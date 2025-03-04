@@ -1,10 +1,10 @@
 use near_sdk::{
-    env,
-    json_types::{U128, U64},
-    near, require, serde_json, AccountId, Promise, PromiseError, PromiseOrValue, PromiseResult,
+    env, json_types::U128, near, require, serde_json, AccountId, Promise, PromiseError,
+    PromiseOrValue, PromiseResult,
 };
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
+    balance_log::BalanceLog,
     borrow::BorrowPosition,
     market::OraclePriceProof,
     supply::SupplyPosition,
@@ -141,17 +141,31 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_total_borrow_asset_deposited_log(&self) -> Vec<(U64, U128)> {
+    pub fn get_total_borrow_asset_deposited_log(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> Vec<BalanceLog<BorrowAsset>> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
         self.total_borrow_asset_deposited_log
             .iter()
-            .map(|(block_height, total)| (block_height.into(), total.as_u128().into()))
+            .skip(offset)
+            .take(count)
             .collect::<Vec<_>>()
     }
 
-    pub fn get_borrow_asset_yield_distribution_log(&self) -> Vec<(U64, U128)> {
+    pub fn get_borrow_asset_yield_distribution_log(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> Vec<BalanceLog<BorrowAsset>> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
         self.borrow_asset_yield_distribution_log
             .iter()
-            .map(|(block_height, total)| (block_height.into(), total.as_u128().into()))
+            .skip(offset)
+            .take(count)
             .collect::<Vec<_>>()
     }
 

@@ -46,14 +46,14 @@ impl SupplyPosition {
 #[near(serializers = [json, borsh])]
 pub struct YieldRecord<T: AssetClass> {
     pub amount: FungibleAssetAmount<T>,
-    pub last_updated_block_height: U64,
+    pub last_updated_epoch_height: U64,
 }
 
 impl<T: AssetClass> YieldRecord<T> {
-    pub fn new(block_height: u64) -> Self {
+    pub fn new(epoch_height: u64) -> Self {
         Self {
             amount: 0.into(),
-            last_updated_block_height: block_height.into(),
+            last_updated_epoch_height: epoch_height.into(),
         }
     }
 
@@ -64,10 +64,10 @@ impl<T: AssetClass> YieldRecord<T> {
     pub fn accumulate_yield(
         &mut self,
         additional_yield: FungibleAssetAmount<T>,
-        block_height: u64,
+        epoch_height: u64,
     ) {
-        debug_assert!(block_height > self.last_updated_block_height.0);
+        debug_assert!(epoch_height > self.last_updated_epoch_height.0);
         self.amount.join(additional_yield);
-        self.last_updated_block_height.0 = block_height;
+        self.last_updated_epoch_height.0 = epoch_height;
     }
 }

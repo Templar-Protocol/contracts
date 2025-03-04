@@ -1,10 +1,14 @@
+use borsh::BorshDeserialize;
 use near_sdk::{
-    collections::{LookupMap, TreeMap, UnorderedMap},
+    collections::{LookupMap, UnorderedMap, Vector},
     env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
 use crate::{
-    asset::{AssetClass, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount},
+    asset::{
+        AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
+    },
+    balance_log::{search_balance_logs, BalanceLog, SearchResult},
     borrow::BorrowPosition,
     market::MarketConfiguration,
     number::Decimal,
@@ -34,8 +38,8 @@ pub struct Market {
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub total_borrow_asset_deposited_log: TreeMap<u64, BorrowAssetAmount>,
-    pub borrow_asset_yield_distribution_log: TreeMap<u64, BorrowAssetAmount>,
+    pub total_borrow_asset_deposited_log: Vector<BalanceLog<BorrowAsset>>,
+    pub borrow_asset_yield_distribution_log: Vector<BalanceLog<BorrowAsset>>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -59,10 +63,8 @@ impl Market {
             borrow_asset_in_flight: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            total_borrow_asset_deposited_log: TreeMap::new(key!(TotalBorrowAssetDepositedLog)),
-            borrow_asset_yield_distribution_log: TreeMap::new(key!(
-                BorrowAssetYieldDistributionLog
-            )),
+            total_borrow_asset_deposited_log: Vector::new(key!(TotalBorrowAssetDepositedLog)),
+            borrow_asset_yield_distribution_log: Vector::new(key!(BorrowAssetYieldDistributionLog)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         }
@@ -120,10 +122,22 @@ impl Market {
         Ok(Some((account_id, amount)))
     }
 
-    fn log_borrow_asset_deposited(&mut self, amount: BorrowAssetAmount) {
-        let block_height = env::block_height();
-        self.total_borrow_asset_deposited_log
-            .insert(&block_height, &amount);
+    fn log_total_borrow_asset_deposited(&mut self, amount: BorrowAssetAmount) {
+        let current_epoch = env::epoch_height();
+        let last_index = self.total_borrow_asset_deposited_log.len() - 1;
+        let last = self
+            .total_borrow_asset_deposited_log
+            .get(last_index)
+            .filter(|log| log.epoch_height.0 == current_epoch);
+
+        if let Some(mut last) = last {
+            last.amount = amount;
+            self.total_borrow_asset_deposited_log
+                .replace(last_index, &last);
+        } else {
+            self.total_borrow_asset_deposited_log
+                .push(&BalanceLog::new(current_epoch, amount));
+        }
     }
 
     fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
@@ -176,14 +190,20 @@ impl Market {
 
         // Next, dynamic (supply-based) yield.
 
-        let block_height = env::block_height();
-        let mut distributed_in_block = self
+        let current_epoch = env::epoch_height();
+        let last_index = self.borrow_asset_yield_distribution_log.len() - 1;
+        let log = self
             .borrow_asset_yield_distribution_log
-            .get(&block_height)
-            .unwrap_or(0.into());
-        distributed_in_block.join(amount);
-        self.borrow_asset_yield_distribution_log
-            .insert(&block_height, &distributed_in_block);
+            .get(last_index)
+            .filter(|log| log.epoch_height.0 == current_epoch);
+        if let Some(mut log) = log {
+            log.amount.join(amount);
+            self.borrow_asset_yield_distribution_log
+                .replace(last_index, &log);
+        } else {
+            self.borrow_asset_yield_distribution_log
+                .push(&BalanceLog::new(current_epoch, amount));
+        }
     }
 
     pub fn record_supply_position_borrow_asset_deposit(
@@ -191,7 +211,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) {
-        self.accumulate_yield_on_supply_position(supply_position, env::block_height());
+        self.accumulate_yield_on_supply_position(supply_position, env::epoch_height());
         supply_position
             .increase_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
@@ -200,7 +220,7 @@ impl Market {
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited overflow"));
 
-        self.log_borrow_asset_deposited(self.borrow_asset_deposited);
+        self.log_total_borrow_asset_deposited(self.borrow_asset_deposited);
     }
 
     pub fn record_supply_position_borrow_asset_withdrawal(
@@ -208,7 +228,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        self.accumulate_yield_on_supply_position(supply_position, env::block_height());
+        self.accumulate_yield_on_supply_position(supply_position, env::epoch_height());
         let withdrawn = supply_position
             .decrease_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
@@ -217,7 +237,7 @@ impl Market {
             .split(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
 
-        self.log_borrow_asset_deposited(self.borrow_asset_deposited);
+        self.log_total_borrow_asset_deposited(self.borrow_asset_deposited);
 
         withdrawn
     }
@@ -315,76 +335,106 @@ impl Market {
     pub fn accumulate_yield_on_supply_position(
         &self,
         supply_position: &mut SupplyPosition,
-        until_block_height: u64,
+        until_epoch_height: u64,
     ) {
-        let (accumulated, last_block_height) = self.calculate_supply_position_yield(
+        let (accumulated, last_epoch_height) = self.calculate_supply_position_yield(
             &self.borrow_asset_yield_distribution_log,
             supply_position
                 .borrow_asset_yield
-                .last_updated_block_height
+                .last_updated_epoch_height
                 .0,
             supply_position.get_borrow_asset_deposit(),
-            until_block_height,
+            until_epoch_height,
         );
 
         supply_position
             .borrow_asset_yield
-            .accumulate_yield(accumulated, last_block_height);
+            .accumulate_yield(accumulated, last_epoch_height);
     }
 
     #[allow(clippy::missing_panics_doc)]
-    pub fn calculate_supply_position_yield<T: AssetClass>(
+    pub fn calculate_supply_position_yield<T: AssetClass + BorshDeserialize>(
         &self,
-        yield_distribution_log: &TreeMap<u64, FungibleAssetAmount<T>>,
-        last_updated_block_height: u64,
+        yield_distribution_logs: &Vector<BalanceLog<T>>,
+        last_updated_epoch_height: u64,
         borrow_asset_deposited_during_interval: BorrowAssetAmount,
-        until_block_height: u64,
+        until_epoch_height: u64,
     ) -> (FungibleAssetAmount<T>, u64) {
-        let start_from_block_height = yield_distribution_log
-            .floor_key(&last_updated_block_height)
-            .map_or(0, |i| i - 1); // -1 because TreeMap::iter_from start is _exclusive_
-
-        // We explicitly want to _exclude_ `until_block_height` because the
-        // intended use of this method is that it will be
-        // `env::block_height()`, and in this case, it would be possible for us
-        // to miss some yield if they were distributed in the same block but
-        // after this function call.
-        if start_from_block_height >= until_block_height {
-            return (0.into(), last_updated_block_height);
-        }
+        let (starting_index, starting_epoch_height) =
+            match search_balance_logs(yield_distribution_logs, last_updated_epoch_height) {
+                SearchResult::Found { index, log } => (index, log.epoch_height.0),
+                SearchResult::NotFound { index_below } => {
+                    let index = index_below + 1;
+                    match yield_distribution_logs
+                        .get(index)
+                        .filter(|log| log.epoch_height.0 < until_epoch_height)
+                    {
+                        Some(log) => (index, log.epoch_height.0),
+                        None => return (0.into(), last_updated_epoch_height),
+                    }
+                }
+            };
 
         let mut accumulated_fees_in_span = FungibleAssetAmount::<T>::zero();
-        let mut last_block_height = start_from_block_height;
 
-        for (block_height, fees) in yield_distribution_log.iter_from(start_from_block_height) {
-            if block_height >= until_block_height {
+        let mut total_assets_deposited_at_distribution = match search_balance_logs(
+            &self.total_borrow_asset_deposited_log,
+            starting_epoch_height,
+        ) {
+            SearchResult::Found { index, log } => (index, log),
+            SearchResult::NotFound { index_below } => (
+                index_below,
+                if let Some(log) = self.total_borrow_asset_deposited_log.get(index_below) {
+                    log
+                } else {
+                    return (0.into(), last_updated_epoch_height);
+                },
+            ),
+        };
+
+        // This value is not necessary for correctness; it just reduces
+        // duplicate reads.
+        let mut next_total_assets_deposited_at_distribution = self
+            .total_borrow_asset_deposited_log
+            .get(total_assets_deposited_at_distribution.0 + 1);
+
+        let mut last_epoch_height = last_updated_epoch_height;
+
+        for i in starting_index..yield_distribution_logs.len() {
+            let log = yield_distribution_logs.get(i).unwrap();
+            if log.epoch_height.0 >= until_epoch_height {
                 break;
             }
 
-            // Safe because borrow assets must always be deposited before
-            // yield can be distributed.
-            let total_borrow_asset_deposited_at_distribution = self
-                .total_borrow_asset_deposited_log
-                .get(
-                    &self
-                        .total_borrow_asset_deposited_log
-                        .floor_key(&block_height)
-                        .unwrap(),
-                )
-                .unwrap();
+            // Now, we are looking for the latest total asset deposited amount
+            // AT OR BEFORE the current yield distribution log.
+            while let Some(next) = next_total_assets_deposited_at_distribution
+                .clone()
+                .filter(|l| l.epoch_height.0 <= log.epoch_height.0)
+            {
+                total_assets_deposited_at_distribution.0 += 1;
+                total_assets_deposited_at_distribution.1 = next;
 
-            let share = Decimal::from(borrow_asset_deposited_during_interval.as_u128())
-                / total_borrow_asset_deposited_at_distribution.as_u128();
-            let portion_of_fees = share * fees.as_u128();
+                next_total_assets_deposited_at_distribution = self
+                    .total_borrow_asset_deposited_log
+                    .get(total_assets_deposited_at_distribution.0 + 1);
+            }
 
-            accumulated_fees_in_span.join(FungibleAssetAmount::new(
-                portion_of_fees.to_u128_floor().unwrap(),
-            ));
+            let share_fraction = Decimal::from(borrow_asset_deposited_during_interval.as_u128())
+                / total_assets_deposited_at_distribution.1.amount.as_u128();
 
-            last_block_height = block_height;
+            let share_amount = FungibleAssetAmount::new(
+                (share_fraction * log.amount.as_u128())
+                    .to_u128_floor()
+                    .unwrap(),
+            );
+
+            accumulated_fees_in_span.join(share_amount);
+
+            last_epoch_height = log.epoch_height.0;
         }
 
-        (accumulated_fees_in_span, last_block_height)
+        (accumulated_fees_in_span, last_epoch_height)
     }
 
     pub fn can_borrow_position_be_liquidated(

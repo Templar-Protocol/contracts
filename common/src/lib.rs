@@ -1,4 +1,5 @@
 pub mod asset;
+pub mod balance_log;
 pub mod borrow;
 pub mod fee;
 pub mod market;

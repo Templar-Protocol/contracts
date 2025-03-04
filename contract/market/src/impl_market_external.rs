@@ -199,7 +199,7 @@ impl MarketExternalInterface for Contract {
     fn harvest_yield(&mut self) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.supply_positions.get(&predecessor) {
-            self.accumulate_yield_on_supply_position(&mut supply_position, env::block_height());
+            self.accumulate_yield_on_supply_position(&mut supply_position, env::epoch_height());
             self.supply_positions.insert(&predecessor, &supply_position);
         }
     }
