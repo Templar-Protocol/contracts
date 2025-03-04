@@ -95,7 +95,7 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn supply_native(&self, supply_user: &Account, amount: u128) {
+    pub async fn supply_native(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
         supply_user
             .call(self.contract.id(), "supply_native")
             .args_json(json!({}))
@@ -103,10 +103,10 @@ impl TestController {
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
-    pub async fn supply(&self, supply_user: &Account, amount: u128) {
+    pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
         println!(
             "{} transferring {amount} tokens for supply...",
             supply_user.id()
@@ -120,7 +120,7 @@ impl TestController {
                     amount,
                     &serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
                 )
-                .await;
+                .await
             }
         }
     }

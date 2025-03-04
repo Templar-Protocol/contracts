@@ -23,13 +23,17 @@ impl<A: AssetClass> BalanceLog<A> {
 
 pub enum SearchResult<T: AssetClass> {
     Found { index: u64, log: BalanceLog<T> },
-    NotFound { index_below: u64 },
+    NotFound { index_below: Option<u64> },
 }
 
 pub fn search_balance_logs<T: AssetClass + BorshDeserialize>(
     logs: &Vector<BalanceLog<T>>,
     search_epoch_height: u64,
 ) -> SearchResult<T> {
+    if logs.is_empty() {
+        return SearchResult::NotFound { index_below: None };
+    }
+
     let mut bottom = 0;
     let mut top = logs.len() - 1;
 
@@ -46,10 +50,15 @@ pub fn search_balance_logs<T: AssetClass + BorshDeserialize>(
                 return SearchResult::Found { index: i, log };
             }
             Ordering::Greater => {
+                if top == 0 {
+                    return SearchResult::NotFound { index_below: None };
+                }
                 top = i - 1;
             }
         }
     }
 
-    SearchResult::NotFound { index_below: top }
+    SearchResult::NotFound {
+        index_below: Some(top),
+    }
 }

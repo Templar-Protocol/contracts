@@ -126,13 +126,18 @@ impl Market {
 
     fn log_total_borrow_asset_deposited(&mut self, amount: BorrowAssetAmount) {
         let current_epoch = env::epoch_height();
-        let last_index = self.total_borrow_asset_deposited_log.len() - 1;
-        let last = self
-            .total_borrow_asset_deposited_log
-            .get(last_index)
-            .filter(|log| log.epoch_height.0 == current_epoch);
 
-        if let Some(mut last) = last {
+        if let Some((last_index, mut last)) = self
+            .total_borrow_asset_deposited_log
+            .len()
+            .checked_sub(1)
+            .and_then(|last_index| {
+                self.total_borrow_asset_deposited_log
+                    .get(last_index)
+                    .filter(|log| log.epoch_height.0 == current_epoch)
+                    .map(|log| (last_index, log))
+            })
+        {
             last.amount = amount;
             self.total_borrow_asset_deposited_log
                 .replace(last_index, &last);
@@ -191,17 +196,22 @@ impl Market {
         }
 
         // Next, dynamic (supply-based) yield.
-
         let current_epoch = env::epoch_height();
-        let last_index = self.borrow_asset_yield_distribution_log.len() - 1;
-        let log = self
+
+        if let Some((last_index, mut last)) = self
             .borrow_asset_yield_distribution_log
-            .get(last_index)
-            .filter(|log| log.epoch_height.0 == current_epoch);
-        if let Some(mut log) = log {
-            log.amount.join(amount);
+            .len()
+            .checked_sub(1)
+            .and_then(|last_index| {
+                self.borrow_asset_yield_distribution_log
+                    .get(last_index)
+                    .filter(|log| log.epoch_height.0 == current_epoch)
+                    .map(|log| (last_index, log))
+            })
+        {
+            last.amount = amount;
             self.borrow_asset_yield_distribution_log
-                .replace(last_index, &log);
+                .replace(last_index, &last);
         } else {
             self.borrow_asset_yield_distribution_log
                 .push(&BalanceLog::new(current_epoch, amount));
@@ -362,16 +372,20 @@ impl Market {
         borrow_asset_deposited_during_interval: BorrowAssetAmount,
         until_epoch_height: u64,
     ) -> (FungibleAssetAmount<T>, u64) {
+        if yield_distribution_logs.is_empty() || self.total_borrow_asset_deposited_log.is_empty() {
+            return (0.into(), last_updated_epoch_height);
+        }
+
         let (starting_index, starting_epoch_height) =
             match search_balance_logs(yield_distribution_logs, last_updated_epoch_height) {
                 SearchResult::Found { index, log } => (index, log.epoch_height.0),
                 SearchResult::NotFound { index_below } => {
-                    let index = index_below + 1;
+                    let index_after = index_below.map_or(0, |i| i + 1);
                     match yield_distribution_logs
-                        .get(index)
+                        .get(index_after)
                         .filter(|log| log.epoch_height.0 < until_epoch_height)
                     {
-                        Some(log) => (index, log.epoch_height.0),
+                        Some(log) => (index_after, log.epoch_height.0),
                         None => return (0.into(), last_updated_epoch_height),
                     }
                 }
@@ -384,7 +398,9 @@ impl Market {
             starting_epoch_height,
         ) {
             SearchResult::Found { index, log } => (index, log),
-            SearchResult::NotFound { index_below } => (
+            SearchResult::NotFound {
+                index_below: Some(index_below),
+            } => (
                 index_below,
                 if let Some(log) = self.total_borrow_asset_deposited_log.get(index_below) {
                     log
@@ -392,6 +408,9 @@ impl Market {
                     return (0.into(), last_updated_epoch_height);
                 },
             ),
+            SearchResult::NotFound { index_below: None } => {
+                env::panic_str("Invariant violation: yield distribution before any deposits.");
+            }
         };
 
         // This value is not necessary for correctness; it just reduces
