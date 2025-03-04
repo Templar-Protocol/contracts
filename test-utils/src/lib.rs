@@ -406,7 +406,7 @@ impl TestController {
         }
     }
 
-    pub async fn harvest_yield(&self, supply_user: &Account) {
+    pub async fn harvest_yield(&self, supply_user: &Account) -> ExecutionSuccess {
         println!("{} harvesting yield...", supply_user.id());
         supply_user
             .call(self.contract.id(), "harvest_yield")
@@ -414,7 +414,7 @@ impl TestController {
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
     pub async fn withdraw_static_yield(
