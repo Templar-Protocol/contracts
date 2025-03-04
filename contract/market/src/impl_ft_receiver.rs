@@ -65,7 +65,7 @@ impl FungibleTokenReceiver for Contract {
                 let amount = use_borrow_asset();
 
                 let liquidated_collateral =
-                    self.execute_liquidate_initial(&account_id, amount, oracle_price_proof);
+                    self.execute_liquidate_initial(&account_id, amount, &oracle_price_proof);
 
                 PromiseOrValue::Promise(
                     self.configuration
