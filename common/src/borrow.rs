@@ -1,7 +1,10 @@
 use near_sdk::{json_types::U64, near};
 
-use crate::asset::{
-    AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
+use crate::{
+    asset::{
+        AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
+    },
+    chain_time::ChainTime,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,25 +35,25 @@ pub enum LiquidationReason {
 #[near(serializers = [borsh, json])]
 pub struct FeeRecord<T: AssetClass> {
     pub(crate) total: FungibleAssetAmount<T>,
-    pub(crate) last_updated_epoch_height: U64,
+    pub(crate) last_updated: ChainTime,
 }
 
 impl<T: AssetClass> FeeRecord<T> {
-    pub fn new(epoch_height: u64) -> Self {
+    pub fn new(chain_time: ChainTime) -> Self {
         Self {
             total: 0.into(),
-            last_updated_epoch_height: U64(epoch_height),
+            last_updated: chain_time,
         }
     }
 
     pub fn accumulate_fees(
         &mut self,
         additional_fees: FungibleAssetAmount<T>,
-        epoch_height: u64,
+        chain_time: ChainTime,
     ) -> Option<()> {
-        debug_assert!(epoch_height > self.last_updated_epoch_height.0);
+        debug_assert!(chain_time > self.last_updated);
         self.total.join(additional_fees)?;
-        self.last_updated_epoch_height.0 = epoch_height;
+        self.last_updated = chain_time;
         Some(())
     }
 }
@@ -67,24 +70,24 @@ pub struct BorrowPosition {
 }
 
 impl BorrowPosition {
-    pub fn new(epoch_height: u64) -> Self {
+    pub fn new(chain_time: ChainTime) -> Self {
         Self {
             started_at_block_timestamp_ms: None,
             collateral_asset_deposit: 0.into(),
             borrow_asset_principal: 0.into(),
-            borrow_asset_fees: FeeRecord::new(epoch_height),
+            borrow_asset_fees: FeeRecord::new(chain_time),
             temporary_lock: 0.into(),
             liquidation_lock: false,
         }
     }
 
-    pub fn full_liquidation(&mut self, epoch_height: u64) {
+    pub fn full_liquidation(&mut self, chain_time: ChainTime) {
         self.liquidation_lock = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
         self.borrow_asset_fees.total = 0.into();
-        self.borrow_asset_fees.last_updated_epoch_height = epoch_height.into();
+        self.borrow_asset_fees.last_updated = chain_time;
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {

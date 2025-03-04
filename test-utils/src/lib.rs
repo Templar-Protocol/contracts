@@ -611,7 +611,7 @@ impl TestController {
 
         println!("Total borrow asset deposited log:");
         for (i, log) in total_borrow_asset_deposited_logs.iter().enumerate() {
-            println!("\t{i}: {}\t[#{}]", log.amount.as_u128(), log.epoch_height.0);
+            println!("\t{i}: {}\t[{}]", log.amount.as_u128(), log.chain_time);
         }
 
         let borrow_asset_yield_distribution_logs = self
@@ -625,7 +625,7 @@ impl TestController {
 
         println!("Borrow asset yield distribution log:");
         for (i, log) in borrow_asset_yield_distribution_logs.iter().enumerate() {
-            println!("\t{i}: {}\t[#{}]", log.amount.as_u128(), log.epoch_height.0);
+            println!("\t{i}: {}\t[{}]", log.amount.as_u128(), log.chain_time);
         }
     }
 }

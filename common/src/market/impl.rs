@@ -10,6 +10,7 @@ use crate::{
     },
     balance_log::{search_balance_logs, BalanceLog, SearchResult},
     borrow::BorrowPosition,
+    chain_time::ChainTime,
     market::MarketConfiguration,
     number::Decimal,
     static_yield::StaticYieldRecord,
@@ -125,7 +126,7 @@ impl Market {
     }
 
     fn log_total_borrow_asset_deposited(&mut self, amount: BorrowAssetAmount) {
-        let current_epoch = env::epoch_height();
+        let now = ChainTime::now();
 
         if let Some((last_index, mut last)) = self
             .total_borrow_asset_deposited_log
@@ -134,7 +135,7 @@ impl Market {
             .and_then(|last_index| {
                 self.total_borrow_asset_deposited_log
                     .get(last_index)
-                    .filter(|log| log.epoch_height.0 == current_epoch)
+                    .filter(|log| log.chain_time == now)
                     .map(|log| (last_index, log))
             })
         {
@@ -143,7 +144,7 @@ impl Market {
                 .replace(last_index, &last);
         } else {
             self.total_borrow_asset_deposited_log
-                .push(&BalanceLog::new(current_epoch, amount));
+                .push(&BalanceLog::new(now, amount));
         }
     }
 
@@ -196,7 +197,7 @@ impl Market {
         }
 
         // Next, dynamic (supply-based) yield.
-        let current_epoch = env::epoch_height();
+        let now = ChainTime::now();
 
         if let Some((last_index, mut last)) = self
             .borrow_asset_yield_distribution_log
@@ -205,7 +206,7 @@ impl Market {
             .and_then(|last_index| {
                 self.borrow_asset_yield_distribution_log
                     .get(last_index)
-                    .filter(|log| log.epoch_height.0 == current_epoch)
+                    .filter(|log| log.chain_time == now)
                     .map(|log| (last_index, log))
             })
         {
@@ -214,7 +215,7 @@ impl Market {
                 .replace(last_index, &last);
         } else {
             self.borrow_asset_yield_distribution_log
-                .push(&BalanceLog::new(current_epoch, amount));
+                .push(&BalanceLog::new(now, amount));
         }
     }
 
@@ -223,7 +224,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) {
-        self.accumulate_yield_on_supply_position(supply_position, env::epoch_height());
+        self.accumulate_yield_on_supply_position(supply_position, ChainTime::now());
         supply_position
             .increase_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
@@ -240,7 +241,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        self.accumulate_yield_on_supply_position(supply_position, env::epoch_height());
+        self.accumulate_yield_on_supply_position(supply_position, ChainTime::now());
         let withdrawn = supply_position
             .decrease_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
@@ -316,7 +317,7 @@ impl Market {
     ) {
         borrow_position
             .borrow_asset_fees
-            .accumulate_fees(fees, env::epoch_height());
+            .accumulate_fees(fees, ChainTime::now());
         borrow_position
             .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
@@ -347,16 +348,13 @@ impl Market {
     pub fn accumulate_yield_on_supply_position(
         &self,
         supply_position: &mut SupplyPosition,
-        until_epoch_height: u64,
+        until: ChainTime,
     ) {
         let (accumulated, last_epoch_height) = self.calculate_supply_position_yield(
             &self.borrow_asset_yield_distribution_log,
-            supply_position
-                .borrow_asset_yield
-                .last_updated_epoch_height
-                .0,
+            supply_position.borrow_asset_yield.last_updated,
             supply_position.get_borrow_asset_deposit(),
-            until_epoch_height,
+            until,
         );
 
         supply_position
@@ -368,25 +366,25 @@ impl Market {
     pub fn calculate_supply_position_yield<T: AssetClass + BorshDeserialize>(
         &self,
         yield_distribution_logs: &Vector<BalanceLog<T>>,
-        last_updated_epoch_height: u64,
+        last_updated: ChainTime,
         borrow_asset_deposited_during_interval: BorrowAssetAmount,
-        until_epoch_height: u64,
-    ) -> (FungibleAssetAmount<T>, u64) {
+        until: ChainTime,
+    ) -> (FungibleAssetAmount<T>, ChainTime) {
         if yield_distribution_logs.is_empty() || self.total_borrow_asset_deposited_log.is_empty() {
-            return (0.into(), last_updated_epoch_height);
+            return (0.into(), last_updated);
         }
 
-        let (starting_index, starting_epoch_height) =
-            match search_balance_logs(yield_distribution_logs, last_updated_epoch_height) {
-                SearchResult::Found { index, log } => (index, log.epoch_height.0),
+        let (starting_index, starting_chain_time) =
+            match search_balance_logs(yield_distribution_logs, last_updated) {
+                SearchResult::Found { index, log } => (index, log.chain_time),
                 SearchResult::NotFound { index_below } => {
                     let index_after = index_below.map_or(0, |i| i + 1);
                     match yield_distribution_logs
                         .get(index_after)
-                        .filter(|log| log.epoch_height.0 < until_epoch_height)
+                        .filter(|log| log.chain_time < until)
                     {
-                        Some(log) => (index_after, log.epoch_height.0),
-                        None => return (0.into(), last_updated_epoch_height),
+                        Some(log) => (index_after, log.chain_time),
+                        None => return (0.into(), last_updated),
                     }
                 }
             };
@@ -395,7 +393,7 @@ impl Market {
 
         let mut total_assets_deposited_at_distribution = match search_balance_logs(
             &self.total_borrow_asset_deposited_log,
-            starting_epoch_height,
+            starting_chain_time,
         ) {
             SearchResult::Found { index, log } => (index, log),
             SearchResult::NotFound {
@@ -405,7 +403,7 @@ impl Market {
                 if let Some(log) = self.total_borrow_asset_deposited_log.get(index_below) {
                     log
                 } else {
-                    return (0.into(), last_updated_epoch_height);
+                    return (0.into(), last_updated);
                 },
             ),
             SearchResult::NotFound { index_below: None } => {
@@ -419,11 +417,11 @@ impl Market {
             .total_borrow_asset_deposited_log
             .get(total_assets_deposited_at_distribution.0 + 1);
 
-        let mut last_epoch_height = last_updated_epoch_height;
+        let mut last_chain_time = last_updated;
 
         for i in starting_index..yield_distribution_logs.len() {
             let log = yield_distribution_logs.get(i).unwrap();
-            if log.epoch_height.0 >= until_epoch_height {
+            if log.chain_time >= until {
                 break;
             }
 
@@ -431,7 +429,7 @@ impl Market {
             // AT OR BEFORE the current yield distribution log.
             while let Some(next) = next_total_assets_deposited_at_distribution
                 .clone()
-                .filter(|l| l.epoch_height.0 <= log.epoch_height.0)
+                .filter(|l| l.chain_time <= log.chain_time)
             {
                 total_assets_deposited_at_distribution.0 += 1;
                 total_assets_deposited_at_distribution.1 = next;
@@ -452,10 +450,10 @@ impl Market {
 
             accumulated_fees_in_span.join(share_amount);
 
-            last_epoch_height = log.epoch_height.0;
+            last_chain_time = log.chain_time;
         }
 
-        (accumulated_fees_in_span, last_epoch_height)
+        (accumulated_fees_in_span, last_chain_time)
     }
 
     pub fn can_borrow_position_be_liquidated(
@@ -490,7 +488,7 @@ impl Market {
         mut recovered_amount: BorrowAssetAmount,
     ) {
         let principal = borrow_position.get_borrow_asset_principal();
-        borrow_position.full_liquidation(env::epoch_height());
+        borrow_position.full_liquidation(ChainTime::now());
 
         // TODO: Is it correct to only care about the original principal here?
         if recovered_amount.split(principal).is_some() {

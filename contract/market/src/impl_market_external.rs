@@ -4,6 +4,7 @@ use near_sdk::{
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
+    chain_time::ChainTime,
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface, OraclePriceProof},
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -199,7 +200,7 @@ impl MarketExternalInterface for Contract {
     fn harvest_yield(&mut self) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.supply_positions.get(&predecessor) {
-            self.accumulate_yield_on_supply_position(&mut supply_position, env::epoch_height());
+            self.accumulate_yield_on_supply_position(&mut supply_position, ChainTime::now());
             self.supply_positions.insert(&predecessor, &supply_position);
         }
     }

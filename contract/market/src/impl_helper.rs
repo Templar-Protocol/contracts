@@ -6,6 +6,7 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     balance_log::BalanceLog,
     borrow::BorrowPosition,
+    chain_time::ChainTime,
     market::OraclePriceProof,
     supply::SupplyPosition,
 };
@@ -18,7 +19,7 @@ impl Contract {
         let mut supply_position = self
             .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| SupplyPosition::new(env::epoch_height()));
+            .unwrap_or_else(|| SupplyPosition::new(ChainTime::now()));
 
         self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
 
@@ -29,7 +30,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(env::epoch_height()));
+            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
 
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
@@ -77,7 +78,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(env::epoch_height()));
+            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
 
         require!(
             self.configuration
