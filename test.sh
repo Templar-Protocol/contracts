@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-ROOT_DIR=$(realpath)
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$ROOT_DIR/mock/ft"
 cargo near build non-reproducible-wasm
