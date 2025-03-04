@@ -10,10 +10,10 @@ pub struct SupplyPosition {
 }
 
 impl SupplyPosition {
-    pub fn new(block_height: u64) -> Self {
+    pub fn new(epoch_height: u64) -> Self {
         Self {
             borrow_asset_deposit: 0.into(),
-            borrow_asset_yield: YieldRecord::new(block_height),
+            borrow_asset_yield: YieldRecord::new(epoch_height),
         }
     }
 

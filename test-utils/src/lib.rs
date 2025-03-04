@@ -1,7 +1,7 @@
 use std::{path::Path, str::FromStr};
 
 use near_sdk::{
-    json_types::{U128, U64},
+    json_types::U128,
     serde_json::{self, json},
     AccountId, AccountIdRef, NearToken,
 };
@@ -9,7 +9,8 @@ use near_workspaces::{
     network::Sandbox, prelude::*, result::ExecutionSuccess, Account, Contract, DevNetwork, Worker,
 };
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
+    balance_log::BalanceLog,
     borrow::{BorrowPosition, BorrowStatus},
     fee::{Fee, TimeBasedFee},
     market::{
@@ -599,36 +600,32 @@ impl TestController {
 
     #[allow(unused)] // This is useful for debugging tests
     pub async fn print_logs(&self) {
-        let total_borrow_asset_deposited_log = self
+        let total_borrow_asset_deposited_logs = self
             .contract
             .view("get_total_borrow_asset_deposited_log")
             .args_json(json!({}))
             .await
             .unwrap()
-            .json::<Vec<(U64, U128)>>()
+            .json::<Vec<BalanceLog<BorrowAsset>>>()
             .unwrap();
 
         println!("Total borrow asset deposited log:");
-        for (i, (U64(block_height), U128(amount))) in
-            total_borrow_asset_deposited_log.iter().enumerate()
-        {
-            println!("\t{i}: {amount}\t[#{block_height}]");
+        for (i, log) in total_borrow_asset_deposited_logs.iter().enumerate() {
+            println!("\t{i}: {}\t[#{}]", log.amount.as_u128(), log.epoch_height.0);
         }
 
-        let borrow_asset_yield_distribution_log = self
+        let borrow_asset_yield_distribution_logs = self
             .contract
             .view("get_borrow_asset_yield_distribution_log")
             .args_json(json!({}))
             .await
             .unwrap()
-            .json::<Vec<(U64, U128)>>()
+            .json::<Vec<BalanceLog<BorrowAsset>>>()
             .unwrap();
 
         println!("Borrow asset yield distribution log:");
-        for (i, (U64(block_height), U128(amount))) in
-            borrow_asset_yield_distribution_log.iter().enumerate()
-        {
-            println!("\t{i}: {amount}\t[#{block_height}]");
+        for (i, log) in borrow_asset_yield_distribution_logs.iter().enumerate() {
+            println!("\t{i}: {}\t[#{}]", log.amount.as_u128(), log.epoch_height.0);
         }
     }
 }

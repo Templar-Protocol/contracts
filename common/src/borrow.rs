@@ -32,25 +32,25 @@ pub enum LiquidationReason {
 #[near(serializers = [borsh, json])]
 pub struct FeeRecord<T: AssetClass> {
     pub(crate) total: FungibleAssetAmount<T>,
-    pub(crate) last_updated_block_height: U64,
+    pub(crate) last_updated_epoch_height: U64,
 }
 
 impl<T: AssetClass> FeeRecord<T> {
-    pub fn new(block_height: u64) -> Self {
+    pub fn new(epoch_height: u64) -> Self {
         Self {
             total: 0.into(),
-            last_updated_block_height: U64(block_height),
+            last_updated_epoch_height: U64(epoch_height),
         }
     }
 
     pub fn accumulate_fees(
         &mut self,
         additional_fees: FungibleAssetAmount<T>,
-        block_height: u64,
+        epoch_height: u64,
     ) -> Option<()> {
-        debug_assert!(block_height > self.last_updated_block_height.0);
+        debug_assert!(epoch_height > self.last_updated_epoch_height.0);
         self.total.join(additional_fees)?;
-        self.last_updated_block_height.0 = block_height;
+        self.last_updated_epoch_height.0 = epoch_height;
         Some(())
     }
 }
@@ -67,24 +67,24 @@ pub struct BorrowPosition {
 }
 
 impl BorrowPosition {
-    pub fn new(block_height: u64) -> Self {
+    pub fn new(epoch_height: u64) -> Self {
         Self {
             started_at_block_timestamp_ms: None,
             collateral_asset_deposit: 0.into(),
             borrow_asset_principal: 0.into(),
-            borrow_asset_fees: FeeRecord::new(block_height),
+            borrow_asset_fees: FeeRecord::new(epoch_height),
             temporary_lock: 0.into(),
             liquidation_lock: false,
         }
     }
 
-    pub fn full_liquidation(&mut self, block_timestamp_ms: u64) {
+    pub fn full_liquidation(&mut self, epoch_height: u64) {
         self.liquidation_lock = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
         self.borrow_asset_fees.total = 0.into();
-        self.borrow_asset_fees.last_updated_block_height = block_timestamp_ms.into();
+        self.borrow_asset_fees.last_updated_epoch_height = epoch_height.into();
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {

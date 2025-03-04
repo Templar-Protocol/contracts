@@ -18,7 +18,7 @@ impl Contract {
         let mut supply_position = self
             .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| SupplyPosition::new(env::block_height()));
+            .unwrap_or_else(|| SupplyPosition::new(env::epoch_height()));
 
         self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
 
@@ -29,7 +29,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
+            .unwrap_or_else(|| BorrowPosition::new(env::epoch_height()));
 
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
@@ -77,7 +77,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
+            .unwrap_or_else(|| BorrowPosition::new(env::epoch_height()));
 
         require!(
             self.configuration

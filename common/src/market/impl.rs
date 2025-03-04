@@ -306,7 +306,7 @@ impl Market {
     ) {
         borrow_position
             .borrow_asset_fees
-            .accumulate_fees(fees, env::block_height());
+            .accumulate_fees(fees, env::epoch_height());
         borrow_position
             .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
@@ -471,7 +471,7 @@ impl Market {
         mut recovered_amount: BorrowAssetAmount,
     ) {
         let principal = borrow_position.get_borrow_asset_principal();
-        borrow_position.full_liquidation(env::block_timestamp_ms());
+        borrow_position.full_liquidation(env::epoch_height());
 
         // TODO: Is it correct to only care about the original principal here?
         if recovered_amount.split(principal).is_some() {
