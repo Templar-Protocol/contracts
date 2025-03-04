@@ -198,7 +198,7 @@ impl Contract {
 
         require!(
             self.configuration
-                .is_within_initial_minimum_collateral_ratio(&borrow_position, &oracle_price_proof),
+                .is_within_minimum_initial_collateral_ratio(&borrow_position, &oracle_price_proof),
             "New position must exceed initial minimum collateral ratio",
         );
 

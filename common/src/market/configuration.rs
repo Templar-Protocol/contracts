@@ -136,7 +136,7 @@ impl MarketConfiguration {
         }
     }
 
-    pub fn is_within_initial_minimum_collateral_ratio(
+    pub fn is_within_minimum_initial_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
         oracle_price_proof: &OraclePriceProof,

@@ -17,7 +17,7 @@ const MAX_DECIMAL_PRECISION: usize = 38; // = floor(FRACTIONAL_BITS / log2(10))
 #[macro_export]
 macro_rules! dec {
     ($s:literal) => {
-        Decimal::from_str($s).unwrap()
+        <$crate::number::Decimal as std::str::FromStr>::from_str($s).unwrap()
     };
 }
 
