@@ -1,11 +1,12 @@
 use near_sdk::{
-    env,
-    json_types::{U128, U64},
-    near, require, serde_json, AccountId, Promise, PromiseError, PromiseOrValue, PromiseResult,
+    env, json_types::U128, near, require, serde_json, AccountId, Promise, PromiseError,
+    PromiseOrValue, PromiseResult,
 };
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
+    balance_log::BalanceLog,
     borrow::BorrowPosition,
+    chain_time::ChainTime,
     market::OraclePriceProof,
     supply::SupplyPosition,
 };
@@ -18,7 +19,7 @@ impl Contract {
         let mut supply_position = self
             .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| SupplyPosition::new(env::block_height()));
+            .unwrap_or_else(|| SupplyPosition::new(ChainTime::now()));
 
         self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
 
@@ -29,7 +30,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
+            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
 
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
@@ -77,7 +78,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
+            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
 
         require!(
             self.configuration
@@ -141,17 +142,31 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_total_borrow_asset_deposited_log(&self) -> Vec<(U64, U128)> {
+    pub fn get_total_borrow_asset_deposited_log(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> Vec<BalanceLog<BorrowAsset>> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
         self.total_borrow_asset_deposited_log
             .iter()
-            .map(|(block_height, total)| (block_height.into(), total.as_u128().into()))
+            .skip(offset)
+            .take(count)
             .collect::<Vec<_>>()
     }
 
-    pub fn get_borrow_asset_yield_distribution_log(&self) -> Vec<(U64, U128)> {
+    pub fn get_borrow_asset_yield_distribution_log(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> Vec<BalanceLog<BorrowAsset>> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
         self.borrow_asset_yield_distribution_log
             .iter()
-            .map(|(block_height, total)| (block_height.into(), total.as_u128().into()))
+            .skip(offset)
+            .take(count)
             .collect::<Vec<_>>()
     }
 

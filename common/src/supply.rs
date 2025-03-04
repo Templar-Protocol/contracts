@@ -1,6 +1,9 @@
-use near_sdk::{json_types::U64, near};
+use near_sdk::near;
 
-use crate::asset::{AssetClass, BorrowAsset, BorrowAssetAmount, FungibleAssetAmount};
+use crate::{
+    asset::{AssetClass, BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
+    chain_time::ChainTime,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -10,10 +13,10 @@ pub struct SupplyPosition {
 }
 
 impl SupplyPosition {
-    pub fn new(block_height: u64) -> Self {
+    pub fn new(chain_time: ChainTime) -> Self {
         Self {
             borrow_asset_deposit: 0.into(),
-            borrow_asset_yield: YieldRecord::new(block_height),
+            borrow_asset_yield: YieldRecord::new(chain_time),
         }
     }
 
@@ -46,14 +49,14 @@ impl SupplyPosition {
 #[near(serializers = [json, borsh])]
 pub struct YieldRecord<T: AssetClass> {
     pub amount: FungibleAssetAmount<T>,
-    pub last_updated_block_height: U64,
+    pub last_updated: ChainTime,
 }
 
 impl<T: AssetClass> YieldRecord<T> {
-    pub fn new(block_height: u64) -> Self {
+    pub fn new(last_updated: ChainTime) -> Self {
         Self {
             amount: 0.into(),
-            last_updated_block_height: block_height.into(),
+            last_updated,
         }
     }
 
@@ -64,10 +67,10 @@ impl<T: AssetClass> YieldRecord<T> {
     pub fn accumulate_yield(
         &mut self,
         additional_yield: FungibleAssetAmount<T>,
-        block_height: u64,
+        chain_time: ChainTime,
     ) {
-        debug_assert!(block_height > self.last_updated_block_height.0);
+        debug_assert!(chain_time > self.last_updated);
         self.amount.join(additional_yield);
-        self.last_updated_block_height.0 = block_height;
+        self.last_updated = chain_time;
     }
 }
