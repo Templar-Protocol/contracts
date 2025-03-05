@@ -17,6 +17,7 @@ pub struct MarketConfiguration {
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub balance_oracle_account_id: AccountId,
+    pub minimum_initial_collateral_ratio: Decimal,
     pub minimum_collateral_ratio_per_borrow: Decimal,
     /// How much of the deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
@@ -42,11 +43,71 @@ pub struct MarketConfiguration {
     pub maximum_liquidator_spread: Decimal,
 }
 
+pub mod error {
+    use std::fmt::Display;
+
+    use thiserror::Error;
+
+    #[derive(Debug, Clone, Error)]
+    #[error("Invalid configuration field `{field}`: {reason}")]
+    pub struct ConfigurationValidationError {
+        field: &'static str,
+        reason: InvalidFieldReason,
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum InvalidFieldReason {
+        OutOfBounds,
+    }
+
+    impl Display for InvalidFieldReason {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "out of bounds")
+        }
+    }
+
+    pub(super) fn out_of_bounds(field: &'static str) -> ConfigurationValidationError {
+        ConfigurationValidationError {
+            field,
+            reason: InvalidFieldReason::OutOfBounds,
+        }
+    }
+}
+
 impl MarketConfiguration {
+    /// # Errors
+    ///
+    /// If the configuration is invalid.
+    pub fn validate(&self) -> Result<(), error::ConfigurationValidationError> {
+        if self.minimum_initial_collateral_ratio < 1u32 {
+            return Err(error::out_of_bounds("minimum_initial_collateral_ratio"));
+        }
+
+        if self.minimum_collateral_ratio_per_borrow < 1u32 {
+            return Err(error::out_of_bounds("minimum_collateral_ratio_per_borrow"));
+        }
+
+        if self.maximum_borrow_asset_usage_ratio.is_zero()
+            || self.maximum_borrow_asset_usage_ratio > 1u32
+        {
+            return Err(error::out_of_bounds("maximum_borrow_asset_usage_ratio"));
+        }
+
+        if self.maximum_borrow_amount < self.minimum_borrow_amount {
+            return Err(error::out_of_bounds("maximum_borrow_amount"));
+        }
+
+        if self.maximum_liquidator_spread >= 1u32 {
+            return Err(error::out_of_bounds("maximum_liquidator_spread"));
+        }
+
+        Ok(())
+    }
+
     pub fn borrow_status(
         &self,
         borrow_position: &BorrowPosition,
-        oracle_price_proof: OraclePriceProof,
+        oracle_price_proof: &OraclePriceProof,
         block_timestamp_ms: u64,
     ) -> BorrowStatus {
         if !self.is_within_minimum_collateral_ratio(borrow_position, oracle_price_proof) {
@@ -75,35 +136,58 @@ impl MarketConfiguration {
         }
     }
 
+    pub fn is_within_minimum_initial_collateral_ratio(
+        &self,
+        borrow_position: &BorrowPosition,
+        oracle_price_proof: &OraclePriceProof,
+    ) -> bool {
+        is_within_mcr(
+            &self.minimum_initial_collateral_ratio,
+            borrow_position,
+            oracle_price_proof,
+        )
+    }
+
     pub fn is_within_minimum_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
-        OraclePriceProof {
-            collateral_asset_price,
-            borrow_asset_price,
-        }: OraclePriceProof,
+        oracle_price_proof: &OraclePriceProof,
     ) -> bool {
-        let scaled_collateral_value =
-            borrow_position.collateral_asset_deposit.as_u128() * collateral_asset_price;
-        let scaled_borrow_value = borrow_position.get_total_borrow_asset_liability().as_u128()
-            * borrow_asset_price
-            * &self.minimum_collateral_ratio_per_borrow;
-
-        scaled_collateral_value >= scaled_borrow_value
+        is_within_mcr(
+            &self.minimum_collateral_ratio_per_borrow,
+            borrow_position,
+            oracle_price_proof,
+        )
     }
 
     pub fn minimum_acceptable_liquidation_amount(
         &self,
         amount: CollateralAssetAmount,
-        oracle_price_proof: OraclePriceProof,
+        oracle_price_proof: &OraclePriceProof,
     ) -> BorrowAssetAmount {
         // minimum_acceptable_amount = collateral_amount * (1 - maximum_liquidator_spread) * collateral_price / borrow_price
         BorrowAssetAmount::new(
-            ((1u32 - &self.maximum_liquidator_spread) * oracle_price_proof.collateral_asset_price
-                / oracle_price_proof.borrow_asset_price
+            ((1u32 - &self.maximum_liquidator_spread) * &oracle_price_proof.collateral_asset_price
+                / &oracle_price_proof.borrow_asset_price
                 * amount.as_u128())
             .to_u128_ceil()
             .unwrap(),
         )
     }
+}
+
+fn is_within_mcr(
+    mcr: &Decimal,
+    borrow_position: &BorrowPosition,
+    OraclePriceProof {
+        collateral_asset_price,
+        borrow_asset_price,
+    }: &OraclePriceProof,
+) -> bool {
+    let scaled_collateral_value =
+        borrow_position.collateral_asset_deposit.as_u128() * collateral_asset_price;
+    let scaled_borrow_value =
+        borrow_position.get_total_borrow_asset_liability().as_u128() * borrow_asset_price * mcr;
+
+    scaled_collateral_value >= scaled_borrow_value
 }

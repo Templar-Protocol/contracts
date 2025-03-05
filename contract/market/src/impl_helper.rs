@@ -73,7 +73,7 @@ impl Contract {
         &mut self,
         account_id: &AccountId,
         amount: BorrowAssetAmount,
-        oracle_price_proof: OraclePriceProof,
+        oracle_price_proof: &OraclePriceProof,
     ) -> CollateralAssetAmount {
         let mut borrow_position = self
             .borrow_positions
@@ -84,7 +84,7 @@ impl Contract {
             self.configuration
                 .borrow_status(
                     &borrow_position,
-                    oracle_price_proof.clone(),
+                    oracle_price_proof,
                     env::block_timestamp_ms(),
                 )
                 .is_liquidation(),
@@ -213,9 +213,15 @@ impl Contract {
 
         require!(
             self.configuration
+                .is_within_minimum_initial_collateral_ratio(&borrow_position, &oracle_price_proof),
+            "New position must exceed initial minimum collateral ratio",
+        );
+
+        require!(
+            self.configuration
                 .borrow_status(
                     &borrow_position,
-                    oracle_price_proof,
+                    &oracle_price_proof,
                     env::block_timestamp_ms(),
                 )
                 .is_healthy(),

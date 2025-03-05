@@ -18,6 +18,7 @@ pub fn main() {
             borrow_asset: FungibleAsset::nep141("usdt.fakes.testnet".parse().unwrap()),
             collateral_asset: FungibleAsset::nep141("wrap.testnet".parse().unwrap()),
             balance_oracle_account_id: "balance_oracle".parse().unwrap(),
+            minimum_initial_collateral_ratio: Decimal::from_str("1.25").unwrap(),
             minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
             maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
             borrow_origination_fee: Fee::zero(),

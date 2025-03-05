@@ -656,6 +656,7 @@ pub fn market_configuration(
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         balance_oracle_account_id: "balance_oracle".parse().unwrap(),
+        minimum_initial_collateral_ratio: Decimal::from_str("1.25").unwrap(),
         minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
         maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
         borrow_origination_fee: Fee::Proportional(Decimal::from_str("0.1").unwrap()),
@@ -676,6 +677,23 @@ async fn compile_contract(p: &str) -> Vec<u8> {
         .unwrap()
 }
 
+async fn read_contract(name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_WORKSPACE_DIR"))
+        .join("target/near/")
+        .join(name)
+        .join(name.to_owned() + ".wasm");
+
+    std::fs::read(path).unwrap()
+}
+
+async fn get_contract(name: &str, path: &str) -> Vec<u8> {
+    if std::env::var("TEST_CONTRACTS_PREBUILT").is_ok() {
+        read_contract(name).await
+    } else {
+        compile_contract(path).await
+    }
+}
+
 pub static WASM_MARKET: OnceCell<Vec<u8>> = OnceCell::const_new();
 pub static WASM_MOCK_FT: OnceCell<Vec<u8>> = OnceCell::const_new();
 
@@ -684,7 +702,7 @@ pub async fn setup_market(
     configuration: &MarketConfiguration,
 ) -> Contract {
     let wasm = WASM_MARKET
-        .get_or_init(|| compile_contract("contract/market"))
+        .get_or_init(|| get_contract("templar_market_contract", "contract/market"))
         .await;
 
     let contract = worker.dev_deploy(wasm).await.unwrap();
@@ -709,7 +727,7 @@ pub async fn deploy_ft(
     supply: u128,
 ) -> Contract {
     let wasm = WASM_MOCK_FT
-        .get_or_init(|| compile_contract("mock/ft"))
+        .get_or_init(|| get_contract("mock_ft", "mock/ft"))
         .await;
 
     let contract = account.deploy(wasm).await.unwrap().unwrap();

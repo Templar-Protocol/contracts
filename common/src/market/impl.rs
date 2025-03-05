@@ -47,6 +47,10 @@ pub struct Market {
 
 impl Market {
     pub fn new(prefix: impl IntoStorageKey, configuration: MarketConfiguration) -> Self {
+        if let Err(e) = configuration.validate() {
+            env::panic_str(&e.to_string());
+        }
+
         let prefix = prefix.into_storage_key();
         macro_rules! key {
             ($key: ident) => {
@@ -459,7 +463,7 @@ impl Market {
     pub fn can_borrow_position_be_liquidated(
         &self,
         account_id: &AccountId,
-        oracle_price_proof: OraclePriceProof,
+        oracle_price_proof: &OraclePriceProof,
     ) -> bool {
         let Some(borrow_position) = self.borrow_positions.get(account_id) else {
             return false;
