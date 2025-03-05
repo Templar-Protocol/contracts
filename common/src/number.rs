@@ -2,6 +2,7 @@ use std::{
     fmt::{Debug, Display},
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
     str::FromStr,
+    u8,
 };
 
 use near_sdk::{
@@ -28,7 +29,7 @@ pub struct Decimal {
 
 impl Default for Decimal {
     fn default() -> Self {
-        Self::zero()
+        Self::ZERO
     }
 }
 
@@ -93,44 +94,150 @@ impl<'de> Deserialize<'de> for Decimal {
     }
 }
 
+#[test]
+fn calc_ln2() {
+    // let r = Decimal::ln2_slow();
+    // let r = Decimal::from_str(
+    //     "2.71828182845904523536028747135266249775724709369995957496696762772407663035",
+    // )
+    // .unwrap();
+    // let r = Decimal {
+    //     repr: U512([
+    //         0xBF71_5880_9CF4_F3C9,
+    //         0xB7E1_5162_8AED_2A6A,
+    //         2,
+    //         0,
+    //         0,
+    //         0,
+    //         0,
+    //         0,
+    //     ]),
+    // };
+    // 1.41421356237309504880168872420969807856967187537694807317667973799073247846
+    // 65572.350952592798759715814028218391911046832265566132082667414208991421...
+    // 65572.35095259279875971581402821839191254389
+    // 65572.35095259279875971581402821839190999352
+    let r = Decimal::pow2(&dec!("16.0008")).unwrap();
+    println!("{:?}", r);
+    println!("{:?}", r.repr.0);
+}
+
+#[test]
+fn factorial() {
+    let mut running = U512::one();
+    let target = U512::from(2).pow(U512::from(128));
+
+    for i in 1.. {
+        let i = U512::from(i);
+        running *= i;
+        if running > target {
+            println!("Found: {i}");
+            break;
+        }
+    }
+}
+
 impl Decimal {
-    const REPR_ONE: U512 = U512([0, 0, 1, 0, 0, 0, 0, 0]);
     /// When converting to & from strings, we don't guarantee accurate
     /// representation of bits lower than this.
     const REPR_EPSILON: U512 = U512([0b1000, 0, 0, 0, 0, 0, 0, 0]);
 
-    pub const fn zero() -> Self {
-        Self { repr: U512::zero() }
-    }
+    pub const ZERO: Self = Self { repr: U512::zero() };
 
-    pub const fn half() -> Self {
-        Self {
-            repr: U512([0, 0x8000_0000_0000_0000, 0, 0, 0, 0, 0, 0]),
-        }
-    }
+    pub const ONE_HALF: Self = Self {
+        repr: U512([0, 0x8000_0000_0000_0000, 0, 0, 0, 0, 0, 0]),
+    };
 
-    pub const fn one() -> Self {
-        Self {
-            repr: Self::REPR_ONE,
-        }
-    }
+    pub const LN2: Self = Self {
+        repr: U512([
+            0xC9E3_B398_03F2_F6B0,
+            0xB172_17F7_D1CF_79AB,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]),
+    };
 
-    pub const fn two() -> Self {
-        Self {
-            repr: U512([0, 0, 2, 0, 0, 0, 0, 0]),
-        }
-    }
+    pub const ONE: Self = Self {
+        repr: U512([0, 0, 1, 0, 0, 0, 0, 0]),
+    };
+
+    pub const TWO: Self = Self {
+        repr: U512([0, 0, 2, 0, 0, 0, 0, 0]),
+    };
+
+    pub const E: Self = Self {
+        repr: U512([
+            0xBF71_5880_9CF4_F3C9,
+            0xB7E1_5162_8AED_2A6A,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]),
+    };
 
     pub fn as_repr(&self) -> &[u64] {
         &self.repr.0
     }
 
-    pub fn near_equal(&self, other: &Decimal) -> bool {
+    pub fn near_equal(&self, other: &Self) -> bool {
         self.abs_diff(other).repr <= Self::REPR_EPSILON
     }
 
+    pub fn pow(&self, pow: u8) -> Self {
+        let mut p = Self::ONE;
+        for _ in 0..pow {
+            p *= self;
+        }
+        p
+    }
+
+    pub fn pow2_int(pow: u32) -> Option<Self> {
+        #[allow(clippy::cast_possible_truncation)]
+        if pow > 512 - FRACTIONAL_BITS as u32 {
+            None
+        } else {
+            Some(Self {
+                repr: Self::ONE.repr << pow,
+            })
+        }
+    }
+
+    fn pow2_frac(&self) -> Self {
+        const MAX_ITERATIONS: u32 = 35; // n=35 is smallest n where n! >= 2^128
+        debug_assert!(self <= &Self::ONE);
+
+        let mut sum = Self::ONE;
+        let mut term = Self::ONE;
+        let numerator = self * Self::LN2;
+
+        for n in 1..=MAX_ITERATIONS {
+            term *= &numerator / n;
+            if term == Self::ZERO {
+                dbg!(n);
+                break;
+            }
+            sum += &term;
+        }
+
+        sum
+    }
+
+    pub fn pow2(&self) -> Option<Self> {
+        let whole = u32::try_from(self.to_u128_floor()?).ok()?;
+        let frac = self - whole;
+
+        Some(Self::pow2_int(whole)? * Self::pow2_frac(&frac))
+    }
+
     #[must_use]
-    pub fn abs_diff(&self, other: &Decimal) -> Decimal {
+    pub fn abs_diff(&self, other: &Self) -> Self {
         if self > other {
             self - other
         } else {
@@ -195,7 +302,7 @@ impl Decimal {
     fn fractional_part_to_dec_string(&self, precision: usize) -> String {
         let mut s = Vec::with_capacity(precision);
         let mut f = self.fractional_part();
-        let d = Self::REPR_ONE;
+        let d = Self::ONE.repr;
 
         #[allow(clippy::cast_possible_truncation)]
         for _ in 0..precision {
@@ -572,17 +679,17 @@ mod tests {
 
     #[test]
     fn constants_are_accurate() {
-        assert_eq!(Decimal::zero().to_u128_floor().unwrap(), 0);
-        assert!((Decimal::half().to_f64_lossy() - 0.5_f64).abs() < 1e-200);
-        assert_eq!(Decimal::one().to_u128_floor().unwrap(), 1);
-        assert_eq!(Decimal::two().to_u128_floor().unwrap(), 2);
+        assert_eq!(Decimal::ZERO.to_u128_floor().unwrap(), 0);
+        assert!((Decimal::ONE_HALF.to_f64_lossy() - 0.5_f64).abs() < 1e-200);
+        assert_eq!(Decimal::ONE.to_u128_floor().unwrap(), 1);
+        assert_eq!(Decimal::TWO.to_u128_floor().unwrap(), 2);
     }
 
     #[rstest]
-    #[case(Decimal::one())]
-    #[case(Decimal::two())]
-    #[case(Decimal::zero())]
-    #[case(Decimal::half())]
+    #[case(Decimal::ONE)]
+    #[case(Decimal::TWO)]
+    #[case(Decimal::ZERO)]
+    #[case(Decimal::ONE_HALF)]
     #[case(Decimal::from(u128::MAX))]
     #[case(Decimal::from(u64::MAX) / Decimal::from(u128::MAX))]
     #[test]

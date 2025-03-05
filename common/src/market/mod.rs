@@ -53,7 +53,7 @@ impl YieldWeights {
     pub fn static_share(&self, account_id: &AccountId) -> Decimal {
         self.r#static
             .get(account_id)
-            .map_or_else(Decimal::zero, |weight| {
+            .map_or(Decimal::ZERO, |weight| {
                 Decimal::from(*weight) / u16::from(self.total_weight())
             })
     }

@@ -88,7 +88,7 @@ async fn successful_liquidation_good_debt_under_mcr(
         liquidation_amount,
         OraclePriceProof {
             collateral_asset_price: Decimal::from(collateral_asset_price_pct) / 100u32,
-            borrow_asset_price: Decimal::one(),
+            borrow_asset_price: Decimal::ONE,
         },
     )
     .await;
@@ -180,7 +180,7 @@ async fn successful_liquidation_with_spread(
         liquidation_amount,
         OraclePriceProof {
             collateral_asset_price,
-            borrow_asset_price: Decimal::one(),
+            borrow_asset_price: Decimal::ONE,
         },
     )
     .await;

@@ -25,13 +25,13 @@ use templar_common::{
 use tokio::sync::OnceCell;
 
 pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Decimal::one(),
-    borrow_asset_price: Decimal::one(),
+    collateral_asset_price: Decimal::ONE,
+    borrow_asset_price: Decimal::ONE,
 };
 
 pub const COLLATERAL_HALF_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Decimal::half(),
-    borrow_asset_price: Decimal::one(),
+    collateral_asset_price: Decimal::ONE_HALF,
+    borrow_asset_price: Decimal::ONE,
 };
 
 pub enum TestAsset {
