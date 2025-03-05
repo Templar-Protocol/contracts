@@ -18,7 +18,7 @@ const MAX_DECIMAL_PRECISION: usize = 38; // = floor(FRACTIONAL_BITS / log2(10))
 #[macro_export]
 macro_rules! dec {
     ($s:literal) => {
-        Decimal::from_str($s).unwrap()
+        <$crate::number::Decimal as std::str::FromStr>::from_str($s).unwrap()
     };
 }
 
@@ -186,6 +186,10 @@ impl Decimal {
         &self.repr.0
     }
 
+    pub fn is_zero(&self) -> bool {
+        self.repr.is_zero()
+    }
+
     pub fn near_equal(&self, other: &Self) -> bool {
         self.abs_diff(other).repr <= Self::REPR_EPSILON
     }
@@ -275,7 +279,7 @@ impl Decimal {
     pub fn to_f64_lossy(&self) -> f64 {
         let frac = self.repr.low_u128() as f64 / 2f64.powi(FRACTIONAL_BITS as i32);
         let low = (self.repr >> FRACTIONAL_BITS).low_u128() as f64;
-        let high = (self.repr >> (FRACTIONAL_BITS * 2)).low_u128() as f64;
+        let high = (self.repr >> (FRACTIONAL_BITS * 2)).low_u128() as f64 * 2f64.powi(128);
 
         high + low + frac
     }
@@ -380,16 +384,7 @@ impl Display for Decimal {
 
 impl Debug for Decimal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.fractional_part().is_zero() {
-            write!(f, "{}", self.repr >> FRACTIONAL_BITS)
-        } else {
-            write!(
-                f,
-                "{}.{}",
-                self.repr >> FRACTIONAL_BITS,
-                self.fractional_part_to_dec_string(MAX_DECIMAL_PRECISION),
-            )
-        }
+        write!(f, "{}", self.to_fixed(MAX_DECIMAL_PRECISION))
     }
 }
 
@@ -663,8 +658,8 @@ mod tests {
     #[case(1, 10)]
     #[case(3, 10_000)]
     #[test]
-    #[allow(clippy::cast_precision_loss)]
     fn division(#[case] a: u128, #[case] b: u128) {
+        #[allow(clippy::cast_precision_loss)]
         let quotient = a as f64 / b as f64;
         let abs_difference_lte = |d: Decimal, f: f64| (d.to_f64_lossy() - f).abs() <= 1e-200;
         assert!(abs_difference_lte(

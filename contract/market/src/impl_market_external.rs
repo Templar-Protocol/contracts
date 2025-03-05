@@ -62,7 +62,7 @@ impl MarketExternalInterface for Contract {
 
         Some(self.configuration.borrow_status(
             &borrow_position,
-            oracle_price_proof,
+            &oracle_price_proof,
             env::block_timestamp_ms(),
         ))
     }
@@ -119,7 +119,7 @@ impl MarketExternalInterface for Contract {
             require!(
                 self.configuration.is_within_minimum_collateral_ratio(
                     &borrow_position,
-                    oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price")),
+                    &oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price")),
                 ),
                 "Borrow must still be above MCR after collateral withdrawal.",
             );
@@ -369,7 +369,7 @@ impl MarketExternalInterface for Contract {
         require!(!amount.is_zero(), "Deposit must be nonzero");
 
         let liquidated_collateral =
-            self.execute_liquidate_initial(&account_id, amount, oracle_price_proof);
+            self.execute_liquidate_initial(&account_id, amount, &oracle_price_proof);
 
         let liquidator_id = env::predecessor_account_id();
 

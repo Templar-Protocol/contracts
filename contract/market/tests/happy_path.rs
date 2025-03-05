@@ -1,9 +1,7 @@
-use std::str::FromStr;
-
 use rstest::rstest;
 use tokio::join;
 
-use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, dec, number::Decimal};
+use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, dec};
 use test_utils::*;
 
 #[allow(dead_code)]
