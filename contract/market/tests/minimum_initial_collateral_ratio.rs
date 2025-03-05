@@ -21,7 +21,7 @@ async fn success_above_minimum_initial_collateral_ratio(
     } = setup_everything(|c| {
         c.borrow_origination_fee = Fee::zero();
         c.minimum_collateral_ratio_per_borrow = minimum;
-        c.minimum_initial_collateral_ratio = initial.clone();
+        c.minimum_initial_collateral_ratio = initial;
     })
     .await;
 
@@ -51,7 +51,7 @@ async fn fail_below_minimum_initial_collateral_ratio(
     } = setup_everything(|c| {
         c.borrow_origination_fee = Fee::zero();
         c.minimum_collateral_ratio_per_borrow = minimum;
-        c.minimum_initial_collateral_ratio = initial.clone();
+        c.minimum_initial_collateral_ratio = initial;
     })
     .await;
 
@@ -81,13 +81,13 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
         ..
     } = setup_everything(|c| {
         c.borrow_origination_fee = Fee::zero();
-        c.minimum_collateral_ratio_per_borrow = minimum.clone();
-        c.minimum_initial_collateral_ratio = initial.clone();
+        c.minimum_collateral_ratio_per_borrow = minimum;
+        c.minimum_initial_collateral_ratio = initial;
     })
     .await;
 
     c.supply(&supply_user, 10_000).await;
-    c.collateralize(&borrow_user, (1000u32 * &initial).to_u128_ceil().unwrap())
+    c.collateralize(&borrow_user, (1000u32 * initial).to_u128_ceil().unwrap())
         .await;
     c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
 

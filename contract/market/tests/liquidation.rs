@@ -124,7 +124,7 @@ async fn successful_liquidation_good_debt_under_mcr(
         },
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(insurance_yield.borrow_asset.as_u128(), yield_amount / 10,);
+            assert_eq!(insurance_yield.borrow_asset.as_u128(), yield_amount / 10);
         },
     );
 }
@@ -154,7 +154,7 @@ async fn successful_liquidation_with_spread(
         borrow_user,
         ..
     } = setup_everything(|config| {
-        config.minimum_collateral_ratio_per_borrow = mcr.clone();
+        config.minimum_collateral_ratio_per_borrow = mcr;
         config.maximum_liquidator_spread = maximum_liquidator_spread;
     })
     .await;
@@ -170,7 +170,7 @@ async fn successful_liquidation_with_spread(
         201u32 * 100u32 // 2:1 collateralization + a bit to ensure we're under MCR
         ;
 
-    let liquidation_amount = (&collateral_asset_price * (1u32 - target_spread) * 2000u32)
+    let liquidation_amount = (collateral_asset_price * (1u32 - target_spread) * 2000u32)
         .to_u128_ceil()
         .unwrap();
 

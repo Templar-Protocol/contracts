@@ -7,8 +7,35 @@ pub trait UsageCurve {
 }
 
 pub enum InterestRateStrategy {
+    Linear(Linear),
     Piecewise(Piecewise),
     Exponential2(Exponential2),
+}
+
+/// ```text,no_run
+/// r(u) = u * (t - b) + b
+/// ```
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub struct Linear {
+    base: Decimal,
+    top: Decimal,
+}
+
+impl Linear {
+    pub fn new(base: Decimal, top: Decimal) -> Option<Self> {
+        if base > top {
+            None
+        } else {
+            Some(Self { base, top })
+        }
+    }
+}
+
+impl UsageCurve for Linear {
+    fn at(&self, utilization_ratio: Decimal) -> Decimal {
+        utilization_ratio * (self.top - self.base) + self.base
+    }
 }
 
 /// ```text,no_run
@@ -24,7 +51,7 @@ pub struct Piecewise {
     optimal: Decimal,
     rate_1: Decimal,
     rate_2: Decimal,
-    i_rate_2_b: Decimal,
+    i_negative_rate_2_b: Decimal,
 }
 
 impl Piecewise {
@@ -38,7 +65,7 @@ impl Piecewise {
         }
 
         Some(Self {
-            i_rate_2_b: &optimal * (&rate_1 - &rate_2) + &base,
+            i_negative_rate_2_b: optimal * (rate_2 - rate_1) - base,
             base,
             optimal,
             rate_1,
@@ -52,13 +79,16 @@ impl UsageCurve for Piecewise {
         require!(utilization_ratio <= Decimal::ONE);
 
         if utilization_ratio < self.optimal {
-            &self.rate_1 * utilization_ratio + &self.base
+            self.rate_1 * utilization_ratio + self.base
         } else {
-            &self.rate_2 * utilization_ratio + &self.i_rate_2_b
+            self.rate_2 * utilization_ratio - self.i_negative_rate_2_b
         }
     }
 }
 
+/// ```text,no_run
+/// r(u) = b + (t - b) * (2^ku - 1) / (2^k - 1)
+/// ```
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
 pub struct Exponential2 {
@@ -81,7 +111,7 @@ impl Exponential2 {
 
         #[allow(clippy::unwrap_used)]
         Some(Self {
-            i_factor: (&top - &base) / (eccentricity.pow2().unwrap() - 1u32),
+            i_factor: (top - base) / (eccentricity.pow2().unwrap() - 1u32),
             base,
             top,
             eccentricity,
@@ -94,19 +124,38 @@ impl UsageCurve for Exponential2 {
     fn at(&self, utilization_ratio: Decimal) -> Decimal {
         require!(utilization_ratio <= Decimal::ONE);
 
-        &self.base
-            + &self.i_factor * ((&self.eccentricity * &utilization_ratio).pow2().unwrap() - 1u32)
+        self.base + self.i_factor * ((self.eccentricity * utilization_ratio).pow2().unwrap() - 1u32)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Div;
+
     use crate::dec;
 
     use super::*;
 
     #[test]
     fn piecewise() {
-        let s = Piecewise::new(Decimal::ZERO, dec!("0.9"), dec!("0.035"), dec!("0.6"));
+        let s = Piecewise::new(Decimal::ZERO, dec!("0.9"), dec!("0.035"), dec!("0.6")).unwrap();
+
+        assert!(s.at(Decimal::ZERO).near_equal(Decimal::ZERO));
+        assert!(s.at(dec!("0.1")).near_equal(dec!("0.0035")));
+        assert!(s.at(dec!("0.5")).near_equal(dec!("0.0175")));
+        assert!(s.at(dec!("0.6")).near_equal(dec!("0.021")));
+        assert!(s.at(dec!("0.9")).near_equal(dec!("0.0315")));
+        assert!(s.at(dec!("0.95")).near_equal(dec!("0.0615")));
+        assert!(s.at(Decimal::ONE).near_equal(dec!("0.0915")));
+    }
+
+    #[test]
+    fn exponential2() {
+        let s = Exponential2::new(dec!("0.005"), dec!("0.08"), dec!("6")).unwrap();
+        assert!(s.at(Decimal::ZERO).near_equal(dec!("0.005")));
+        assert!(s.at(dec!("0.25")).near_equal(dec!(
+            "0.00717669895803117868762306839097547161564207589375463826946828509045412494"
+        )));
+        assert!(s.at(Decimal::ONE_HALF).near_equal(Decimal::ONE.div(75u32)));
     }
 }

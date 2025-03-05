@@ -167,8 +167,8 @@ impl MarketConfiguration {
     ) -> BorrowAssetAmount {
         // minimum_acceptable_amount = collateral_amount * (1 - maximum_liquidator_spread) * collateral_price / borrow_price
         BorrowAssetAmount::new(
-            ((1u32 - &self.maximum_liquidator_spread) * &oracle_price_proof.collateral_asset_price
-                / &oracle_price_proof.borrow_asset_price
+            ((1u32 - self.maximum_liquidator_spread) * oracle_price_proof.collateral_asset_price
+                / oracle_price_proof.borrow_asset_price
                 * amount.as_u128())
             .to_u128_ceil()
             .unwrap(),

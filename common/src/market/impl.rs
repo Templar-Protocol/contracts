@@ -79,7 +79,7 @@ impl Market {
         &self,
         current_contract_balance: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        let must_retain = ((1u32 - &self.configuration.maximum_borrow_asset_usage_ratio)
+        let must_retain = ((1u32 - self.configuration.maximum_borrow_asset_usage_ratio)
             * self.borrow_asset_deposited.as_u128())
         .to_u128_ceil()
         .unwrap();
