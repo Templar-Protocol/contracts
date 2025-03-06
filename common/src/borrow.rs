@@ -32,25 +32,25 @@ pub enum LiquidationReason {
 #[near(serializers = [borsh, json])]
 pub struct FeeRecord<T: AssetClass> {
     pub(crate) total: FungibleAssetAmount<T>,
-    pub(crate) until_log_index: U64,
+    pub(crate) until_log_index: u32,
 }
 
 impl<T: AssetClass> FeeRecord<T> {
-    pub fn new(until_log_index: u64) -> Self {
+    pub fn new(until_log_index: u32) -> Self {
         Self {
             total: 0.into(),
-            until_log_index: until_log_index.into(),
+            until_log_index,
         }
     }
 
     pub fn accumulate_fees(
         &mut self,
         additional_fees: FungibleAssetAmount<T>,
-        until_log_index: u64,
+        until_log_index: u32,
     ) -> Option<()> {
-        debug_assert!(until_log_index > self.until_log_index.0);
+        debug_assert!(until_log_index > self.until_log_index);
         self.total.join(additional_fees)?;
-        self.until_log_index.0 = until_log_index;
+        self.until_log_index = until_log_index;
         Some(())
     }
 }
@@ -67,7 +67,7 @@ pub struct BorrowPosition {
 }
 
 impl BorrowPosition {
-    pub fn new(current_log_index: u64) -> Self {
+    pub fn new(current_log_index: u32) -> Self {
         Self {
             started_at_block_timestamp_ms: None,
             collateral_asset_deposit: 0.into(),
@@ -82,13 +82,13 @@ impl BorrowPosition {
         }
     }
 
-    pub fn full_liquidation(&mut self, current_log_index: u64) {
+    pub fn full_liquidation(&mut self, current_log_index: u32) {
         self.liquidation_lock = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
         self.borrow_asset_fees.total = 0.into();
-        self.borrow_asset_fees.until_log_index.0 = current_log_index;
+        self.borrow_asset_fees.until_log_index = current_log_index;
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {

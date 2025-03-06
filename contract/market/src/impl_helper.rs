@@ -141,7 +141,7 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_logs(&self, offset: Option<u32>, count: Option<u32>) -> Vec<MarketLog> {
+    pub fn get_logs(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&MarketLog> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
         self.logs

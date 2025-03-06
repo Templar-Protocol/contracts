@@ -1,6 +1,8 @@
 use near_sdk::{
-    collections::{LookupMap, UnorderedMap, Vector},
-    env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
+    collections::{LookupMap, UnorderedMap},
+    env, near, require,
+    store::Vector,
+    AccountId, BorshStorageKey, IntoStorageKey,
 };
 
 use crate::{
@@ -80,7 +82,7 @@ impl Market {
         self_
     }
 
-    pub fn current_log_index(&self) -> u64 {
+    pub fn current_log_index(&self) -> u32 {
         let last_log_index = self.logs.len() - 1;
         let chain_time = ChainTime::now();
         if self
@@ -169,7 +171,7 @@ impl Market {
                     y
                 }),
             };
-            self.logs.replace(last_index, &new_log);
+            self.logs.replace(last_index, new_log);
         } else {
             let new_log = MarketLog {
                 chain_time,
@@ -178,7 +180,7 @@ impl Market {
                 borrowed: self.borrow_asset_borrowed,
                 yield_distribution: add_yield.unwrap_or_else(BorrowAssetAmount::zero),
             };
-            self.logs.push(&new_log);
+            self.logs.push(new_log);
         }
     }
 
@@ -374,7 +376,7 @@ impl Market {
     ) {
         let (accumulated, until_log_index) = self.calculate_borrow_position_interest(
             borrow_position.get_borrow_asset_principal(),
-            borrow_position.borrow_asset_fees.until_log_index.0,
+            borrow_position.borrow_asset_fees.until_log_index,
             |(_, log)| log.chain_time < until_chain_time,
         );
 
@@ -386,9 +388,9 @@ impl Market {
     pub fn calculate_borrow_position_interest(
         &self,
         principal_in_span: BorrowAssetAmount,
-        from_log_index: u64,
-        take_while: impl FnMut(&(u64, MarketLog)) -> bool,
-    ) -> (BorrowAssetAmount, u64) {
+        from_log_index: u32,
+        take_while: impl FnMut(&(u32, &MarketLog)) -> bool,
+    ) -> (BorrowAssetAmount, u32) {
         if self.logs.is_empty() {
             return (0.into(), from_log_index);
         }
@@ -403,7 +405,7 @@ impl Market {
             .iter()
             .enumerate()
             .skip(from_log_index as usize)
-            .map(|(i, log)| (i as u64, log))
+            .map(|(i, log)| (i as u32, log))
             .take_while(take_while)
             .peekable();
 
@@ -453,7 +455,7 @@ impl Market {
     ) {
         let (accumulated, finished_at_log_index) = self.calculate_supply_position_yield(
             supply_position.get_borrow_asset_deposit(),
-            supply_position.borrow_asset_yield.until_log_index.0,
+            supply_position.borrow_asset_yield.until_log_index,
             |(_, log)| log.chain_time < until_chain_time,
         );
 
@@ -466,9 +468,9 @@ impl Market {
     pub fn calculate_supply_position_yield(
         &self,
         amount_deposited_during_interval: BorrowAssetAmount,
-        from_log_index: u64,
-        take_while: impl FnMut(&(u64, MarketLog)) -> bool,
-    ) -> (BorrowAssetAmount, u64) {
+        from_log_index: u32,
+        take_while: impl FnMut(&(u32, &MarketLog)) -> bool,
+    ) -> (BorrowAssetAmount, u32) {
         if self.logs.is_empty() {
             return (0.into(), from_log_index);
         }
@@ -483,7 +485,7 @@ impl Market {
             .iter()
             .enumerate()
             .skip(from_log_index as usize)
-            .map(|(i, log)| (i as u64, log))
+            .map(|(i, log)| (i as u32, log))
             .take_while(take_while)
         {
             let deposited = Decimal::from(log.deposited.as_u128());
