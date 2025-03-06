@@ -6,6 +6,7 @@ use crate::{
     },
     borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
+    interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
 };
 
@@ -28,7 +29,7 @@ pub struct MarketConfiguration {
     /// the borrow asset and is paid by the borrowing account during repayment
     /// (or liquidation).
     pub borrow_origination_fee: Fee<BorrowAsset>,
-    pub borrow_annual_maintenance_fee: Fee<BorrowAsset>,
+    pub borrow_interest_rate_strategy: InterestRateStrategy,
     pub maximum_borrow_duration_ms: Option<U64>,
     pub minimum_borrow_amount: BorrowAssetAmount,
     pub maximum_borrow_amount: BorrowAssetAmount,

@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use near_sdk::{near, require};
 
 use crate::number::Decimal;
@@ -6,10 +8,52 @@ pub trait UsageCurve {
     fn at(&self, utilization_ratio: Decimal) -> Decimal;
 }
 
+#[derive(Clone, Debug)]
+#[near(serializers = [json, borsh])]
 pub enum InterestRateStrategy {
     Linear(Linear),
     Piecewise(Piecewise),
     Exponential2(Exponential2),
+}
+
+impl InterestRateStrategy {
+    #[must_use]
+    pub fn linear(base: Decimal, top: Decimal) -> Option<Self> {
+        Some(Self::Linear(Linear::new(base, top)?))
+    }
+
+    #[must_use]
+    pub fn piecewise(
+        base: Decimal,
+        optimal: Decimal,
+        rate_1: Decimal,
+        rate_2: Decimal,
+    ) -> Option<Self> {
+        Some(Self::Piecewise(Piecewise::new(
+            base, optimal, rate_1, rate_2,
+        )?))
+    }
+
+    #[must_use]
+    pub fn exponential2(base: Decimal, top: Decimal, eccentricity: Decimal) -> Option<Self> {
+        Some(Self::Exponential2(Exponential2::new(
+            base,
+            top,
+            eccentricity,
+        )?))
+    }
+}
+
+impl Deref for InterestRateStrategy {
+    type Target = dyn UsageCurve;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Linear(linear) => linear as &dyn UsageCurve,
+            Self::Piecewise(piecewise) => piecewise as &dyn UsageCurve,
+            Self::Exponential2(exponential2) => exponential2 as &dyn UsageCurve,
+        }
+    }
 }
 
 /// ```text,no_run

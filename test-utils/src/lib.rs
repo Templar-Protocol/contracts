@@ -12,7 +12,9 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     balance_log::BalanceLog,
     borrow::{BorrowPosition, BorrowStatus},
+    dec,
     fee::{Fee, TimeBasedFee},
+    interest_rate_strategy::InterestRateStrategy,
     market::{
         LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
         YieldWeights,
@@ -660,7 +662,13 @@ pub fn market_configuration(
         minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
         maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
         borrow_origination_fee: Fee::Proportional(Decimal::from_str("0.1").unwrap()),
-        borrow_annual_maintenance_fee: Fee::zero(),
+        borrow_interest_rate_strategy: InterestRateStrategy::piecewise(
+            Decimal::ZERO,
+            dec!("0.9"),
+            dec!("0.04"),
+            dec!("0.6"),
+        )
+        .unwrap(),
         maximum_borrow_duration_ms: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
