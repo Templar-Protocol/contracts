@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use borsh::BorshDeserialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::{collections::Vector, near};
 
 use crate::{
@@ -60,5 +60,26 @@ pub fn search_balance_logs<T: AssetClass + BorshDeserialize>(
 
     SearchResult::NotFound {
         index_below: Some(top),
+    }
+}
+
+pub fn add_or_update_balance_log<A: AssetClass + BorshDeserialize + BorshSerialize, T>(
+    logs: &mut Vector<BalanceLog<A>>,
+    chain_time: ChainTime,
+    update_fn: impl FnOnce(&mut BalanceLog<A>) -> T,
+) -> T {
+    if let Some((last_index, mut last)) = logs.len().checked_sub(1).and_then(|last_index| {
+        logs.get(last_index)
+            .filter(|log| log.chain_time == chain_time)
+            .map(|log| (last_index, log))
+    }) {
+        let s = update_fn(&mut last);
+        logs.replace(last_index, &last);
+        s
+    } else {
+        let mut new_log = BalanceLog::new(chain_time, FungibleAssetAmount::<A>::zero());
+        let s = update_fn(&mut new_log);
+        logs.push(&new_log);
+        s
     }
 }

@@ -149,7 +149,7 @@ impl Contract {
     ) -> Vec<BalanceLog<BorrowAsset>> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.total_borrow_asset_deposited_log
+        self.total_borrow_asset_deposited_logs
             .iter()
             .skip(offset)
             .take(count)
@@ -163,7 +163,7 @@ impl Contract {
     ) -> Vec<BalanceLog<BorrowAsset>> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.borrow_asset_yield_distribution_log
+        self.borrow_asset_yield_distribution_logs
             .iter()
             .skip(offset)
             .take(count)

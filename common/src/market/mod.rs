@@ -17,6 +17,7 @@ pub use r#impl::*;
 pub struct BorrowAssetMetrics {
     pub available: BorrowAssetAmount,
     pub deposited: BorrowAssetAmount,
+    pub borrowed: BorrowAssetAmount,
 }
 
 #[derive(Clone, Debug)]

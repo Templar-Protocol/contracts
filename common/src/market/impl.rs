@@ -8,7 +8,7 @@ use crate::{
     asset::{
         AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
     },
-    balance_log::{search_balance_logs, BalanceLog, SearchResult},
+    balance_log::{add_or_update_balance_log, search_balance_logs, BalanceLog, SearchResult},
     borrow::BorrowPosition,
     chain_time::ChainTime,
     market::MarketConfiguration,
@@ -25,8 +25,9 @@ use super::OraclePriceProof;
 enum StorageKey {
     SupplyPositions,
     BorrowPositions,
-    TotalBorrowAssetDepositedLog,
-    BorrowAssetYieldDistributionLog,
+    TotalBorrowAssetDepositedLogs,
+    TotalBorrowAssetBorrowedLogs,
+    BorrowAssetYieldDistributionLogs,
     WithdrawalQueue,
     StaticYield,
 }
@@ -37,10 +38,12 @@ pub struct Market {
     pub configuration: MarketConfiguration,
     pub borrow_asset_deposited: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
+    pub borrow_asset_borrowed: BorrowAssetAmount,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub total_borrow_asset_deposited_log: Vector<BalanceLog<BorrowAsset>>,
-    pub borrow_asset_yield_distribution_log: Vector<BalanceLog<BorrowAsset>>,
+    pub total_borrow_asset_deposited_logs: Vector<BalanceLog<BorrowAsset>>,
+    pub total_borrow_asset_borrowed_logs: Vector<BalanceLog<BorrowAsset>>,
+    pub borrow_asset_yield_distribution_logs: Vector<BalanceLog<BorrowAsset>>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -66,10 +69,14 @@ impl Market {
             configuration,
             borrow_asset_deposited: 0.into(),
             borrow_asset_in_flight: 0.into(),
+            borrow_asset_borrowed: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            total_borrow_asset_deposited_log: Vector::new(key!(TotalBorrowAssetDepositedLog)),
-            borrow_asset_yield_distribution_log: Vector::new(key!(BorrowAssetYieldDistributionLog)),
+            total_borrow_asset_deposited_logs: Vector::new(key!(TotalBorrowAssetDepositedLogs)),
+            total_borrow_asset_borrowed_logs: Vector::new(key!(TotalBorrowAssetDepositedLogs)),
+            borrow_asset_yield_distribution_logs: Vector::new(key!(
+                BorrowAssetYieldDistributionLogs
+            )),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         }
@@ -130,26 +137,19 @@ impl Market {
     }
 
     fn log_total_borrow_asset_deposited(&mut self, amount: BorrowAssetAmount) {
-        let now = ChainTime::now();
+        add_or_update_balance_log(
+            &mut self.total_borrow_asset_deposited_logs,
+            ChainTime::now(),
+            |log| log.amount = amount,
+        );
+    }
 
-        if let Some((last_index, mut last)) = self
-            .total_borrow_asset_deposited_log
-            .len()
-            .checked_sub(1)
-            .and_then(|last_index| {
-                self.total_borrow_asset_deposited_log
-                    .get(last_index)
-                    .filter(|log| log.chain_time == now)
-                    .map(|log| (last_index, log))
-            })
-        {
-            last.amount = amount;
-            self.total_borrow_asset_deposited_log
-                .replace(last_index, &last);
-        } else {
-            self.total_borrow_asset_deposited_log
-                .push(&BalanceLog::new(now, amount));
-        }
+    fn log_total_borrow_asset_borrowed(&mut self, amount: BorrowAssetAmount) {
+        add_or_update_balance_log(
+            &mut self.total_borrow_asset_borrowed_logs,
+            ChainTime::now(),
+            |log| log.amount = amount,
+        );
     }
 
     fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
@@ -201,26 +201,11 @@ impl Market {
         }
 
         // Next, dynamic (supply-based) yield.
-        let now = ChainTime::now();
-
-        if let Some((last_index, mut last)) = self
-            .borrow_asset_yield_distribution_log
-            .len()
-            .checked_sub(1)
-            .and_then(|last_index| {
-                self.borrow_asset_yield_distribution_log
-                    .get(last_index)
-                    .filter(|log| log.chain_time == now)
-                    .map(|log| (last_index, log))
-            })
-        {
-            last.amount = amount;
-            self.borrow_asset_yield_distribution_log
-                .replace(last_index, &last);
-        } else {
-            self.borrow_asset_yield_distribution_log
-                .push(&BalanceLog::new(now, amount));
-        }
+        add_or_update_balance_log(
+            &mut self.borrow_asset_yield_distribution_logs,
+            ChainTime::now(),
+            |log| log.amount.join(amount),
+        );
     }
 
     pub fn record_supply_position_borrow_asset_deposit(
@@ -325,6 +310,11 @@ impl Market {
         borrow_position
             .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
+
+        self.borrow_asset_borrowed
+            .join(amount)
+            .unwrap_or_else(|| env::panic_str("Borrow asset borrowed overflow"));
+        self.log_total_borrow_asset_borrowed(self.borrow_asset_borrowed);
     }
 
     pub fn record_borrow_position_borrow_asset_repay(
@@ -342,6 +332,21 @@ impl Market {
         );
 
         self.record_borrow_asset_yield_distribution(liability_reduction.amount_to_fees);
+
+        // SAFETY: It should be impossible to panic here, since assets that
+        // have not yet been borrowed cannot be repaid.
+        self.borrow_asset_borrowed
+            .split(amount)
+            .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
+        self.log_total_borrow_asset_borrowed(self.borrow_asset_borrowed);
+    }
+
+    pub fn accumulate_fees_on_borrow_position(
+        &self,
+        borrow_position: &mut BorrowPosition,
+        until: ChainTime,
+    ) {
+        todo!()
     }
 
     /// In order for yield calculations to be accurate, this function MUST
@@ -354,8 +359,8 @@ impl Market {
         supply_position: &mut SupplyPosition,
         until: ChainTime,
     ) {
-        let (accumulated, last_epoch_height) = self.calculate_supply_position_yield(
-            &self.borrow_asset_yield_distribution_log,
+        let (accumulated, last_chain_time) = self.calculate_supply_position_yield(
+            &self.borrow_asset_yield_distribution_logs,
             supply_position.borrow_asset_yield.last_updated,
             supply_position.get_borrow_asset_deposit(),
             until,
@@ -363,7 +368,7 @@ impl Market {
 
         supply_position
             .borrow_asset_yield
-            .accumulate_yield(accumulated, last_epoch_height);
+            .accumulate_yield(accumulated, last_chain_time);
     }
 
     #[allow(clippy::missing_panics_doc)]
@@ -374,7 +379,7 @@ impl Market {
         borrow_asset_deposited_during_interval: BorrowAssetAmount,
         until: ChainTime,
     ) -> (FungibleAssetAmount<T>, ChainTime) {
-        if yield_distribution_logs.is_empty() || self.total_borrow_asset_deposited_log.is_empty() {
+        if yield_distribution_logs.is_empty() || self.total_borrow_asset_deposited_logs.is_empty() {
             return (0.into(), last_updated);
         }
 
@@ -382,12 +387,12 @@ impl Market {
             match search_balance_logs(yield_distribution_logs, last_updated) {
                 SearchResult::Found { index, log } => (index, log.chain_time),
                 SearchResult::NotFound { index_below } => {
-                    let index_after = index_below.map_or(0, |i| i + 1);
+                    let index_above = index_below.map_or(0, |i| i + 1);
                     match yield_distribution_logs
-                        .get(index_after)
+                        .get(index_above)
                         .filter(|log| log.chain_time < until)
                     {
-                        Some(log) => (index_after, log.chain_time),
+                        Some(log) => (index_above, log.chain_time),
                         None => return (0.into(), last_updated),
                     }
                 }
@@ -395,36 +400,35 @@ impl Market {
 
         let mut accumulated_fees_in_span = FungibleAssetAmount::<T>::zero();
 
-        let mut total_assets_deposited_at_distribution = match search_balance_logs(
-            &self.total_borrow_asset_deposited_log,
-            starting_chain_time,
-        ) {
-            SearchResult::Found { index, log } => (index, log),
-            SearchResult::NotFound {
-                index_below: Some(index_below),
-            } => (
-                index_below,
-                if let Some(log) = self.total_borrow_asset_deposited_log.get(index_below) {
-                    log
-                } else {
-                    return (0.into(), last_updated);
-                },
-            ),
-            SearchResult::NotFound { index_below: None } => {
-                env::panic_str("Invariant violation: yield distribution before any deposits.");
-            }
-        };
+        let mut total_assets_deposited_at_distribution =
+            match search_balance_logs(&self.total_borrow_asset_deposited_logs, starting_chain_time)
+            {
+                SearchResult::Found { index, log } => (index, log),
+                SearchResult::NotFound {
+                    index_below: Some(index_below),
+                } => (
+                    index_below,
+                    if let Some(log) = self.total_borrow_asset_deposited_logs.get(index_below) {
+                        log
+                    } else {
+                        return (0.into(), last_updated);
+                    },
+                ),
+                SearchResult::NotFound { index_below: None } => {
+                    env::panic_str("Invariant violation: yield distribution before any deposits.");
+                }
+            };
 
         // This value is not necessary for correctness; it just reduces
         // duplicate reads.
         let mut next_total_assets_deposited_at_distribution = self
-            .total_borrow_asset_deposited_log
+            .total_borrow_asset_deposited_logs
             .get(total_assets_deposited_at_distribution.0 + 1);
 
         let mut last_chain_time = last_updated;
 
-        for i in starting_index..yield_distribution_logs.len() {
-            let log = yield_distribution_logs.get(i).unwrap();
+        #[allow(clippy::cast_possible_truncation)]
+        for log in yield_distribution_logs.iter().skip(starting_index as usize) {
             if log.chain_time >= until {
                 break;
             }
@@ -439,7 +443,7 @@ impl Market {
                 total_assets_deposited_at_distribution.1 = next;
 
                 next_total_assets_deposited_at_distribution = self
-                    .total_borrow_asset_deposited_log
+                    .total_borrow_asset_deposited_logs
                     .get(total_assets_deposited_at_distribution.0 + 1);
             }
 
