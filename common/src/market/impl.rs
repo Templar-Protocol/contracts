@@ -362,7 +362,7 @@ impl Market {
         // SAFETY: It should be impossible to panic here, since assets that
         // have not yet been borrowed cannot be repaid.
         self.borrow_asset_borrowed
-            .split(amount)
+            .split(liability_reduction.amount_to_principal)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
         self.add_or_update_log(None);
     }

@@ -381,7 +381,7 @@ impl TestController {
         }
     }
 
-    pub async fn repay_native(&self, borrow_user: &Account, amount: u128) {
+    pub async fn repay_native(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         borrow_user
             .call(self.contract.id(), "repay_native")
             .args_json(json!({}))
@@ -389,10 +389,10 @@ impl TestController {
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
-    pub async fn repay(&self, borrow_user: &Account, amount: u128) {
+    pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         println!("{} repaying {amount} tokens...", borrow_user.id());
         match self.borrow_asset {
             TestAsset::Native => self.repay_native(borrow_user, amount).await,
@@ -403,7 +403,7 @@ impl TestController {
                     amount,
                     &serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
                 )
-                .await;
+                .await
             }
         }
     }
