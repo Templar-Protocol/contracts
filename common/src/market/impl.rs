@@ -1,17 +1,14 @@
-use borsh::BorshDeserialize;
 use near_sdk::{
     collections::{LookupMap, UnorderedMap, Vector},
     env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
 use crate::{
-    asset::{
-        AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
-    },
-    balance_log::{add_or_update_balance_log, search_balance_logs, BalanceLog, SearchResult},
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::BorrowPosition,
     chain_time::ChainTime,
     market::MarketConfiguration,
+    market_log::MarketLog,
     number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -20,14 +17,14 @@ use crate::{
 
 use super::OraclePriceProof;
 
+const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425
+
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {
     SupplyPositions,
     BorrowPositions,
-    TotalBorrowAssetDepositedLogs,
-    TotalBorrowAssetBorrowedLogs,
-    BorrowAssetYieldDistributionLogs,
+    Logs,
     WithdrawalQueue,
     StaticYield,
 }
@@ -41,9 +38,7 @@ pub struct Market {
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub total_borrow_asset_deposited_logs: Vector<BalanceLog<BorrowAsset>>,
-    pub total_borrow_asset_borrowed_logs: Vector<BalanceLog<BorrowAsset>>,
-    pub borrow_asset_yield_distribution_logs: Vector<BalanceLog<BorrowAsset>>,
+    pub logs: Vector<MarketLog>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -64,7 +59,7 @@ impl Market {
                 .concat()
             };
         }
-        Self {
+        let mut self_ = Self {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited: 0.into(),
@@ -72,13 +67,31 @@ impl Market {
             borrow_asset_borrowed: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            total_borrow_asset_deposited_logs: Vector::new(key!(TotalBorrowAssetDepositedLogs)),
-            total_borrow_asset_borrowed_logs: Vector::new(key!(TotalBorrowAssetDepositedLogs)),
-            borrow_asset_yield_distribution_logs: Vector::new(key!(
-                BorrowAssetYieldDistributionLogs
-            )),
+            logs: Vector::new(key!(Logs)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
+        };
+
+        // So we never have to worry about logs being empty.
+        // This means that expressions like `self.logs.len() - 1` will never
+        // underflow.
+        self_.add_or_update_log(None);
+
+        self_
+    }
+
+    pub fn current_log_index(&self) -> u64 {
+        let last_log_index = self.logs.len() - 1;
+        let chain_time = ChainTime::now();
+        if self
+            .logs
+            .get(last_log_index)
+            .filter(|log| log.chain_time == chain_time)
+            .is_some()
+        {
+            last_log_index
+        } else {
+            last_log_index + 1
         }
     }
 
@@ -136,20 +149,37 @@ impl Market {
         Ok(Some((account_id, amount)))
     }
 
-    fn log_total_borrow_asset_deposited(&mut self, amount: BorrowAssetAmount) {
-        add_or_update_balance_log(
-            &mut self.total_borrow_asset_deposited_logs,
-            ChainTime::now(),
-            |log| log.amount = amount,
-        );
-    }
+    fn add_or_update_log(&mut self, add_yield: Option<BorrowAssetAmount>) {
+        let chain_time = ChainTime::now();
 
-    fn log_total_borrow_asset_borrowed(&mut self, amount: BorrowAssetAmount) {
-        add_or_update_balance_log(
-            &mut self.total_borrow_asset_borrowed_logs,
-            ChainTime::now(),
-            |log| log.amount = amount,
-        );
+        if let Some((last_index, old_log)) = self.logs.len().checked_sub(1).and_then(|last_index| {
+            self.logs
+                .get(last_index)
+                .filter(|log| log.chain_time == chain_time)
+                .map(|log| (last_index, log))
+        }) {
+            let new_log = MarketLog {
+                chain_time,
+                timestamp_ms: old_log.timestamp_ms,
+                deposited: self.borrow_asset_deposited,
+                borrowed: self.borrow_asset_borrowed,
+                yield_distribution: add_yield.map_or(old_log.yield_distribution, |add| {
+                    let mut y = old_log.yield_distribution;
+                    y.join(add);
+                    y
+                }),
+            };
+            self.logs.replace(last_index, &new_log);
+        } else {
+            let new_log = MarketLog {
+                chain_time,
+                timestamp_ms: env::block_timestamp_ms().into(),
+                deposited: self.borrow_asset_deposited,
+                borrowed: self.borrow_asset_borrowed,
+                yield_distribution: add_yield.unwrap_or_else(BorrowAssetAmount::zero),
+            };
+            self.logs.push(&new_log);
+        }
     }
 
     fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
@@ -201,11 +231,7 @@ impl Market {
         }
 
         // Next, dynamic (supply-based) yield.
-        add_or_update_balance_log(
-            &mut self.borrow_asset_yield_distribution_logs,
-            ChainTime::now(),
-            |log| log.amount.join(amount),
-        );
+        self.add_or_update_log(Some(amount));
     }
 
     pub fn record_supply_position_borrow_asset_deposit(
@@ -222,7 +248,7 @@ impl Market {
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited overflow"));
 
-        self.log_total_borrow_asset_deposited(self.borrow_asset_deposited);
+        self.add_or_update_log(None);
     }
 
     pub fn record_supply_position_borrow_asset_withdrawal(
@@ -239,7 +265,7 @@ impl Market {
             .split(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
 
-        self.log_total_borrow_asset_deposited(self.borrow_asset_deposited);
+        self.add_or_update_log(None);
 
         withdrawn
     }
@@ -306,7 +332,7 @@ impl Market {
     ) {
         borrow_position
             .borrow_asset_fees
-            .accumulate_fees(fees, ChainTime::now());
+            .accumulate_fees(fees, self.current_log_index());
         borrow_position
             .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
@@ -314,7 +340,7 @@ impl Market {
         self.borrow_asset_borrowed
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed overflow"));
-        self.log_total_borrow_asset_borrowed(self.borrow_asset_borrowed);
+        self.add_or_update_log(None);
     }
 
     pub fn record_borrow_position_borrow_asset_repay(
@@ -338,15 +364,81 @@ impl Market {
         self.borrow_asset_borrowed
             .split(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
-        self.log_total_borrow_asset_borrowed(self.borrow_asset_borrowed);
+        self.add_or_update_log(None);
     }
 
-    pub fn accumulate_fees_on_borrow_position(
+    pub fn accumulate_interest_on_borrow_position(
         &self,
         borrow_position: &mut BorrowPosition,
-        until: ChainTime,
+        until_chain_time: ChainTime,
     ) {
-        todo!()
+        let (accumulated, until_log_index) = self.calculate_borrow_position_interest(
+            borrow_position.get_borrow_asset_principal(),
+            borrow_position.borrow_asset_fees.until_log_index.0,
+            |(_, log)| log.chain_time < until_chain_time,
+        );
+
+        borrow_position
+            .borrow_asset_fees
+            .accumulate_fees(accumulated, until_log_index);
+    }
+
+    pub fn calculate_borrow_position_interest(
+        &self,
+        principal_in_span: BorrowAssetAmount,
+        from_log_index: u64,
+        take_while: impl FnMut(&(u64, MarketLog)) -> bool,
+    ) -> (BorrowAssetAmount, u64) {
+        if self.logs.is_empty() {
+            return (0.into(), from_log_index);
+        }
+
+        let principal = Decimal::from(principal_in_span.as_u128());
+
+        let mut accumulated = Decimal::ZERO;
+        let mut finished_at_log_index = from_log_index;
+
+        let mut it = self
+            .logs
+            .iter()
+            .enumerate()
+            .skip(from_log_index as usize)
+            .map(|(i, log)| (i as u64, log))
+            .take_while(take_while)
+            .peekable();
+
+        while let Some((i, log)) = it.next() {
+            let Some((_, next_log)) = it.peek() else {
+                // Cannot calculate duration.
+                break;
+            };
+
+            let total_borrowed = Decimal::from(log.borrowed.as_u128());
+            let total_deposited = Decimal::from(log.deposited.as_u128());
+            let utilization_ratio = total_borrowed / total_deposited;
+            let interest_rate_per_year = self
+                .configuration
+                .borrow_interest_rate_strategy
+                .at(utilization_ratio);
+            let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
+            let duration_ms: Decimal = next_log
+                .timestamp_ms
+                .0
+                .checked_sub(log.timestamp_ms.0)
+                .unwrap_or_else(|| env::panic_str(&format!("Invariant violation: Log timestamps must never decrease. Violation at log index {}", i + 1)))
+                .into();
+
+            let interest = principal * interest_rate_per_year * duration_ms / ms_in_a_year;
+
+            accumulated += interest;
+
+            finished_at_log_index = i;
+        }
+
+        (
+            accumulated.to_u128_floor().unwrap().into(),
+            finished_at_log_index,
+        )
     }
 
     /// In order for yield calculations to be accurate, this function MUST
@@ -357,111 +449,55 @@ impl Market {
     pub fn accumulate_yield_on_supply_position(
         &self,
         supply_position: &mut SupplyPosition,
-        until: ChainTime,
+        until_chain_time: ChainTime,
     ) {
-        let (accumulated, last_chain_time) = self.calculate_supply_position_yield(
-            &self.borrow_asset_yield_distribution_logs,
-            supply_position.borrow_asset_yield.last_updated,
+        let (accumulated, finished_at_log_index) = self.calculate_supply_position_yield(
             supply_position.get_borrow_asset_deposit(),
-            until,
+            supply_position.borrow_asset_yield.until_log_index.0,
+            |(_, log)| log.chain_time < until_chain_time,
         );
 
         supply_position
             .borrow_asset_yield
-            .accumulate_yield(accumulated, last_chain_time);
+            .accumulate_yield(accumulated, finished_at_log_index);
     }
 
     #[allow(clippy::missing_panics_doc)]
-    pub fn calculate_supply_position_yield<T: AssetClass + BorshDeserialize>(
+    pub fn calculate_supply_position_yield(
         &self,
-        yield_distribution_logs: &Vector<BalanceLog<T>>,
-        last_updated: ChainTime,
-        borrow_asset_deposited_during_interval: BorrowAssetAmount,
-        until: ChainTime,
-    ) -> (FungibleAssetAmount<T>, ChainTime) {
-        if yield_distribution_logs.is_empty() || self.total_borrow_asset_deposited_logs.is_empty() {
-            return (0.into(), last_updated);
+        amount_deposited_during_interval: BorrowAssetAmount,
+        from_log_index: u64,
+        take_while: impl FnMut(&(u64, MarketLog)) -> bool,
+    ) -> (BorrowAssetAmount, u64) {
+        if self.logs.is_empty() {
+            return (0.into(), from_log_index);
         }
 
-        let (starting_index, starting_chain_time) =
-            match search_balance_logs(yield_distribution_logs, last_updated) {
-                SearchResult::Found { index, log } => (index, log.chain_time),
-                SearchResult::NotFound { index_below } => {
-                    let index_above = index_below.map_or(0, |i| i + 1);
-                    match yield_distribution_logs
-                        .get(index_above)
-                        .filter(|log| log.chain_time < until)
-                    {
-                        Some(log) => (index_above, log.chain_time),
-                        None => return (0.into(), last_updated),
-                    }
-                }
-            };
+        let amount = Decimal::from(amount_deposited_during_interval.as_u128());
 
-        let mut accumulated_fees_in_span = FungibleAssetAmount::<T>::zero();
+        let mut accumulated = Decimal::ZERO;
+        let mut finished_at_log_index = from_log_index;
 
-        let mut total_assets_deposited_at_distribution =
-            match search_balance_logs(&self.total_borrow_asset_deposited_logs, starting_chain_time)
-            {
-                SearchResult::Found { index, log } => (index, log),
-                SearchResult::NotFound {
-                    index_below: Some(index_below),
-                } => (
-                    index_below,
-                    if let Some(log) = self.total_borrow_asset_deposited_logs.get(index_below) {
-                        log
-                    } else {
-                        return (0.into(), last_updated);
-                    },
-                ),
-                SearchResult::NotFound { index_below: None } => {
-                    env::panic_str("Invariant violation: yield distribution before any deposits.");
-                }
-            };
+        for (i, log) in self
+            .logs
+            .iter()
+            .enumerate()
+            .skip(from_log_index as usize)
+            .map(|(i, log)| (i as u64, log))
+            .take_while(take_while)
+        {
+            let deposited = Decimal::from(log.deposited.as_u128());
+            let distributed = Decimal::from(log.yield_distribution.as_u128());
+            let share = amount * distributed / deposited;
+            accumulated += share;
 
-        // This value is not necessary for correctness; it just reduces
-        // duplicate reads.
-        let mut next_total_assets_deposited_at_distribution = self
-            .total_borrow_asset_deposited_logs
-            .get(total_assets_deposited_at_distribution.0 + 1);
-
-        let mut last_chain_time = last_updated;
-
-        #[allow(clippy::cast_possible_truncation)]
-        for log in yield_distribution_logs.iter().skip(starting_index as usize) {
-            if log.chain_time >= until {
-                break;
-            }
-
-            // Now, we are looking for the latest total asset deposited amount
-            // AT OR BEFORE the current yield distribution log.
-            while let Some(next) = next_total_assets_deposited_at_distribution
-                .clone()
-                .filter(|l| l.chain_time <= log.chain_time)
-            {
-                total_assets_deposited_at_distribution.0 += 1;
-                total_assets_deposited_at_distribution.1 = next;
-
-                next_total_assets_deposited_at_distribution = self
-                    .total_borrow_asset_deposited_logs
-                    .get(total_assets_deposited_at_distribution.0 + 1);
-            }
-
-            let share_fraction = Decimal::from(borrow_asset_deposited_during_interval.as_u128())
-                / total_assets_deposited_at_distribution.1.amount.as_u128();
-
-            let share_amount = FungibleAssetAmount::new(
-                (share_fraction * log.amount.as_u128())
-                    .to_u128_floor()
-                    .unwrap(),
-            );
-
-            accumulated_fees_in_span.join(share_amount);
-
-            last_chain_time = log.chain_time;
+            finished_at_log_index = i;
         }
 
-        (accumulated_fees_in_span, last_chain_time)
+        (
+            accumulated.to_u128_floor().unwrap().into(),
+            finished_at_log_index,
+        )
     }
 
     pub fn can_borrow_position_be_liquidated(
@@ -496,15 +532,23 @@ impl Market {
         mut recovered_amount: BorrowAssetAmount,
     ) {
         let principal = borrow_position.get_borrow_asset_principal();
-        borrow_position.full_liquidation(ChainTime::now());
+        borrow_position.full_liquidation(self.current_log_index());
+
+        self.borrow_asset_borrowed.split(principal);
 
         // TODO: Is it correct to only care about the original principal here?
         if recovered_amount.split(principal).is_some() {
             // distribute yield
+            // record_borrow_asset_yield_distribution will add logs, no need to do it:
+            // self.add_or_update_log(None);
             self.record_borrow_asset_yield_distribution(recovered_amount);
         } else {
             // we took a loss
             // TODO: some sort of recovery for suppliers
+            //
+            // Might look something like this:
+            // self.borrow_asset_deposited.split(principal);
+            // (?)
             todo!("Took a loss during liquidation");
         }
     }

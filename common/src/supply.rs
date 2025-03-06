@@ -1,9 +1,6 @@
-use near_sdk::near;
+use near_sdk::{json_types::U64, near};
 
-use crate::{
-    asset::{AssetClass, BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
-    chain_time::ChainTime,
-};
+use crate::asset::{AssetClass, BorrowAsset, BorrowAssetAmount, FungibleAssetAmount};
 
 #[derive(Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -13,10 +10,13 @@ pub struct SupplyPosition {
 }
 
 impl SupplyPosition {
-    pub fn new(chain_time: ChainTime) -> Self {
+    pub fn new(current_log_index: u64) -> Self {
         Self {
             borrow_asset_deposit: 0.into(),
-            borrow_asset_yield: YieldRecord::new(chain_time),
+            // We start at next log index so that the supply starts
+            // accumulating yield from the _next_ log (since they were not
+            // necessarily supplying for all of the current log).
+            borrow_asset_yield: YieldRecord::new(current_log_index + 1),
         }
     }
 
@@ -49,14 +49,14 @@ impl SupplyPosition {
 #[near(serializers = [json, borsh])]
 pub struct YieldRecord<T: AssetClass> {
     pub amount: FungibleAssetAmount<T>,
-    pub last_updated: ChainTime,
+    pub until_log_index: U64,
 }
 
 impl<T: AssetClass> YieldRecord<T> {
-    pub fn new(last_updated: ChainTime) -> Self {
+    pub fn new(until_log_index: u64) -> Self {
         Self {
             amount: 0.into(),
-            last_updated,
+            until_log_index: until_log_index.into(),
         }
     }
 
@@ -67,10 +67,10 @@ impl<T: AssetClass> YieldRecord<T> {
     pub fn accumulate_yield(
         &mut self,
         additional_yield: FungibleAssetAmount<T>,
-        chain_time: ChainTime,
+        until_log_index: u64,
     ) {
-        debug_assert!(chain_time > self.last_updated);
+        debug_assert!(until_log_index > self.until_log_index.0);
         self.amount.join(additional_yield);
-        self.last_updated = chain_time;
+        self.until_log_index.0 = until_log_index;
     }
 }

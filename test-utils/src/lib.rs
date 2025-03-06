@@ -9,8 +9,7 @@ use near_workspaces::{
     network::Sandbox, prelude::*, result::ExecutionSuccess, Account, Contract, DevNetwork, Worker,
 };
 use templar_common::{
-    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
-    balance_log::BalanceLog,
+    asset::{BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
     dec,
     fee::{Fee, TimeBasedFee},
@@ -19,6 +18,7 @@ use templar_common::{
         LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
         YieldWeights,
     },
+    market_log::MarketLog,
     number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -604,30 +604,20 @@ impl TestController {
     pub async fn print_logs(&self) {
         let total_borrow_asset_deposited_logs = self
             .contract
-            .view("get_total_borrow_asset_deposited_log")
+            .view("get_logs")
             .args_json(json!({}))
             .await
             .unwrap()
-            .json::<Vec<BalanceLog<BorrowAsset>>>()
+            .json::<Vec<MarketLog>>()
             .unwrap();
 
-        println!("Total borrow asset deposited log:");
+        println!("Market logs:");
         for (i, log) in total_borrow_asset_deposited_logs.iter().enumerate() {
-            println!("\t{i}: {}\t[{}]", log.amount.as_u128(), log.chain_time);
-        }
-
-        let borrow_asset_yield_distribution_logs = self
-            .contract
-            .view("get_borrow_asset_yield_distribution_log")
-            .args_json(json!({}))
-            .await
-            .unwrap()
-            .json::<Vec<BalanceLog<BorrowAsset>>>()
-            .unwrap();
-
-        println!("Borrow asset yield distribution log:");
-        for (i, log) in borrow_asset_yield_distribution_logs.iter().enumerate() {
-            println!("\t{i}: {}\t[{}]", log.amount.as_u128(), log.chain_time);
+            println!("\t{i}: {}", log.chain_time);
+            println!("\t\tTimestamp:\t{}", log.timestamp_ms.0);
+            println!("\t\tDeposited:\t{}", log.deposited.as_u128());
+            println!("\t\tBorrowed:\t{}", log.borrowed.as_u128());
+            println!("\t\tDistribution:\t{}", log.yield_distribution.as_u128());
         }
     }
 }

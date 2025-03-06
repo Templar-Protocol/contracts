@@ -1,10 +1,7 @@
 use near_sdk::{json_types::U64, near};
 
-use crate::{
-    asset::{
-        AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
-    },
-    chain_time::ChainTime,
+use crate::asset::{
+    AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -35,25 +32,25 @@ pub enum LiquidationReason {
 #[near(serializers = [borsh, json])]
 pub struct FeeRecord<T: AssetClass> {
     pub(crate) total: FungibleAssetAmount<T>,
-    pub(crate) last_updated: ChainTime,
+    pub(crate) until_log_index: U64,
 }
 
 impl<T: AssetClass> FeeRecord<T> {
-    pub fn new(chain_time: ChainTime) -> Self {
+    pub fn new(until_log_index: u64) -> Self {
         Self {
             total: 0.into(),
-            last_updated: chain_time,
+            until_log_index: until_log_index.into(),
         }
     }
 
     pub fn accumulate_fees(
         &mut self,
         additional_fees: FungibleAssetAmount<T>,
-        chain_time: ChainTime,
+        until_log_index: u64,
     ) -> Option<()> {
-        debug_assert!(chain_time > self.last_updated);
+        debug_assert!(until_log_index > self.until_log_index.0);
         self.total.join(additional_fees)?;
-        self.last_updated = chain_time;
+        self.until_log_index.0 = until_log_index;
         Some(())
     }
 }
@@ -70,24 +67,28 @@ pub struct BorrowPosition {
 }
 
 impl BorrowPosition {
-    pub fn new(chain_time: ChainTime) -> Self {
+    pub fn new(current_log_index: u64) -> Self {
         Self {
             started_at_block_timestamp_ms: None,
             collateral_asset_deposit: 0.into(),
             borrow_asset_principal: 0.into(),
-            borrow_asset_fees: FeeRecord::new(chain_time),
+            // Subtract one to avoid the possibility of borrowing "for free".
+            // e.g. if ChainTime units are epochs (12 hours), this prevents
+            // someone from getting 11 hours of free borrowing if they create
+            // the borrow 1 hour into the epoch.
+            borrow_asset_fees: FeeRecord::new(current_log_index),
             temporary_lock: 0.into(),
             liquidation_lock: false,
         }
     }
 
-    pub fn full_liquidation(&mut self, chain_time: ChainTime) {
+    pub fn full_liquidation(&mut self, current_log_index: u64) {
         self.liquidation_lock = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
         self.borrow_asset_fees.total = 0.into();
-        self.borrow_asset_fees.last_updated = chain_time;
+        self.borrow_asset_fees.until_log_index.0 = current_log_index;
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
