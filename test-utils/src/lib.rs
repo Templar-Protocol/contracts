@@ -3,7 +3,7 @@ use std::{path::Path, str::FromStr};
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, AccountIdRef, NearToken,
+    AccountId, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, prelude::*, result::ExecutionSuccess, Account, Contract, DevNetwork, Worker,
@@ -408,6 +408,17 @@ impl TestController {
         }
     }
 
+    pub async fn apply_interest(&self, borrow_user: &Account) -> ExecutionSuccess {
+        println!("{} applying interest...", borrow_user.id());
+        borrow_user
+            .call(self.contract.id(), "apply_interest")
+            .args_json(json!({}))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     pub async fn harvest_yield(&self, supply_user: &Account) -> ExecutionSuccess {
         println!("{} harvesting yield...", supply_user.id());
         supply_user
@@ -600,6 +611,33 @@ impl TestController {
         }
     }
 
+    pub async fn mint_asset(&self, ft_id: &AccountId, receiver: &Account, amount: u128) {
+        println!("{} minting {amount} of {}...", receiver.id(), ft_id);
+        receiver
+            .call(ft_id, "mint")
+            .args_json(json!({
+                "amount": U128(amount),
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    pub async fn mint_collateral_asset(&self, receiver: &Account, amount: u128) {
+        match &self.collateral_asset {
+            TestAsset::Nep141(contract) => self.mint_asset(contract.id(), receiver, amount).await,
+            TestAsset::Native => todo!(),
+        }
+    }
+
+    pub async fn mint_borrow_asset(&self, receiver: &Account, amount: u128) {
+        match &self.borrow_asset {
+            TestAsset::Nep141(contract) => self.mint_asset(contract.id(), receiver, amount).await,
+            TestAsset::Native => todo!(),
+        }
+    }
+
     #[allow(unused)] // This is useful for debugging tests
     pub async fn print_logs(&self) {
         let total_borrow_asset_deposited_logs = self
@@ -717,13 +755,7 @@ pub async fn setup_market(
     contract
 }
 
-pub async fn deploy_ft(
-    account: Account,
-    name: &str,
-    symbol: &str,
-    owner_id: &AccountIdRef,
-    supply: u128,
-) -> Contract {
+pub async fn deploy_ft(account: Account, name: &str, symbol: &str) -> Contract {
     let wasm = WASM_MOCK_FT
         .get_or_init(|| get_contract("mock_ft", "mock/ft"))
         .await;
@@ -734,10 +766,7 @@ pub async fn deploy_ft(
         .args_json(json!({
             "name": name,
             "symbol": symbol,
-            "owner_id": owner_id,
-            "supply": U128(supply),
         }))
-        .deposit(NearToken::from_near(1))
         .transact()
         .await
         .unwrap()
@@ -750,7 +779,9 @@ pub struct SetupEverything {
     pub c: TestController,
     pub liquidator_user: Account,
     pub supply_user: Account,
+    pub supply_user2: Account,
     pub borrow_user: Account,
+    pub borrow_user_2: Account,
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
 }
@@ -763,7 +794,9 @@ pub async fn setup_everything(
         worker,
         liquidator_user,
         supply_user,
+        supply_user2,
         borrow_user,
+        borrow_user_2,
         protocol_yield_user,
         insurance_yield_user,
         collateral_asset,
@@ -780,20 +813,8 @@ pub async fn setup_everything(
 
     let (contract, borrow_asset, collateral_asset) = tokio::join!(
         setup_market(&worker, &config),
-        deploy_ft(
-            borrow_asset,
-            "Borrow Asset",
-            "BORROW",
-            supply_user.id(),
-            200000,
-        ),
-        deploy_ft(
-            collateral_asset,
-            "Collateral Asset",
-            "COLLATERAL",
-            borrow_user.id(),
-            100000,
-        ),
+        deploy_ft(borrow_asset, "Borrow Asset", "BORROW"),
+        deploy_ft(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
     let collateral_asset = config
@@ -817,11 +838,24 @@ pub async fn setup_everything(
         c.storage_deposits(c.contract.as_account()),
         async {
             c.storage_deposits(&liquidator_user).await;
-            c.borrow_asset_transfer(&supply_user, liquidator_user.id(), 100000)
-                .await;
+            c.mint_borrow_asset(&liquidator_user, 100_000_000).await;
         },
-        c.storage_deposits(&borrow_user),
-        c.storage_deposits(&supply_user),
+        async {
+            c.storage_deposits(&borrow_user).await;
+            c.mint_collateral_asset(&borrow_user, 100_000_000).await;
+        },
+        async {
+            c.storage_deposits(&borrow_user_2).await;
+            c.mint_collateral_asset(&borrow_user_2, 100_000_000).await;
+        },
+        async {
+            c.storage_deposits(&supply_user).await;
+            c.mint_borrow_asset(&supply_user, 100_000_000).await;
+        },
+        async {
+            c.storage_deposits(&supply_user2).await;
+            c.mint_borrow_asset(&supply_user2, 100_000_000).await;
+        },
         c.storage_deposits(&protocol_yield_user),
         c.storage_deposits(&insurance_yield_user),
     );
@@ -830,7 +864,9 @@ pub async fn setup_everything(
         c,
         liquidator_user,
         supply_user,
+        supply_user2,
         borrow_user,
+        borrow_user_2,
         protocol_yield_user,
         insurance_yield_user,
     }

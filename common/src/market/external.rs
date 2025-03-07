@@ -43,6 +43,7 @@ pub trait MarketExternalInterface {
     // ft_on_receive :: where msg = Repay
     fn repay_native(&mut self) -> PromiseOrValue<()>;
 
+    /// Fees may be slightly lower than actual.
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition>;
     /// This is just a read-only function, so we don't care about validating
     /// the provided price data.
@@ -62,6 +63,11 @@ pub trait MarketExternalInterface {
         amount: U128,
         oracle_price_proof: Option<OraclePriceProof>,
     ) -> Promise;
+
+    /// Applies interest to the predecessor's borrow record.
+    /// Not likely to be used in real life, since there it does not affect the
+    /// final interest calculation.
+    fn apply_interest(&mut self);
 
     // ================
     // SUPPLY FUNCTIONS

@@ -51,7 +51,9 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
-        self.borrow_positions.get(&account_id)
+        let mut borrow_position = self.borrow_positions.get(&account_id)?;
+        self.estimate_instantaneous_borrow_position_interest(&mut borrow_position);
+        Some(borrow_position)
     }
 
     fn get_borrow_status(
@@ -59,7 +61,7 @@ impl MarketExternalInterface for Contract {
         account_id: AccountId,
         oracle_price_proof: OraclePriceProof,
     ) -> Option<BorrowStatus> {
-        let borrow_position = self.borrow_positions.get(&account_id)?;
+        let borrow_position = self.get_borrow_position(account_id)?;
 
         Some(self.configuration.borrow_status(
             &borrow_position,
@@ -132,6 +134,14 @@ impl MarketExternalInterface for Contract {
             .collateral_asset
             .transfer(account_id, amount) // TODO: Check for failure
             .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
+    }
+
+    fn apply_interest(&mut self) {
+        let predecessor = env::predecessor_account_id();
+        if let Some(mut borrow_position) = self.borrow_positions.get(&predecessor) {
+            self.accumulate_interest_on_borrow_position(&mut borrow_position, ChainTime::now());
+            self.borrow_positions.insert(&predecessor, &borrow_position);
+        }
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
