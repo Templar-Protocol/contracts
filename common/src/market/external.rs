@@ -43,7 +43,9 @@ pub trait MarketExternalInterface {
     // ft_on_receive :: where msg = Repay
     fn repay_native(&mut self) -> PromiseOrValue<()>;
 
-    /// Fees may be slightly lower than actual.
+    /// This function may report fees slightly inaccurately. This is because
+    /// the function has to estimate what fees will be applied between the last
+    /// market snapshot and the (present) time when the function was called.
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition>;
     /// This is just a read-only function, so we don't care about validating
     /// the provided price data.
