@@ -10,8 +10,8 @@ use crate::{
     borrow::BorrowPosition,
     chain_time::ChainTime,
     market::MarketConfiguration,
-    market_log::MarketLog,
     number::Decimal,
+    snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
@@ -26,7 +26,7 @@ pub const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425
 enum StorageKey {
     SupplyPositions,
     BorrowPositions,
-    Logs,
+    Snapshots,
     WithdrawalQueue,
     StaticYield,
 }
@@ -40,7 +40,7 @@ pub struct Market {
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub logs: Vector<MarketLog>,
+    pub snapshots: Vector<Snapshot>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -69,60 +69,62 @@ impl Market {
             borrow_asset_borrowed: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            logs: Vector::new(key!(Logs)),
+            snapshots: Vector::new(key!(Snapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         };
 
-        // So we never have to worry about logs being empty.
-        // This means that expressions like `self.logs.len() - 1` will never
+        // So we never have to worry about snapshots being empty.
+        // This means that expressions like `self.snapshots.len() - 1` will never
         // underflow.
-        self_.log();
+        self_.snapshot();
 
         self_
     }
 
     #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
-    pub fn get_last_log(&self) -> &MarketLog {
-        self.logs.get(self.logs.len() - 1).unwrap()
+    pub fn get_last_snapshot(&self) -> &Snapshot {
+        self.snapshots.get(self.snapshots.len() - 1).unwrap()
     }
 
-    pub fn log(&mut self) -> u32 {
-        self.log_yield_distribution(BorrowAssetAmount::zero())
+    pub fn snapshot(&mut self) -> u32 {
+        self.snapshot_with_yield_distribution(BorrowAssetAmount::zero())
     }
 
-    fn log_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
+    fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
         let chain_time = ChainTime::now();
 
-        if let Some((last_index, old_log)) = self.logs.len().checked_sub(1).and_then(|last_index| {
-            self.logs
-                .get(last_index)
-                .filter(|log| log.chain_time == chain_time)
-                .map(|log| (last_index, log))
-        }) {
-            let new_log = MarketLog {
+        if let Some((last_index, old_snapshot)) =
+            self.snapshots.len().checked_sub(1).and_then(|last_index| {
+                self.snapshots
+                    .get(last_index)
+                    .filter(|s| s.chain_time == chain_time)
+                    .map(|s| (last_index, s))
+            })
+        {
+            let new_snapshot = Snapshot {
                 chain_time,
-                timestamp_ms: old_log.timestamp_ms,
+                timestamp_ms: old_snapshot.timestamp_ms,
                 deposited: self.borrow_asset_deposited,
                 borrowed: self.borrow_asset_borrowed,
                 yield_distribution: {
-                    let mut y = old_log.yield_distribution;
+                    let mut y = old_snapshot.yield_distribution;
                     y.join(yield_distribution);
                     y
                 },
             };
-            self.logs.replace(last_index, new_log);
+            self.snapshots.replace(last_index, new_snapshot);
             last_index
         } else {
-            let index = self.logs.len();
-            let new_log = MarketLog {
+            let index = self.snapshots.len();
+            let new_snapshot = Snapshot {
                 chain_time,
                 timestamp_ms: env::block_timestamp_ms().into(),
                 deposited: self.borrow_asset_deposited,
                 borrowed: self.borrow_asset_borrowed,
                 yield_distribution,
             };
-            self.logs.push(new_log);
+            self.snapshots.push(new_snapshot);
             index
         }
     }
@@ -143,9 +145,9 @@ impl Market {
         known_available.saturating_sub(must_retain).into()
     }
 
-    pub fn get_interest_rate_for_log(&self, log: &MarketLog) -> Decimal {
-        let borrowed: Decimal = log.borrowed.as_u128().into();
-        let deposited: Decimal = log.deposited.as_u128().into();
+    pub fn get_interest_rate_for_snapshot(&self, snapshot: &Snapshot) -> Decimal {
+        let borrowed: Decimal = snapshot.borrowed.as_u128().into();
+        let deposited: Decimal = snapshot.deposited.as_u128().into();
         let usage_ratio = borrowed / deposited;
         self.configuration
             .borrow_interest_rate_strategy
@@ -239,7 +241,7 @@ impl Market {
         }
 
         // Next, dynamic (supply-based) yield.
-        self.log_yield_distribution(amount);
+        self.snapshot_with_yield_distribution(amount);
     }
 
     pub fn record_supply_position_borrow_asset_deposit(
@@ -256,7 +258,7 @@ impl Market {
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited overflow"));
 
-        self.log();
+        self.snapshot();
     }
 
     pub fn record_supply_position_borrow_asset_withdrawal(
@@ -273,7 +275,7 @@ impl Market {
             .split(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
 
-        self.log();
+        self.snapshot();
 
         withdrawn
     }
@@ -354,7 +356,7 @@ impl Market {
         self.borrow_asset_borrowed
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed overflow"));
-        self.log();
+        self.snapshot();
     }
 
     pub fn record_borrow_position_borrow_asset_repay(
@@ -381,7 +383,7 @@ impl Market {
             .split(liability_reduction.amount_to_principal)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
 
-        self.log();
+        self.snapshot();
     }
 
     pub fn accumulate_interest_on_borrow_position(
@@ -389,17 +391,17 @@ impl Market {
         borrow_position: &mut BorrowPosition,
         until_chain_time: ChainTime,
     ) {
-        self.log();
+        self.snapshot();
 
-        let (accumulated, next_log_index) = self.calculate_borrow_position_interest(
+        let (accumulated, next_snapshot_index) = self.calculate_borrow_position_interest(
             borrow_position.get_borrow_asset_principal(),
-            borrow_position.borrow_asset_fees.next_log_index,
-            |(_, log)| log.chain_time < until_chain_time,
+            borrow_position.borrow_asset_fees.next_snapshot_index,
+            |(_, s)| s.chain_time < until_chain_time,
         );
 
         borrow_position
             .borrow_asset_fees
-            .accumulate_fees(accumulated, next_log_index);
+            .accumulate_fees(accumulated, next_snapshot_index);
     }
 
     /// This function must only be used to estimate interest for the purpose of account monitoring.
@@ -408,19 +410,20 @@ impl Market {
         &self,
         borrow_position: &mut BorrowPosition,
     ) {
-        let (calculated_from_logs, next_log_index) = self.calculate_borrow_position_interest(
-            borrow_position.get_borrow_asset_principal(),
-            borrow_position.borrow_asset_fees.get_next_log_index(),
-            |_| true,
-        );
+        let (calculated_from_snapshots, next_snapshot_index) = self
+            .calculate_borrow_position_interest(
+                borrow_position.get_borrow_asset_principal(),
+                borrow_position.borrow_asset_fees.get_next_snapshot_index(),
+                |_| true,
+            );
         borrow_position
             .borrow_asset_fees
-            .accumulate_fees(calculated_from_logs, next_log_index);
+            .accumulate_fees(calculated_from_snapshots, next_snapshot_index);
 
-        // Add on the bit representing the "in-progress" log.
-        let last_log = self.get_last_log();
-        let interest_rate = self.get_interest_rate_for_log(last_log);
-        let duration_ms = Decimal::from(env::block_timestamp_ms() - last_log.timestamp_ms.0);
+        // Add on the bit representing the "in-progress" snapshot.
+        let last_snapshot = self.get_last_snapshot();
+        let interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
+        let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
         let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
         let interest_rate_part = interest_rate * duration_ms / ms_in_a_year;
         let interest = interest_rate_part
@@ -434,31 +437,33 @@ impl Market {
     pub(crate) fn calculate_borrow_position_interest(
         &self,
         principal_in_span: BorrowAssetAmount,
-        mut next_log_index: u32,
-        take_while: impl FnMut(&(u32, &MarketLog)) -> bool,
+        mut next_snapshot_index: u32,
+        take_while: impl FnMut(&(u32, &Snapshot)) -> bool,
     ) -> (BorrowAssetAmount, u32) {
         let principal = Decimal::from(principal_in_span.as_u128());
 
         let mut accumulated = Decimal::ZERO;
 
         let mut it = self
-            .logs
+            .snapshots
             .iter()
             .enumerate()
-            .skip(next_log_index as usize)
-            .map(|(i, log)| (i as u32, log))
+            .skip(next_snapshot_index as usize)
+            .map(|(i, s)| (i as u32, s))
             .take_while(take_while)
             .peekable();
 
-        while let Some((i, log)) = it.next() {
-            let Some(end_timestamp_ms) = it.peek().map(|(_, next_log)| next_log.timestamp_ms.0)
+        while let Some((i, snapshot)) = it.next() {
+            let Some(end_timestamp_ms) = it
+                .peek()
+                .map(|(_, next_snapshot)| next_snapshot.timestamp_ms.0)
             else {
                 // Cannot calculate duration.
                 break;
             };
 
-            let total_borrowed = Decimal::from(log.borrowed.as_u128());
-            let total_deposited = Decimal::from(log.deposited.as_u128());
+            let total_borrowed = Decimal::from(snapshot.borrowed.as_u128());
+            let total_deposited = Decimal::from(snapshot.deposited.as_u128());
             let utilization_ratio = total_borrowed / total_deposited;
             let interest_rate_per_year = self
                 .configuration
@@ -466,10 +471,10 @@ impl Market {
                 .at(utilization_ratio);
             let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
             let duration_ms: Decimal = end_timestamp_ms
-                .checked_sub(log.timestamp_ms.0)
+                .checked_sub(snapshot.timestamp_ms.0)
                 .unwrap_or_else(|| {
                     env::panic_str(&format!(
-                        "Invariant violation: Log timestamp decrease at #{}.",
+                        "Invariant violation: Snapshot timestamp decrease at #{}.",
                         i + 1,
                     ))
                 })
@@ -482,10 +487,13 @@ impl Market {
             // TODO: This is definitely correct for this function.
             // Need to investigate to see if the same logic is necessary in
             // yield accumulation fns.
-            next_log_index = i + 1;
+            next_snapshot_index = i + 1;
         }
 
-        (accumulated.to_u128_ceil().unwrap().into(), next_log_index)
+        (
+            accumulated.to_u128_ceil().unwrap().into(),
+            next_snapshot_index,
+        )
     }
 
     /// In order for yield calculations to be accurate, this function MUST
@@ -498,52 +506,52 @@ impl Market {
         supply_position: &mut SupplyPosition,
         until_chain_time: ChainTime,
     ) {
-        let (accumulated, finished_at_log_index) = self.calculate_supply_position_yield(
+        let (accumulated, finished_at_snapshot_index) = self.calculate_supply_position_yield(
             supply_position.get_borrow_asset_deposit(),
-            supply_position.borrow_asset_yield.until_log_index,
-            |(_, log)| log.chain_time < until_chain_time,
+            supply_position.borrow_asset_yield.until_snapshot_index,
+            |(_, snapshot)| snapshot.chain_time < until_chain_time,
         );
 
         supply_position
             .borrow_asset_yield
-            .accumulate_yield(accumulated, finished_at_log_index);
+            .accumulate_yield(accumulated, finished_at_snapshot_index);
     }
 
     #[allow(clippy::missing_panics_doc)]
     pub fn calculate_supply_position_yield(
         &self,
         amount_deposited_during_interval: BorrowAssetAmount,
-        from_log_index: u32,
-        take_while: impl FnMut(&(u32, &MarketLog)) -> bool,
+        from_snapshot_index: u32,
+        take_while: impl FnMut(&(u32, &Snapshot)) -> bool,
     ) -> (BorrowAssetAmount, u32) {
-        if self.logs.is_empty() {
-            return (0.into(), from_log_index);
+        if self.snapshots.is_empty() {
+            return (0.into(), from_snapshot_index);
         }
 
         let amount = Decimal::from(amount_deposited_during_interval.as_u128());
 
         let mut accumulated = Decimal::ZERO;
-        let mut finished_at_log_index = from_log_index;
+        let mut finished_at_snapshot_index = from_snapshot_index;
 
-        for (i, log) in self
-            .logs
+        for (i, snapshot) in self
+            .snapshots
             .iter()
             .enumerate()
-            .skip(from_log_index as usize)
-            .map(|(i, log)| (i as u32, log))
+            .skip(from_snapshot_index as usize)
+            .map(|(i, s)| (i as u32, s))
             .take_while(take_while)
         {
-            let deposited = Decimal::from(log.deposited.as_u128());
-            let distributed = Decimal::from(log.yield_distribution.as_u128());
+            let deposited = Decimal::from(snapshot.deposited.as_u128());
+            let distributed = Decimal::from(snapshot.yield_distribution.as_u128());
             let share = amount * distributed / deposited;
             accumulated += share;
 
-            finished_at_log_index = i;
+            finished_at_snapshot_index = i;
         }
 
         (
             accumulated.to_u128_floor().unwrap().into(),
-            finished_at_log_index,
+            finished_at_snapshot_index,
         )
     }
 
@@ -579,15 +587,14 @@ impl Market {
         mut recovered_amount: BorrowAssetAmount,
     ) {
         let principal = borrow_position.get_borrow_asset_principal();
-        borrow_position.full_liquidation(self.log());
+        borrow_position.full_liquidation(self.snapshot());
 
         self.borrow_asset_borrowed.split(principal);
 
         // TODO: Is it correct to only care about the original principal here?
         if recovered_amount.split(principal).is_some() {
             // distribute yield
-            // record_borrow_asset_yield_distribution will add logs, no need to do it:
-            // self.add_or_update_log(None);
+            // record_borrow_asset_yield_distribution will take snapshot, no need to do it.
             self.record_borrow_asset_yield_distribution(recovered_amount);
         } else {
             // we took a loss

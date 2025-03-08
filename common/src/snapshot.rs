@@ -4,7 +4,7 @@ use crate::{asset::BorrowAssetAmount, chain_time::ChainTime};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
-pub struct MarketLog {
+pub struct Snapshot {
     pub chain_time: ChainTime,
     pub timestamp_ms: U64,
     pub deposited: BorrowAssetAmount,

@@ -10,13 +10,13 @@ pub struct SupplyPosition {
 }
 
 impl SupplyPosition {
-    pub fn new(current_log_index: u32) -> Self {
+    pub fn new(current_snapshot_index: u32) -> Self {
         Self {
             borrow_asset_deposit: 0.into(),
             // We start at next log index so that the supply starts
             // accumulating yield from the _next_ log (since they were not
             // necessarily supplying for all of the current log).
-            borrow_asset_yield: YieldRecord::new(current_log_index + 1),
+            borrow_asset_yield: YieldRecord::new(current_snapshot_index + 1),
         }
     }
 
@@ -49,14 +49,14 @@ impl SupplyPosition {
 #[near(serializers = [json, borsh])]
 pub struct YieldRecord<T: AssetClass> {
     pub amount: FungibleAssetAmount<T>,
-    pub until_log_index: u32,
+    pub until_snapshot_index: u32,
 }
 
 impl<T: AssetClass> YieldRecord<T> {
-    pub fn new(until_log_index: u32) -> Self {
+    pub fn new(until_snapshot_index: u32) -> Self {
         Self {
             amount: 0.into(),
-            until_log_index,
+            until_snapshot_index,
         }
     }
 
@@ -67,10 +67,10 @@ impl<T: AssetClass> YieldRecord<T> {
     pub fn accumulate_yield(
         &mut self,
         additional_yield: FungibleAssetAmount<T>,
-        until_log_index: u32,
+        until_snapshot_index: u32,
     ) {
-        debug_assert!(until_log_index > self.until_log_index);
+        debug_assert!(until_snapshot_index > self.until_snapshot_index);
         self.amount.join(additional_yield);
-        self.until_log_index = until_log_index;
+        self.until_snapshot_index = until_snapshot_index;
     }
 }

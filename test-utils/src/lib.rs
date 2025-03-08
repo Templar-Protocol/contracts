@@ -18,8 +18,8 @@ use templar_common::{
         LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
         YieldWeights,
     },
-    market_log::MarketLog,
     number::Decimal,
+    snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -639,23 +639,26 @@ impl TestController {
     }
 
     #[allow(unused)] // This is useful for debugging tests
-    pub async fn print_logs(&self) {
-        let total_borrow_asset_deposited_logs = self
+    pub async fn print_snapshots(&self) {
+        let snapshots = self
             .contract
-            .view("get_logs")
+            .view("get_snapshots")
             .args_json(json!({}))
             .await
             .unwrap()
-            .json::<Vec<MarketLog>>()
+            .json::<Vec<Snapshot>>()
             .unwrap();
 
-        println!("Market logs:");
-        for (i, log) in total_borrow_asset_deposited_logs.iter().enumerate() {
-            println!("\t{i}: {}", log.chain_time);
-            println!("\t\tTimestamp:\t{}", log.timestamp_ms.0);
-            println!("\t\tDeposited:\t{}", log.deposited.as_u128());
-            println!("\t\tBorrowed:\t{}", log.borrowed.as_u128());
-            println!("\t\tDistribution:\t{}", log.yield_distribution.as_u128());
+        println!("Market snapshots:");
+        for (i, snapshot) in snapshots.iter().enumerate() {
+            println!("\t{i}: {}", snapshot.chain_time);
+            println!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
+            println!("\t\tDeposited:\t{}", snapshot.deposited.as_u128());
+            println!("\t\tBorrowed:\t{}", snapshot.borrowed.as_u128());
+            println!(
+                "\t\tDistribution:\t{}",
+                snapshot.yield_distribution.as_u128()
+            );
         }
     }
 }

@@ -6,7 +6,7 @@ use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::BorrowPosition,
     market::OraclePriceProof,
-    market_log::MarketLog,
+    snapshot::Snapshot,
     supply::SupplyPosition,
 };
 
@@ -18,7 +18,7 @@ impl Contract {
         let mut supply_position = self
             .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| SupplyPosition::new(self.log()));
+            .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
 
         self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
 
@@ -29,7 +29,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(self.log()));
+            .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
 
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
@@ -77,7 +77,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(self.log()));
+            .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
 
         require!(
             self.configuration
@@ -141,10 +141,10 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_logs(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&MarketLog> {
+    pub fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.logs
+        self.snapshots
             .iter()
             .skip(offset)
             .take(count)

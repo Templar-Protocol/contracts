@@ -32,19 +32,19 @@ pub enum LiquidationReason {
 #[near(serializers = [borsh, json])]
 pub struct FeeRecord<T: AssetClass> {
     pub(crate) total: FungibleAssetAmount<T>,
-    pub(crate) next_log_index: u32,
+    pub(crate) next_snapshot_index: u32,
 }
 
 impl<T: AssetClass> FeeRecord<T> {
-    pub fn new(next_log_index: u32) -> Self {
+    pub fn new(next_snapshot_index: u32) -> Self {
         Self {
             total: 0.into(),
-            next_log_index,
+            next_snapshot_index,
         }
     }
 
-    pub fn get_next_log_index(&self) -> u32 {
-        self.next_log_index
+    pub fn get_next_snapshot_index(&self) -> u32 {
+        self.next_snapshot_index
     }
 
     pub fn get_total(&self) -> FungibleAssetAmount<T> {
@@ -58,11 +58,11 @@ impl<T: AssetClass> FeeRecord<T> {
     pub(crate) fn accumulate_fees(
         &mut self,
         additional_fees: FungibleAssetAmount<T>,
-        next_log_index: u32,
+        next_snapshot_index: u32,
     ) -> Option<()> {
-        debug_assert!(next_log_index > self.next_log_index);
+        debug_assert!(next_snapshot_index > self.next_snapshot_index);
         self.total.join(additional_fees)?;
-        self.next_log_index = next_log_index;
+        self.next_snapshot_index = next_snapshot_index;
         Some(())
     }
 }
@@ -79,7 +79,7 @@ pub struct BorrowPosition {
 }
 
 impl BorrowPosition {
-    pub fn new(current_log_index: u32) -> Self {
+    pub fn new(current_snapshot_index: u32) -> Self {
         Self {
             started_at_block_timestamp_ms: None,
             collateral_asset_deposit: 0.into(),
@@ -88,19 +88,19 @@ impl BorrowPosition {
             // e.g. if ChainTime units are epochs (12 hours), this prevents
             // someone from getting 11 hours of free borrowing if they create
             // the borrow 1 hour into the epoch.
-            borrow_asset_fees: FeeRecord::new(current_log_index),
+            borrow_asset_fees: FeeRecord::new(current_snapshot_index),
             temporary_lock: 0.into(),
             liquidation_lock: false,
         }
     }
 
-    pub fn full_liquidation(&mut self, current_log_index: u32) {
+    pub fn full_liquidation(&mut self, current_snapshot_index: u32) {
         self.liquidation_lock = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
         self.borrow_asset_fees.total = 0.into();
-        self.borrow_asset_fees.next_log_index = current_log_index;
+        self.borrow_asset_fees.next_snapshot_index = current_snapshot_index;
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
