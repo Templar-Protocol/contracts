@@ -97,6 +97,8 @@ pub trait MarketExternalInterface {
 
     fn harvest_yield(&mut self);
 
+    fn get_last_yield_rate(&self) -> Decimal;
+
     // =====================
     // LIQUIDATION FUNCTIONS
     // =====================

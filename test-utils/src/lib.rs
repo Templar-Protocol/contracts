@@ -638,6 +638,26 @@ impl TestController {
         }
     }
 
+    pub async fn get_last_interest_rate(&self) -> Decimal {
+        self.contract
+            .view("get_last_interest_rate")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+
+    pub async fn get_last_yield_rate(&self) -> Decimal {
+        self.contract
+            .view("get_last_yield_rate")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+
     #[allow(unused)] // This is useful for debugging tests
     pub async fn print_snapshots(&self) {
         let snapshots = self
