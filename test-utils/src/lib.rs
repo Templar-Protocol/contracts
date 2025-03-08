@@ -866,10 +866,12 @@ pub async fn setup_everything(
         async {
             c.storage_deposits(&borrow_user).await;
             c.mint_collateral_asset(&borrow_user, 100_000_000).await;
+            c.mint_borrow_asset(&borrow_user, 100_000_000).await;
         },
         async {
             c.storage_deposits(&borrow_user_2).await;
             c.mint_collateral_asset(&borrow_user_2, 100_000_000).await;
+            c.mint_borrow_asset(&borrow_user_2, 100_000_000).await;
         },
         async {
             c.storage_deposits(&supply_user).await;
