@@ -3,6 +3,7 @@ use near_sdk::{json_types::U128, AccountId, Promise, PromiseOrValue};
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
+    number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -70,6 +71,8 @@ pub trait MarketExternalInterface {
     /// Not likely to be used in real life, since there it does not affect the
     /// final interest calculation.
     fn apply_interest(&mut self);
+
+    fn get_last_interest_rate(&self) -> Decimal;
 
     // ================
     // SUPPLY FUNCTIONS

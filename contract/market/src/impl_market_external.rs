@@ -6,6 +6,7 @@ use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     chain_time::ChainTime,
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface, OraclePriceProof},
+    number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -142,6 +143,10 @@ impl MarketExternalInterface for Contract {
             self.accumulate_interest_on_borrow_position(&mut borrow_position, ChainTime::now());
             self.borrow_positions.insert(&predecessor, &borrow_position);
         }
+    }
+
+    fn get_last_interest_rate(&self) -> Decimal {
+        self.get_interest_rate_for_snapshot(self.get_last_snapshot())
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
