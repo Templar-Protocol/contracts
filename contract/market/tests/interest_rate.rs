@@ -7,23 +7,15 @@ use templar_common::{
 };
 use test_utils::*;
 
-#[test]
-fn test_strategy() {
-    let s = InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap();
-    let duration_ms = Decimal::from(30 * 1000u128);
-    let ms_in_a_year = dec!("31556952000");
-    let principal = 1_000_000u128;
-    let usage_ratio = dec!("0.2");
-    println!(
-        "{}",
-        s.at(usage_ratio) * duration_ms / ms_in_a_year * principal
-    );
-    // 30s -> 950662.1552043429
-}
-
 #[rstest]
 #[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap())]
 #[case(1_000_000, InterestRateStrategy::linear(dec!("100000"), dec!("5000000")).unwrap())]
+#[case(5_000_000,
+    InterestRateStrategy::piecewise(Decimal::ZERO, dec!("0.9"), dec!("350"), dec!("6000")).unwrap()
+)]
+#[case(5_000_000,
+    InterestRateStrategy::exponential2(dec!("5"), dec!("800"), dec!("6")).unwrap()
+)]
 #[tokio::test]
 async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateStrategy) {
     let SetupEverything {
@@ -51,6 +43,8 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
     tokio::time::sleep(Duration::from_secs(1)).await;
     let time_inner = std::time::Instant::now();
 
+    let mut iters = 0;
+
     for _ in 0..3 {
         println!("Sleeping...");
         let done = std::sync::atomic::AtomicBool::new(false);
@@ -61,6 +55,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                 while !done.load(Ordering::Relaxed) {
                     c.apply_interest(&borrow_user_2).await;
                     tokio::time::sleep(Duration::from_secs(1)).await;
+                    iters += 1;
                 }
             },
             async {
@@ -94,22 +89,22 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let actual_1 = borrow_position_1.borrow_asset_fees.get_total().as_u128();
         println!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
-        let actual_2 = borrow_position_2.borrow_asset_fees.get_total().as_u128();
-        println!("{approximation_below} <= {actual_2} <= {approximation_above}?");
-
         assert!(approximation_below <= actual_1);
         assert!(actual_1 <= approximation_above);
 
+        let actual_2 = borrow_position_2.borrow_asset_fees.get_total().as_u128();
+        println!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
+
         assert!(approximation_below <= actual_2);
-        assert!(actual_2 <= approximation_above);
+        assert!(actual_2 <= approximation_above + iters);
 
         assert!(
             actual_2 >= actual_1,
             "Users should not be able to reduce interest by applying it more frequently"
         );
         assert!(
-            actual_1 / (actual_2 - actual_1) >= 50_000,
-            "Accounting accuracy is within 0.002%"
+            actual_2 <= actual_1 + iters,
+            "Accuracy should be within # of iters due to rounding up",
         );
     }
 }

@@ -88,13 +88,11 @@ impl UsageCurve for Linear {
 ///     else     : r_2 * u + o * (r_1 - r_2) + b
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
+#[serde(try_from = "PiecewiseParams", into = "PiecewiseParams")]
 pub struct Piecewise {
-    base: Decimal,
-    optimal: Decimal,
-    rate_1: Decimal,
-    rate_2: Decimal,
+    params: PiecewiseParams,
     i_negative_rate_2_b: Decimal,
 }
 
@@ -110,10 +108,12 @@ impl Piecewise {
 
         Some(Self {
             i_negative_rate_2_b: optimal * (rate_2 - rate_1) - base,
-            base,
-            optimal,
-            rate_1,
-            rate_2,
+            params: PiecewiseParams {
+                base,
+                optimal,
+                rate_1,
+                rate_2,
+            },
         })
     }
 }
@@ -122,23 +122,52 @@ impl UsageCurve for Piecewise {
     fn at(&self, utilization_ratio: Decimal) -> Decimal {
         require!(utilization_ratio <= Decimal::ONE);
 
-        if utilization_ratio < self.optimal {
-            self.rate_1 * utilization_ratio + self.base
+        if utilization_ratio < self.params.optimal {
+            self.params.rate_1 * utilization_ratio + self.params.base
         } else {
-            self.rate_2 * utilization_ratio - self.i_negative_rate_2_b
+            self.params.rate_2 * utilization_ratio - self.i_negative_rate_2_b
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct PiecewiseParams {
+    base: Decimal,
+    optimal: Decimal,
+    rate_1: Decimal,
+    rate_2: Decimal,
+}
+
+impl TryFrom<PiecewiseParams> for Piecewise {
+    type Error = &'static str;
+
+    fn try_from(
+        PiecewiseParams {
+            base,
+            optimal,
+            rate_1,
+            rate_2,
+        }: PiecewiseParams,
+    ) -> Result<Self, Self::Error> {
+        Self::new(base, optimal, rate_1, rate_2).ok_or("Invalid Piecewise parameters")
+    }
+}
+
+impl From<Piecewise> for PiecewiseParams {
+    fn from(value: Piecewise) -> Self {
+        value.params
     }
 }
 
 /// ```text,no_run
 /// r(u) = b + (t - b) * (2^ku - 1) / (2^k - 1)
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
+#[serde(try_from = "Exponential2Params", into = "Exponential2Params")]
 pub struct Exponential2 {
-    base: Decimal,
-    top: Decimal,
-    eccentricity: Decimal,
+    params: Exponential2Params,
     i_factor: Decimal,
 }
 
@@ -149,16 +178,18 @@ impl Exponential2 {
             return None;
         }
 
-        if eccentricity > 24u32 {
+        if eccentricity > 24u32 || eccentricity.is_zero() {
             return None;
         }
 
         #[allow(clippy::unwrap_used)]
         Some(Self {
             i_factor: (top - base) / (eccentricity.pow2().unwrap() - 1u32),
-            base,
-            top,
-            eccentricity,
+            params: Exponential2Params {
+                base,
+                top,
+                eccentricity,
+            },
         })
     }
 }
@@ -168,7 +199,40 @@ impl UsageCurve for Exponential2 {
     fn at(&self, utilization_ratio: Decimal) -> Decimal {
         require!(utilization_ratio <= Decimal::ONE);
 
-        self.base + self.i_factor * ((self.eccentricity * utilization_ratio).pow2().unwrap() - 1u32)
+        self.params.base
+            + self.i_factor
+                * ((self.params.eccentricity * utilization_ratio)
+                    .pow2()
+                    .unwrap()
+                    - 1u32)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct Exponential2Params {
+    base: Decimal,
+    top: Decimal,
+    eccentricity: Decimal,
+}
+
+impl TryFrom<Exponential2Params> for Exponential2 {
+    type Error = &'static str;
+
+    fn try_from(
+        Exponential2Params {
+            base,
+            top,
+            eccentricity,
+        }: Exponential2Params,
+    ) -> Result<Self, Self::Error> {
+        Self::new(base, top, eccentricity).ok_or("Invalid Exponential2 parameters")
+    }
+}
+
+impl From<Exponential2> for Exponential2Params {
+    fn from(value: Exponential2) -> Self {
+        value.params
     }
 }
 
