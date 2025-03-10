@@ -1,4 +1,4 @@
-use near_sdk::{json_types::U128, AccountId, Promise, PromiseOrValue};
+use near_sdk::{AccountId, Promise, PromiseOrValue};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
@@ -63,7 +63,7 @@ pub trait MarketExternalInterface {
     ) -> Promise;
     fn withdraw_collateral(
         &mut self,
-        amount: U128,
+        amount: CollateralAssetAmount,
         oracle_price_proof: Option<OraclePriceProof>,
     ) -> Promise;
 
@@ -85,7 +85,7 @@ pub trait MarketExternalInterface {
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
-    fn create_supply_withdrawal_request(&mut self, amount: U128);
+    fn create_supply_withdrawal_request(&mut self, amount: BorrowAssetAmount);
     fn cancel_supply_withdrawal_request(&mut self);
     /// Auto-harvests yield.
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()>;
@@ -114,7 +114,7 @@ pub trait MarketExternalInterface {
     // YIELD FUNCTIONS
     // =================
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord>;
-    fn withdraw_supply_yield(&mut self, amount: Option<U128>) -> Promise;
+    fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise;
     fn withdraw_static_yield(
         &mut self,
         borrow_asset_amount: Option<BorrowAssetAmount>,

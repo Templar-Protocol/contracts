@@ -802,7 +802,7 @@ pub struct SetupEverything {
     pub c: TestController,
     pub liquidator_user: Account,
     pub supply_user: Account,
-    pub supply_user2: Account,
+    pub supply_user_2: Account,
     pub borrow_user: Account,
     pub borrow_user_2: Account,
     pub protocol_yield_user: Account,
@@ -817,7 +817,7 @@ pub async fn setup_everything(
         worker,
         liquidator_user,
         supply_user,
-        supply_user2,
+        supply_user_2,
         borrow_user,
         borrow_user_2,
         protocol_yield_user,
@@ -878,8 +878,8 @@ pub async fn setup_everything(
             c.mint_borrow_asset(&supply_user, 100_000_000).await;
         },
         async {
-            c.storage_deposits(&supply_user2).await;
-            c.mint_borrow_asset(&supply_user2, 100_000_000).await;
+            c.storage_deposits(&supply_user_2).await;
+            c.mint_borrow_asset(&supply_user_2, 100_000_000).await;
         },
         c.storage_deposits(&protocol_yield_user),
         c.storage_deposits(&insurance_yield_user),
@@ -889,7 +889,7 @@ pub async fn setup_everything(
         c,
         liquidator_user,
         supply_user,
-        supply_user2,
+        supply_user_2,
         borrow_user,
         borrow_user_2,
         protocol_yield_user,

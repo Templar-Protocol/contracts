@@ -114,7 +114,7 @@ async fn successful_liquidation_good_debt_under_mcr(
             c.harvest_yield(&supply_user).await;
             let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
             assert_eq!(
-                supply_position.borrow_asset_yield.amount.as_u128(),
+                supply_position.borrow_asset_yield.get_total().as_u128(),
                 yield_amount * 8 / 10,
             );
         },

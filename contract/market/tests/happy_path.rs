@@ -170,7 +170,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
             {
                 c.harvest_yield(&supply_user).await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert_eq!(supply_position.borrow_asset_yield.amount.as_u128(), 80);
+                assert_eq!(supply_position.borrow_asset_yield.get_total().as_u128(), 80);
 
                 let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
                 // Withdraw all
@@ -179,12 +179,12 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
 
                 assert_eq!(
                     balance_after - balance_before,
-                    supply_position.borrow_asset_yield.amount.as_u128(),
+                    supply_position.borrow_asset_yield.get_total().as_u128(),
                 );
 
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert!(
-                    supply_position.borrow_asset_yield.amount.is_zero(),
+                    supply_position.borrow_asset_yield.get_total().is_zero(),
                     "Supply position should not have yield after withdrawing all",
                 );
             }

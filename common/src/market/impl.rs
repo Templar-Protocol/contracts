@@ -1,3 +1,5 @@
+use std::u32;
+
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
     env, near, require,
@@ -6,7 +8,8 @@ use near_sdk::{
 };
 
 use crate::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    accumulator::AccumulationRecord,
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::BorrowPosition,
     chain_time::ChainTime,
     market::MarketConfiguration,
@@ -249,7 +252,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) {
-        self.accumulate_yield_on_supply_position(supply_position, ChainTime::now());
+        self.accumulate_supply_position_yield(supply_position, ChainTime::now());
         supply_position
             .increase_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
@@ -266,7 +269,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        self.accumulate_yield_on_supply_position(supply_position, ChainTime::now());
+        self.accumulate_supply_position_yield(supply_position, ChainTime::now());
         let withdrawn = supply_position
             .decrease_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
@@ -285,7 +288,7 @@ impl Market {
         borrow_position: &mut BorrowPosition,
         amount: CollateralAssetAmount,
     ) {
-        self.accumulate_interest_on_borrow_position(borrow_position, ChainTime::now());
+        self.accumulate_borrow_position_interest(borrow_position);
         borrow_position
             .increase_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset overflow"));
@@ -296,7 +299,7 @@ impl Market {
         borrow_position: &mut BorrowPosition,
         amount: CollateralAssetAmount,
     ) {
-        self.accumulate_interest_on_borrow_position(borrow_position, ChainTime::now());
+        self.accumulate_borrow_position_interest(borrow_position);
         borrow_position
             .decrease_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
@@ -308,7 +311,7 @@ impl Market {
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        self.accumulate_interest_on_borrow_position(borrow_position, ChainTime::now());
+        self.accumulate_borrow_position_interest(borrow_position);
 
         self.borrow_asset_in_flight
             .join(amount)
@@ -326,7 +329,7 @@ impl Market {
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        self.accumulate_interest_on_borrow_position(borrow_position, ChainTime::now());
+        self.accumulate_borrow_position_interest(borrow_position);
 
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
@@ -346,9 +349,9 @@ impl Market {
         amount: BorrowAssetAmount,
         fee: BorrowAssetAmount,
     ) {
-        self.accumulate_interest_on_borrow_position(borrow_position, ChainTime::now());
+        self.accumulate_borrow_position_interest(borrow_position);
 
-        borrow_position.borrow_asset_fees.add_one_time_fee(fee);
+        borrow_position.borrow_asset_fees.add_once(fee);
         borrow_position
             .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
@@ -364,7 +367,7 @@ impl Market {
         borrow_position: &mut BorrowPosition,
         amount: BorrowAssetAmount,
     ) {
-        self.accumulate_interest_on_borrow_position(borrow_position, ChainTime::now());
+        self.accumulate_borrow_position_interest(borrow_position);
 
         let liability_reduction = borrow_position
             .reduce_borrow_asset_liability(amount)
@@ -386,41 +389,46 @@ impl Market {
         self.snapshot();
     }
 
-    pub fn accumulate_interest_on_borrow_position(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        until_chain_time: ChainTime,
-    ) {
+    pub fn accumulate_borrow_position_interest(&mut self, borrow_position: &mut BorrowPosition) {
         self.snapshot();
 
-        let (accumulated, next_snapshot_index) = self.calculate_borrow_position_interest(
+        let accumulation_record = self.calculate_borrow_position_interest(
             borrow_position.get_borrow_asset_principal(),
             borrow_position.borrow_asset_fees.next_snapshot_index,
-            |(_, s)| s.chain_time < until_chain_time,
+            u32::MAX,
         );
 
         borrow_position
             .borrow_asset_fees
-            .accumulate_fees(accumulated, next_snapshot_index);
+            .accumulate(accumulation_record);
     }
 
-    /// This function must only be used to estimate interest for the purpose of account monitoring.
-    /// The borrow position MUST NOT be written back to storage.
-    pub fn estimate_instantaneous_borrow_position_interest(
+    #[must_use]
+    pub fn calculate_borrow_position_instantaneous_pending_interest(
         &self,
-        borrow_position: &mut BorrowPosition,
-    ) {
-        let (calculated_from_snapshots, next_snapshot_index) = self
+        borrow_position: &BorrowPosition,
+    ) -> BorrowAssetAmount {
+        let mut amount = self
             .calculate_borrow_position_interest(
                 borrow_position.get_borrow_asset_principal(),
                 borrow_position.borrow_asset_fees.get_next_snapshot_index(),
-                |_| true,
-            );
-        borrow_position
-            .borrow_asset_fees
-            .accumulate_fees(calculated_from_snapshots, next_snapshot_index);
+                u32::MAX,
+            )
+            .get_amount();
 
-        // Add on the bit representing the "in-progress" snapshot.
+        // Add the amount representing the "in-progress" snapshot.
+        let last_snapshot_part =
+            self.calculate_borrow_position_last_snapshot_interest(borrow_position);
+
+        amount.join(last_snapshot_part);
+
+        amount
+    }
+
+    pub(crate) fn calculate_borrow_position_last_snapshot_interest(
+        &self,
+        borrow_position: &BorrowPosition,
+    ) -> BorrowAssetAmount {
         let last_snapshot = self.get_last_snapshot();
         let interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
         let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
@@ -429,17 +437,15 @@ impl Market {
         let interest = interest_rate_part
             * Decimal::from(borrow_position.get_borrow_asset_principal().as_u128());
 
-        borrow_position
-            .borrow_asset_fees
-            .add_one_time_fee(interest.to_u128_ceil().unwrap().into());
+        interest.to_u128_ceil().unwrap().into()
     }
 
     pub(crate) fn calculate_borrow_position_interest(
         &self,
         principal_in_span: BorrowAssetAmount,
         mut next_snapshot_index: u32,
-        take_while: impl FnMut(&(u32, &Snapshot)) -> bool,
-    ) -> (BorrowAssetAmount, u32) {
+        limit: u32,
+    ) -> AccumulationRecord<BorrowAsset> {
         let principal = Decimal::from(principal_in_span.as_u128());
 
         let mut accumulated = Decimal::ZERO;
@@ -449,9 +455,11 @@ impl Market {
             .iter()
             .enumerate()
             .skip(next_snapshot_index as usize)
+            .take(limit as usize)
             .map(|(i, s)| (i as u32, s))
-            .take_while(take_while)
             .peekable();
+
+        let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
 
         while let Some((i, snapshot)) = it.next() {
             let Some(end_timestamp_ms) = it
@@ -469,7 +477,6 @@ impl Market {
                 .configuration
                 .borrow_interest_rate_strategy
                 .at(utilization_ratio);
-            let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
             let duration_ms: Decimal = end_timestamp_ms
                 .checked_sub(snapshot.timestamp_ms.0)
                 .unwrap_or_else(|| {
@@ -484,16 +491,13 @@ impl Market {
 
             accumulated += interest;
 
-            // TODO: This is definitely correct for this function.
-            // Need to investigate to see if the same logic is necessary in
-            // yield accumulation fns.
             next_snapshot_index = i + 1;
         }
 
-        (
-            accumulated.to_u128_ceil().unwrap().into(),
+        AccumulationRecord {
+            amount: accumulated.to_u128_ceil().unwrap().into(),
             next_snapshot_index,
-        )
+        }
     }
 
     /// In order for yield calculations to be accurate, this function MUST
@@ -501,58 +505,96 @@ impl Market {
     /// requirement is largely met by virtue of the fact that
     /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
     /// be modified via `Self::record_supply_position_*` methods.
-    pub fn accumulate_yield_on_supply_position(
-        &self,
+    pub fn accumulate_supply_position_yield(
+        &mut self,
         supply_position: &mut SupplyPosition,
         until_chain_time: ChainTime,
     ) {
-        let (accumulated, finished_at_snapshot_index) = self.calculate_supply_position_yield(
+        self.snapshot();
+
+        let accumulation_record = self.calculate_supply_position_yield(
             supply_position.get_borrow_asset_deposit(),
-            supply_position.borrow_asset_yield.until_snapshot_index,
-            |(_, snapshot)| snapshot.chain_time < until_chain_time,
+            supply_position.borrow_asset_yield.next_snapshot_index,
         );
 
         supply_position
             .borrow_asset_yield
-            .accumulate_yield(accumulated, finished_at_snapshot_index);
+            .accumulate(accumulation_record);
+    }
+
+    /// This function must only be used to estimate interest for the purpose of account monitoring.
+    #[must_use]
+    pub fn calculate_supply_position_instantaneous_pending_yield(
+        &self,
+        supply_position: &SupplyPosition,
+    ) -> BorrowAssetAmount {
+        let mut amount = self
+            .calculate_supply_position_yield(
+                supply_position.get_borrow_asset_deposit(),
+                supply_position.borrow_asset_yield.next_snapshot_index,
+            )
+            .get_amount();
+
+        // Calculate the amount representing the "in-progress" snapshot.
+        let current_snapshot_part =
+            self.calculate_supply_position_last_snapshot_yield(supply_position);
+
+        amount.join(current_snapshot_part);
+
+        amount
+    }
+
+    pub fn calculate_supply_position_last_snapshot_yield(
+        &self,
+        supply_position: &SupplyPosition,
+    ) -> BorrowAssetAmount {
+        let last_snapshot = self.get_last_snapshot();
+        let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
+        let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
+        let deposit = Decimal::from(supply_position.get_borrow_asset_deposit().as_u128());
+        let total_deposited = Decimal::from(last_snapshot.deposited.as_u128());
+        let total_yield_distribution = Decimal::from(last_snapshot.yield_distribution.as_u128());
+        let estimate_current_snapshot =
+            total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
+
+        estimate_current_snapshot.to_u128_floor().unwrap().into()
     }
 
     #[allow(clippy::missing_panics_doc)]
     pub fn calculate_supply_position_yield(
         &self,
         amount_deposited_during_interval: BorrowAssetAmount,
-        from_snapshot_index: u32,
-        take_while: impl FnMut(&(u32, &Snapshot)) -> bool,
-    ) -> (BorrowAssetAmount, u32) {
+        mut next_snapshot_index: u32,
+    ) -> AccumulationRecord<BorrowAsset> {
         if self.snapshots.is_empty() {
-            return (0.into(), from_snapshot_index);
+            return AccumulationRecord::empty(next_snapshot_index);
         }
 
         let amount = Decimal::from(amount_deposited_during_interval.as_u128());
 
         let mut accumulated = Decimal::ZERO;
-        let mut finished_at_snapshot_index = from_snapshot_index;
 
-        for (i, snapshot) in self
-            .snapshots
-            .iter()
+        let mut it = self.snapshots.iter();
+        // Skip the last snapshot, which may be incomplete.
+        it.next_back();
+
+        for (i, snapshot) in it
             .enumerate()
-            .skip(from_snapshot_index as usize)
+            .skip(next_snapshot_index as usize)
             .map(|(i, s)| (i as u32, s))
-            .take_while(take_while)
         {
             let deposited = Decimal::from(snapshot.deposited.as_u128());
             let distributed = Decimal::from(snapshot.yield_distribution.as_u128());
             let share = amount * distributed / deposited;
             accumulated += share;
 
-            finished_at_snapshot_index = i;
+            next_snapshot_index = i + 1;
         }
 
-        (
-            accumulated.to_u128_floor().unwrap().into(),
-            finished_at_snapshot_index,
-        )
+        AccumulationRecord {
+            amount: accumulated.to_u128_floor().unwrap().into(),
+            next_snapshot_index,
+        }
     }
 
     pub fn can_borrow_position_be_liquidated(

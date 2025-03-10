@@ -53,7 +53,8 @@ impl MarketExternalInterface for Contract {
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
         let mut borrow_position = self.borrow_positions.get(&account_id)?;
-        self.estimate_instantaneous_borrow_position_interest(&mut borrow_position);
+        borrow_position.pending_fee_estimate =
+            self.calculate_borrow_position_instantaneous_pending_interest(&borrow_position);
         Some(borrow_position)
     }
 
@@ -106,11 +107,9 @@ impl MarketExternalInterface for Contract {
 
     fn withdraw_collateral(
         &mut self,
-        amount: U128,
+        amount: CollateralAssetAmount,
         oracle_price_proof: Option<OraclePriceProof>,
     ) -> Promise {
-        let amount = CollateralAssetAmount::new(amount.0);
-
         let account_id = env::predecessor_account_id();
 
         let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
@@ -140,7 +139,7 @@ impl MarketExternalInterface for Contract {
     fn apply_interest(&mut self) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut borrow_position) = self.borrow_positions.get(&predecessor) {
-            self.accumulate_interest_on_borrow_position(&mut borrow_position, ChainTime::now());
+            self.accumulate_borrow_position_interest(&mut borrow_position);
             self.borrow_positions.insert(&predecessor, &borrow_position);
         }
     }
@@ -150,13 +149,15 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
-        self.supply_positions.get(&account_id)
+        let mut supply_position = self.supply_positions.get(&account_id)?;
+        supply_position.pending_yield_estimate =
+            self.calculate_supply_position_instantaneous_pending_yield(&supply_position);
+        Some(supply_position)
     }
 
     /// If the predecessor has already entered the queue, calling this function
     /// will reset the position to the back of the queue.
-    fn create_supply_withdrawal_request(&mut self, amount: U128) {
-        let amount = BorrowAssetAmount::from(amount.0);
+    fn create_supply_withdrawal_request(&mut self, amount: BorrowAssetAmount) {
         require!(
             !amount.is_zero(),
             "Amount to withdraw must be greater than zero",
@@ -216,7 +217,7 @@ impl MarketExternalInterface for Contract {
     fn harvest_yield(&mut self) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.supply_positions.get(&predecessor) {
-            self.accumulate_yield_on_supply_position(&mut supply_position, ChainTime::now());
+            self.accumulate_supply_position_yield(&mut supply_position, ChainTime::now());
             self.supply_positions.insert(&predecessor, &supply_position);
         }
     }
@@ -236,20 +237,17 @@ impl MarketExternalInterface for Contract {
         self.static_yield.get(&account_id)
     }
 
-    fn withdraw_supply_yield(&mut self, amount: Option<U128>) -> Promise {
+    fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
         let predecessor = env::predecessor_account_id();
         let Some(mut supply_position) = self.supply_positions.get(&predecessor) else {
             env::panic_str("Supply position does not exist");
         };
 
-        let amount = amount.map_or_else(
-            || supply_position.borrow_asset_yield.amount.as_u128(),
-            |amount| amount.0,
-        );
+        let amount = amount.unwrap_or_else(|| supply_position.borrow_asset_yield.get_total());
 
         let withdrawn = supply_position
             .borrow_asset_yield
-            .withdraw(amount)
+            .remove(amount)
             .unwrap_or_else(|| {
                 env::panic_str("Attempt to withdraw more yield than has accumulated")
             });
