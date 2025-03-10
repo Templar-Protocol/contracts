@@ -149,7 +149,11 @@ impl Market {
     pub fn get_interest_rate_for_snapshot(&self, snapshot: &Snapshot) -> Decimal {
         let borrowed: Decimal = snapshot.borrowed.as_u128().into();
         let deposited: Decimal = snapshot.deposited.as_u128().into();
-        let usage_ratio = borrowed / deposited;
+        let usage_ratio = if deposited.is_zero() {
+            Decimal::ZERO
+        } else {
+            borrowed / deposited
+        };
         self.configuration
             .borrow_interest_rate_strategy
             .at(usage_ratio)

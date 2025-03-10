@@ -187,7 +187,6 @@ impl Decimal {
         for n in 1..=MAX_ITERATIONS {
             term *= numerator / n;
             if term == Self::ZERO {
-                dbg!(n);
                 break;
             }
             sum += &term;
