@@ -31,12 +31,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
     })
     .await;
 
-    let r = c.supply(&supply_user, principal * 5).await;
-    println!("{r:?}");
-    println!("Logs");
-    for log in r.logs() {
-        println!("\t{log}");
-    }
+    c.supply(&supply_user, principal * 5).await;
     c.supply(&supply_user_2, principal * 5).await;
     c.collateralize(&borrow_user, principal * 2).await;
     c.collateralize(&borrow_user_2, principal * 2).await;
@@ -58,7 +53,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         tokio::join!(
             async {
                 // borrow_user_2 will be continually applying interest while borrow_user_1 does not.
-                // They should accumulate the same amount of interest regardless.
+                // They should accumulate (very nearly) the same amount of interest regardless.
                 while !done.load(Ordering::Relaxed) {
                     tokio::join!(
                         c.apply_interest(&borrow_user_2),
@@ -127,29 +122,44 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     tokio::join!(
         async {
-            let b = c.get_borrow_position(borrow_user.id()).await.unwrap();
-            println!("Position before repay 1: {b:#?}");
-            let r = c
-                .repay(&borrow_user, b.get_total_borrow_asset_liability().as_u128())
-                .await;
-            println!("position 1 r: {r:#?}");
-            println!("Logs");
-            for log in r.logs() {
-                println!("\t{log}");
-            }
-            let b = c.get_borrow_position(borrow_user.id()).await.unwrap();
-            println!("Position after repay 1: {b:#?}");
-        },
-        async {
-            let b = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
-            println!("Position before repay 2: {b:#?}");
+            let borrow_position_before = c.get_borrow_position(borrow_user.id()).await.unwrap();
             c.repay(
-                &borrow_user_2,
-                b.get_total_borrow_asset_liability().as_u128(),
+                &borrow_user,
+                borrow_position_before
+                    .get_total_borrow_asset_liability()
+                    .as_u128()
+                    * 110
+                    / 100, /* overpayment */
             )
             .await;
-            let b = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
-            println!("Position after repay 2: {b:#?}");
+            let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
+
+            assert!(
+                borrow_position_after
+                    .get_total_borrow_asset_liability()
+                    .is_zero(),
+                "Borrow should be fully repaid",
+            );
+        },
+        async {
+            let borrow_position_before = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
+            c.repay(
+                &borrow_user_2,
+                borrow_position_before
+                    .get_total_borrow_asset_liability()
+                    .as_u128()
+                    * 110
+                    / 100, /* overpayment */
+            )
+            .await;
+            let borrow_position_after = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
+
+            assert!(
+                borrow_position_after
+                    .get_total_borrow_asset_liability()
+                    .is_zero(),
+                "Borrow should be fully repaid",
+            );
         },
     );
 
@@ -163,9 +173,6 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
             c.get_supply_position(supply_user_2.id()).await.unwrap()
         },
     );
-
-    // println!("Final supply position 1: {supply_position_1:#?}");
-    // println!("Final supply position 2: {supply_position_2:#?}");
 
     assert!(!supply_position_1.borrow_asset_yield.get_total().is_zero());
     assert_eq!(

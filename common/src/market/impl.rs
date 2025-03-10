@@ -1,8 +1,6 @@
-use std::u32;
-
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
-    env, near, require,
+    env, near,
     store::Vector,
     AccountId, BorshStorageKey, IntoStorageKey,
 };
@@ -252,7 +250,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) {
-        self.accumulate_supply_position_yield(supply_position, ChainTime::now());
+        self.accumulate_supply_position_yield(supply_position);
         supply_position
             .increase_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
@@ -269,7 +267,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        self.accumulate_supply_position_yield(supply_position, ChainTime::now());
+        self.accumulate_supply_position_yield(supply_position);
         let withdrawn = supply_position
             .decrease_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
@@ -366,17 +364,12 @@ impl Market {
         &mut self,
         borrow_position: &mut BorrowPosition,
         amount: BorrowAssetAmount,
-    ) {
+    ) -> BorrowAssetAmount {
         self.accumulate_borrow_position_interest(borrow_position);
 
         let liability_reduction = borrow_position
             .reduce_borrow_asset_liability(amount)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-        require!(
-            liability_reduction.amount_remaining.is_zero(),
-            "Overpayment not supported",
-        );
 
         self.record_borrow_asset_yield_distribution(liability_reduction.amount_to_fees);
 
@@ -387,6 +380,8 @@ impl Market {
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
 
         self.snapshot();
+
+        liability_reduction.amount_remaining
     }
 
     pub fn accumulate_borrow_position_interest(&mut self, borrow_position: &mut BorrowPosition) {
@@ -505,11 +500,7 @@ impl Market {
     /// requirement is largely met by virtue of the fact that
     /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
     /// be modified via `Self::record_supply_position_*` methods.
-    pub fn accumulate_supply_position_yield(
-        &mut self,
-        supply_position: &mut SupplyPosition,
-        until_chain_time: ChainTime,
-    ) {
+    pub fn accumulate_supply_position_yield(&mut self, supply_position: &mut SupplyPosition) {
         self.snapshot();
 
         let accumulation_record = self.calculate_supply_position_yield(

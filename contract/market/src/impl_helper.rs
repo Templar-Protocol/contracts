@@ -50,18 +50,18 @@ impl Contract {
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
         if let Some(mut borrow_position) = self.borrow_positions.get(account_id) {
-            // TODO: This function *errors* on overpayment. Instead, add a
-            // check before and only repay the maximum, then return the excess.
-            //
+            // TODO:
             // Due to the slightly imprecise calculation of yield and
             // other fees, the returning of the excess should be
             // anything >1%, for example, over the total amount
             // borrowed + fees/interest.
             // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923876327
-            self.record_borrow_position_borrow_asset_repay(&mut borrow_position, amount);
+            let refund =
+                self.record_borrow_position_borrow_asset_repay(&mut borrow_position, amount);
 
             self.borrow_positions.insert(account_id, &borrow_position);
-            BorrowAssetAmount::zero()
+
+            refund
         } else {
             // No borrow exists: just return the whole amount.
             amount
