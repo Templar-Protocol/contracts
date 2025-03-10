@@ -1,22 +1,29 @@
 use near_sdk::near;
 
 use crate::{
-    asset::{AssetClass, BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
-    chain_time::ChainTime,
+    accumulator::Accumulator,
+    asset::{BorrowAsset, BorrowAssetAmount},
 };
 
 #[derive(Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
     borrow_asset_deposit: BorrowAssetAmount,
-    pub borrow_asset_yield: YieldRecord<BorrowAsset>,
+    pub borrow_asset_yield: Accumulator<BorrowAsset>,
+    #[borsh(skip)]
+    #[serde(default, skip_serializing_if = "BorrowAssetAmount::is_zero")]
+    pub pending_yield_estimate: BorrowAssetAmount,
 }
 
 impl SupplyPosition {
-    pub fn new(chain_time: ChainTime) -> Self {
+    pub fn new(current_snapshot_index: u32) -> Self {
         Self {
             borrow_asset_deposit: 0.into(),
-            borrow_asset_yield: YieldRecord::new(chain_time),
+            // We start at next log index so that the supply starts
+            // accumulating yield from the _next_ log (since they were not
+            // necessarily supplying for all of the current log).
+            borrow_asset_yield: Accumulator::new(current_snapshot_index + 1),
+            pending_yield_estimate: BorrowAssetAmount::zero(),
         }
     }
 
@@ -25,7 +32,7 @@ impl SupplyPosition {
     }
 
     pub fn exists(&self) -> bool {
-        !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_yield.amount.is_zero()
+        !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_yield.total.is_zero()
     }
 
     /// MUST always be paired with a yield recalculation!
@@ -42,35 +49,5 @@ impl SupplyPosition {
         amount: BorrowAssetAmount,
     ) -> Option<BorrowAssetAmount> {
         self.borrow_asset_deposit.split(amount)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct YieldRecord<T: AssetClass> {
-    pub amount: FungibleAssetAmount<T>,
-    pub last_updated: ChainTime,
-}
-
-impl<T: AssetClass> YieldRecord<T> {
-    pub fn new(last_updated: ChainTime) -> Self {
-        Self {
-            amount: 0.into(),
-            last_updated,
-        }
-    }
-
-    pub fn withdraw(&mut self, amount: u128) -> Option<FungibleAssetAmount<T>> {
-        self.amount.split(amount)
-    }
-
-    pub fn accumulate_yield(
-        &mut self,
-        additional_yield: FungibleAssetAmount<T>,
-        chain_time: ChainTime,
-    ) {
-        debug_assert!(chain_time > self.last_updated);
-        self.amount.join(additional_yield);
-        self.last_updated = chain_time;
     }
 }

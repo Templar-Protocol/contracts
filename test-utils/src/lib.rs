@@ -3,21 +3,23 @@ use std::{path::Path, str::FromStr};
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, AccountIdRef, NearToken,
+    AccountId, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, prelude::*, result::ExecutionSuccess, Account, Contract, DevNetwork, Worker,
 };
 use templar_common::{
-    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
-    balance_log::BalanceLog,
+    asset::{BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
+    dec,
     fee::{Fee, TimeBasedFee},
+    interest_rate_strategy::InterestRateStrategy,
     market::{
         LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
         YieldWeights,
     },
     number::Decimal,
+    snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -25,13 +27,13 @@ use templar_common::{
 use tokio::sync::OnceCell;
 
 pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Decimal::one(),
-    borrow_asset_price: Decimal::one(),
+    collateral_asset_price: Decimal::ONE,
+    borrow_asset_price: Decimal::ONE,
 };
 
 pub const COLLATERAL_HALF_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Decimal::half(),
-    borrow_asset_price: Decimal::one(),
+    collateral_asset_price: Decimal::ONE_HALF,
+    borrow_asset_price: Decimal::ONE,
 };
 
 pub enum TestAsset {
@@ -379,7 +381,7 @@ impl TestController {
         }
     }
 
-    pub async fn repay_native(&self, borrow_user: &Account, amount: u128) {
+    pub async fn repay_native(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         borrow_user
             .call(self.contract.id(), "repay_native")
             .args_json(json!({}))
@@ -387,10 +389,10 @@ impl TestController {
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
-    pub async fn repay(&self, borrow_user: &Account, amount: u128) {
+    pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         println!("{} repaying {amount} tokens...", borrow_user.id());
         match self.borrow_asset {
             TestAsset::Native => self.repay_native(borrow_user, amount).await,
@@ -401,9 +403,20 @@ impl TestController {
                     amount,
                     &serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
                 )
-                .await;
+                .await
             }
         }
+    }
+
+    pub async fn apply_interest(&self, borrow_user: &Account) -> ExecutionSuccess {
+        println!("{} applying interest...", borrow_user.id());
+        borrow_user
+            .call(self.contract.id(), "apply_interest")
+            .args_json(json!({}))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     pub async fn harvest_yield(&self, supply_user: &Account) -> ExecutionSuccess {
@@ -411,6 +424,7 @@ impl TestController {
         supply_user
             .call(self.contract.id(), "harvest_yield")
             .args_json(json!({}))
+            .max_gas()
             .transact()
             .await
             .unwrap()
@@ -598,34 +612,74 @@ impl TestController {
         }
     }
 
-    #[allow(unused)] // This is useful for debugging tests
-    pub async fn print_logs(&self) {
-        let total_borrow_asset_deposited_logs = self
-            .contract
-            .view("get_total_borrow_asset_deposited_log")
-            .args_json(json!({}))
+    pub async fn mint_asset(&self, ft_id: &AccountId, receiver: &Account, amount: u128) {
+        println!("{} minting {amount} of {}...", receiver.id(), ft_id);
+        receiver
+            .call(ft_id, "mint")
+            .args_json(json!({
+                "amount": U128(amount),
+            }))
+            .transact()
             .await
             .unwrap()
-            .json::<Vec<BalanceLog<BorrowAsset>>>()
             .unwrap();
+    }
 
-        println!("Total borrow asset deposited log:");
-        for (i, log) in total_borrow_asset_deposited_logs.iter().enumerate() {
-            println!("\t{i}: {}\t[{}]", log.amount.as_u128(), log.chain_time);
+    pub async fn mint_collateral_asset(&self, receiver: &Account, amount: u128) {
+        match &self.collateral_asset {
+            TestAsset::Nep141(contract) => self.mint_asset(contract.id(), receiver, amount).await,
+            TestAsset::Native => todo!(),
         }
+    }
 
-        let borrow_asset_yield_distribution_logs = self
-            .contract
-            .view("get_borrow_asset_yield_distribution_log")
+    pub async fn mint_borrow_asset(&self, receiver: &Account, amount: u128) {
+        match &self.borrow_asset {
+            TestAsset::Nep141(contract) => self.mint_asset(contract.id(), receiver, amount).await,
+            TestAsset::Native => todo!(),
+        }
+    }
+
+    pub async fn get_last_interest_rate(&self) -> Decimal {
+        self.contract
+            .view("get_last_interest_rate")
             .args_json(json!({}))
             .await
             .unwrap()
-            .json::<Vec<BalanceLog<BorrowAsset>>>()
+            .json()
+            .unwrap()
+    }
+
+    pub async fn get_last_yield_rate(&self) -> Decimal {
+        self.contract
+            .view("get_last_yield_rate")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+
+    #[allow(unused)] // This is useful for debugging tests
+    pub async fn print_snapshots(&self) {
+        let snapshots = self
+            .contract
+            .view("get_snapshots")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<Vec<Snapshot>>()
             .unwrap();
 
-        println!("Borrow asset yield distribution log:");
-        for (i, log) in borrow_asset_yield_distribution_logs.iter().enumerate() {
-            println!("\t{i}: {}\t[{}]", log.amount.as_u128(), log.chain_time);
+        println!("Market snapshots:");
+        for (i, snapshot) in snapshots.iter().enumerate() {
+            println!("\t{i}: {}", snapshot.chain_time);
+            println!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
+            println!("\t\tDeposited:\t{}", snapshot.deposited.as_u128());
+            println!("\t\tBorrowed:\t{}", snapshot.borrowed.as_u128());
+            println!(
+                "\t\tDistribution:\t{}",
+                snapshot.yield_distribution.as_u128()
+            );
         }
     }
 }
@@ -660,7 +714,13 @@ pub fn market_configuration(
         minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
         maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
         borrow_origination_fee: Fee::Proportional(Decimal::from_str("0.1").unwrap()),
-        borrow_annual_maintenance_fee: Fee::zero(),
+        borrow_interest_rate_strategy: InterestRateStrategy::piecewise(
+            Decimal::ZERO,
+            dec!("0.9"),
+            dec!("0.04"),
+            dec!("0.6"),
+        )
+        .unwrap(),
         maximum_borrow_duration_ms: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
@@ -719,13 +779,7 @@ pub async fn setup_market(
     contract
 }
 
-pub async fn deploy_ft(
-    account: Account,
-    name: &str,
-    symbol: &str,
-    owner_id: &AccountIdRef,
-    supply: u128,
-) -> Contract {
+pub async fn deploy_ft(account: Account, name: &str, symbol: &str) -> Contract {
     let wasm = WASM_MOCK_FT
         .get_or_init(|| get_contract("mock_ft", "mock/ft"))
         .await;
@@ -736,10 +790,7 @@ pub async fn deploy_ft(
         .args_json(json!({
             "name": name,
             "symbol": symbol,
-            "owner_id": owner_id,
-            "supply": U128(supply),
         }))
-        .deposit(NearToken::from_near(1))
         .transact()
         .await
         .unwrap()
@@ -752,7 +803,9 @@ pub struct SetupEverything {
     pub c: TestController,
     pub liquidator_user: Account,
     pub supply_user: Account,
+    pub supply_user_2: Account,
     pub borrow_user: Account,
+    pub borrow_user_2: Account,
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
 }
@@ -765,7 +818,9 @@ pub async fn setup_everything(
         worker,
         liquidator_user,
         supply_user,
+        supply_user_2,
         borrow_user,
+        borrow_user_2,
         protocol_yield_user,
         insurance_yield_user,
         collateral_asset,
@@ -782,20 +837,8 @@ pub async fn setup_everything(
 
     let (contract, borrow_asset, collateral_asset) = tokio::join!(
         setup_market(&worker, &config),
-        deploy_ft(
-            borrow_asset,
-            "Borrow Asset",
-            "BORROW",
-            supply_user.id(),
-            200000,
-        ),
-        deploy_ft(
-            collateral_asset,
-            "Collateral Asset",
-            "COLLATERAL",
-            borrow_user.id(),
-            100000,
-        ),
+        deploy_ft(borrow_asset, "Borrow Asset", "BORROW"),
+        deploy_ft(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
     let collateral_asset = config
@@ -819,11 +862,26 @@ pub async fn setup_everything(
         c.storage_deposits(c.contract.as_account()),
         async {
             c.storage_deposits(&liquidator_user).await;
-            c.borrow_asset_transfer(&supply_user, liquidator_user.id(), 100000)
-                .await;
+            c.mint_borrow_asset(&liquidator_user, 100_000_000).await;
         },
-        c.storage_deposits(&borrow_user),
-        c.storage_deposits(&supply_user),
+        async {
+            c.storage_deposits(&borrow_user).await;
+            c.mint_collateral_asset(&borrow_user, 100_000_000).await;
+            c.mint_borrow_asset(&borrow_user, 100_000_000).await;
+        },
+        async {
+            c.storage_deposits(&borrow_user_2).await;
+            c.mint_collateral_asset(&borrow_user_2, 100_000_000).await;
+            c.mint_borrow_asset(&borrow_user_2, 100_000_000).await;
+        },
+        async {
+            c.storage_deposits(&supply_user).await;
+            c.mint_borrow_asset(&supply_user, 100_000_000).await;
+        },
+        async {
+            c.storage_deposits(&supply_user_2).await;
+            c.mint_borrow_asset(&supply_user_2, 100_000_000).await;
+        },
         c.storage_deposits(&protocol_yield_user),
         c.storage_deposits(&insurance_yield_user),
     );
@@ -832,7 +890,9 @@ pub async fn setup_everything(
         c,
         liquidator_user,
         supply_user,
+        supply_user_2,
         borrow_user,
+        borrow_user_2,
         protocol_yield_user,
         insurance_yield_user,
     }

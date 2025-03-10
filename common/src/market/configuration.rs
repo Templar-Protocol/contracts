@@ -6,6 +6,7 @@ use crate::{
     },
     borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
+    interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
 };
 
@@ -28,7 +29,7 @@ pub struct MarketConfiguration {
     /// the borrow asset and is paid by the borrowing account during repayment
     /// (or liquidation).
     pub borrow_origination_fee: Fee<BorrowAsset>,
-    pub borrow_annual_maintenance_fee: Fee<BorrowAsset>,
+    pub borrow_interest_rate_strategy: InterestRateStrategy,
     pub maximum_borrow_duration_ms: Option<U64>,
     pub minimum_borrow_amount: BorrowAssetAmount,
     pub maximum_borrow_amount: BorrowAssetAmount,
@@ -167,8 +168,8 @@ impl MarketConfiguration {
     ) -> BorrowAssetAmount {
         // minimum_acceptable_amount = collateral_amount * (1 - maximum_liquidator_spread) * collateral_price / borrow_price
         BorrowAssetAmount::new(
-            ((1u32 - &self.maximum_liquidator_spread) * &oracle_price_proof.collateral_asset_price
-                / &oracle_price_proof.borrow_asset_price
+            ((1u32 - self.maximum_liquidator_spread) * oracle_price_proof.collateral_asset_price
+                / oracle_price_proof.borrow_asset_price
                 * amount.as_u128())
             .to_u128_ceil()
             .unwrap(),

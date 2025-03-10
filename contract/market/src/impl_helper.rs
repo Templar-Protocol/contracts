@@ -3,11 +3,10 @@ use near_sdk::{
     PromiseOrValue, PromiseResult,
 };
 use templar_common::{
-    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    balance_log::BalanceLog,
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::BorrowPosition,
-    chain_time::ChainTime,
     market::OraclePriceProof,
+    snapshot::Snapshot,
     supply::SupplyPosition,
 };
 
@@ -19,7 +18,7 @@ impl Contract {
         let mut supply_position = self
             .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| SupplyPosition::new(ChainTime::now()));
+            .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
 
         self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
 
@@ -30,7 +29,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
+            .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
 
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
@@ -51,18 +50,18 @@ impl Contract {
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
         if let Some(mut borrow_position) = self.borrow_positions.get(account_id) {
-            // TODO: This function *errors* on overpayment. Instead, add a
-            // check before and only repay the maximum, then return the excess.
-            //
+            // TODO:
             // Due to the slightly imprecise calculation of yield and
             // other fees, the returning of the excess should be
             // anything >1%, for example, over the total amount
             // borrowed + fees/interest.
             // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923876327
-            self.record_borrow_position_borrow_asset_repay(&mut borrow_position, amount);
+            let refund =
+                self.record_borrow_position_borrow_asset_repay(&mut borrow_position, amount);
 
             self.borrow_positions.insert(account_id, &borrow_position);
-            BorrowAssetAmount::zero()
+
+            refund
         } else {
             // No borrow exists: just return the whole amount.
             amount
@@ -78,7 +77,7 @@ impl Contract {
         let mut borrow_position = self
             .borrow_positions
             .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
+            .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
 
         require!(
             self.configuration
@@ -142,28 +141,10 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_total_borrow_asset_deposited_log(
-        &self,
-        offset: Option<u32>,
-        count: Option<u32>,
-    ) -> Vec<BalanceLog<BorrowAsset>> {
+    pub fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.total_borrow_asset_deposited_log
-            .iter()
-            .skip(offset)
-            .take(count)
-            .collect::<Vec<_>>()
-    }
-
-    pub fn get_borrow_asset_yield_distribution_log(
-        &self,
-        offset: Option<u32>,
-        count: Option<u32>,
-    ) -> Vec<BalanceLog<BorrowAsset>> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.borrow_asset_yield_distribution_log
+        self.snapshots
             .iter()
             .skip(offset)
             .take(count)

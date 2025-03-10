@@ -1,11 +1,9 @@
-use near_sdk::{
-    env, json_types::U128, near, require, serde_json, AccountId, Promise, PromiseOrValue,
-};
+use near_sdk::{env, near, require, serde_json, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    chain_time::ChainTime,
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface, OraclePriceProof},
+    number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -26,6 +24,7 @@ impl MarketExternalInterface for Contract {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(borrow_asset_balance),
             deposited: self.borrow_asset_deposited,
+            borrowed: self.borrow_asset_borrowed,
         }
     }
 
@@ -50,7 +49,10 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
-        self.borrow_positions.get(&account_id)
+        let mut borrow_position = self.borrow_positions.get(&account_id)?;
+        borrow_position.pending_fee_estimate =
+            self.calculate_borrow_position_instantaneous_pending_interest(&borrow_position);
+        Some(borrow_position)
     }
 
     fn get_borrow_status(
@@ -58,7 +60,7 @@ impl MarketExternalInterface for Contract {
         account_id: AccountId,
         oracle_price_proof: OraclePriceProof,
     ) -> Option<BorrowStatus> {
-        let borrow_position = self.borrow_positions.get(&account_id)?;
+        let borrow_position = self.get_borrow_position(account_id)?;
 
         Some(self.configuration.borrow_status(
             &borrow_position,
@@ -102,11 +104,9 @@ impl MarketExternalInterface for Contract {
 
     fn withdraw_collateral(
         &mut self,
-        amount: U128,
+        amount: CollateralAssetAmount,
         oracle_price_proof: Option<OraclePriceProof>,
     ) -> Promise {
-        let amount = CollateralAssetAmount::new(amount.0);
-
         let account_id = env::predecessor_account_id();
 
         let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
@@ -133,14 +133,28 @@ impl MarketExternalInterface for Contract {
             .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
     }
 
+    fn apply_interest(&mut self) {
+        let predecessor = env::predecessor_account_id();
+        if let Some(mut borrow_position) = self.borrow_positions.get(&predecessor) {
+            self.accumulate_borrow_position_interest(&mut borrow_position);
+            self.borrow_positions.insert(&predecessor, &borrow_position);
+        }
+    }
+
+    fn get_last_interest_rate(&self) -> Decimal {
+        self.get_interest_rate_for_snapshot(self.get_last_snapshot())
+    }
+
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
-        self.supply_positions.get(&account_id)
+        let mut supply_position = self.supply_positions.get(&account_id)?;
+        supply_position.pending_yield_estimate =
+            self.calculate_supply_position_instantaneous_pending_yield(&supply_position);
+        Some(supply_position)
     }
 
     /// If the predecessor has already entered the queue, calling this function
     /// will reset the position to the back of the queue.
-    fn create_supply_withdrawal_request(&mut self, amount: U128) {
-        let amount = BorrowAssetAmount::from(amount.0);
+    fn create_supply_withdrawal_request(&mut self, amount: BorrowAssetAmount) {
         require!(
             !amount.is_zero(),
             "Amount to withdraw must be greater than zero",
@@ -200,29 +214,40 @@ impl MarketExternalInterface for Contract {
     fn harvest_yield(&mut self) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.supply_positions.get(&predecessor) {
-            self.accumulate_yield_on_supply_position(&mut supply_position, ChainTime::now());
+            self.accumulate_supply_position_yield(&mut supply_position);
             self.supply_positions.insert(&predecessor, &supply_position);
         }
+    }
+
+    fn get_last_yield_rate(&self) -> Decimal {
+        let last_snapshot = self.get_last_snapshot();
+        let last_interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
+        let borrowed = Decimal::from(last_snapshot.borrowed.as_u128());
+        let deposited = Decimal::from(last_snapshot.deposited.as_u128());
+        if deposited.is_zero() {
+            return Decimal::ZERO;
+        }
+        let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
+        let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
+
+        last_interest_rate * borrowed * supply_weight / deposited / total_weight
     }
 
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {
         self.static_yield.get(&account_id)
     }
 
-    fn withdraw_supply_yield(&mut self, amount: Option<U128>) -> Promise {
+    fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
         let predecessor = env::predecessor_account_id();
         let Some(mut supply_position) = self.supply_positions.get(&predecessor) else {
             env::panic_str("Supply position does not exist");
         };
 
-        let amount = amount.map_or_else(
-            || supply_position.borrow_asset_yield.amount.as_u128(),
-            |amount| amount.0,
-        );
+        let amount = amount.unwrap_or_else(|| supply_position.borrow_asset_yield.get_total());
 
         let withdrawn = supply_position
             .borrow_asset_yield
-            .withdraw(amount)
+            .remove(amount)
             .unwrap_or_else(|| {
                 env::panic_str("Attempt to withdraw more yield than has accumulated")
             });

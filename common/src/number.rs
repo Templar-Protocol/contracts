@@ -21,14 +21,14 @@ macro_rules! dec {
     };
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Decimal {
     repr: U512,
 }
 
 impl Default for Decimal {
     fn default() -> Self {
-        Self::zero()
+        Self::ZERO
     }
 }
 
@@ -94,47 +94,116 @@ impl<'de> Deserialize<'de> for Decimal {
 }
 
 impl Decimal {
-    const REPR_ONE: U512 = U512([0, 0, 1, 0, 0, 0, 0, 0]);
     /// When converting to & from strings, we don't guarantee accurate
     /// representation of bits lower than this.
     const REPR_EPSILON: U512 = U512([0b1000, 0, 0, 0, 0, 0, 0, 0]);
 
-    pub const fn zero() -> Self {
-        Self { repr: U512::zero() }
-    }
+    pub const ZERO: Self = Self { repr: U512::zero() };
+    pub const ONE_HALF: Self = Self {
+        repr: U512([0, 0x8000_0000_0000_0000, 0, 0, 0, 0, 0, 0]),
+    };
+    pub const LN2: Self = Self {
+        repr: U512([
+            0xC9E3_B398_03F2_F6B0,
+            0xB172_17F7_D1CF_79AB,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]),
+    };
+    pub const ONE: Self = Self {
+        repr: U512([0, 0, 1, 0, 0, 0, 0, 0]),
+    };
+    pub const TWO: Self = Self {
+        repr: U512([0, 0, 2, 0, 0, 0, 0, 0]),
+    };
+    pub const E: Self = Self {
+        repr: U512([
+            0xBF71_5880_9CF4_F3C9,
+            0xB7E1_5162_8AED_2A6A,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]),
+    };
 
-    pub const fn half() -> Self {
-        Self {
-            repr: U512([0, 0x8000_0000_0000_0000, 0, 0, 0, 0, 0, 0]),
-        }
-    }
-
-    pub const fn one() -> Self {
-        Self {
-            repr: Self::REPR_ONE,
-        }
-    }
-
-    pub const fn two() -> Self {
-        Self {
-            repr: U512([0, 0, 2, 0, 0, 0, 0, 0]),
-        }
-    }
-
-    pub fn as_repr(&self) -> &[u64] {
-        &self.repr.0
+    pub fn as_repr(self) -> [u64; 8] {
+        self.repr.0
     }
 
     pub fn is_zero(&self) -> bool {
         self.repr.is_zero()
     }
 
-    pub fn near_equal(&self, other: &Decimal) -> bool {
+    pub fn near_equal(self, other: Self) -> bool {
         self.abs_diff(other).repr <= Self::REPR_EPSILON
     }
 
     #[must_use]
-    pub fn abs_diff(&self, other: &Decimal) -> Decimal {
+    pub fn pow(self, mut exponent: u32) -> Self {
+        if exponent == 0 {
+            return Self::ONE;
+        }
+
+        let mut y = Self::ONE;
+        let mut x = self;
+
+        while exponent > 1 {
+            if exponent % 2 == 1 {
+                y *= x;
+            }
+            x *= x;
+            exponent >>= 1;
+        }
+
+        x * y
+    }
+
+    pub fn pow2_int(exponent: u32) -> Option<Self> {
+        #[allow(clippy::cast_possible_truncation)]
+        if exponent > 512 - FRACTIONAL_BITS as u32 {
+            None
+        } else {
+            Some(Self {
+                repr: Self::ONE.repr << exponent,
+            })
+        }
+    }
+
+    fn pow2_frac(self) -> Self {
+        const MAX_ITERATIONS: u32 = 35; // n=35 is smallest n where n! >= 2^128
+        debug_assert!(self <= Self::ONE);
+
+        let mut sum = Self::ONE;
+        let mut term = Self::ONE;
+        let numerator = self * Self::LN2;
+
+        for n in 1..=MAX_ITERATIONS {
+            term *= numerator / n;
+            if term == Self::ZERO {
+                break;
+            }
+            sum += &term;
+        }
+
+        sum
+    }
+
+    pub fn pow2(self) -> Option<Self> {
+        let whole = u32::try_from(self.to_u128_floor()?).ok()?;
+        let frac = self - whole;
+
+        Some(Self::pow2_int(whole)? * Self::pow2_frac(frac))
+    }
+
+    #[must_use]
+    pub fn abs_diff(self, other: Self) -> Self {
         if self > other {
             self - other
         } else {
@@ -142,7 +211,7 @@ impl Decimal {
         }
     }
 
-    pub fn to_u128_floor(&self) -> Option<u128> {
+    pub fn to_u128_floor(self) -> Option<u128> {
         let truncated = self.repr >> FRACTIONAL_BITS;
         if truncated.bits() <= 128 {
             Some(truncated.as_u128())
@@ -151,7 +220,7 @@ impl Decimal {
         }
     }
 
-    pub fn to_u128_ceil(&self) -> Option<u128> {
+    pub fn to_u128_ceil(self) -> Option<u128> {
         let truncated = self.repr >> FRACTIONAL_BITS;
         if truncated.bits() <= 128 {
             if self.fractional_part().is_zero() {
@@ -169,7 +238,7 @@ impl Decimal {
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap
     )]
-    pub fn to_f64_lossy(&self) -> f64 {
+    pub fn to_f64_lossy(self) -> f64 {
         let frac = self.repr.low_u128() as f64 / 2f64.powi(FRACTIONAL_BITS as i32);
         let low = (self.repr >> FRACTIONAL_BITS).low_u128() as f64;
         let high = (self.repr >> (FRACTIONAL_BITS * 2)).low_u128() as f64 * 2f64.powi(128);
@@ -199,7 +268,7 @@ impl Decimal {
     fn fractional_part_to_dec_string(&self, precision: usize) -> String {
         let mut s = Vec::with_capacity(precision);
         let mut f = self.fractional_part();
-        let d = Self::REPR_ONE;
+        let d = Self::ONE.repr;
 
         #[allow(clippy::cast_possible_truncation)]
         for _ in 0..precision {
@@ -565,19 +634,31 @@ mod tests {
         ));
     }
 
+    #[rstest]
+    #[case(12, 2)]
+    #[case(2, 32)]
+    #[case(1, 0)]
+    #[case(0, 0)]
+    #[case(0, 1)]
+    #[case(1, 1)]
+    #[test]
+    fn power(#[case] x: u128, #[case] n: u32) {
+        assert_eq!(Decimal::from(x).pow(n), Decimal::from(x.pow(n)));
+    }
+
     #[test]
     fn constants_are_accurate() {
-        assert_eq!(Decimal::zero().to_u128_floor().unwrap(), 0);
-        assert!((Decimal::half().to_f64_lossy() - 0.5_f64).abs() < 1e-200);
-        assert_eq!(Decimal::one().to_u128_floor().unwrap(), 1);
-        assert_eq!(Decimal::two().to_u128_floor().unwrap(), 2);
+        assert_eq!(Decimal::ZERO.to_u128_floor().unwrap(), 0);
+        assert!((Decimal::ONE_HALF.to_f64_lossy() - 0.5_f64).abs() < 1e-200);
+        assert_eq!(Decimal::ONE.to_u128_floor().unwrap(), 1);
+        assert_eq!(Decimal::TWO.to_u128_floor().unwrap(), 2);
     }
 
     #[rstest]
-    #[case(Decimal::one())]
-    #[case(Decimal::two())]
-    #[case(Decimal::zero())]
-    #[case(Decimal::half())]
+    #[case(Decimal::ONE)]
+    #[case(Decimal::TWO)]
+    #[case(Decimal::ZERO)]
+    #[case(Decimal::ONE_HALF)]
     #[case(Decimal::from(u128::MAX))]
     #[case(Decimal::from(u64::MAX) / Decimal::from(u128::MAX))]
     #[test]
@@ -585,7 +666,7 @@ mod tests {
         let serialized = serde_json::to_string(&value).unwrap();
         let deserialized: Decimal = serde_json::from_str(&serialized).unwrap();
 
-        assert!(value.near_equal(&deserialized));
+        assert!(value.near_equal(deserialized));
     }
 
     #[test]
@@ -608,7 +689,7 @@ mod tests {
             }
             let parsed = Decimal::from_str(&s).unwrap();
 
-            let e = actual.abs_diff(&parsed).repr;
+            let e = actual.abs_diff(parsed).repr;
 
             if e > max_error {
                 max_error = e;

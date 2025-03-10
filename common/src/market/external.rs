@@ -1,8 +1,9 @@
-use near_sdk::{json_types::U128, AccountId, Promise, PromiseOrValue};
+use near_sdk::{AccountId, Promise, PromiseOrValue};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
+    number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -43,6 +44,9 @@ pub trait MarketExternalInterface {
     // ft_on_receive :: where msg = Repay
     fn repay_native(&mut self) -> PromiseOrValue<()>;
 
+    /// This function may report fees slightly inaccurately. This is because
+    /// the function has to estimate what fees will be applied between the last
+    /// market snapshot and the (present) time when the function was called.
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition>;
     /// This is just a read-only function, so we don't care about validating
     /// the provided price data.
@@ -59,9 +63,16 @@ pub trait MarketExternalInterface {
     ) -> Promise;
     fn withdraw_collateral(
         &mut self,
-        amount: U128,
+        amount: CollateralAssetAmount,
         oracle_price_proof: Option<OraclePriceProof>,
     ) -> Promise;
+
+    /// Applies interest to the predecessor's borrow record.
+    /// Not likely to be used in real life, since there it does not affect the
+    /// final interest calculation.
+    fn apply_interest(&mut self);
+
+    fn get_last_interest_rate(&self) -> Decimal;
 
     // ================
     // SUPPLY FUNCTIONS
@@ -74,7 +85,7 @@ pub trait MarketExternalInterface {
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
-    fn create_supply_withdrawal_request(&mut self, amount: U128);
+    fn create_supply_withdrawal_request(&mut self, amount: BorrowAssetAmount);
     fn cancel_supply_withdrawal_request(&mut self);
     /// Auto-harvests yield.
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()>;
@@ -85,6 +96,8 @@ pub trait MarketExternalInterface {
     fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
 
     fn harvest_yield(&mut self);
+
+    fn get_last_yield_rate(&self) -> Decimal;
 
     // =====================
     // LIQUIDATION FUNCTIONS
@@ -101,7 +114,7 @@ pub trait MarketExternalInterface {
     // YIELD FUNCTIONS
     // =================
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord>;
-    fn withdraw_supply_yield(&mut self, amount: Option<U128>) -> Promise;
+    fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise;
     fn withdraw_static_yield(
         &mut self,
         borrow_asset_amount: Option<BorrowAssetAmount>,

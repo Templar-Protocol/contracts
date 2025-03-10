@@ -1,7 +1,10 @@
 use rstest::rstest;
 use tokio::join;
 
-use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, dec};
+use templar_common::{
+    asset::FungibleAsset, borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy,
+    number::Decimal,
+};
 use test_utils::*;
 
 #[allow(dead_code)]
@@ -27,14 +30,18 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         protocol_yield_user,
         insurance_yield_user,
         ..
-    } = setup_everything(|c| match native_asset_case {
-        NativeAssetCase::Neither => {}
-        NativeAssetCase::BorrowAsset => {
-            c.borrow_asset = FungibleAsset::native();
+    } = setup_everything(|c| {
+        match native_asset_case {
+            NativeAssetCase::Neither => {}
+            NativeAssetCase::BorrowAsset => {
+                c.borrow_asset = FungibleAsset::native();
+            }
+            NativeAssetCase::CollateralAsset => {
+                c.collateral_asset = FungibleAsset::native();
+            }
         }
-        NativeAssetCase::CollateralAsset => {
-            c.collateral_asset = FungibleAsset::native();
-        }
+        c.borrow_interest_rate_strategy =
+            InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
     })
     .await;
 
@@ -67,17 +74,9 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         }
     }
 
-    eprintln!(
-        "{:?}",
-        configuration
-            .minimum_collateral_ratio_per_borrow
-            .abs_diff(&dec!("1.2"))
-            .as_repr(),
-    );
-
     assert!(configuration
         .minimum_collateral_ratio_per_borrow
-        .near_equal(&dec!("1.2")));
+        .near_equal(dec!("1.2")));
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;
@@ -130,13 +129,18 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     );
 
     // Step 3: Withdraw some of the borrow asset
+    let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
     c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
 
-    let balance = c.borrow_asset_balance_of(borrow_user.id()).await;
+    let balance_after = c.borrow_asset_balance_of(borrow_user.id()).await;
 
-    assert_eq!(balance, 1000, "Borrow user should receive assets");
+    assert_eq!(
+        balance_before + 1000,
+        balance_after,
+        "Borrow user should receive assets"
+    );
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
@@ -147,10 +151,6 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     );
 
     // Step 4: Repay borrow
-
-    // Need extra to pay for origination fee.
-    c.borrow_asset_transfer(&supply_user, borrow_user.id(), 100)
-        .await;
 
     c.repay(&borrow_user, 1100).await;
 
@@ -170,7 +170,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
             {
                 c.harvest_yield(&supply_user).await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert_eq!(supply_position.borrow_asset_yield.amount.as_u128(), 80);
+                assert_eq!(supply_position.borrow_asset_yield.get_total().as_u128(), 80);
 
                 let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
                 // Withdraw all
@@ -179,12 +179,12 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
 
                 assert_eq!(
                     balance_after - balance_before,
-                    supply_position.borrow_asset_yield.amount.as_u128(),
+                    supply_position.borrow_asset_yield.get_total().as_u128(),
                 );
 
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert!(
-                    supply_position.borrow_asset_yield.amount.is_zero(),
+                    supply_position.borrow_asset_yield.get_total().is_zero(),
                     "Supply position should not have yield after withdrawing all",
                 );
             }
