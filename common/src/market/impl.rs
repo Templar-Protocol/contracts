@@ -539,11 +539,20 @@ impl Market {
         &self,
         supply_position: &SupplyPosition,
     ) -> BorrowAssetAmount {
-        let last_snapshot = self.get_last_snapshot();
-        let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
-        let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
         let deposit = Decimal::from(supply_position.get_borrow_asset_deposit().as_u128());
+        if deposit.is_zero() {
+            return BorrowAssetAmount::zero();
+        }
+
+        let last_snapshot = self.get_last_snapshot();
         let total_deposited = Decimal::from(last_snapshot.deposited.as_u128());
+        if total_deposited.is_zero() {
+            // divzero safety
+            return BorrowAssetAmount::zero();
+        }
+        let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
+        // This is guaranteed to be nonzero, so no divzero issue.
+        let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
         let total_yield_distribution = Decimal::from(last_snapshot.yield_distribution.as_u128());
         let estimate_current_snapshot =
             total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
