@@ -424,6 +424,7 @@ impl TestController {
         supply_user
             .call(self.contract.id(), "harvest_yield")
             .args_json(json!({}))
+            .max_gas()
             .transact()
             .await
             .unwrap()

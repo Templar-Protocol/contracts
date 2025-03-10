@@ -10,7 +10,7 @@ async fn liquidation_after_expiration() {
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_duration_ms = Some(U64(100));
+        c.maximum_borrow_duration_ms = Some(U64(1000));
     })
     .await;
 

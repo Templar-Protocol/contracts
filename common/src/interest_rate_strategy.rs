@@ -120,7 +120,10 @@ impl Piecewise {
 
 impl UsageCurve for Piecewise {
     fn at(&self, utilization_ratio: Decimal) -> Decimal {
-        require!(utilization_ratio <= Decimal::ONE);
+        require!(
+            utilization_ratio <= Decimal::ONE,
+            "Invariant violation: Utilization ratio cannot be over 100%.",
+        );
 
         if utilization_ratio < self.params.optimal {
             self.params.rate_1 * utilization_ratio + self.params.base
@@ -197,7 +200,10 @@ impl Exponential2 {
 impl UsageCurve for Exponential2 {
     #[allow(clippy::unwrap_used)]
     fn at(&self, utilization_ratio: Decimal) -> Decimal {
-        require!(utilization_ratio <= Decimal::ONE);
+        require!(
+            utilization_ratio <= Decimal::ONE,
+            "Invariant violation: Utilization ratio cannot be over 100%.",
+        );
 
         self.params.base
             + self.i_factor
