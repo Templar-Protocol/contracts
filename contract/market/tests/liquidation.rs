@@ -1,6 +1,6 @@
 use rstest::rstest;
 
-use templar_common::{fee::Fee, market::OraclePriceProof, number::Decimal};
+use templar_common::{fee::Fee, number::Decimal};
 use test_utils::*;
 
 #[tokio::test]
@@ -15,7 +15,7 @@ async fn successful_liquidation_totally_underwater() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
-    c.borrow(&borrow_user, 300, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 300).await;
 
     // value of collateral will go 500->250
     // collateralization: 250/300 ~= 83%
@@ -24,11 +24,11 @@ async fn successful_liquidation_totally_underwater() {
     let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
 
+    c.set_collateral_asset_price(0.5).await;
     c.liquidate(
         &liquidator_user,
         borrow_user.id(),
         300, // this is fmv (i.e. NOT what a real liquidator would do to purchase bad debt)
-        COLLATERAL_HALF_PRICE,
     )
     .await;
 
@@ -72,26 +72,23 @@ async fn successful_liquidation_good_debt_under_mcr(
     } = setup_everything(|config| {
         config.borrow_origination_fee = Fee::zero();
         config.minimum_collateral_ratio_per_borrow = Decimal::from(mcr) / 100u32;
+        config.minimum_initial_collateral_ratio = Decimal::from(mcr) / 100u32;
     })
     .await;
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, collateral_amount).await;
-    c.borrow(&borrow_user, borrow_amount, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, borrow_amount).await;
 
     let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
 
-    c.liquidate(
-        &liquidator_user,
-        borrow_user.id(),
-        liquidation_amount,
-        OraclePriceProof {
-            collateral_asset_price: Decimal::from(collateral_asset_price_pct) / 100u32,
-            borrow_asset_price: Decimal::ONE,
-        },
+    c.set_collateral_asset_price(
+        (Decimal::from(collateral_asset_price_pct) / 100u32).to_f64_lossy(),
     )
     .await;
+    c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
+        .await;
 
     let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
@@ -161,7 +158,7 @@ async fn successful_liquidation_with_spread(
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, 2000).await; // 2:1 collateralization
-    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 1000).await;
 
     let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
@@ -174,16 +171,10 @@ async fn successful_liquidation_with_spread(
         .to_u128_ceil()
         .unwrap();
 
-    c.liquidate(
-        &liquidator_user,
-        borrow_user.id(),
-        liquidation_amount,
-        OraclePriceProof {
-            collateral_asset_price,
-            borrow_asset_price: Decimal::ONE,
-        },
-    )
-    .await;
+    c.set_collateral_asset_price(collateral_asset_price.to_f64_lossy())
+        .await;
+    c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
+        .await;
 
     let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
@@ -212,18 +203,13 @@ async fn fail_liquidation_too_little_attached() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
-    c.borrow(&borrow_user, 300, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 300).await;
 
     let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
 
-    c.liquidate(
-        &liquidator_user,
-        borrow_user.id(),
-        150,
-        COLLATERAL_HALF_PRICE,
-    )
-    .await;
+    c.set_collateral_asset_price(0.5).await;
+    c.liquidate(&liquidator_user, borrow_user.id(), 150).await;
 
     let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
@@ -255,13 +241,12 @@ async fn fail_liquidation_healthy_borrow() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
-    c.borrow(&borrow_user, 300, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 300).await;
 
     let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
 
-    c.liquidate(&liquidator_user, borrow_user.id(), 300, EQUAL_PRICE)
-        .await;
+    c.liquidate(&liquidator_user, borrow_user.id(), 300).await;
 
     let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;

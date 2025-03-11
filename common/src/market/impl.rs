@@ -1,4 +1,5 @@
 use near_sdk::{
+    borsh::BorshDeserialize,
     collections::{LookupMap, UnorderedMap},
     env, near,
     store::Vector,
@@ -18,7 +19,7 @@ use crate::{
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
-use super::OraclePriceProof;
+use super::PricePair;
 
 pub const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425
 
@@ -604,7 +605,7 @@ impl Market {
     pub fn can_borrow_position_be_liquidated(
         &self,
         account_id: &AccountId,
-        oracle_price_proof: &OraclePriceProof,
+        oracle_price_proof: &PricePair,
     ) -> bool {
         let Some(borrow_position) = self.borrow_positions.get(account_id) else {
             return false;

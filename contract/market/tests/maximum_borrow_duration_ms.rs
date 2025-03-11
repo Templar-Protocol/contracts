@@ -16,10 +16,12 @@ async fn liquidation_after_expiration() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, 100, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 100).await;
+
+    let prices = c.get_prices().await;
 
     let status = c
-        .get_borrow_status(borrow_user.id(), EQUAL_PRICE)
+        .get_borrow_status(borrow_user.id(), prices.clone())
         .await
         .unwrap();
 
@@ -27,10 +29,7 @@ async fn liquidation_after_expiration() {
 
     c.worker.fast_forward(10).await.unwrap();
 
-    let status = c
-        .get_borrow_status(borrow_user.id(), EQUAL_PRICE)
-        .await
-        .unwrap();
+    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
 
     assert_eq!(
         status,

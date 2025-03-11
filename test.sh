@@ -3,6 +3,9 @@ set -e
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+cd "$ROOT_DIR/mock/oracle"
+cargo near build non-reproducible-wasm
+
 cd "$ROOT_DIR/mock/ft"
 cargo near build non-reproducible-wasm
 

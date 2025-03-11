@@ -36,6 +36,3 @@ tokio.workspace = true
 
 [lints]
 workspace = true
-
-[[example]]
-name = "generate_testnet_configuration"

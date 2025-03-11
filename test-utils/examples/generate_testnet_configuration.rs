@@ -9,8 +9,9 @@ use templar_common::{
     dec,
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
-    market::{MarketConfiguration, YieldWeights},
+    market::{BalanceOracleConfiguration, MarketConfiguration, YieldWeights},
     number::Decimal,
+    oracle::pyth::PriceIdentifier,
 };
 
 pub fn main() {
@@ -19,7 +20,18 @@ pub fn main() {
         serde_json::to_string(&MarketConfiguration {
             borrow_asset: FungibleAsset::nep141("usdt.fakes.testnet".parse().unwrap()),
             collateral_asset: FungibleAsset::nep141("wrap.testnet".parse().unwrap()),
-            balance_oracle_account_id: "balance_oracle".parse().unwrap(),
+            balance_oracle: BalanceOracleConfiguration {
+                account_id: "pyth-oracle.testnet".parse().unwrap(),
+                borrow_asset_price_id: PriceIdentifier(hex_literal::hex!(
+                    "27e867f0f4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
+                )),
+                borrow_asset_decimals: 6,
+                collateral_asset_price_id: PriceIdentifier(hex_literal::hex!(
+                    "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
+                )),
+                collateral_asset_decimals: 24,
+                price_maximum_age_s: 60,
+            },
             minimum_initial_collateral_ratio: Decimal::from_str("1.25").unwrap(),
             minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
             maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
