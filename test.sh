@@ -14,4 +14,4 @@ cargo near build non-reproducible-wasm
 
 cd "$ROOT_DIR"
 export TEST_CONTRACTS_PREBUILT=1
-cargo nextest run --retries 1 "$@"
+cargo nextest run "$@"

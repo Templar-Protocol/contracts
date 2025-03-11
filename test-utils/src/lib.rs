@@ -728,7 +728,7 @@ pub async fn create_prefixed_account<T: DevNetwork + TopLevelAccountCreator + 's
 
 macro_rules! accounts {
     ($w: ident, $($n:ident),*) => {
-        let ($($n,)*) = tokio::join!( $(create_prefixed_account(stringify!($n), &$w)),* );
+        $(let $n = create_prefixed_account(stringify!($n), &$w).await;)*
     };
 }
 
