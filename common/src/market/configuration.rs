@@ -161,12 +161,16 @@ impl MarketConfiguration {
         )
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn minimum_acceptable_liquidation_amount(
         &self,
         amount: CollateralAssetAmount,
         price_pair: &PricePair,
     ) -> BorrowAssetAmount {
         BorrowAssetAmount::new(
+            // Safe because the factor is guaranteed to be <=1, so the result
+            // must still fit in u128.
+            #[allow(clippy::unwrap_used)]
             ((1u32 - self.maximum_liquidator_spread)
                 * price_pair.convert_pessimistic(amount).as_u128())
             .to_u128_ceil()
@@ -186,7 +190,7 @@ fn is_within_mcr(mcr: &Decimal, borrow_position: &BorrowPosition, price_pair: &P
 
 #[cfg(test)]
 mod tests {
-    use crate::dec;
+    use crate::{dec, oracle::pyth};
 
     use super::*;
 
@@ -195,6 +199,26 @@ mod tests {
         let mut b = BorrowPosition::new(0);
         b.increase_collateral_asset_deposit(121u128.into());
         b.increase_borrow_asset_principal(100u128.into(), 0);
-        // assert!(is_within_mcr(&dec!("1.2"), &b, PricePair::))
+        assert!(is_within_mcr(
+            &dec!("1.2"),
+            &b,
+            &PricePair::new(
+                18,
+                &pyth::Price {
+                    price: near_sdk::json_types::I64(10000),
+                    conf: U64(1),
+                    expo: -4,
+                    publish_time: 0,
+                },
+                18,
+                &pyth::Price {
+                    price: near_sdk::json_types::I64(10000),
+                    conf: U64(1),
+                    expo: -4,
+                    publish_time: 0,
+                },
+            )
+            .unwrap()
+        ));
     }
 }

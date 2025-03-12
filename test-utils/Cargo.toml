@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-hex-literal = "1"
+hex-literal = "0.4"
 near-sdk.workspace = true
 near-workspaces.workspace = true
 templar-common.workspace = true

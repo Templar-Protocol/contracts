@@ -66,8 +66,8 @@ impl MarketExternalInterface for Contract {
         let price_pair = self
             .configuration
             .balance_oracle
-            .consume_oracle_response(oracle_response)
-            .unwrap();
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         Some(self.configuration.borrow_status(
             &borrow_position,

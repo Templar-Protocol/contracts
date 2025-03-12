@@ -26,21 +26,24 @@ impl BalanceOracleConfiguration {
         )
     }
 
-    pub fn consume_oracle_response(
+    /// # Errors
+    ///
+    /// If the response from the oracle does not contain valid prices for the
+    /// configured asset pair.
+    pub fn create_price_pair(
         &self,
-        oracle_response: OracleResponse,
+        oracle_response: &OracleResponse,
     ) -> Result<PricePair, error::RetrievalError> {
         Ok(PricePair::new(
-            self.clone(),
+            self.collateral_asset_decimals,
             oracle_response
                 .get(&self.collateral_asset_price_id)
-                .cloned()
-                .flatten()
+                .and_then(|o| o.as_ref())
                 .ok_or(error::RetrievalError::MissingPrice)?,
+            self.borrow_asset_decimals,
             oracle_response
                 .get(&self.borrow_asset_price_id)
-                .cloned()
-                .flatten()
+                .and_then(|o| o.as_ref())
                 .ok_or(error::RetrievalError::MissingPrice)?,
         )?)
     }
@@ -75,44 +78,62 @@ mod error {
         ConfidenceIntervalTooLarge,
     }
 }
-
 impl TryFrom<pyth::Price> for Price {
     type Error = error::PriceDataError;
 
-    fn try_from(price: pyth::Price) -> Result<Self, Self::Error> {
-        if price.price.0 < 0 {
+    fn try_from(value: pyth::Price) -> Result<Self, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+impl TryFrom<&pyth::Price> for Price {
+    type Error = error::PriceDataError;
+
+    fn try_from(pyth_price: &pyth::Price) -> Result<Self, Self::Error> {
+        if pyth_price.price.0 < 0 {
             return Err(error::PriceDataError::NegativePrice);
         }
 
-        if price.conf.0 >= price.price.0 as u64 {
+        #[allow(clippy::cast_sign_loss)]
+        let price = pyth_price.price.0 as u64;
+
+        if pyth_price.conf.0 >= price {
             return Err(error::PriceDataError::ConfidenceIntervalTooLarge);
         }
 
         Ok(Self {
-            publish_time_s: u64::try_from(price.publish_time).unwrap(),
-            price: price.price.0 as u64,
-            confidence: price.conf.0,
-            exponent_10: price.expo,
+            // We assume that it is a current timestamp (>0).
+            #[allow(clippy::unwrap_used)]
+            publish_time_s: u64::try_from(pyth_price.publish_time).unwrap(),
+            price,
+            confidence: pyth_price.conf.0,
+            exponent_10: pyth_price.expo,
         })
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct PricePair {
-    configuration: BalanceOracleConfiguration,
+    collateral_asset_decimals: i32,
     collateral_asset_price: Price,
+    borrow_asset_decimals: i32,
     borrow_asset_price: Price,
 }
 
 impl PricePair {
+    /// # Errors
+    ///
+    /// If the price data are invalid.
     pub fn new(
-        configuration: BalanceOracleConfiguration,
-        collateral_asset_price: pyth::Price,
-        borrow_asset_price: pyth::Price,
+        collateral_asset_decimals: i32,
+        collateral_asset_price: &pyth::Price,
+        borrow_asset_decimals: i32,
+        borrow_asset_price: &pyth::Price,
     ) -> Result<Self, error::PriceDataError> {
         Ok(Self {
-            configuration,
+            collateral_asset_decimals,
             collateral_asset_price: collateral_asset_price.try_into()?,
+            borrow_asset_decimals,
             borrow_asset_price: borrow_asset_price.try_into()?,
         })
     }
@@ -135,9 +156,9 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
                 - u128::from(self.borrow_asset_price.confidence))
             * Decimal::from(10u32).pow(
                 self.collateral_asset_price.exponent_10
-                    - self.configuration.collateral_asset_decimals
+                    - self.collateral_asset_decimals
                     - self.borrow_asset_price.exponent_10
-                    + self.configuration.borrow_asset_decimals,
+                    + self.borrow_asset_decimals,
             ))
         .to_u128_ceil()
         .unwrap()
@@ -155,9 +176,9 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
                 + u128::from(self.borrow_asset_price.confidence))
             * Decimal::from(10u32).pow(
                 self.collateral_asset_price.exponent_10
-                    - self.configuration.collateral_asset_decimals
+                    - self.collateral_asset_decimals
                     - self.borrow_asset_price.exponent_10
-                    + self.configuration.borrow_asset_decimals,
+                    + self.borrow_asset_decimals,
             ))
         .to_u128_floor()
         .unwrap()
@@ -177,9 +198,9 @@ impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
                 - u128::from(self.collateral_asset_price.confidence))
             * Decimal::from(10u32).pow(
                 self.borrow_asset_price.exponent_10
-                    - self.configuration.borrow_asset_decimals
+                    - self.borrow_asset_decimals
                     - self.collateral_asset_price.exponent_10
-                    + self.configuration.collateral_asset_decimals,
+                    + self.collateral_asset_decimals,
             ))
         .to_u128_ceil()
         .unwrap()
@@ -197,9 +218,9 @@ impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
                 + u128::from(self.collateral_asset_price.confidence))
             * Decimal::from(10u32).pow(
                 self.borrow_asset_price.exponent_10
-                    - self.configuration.borrow_asset_decimals
+                    - self.borrow_asset_decimals
                     - self.collateral_asset_price.exponent_10
-                    + self.configuration.collateral_asset_decimals,
+                    + self.collateral_asset_decimals,
             ))
         .to_u128_floor()
         .unwrap()
@@ -218,7 +239,7 @@ impl AssetValuation<BorrowAsset> for PricePair {
             * (u128::from(self.borrow_asset_price.price)
                 + u128::from(self.borrow_asset_price.confidence))
             * Decimal::from(10u32)
-                .pow(self.borrow_asset_price.exponent_10 - self.configuration.borrow_asset_decimals)
+                .pow(self.borrow_asset_price.exponent_10 - self.borrow_asset_decimals)
     }
 
     fn value_pessimistic(&self, amount: FungibleAssetAmount<BorrowAsset>) -> Decimal {
@@ -226,7 +247,7 @@ impl AssetValuation<BorrowAsset> for PricePair {
             * (u128::from(self.borrow_asset_price.price)
                 - u128::from(self.borrow_asset_price.confidence))
             * Decimal::from(10u32)
-                .pow(self.borrow_asset_price.exponent_10 - self.configuration.borrow_asset_decimals)
+                .pow(self.borrow_asset_price.exponent_10 - self.borrow_asset_decimals)
     }
 }
 
@@ -235,19 +256,15 @@ impl AssetValuation<CollateralAsset> for PricePair {
         Decimal::from(amount.as_u128())
             * (u128::from(self.collateral_asset_price.price)
                 + u128::from(self.collateral_asset_price.confidence))
-            * Decimal::from(10u32).pow(
-                self.collateral_asset_price.exponent_10
-                    - self.configuration.collateral_asset_decimals,
-            )
+            * Decimal::from(10u32)
+                .pow(self.collateral_asset_price.exponent_10 - self.collateral_asset_decimals)
     }
 
     fn value_pessimistic(&self, amount: CollateralAssetAmount) -> Decimal {
         Decimal::from(amount.as_u128())
             * (u128::from(self.collateral_asset_price.price)
                 - u128::from(self.collateral_asset_price.confidence))
-            * Decimal::from(10u32).pow(
-                self.collateral_asset_price.exponent_10
-                    - self.configuration.collateral_asset_decimals,
-            )
+            * Decimal::from(10u32)
+                .pow(self.collateral_asset_price.exponent_10 - self.collateral_asset_decimals)
     }
 }

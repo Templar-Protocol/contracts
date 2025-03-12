@@ -172,7 +172,7 @@ impl Contract {
         let price_pair = self
             .configuration
             .balance_oracle
-            .consume_oracle_response(oracle_response)
+            .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         // Ensure we have enough funds to dispense.
@@ -329,7 +329,7 @@ impl Contract {
         let price_pair = self
             .configuration
             .balance_oracle
-            .consume_oracle_response(oracle_response)
+            .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         let liquidated_collateral =
@@ -373,7 +373,7 @@ impl Contract {
         let price_pair = self
             .configuration
             .balance_oracle
-            .consume_oracle_response(oracle_response)
+            .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         let liquidated_collateral =
@@ -426,7 +426,7 @@ impl Contract {
         let price_pair = self
             .configuration
             .balance_oracle
-            .consume_oracle_response(oracle_response)
+            .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {

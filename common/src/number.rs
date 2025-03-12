@@ -656,7 +656,9 @@ mod tests {
     #[case(1, 1)]
     #[test]
     fn power(#[case] x: u128, #[case] n: u32) {
-        assert_eq!(Decimal::from(x).pow(n as i32), Decimal::from(x.pow(n)));
+        #[allow(clippy::cast_possible_wrap)]
+        let n_i32 = n as i32;
+        assert_eq!(Decimal::from(x).pow(n_i32), Decimal::from(x.pow(n)));
     }
 
     #[test]
