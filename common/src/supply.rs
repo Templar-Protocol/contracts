@@ -89,19 +89,11 @@ impl<M> LinkedSupplyPosition<M> {
 
 impl<M: std::borrow::Borrow<Market>> LinkedSupplyPosition<M> {
     pub fn with_pending_yield_estimate(&mut self) {
-        self.position.borrow_asset_yield.pending_estimate =
-            self.calculate_instantaneous_pending_yield();
-    }
-
-    pub fn calculate_instantaneous_pending_yield(&self) -> BorrowAssetAmount {
-        let mut amount = self.calculate_yield().get_amount();
-
-        // Calculate the amount representing the "in-progress" snapshot.
-        let current_snapshot_part = self.calculate_last_snapshot_yield();
-
-        amount.join(current_snapshot_part);
-
-        amount
+        self.position.borrow_asset_yield.pending_estimate = self.calculate_yield().get_amount();
+        self.position
+            .borrow_asset_yield
+            .pending_estimate
+            .join(self.calculate_last_snapshot_yield());
     }
 
     pub fn calculate_last_snapshot_yield(&self) -> BorrowAssetAmount {
