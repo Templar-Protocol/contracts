@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["common", "contract/*", "mock/*", "test-utils"]
+package.license = "MIT"
 
 [workspace.dependencies]
 getrandom = { version = "0.2", features = ["custom"] }

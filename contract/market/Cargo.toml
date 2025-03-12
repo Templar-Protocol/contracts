@@ -4,6 +4,7 @@ description = "cargo-near-new-project-description"
 version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/Templar-Protocol/contract-mvp"
+license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
