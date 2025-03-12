@@ -47,6 +47,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     let mut iters = 0;
 
+    // TODO: Change back to 3
     for _ in 0..1 {
         println!("Sleeping...");
         let done = std::sync::atomic::AtomicBool::new(false);
@@ -103,14 +104,20 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
 
         let actual_1 = borrow_position_1.borrow_asset_fees.get_total().as_u128()
-            + borrow_position_1.pending_fee_estimate.as_u128();
+            + borrow_position_1
+                .borrow_asset_fees
+                .pending_estimate
+                .as_u128();
         println!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
         assert!(approximation_below <= actual_1);
         assert!(actual_1 <= approximation_above);
 
         let actual_2 = borrow_position_2.borrow_asset_fees.get_total().as_u128()
-            + borrow_position_2.pending_fee_estimate.as_u128();
+            + borrow_position_2
+                .borrow_asset_fees
+                .pending_estimate
+                .as_u128();
         println!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
         assert!(approximation_below <= actual_2);
@@ -135,7 +142,10 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                     (borrow_position_before
                         .get_total_borrow_asset_liability()
                         .as_u128()
-                        + borrow_position_before.pending_fee_estimate.as_u128())
+                        + borrow_position_before
+                            .borrow_asset_fees
+                            .pending_estimate
+                            .as_u128())
                         * 110
                         / 100, /* overpayment */
                 )
@@ -160,7 +170,10 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                 (borrow_position_before
                     .get_total_borrow_asset_liability()
                     .as_u128()
-                    + borrow_position_before.pending_fee_estimate.as_u128())
+                    + borrow_position_before
+                        .borrow_asset_fees
+                        .pending_estimate
+                        .as_u128())
                     * 110
                     / 100, /* overpayment */
             )

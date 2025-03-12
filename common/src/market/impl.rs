@@ -8,7 +8,7 @@ use near_sdk::{
 use crate::{
     accumulator::AccumulationRecord,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    borrow::BorrowPosition,
+    borrow::{BorrowPosition, LinkedBorrowPosition, LinkedBorrowPositionMut},
     chain_time::ChainTime,
     event::MarketEvent,
     market::MarketConfiguration,
@@ -41,7 +41,7 @@ pub struct Market {
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
-    pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
+    pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub snapshots: Vector<Snapshot>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
@@ -206,6 +206,40 @@ impl Market {
         LinkedSupplyPositionMut::new(self, account_id, position)
     }
 
+    pub fn iter_borrow_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
+        self.borrow_positions.keys()
+    }
+
+    pub fn get_linked_borrow_position(
+        &self,
+        account_id: AccountId,
+    ) -> Option<LinkedBorrowPosition<&Self>> {
+        self.borrow_positions
+            .get(&account_id)
+            .map(|position| LinkedBorrowPosition::new(self, account_id, position))
+    }
+
+    pub fn get_linked_borrow_position_mut(
+        &mut self,
+        account_id: AccountId,
+    ) -> Option<LinkedBorrowPositionMut<&mut Self>> {
+        self.borrow_positions
+            .get(&account_id)
+            .map(|position| LinkedBorrowPositionMut::new(self, account_id, position))
+    }
+
+    pub fn get_or_create_linked_borrow_position_mut(
+        &mut self,
+        account_id: AccountId,
+    ) -> LinkedBorrowPositionMut<&mut Self> {
+        let position = self
+            .borrow_positions
+            .get(&account_id)
+            .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
+
+        LinkedBorrowPositionMut::new(self, account_id, position)
+    }
+
     /// # Errors
     /// - If the withdrawal queue is already locked.
     /// - If the withdrawal queue is empty.
@@ -241,7 +275,7 @@ impl Market {
         Ok(Some((account_id, amount)))
     }
 
-    fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+    pub(crate) fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
         // Sanity.
         if amount.is_zero() {
             return;
@@ -296,273 +330,5 @@ impl Market {
 
         // Next, dynamic (supply-based) yield.
         self.snapshot_with_yield_distribution(amount);
-    }
-
-    pub fn record_borrow_position_collateral_asset_deposit(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: CollateralAssetAmount,
-    ) {
-        self.accumulate_borrow_position_interest(borrow_position);
-        borrow_position
-            .increase_collateral_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow position collateral asset overflow"));
-    }
-
-    pub fn record_borrow_position_collateral_asset_withdrawal(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: CollateralAssetAmount,
-    ) {
-        self.accumulate_borrow_position_interest(borrow_position);
-        borrow_position
-            .decrease_collateral_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
-    }
-
-    pub fn record_borrow_position_borrow_asset_in_flight_start(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
-        self.accumulate_borrow_position_interest(borrow_position);
-
-        self.borrow_asset_in_flight
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount overflow"));
-        borrow_position
-            .temporary_lock
-            .join(amount)
-            .and_then(|()| borrow_position.temporary_lock.join(fees))
-            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount overflow"));
-    }
-
-    pub fn record_borrow_position_borrow_asset_in_flight_end(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
-        self.accumulate_borrow_position_interest(borrow_position);
-
-        // This should never panic, because a given amount of in-flight borrow
-        // asset should always be added before it is removed.
-        self.borrow_asset_in_flight
-            .split(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount underflow"));
-        borrow_position
-            .temporary_lock
-            .split(amount)
-            .and_then(|_| borrow_position.temporary_lock.split(fees))
-            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount underflow"));
-    }
-
-    pub fn record_borrow_position_borrow_asset_withdrawal(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-        fee: BorrowAssetAmount,
-    ) {
-        self.accumulate_borrow_position_interest(borrow_position);
-
-        borrow_position.borrow_asset_fees.add_once(fee);
-        borrow_position
-            .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
-            .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
-
-        self.borrow_asset_borrowed
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset borrowed overflow"));
-        self.snapshot();
-    }
-
-    pub fn record_borrow_position_borrow_asset_repay(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-    ) -> BorrowAssetAmount {
-        self.accumulate_borrow_position_interest(borrow_position);
-
-        let liability_reduction = borrow_position
-            .reduce_borrow_asset_liability(amount)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-        self.record_borrow_asset_yield_distribution(liability_reduction.amount_to_fees);
-
-        // SAFETY: It should be impossible to panic here, since assets that
-        // have not yet been borrowed cannot be repaid.
-        self.borrow_asset_borrowed
-            .split(liability_reduction.amount_to_principal)
-            .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
-
-        self.snapshot();
-
-        liability_reduction.amount_remaining
-    }
-
-    pub fn accumulate_borrow_position_interest(&mut self, borrow_position: &mut BorrowPosition) {
-        self.snapshot();
-
-        let accumulation_record = self.calculate_borrow_position_interest(
-            borrow_position.get_borrow_asset_principal(),
-            borrow_position.borrow_asset_fees.get_next_snapshot_index(),
-            u32::MAX,
-        );
-
-        borrow_position
-            .borrow_asset_fees
-            .accumulate(accumulation_record);
-    }
-
-    #[must_use]
-    pub fn calculate_borrow_position_instantaneous_pending_interest(
-        &self,
-        borrow_position: &BorrowPosition,
-    ) -> BorrowAssetAmount {
-        let mut amount = self
-            .calculate_borrow_position_interest(
-                borrow_position.get_borrow_asset_principal(),
-                borrow_position.borrow_asset_fees.get_next_snapshot_index(),
-                u32::MAX,
-            )
-            .get_amount();
-
-        // Add the amount representing the "in-progress" snapshot.
-        let last_snapshot_part =
-            self.calculate_borrow_position_last_snapshot_interest(borrow_position);
-
-        amount.join(last_snapshot_part);
-
-        amount
-    }
-
-    pub(crate) fn calculate_borrow_position_last_snapshot_interest(
-        &self,
-        borrow_position: &BorrowPosition,
-    ) -> BorrowAssetAmount {
-        let last_snapshot = self.get_last_snapshot();
-        let interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
-        let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
-        let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
-        let interest_rate_part = interest_rate * duration_ms / ms_in_a_year;
-        let interest = interest_rate_part
-            * Decimal::from(borrow_position.get_borrow_asset_principal().as_u128());
-
-        interest.to_u128_ceil().unwrap().into()
-    }
-
-    pub(crate) fn calculate_borrow_position_interest(
-        &self,
-        principal_in_span: BorrowAssetAmount,
-        mut next_snapshot_index: u32,
-        limit: u32,
-    ) -> AccumulationRecord<BorrowAsset> {
-        let principal = Decimal::from(principal_in_span.as_u128());
-
-        let mut accumulated = Decimal::ZERO;
-
-        // Assume # of snapshots will never be > u32::MAX.
-        #[allow(clippy::cast_possible_truncation)]
-        let mut it = self
-            .snapshots
-            .iter()
-            .enumerate()
-            .skip(next_snapshot_index as usize)
-            .take(limit as usize)
-            .map(|(i, s)| (i as u32, s))
-            .peekable();
-
-        let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
-
-        while let Some((i, snapshot)) = it.next() {
-            let Some(end_timestamp_ms) = it
-                .peek()
-                .map(|(_, next_snapshot)| next_snapshot.timestamp_ms.0)
-            else {
-                // Cannot calculate duration.
-                break;
-            };
-
-            let total_borrowed = Decimal::from(snapshot.borrowed.as_u128());
-            let total_deposited = Decimal::from(snapshot.deposited.as_u128());
-            let utilization_ratio = total_borrowed / total_deposited;
-            let interest_rate_per_year = self
-                .configuration
-                .borrow_interest_rate_strategy
-                .at(utilization_ratio);
-            let duration_ms: Decimal = end_timestamp_ms
-                .checked_sub(snapshot.timestamp_ms.0)
-                .unwrap_or_else(|| {
-                    env::panic_str(&format!(
-                        "Invariant violation: Snapshot timestamp decrease at #{}.",
-                        i + 1,
-                    ))
-                })
-                .into();
-
-            let interest = principal * interest_rate_per_year * duration_ms / ms_in_a_year;
-
-            accumulated += interest;
-
-            next_snapshot_index = i + 1;
-        }
-
-        AccumulationRecord {
-            amount: accumulated.to_u128_ceil().unwrap().into(),
-            next_snapshot_index,
-        }
-    }
-
-    pub fn can_borrow_position_be_liquidated(
-        &self,
-        account_id: &AccountId,
-        oracle_price_proof: &PricePair,
-    ) -> bool {
-        let Some(borrow_position) = self.borrow_positions.get(account_id) else {
-            return false;
-        };
-
-        self.configuration
-            .borrow_status(
-                &borrow_position,
-                oracle_price_proof,
-                env::block_timestamp_ms(),
-            )
-            .is_liquidation()
-    }
-
-    pub fn record_liquidation_lock(&mut self, borrow_position: &mut BorrowPosition) {
-        borrow_position.liquidation_lock = true;
-    }
-
-    pub fn record_liquidation_unlock(&mut self, borrow_position: &mut BorrowPosition) {
-        borrow_position.liquidation_lock = false;
-    }
-
-    pub fn record_full_liquidation(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        mut recovered_amount: BorrowAssetAmount,
-    ) {
-        let principal = borrow_position.get_borrow_asset_principal();
-        borrow_position.full_liquidation(self.snapshot());
-
-        self.borrow_asset_borrowed.split(principal);
-
-        // TODO: Is it correct to only care about the original principal here?
-        if recovered_amount.split(principal).is_some() {
-            // distribute yield
-            // record_borrow_asset_yield_distribution will take snapshot, no need to do it.
-            self.record_borrow_asset_yield_distribution(recovered_amount);
-        } else {
-            // we took a loss
-            // TODO: some sort of recovery for suppliers
-            //
-            // Might look something like this:
-            // self.borrow_asset_deposited.split(principal);
-            // (?)
-            todo!("Took a loss during liquidation");
-        }
     }
 }

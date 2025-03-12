@@ -47,14 +47,14 @@ impl FungibleTokenReceiver for Contract {
             Nep141MarketDepositMessage::Collateralize => {
                 let amount = use_collateral_asset();
 
-                self.execute_collateralize(&sender_id, amount);
+                self.execute_collateralize(sender_id, amount);
 
                 PromiseOrValue::Value(U128(0))
             }
             Nep141MarketDepositMessage::Repay => {
                 let amount = use_borrow_asset();
 
-                let refund = self.execute_repay(&sender_id, amount);
+                let refund = self.execute_repay(sender_id, amount);
 
                 PromiseOrValue::Value(refund.into())
             }
