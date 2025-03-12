@@ -4,7 +4,6 @@ use near_sdk::{
 };
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    borrow::BorrowPosition,
     market::PricePair,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
@@ -75,12 +74,13 @@ impl Contract {
 
         borrow_position.liquidation_lock();
 
-        borrow_position.collateral_asset_deposit
+        borrow_position.inner().collateral_asset_deposit
     }
 
     /// Returns the amount to return to the liquidator.
     pub fn execute_liquidate_final(
         &mut self,
+        liquidator_id: AccountId,
         account_id: AccountId,
         amount: BorrowAssetAmount,
         success: bool,
@@ -92,7 +92,7 @@ impl Contract {
             });
 
         if success {
-            borrow_position.record_full_liquidation(amount);
+            borrow_position.record_full_liquidation(liquidator_id, amount);
             BorrowAssetAmount::zero()
         } else {
             // Somehow transfer of collateral failed. This could mean:
@@ -296,10 +296,13 @@ impl Contract {
 
         self.configuration
             .collateral_asset
-            .transfer(liquidator_id, liquidated_collateral)
+            .transfer(liquidator_id.clone(), liquidated_collateral)
             .then(
-                Self::ext(env::current_account_id())
-                    .liquidate_ft_transfer_call_02_finalize(account_id, amount),
+                Self::ext(env::current_account_id()).liquidate_ft_transfer_call_02_finalize(
+                    liquidator_id,
+                    account_id,
+                    amount,
+                ),
             )
     }
 
@@ -308,6 +311,7 @@ impl Contract {
     #[private]
     pub fn liquidate_ft_transfer_call_02_finalize(
         &mut self,
+        liquidator_id: AccountId,
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
     ) -> U128 {
@@ -316,7 +320,7 @@ impl Contract {
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
         let refund_to_liquidator =
-            self.execute_liquidate_final(account_id, borrow_asset_amount, success);
+            self.execute_liquidate_final(liquidator_id, account_id, borrow_asset_amount, success);
 
         refund_to_liquidator.into()
     }
@@ -361,8 +365,12 @@ impl Contract {
 
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        let refund_to_liquidator =
-            self.execute_liquidate_final(account_id, borrow_asset_amount, success);
+        let refund_to_liquidator = self.execute_liquidate_final(
+            liquidator_id.clone(),
+            account_id,
+            borrow_asset_amount,
+            success,
+        );
 
         if refund_to_liquidator.is_zero() {
             PromiseOrValue::Value(())

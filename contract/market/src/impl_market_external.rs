@@ -50,7 +50,7 @@ impl MarketExternalInterface for Contract {
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
         let mut borrow_position = self.get_linked_borrow_position(account_id)?;
         borrow_position.with_pending_interest();
-        Some(borrow_position.raw_position().clone())
+        Some(borrow_position.inner().clone())
     }
 
     fn get_borrow_status(
@@ -105,7 +105,11 @@ impl MarketExternalInterface for Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
-        if borrow_position.get_total_borrow_asset_liability().is_zero() {
+        if borrow_position
+            .inner()
+            .get_total_borrow_asset_liability()
+            .is_zero()
+        {
             // No need to retrieve prices, since there is zero liability.
             borrow_position.record_collateral_asset_withdrawal(amount);
             drop(borrow_position);
@@ -144,7 +148,7 @@ impl MarketExternalInterface for Contract {
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
         let mut supply_position = self.get_linked_supply_position(account_id)?;
         supply_position.with_pending_yield_estimate();
-        Some(supply_position.raw_position().clone())
+        Some(supply_position.inner().clone())
     }
 
     /// If the predecessor has already entered the queue, calling this function
@@ -157,7 +161,7 @@ impl MarketExternalInterface for Contract {
         let predecessor = env::predecessor_account_id();
         if self
             .get_linked_supply_position(predecessor.clone())
-            .filter(|supply_position| !supply_position.get_borrow_asset_deposit().is_zero())
+            .filter(|supply_position| !supply_position.inner().get_borrow_asset_deposit().is_zero())
             .is_none()
         {
             env::panic_str("Supply position does not exist");
@@ -237,7 +241,8 @@ impl MarketExternalInterface for Contract {
             env::panic_str("Supply position does not exist");
         };
 
-        let amount = amount.unwrap_or_else(|| supply_position.borrow_asset_yield.get_total());
+        let amount =
+            amount.unwrap_or_else(|| supply_position.inner().borrow_asset_yield.get_total());
 
         let withdrawn = supply_position
             .record_yield_withdrawal(amount)

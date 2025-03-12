@@ -8,6 +8,7 @@ use near_sdk::{env, json_types::U64, near, AccountId};
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
+    event::MarketEvent,
     market::{Market, PricePair},
     number::Decimal,
     MS_IN_A_YEAR,
@@ -37,7 +38,7 @@ pub enum LiquidationReason {
     Expiration,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowPosition {
     pub started_at_block_timestamp_ms: Option<U64>,
@@ -64,7 +65,7 @@ impl BorrowPosition {
         }
     }
 
-    pub fn full_liquidation(&mut self, current_snapshot_index: u32) {
+    pub(crate) fn full_liquidation(&mut self, current_snapshot_index: u32) {
         self.liquidation_lock = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
@@ -89,21 +90,21 @@ impl BorrowPosition {
             || !self.get_total_borrow_asset_liability().is_zero()
     }
 
-    pub fn increase_collateral_asset_deposit(
+    pub(crate) fn increase_collateral_asset_deposit(
         &mut self,
         amount: CollateralAssetAmount,
     ) -> Option<()> {
         self.collateral_asset_deposit.join(amount)
     }
 
-    pub fn decrease_collateral_asset_deposit(
+    pub(crate) fn decrease_collateral_asset_deposit(
         &mut self,
         amount: CollateralAssetAmount,
     ) -> Option<CollateralAssetAmount> {
         self.collateral_asset_deposit.split(amount)
     }
 
-    pub fn increase_borrow_asset_principal(
+    pub(crate) fn increase_borrow_asset_principal(
         &mut self,
         amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
@@ -167,14 +168,6 @@ pub struct LinkedBorrowPosition<M> {
     position: BorrowPosition,
 }
 
-impl<M> Deref for LinkedBorrowPosition<M> {
-    type Target = BorrowPosition;
-
-    fn deref(&self) -> &Self::Target {
-        &self.position
-    }
-}
-
 impl<M> LinkedBorrowPosition<M> {
     pub fn new(market: M, account_id: AccountId, position: BorrowPosition) -> Self {
         Self {
@@ -188,7 +181,7 @@ impl<M> LinkedBorrowPosition<M> {
         &self.account_id
     }
 
-    pub fn raw_position(&self) -> &BorrowPosition {
+    pub fn inner(&self) -> &BorrowPosition {
         &self.position
     }
 }
@@ -347,16 +340,30 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedBorrowPositionMut<M> {
 
     pub fn record_collateral_asset_deposit(&mut self, amount: CollateralAssetAmount) {
         self.accumulate_interest();
+
         self.position
             .increase_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset overflow"));
+
+        MarketEvent::CollateralDeposited {
+            account_id: self.account_id.clone(),
+            collateral_asset_amount: amount,
+        }
+        .emit();
     }
 
     pub fn record_collateral_asset_withdrawal(&mut self, amount: CollateralAssetAmount) {
         self.accumulate_interest();
+
         self.position
             .decrease_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
+
+        MarketEvent::CollateralWithdrawn {
+            account_id: self.account_id.clone(),
+            collateral_asset_amount: amount,
+        }
+        .emit();
     }
 
     pub fn record_borrow_asset_in_flight_start(
@@ -417,6 +424,12 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedBorrowPositionMut<M> {
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed overflow"));
         self.market.borrow_mut().snapshot();
+
+        MarketEvent::BorrowWithdrawn {
+            account_id: self.account_id.clone(),
+            borrow_asset_amount: amount,
+        }
+        .emit();
     }
 
     pub fn record_repay(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
@@ -441,6 +454,14 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedBorrowPositionMut<M> {
 
         self.market.borrow_mut().snapshot();
 
+        MarketEvent::BorrowRepaid {
+            account_id: self.account_id.clone(),
+            borrow_asset_fees_repaid: liability_reduction.amount_to_fees,
+            borrow_asset_principal_repaid: liability_reduction.amount_to_principal,
+            borrow_asset_principal_remaining: self.position.get_borrow_asset_principal(),
+        }
+        .emit();
+
         liability_reduction.amount_remaining
     }
 
@@ -448,6 +469,12 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         self.market.borrow_mut().snapshot();
 
         let accumulation_record = self.calculate_interest(u32::MAX);
+
+        MarketEvent::InterestAccumulated {
+            account_id: self.account_id.clone(),
+            borrow_asset_amount: accumulation_record.amount,
+        }
+        .emit();
 
         self.position
             .borrow_asset_fees
@@ -462,8 +489,23 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         self.position.liquidation_lock = false;
     }
 
-    pub fn record_full_liquidation(&mut self, mut recovered_amount: BorrowAssetAmount) {
+    pub fn record_full_liquidation(
+        &mut self,
+        liquidator_id: AccountId,
+        mut recovered_amount: BorrowAssetAmount,
+    ) {
         let principal = self.position.get_borrow_asset_principal();
+        let collateral_asset_liquidated = self.position.collateral_asset_deposit;
+
+        MarketEvent::FullLiquidation {
+            liquidator_id,
+            account_id: self.account_id.clone(),
+            borrow_asset_principal: principal,
+            borrow_asset_recovered: recovered_amount,
+            collateral_asset_liquidated,
+        }
+        .emit();
+
         let snapshot_index = self.market.borrow_mut().snapshot();
         self.position.full_liquidation(snapshot_index);
 

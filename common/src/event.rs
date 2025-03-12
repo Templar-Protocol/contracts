@@ -17,16 +17,16 @@ pub enum MarketEvent {
     GlobalYieldDistributed {
         borrow_asset_amount: BorrowAssetAmount,
     },
-    // #[event_version("1.0.0")]
-    // YieldAccumulated {
-    //     account_id: AccountId,
-    //     borrow_asset_amount: BorrowAssetAmount,
-    // },
-    // #[event_version("1.0.0")]
-    // InterestAccumulated {
-    //     account_id: AccountId,
-    //     borrow_asset_amount: BorrowAssetAmount,
-    // },
+    #[event_version("1.0.0")]
+    YieldAccumulated {
+        account_id: AccountId,
+        borrow_asset_amount: BorrowAssetAmount,
+    },
+    #[event_version("1.0.0")]
+    InterestAccumulated {
+        account_id: AccountId,
+        borrow_asset_amount: BorrowAssetAmount,
+    },
     #[event_version("1.0.0")]
     SupplyDeposited {
         account_id: AccountId,
@@ -55,15 +55,16 @@ pub enum MarketEvent {
     #[event_version("1.0.0")]
     BorrowRepaid {
         account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
+        borrow_asset_fees_repaid: BorrowAssetAmount,
+        borrow_asset_principal_repaid: BorrowAssetAmount,
+        borrow_asset_principal_remaining: BorrowAssetAmount,
     },
     #[event_version("1.0.0")]
     FullLiquidation {
         liquidator_id: AccountId,
         account_id: AccountId,
         borrow_asset_principal: BorrowAssetAmount,
-        borrow_asset_unpaid_fees: BorrowAssetAmount,
-        borrow_asset_paid: BorrowAssetAmount,
-        collateral_asset_acquired: CollateralAssetAmount,
+        borrow_asset_recovered: BorrowAssetAmount,
+        collateral_asset_liquidated: CollateralAssetAmount,
     },
 }

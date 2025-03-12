@@ -8,6 +8,7 @@ use near_sdk::{env, near, AccountId};
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount},
+    event::MarketEvent,
     market::Market,
     number::Decimal,
 };
@@ -61,14 +62,6 @@ pub struct LinkedSupplyPosition<M> {
     position: SupplyPosition,
 }
 
-impl<M> Deref for LinkedSupplyPosition<M> {
-    type Target = SupplyPosition;
-
-    fn deref(&self) -> &Self::Target {
-        &self.position
-    }
-}
-
 impl<M> LinkedSupplyPosition<M> {
     pub fn new(market: M, account_id: AccountId, position: SupplyPosition) -> Self {
         Self {
@@ -82,7 +75,7 @@ impl<M> LinkedSupplyPosition<M> {
         &self.account_id
     }
 
-    pub fn raw_position(&self) -> &SupplyPosition {
+    pub fn inner(&self) -> &SupplyPosition {
         &self.position
     }
 }
@@ -97,7 +90,7 @@ impl<M: std::borrow::Borrow<Market>> LinkedSupplyPosition<M> {
     }
 
     pub fn calculate_last_snapshot_yield(&self) -> BorrowAssetAmount {
-        let deposit = Decimal::from(self.get_borrow_asset_deposit().as_u128());
+        let deposit = Decimal::from(self.position.get_borrow_asset_deposit().as_u128());
         if deposit.is_zero() {
             return BorrowAssetAmount::zero();
         }
@@ -133,13 +126,13 @@ impl<M: std::borrow::Borrow<Market>> LinkedSupplyPosition<M> {
     }
 
     pub fn calculate_yield(&self) -> AccumulationRecord<BorrowAsset> {
-        let mut next_snapshot_index = self.borrow_asset_yield.get_next_snapshot_index();
+        let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
 
         if self.market.borrow().snapshots.is_empty() {
             return AccumulationRecord::empty(next_snapshot_index);
         }
 
-        let amount = Decimal::from(self.get_borrow_asset_deposit().as_u128());
+        let amount = Decimal::from(self.position.get_borrow_asset_deposit().as_u128());
 
         let mut accumulated = Decimal::ZERO;
 
@@ -208,6 +201,12 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedSupplyPositionMut<M> {
 
         let accumulation_record = self.calculate_yield();
 
+        MarketEvent::YieldAccumulated {
+            account_id: self.account_id.clone(),
+            borrow_asset_amount: accumulation_record.amount,
+        }
+        .emit();
+
         self.position
             .borrow_asset_yield
             .accumulate(accumulation_record);
@@ -264,6 +263,12 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedSupplyPositionMut<M> {
 
         self.market.borrow_mut().snapshot();
 
+        MarketEvent::SupplyWithdrawn {
+            account_id: self.account_id.clone(),
+            borrow_asset_amount: amount,
+        }
+        .emit();
+
         withdrawn
     }
 
@@ -281,6 +286,12 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedSupplyPositionMut<M> {
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited overflow"));
 
         self.market.borrow_mut().snapshot();
+
+        MarketEvent::SupplyDeposited {
+            account_id: self.account_id.clone(),
+            borrow_asset_amount: amount,
+        }
+        .emit();
     }
 
     pub fn record_yield_withdrawal(

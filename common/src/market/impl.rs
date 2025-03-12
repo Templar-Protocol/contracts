@@ -248,6 +248,7 @@ impl Market {
             .and_then(|supply_position| {
                 // Cap withdrawal amount to deposit amount at most.
                 let amount = supply_position
+                    .inner()
                     .get_borrow_asset_deposit()
                     .min(requested_amount);
 
