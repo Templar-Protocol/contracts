@@ -7,22 +7,15 @@ use templar_common::{
     borrow::BorrowPosition,
     market::OraclePriceProof,
     snapshot::Snapshot,
-    supply::SupplyPosition,
 };
 
 use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {
-    pub fn execute_supply(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
-        let mut supply_position = self
-            .supply_positions
-            .get(account_id)
-            .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
-
-        self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
-
-        self.supply_positions.insert(account_id, &supply_position);
+    pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+        let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
+        supply_position.record_deposit(amount);
     }
 
     pub fn execute_collateralize(&mut self, account_id: &AccountId, amount: CollateralAssetAmount) {
@@ -308,9 +301,8 @@ impl Contract {
 
                 env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
                 self.withdrawal_queue.unlock();
-                if let Some(mut supply_position) = self.supply_positions.get(&account) {
-                    self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
-                    self.supply_positions.insert(&account, &supply_position);
+                if let Some(mut supply_position) = self.get_linked_supply_position_mut(account) {
+                    supply_position.record_deposit(amount);
                 }
             }
         }

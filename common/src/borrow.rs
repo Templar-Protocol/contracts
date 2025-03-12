@@ -65,8 +65,7 @@ impl BorrowPosition {
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
-        self.borrow_asset_fees.total = 0.into();
-        self.borrow_asset_fees.next_snapshot_index = current_snapshot_index;
+        self.borrow_asset_fees.clear(current_snapshot_index);
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
@@ -76,9 +75,8 @@ impl BorrowPosition {
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         total.join(self.borrow_asset_principal);
-        total.join(self.borrow_asset_fees.total);
+        total.join(self.borrow_asset_fees.get_total());
         total.join(self.temporary_lock);
-        total.join(self.pending_fee_estimate);
         total
     }
 
@@ -124,9 +122,9 @@ impl BorrowPosition {
 
         // No bounds checks necessary here: the min() call prevents underflow.
 
-        let amount_to_fees = self.borrow_asset_fees.total.min(amount);
+        let amount_to_fees = self.borrow_asset_fees.get_total().min(amount);
         amount.split(amount_to_fees);
-        self.borrow_asset_fees.total.split(amount_to_fees);
+        self.borrow_asset_fees.remove(amount_to_fees);
 
         let amount_to_principal = self.borrow_asset_principal.min(amount);
         amount.split(amount_to_principal);

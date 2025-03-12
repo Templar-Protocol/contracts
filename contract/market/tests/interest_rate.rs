@@ -80,9 +80,15 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let duration_outer = time_outer.elapsed();
 
         let supply_yield_1 = supply_position_1.borrow_asset_yield.get_total().as_u128()
-            + supply_position_1.pending_yield_estimate.as_u128();
+            + supply_position_1
+                .borrow_asset_yield
+                .pending_estimate
+                .as_u128();
         let supply_yield_2 = supply_position_2.borrow_asset_yield.get_total().as_u128()
-            + supply_position_2.pending_yield_estimate.as_u128();
+            + supply_position_2
+                .borrow_asset_yield
+                .pending_estimate
+                .as_u128();
 
         // No yield yet.
         assert_eq!(supply_yield_1, 0);

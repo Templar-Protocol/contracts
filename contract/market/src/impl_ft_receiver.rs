@@ -40,7 +40,7 @@ impl FungibleTokenReceiver for Contract {
             Nep141MarketDepositMessage::Supply => {
                 let amount = use_borrow_asset();
 
-                self.execute_supply(&sender_id, amount);
+                self.execute_supply(sender_id, amount);
 
                 PromiseOrValue::Value(U128(0))
             }

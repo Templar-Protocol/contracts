@@ -41,8 +41,7 @@ impl MarketExternalInterface for Contract {
     fn list_supplys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.supply_positions
-            .keys()
+        self.iter_supply_account_ids()
             .skip(offset)
             .take(count)
             .collect()
@@ -146,10 +145,9 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
-        let mut supply_position = self.supply_positions.get(&account_id)?;
-        supply_position.pending_yield_estimate =
-            self.calculate_supply_position_instantaneous_pending_yield(&supply_position);
-        Some(supply_position)
+        let mut supply_position = self.get_linked_supply_position(account_id)?;
+        supply_position.with_pending_yield_estimate();
+        Some(supply_position.raw_position().clone())
     }
 
     /// If the predecessor has already entered the queue, calling this function
@@ -161,8 +159,7 @@ impl MarketExternalInterface for Contract {
         );
         let predecessor = env::predecessor_account_id();
         if self
-            .supply_positions
-            .get(&predecessor)
+            .get_linked_supply_position(predecessor.clone())
             .filter(|supply_position| !supply_position.get_borrow_asset_deposit().is_zero())
             .is_none()
         {
@@ -213,9 +210,8 @@ impl MarketExternalInterface for Contract {
 
     fn harvest_yield(&mut self) {
         let predecessor = env::predecessor_account_id();
-        if let Some(mut supply_position) = self.supply_positions.get(&predecessor) {
-            self.accumulate_supply_position_yield(&mut supply_position);
-            self.supply_positions.insert(&predecessor, &supply_position);
+        if let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) {
+            supply_position.accumulate_yield();
         }
     }
 
@@ -239,22 +235,22 @@ impl MarketExternalInterface for Contract {
 
     fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
         let predecessor = env::predecessor_account_id();
-        let Some(mut supply_position) = self.supply_positions.get(&predecessor) else {
+        let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor.clone())
+        else {
             env::panic_str("Supply position does not exist");
         };
 
         let amount = amount.unwrap_or_else(|| supply_position.borrow_asset_yield.get_total());
 
         let withdrawn = supply_position
-            .borrow_asset_yield
-            .remove(amount)
+            .record_yield_withdrawal(amount)
             .unwrap_or_else(|| {
                 env::panic_str("Attempt to withdraw more yield than has accumulated")
             });
         if withdrawn.is_zero() {
             env::panic_str("No rewards can be withdrawn");
         }
-        self.supply_positions.insert(&predecessor, &supply_position);
+        drop(supply_position);
 
         // TODO: Check for transfer success.
         self.configuration
@@ -335,7 +331,7 @@ impl MarketExternalInterface for Contract {
 
         require!(!amount.is_zero(), "Deposit must be nonzero");
 
-        self.execute_supply(&env::predecessor_account_id(), amount);
+        self.execute_supply(env::predecessor_account_id(), amount);
     }
 
     #[payable]

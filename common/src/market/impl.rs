@@ -10,11 +10,12 @@ use crate::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::BorrowPosition,
     chain_time::ChainTime,
+    event::MarketEvent,
     market::MarketConfiguration,
     number::Decimal,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
-    supply::SupplyPosition,
+    supply::{LinkedSupplyPosition, LinkedSupplyPositionMut, SupplyPosition},
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
@@ -39,7 +40,7 @@ pub struct Market {
     pub borrow_asset_deposited: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
-    pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
+    pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub snapshots: Vector<Snapshot>,
     pub withdrawal_queue: WithdrawalQueue,
@@ -126,6 +127,15 @@ impl Market {
                 yield_distribution,
             };
             self.snapshots.push(new_snapshot);
+            if let Some(previous_snapshot_index) = index.checked_sub(1) {
+                if let Some(previous_snapshot) = self.snapshots.get(previous_snapshot_index) {
+                    MarketEvent::SnapshotFinalized {
+                        index: previous_snapshot_index,
+                        snapshot: previous_snapshot.clone(),
+                    }
+                    .emit();
+                }
+            }
             index
         }
     }
@@ -157,6 +167,40 @@ impl Market {
         self.configuration
             .borrow_interest_rate_strategy
             .at(usage_ratio)
+    }
+
+    pub fn iter_supply_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
+        self.supply_positions.keys()
+    }
+
+    pub fn get_linked_supply_position(
+        &self,
+        account_id: AccountId,
+    ) -> Option<LinkedSupplyPosition<&Self>> {
+        self.supply_positions
+            .get(&account_id)
+            .map(|position| LinkedSupplyPosition::new(self, account_id, position))
+    }
+
+    pub fn get_linked_supply_position_mut(
+        &mut self,
+        account_id: AccountId,
+    ) -> Option<LinkedSupplyPositionMut<&mut Self>> {
+        self.supply_positions
+            .get(&account_id)
+            .map(|position| LinkedSupplyPositionMut::new(self, account_id, position))
+    }
+
+    pub fn get_or_create_linked_supply_position_mut(
+        &mut self,
+        account_id: AccountId,
+    ) -> LinkedSupplyPositionMut<&mut Self> {
+        let position = self
+            .supply_positions
+            .get(&account_id)
+            .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
+
+        LinkedSupplyPositionMut::new(self, account_id, position)
     }
 
     /// # Errors
@@ -202,6 +246,11 @@ impl Market {
         if amount.is_zero() {
             return;
         }
+
+        MarketEvent::GlobalYieldDistributed {
+            borrow_asset_amount: amount,
+        }
+        .emit();
 
         // First, static yield.
 
@@ -393,7 +442,7 @@ impl Market {
 
         let accumulation_record = self.calculate_borrow_position_interest(
             borrow_position.get_borrow_asset_principal(),
-            borrow_position.borrow_asset_fees.next_snapshot_index,
+            borrow_position.borrow_asset_fees.get_next_snapshot_index(),
             u32::MAX,
         );
 
@@ -509,7 +558,7 @@ impl Market {
 
         let accumulation_record = self.calculate_supply_position_yield(
             supply_position.get_borrow_asset_deposit(),
-            supply_position.borrow_asset_yield.next_snapshot_index,
+            supply_position.borrow_asset_yield.get_next_snapshot_index(),
         );
 
         supply_position
@@ -526,7 +575,7 @@ impl Market {
         let mut amount = self
             .calculate_supply_position_yield(
                 supply_position.get_borrow_asset_deposit(),
-                supply_position.borrow_asset_yield.next_snapshot_index,
+                supply_position.borrow_asset_yield.get_next_snapshot_index(),
             )
             .get_amount();
 
