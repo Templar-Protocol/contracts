@@ -74,6 +74,14 @@ pub struct LiquidateMsg {
     pub oracle_price_proof: OraclePriceProof,
 }
 
+#[derive(Clone, Debug)]
+#[near(serializers = [json, borsh])]
+pub struct WithdrawalExecution {
+    pub account_id: AccountId,
+    pub amount_to_account: BorrowAssetAmount,
+    pub amount_to_fees: BorrowAssetAmount,
+}
+
 /// This represents some sort of proof-of-price from a price oracle, e.g. Pyth.
 /// In production, it must be validated, but for now it's just trust me bro.
 #[derive(Clone, Debug)]

@@ -5,7 +5,7 @@ use near_sdk::{
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::BorrowPosition,
-    market::OraclePriceProof,
+    market::{OraclePriceProof, WithdrawalExecution},
     snapshot::Snapshot,
     supply::SupplyPosition,
 };
@@ -275,7 +275,7 @@ impl Contract {
     }
 
     #[private]
-    pub fn after_execute_next_withdrawal(&mut self, account: AccountId, amount: BorrowAssetAmount) {
+    pub fn after_execute_next_withdrawal(&mut self, withdrawal_execution: WithdrawalExecution) {
         // TODO: Is this check even necessary in a #[private] function?
         require!(env::promise_results_count() == 1);
 
@@ -294,9 +294,11 @@ impl Contract {
                 // head of the queue cannot change while transfers are
                 // in-flight. This should be maintained by the queue itself.
                 require!(
-                    popped_account == account,
+                    popped_account == withdrawal_execution.account_id,
                     "Invariant violation: Queue shifted while locked/in-flight.",
                 );
+
+                self.record_borrow_asset_yield_distribution(withdrawal_execution.amount_to_fees);
             }
             PromiseResult::Failed => {
                 // Withdrawal failed: unlock the queue so they can try again.
@@ -308,9 +310,16 @@ impl Contract {
 
                 env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
                 self.withdrawal_queue.unlock();
-                if let Some(mut supply_position) = self.supply_positions.get(&account) {
+
+                let mut amount = withdrawal_execution.amount_to_account;
+                amount.join(withdrawal_execution.amount_to_fees).unwrap();
+
+                if let Some(mut supply_position) =
+                    self.supply_positions.get(&withdrawal_execution.account_id)
+                {
                     self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
-                    self.supply_positions.insert(&account, &supply_position);
+                    self.supply_positions
+                        .insert(&withdrawal_execution.account_id, &supply_position);
                 }
             }
         }

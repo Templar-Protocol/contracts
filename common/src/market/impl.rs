@@ -18,7 +18,7 @@ use crate::{
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
-use super::OraclePriceProof;
+use super::{OraclePriceProof, WithdrawalExecution};
 
 pub const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425
 
@@ -164,24 +164,24 @@ impl Market {
     /// - If the withdrawal queue is empty.
     pub fn try_lock_next_withdrawal_request(
         &mut self,
-    ) -> Result<Option<(AccountId, BorrowAssetAmount)>, WithdrawalQueueLockError> {
+    ) -> Result<Option<WithdrawalExecution>, WithdrawalQueueLockError> {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
-        let Some((amount, mut supply_position)) =
-            self.supply_positions
-                .get(&account_id)
-                .and_then(|supply_position| {
-                    // Cap withdrawal amount to deposit amount at most.
-                    let amount = supply_position
-                        .get_borrow_asset_deposit()
-                        .min(requested_amount);
+        let Some((mut amount, mut supply_position)) = self
+            .supply_positions
+            .get(&account_id)
+            .and_then(|supply_position| {
+                // Cap withdrawal amount to deposit amount at most.
+                let amount = supply_position
+                    .get_borrow_asset_deposit()
+                    .min(requested_amount);
 
-                    if amount.is_zero() {
-                        None
-                    } else {
-                        Some((amount, supply_position))
-                    }
-                })
+                if amount.is_zero() {
+                    None
+                } else {
+                    Some((amount, supply_position))
+                }
+            })
         else {
             // The amount that the entry is eligible to withdraw is zero, so skip it.
             self.withdrawal_queue
@@ -194,10 +194,27 @@ impl Market {
 
         self.supply_positions.insert(&account_id, &supply_position);
 
-        Ok(Some((account_id, amount)))
+        let amount_to_fees = self
+            .configuration
+            .supply_withdrawal_fee
+            .of(
+                amount,
+                // Guaranteed to exist because position is nonzero (can withdraw).
+                env::block_timestamp_ms()
+                    - supply_position.started_at_block_timestamp_ms.unwrap().0,
+            )
+            .unwrap();
+
+        amount.split(amount_to_fees).unwrap();
+
+        Ok(Some(WithdrawalExecution {
+            account_id,
+            amount_to_account: amount,
+            amount_to_fees,
+        }))
     }
 
-    fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+    pub fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
         // Sanity.
         if amount.is_zero() {
             return;
@@ -256,7 +273,7 @@ impl Market {
     ) {
         self.accumulate_supply_position_yield(supply_position);
         supply_position
-            .increase_borrow_asset_deposit(amount)
+            .increase_borrow_asset_deposit(amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
 
         self.borrow_asset_deposited

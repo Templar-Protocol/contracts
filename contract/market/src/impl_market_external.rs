@@ -181,7 +181,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
-        let Some((account_id, amount)) = self
+        let Some(withdrawal_execution) = self
             .try_lock_next_withdrawal_request()
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
         else {
@@ -192,10 +192,13 @@ impl MarketExternalInterface for Contract {
         PromiseOrValue::Promise(
             self.configuration
                 .borrow_asset
-                .transfer(account_id.clone(), amount)
+                .transfer(
+                    withdrawal_execution.account_id.clone(),
+                    withdrawal_execution.amount_to_account,
+                )
                 .then(
                     Self::ext(env::current_account_id())
-                        .after_execute_next_withdrawal(account_id.clone(), amount),
+                        .after_execute_next_withdrawal(withdrawal_execution),
                 ),
         )
     }

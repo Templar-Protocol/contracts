@@ -1,4 +1,4 @@
-use near_sdk::near;
+use near_sdk::{json_types::U64, near};
 
 use crate::{
     accumulator::Accumulator,
@@ -8,6 +8,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
+    pub started_at_block_timestamp_ms: Option<U64>,
     borrow_asset_deposit: BorrowAssetAmount,
     pub borrow_asset_yield: Accumulator<BorrowAsset>,
     #[borsh(skip)]
@@ -18,6 +19,7 @@ pub struct SupplyPosition {
 impl SupplyPosition {
     pub fn new(current_snapshot_index: u32) -> Self {
         Self {
+            started_at_block_timestamp_ms: None,
             borrow_asset_deposit: 0.into(),
             // We start at next log index so that the supply starts
             // accumulating yield from the _next_ log (since they were not
@@ -39,7 +41,11 @@ impl SupplyPosition {
     pub(crate) fn increase_borrow_asset_deposit(
         &mut self,
         amount: BorrowAssetAmount,
+        block_timestamp_ms: u64,
     ) -> Option<()> {
+        if self.started_at_block_timestamp_ms.is_none() || self.borrow_asset_deposit.is_zero() {
+            self.started_at_block_timestamp_ms = Some(block_timestamp_ms.into());
+        }
         self.borrow_asset_deposit.join(amount)
     }
 
@@ -48,6 +54,13 @@ impl SupplyPosition {
         &mut self,
         amount: BorrowAssetAmount,
     ) -> Option<BorrowAssetAmount> {
-        self.borrow_asset_deposit.split(amount)
+        let r = self.borrow_asset_deposit.split(amount);
+        // TODO: If we perform this commented-out reset, then failed
+        // withdrawal attempts will reset the timer. However, if we do not
+        // reset the timer, there is no other mechanism for doing so.
+        // if self.borrow_asset_deposit.is_zero() {
+        //     self.started_at_block_timestamp_ms = None;
+        // }
+        r
     }
 }
