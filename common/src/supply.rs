@@ -94,14 +94,7 @@ impl<M: std::borrow::Borrow<Market>> LinkedSupplyPosition<M> {
     }
 
     pub fn calculate_instantaneous_pending_yield(&self) -> BorrowAssetAmount {
-        let mut amount = self
-            .market
-            .borrow()
-            .calculate_supply_position_yield(
-                self.get_borrow_asset_deposit(),
-                self.borrow_asset_yield.get_next_snapshot_index(),
-            )
-            .get_amount();
+        let mut amount = self.calculate_yield().get_amount();
 
         // Calculate the amount representing the "in-progress" snapshot.
         let current_snapshot_part = self.calculate_last_snapshot_yield();
@@ -146,6 +139,40 @@ impl<M: std::borrow::Borrow<Market>> LinkedSupplyPosition<M> {
 
         estimate_current_snapshot.to_u128_floor().unwrap().into()
     }
+
+    pub fn calculate_yield(&self) -> AccumulationRecord<BorrowAsset> {
+        let mut next_snapshot_index = self.borrow_asset_yield.get_next_snapshot_index();
+
+        if self.market.borrow().snapshots.is_empty() {
+            return AccumulationRecord::empty(next_snapshot_index);
+        }
+
+        let amount = Decimal::from(self.get_borrow_asset_deposit().as_u128());
+
+        let mut accumulated = Decimal::ZERO;
+
+        let mut it = self.market.borrow().snapshots.iter();
+        // Skip the last snapshot, which may be incomplete.
+        it.next_back();
+
+        for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize).map(
+            // Assume # of snapshots is never >u32::MAX.
+            #[allow(clippy::cast_possible_truncation)]
+            |(i, s)| (i as u32, s),
+        ) {
+            let deposited = Decimal::from(snapshot.deposited.as_u128());
+            let distributed = Decimal::from(snapshot.yield_distribution.as_u128());
+            let share = amount * distributed / deposited;
+            accumulated += share;
+
+            next_snapshot_index = i + 1;
+        }
+
+        AccumulationRecord {
+            amount: accumulated.to_u128_floor().unwrap().into(),
+            next_snapshot_index,
+        }
+    }
 }
 
 pub struct LinkedSupplyPositionMut<M: std::borrow::BorrowMut<Market>>(LinkedSupplyPosition<M>);
@@ -179,13 +206,15 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         Self(LinkedSupplyPosition::new(market, account_id, position))
     }
 
+    /// In order for yield calculations to be accurate, this function MUST
+    /// BE CALLED every time a supply position's deposit changes. This
+    /// requirement is largely met by virtue of the fact that
+    /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
+    /// be modified via methods on this type.
     pub fn accumulate_yield(&mut self) {
         self.market.borrow_mut().snapshot();
 
-        let accumulation_record = self.market.borrow().calculate_supply_position_yield(
-            self.get_borrow_asset_deposit(),
-            self.borrow_asset_yield.get_next_snapshot_index(),
-        );
+        let accumulation_record = self.calculate_yield();
 
         self.position
             .borrow_asset_yield

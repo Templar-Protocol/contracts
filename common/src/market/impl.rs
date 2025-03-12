@@ -214,21 +214,20 @@ impl Market {
     ) -> Result<Option<(AccountId, BorrowAssetAmount)>, WithdrawalQueueLockError> {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
-        let Some((amount, mut supply_position)) =
-            self.supply_positions
-                .get(&account_id)
-                .and_then(|supply_position| {
-                    // Cap withdrawal amount to deposit amount at most.
-                    let amount = supply_position
-                        .get_borrow_asset_deposit()
-                        .min(requested_amount);
+        let Some((amount, mut supply_position)) = self
+            .get_linked_supply_position_mut(account_id.clone())
+            .and_then(|supply_position| {
+                // Cap withdrawal amount to deposit amount at most.
+                let amount = supply_position
+                    .get_borrow_asset_deposit()
+                    .min(requested_amount);
 
-                    if amount.is_zero() {
-                        None
-                    } else {
-                        Some((amount, supply_position))
-                    }
-                })
+                if amount.is_zero() {
+                    None
+                } else {
+                    Some((amount, supply_position))
+                }
+            })
         else {
             // The amount that the entry is eligible to withdraw is zero, so skip it.
             self.withdrawal_queue
@@ -237,9 +236,7 @@ impl Market {
             return Ok(None);
         };
 
-        self.record_supply_position_borrow_asset_withdrawal(&mut supply_position, amount);
-
-        self.supply_positions.insert(&account_id, &supply_position);
+        supply_position.record_withdrawal(amount);
 
         Ok(Some((account_id, amount)))
     }
@@ -299,42 +296,6 @@ impl Market {
 
         // Next, dynamic (supply-based) yield.
         self.snapshot_with_yield_distribution(amount);
-    }
-
-    pub fn record_supply_position_borrow_asset_deposit(
-        &mut self,
-        supply_position: &mut SupplyPosition,
-        amount: BorrowAssetAmount,
-    ) {
-        self.accumulate_supply_position_yield(supply_position);
-        supply_position
-            .increase_borrow_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
-
-        self.borrow_asset_deposited
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset deposited overflow"));
-
-        self.snapshot();
-    }
-
-    pub fn record_supply_position_borrow_asset_withdrawal(
-        &mut self,
-        supply_position: &mut SupplyPosition,
-        amount: BorrowAssetAmount,
-    ) -> BorrowAssetAmount {
-        self.accumulate_supply_position_yield(supply_position);
-        let withdrawn = supply_position
-            .decrease_borrow_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
-
-        self.borrow_asset_deposited
-            .split(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
-
-        self.snapshot();
-
-        withdrawn
     }
 
     pub fn record_borrow_position_collateral_asset_deposit(
@@ -549,113 +510,6 @@ impl Market {
 
         AccumulationRecord {
             amount: accumulated.to_u128_ceil().unwrap().into(),
-            next_snapshot_index,
-        }
-    }
-
-    /// In order for yield calculations to be accurate, this function MUST
-    /// BE CALLED every time a supply position's deposit changes. This
-    /// requirement is largely met by virtue of the fact that
-    /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
-    /// be modified via `Self::record_supply_position_*` methods.
-    pub fn accumulate_supply_position_yield(&mut self, supply_position: &mut SupplyPosition) {
-        self.snapshot();
-
-        let accumulation_record = self.calculate_supply_position_yield(
-            supply_position.get_borrow_asset_deposit(),
-            supply_position.borrow_asset_yield.get_next_snapshot_index(),
-        );
-
-        supply_position
-            .borrow_asset_yield
-            .accumulate(accumulation_record);
-    }
-
-    /// This function must only be used to estimate interest for the purpose of account monitoring.
-    #[must_use]
-    pub fn calculate_supply_position_instantaneous_pending_yield(
-        &self,
-        supply_position: &SupplyPosition,
-    ) -> BorrowAssetAmount {
-        let mut amount = self
-            .calculate_supply_position_yield(
-                supply_position.get_borrow_asset_deposit(),
-                supply_position.borrow_asset_yield.get_next_snapshot_index(),
-            )
-            .get_amount();
-
-        // Calculate the amount representing the "in-progress" snapshot.
-        let current_snapshot_part =
-            self.calculate_supply_position_last_snapshot_yield(supply_position);
-
-        amount.join(current_snapshot_part);
-
-        amount
-    }
-
-    #[allow(clippy::missing_panics_doc)]
-    pub fn calculate_supply_position_last_snapshot_yield(
-        &self,
-        supply_position: &SupplyPosition,
-    ) -> BorrowAssetAmount {
-        let deposit = Decimal::from(supply_position.get_borrow_asset_deposit().as_u128());
-        if deposit.is_zero() {
-            return BorrowAssetAmount::zero();
-        }
-
-        let last_snapshot = self.get_last_snapshot();
-        let total_deposited = Decimal::from(last_snapshot.deposited.as_u128());
-        if total_deposited.is_zero() {
-            // divzero safety
-            return BorrowAssetAmount::zero();
-        }
-        let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
-        // This is guaranteed to be nonzero, so no divzero issue.
-        let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
-        let total_yield_distribution = Decimal::from(last_snapshot.yield_distribution.as_u128());
-        let estimate_current_snapshot =
-            total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
-
-        // We know that total_yield_distribution fits in u128.
-        // Also: supply_weight <= total_weight, deposit <= total_deposited.
-        // Therefore, estimate_current_snapshot cannot exceed u128.
-        #[allow(clippy::unwrap_used)]
-        estimate_current_snapshot.to_u128_floor().unwrap().into()
-    }
-
-    #[allow(clippy::missing_panics_doc)]
-    pub fn calculate_supply_position_yield(
-        &self,
-        amount_deposited_during_interval: BorrowAssetAmount,
-        mut next_snapshot_index: u32,
-    ) -> AccumulationRecord<BorrowAsset> {
-        if self.snapshots.is_empty() {
-            return AccumulationRecord::empty(next_snapshot_index);
-        }
-
-        let amount = Decimal::from(amount_deposited_during_interval.as_u128());
-
-        let mut accumulated = Decimal::ZERO;
-
-        let mut it = self.snapshots.iter();
-        // Skip the last snapshot, which may be incomplete.
-        it.next_back();
-
-        for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize).map(
-            // Assume # of snapshots is never >u32::MAX.
-            #[allow(clippy::cast_possible_truncation)]
-            |(i, s)| (i as u32, s),
-        ) {
-            let deposited = Decimal::from(snapshot.deposited.as_u128());
-            let distributed = Decimal::from(snapshot.yield_distribution.as_u128());
-            let share = amount * distributed / deposited;
-            accumulated += share;
-
-            next_snapshot_index = i + 1;
-        }
-
-        AccumulationRecord {
-            amount: accumulated.to_u128_floor().unwrap().into(),
             next_snapshot_index,
         }
     }
