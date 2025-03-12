@@ -53,7 +53,7 @@ jobs:
         run: |
           cd contract/market
           if [ -n "$NEWLY_CREATED" ]; then
-            INIT_ARGS=$(cargo run --package templar-market-contract --example generate_testnet_configuration)
+            INIT_ARGS=$(cargo run --package test-utils --example generate_testnet_configuration)
             cargo near deploy build-reproducible-wasm --skip-git-remote-check "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
               with-init-call new \
                 json-args "$INIT_ARGS" \

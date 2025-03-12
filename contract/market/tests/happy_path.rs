@@ -118,7 +118,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     );
 
     let borrow_status = c
-        .get_borrow_status(borrow_user.id(), EQUAL_PRICE)
+        .get_borrow_status(borrow_user.id(), c.get_prices().await)
         .await
         .unwrap();
 
@@ -131,8 +131,10 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     // Step 3: Withdraw some of the borrow asset
     let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
 
+    println!("Price pair: {:#?}", c.get_prices().await);
+
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
-    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 1000).await;
 
     let balance_after = c.borrow_asset_balance_of(borrow_user.id()).await;
 
@@ -266,7 +268,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         // Borrower withdraws collateral.
         async {
             let balance_before = c.collateral_asset_balance_of(borrow_user.id()).await;
-            c.withdraw_collateral(&borrow_user, 2000, None).await;
+            c.withdraw_collateral(&borrow_user, 2000).await;
             let balance_after = c.collateral_asset_balance_of(borrow_user.id()).await;
             assert_eq!(balance_after - balance_before, 2000);
             let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();

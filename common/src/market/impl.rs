@@ -18,7 +18,7 @@ use crate::{
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
-use super::OraclePriceProof;
+use super::PricePair;
 
 pub const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425
 
@@ -130,10 +130,13 @@ impl Market {
         }
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn get_borrow_asset_available_to_borrow(
         &self,
         current_contract_balance: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
+        // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
+        #[allow(clippy::unwrap_used)]
         let must_retain = ((1u32 - self.configuration.maximum_borrow_asset_usage_ratio)
             * self.borrow_asset_deposited.as_u128())
         .to_u128_ceil()
@@ -449,6 +452,8 @@ impl Market {
 
         let mut accumulated = Decimal::ZERO;
 
+        // Assume # of snapshots will never be > u32::MAX.
+        #[allow(clippy::cast_possible_truncation)]
         let mut it = self
             .snapshots
             .iter()
@@ -539,6 +544,7 @@ impl Market {
         amount
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn calculate_supply_position_last_snapshot_yield(
         &self,
         supply_position: &SupplyPosition,
@@ -561,6 +567,10 @@ impl Market {
         let estimate_current_snapshot =
             total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
 
+        // We know that total_yield_distribution fits in u128.
+        // Also: supply_weight <= total_weight, deposit <= total_deposited.
+        // Therefore, estimate_current_snapshot cannot exceed u128.
+        #[allow(clippy::unwrap_used)]
         estimate_current_snapshot.to_u128_floor().unwrap().into()
     }
 
@@ -582,11 +592,11 @@ impl Market {
         // Skip the last snapshot, which may be incomplete.
         it.next_back();
 
-        for (i, snapshot) in it
-            .enumerate()
-            .skip(next_snapshot_index as usize)
-            .map(|(i, s)| (i as u32, s))
-        {
+        for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize).map(
+            // Assume # of snapshots is never >u32::MAX.
+            #[allow(clippy::cast_possible_truncation)]
+            |(i, s)| (i as u32, s),
+        ) {
             let deposited = Decimal::from(snapshot.deposited.as_u128());
             let distributed = Decimal::from(snapshot.yield_distribution.as_u128());
             let share = amount * distributed / deposited;
@@ -604,7 +614,7 @@ impl Market {
     pub fn can_borrow_position_be_liquidated(
         &self,
         account_id: &AccountId,
-        oracle_price_proof: &OraclePriceProof,
+        oracle_price_proof: &PricePair,
     ) -> bool {
         let Some(borrow_position) = self.borrow_positions.get(account_id) else {
             return false;

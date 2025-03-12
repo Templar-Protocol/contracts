@@ -26,9 +26,12 @@ async fn success_above_minimum_initial_collateral_ratio(
     .await;
 
     c.supply(&supply_user, 10_000).await;
-    c.collateralize(&borrow_user, (1000u32 * initial).to_u128_ceil().unwrap())
-        .await;
-    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+    c.collateralize(
+        &borrow_user,
+        (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+    )
+    .await;
+    c.borrow(&borrow_user, 1000).await;
 }
 
 #[rstest]
@@ -58,10 +61,10 @@ async fn fail_below_minimum_initial_collateral_ratio(
     c.supply(&supply_user, 10_000).await;
     c.collateralize(
         &borrow_user,
-        (1000u32 * initial).to_u128_ceil().unwrap() - 1,
+        (1000u32 * initial).to_u128_floor().unwrap() - 1,
     )
     .await;
-    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 1000).await;
 }
 
 #[rstest]
@@ -87,18 +90,17 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
     .await;
 
     c.supply(&supply_user, 10_000).await;
-    c.collateralize(&borrow_user, (1000u32 * initial).to_u128_ceil().unwrap())
-        .await;
-    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+    c.collateralize(
+        &borrow_user,
+        (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+    )
+    .await;
+    c.borrow(&borrow_user, 1000).await;
+
+    c.set_collateral_asset_price(0.99).await;
 
     let borrow_status = c
-        .get_borrow_status(
-            borrow_user.id(),
-            templar_common::market::OraclePriceProof {
-                collateral_asset_price: dec!("0.99"),
-                borrow_asset_price: Decimal::ONE,
-            },
-        )
+        .get_borrow_status(borrow_user.id(), c.get_prices().await)
         .await
         .unwrap();
 

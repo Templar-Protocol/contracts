@@ -5,6 +5,7 @@ members = ["common", "contract/*", "mock/*", "test-utils"]
 [workspace.dependencies]
 getrandom = { version = "0.2", features = ["custom"] }
 borsh = { version = "1.5", features = ["unstable__schema"] }
+hex = { version = "0.4.3", features = ["serde"] }
 near-sdk = { version = "5.7", features = ["unstable"] }
 near-contract-standards = "5.7"
 near-workspaces = { version = "0.16", features = ["unstable"] }

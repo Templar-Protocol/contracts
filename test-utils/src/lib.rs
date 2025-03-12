@@ -1,7 +1,7 @@
 use std::{path::Path, str::FromStr};
 
 use near_sdk::{
-    json_types::U128,
+    json_types::{I64, U128, U64},
     serde_json::{self, json},
     AccountId, NearToken,
 };
@@ -15,10 +15,11 @@ use templar_common::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     market::{
-        LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
+        BalanceOracleConfiguration, LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage,
         YieldWeights,
     },
     number::Decimal,
+    oracle::pyth::{self, OracleResponse, PriceIdentifier},
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -26,15 +27,14 @@ use templar_common::{
 };
 use tokio::sync::OnceCell;
 
-pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Decimal::ONE,
-    borrow_asset_price: Decimal::ONE,
-};
-
-pub const COLLATERAL_HALF_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Decimal::ONE_HALF,
-    borrow_asset_price: Decimal::ONE,
-};
+pub fn to_price(price: f64) -> pyth::Price {
+    pyth::Price {
+        price: I64((price * 10000.0) as i64),
+        conf: U64(0),
+        expo: -4,
+        publish_time: 0,
+    }
+}
 
 pub enum TestAsset {
     Native,
@@ -58,6 +58,8 @@ impl TestAsset {
 pub struct TestController {
     pub worker: Worker<Sandbox>,
     pub contract: Contract,
+    pub config: MarketConfiguration,
+    pub balance_oracle: Contract,
     pub borrow_asset: TestAsset,
     pub collateral_asset: TestAsset,
 }
@@ -94,6 +96,47 @@ impl TestController {
             .await
             .unwrap()
             .json::<MarketConfiguration>()
+            .unwrap()
+    }
+
+    pub async fn set_collateral_asset_price(&self, price: f64) -> ExecutionSuccess {
+        println!("Setting collateral asset price...",);
+        self.balance_oracle
+            .call("set_price")
+            .args_json(json!({
+                "price_identifier": self.config.balance_oracle.collateral_asset_price_id,
+                "price": to_price(price),
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    pub async fn set_borrow_asset_price(&self, price: f64) -> ExecutionSuccess {
+        println!("Setting borrow asset price...",);
+        self.balance_oracle
+            .call("set_price")
+            .args_json(json!({
+                "price_identifier": self.config.balance_oracle.borrow_asset_price_id,
+                "price": to_price(price),
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    pub async fn get_prices(&self) -> OracleResponse {
+        self.balance_oracle
+            .view("list_ema_prices_no_older_than")
+            .args_json(json!({ "price_ids": [
+                self.config.balance_oracle.borrow_asset_price_id,
+                self.config.balance_oracle.collateral_asset_price_id,
+            ], "age": self.config.balance_oracle.price_maximum_age_s }))
+            .await
+            .unwrap()
+            .json::<OracleResponse>()
             .unwrap()
     }
 
@@ -204,13 +247,13 @@ impl TestController {
     pub async fn get_borrow_status(
         &self,
         account_id: &AccountId,
-        price: OraclePriceProof,
+        oracle_response: OracleResponse,
     ) -> Option<BorrowStatus> {
         self.contract
             .view("get_borrow_status")
             .args_json(json!({
                 "account_id": account_id,
-                "oracle_price_proof": price,
+                "oracle_response": oracle_response,
             }))
             .await
             .unwrap()
@@ -218,19 +261,18 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn borrow(&self, borrow_user: &Account, amount: u128, price: OraclePriceProof) {
+    pub async fn borrow(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         println!("{} borrowing {amount} tokens...", borrow_user.id());
         borrow_user
             .call(self.contract.id(), "borrow")
             .args_json(json!({
                 "amount": U128(amount),
-                "oracle_price_proof": price,
             }))
             .max_gas()
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
     pub async fn collateral_asset_balance_of(&self, account_id: &AccountId) -> u128 {
@@ -483,14 +525,12 @@ impl TestController {
         &self,
         borrow_user: &Account,
         amount: u128,
-        price: Option<OraclePriceProof>,
     ) -> ExecutionSuccess {
         println!("{} withdrawing {amount} collateral...", borrow_user.id());
         borrow_user
             .call(self.contract.id(), "withdraw_collateral")
             .args_json(json!({
                 "amount": U128(amount),
-                "oracle_price_proof": price,
             }))
             .transact()
             .await
@@ -558,13 +598,11 @@ impl TestController {
         liquidator_user: &Account,
         account_id: &AccountId,
         borrow_asset_amount: u128,
-        oracle_price_proof: OraclePriceProof,
     ) {
         liquidator_user
             .call(self.contract.id(), "liquidate_native")
             .args_json(json!({
                 "account_id": account_id,
-                "oracle_price_proof": oracle_price_proof,
             }))
             .deposit(NearToken::from_yoctonear(borrow_asset_amount))
             .transact()
@@ -578,7 +616,6 @@ impl TestController {
         liquidator_user: &Account,
         account_id: &AccountId,
         borrow_asset_amount: u128,
-        oracle_price_proof: OraclePriceProof,
     ) {
         println!(
             "{} executing liquidation against {} for {}...",
@@ -588,13 +625,8 @@ impl TestController {
         );
         match self.borrow_asset {
             TestAsset::Native => {
-                self.liquidate_native(
-                    liquidator_user,
-                    account_id,
-                    borrow_asset_amount,
-                    oracle_price_proof,
-                )
-                .await
+                self.liquidate_native(liquidator_user, account_id, borrow_asset_amount)
+                    .await
             }
             TestAsset::Nep141(_) => {
                 self.borrow_asset_transfer_call(
@@ -603,7 +635,6 @@ impl TestController {
                     borrow_asset_amount,
                     &serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
                         account_id: account_id.clone(),
-                        oracle_price_proof,
                     }))
                     .unwrap(),
                 )
@@ -697,11 +728,12 @@ pub async fn create_prefixed_account<T: DevNetwork + TopLevelAccountCreator + 's
 
 macro_rules! accounts {
     ($w: ident, $($n:ident),*) => {
-        let ($($n,)*) = tokio::join!( $(create_prefixed_account(stringify!($n), &$w)),* );
+        $(let $n = create_prefixed_account(stringify!($n), &$w).await;)*
     };
 }
 
 pub fn market_configuration(
+    balance_oracle_id: AccountId,
     borrow_asset_id: AccountId,
     collateral_asset_id: AccountId,
     yield_weights: YieldWeights,
@@ -709,7 +741,18 @@ pub fn market_configuration(
     MarketConfiguration {
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
-        balance_oracle_account_id: "balance_oracle".parse().unwrap(),
+        balance_oracle: BalanceOracleConfiguration {
+            account_id: balance_oracle_id,
+            collateral_asset_price_id: PriceIdentifier(hex_literal::hex!(
+                "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
+            )),
+            collateral_asset_decimals: 24,
+            borrow_asset_price_id: PriceIdentifier(hex_literal::hex!(
+                "27e867f0f4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
+            )),
+            borrow_asset_decimals: 24, // TODO: Update test helpers to make it easier to work with assets with differing decimal places
+            price_maximum_age_s: 60,
+        },
         minimum_initial_collateral_ratio: Decimal::from_str("1.25").unwrap(),
         minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
         maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
@@ -756,6 +799,7 @@ async fn get_contract(name: &str, path: &str) -> Vec<u8> {
 
 pub static WASM_MARKET: OnceCell<Vec<u8>> = OnceCell::const_new();
 pub static WASM_MOCK_FT: OnceCell<Vec<u8>> = OnceCell::const_new();
+pub static WASM_MOCK_ORACLE: OnceCell<Vec<u8>> = OnceCell::const_new();
 
 pub async fn setup_market(
     worker: &Worker<Sandbox>,
@@ -771,6 +815,23 @@ pub async fn setup_market(
         .args_json(json!({
             "configuration": configuration,
         }))
+        .transact()
+        .await
+        .unwrap()
+        .unwrap();
+
+    contract
+}
+
+pub async fn deploy_oracle(account: Account) -> Contract {
+    let wasm = WASM_MOCK_ORACLE
+        .get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
+        .await;
+
+    let contract = account.deploy(wasm).await.unwrap().unwrap();
+    contract
+        .call("new")
+        .args_json(json!({}))
         .transact()
         .await
         .unwrap()
@@ -824,9 +885,11 @@ pub async fn setup_everything(
         protocol_yield_user,
         insurance_yield_user,
         collateral_asset,
-        borrow_asset
+        borrow_asset,
+        balance_oracle
     );
     let mut config = market_configuration(
+        balance_oracle.id().clone(),
         borrow_asset.id().clone(),
         collateral_asset.id().clone(),
         YieldWeights::new_with_supply_weight(8)
@@ -835,27 +898,35 @@ pub async fn setup_everything(
     );
     customize_market_configuration(&mut config);
 
-    let (contract, borrow_asset, collateral_asset) = tokio::join!(
+    let (contract, balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
         setup_market(&worker, &config),
+        deploy_oracle(balance_oracle),
         deploy_ft(borrow_asset, "Borrow Asset", "BORROW"),
         deploy_ft(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
     let collateral_asset = config
         .collateral_asset
+        .clone()
         .into_nep141()
         .map_or(TestAsset::Native, |_| TestAsset::Nep141(collateral_asset));
     let borrow_asset = config
         .borrow_asset
+        .clone()
         .into_nep141()
         .map_or(TestAsset::Native, |_| TestAsset::Nep141(borrow_asset));
 
     let c = TestController {
         worker,
+        config,
         contract,
+        balance_oracle,
         collateral_asset,
         borrow_asset,
     };
+
+    c.set_borrow_asset_price(1.0).await;
+    c.set_collateral_asset_price(1.0).await;
 
     // Asset opt-ins.
     tokio::join!(

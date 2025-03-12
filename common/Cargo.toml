@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 borsh.workspace = true
+hex.workspace = true
 near-contract-standards.workspace = true
 near-sdk.workspace = true
 thiserror.workspace = true

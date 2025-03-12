@@ -1,0 +1,14 @@
+[package]
+name = "mock-oracle"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+getrandom.workspace = true
+near-sdk.workspace = true
+near-contract-standards.workspace = true
+templar-common.workspace = true
