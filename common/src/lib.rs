@@ -13,3 +13,5 @@ pub mod static_yield;
 pub mod supply;
 pub mod util;
 pub mod withdrawal_queue;
+
+pub const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425

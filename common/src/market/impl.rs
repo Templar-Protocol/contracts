@@ -6,8 +6,7 @@ use near_sdk::{
 };
 
 use crate::{
-    accumulator::AccumulationRecord,
-    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
+    asset::BorrowAssetAmount,
     borrow::{BorrowPosition, LinkedBorrowPosition, LinkedBorrowPositionMut},
     chain_time::ChainTime,
     event::MarketEvent,
@@ -18,10 +17,6 @@ use crate::{
     supply::{LinkedSupplyPosition, LinkedSupplyPositionMut, SupplyPosition},
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
-
-use super::PricePair;
-
-pub const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425
 
 #[derive(BorshStorageKey)]
 #[near]

@@ -8,8 +8,9 @@ use near_sdk::{env, json_types::U64, near, AccountId};
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    market::{Market, PricePair, MS_IN_A_YEAR},
+    market::{Market, PricePair},
     number::Decimal,
+    MS_IN_A_YEAR,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

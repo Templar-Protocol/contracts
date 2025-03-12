@@ -3,7 +3,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 use rstest::rstest;
 use templar_common::{
     asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
-    market::MS_IN_A_YEAR, number::Decimal,
+    number::Decimal, MS_IN_A_YEAR,
 };
 use test_utils::*;
 
@@ -47,8 +47,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     let mut iters = 0;
 
-    // TODO: Change back to 3
-    for _ in 0..1 {
+    for _ in 0..3 {
         println!("Sleeping...");
         let done = std::sync::atomic::AtomicBool::new(false);
         tokio::join!(
