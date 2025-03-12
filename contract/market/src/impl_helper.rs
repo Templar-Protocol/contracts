@@ -5,7 +5,8 @@ use near_sdk::{
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::BorrowPosition,
-    market::OraclePriceProof,
+    market::PricePair,
+    oracle::pyth::OracleResponse,
     snapshot::Snapshot,
 };
 
@@ -65,7 +66,7 @@ impl Contract {
         &mut self,
         account_id: &AccountId,
         amount: BorrowAssetAmount,
-        oracle_price_proof: &OraclePriceProof,
+        oracle_price_proof: &PricePair,
     ) -> CollateralAssetAmount {
         let mut borrow_position = self
             .borrow_positions
@@ -155,12 +156,17 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
         #[callback_result] current_balance: Result<BorrowAssetAmount, PromiseError>,
-        #[callback_result] oracle_price_proof: Result<OraclePriceProof, PromiseError>,
+        #[callback_result] oracle_response_result: Result<OracleResponse, PromiseError>,
     ) -> Promise {
         let current_balance = current_balance
             .unwrap_or_else(|_| env::panic_str("Failed to fetch borrow asset current balance."));
-        let oracle_price_proof = oracle_price_proof
+        let oracle_response = oracle_response_result
             .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
+        let price_pair = self
+            .configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.get_borrow_asset_available_to_borrow(current_balance);
@@ -187,17 +193,13 @@ impl Contract {
 
         require!(
             self.configuration
-                .is_within_minimum_initial_collateral_ratio(&borrow_position, &oracle_price_proof),
+                .is_within_minimum_initial_collateral_ratio(&borrow_position, &price_pair),
             "New position must exceed initial minimum collateral ratio",
         );
 
         require!(
             self.configuration
-                .borrow_status(
-                    &borrow_position,
-                    &oracle_price_proof,
-                    env::block_timestamp_ms(),
-                )
+                .borrow_status(&borrow_position, &price_pair, env::block_timestamp_ms())
                 .is_healthy(),
             "New position would be in liquidation",
         );
@@ -308,10 +310,36 @@ impl Contract {
         }
     }
 
+    #[private]
+    pub fn liquidate_ft_transfer_call_01_consume_oracle_response(
+        &mut self,
+        liquidator_id: AccountId,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> Promise {
+        let price_pair = self
+            .configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+        let liquidated_collateral =
+            self.execute_liquidate_initial(&account_id, amount, &price_pair);
+
+        self.configuration
+            .collateral_asset
+            .transfer(liquidator_id, liquidated_collateral)
+            .then(
+                Self::ext(env::current_account_id())
+                    .liquidate_ft_transfer_call_02_finalize(account_id, amount),
+            )
+    }
+
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
     #[private]
-    pub fn after_liquidate_via_ft_transfer_call(
+    pub fn liquidate_ft_transfer_call_02_finalize(
         &mut self,
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
@@ -327,7 +355,36 @@ impl Contract {
     }
 
     #[private]
-    pub fn after_liquidate_native(
+    pub fn liquidate_native_01_consume_price(
+        &mut self,
+        liquidator_id: AccountId,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> Promise {
+        let price_pair = self
+            .configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+        let liquidated_collateral =
+            self.execute_liquidate_initial(&account_id, amount, &price_pair);
+
+        self.configuration
+            .collateral_asset
+            .transfer(liquidator_id.clone(), liquidated_collateral)
+            .then(
+                Self::ext(env::current_account_id()).liquidate_native_02_finalize(
+                    liquidator_id,
+                    account_id,
+                    amount,
+                ),
+            )
+    }
+
+    #[private]
+    pub fn liquidate_native_02_finalize(
         &mut self,
         liquidator_id: AccountId,
         account_id: AccountId,
@@ -348,6 +405,65 @@ impl Contract {
                     .borrow_asset
                     .transfer(liquidator_id, refund_to_liquidator),
             )
+        }
+    }
+
+    #[private]
+    pub fn withdraw_collateral_01_consume_price(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> Promise {
+        let price_pair = self
+            .configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+            env::panic_str("No borrower record. Please deposit collateral first.");
+        };
+
+        self.record_borrow_position_collateral_asset_withdrawal(&mut borrow_position, amount);
+
+        require!(
+            self.configuration
+                .is_within_minimum_collateral_ratio(&borrow_position, &price_pair),
+            "Borrow must still be above MCR after collateral withdrawal.",
+        );
+
+        self.borrow_positions.insert(&account_id, &borrow_position);
+
+        self.configuration
+            .collateral_asset
+            .transfer(account_id.clone(), amount)
+            .then(
+                Self::ext(env::current_account_id())
+                    .withdraw_collateral_02_finalize(account_id, amount),
+            )
+    }
+
+    #[private]
+    pub fn withdraw_collateral_02_finalize(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+    ) {
+        require!(env::promise_results_count() == 1);
+        let transfer_was_successful =
+            matches!(env::promise_result(0), PromiseResult::Successful(_));
+
+        if transfer_was_successful {
+            // Do nothing
+        } else {
+            let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+                env::panic_str("Invariant violation: Borrow position must exist after collateral withdrawal failure.");
+            };
+
+            self.record_borrow_position_collateral_asset_deposit(&mut borrow_position, amount);
+
+            self.borrow_positions.insert(&account_id, &borrow_position);
         }
     }
 }

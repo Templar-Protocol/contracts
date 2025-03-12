@@ -1,9 +1,10 @@
-use near_sdk::{env, near, require, serde_json, AccountId, Promise, PromiseOrValue};
+use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface, OraclePriceProof},
+    market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
+    oracle::pyth::OracleResponse,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -57,22 +58,24 @@ impl MarketExternalInterface for Contract {
     fn get_borrow_status(
         &self,
         account_id: AccountId,
-        oracle_price_proof: OraclePriceProof,
+        oracle_response: OracleResponse,
     ) -> Option<BorrowStatus> {
         let borrow_position = self.get_borrow_position(account_id)?;
 
+        let price_pair = self
+            .configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
         Some(self.configuration.borrow_status(
             &borrow_position,
-            &oracle_price_proof,
+            &price_pair,
             env::block_timestamp_ms(),
         ))
     }
 
-    fn borrow(
-        &mut self,
-        amount: BorrowAssetAmount,
-        oracle_price_proof: OraclePriceProof,
-    ) -> Promise {
+    fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
         require!(
             amount >= self.configuration.minimum_borrow_amount,
@@ -89,47 +92,42 @@ impl MarketExternalInterface for Contract {
         self.configuration
             .borrow_asset
             .current_account_balance()
-            .and(
-                #[allow(clippy::unwrap_used)]
-                // TODO: Replace with call to actual price oracle.
-                Self::ext(env::current_account_id())
-                    .return_static(serde_json::to_value(oracle_price_proof).unwrap()),
-            )
+            .and(self.configuration.balance_oracle.retrieve_price_pair())
             .then(
                 Self::ext(env::current_account_id())
                     .borrow_01_consume_balance_and_price(account_id, amount),
             )
     }
 
-    fn withdraw_collateral(
-        &mut self,
-        amount: CollateralAssetAmount,
-        oracle_price_proof: Option<OraclePriceProof>,
-    ) -> Promise {
+    fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise {
         let account_id = env::predecessor_account_id();
 
         let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
-        self.record_borrow_position_collateral_asset_withdrawal(&mut borrow_position, amount);
+        if borrow_position.get_total_borrow_asset_liability().is_zero() {
+            // No need to retrieve prices, since there is zero liability.
+            self.record_borrow_position_collateral_asset_withdrawal(&mut borrow_position, amount);
+            self.borrow_positions.insert(&account_id, &borrow_position);
 
-        if !borrow_position.get_total_borrow_asset_liability().is_zero() {
-            require!(
-                self.configuration.is_within_minimum_collateral_ratio(
-                    &borrow_position,
-                    &oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price")),
-                ),
-                "Borrow must still be above MCR after collateral withdrawal.",
-            );
+            self.configuration
+                .collateral_asset
+                .transfer(account_id.clone(), amount)
+                .then(
+                    Self::ext(env::current_account_id())
+                        .withdraw_collateral_02_finalize(account_id, amount),
+                )
+        } else {
+            // They still have liability, so we need to check prices.
+            self.configuration
+                .balance_oracle
+                .retrieve_price_pair()
+                .then(
+                    Self::ext(env::current_account_id())
+                        .withdraw_collateral_01_consume_price(account_id, amount),
+                )
         }
-
-        self.borrow_positions.insert(&account_id, &borrow_position);
-
-        self.configuration
-            .collateral_asset
-            .transfer(account_id, amount) // TODO: Check for failure
-            .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
     }
 
     fn apply_interest(&mut self) {
@@ -375,11 +373,7 @@ impl MarketExternalInterface for Contract {
     }
 
     #[payable]
-    fn liquidate_native(
-        &mut self,
-        account_id: AccountId,
-        oracle_price_proof: OraclePriceProof,
-    ) -> Promise {
+    fn liquidate_native(&mut self, account_id: AccountId) -> Promise {
         require!(
             self.configuration.borrow_asset.is_native(),
             "Unsupported borrow asset",
@@ -389,18 +383,15 @@ impl MarketExternalInterface for Contract {
 
         require!(!amount.is_zero(), "Deposit must be nonzero");
 
-        let liquidated_collateral =
-            self.execute_liquidate_initial(&account_id, amount, &oracle_price_proof);
-
-        let liquidator_id = env::predecessor_account_id();
-
         self.configuration
-            .collateral_asset
-            .transfer(liquidator_id.clone(), liquidated_collateral)
-            .then(Self::ext(env::current_account_id()).after_liquidate_native(
-                liquidator_id,
-                account_id,
-                amount,
-            ))
+            .balance_oracle
+            .retrieve_price_pair()
+            .then(
+                Self::ext(env::current_account_id()).liquidate_native_01_consume_price(
+                    env::predecessor_account_id(),
+                    account_id,
+                    amount,
+                ),
+            )
     }
 }

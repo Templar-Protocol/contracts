@@ -38,8 +38,8 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     let time_outer = std::time::Instant::now();
     tokio::join!(
-        c.borrow(&borrow_user, principal, EQUAL_PRICE),
-        c.borrow(&borrow_user_2, principal, EQUAL_PRICE),
+        c.borrow(&borrow_user, principal),
+        c.borrow(&borrow_user_2, principal),
     );
     // wait for ~1 block
     tokio::time::sleep(Duration::from_secs(1)).await;

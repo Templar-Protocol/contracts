@@ -1,5 +1,5 @@
 use rstest::rstest;
-use test_utils::{setup_everything, SetupEverything, EQUAL_PRICE};
+use test_utils::{setup_everything, SetupEverything};
 
 #[rstest]
 #[case(0)]
@@ -23,7 +23,7 @@ async fn harvest_yield_gas(#[case] iterations: usize) {
         if i % 10 == 0 {
             println!("Iteration {i}...");
         }
-        c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+        c.borrow(&borrow_user, 1000).await;
         c.repay(&borrow_user, 1100).await;
     }
 

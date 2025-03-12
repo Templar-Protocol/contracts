@@ -146,10 +146,17 @@ impl Decimal {
     }
 
     #[must_use]
-    pub fn pow(self, mut exponent: u32) -> Self {
+    pub fn pow(self, mut exponent: i32) -> Self {
         if exponent == 0 {
             return Self::ONE;
         }
+
+        let to_reciprocal = if exponent < 0 {
+            exponent = -exponent;
+            true
+        } else {
+            false
+        };
 
         let mut y = Self::ONE;
         let mut x = self;
@@ -162,7 +169,13 @@ impl Decimal {
             exponent >>= 1;
         }
 
-        x * y
+        let result = x * y;
+
+        if to_reciprocal {
+            Decimal::ONE / result
+        } else {
+            result
+        }
     }
 
     pub fn pow2_int(exponent: u32) -> Option<Self> {
@@ -643,7 +656,9 @@ mod tests {
     #[case(1, 1)]
     #[test]
     fn power(#[case] x: u128, #[case] n: u32) {
-        assert_eq!(Decimal::from(x).pow(n), Decimal::from(x.pow(n)));
+        #[allow(clippy::cast_possible_wrap)]
+        let n_i32 = n as i32;
+        assert_eq!(Decimal::from(x).pow(n_i32), Decimal::from(x.pow(n)));
     }
 
     #[test]
