@@ -213,6 +213,10 @@ impl MarketExternalInterface for Contract {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) {
             supply_position.accumulate_yield();
+            // Compound yield by withdrawing it and recording it as an immediate deposit.
+            let total_yield = supply_position.inner().borrow_asset_yield.get_total();
+            supply_position.record_yield_withdrawal(total_yield);
+            supply_position.record_deposit(total_yield);
         }
     }
 
