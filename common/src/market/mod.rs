@@ -5,6 +5,8 @@ use near_sdk::{env, near, AccountId};
 
 use crate::{asset::BorrowAssetAmount, number::Decimal};
 
+mod balance_oracle_configuration;
+pub use balance_oracle_configuration::*;
 mod configuration;
 pub use configuration::*;
 mod external;
@@ -71,7 +73,6 @@ pub enum Nep141MarketDepositMessage {
 #[near(serializers = [json])]
 pub struct LiquidateMsg {
     pub account_id: AccountId,
-    pub oracle_price_proof: OraclePriceProof,
 }
 
 #[derive(Clone, Debug)]
@@ -80,13 +81,4 @@ pub struct WithdrawalExecution {
     pub account_id: AccountId,
     pub amount_to_account: BorrowAssetAmount,
     pub amount_to_fees: BorrowAssetAmount,
-}
-
-/// This represents some sort of proof-of-price from a price oracle, e.g. Pyth.
-/// In production, it must be validated, but for now it's just trust me bro.
-#[derive(Clone, Debug)]
-#[near(serializers = [json])]
-pub struct OraclePriceProof {
-    pub collateral_asset_price: Decimal,
-    pub borrow_asset_price: Decimal,
 }

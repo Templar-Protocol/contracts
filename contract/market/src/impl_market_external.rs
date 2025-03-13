@@ -1,9 +1,10 @@
-use near_sdk::{env, near, require, serde_json, AccountId, Promise, PromiseOrValue};
+use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface, OraclePriceProof},
+    market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
+    oracle::pyth::OracleResponse,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -31,8 +32,7 @@ impl MarketExternalInterface for Contract {
     fn list_borrows(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.borrow_positions
-            .keys()
+        self.iter_borrow_account_ids()
             .skip(offset)
             .take(count)
             .collect()
@@ -41,39 +41,39 @@ impl MarketExternalInterface for Contract {
     fn list_supplys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.supply_positions
-            .keys()
+        self.iter_supply_account_ids()
             .skip(offset)
             .take(count)
             .collect()
     }
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
-        let mut borrow_position = self.borrow_positions.get(&account_id)?;
-        borrow_position.pending_fee_estimate =
-            self.calculate_borrow_position_instantaneous_pending_interest(&borrow_position);
-        Some(borrow_position)
+        let mut borrow_position = self.get_linked_borrow_position(account_id)?;
+        borrow_position.with_pending_interest();
+        Some(borrow_position.inner().clone())
     }
 
     fn get_borrow_status(
         &self,
         account_id: AccountId,
-        oracle_price_proof: OraclePriceProof,
+        oracle_response: OracleResponse,
     ) -> Option<BorrowStatus> {
         let borrow_position = self.get_borrow_position(account_id)?;
 
+        let price_pair = self
+            .configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
         Some(self.configuration.borrow_status(
             &borrow_position,
-            &oracle_price_proof,
+            &price_pair,
             env::block_timestamp_ms(),
         ))
     }
 
-    fn borrow(
-        &mut self,
-        amount: BorrowAssetAmount,
-        oracle_price_proof: OraclePriceProof,
-    ) -> Promise {
+    fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
         require!(
             amount >= self.configuration.minimum_borrow_amount,
@@ -90,54 +90,54 @@ impl MarketExternalInterface for Contract {
         self.configuration
             .borrow_asset
             .current_account_balance()
-            .and(
-                #[allow(clippy::unwrap_used)]
-                // TODO: Replace with call to actual price oracle.
-                Self::ext(env::current_account_id())
-                    .return_static(serde_json::to_value(oracle_price_proof).unwrap()),
-            )
+            .and(self.configuration.balance_oracle.retrieve_price_pair())
             .then(
                 Self::ext(env::current_account_id())
                     .borrow_01_consume_balance_and_price(account_id, amount),
             )
     }
 
-    fn withdraw_collateral(
-        &mut self,
-        amount: CollateralAssetAmount,
-        oracle_price_proof: Option<OraclePriceProof>,
-    ) -> Promise {
+    fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise {
         let account_id = env::predecessor_account_id();
 
-        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+        let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id.clone())
+        else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
-        self.record_borrow_position_collateral_asset_withdrawal(&mut borrow_position, amount);
+        if borrow_position
+            .inner()
+            .get_total_borrow_asset_liability()
+            .is_zero()
+        {
+            // No need to retrieve prices, since there is zero liability.
+            borrow_position.record_collateral_asset_withdrawal(amount);
+            drop(borrow_position);
 
-        if !borrow_position.get_total_borrow_asset_liability().is_zero() {
-            require!(
-                self.configuration.is_within_minimum_collateral_ratio(
-                    &borrow_position,
-                    &oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price")),
-                ),
-                "Borrow must still be above MCR after collateral withdrawal.",
-            );
+            self.configuration
+                .collateral_asset
+                .transfer(account_id.clone(), amount)
+                .then(
+                    Self::ext(env::current_account_id())
+                        .withdraw_collateral_02_finalize(account_id, amount),
+                )
+        } else {
+            drop(borrow_position);
+            // They still have liability, so we need to check prices.
+            self.configuration
+                .balance_oracle
+                .retrieve_price_pair()
+                .then(
+                    Self::ext(env::current_account_id())
+                        .withdraw_collateral_01_consume_price(account_id, amount),
+                )
         }
-
-        self.borrow_positions.insert(&account_id, &borrow_position);
-
-        self.configuration
-            .collateral_asset
-            .transfer(account_id, amount) // TODO: Check for failure
-            .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
     }
 
     fn apply_interest(&mut self) {
         let predecessor = env::predecessor_account_id();
-        if let Some(mut borrow_position) = self.borrow_positions.get(&predecessor) {
-            self.accumulate_borrow_position_interest(&mut borrow_position);
-            self.borrow_positions.insert(&predecessor, &borrow_position);
+        if let Some(mut borrow_position) = self.get_linked_borrow_position_mut(predecessor) {
+            borrow_position.accumulate_interest();
         }
     }
 
@@ -146,10 +146,9 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
-        let mut supply_position = self.supply_positions.get(&account_id)?;
-        supply_position.pending_yield_estimate =
-            self.calculate_supply_position_instantaneous_pending_yield(&supply_position);
-        Some(supply_position)
+        let mut supply_position = self.get_linked_supply_position(account_id)?;
+        supply_position.with_pending_yield_estimate();
+        Some(supply_position.inner().clone())
     }
 
     /// If the predecessor has already entered the queue, calling this function
@@ -161,9 +160,8 @@ impl MarketExternalInterface for Contract {
         );
         let predecessor = env::predecessor_account_id();
         if self
-            .supply_positions
-            .get(&predecessor)
-            .filter(|supply_position| !supply_position.get_borrow_asset_deposit().is_zero())
+            .get_linked_supply_position(predecessor.clone())
+            .filter(|supply_position| !supply_position.inner().get_borrow_asset_deposit().is_zero())
             .is_none()
         {
             env::panic_str("Supply position does not exist");
@@ -216,9 +214,8 @@ impl MarketExternalInterface for Contract {
 
     fn harvest_yield(&mut self) {
         let predecessor = env::predecessor_account_id();
-        if let Some(mut supply_position) = self.supply_positions.get(&predecessor) {
-            self.accumulate_supply_position_yield(&mut supply_position);
-            self.supply_positions.insert(&predecessor, &supply_position);
+        if let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) {
+            supply_position.accumulate_yield();
         }
     }
 
@@ -242,22 +239,23 @@ impl MarketExternalInterface for Contract {
 
     fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
         let predecessor = env::predecessor_account_id();
-        let Some(mut supply_position) = self.supply_positions.get(&predecessor) else {
+        let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor.clone())
+        else {
             env::panic_str("Supply position does not exist");
         };
 
-        let amount = amount.unwrap_or_else(|| supply_position.borrow_asset_yield.get_total());
+        let amount =
+            amount.unwrap_or_else(|| supply_position.inner().borrow_asset_yield.get_total());
 
         let withdrawn = supply_position
-            .borrow_asset_yield
-            .remove(amount)
+            .record_yield_withdrawal(amount)
             .unwrap_or_else(|| {
                 env::panic_str("Attempt to withdraw more yield than has accumulated")
             });
         if withdrawn.is_zero() {
             env::panic_str("No rewards can be withdrawn");
         }
-        self.supply_positions.insert(&predecessor, &supply_position);
+        drop(supply_position);
 
         // TODO: Check for transfer success.
         self.configuration
@@ -338,7 +336,7 @@ impl MarketExternalInterface for Contract {
 
         require!(!amount.is_zero(), "Deposit must be nonzero");
 
-        self.execute_supply(&env::predecessor_account_id(), amount);
+        self.execute_supply(env::predecessor_account_id(), amount);
     }
 
     #[payable]
@@ -352,7 +350,7 @@ impl MarketExternalInterface for Contract {
 
         require!(!amount.is_zero(), "Deposit must be nonzero");
 
-        self.execute_collateralize(&env::predecessor_account_id(), amount);
+        self.execute_collateralize(env::predecessor_account_id(), amount);
     }
 
     #[payable]
@@ -368,7 +366,7 @@ impl MarketExternalInterface for Contract {
 
         let predecessor = env::predecessor_account_id();
 
-        let refund = self.execute_repay(&predecessor, amount);
+        let refund = self.execute_repay(predecessor.clone(), amount);
 
         if refund.is_zero() {
             PromiseOrValue::Value(())
@@ -382,11 +380,7 @@ impl MarketExternalInterface for Contract {
     }
 
     #[payable]
-    fn liquidate_native(
-        &mut self,
-        account_id: AccountId,
-        oracle_price_proof: OraclePriceProof,
-    ) -> Promise {
+    fn liquidate_native(&mut self, account_id: AccountId) -> Promise {
         require!(
             self.configuration.borrow_asset.is_native(),
             "Unsupported borrow asset",
@@ -396,18 +390,15 @@ impl MarketExternalInterface for Contract {
 
         require!(!amount.is_zero(), "Deposit must be nonzero");
 
-        let liquidated_collateral =
-            self.execute_liquidate_initial(&account_id, amount, &oracle_price_proof);
-
-        let liquidator_id = env::predecessor_account_id();
-
         self.configuration
-            .collateral_asset
-            .transfer(liquidator_id.clone(), liquidated_collateral)
-            .then(Self::ext(env::current_account_id()).after_liquidate_native(
-                liquidator_id,
-                account_id,
-                amount,
-            ))
+            .balance_oracle
+            .retrieve_price_pair()
+            .then(
+                Self::ext(env::current_account_id()).liquidate_native_01_consume_price(
+                    env::predecessor_account_id(),
+                    account_id,
+                    amount,
+                ),
+            )
     }
 }

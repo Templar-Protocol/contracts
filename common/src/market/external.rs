@@ -4,12 +4,13 @@ use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
     number::Decimal,
+    oracle::pyth::OracleResponse,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 
-use super::{BorrowAssetMetrics, MarketConfiguration, OraclePriceProof};
+use super::{BorrowAssetMetrics, MarketConfiguration};
 
 #[near_sdk::ext_contract(ext_market)]
 pub trait MarketExternalInterface {
@@ -53,19 +54,11 @@ pub trait MarketExternalInterface {
     fn get_borrow_status(
         &self,
         account_id: AccountId,
-        oracle_price_proof: OraclePriceProof,
+        oracle_response: OracleResponse,
     ) -> Option<BorrowStatus>;
 
-    fn borrow(
-        &mut self,
-        amount: BorrowAssetAmount,
-        oracle_price_proof: OraclePriceProof,
-    ) -> Promise;
-    fn withdraw_collateral(
-        &mut self,
-        amount: CollateralAssetAmount,
-        oracle_price_proof: Option<OraclePriceProof>,
-    ) -> Promise;
+    fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise;
+    fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise;
 
     /// Applies interest to the predecessor's borrow record.
     /// Not likely to be used in real life, since there it does not affect the
@@ -104,11 +97,7 @@ pub trait MarketExternalInterface {
     // =====================
 
     // ft_on_receive :: where msg = Liquidate { account_id }
-    fn liquidate_native(
-        &mut self,
-        account_id: AccountId,
-        oracle_price_proof: OraclePriceProof,
-    ) -> Promise;
+    fn liquidate_native(&mut self, account_id: AccountId) -> Promise;
 
     // =================
     // YIELD FUNCTIONS

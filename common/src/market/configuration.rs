@@ -1,4 +1,4 @@
-use near_sdk::{json_types::U64, near, AccountId};
+use near_sdk::{json_types::U64, near};
 
 use crate::{
     asset::{
@@ -10,14 +10,14 @@ use crate::{
     number::Decimal,
 };
 
-use super::{OraclePriceProof, YieldWeights};
+use super::{AssetConversion, AssetValuation, BalanceOracleConfiguration, PricePair, YieldWeights};
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
-    pub balance_oracle_account_id: AccountId,
+    pub balance_oracle: BalanceOracleConfiguration,
     pub minimum_initial_collateral_ratio: Decimal,
     pub minimum_collateral_ratio_per_borrow: Decimal,
     /// How much of the deposited principal may be lent out (up to 100%)?
@@ -108,10 +108,10 @@ impl MarketConfiguration {
     pub fn borrow_status(
         &self,
         borrow_position: &BorrowPosition,
-        oracle_price_proof: &OraclePriceProof,
+        price_pair: &PricePair,
         block_timestamp_ms: u64,
     ) -> BorrowStatus {
-        if !self.is_within_minimum_collateral_ratio(borrow_position, oracle_price_proof) {
+        if !self.is_within_minimum_collateral_ratio(borrow_position, price_pair) {
             return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
         }
 
@@ -131,7 +131,7 @@ impl MarketConfiguration {
             borrow_position
                 .started_at_block_timestamp_ms
                 .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
-                .map_or(true, |duration_ms| duration_ms <= maximum_duration_ms)
+                .is_none_or(|duration_ms| duration_ms <= maximum_duration_ms)
         } else {
             true
         }
@@ -140,7 +140,7 @@ impl MarketConfiguration {
     pub fn is_within_minimum_initial_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
-        oracle_price_proof: &OraclePriceProof,
+        oracle_price_proof: &PricePair,
     ) -> bool {
         is_within_mcr(
             &self.minimum_initial_collateral_ratio,
@@ -152,7 +152,7 @@ impl MarketConfiguration {
     pub fn is_within_minimum_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
-        oracle_price_proof: &OraclePriceProof,
+        oracle_price_proof: &PricePair,
     ) -> bool {
         is_within_mcr(
             &self.minimum_collateral_ratio_per_borrow,
@@ -161,34 +161,64 @@ impl MarketConfiguration {
         )
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn minimum_acceptable_liquidation_amount(
         &self,
         amount: CollateralAssetAmount,
-        oracle_price_proof: &OraclePriceProof,
+        price_pair: &PricePair,
     ) -> BorrowAssetAmount {
-        // minimum_acceptable_amount = collateral_amount * (1 - maximum_liquidator_spread) * collateral_price / borrow_price
         BorrowAssetAmount::new(
-            ((1u32 - self.maximum_liquidator_spread) * oracle_price_proof.collateral_asset_price
-                / oracle_price_proof.borrow_asset_price
-                * amount.as_u128())
+            // Safe because the factor is guaranteed to be <=1, so the result
+            // must still fit in u128.
+            #[allow(clippy::unwrap_used)]
+            ((1u32 - self.maximum_liquidator_spread)
+                * price_pair.convert_pessimistic(amount).as_u128())
             .to_u128_ceil()
             .unwrap(),
         )
     }
 }
 
-fn is_within_mcr(
-    mcr: &Decimal,
-    borrow_position: &BorrowPosition,
-    OraclePriceProof {
-        collateral_asset_price,
-        borrow_asset_price,
-    }: &OraclePriceProof,
-) -> bool {
+fn is_within_mcr(mcr: &Decimal, borrow_position: &BorrowPosition, price_pair: &PricePair) -> bool {
     let scaled_collateral_value =
-        borrow_position.collateral_asset_deposit.as_u128() * collateral_asset_price;
+        price_pair.value_pessimistic(borrow_position.collateral_asset_deposit);
     let scaled_borrow_value =
-        borrow_position.get_total_borrow_asset_liability().as_u128() * borrow_asset_price * mcr;
+        price_pair.value_optimistic(borrow_position.get_total_borrow_asset_liability());
 
-    scaled_collateral_value >= scaled_borrow_value
+    scaled_collateral_value >= scaled_borrow_value * mcr
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{dec, oracle::pyth};
+
+    use super::*;
+
+    #[test]
+    fn test_is_within_mcr() {
+        let mut b = BorrowPosition::new(0);
+        b.increase_collateral_asset_deposit(121u128.into());
+        b.increase_borrow_asset_principal(100u128.into(), 0);
+        assert!(is_within_mcr(
+            &dec!("1.2"),
+            &b,
+            &PricePair::new(
+                18,
+                &pyth::Price {
+                    price: near_sdk::json_types::I64(10000),
+                    conf: U64(1),
+                    expo: -4,
+                    publish_time: 0,
+                },
+                18,
+                &pyth::Price {
+                    price: near_sdk::json_types::I64(10000),
+                    conf: U64(1),
+                    expo: -4,
+                    publish_time: 0,
+                },
+            )
+            .unwrap()
+        ));
+    }
 }

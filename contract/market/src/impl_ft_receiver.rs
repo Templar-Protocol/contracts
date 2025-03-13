@@ -40,40 +40,36 @@ impl FungibleTokenReceiver for Contract {
             Nep141MarketDepositMessage::Supply => {
                 let amount = use_borrow_asset();
 
-                self.execute_supply(&sender_id, amount);
+                self.execute_supply(sender_id, amount);
 
                 PromiseOrValue::Value(U128(0))
             }
             Nep141MarketDepositMessage::Collateralize => {
                 let amount = use_collateral_asset();
 
-                self.execute_collateralize(&sender_id, amount);
+                self.execute_collateralize(sender_id, amount);
 
                 PromiseOrValue::Value(U128(0))
             }
             Nep141MarketDepositMessage::Repay => {
                 let amount = use_borrow_asset();
 
-                let refund = self.execute_repay(&sender_id, amount);
+                let refund = self.execute_repay(sender_id, amount);
 
                 PromiseOrValue::Value(refund.into())
             }
-            Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
-                account_id,
-                oracle_price_proof,
-            }) => {
+            Nep141MarketDepositMessage::Liquidate(LiquidateMsg { account_id }) => {
                 let amount = use_borrow_asset();
-
-                let liquidated_collateral =
-                    self.execute_liquidate_initial(&account_id, amount, &oracle_price_proof);
 
                 PromiseOrValue::Promise(
                     self.configuration
-                        .collateral_asset
-                        .transfer(sender_id, liquidated_collateral)
+                        .balance_oracle
+                        .retrieve_price_pair()
                         .then(
                             Self::ext(env::current_account_id())
-                                .after_liquidate_via_ft_transfer_call(account_id, amount),
+                                .liquidate_ft_transfer_call_01_consume_oracle_response(
+                                    sender_id, account_id, amount,
+                                ),
                         ),
                 )
             }
