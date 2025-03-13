@@ -5,7 +5,7 @@ use near_sdk::{
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     market::PricePair,
-    market::WithdrawalExecution,
+    market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
 };
@@ -238,7 +238,7 @@ impl Contract {
     }
 
     #[private]
-    pub fn after_execute_next_withdrawal(&mut self, withdrawal_execution: WithdrawalExecution) {
+    pub fn after_execute_next_withdrawal(&mut self, withdrawal_resolution: WithdrawalResolution) {
         // TODO: Is this check even necessary in a #[private] function?
         require!(env::promise_results_count() == 1);
 
@@ -257,11 +257,11 @@ impl Contract {
                 // head of the queue cannot change while transfers are
                 // in-flight. This should be maintained by the queue itself.
                 require!(
-                    popped_account == withdrawal_execution.account_id,
+                    popped_account == withdrawal_resolution.account_id,
                     "Invariant violation: Queue shifted while locked/in-flight.",
                 );
 
-                self.record_borrow_asset_yield_distribution(withdrawal_execution.amount_to_fees);
+                self.record_borrow_asset_yield_distribution(withdrawal_resolution.amount_to_fees);
             }
             PromiseResult::Failed => {
                 // Withdrawal failed: unlock the queue so they can try again.
@@ -275,11 +275,11 @@ impl Contract {
                 self.withdrawal_queue.unlock();
 
                 if let Some(mut supply_position) =
-                    self.get_linked_supply_position_mut(withdrawal_execution.account_id.clone())
+                    self.get_linked_supply_position_mut(withdrawal_resolution.account_id.clone())
                 {
                     let timestamp = env::block_timestamp_ms();
-                    let mut amount = withdrawal_execution.amount_to_account;
-                    amount.join(withdrawal_execution.amount_to_fees);
+                    let mut amount = withdrawal_resolution.amount_to_account;
+                    amount.join(withdrawal_resolution.amount_to_fees);
                     supply_position.record_deposit(amount, timestamp);
                 }
             }

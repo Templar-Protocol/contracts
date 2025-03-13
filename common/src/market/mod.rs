@@ -77,7 +77,7 @@ pub struct LiquidateMsg {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
-pub struct WithdrawalExecution {
+pub struct WithdrawalResolution {
     pub account_id: AccountId,
     pub amount_to_account: BorrowAssetAmount,
     pub amount_to_fees: BorrowAssetAmount,

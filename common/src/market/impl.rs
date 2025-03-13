@@ -18,7 +18,7 @@ use crate::{
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
-use super::WithdrawalExecution;
+use super::WithdrawalResolution;
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -242,7 +242,7 @@ impl Market {
     /// - If the withdrawal queue is empty.
     pub fn try_lock_next_withdrawal_request(
         &mut self,
-    ) -> Result<Option<WithdrawalExecution>, WithdrawalQueueLockError> {
+    ) -> Result<Option<WithdrawalResolution>, WithdrawalQueueLockError> {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
         let Some((amount, mut supply_position)) = self

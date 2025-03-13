@@ -9,7 +9,7 @@ use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount},
     event::MarketEvent,
-    market::{Market, WithdrawalExecution},
+    market::{Market, WithdrawalResolution},
     number::Decimal,
 };
 
@@ -62,14 +62,9 @@ impl SupplyPosition {
         &mut self,
         amount: BorrowAssetAmount,
     ) -> Option<BorrowAssetAmount> {
-        let r = self.borrow_asset_deposit.split(amount);
-        // TODO: If we perform this commented-out reset, then failed
-        // withdrawal attempts will reset the timer. However, if we do not
-        // reset the timer, there is no other mechanism for doing so.
-        // if self.borrow_asset_deposit.is_zero() {
-        //     self.started_at_block_timestamp_ms = None;
-        // }
-        r
+        // No need to reset the timer; it is a permanent indication of the
+        // initial supply event.
+        self.borrow_asset_deposit.split(amount)
     }
 }
 
@@ -268,7 +263,7 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         &mut self,
         mut amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
-    ) -> WithdrawalExecution {
+    ) -> WithdrawalResolution {
         self.accumulate_yield();
 
         self.position
@@ -304,7 +299,7 @@ impl<M: std::borrow::BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         }
         .emit();
 
-        WithdrawalExecution {
+        WithdrawalResolution {
             account_id: self.account_id.clone(),
             amount_to_account: amount,
             amount_to_fees,
