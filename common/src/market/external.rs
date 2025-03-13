@@ -88,7 +88,7 @@ pub trait MarketExternalInterface {
     ) -> Option<WithdrawalRequestStatus>;
     fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
 
-    fn harvest_yield(&mut self);
+    fn harvest_yield(&mut self, compounding: Option<bool>);
 
     fn get_last_yield_rate(&self) -> Decimal;
 

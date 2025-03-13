@@ -27,7 +27,7 @@ async fn harvest_yield_gas(#[case] iterations: usize) {
         c.repay(&borrow_user, 1100).await;
     }
 
-    let r = c.harvest_yield(&supply_user).await;
+    let r = c.harvest_yield(&supply_user, true).await;
 
     println!("Total gas burnt ({iterations}): {}", r.total_gas_burnt);
 }

@@ -170,7 +170,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         async {
             // Withdraw yield.
             {
-                c.harvest_yield(&supply_user).await;
+                c.harvest_yield(&supply_user, false).await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert_eq!(supply_position.borrow_asset_yield.get_total().as_u128(), 80);
 
