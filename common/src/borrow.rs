@@ -1,5 +1,5 @@
 use std::{
-    borrow::BorrowMut,
+    borrow::{Borrow, BorrowMut},
     ops::{Deref, DerefMut},
 };
 
@@ -186,7 +186,7 @@ impl<M> LinkedBorrowPosition<M> {
     }
 }
 
-impl<M: std::borrow::Borrow<Market>> LinkedBorrowPosition<M> {
+impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
     pub fn with_pending_interest(&mut self) {
         self.position.borrow_asset_fees.pending_estimate =
             self.calculate_interest(u32::MAX).get_amount();
@@ -307,9 +307,9 @@ impl<M: std::borrow::Borrow<Market>> LinkedBorrowPosition<M> {
     }
 }
 
-pub struct LinkedBorrowPositionMut<M: std::borrow::BorrowMut<Market>>(LinkedBorrowPosition<M>);
+pub struct LinkedBorrowPositionMut<M: BorrowMut<Market>>(LinkedBorrowPosition<M>);
 
-impl<M: std::borrow::BorrowMut<Market>> Drop for LinkedBorrowPositionMut<M> {
+impl<M: BorrowMut<Market>> Drop for LinkedBorrowPositionMut<M> {
     fn drop(&mut self) {
         self.0
             .market
@@ -333,7 +333,7 @@ impl<M: BorrowMut<Market>> DerefMut for LinkedBorrowPositionMut<M> {
     }
 }
 
-impl<M: std::borrow::BorrowMut<Market>> LinkedBorrowPositionMut<M> {
+impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
     pub fn new(market: M, account_id: AccountId, position: BorrowPosition) -> Self {
         Self(LinkedBorrowPosition::new(market, account_id, position))
     }

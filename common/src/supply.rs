@@ -1,5 +1,5 @@
 use std::{
-    borrow::BorrowMut,
+    borrow::{Borrow, BorrowMut},
     ops::{Deref, DerefMut},
 };
 
@@ -92,7 +92,7 @@ impl<M> LinkedSupplyPosition<M> {
     }
 }
 
-impl<M: std::borrow::Borrow<Market>> LinkedSupplyPosition<M> {
+impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
     pub fn with_pending_yield_estimate(&mut self) {
         self.position.borrow_asset_yield.pending_estimate = self.calculate_yield().get_amount();
         self.position
@@ -172,9 +172,9 @@ impl<M: std::borrow::Borrow<Market>> LinkedSupplyPosition<M> {
     }
 }
 
-pub struct LinkedSupplyPositionMut<M: std::borrow::BorrowMut<Market>>(LinkedSupplyPosition<M>);
+pub struct LinkedSupplyPositionMut<M: BorrowMut<Market>>(LinkedSupplyPosition<M>);
 
-impl<M: std::borrow::BorrowMut<Market>> Drop for LinkedSupplyPositionMut<M> {
+impl<M: BorrowMut<Market>> Drop for LinkedSupplyPositionMut<M> {
     fn drop(&mut self) {
         self.0
             .market
@@ -198,7 +198,7 @@ impl<M: BorrowMut<Market>> DerefMut for LinkedSupplyPositionMut<M> {
     }
 }
 
-impl<M: std::borrow::BorrowMut<Market>> LinkedSupplyPositionMut<M> {
+impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
     pub fn new(market: M, account_id: AccountId, position: SupplyPosition) -> Self {
         Self(LinkedSupplyPosition::new(market, account_id, position))
     }
