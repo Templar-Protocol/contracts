@@ -78,6 +78,7 @@ mod error {
         ConfidenceIntervalTooLarge,
     }
 }
+
 impl TryFrom<pyth::Price> for Price {
     type Error = error::PriceDataError;
 
