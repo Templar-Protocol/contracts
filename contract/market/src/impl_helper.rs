@@ -261,7 +261,7 @@ impl Contract {
                     "Invariant violation: Queue shifted while locked/in-flight.",
                 );
 
-                self.record_borrow_asset_yield_distribution(withdrawal_resolution.amount_to_fees);
+                self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
             }
             PromiseResult::Failed => {
                 // Withdrawal failed: unlock the queue so they can try again.

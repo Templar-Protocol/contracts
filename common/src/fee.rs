@@ -54,7 +54,11 @@ pub enum TimeBasedFeeFunction {
 }
 
 impl<T: AssetClass> TimeBasedFee<T> {
-    pub fn of(&self, amount: FungibleAssetAmount<T>, time: u64) -> Option<FungibleAssetAmount<T>> {
+    pub fn of(
+        &self,
+        amount: FungibleAssetAmount<T>,
+        duration: u64,
+    ) -> Option<FungibleAssetAmount<T>> {
         let base_fee = self.fee.of(amount)?;
 
         if self.duration.0 == 0 {
@@ -62,11 +66,20 @@ impl<T: AssetClass> TimeBasedFee<T> {
         }
 
         match self.behavior {
-            TimeBasedFeeFunction::Fixed => Some(base_fee),
-            TimeBasedFeeFunction::Linear => (Decimal::from(time) / self.duration.0
-                * base_fee.as_u128())
-            .to_u128_ceil()
-            .map(FungibleAssetAmount::new),
+            TimeBasedFeeFunction::Fixed => {
+                if duration >= self.duration.0 {
+                    Some(0.into())
+                } else {
+                    Some(base_fee)
+                }
+            }
+            TimeBasedFeeFunction::Linear => {
+                (Decimal::from(self.duration.0.saturating_sub(duration))
+                    / Decimal::from(self.duration.0)
+                    * base_fee.as_u128())
+                .to_u128_ceil()
+                .map(FungibleAssetAmount::new)
+            }
             TimeBasedFeeFunction::Logarithmic => Some(
                 // TODO: Seems jank.
                 #[allow(
@@ -74,8 +87,8 @@ impl<T: AssetClass> TimeBasedFee<T> {
                     clippy::cast_possible_truncation,
                     clippy::cast_precision_loss
                 )]
-                (((base_fee.as_u128() as f64 * f64::log2((1 + time - self.duration.0) as f64))
-                    / f64::log2((1 + time) as f64))
+                (((base_fee.as_u128() as f64 * f64::log2((1 + duration - self.duration.0) as f64))
+                    / f64::log2((1 + duration) as f64))
                 .ceil() as u128)
                     .into(),
             ),

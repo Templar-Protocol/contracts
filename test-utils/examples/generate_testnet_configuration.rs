@@ -49,6 +49,7 @@ pub fn main() {
             supply_withdrawal_fee: TimeBasedFee::zero(),
             yield_weights: YieldWeights::new_with_supply_weight(1),
             maximum_liquidator_spread: Decimal::from_str("0.05").unwrap(),
+            protocol_account_id: "templar-in-training.testnet".parse().unwrap(),
         })
         .unwrap(),
     );

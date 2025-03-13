@@ -273,6 +273,18 @@ impl Market {
         Ok(Some(resolution))
     }
 
+    pub fn record_borrow_asset_protocol_yield(&mut self, amount: BorrowAssetAmount) {
+        let mut yield_record = self
+            .static_yield
+            .get(&self.configuration.protocol_account_id)
+            .unwrap_or_default();
+
+        yield_record.borrow_asset.join(amount);
+
+        self.static_yield
+            .insert(&self.configuration.protocol_account_id, &yield_record);
+    }
+
     pub fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
         // Sanity.
         if amount.is_zero() {
