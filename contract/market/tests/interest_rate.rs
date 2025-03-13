@@ -2,8 +2,8 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use rstest::rstest;
 use templar_common::{
-    dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, market::MS_IN_A_YEAR,
-    number::Decimal,
+    asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
+    number::Decimal, MS_IN_A_YEAR,
 };
 use test_utils::*;
 
@@ -80,9 +80,15 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let duration_outer = time_outer.elapsed();
 
         let supply_yield_1 = supply_position_1.borrow_asset_yield.get_total().as_u128()
-            + supply_position_1.pending_yield_estimate.as_u128();
+            + supply_position_1
+                .borrow_asset_yield
+                .pending_estimate
+                .as_u128();
         let supply_yield_2 = supply_position_2.borrow_asset_yield.get_total().as_u128()
-            + supply_position_2.pending_yield_estimate.as_u128();
+            + supply_position_2
+                .borrow_asset_yield
+                .pending_estimate
+                .as_u128();
 
         // No yield yet.
         assert_eq!(supply_yield_1, 0);
@@ -97,14 +103,20 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
 
         let actual_1 = borrow_position_1.borrow_asset_fees.get_total().as_u128()
-            + borrow_position_1.pending_fee_estimate.as_u128();
+            + borrow_position_1
+                .borrow_asset_fees
+                .pending_estimate
+                .as_u128();
         println!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
         assert!(approximation_below <= actual_1);
         assert!(actual_1 <= approximation_above);
 
         let actual_2 = borrow_position_2.borrow_asset_fees.get_total().as_u128()
-            + borrow_position_2.pending_fee_estimate.as_u128();
+            + borrow_position_2
+                .borrow_asset_fees
+                .pending_estimate
+                .as_u128();
         println!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
         assert!(approximation_below <= actual_2);
@@ -123,21 +135,30 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
     tokio::join!(
         async {
             let borrow_position_before = c.get_borrow_position(borrow_user.id()).await.unwrap();
-            c.repay(
-                &borrow_user,
-                borrow_position_before
-                    .get_total_borrow_asset_liability()
-                    .as_u128()
-                    * 110
-                    / 100, /* overpayment */
-            )
-            .await;
+            let r = c
+                .repay(
+                    &borrow_user,
+                    (borrow_position_before
+                        .get_total_borrow_asset_liability()
+                        .as_u128()
+                        + borrow_position_before
+                            .borrow_asset_fees
+                            .pending_estimate
+                            .as_u128())
+                        * 110
+                        / 100, /* overpayment */
+                )
+                .await;
+            println!("{r:#?}");
+            println!("logs");
+            for log in r.logs() {
+                println!("\t{log}");
+            }
             let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-            assert!(
-                borrow_position_after
-                    .get_total_borrow_asset_liability()
-                    .is_zero(),
+            assert_eq!(
+                borrow_position_after.get_total_borrow_asset_liability(),
+                BorrowAssetAmount::zero(),
                 "Borrow should be fully repaid",
             );
         },
@@ -145,19 +166,22 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
             let borrow_position_before = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
             c.repay(
                 &borrow_user_2,
-                borrow_position_before
+                (borrow_position_before
                     .get_total_borrow_asset_liability()
                     .as_u128()
+                    + borrow_position_before
+                        .borrow_asset_fees
+                        .pending_estimate
+                        .as_u128())
                     * 110
                     / 100, /* overpayment */
             )
             .await;
             let borrow_position_after = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
 
-            assert!(
-                borrow_position_after
-                    .get_total_borrow_asset_liability()
-                    .is_zero(),
+            assert_eq!(
+                borrow_position_after.get_total_borrow_asset_liability(),
+                BorrowAssetAmount::zero(),
                 "Borrow should be fully repaid",
             );
         },

@@ -102,12 +102,12 @@ mod sealed {
 }
 pub trait AssetClass: sealed::Sealed + Copy + Clone {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub struct CollateralAsset;
 impl sealed::Sealed for CollateralAsset {}
 impl AssetClass for CollateralAsset {}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}

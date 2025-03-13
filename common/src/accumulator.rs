@@ -5,8 +5,11 @@ use crate::asset::{AssetClass, FungibleAssetAmount};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct Accumulator<T: AssetClass> {
-    pub(crate) total: FungibleAssetAmount<T>,
-    pub(crate) next_snapshot_index: u32,
+    total: FungibleAssetAmount<T>,
+    next_snapshot_index: u32,
+    #[borsh(skip)]
+    #[serde(default, skip_serializing_if = "FungibleAssetAmount::is_zero")]
+    pub pending_estimate: FungibleAssetAmount<T>,
 }
 
 impl<T: AssetClass> Accumulator<T> {
@@ -14,6 +17,7 @@ impl<T: AssetClass> Accumulator<T> {
         Self {
             total: 0.into(),
             next_snapshot_index,
+            pending_estimate: 0.into(),
         }
     }
 
@@ -23,6 +27,11 @@ impl<T: AssetClass> Accumulator<T> {
 
     pub fn get_total(&self) -> FungibleAssetAmount<T> {
         self.total
+    }
+
+    pub fn clear(&mut self, next_snapshot_index: u32) {
+        self.total = 0.into();
+        self.next_snapshot_index = next_snapshot_index;
     }
 
     pub fn remove(&mut self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
