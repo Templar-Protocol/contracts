@@ -220,7 +220,7 @@ impl MarketExternalInterface for Contract {
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
                 supply_position.record_yield_withdrawal(total_yield);
-                supply_position.record_deposit(total_yield);
+                supply_position.record_deposit(total_yield, env::block_timestamp_ms());
             }
         }
     }
