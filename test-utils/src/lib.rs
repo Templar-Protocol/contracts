@@ -461,11 +461,17 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn harvest_yield(&self, supply_user: &Account) -> ExecutionSuccess {
+    pub async fn harvest_yield(
+        &self,
+        supply_user: &Account,
+        compounding: bool,
+    ) -> ExecutionSuccess {
         println!("{} harvesting yield...", supply_user.id());
         supply_user
             .call(self.contract.id(), "harvest_yield")
-            .args_json(json!({}))
+            .args_json(json!({
+                "compounding": compounding,
+            }))
             .max_gas()
             .transact()
             .await
