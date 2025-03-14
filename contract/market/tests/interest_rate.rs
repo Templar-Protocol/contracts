@@ -57,7 +57,11 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                 while !done.load(Ordering::Relaxed) {
                     tokio::join!(
                         c.apply_interest(&borrow_user_2),
-                        c.harvest_yield(&supply_user_2),
+                        // No compounding so we get apples-to-apples comparison.
+                        // Technically it should be optimal to harvest (and
+                        // compound) occasionally throughout the duration of
+                        // the supply.
+                        c.harvest_yield(&supply_user_2, false),
                     );
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     iters += 1;
@@ -189,11 +193,11 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     let (supply_position_1, supply_position_2) = tokio::join!(
         async {
-            c.harvest_yield(&supply_user).await;
+            c.harvest_yield(&supply_user, false).await;
             c.get_supply_position(supply_user.id()).await.unwrap()
         },
         async {
-            c.harvest_yield(&supply_user_2).await;
+            c.harvest_yield(&supply_user_2, false).await;
             c.get_supply_position(supply_user_2.id()).await.unwrap()
         },
     );
