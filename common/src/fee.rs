@@ -50,7 +50,6 @@ impl<T: AssetClass> TimeBasedFee<T> {
 pub enum TimeBasedFeeFunction {
     Fixed,
     Linear,
-    Logarithmic,
 }
 
 impl<T: AssetClass> TimeBasedFee<T> {
@@ -80,18 +79,6 @@ impl<T: AssetClass> TimeBasedFee<T> {
                 .to_u128_ceil()
                 .map(FungibleAssetAmount::new)
             }
-            TimeBasedFeeFunction::Logarithmic => Some(
-                // TODO: Seems jank.
-                #[allow(
-                    clippy::cast_sign_loss,
-                    clippy::cast_possible_truncation,
-                    clippy::cast_precision_loss
-                )]
-                (((base_fee.as_u128() as f64 * f64::log2((1 + duration - self.duration.0) as f64))
-                    / f64::log2((1 + duration) as f64))
-                .ceil() as u128)
-                    .into(),
-            ),
         }
     }
 }
