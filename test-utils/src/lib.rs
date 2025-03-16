@@ -711,11 +711,11 @@ impl TestController {
         for (i, snapshot) in snapshots.iter().enumerate() {
             println!("\t{i}: {}", snapshot.chain_time);
             println!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
-            println!("\t\tDeposited:\t{}", snapshot.deposited.as_u128());
-            println!("\t\tBorrowed:\t{}", snapshot.borrowed.as_u128());
+            println!("\t\tDeposited:\t{}", snapshot.deposited.to_u128());
+            println!("\t\tBorrowed:\t{}", snapshot.borrowed.to_u128());
             println!(
                 "\t\tDistribution:\t{}",
-                snapshot.yield_distribution.as_u128()
+                snapshot.yield_distribution.to_u128()
             );
         }
     }

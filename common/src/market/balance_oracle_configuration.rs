@@ -150,7 +150,7 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<CollateralAsset>,
     ) -> FungibleAssetAmount<BorrowAsset> {
-        (Decimal::from(amount.as_u128())
+        (amount.to_decimal()
             * (u128::from(self.collateral_asset_price.price)
                 + u128::from(self.collateral_asset_price.confidence))
             / (u128::from(self.borrow_asset_price.price)
@@ -170,7 +170,7 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<CollateralAsset>,
     ) -> FungibleAssetAmount<BorrowAsset> {
-        (Decimal::from(amount.as_u128())
+        (amount.to_decimal()
             * (u128::from(self.collateral_asset_price.price)
                 - u128::from(self.collateral_asset_price.confidence))
             / (u128::from(self.borrow_asset_price.price)
@@ -192,7 +192,7 @@ impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<BorrowAsset>,
     ) -> FungibleAssetAmount<CollateralAsset> {
-        (Decimal::from(amount.as_u128())
+        (amount.to_decimal()
             * (u128::from(self.borrow_asset_price.price)
                 + u128::from(self.borrow_asset_price.confidence))
             / (u128::from(self.collateral_asset_price.price)
@@ -212,7 +212,7 @@ impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<BorrowAsset>,
     ) -> FungibleAssetAmount<CollateralAsset> {
-        (Decimal::from(amount.as_u128())
+        (amount.to_decimal()
             * (u128::from(self.borrow_asset_price.price)
                 - u128::from(self.borrow_asset_price.confidence))
             / (u128::from(self.collateral_asset_price.price)
@@ -236,7 +236,7 @@ pub trait AssetValuation<T: AssetClass> {
 
 impl AssetValuation<BorrowAsset> for PricePair {
     fn value_optimistic(&self, amount: FungibleAssetAmount<BorrowAsset>) -> Decimal {
-        Decimal::from(amount.as_u128())
+        amount.to_decimal()
             * (u128::from(self.borrow_asset_price.price)
                 + u128::from(self.borrow_asset_price.confidence))
             * Decimal::from(10u32)
@@ -244,7 +244,7 @@ impl AssetValuation<BorrowAsset> for PricePair {
     }
 
     fn value_pessimistic(&self, amount: FungibleAssetAmount<BorrowAsset>) -> Decimal {
-        Decimal::from(amount.as_u128())
+        amount.to_decimal()
             * (u128::from(self.borrow_asset_price.price)
                 - u128::from(self.borrow_asset_price.confidence))
             * Decimal::from(10u32)
@@ -254,7 +254,7 @@ impl AssetValuation<BorrowAsset> for PricePair {
 
 impl AssetValuation<CollateralAsset> for PricePair {
     fn value_optimistic(&self, amount: CollateralAssetAmount) -> Decimal {
-        Decimal::from(amount.as_u128())
+        amount.to_decimal()
             * (u128::from(self.collateral_asset_price.price)
                 + u128::from(self.collateral_asset_price.confidence))
             * Decimal::from(10u32)
@@ -262,7 +262,7 @@ impl AssetValuation<CollateralAsset> for PricePair {
     }
 
     fn value_pessimistic(&self, amount: CollateralAssetAmount) -> Decimal {
-        Decimal::from(amount.as_u128())
+        amount.to_decimal()
             * (u128::from(self.collateral_asset_price.price)
                 - u128::from(self.collateral_asset_price.confidence))
             * Decimal::from(10u32)

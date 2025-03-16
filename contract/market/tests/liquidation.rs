@@ -111,17 +111,17 @@ async fn successful_liquidation_good_debt_under_mcr(
             c.harvest_yield(&supply_user, false).await;
             let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
             assert_eq!(
-                supply_position.borrow_asset_yield.get_total().as_u128(),
+                supply_position.borrow_asset_yield.get_total().to_u128(),
                 yield_amount * 8 / 10,
             );
         },
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert_eq!(protocol_yield.borrow_asset.as_u128(), yield_amount / 10);
+            assert_eq!(protocol_yield.borrow_asset.to_u128(), yield_amount / 10);
         },
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(insurance_yield.borrow_asset.as_u128(), yield_amount / 10);
+            assert_eq!(insurance_yield.borrow_asset.to_u128(), yield_amount / 10);
         },
     );
 }
@@ -225,8 +225,8 @@ async fn fail_liquidation_too_little_attached() {
 
     // ensure borrow position remains unchanged
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(borrow_position.get_borrow_asset_principal().as_u128(), 300);
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 500);
+    assert_eq!(borrow_position.get_borrow_asset_principal().to_u128(), 300);
+    assert_eq!(borrow_position.collateral_asset_deposit.to_u128(), 500);
 }
 
 #[tokio::test]
@@ -262,6 +262,6 @@ async fn fail_liquidation_healthy_borrow() {
 
     // ensure borrow position remains unchanged
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(borrow_position.get_borrow_asset_principal().as_u128(), 300);
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 500);
+    assert_eq!(borrow_position.get_borrow_asset_principal().to_u128(), 300);
+    assert_eq!(borrow_position.collateral_asset_deposit.to_u128(), 500);
 }

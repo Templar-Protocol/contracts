@@ -240,7 +240,7 @@ impl WithdrawalQueue {
     pub fn get_status(&self) -> WithdrawalQueueStatus {
         let depth = self
             .iter()
-            .map(|(_, amount)| amount.as_u128())
+            .map(|(_, amount)| amount.to_u128())
             .sum::<u128>()
             .into();
         WithdrawalQueueStatus {

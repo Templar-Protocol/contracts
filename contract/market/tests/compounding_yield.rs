@@ -46,7 +46,7 @@ async fn compounding_yield(
                 let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
                 c.repay(
                     &borrow_user,
-                    position.get_total_borrow_asset_liability().as_u128() * 120 / 100,
+                    position.get_total_borrow_asset_liability().to_u128() * 120 / 100,
                 )
                 .await;
                 c.borrow(&borrow_user, principal).await;
@@ -66,25 +66,25 @@ async fn compounding_yield(
         async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
     );
 
-    let supply_yield_1 = supply_position_1_after.get_borrow_asset_deposit().as_u128()
+    let supply_yield_1 = supply_position_1_after.get_borrow_asset_deposit().to_u128()
         + supply_position_1_after
             .borrow_asset_yield
             .get_total()
-            .as_u128()
+            .to_u128()
         + supply_position_1_after
             .borrow_asset_yield
             .pending_estimate
-            .as_u128()
+            .to_u128()
         - principal * 5;
-    let supply_yield_2 = supply_position_2_after.get_borrow_asset_deposit().as_u128()
+    let supply_yield_2 = supply_position_2_after.get_borrow_asset_deposit().to_u128()
         + supply_position_2_after
             .borrow_asset_yield
             .get_total()
-            .as_u128()
+            .to_u128()
         + supply_position_2_after
             .borrow_asset_yield
             .pending_estimate
-            .as_u128()
+            .to_u128()
         - principal * 5;
 
     println!("supply 1 yield: {supply_yield_1:#?}");

@@ -172,7 +172,7 @@ impl MarketConfiguration {
             // must still fit in u128.
             #[allow(clippy::unwrap_used)]
             ((1u32 - self.maximum_liquidator_spread)
-                * price_pair.convert_pessimistic(amount).as_u128())
+                * price_pair.convert_pessimistic(amount).to_u128())
             .to_u128_ceil()
             .unwrap(),
         )
