@@ -7,7 +7,6 @@ use templar_common::{
     market::PricePair,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
-    supply::YieldAccumulationProof,
 };
 
 use crate::{Contract, ContractExt};

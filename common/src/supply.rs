@@ -13,6 +13,9 @@ use crate::{
     number::Decimal,
 };
 
+/// This struct can only be constructed after accumulating yield on a
+/// supply position. This serves as proof that the yield has accrued, so it
+/// is safe to perform certain other operations.
 pub struct YieldAccumulationProof(());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +44,7 @@ impl SupplyPosition {
         !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_yield.get_total().is_zero()
     }
 
-    /// MUST always be paired with a yield recalculation!
+    /// Yield accumulation MUST be applied before calling this function.
     pub(crate) fn increase_borrow_asset_deposit(
         &mut self,
         _proof: YieldAccumulationProof,
@@ -50,7 +53,7 @@ impl SupplyPosition {
         self.borrow_asset_deposit.join(amount)
     }
 
-    /// MUST always be paired with a yield recalculation!
+    /// Yield accumulation MUST be applied before calling this function.
     pub(crate) fn decrease_borrow_asset_deposit(
         &mut self,
         _proof: YieldAccumulationProof,
@@ -195,10 +198,6 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         Self(LinkedSupplyPosition::new(market, account_id, position))
     }
 
-    /// In order for yield calculations to be accurate, this function MUST
-    /// BE CALLED every time a supply position's deposit changes. This
-    /// requirement is met because those functions take parameters of type
-    /// `YieldAccumulationProof`, which cannot be constructed elsewhere.
     pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
         self.market.borrow_mut().snapshot();
 

@@ -14,6 +14,9 @@ use crate::{
     MS_IN_A_YEAR,
 };
 
+/// This struct can only be constructed after accumulating interest on a
+/// borrow position. This serves as proof that the interest has accrued, so it
+/// is safe to perform certain other operations.
 pub struct InterestAccumulationProof(());
 
 #[cfg(test)]
@@ -113,6 +116,7 @@ impl BorrowPosition {
         self.collateral_asset_deposit.split(amount)
     }
 
+    /// Interest accumulation MUST be applied before calling this function.
     pub(crate) fn increase_borrow_asset_principal(
         &mut self,
         _proof: InterestAccumulationProof,
@@ -127,6 +131,7 @@ impl BorrowPosition {
         self.borrow_asset_principal.join(amount)
     }
 
+    /// Interest accumulation MUST be applied before calling this function.
     pub(crate) fn reduce_borrow_asset_liability(
         &mut self,
         _proof: InterestAccumulationProof,
