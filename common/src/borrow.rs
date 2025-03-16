@@ -11,6 +11,7 @@ use crate::{
     event::MarketEvent,
     market::{Market, PricePair},
     number::Decimal,
+    snapshot::Snapshot,
     MS_IN_A_YEAR,
 };
 
@@ -224,7 +225,7 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
             .enumerate()
             .skip(next_snapshot_index as usize)
             .take(limit as usize)
-            .map(|(i, s)| (i as u32, s))
+            .map(|(i, s): (usize, &Snapshot)| (i as u32, s))
             .peekable();
 
         let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
@@ -238,15 +239,12 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
                 break;
             };
 
-            let total_borrowed = Decimal::from(snapshot.borrowed.to_u128());
-            let total_deposited = Decimal::from(snapshot.deposited.to_u128());
-            let utilization_ratio = total_borrowed / total_deposited;
             let interest_rate_per_year = self
                 .market
                 .borrow()
                 .configuration
                 .borrow_interest_rate_strategy
-                .at(utilization_ratio);
+                .at(snapshot.usage_ratio());
             let duration_ms: Decimal = end_timestamp_ms
                 .checked_sub(snapshot.timestamp_ms.0)
                 .unwrap_or_else(|| {

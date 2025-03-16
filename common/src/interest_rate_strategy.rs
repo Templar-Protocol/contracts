@@ -5,7 +5,7 @@ use near_sdk::{near, require};
 use crate::number::Decimal;
 
 pub trait UsageCurve {
-    fn at(&self, utilization_ratio: Decimal) -> Decimal;
+    fn at(&self, usage_ratio: Decimal) -> Decimal;
 }
 
 #[derive(Clone, Debug)]
@@ -77,8 +77,8 @@ impl Linear {
 }
 
 impl UsageCurve for Linear {
-    fn at(&self, utilization_ratio: Decimal) -> Decimal {
-        utilization_ratio * (self.top - self.base) + self.base
+    fn at(&self, usage_ratio: Decimal) -> Decimal {
+        usage_ratio * (self.top - self.base) + self.base
     }
 }
 
@@ -119,16 +119,16 @@ impl Piecewise {
 }
 
 impl UsageCurve for Piecewise {
-    fn at(&self, utilization_ratio: Decimal) -> Decimal {
+    fn at(&self, usage_ratio: Decimal) -> Decimal {
         require!(
-            utilization_ratio <= Decimal::ONE,
+            usage_ratio <= Decimal::ONE,
             "Invariant violation: Utilization ratio cannot be over 100%.",
         );
 
-        if utilization_ratio < self.params.optimal {
-            self.params.rate_1 * utilization_ratio + self.params.base
+        if usage_ratio < self.params.optimal {
+            self.params.rate_1 * usage_ratio + self.params.base
         } else {
-            self.params.rate_2 * utilization_ratio - self.i_negative_rate_2_b
+            self.params.rate_2 * usage_ratio - self.i_negative_rate_2_b
         }
     }
 }
@@ -199,18 +199,14 @@ impl Exponential2 {
 
 impl UsageCurve for Exponential2 {
     #[allow(clippy::unwrap_used)]
-    fn at(&self, utilization_ratio: Decimal) -> Decimal {
+    fn at(&self, usage_ratio: Decimal) -> Decimal {
         require!(
-            utilization_ratio <= Decimal::ONE,
+            usage_ratio <= Decimal::ONE,
             "Invariant violation: Utilization ratio cannot be over 100%.",
         );
 
         self.params.base
-            + self.i_factor
-                * ((self.params.eccentricity * utilization_ratio)
-                    .pow2()
-                    .unwrap()
-                    - 1u32)
+            + self.i_factor * ((self.params.eccentricity * usage_ratio).pow2().unwrap() - 1u32)
     }
 }
 

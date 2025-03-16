@@ -14,7 +14,6 @@ pub struct BalanceOracleConfiguration {
     pub collateral_asset_decimals: i32,
     pub borrow_asset_price_id: PriceIdentifier,
     pub borrow_asset_decimals: i32,
-    // pub use_exponential_moving_average: bool,
     pub price_maximum_age_s: u32,
 }
 
@@ -78,24 +77,13 @@ mod error {
     }
 }
 
-impl TryFrom<pyth::Price> for Price {
-    type Error = error::PriceDataError;
-
-    fn try_from(value: pyth::Price) -> Result<Self, Self::Error> {
-        (&value).try_into()
-    }
-}
-
 impl TryFrom<&pyth::Price> for Price {
     type Error = error::PriceDataError;
 
     fn try_from(pyth_price: &pyth::Price) -> Result<Self, Self::Error> {
-        if pyth_price.price.0 < 0 {
+        let Ok(price) = u64::try_from(pyth_price.price.0) else {
             return Err(error::PriceDataError::NegativePrice);
-        }
-
-        #[allow(clippy::cast_sign_loss)]
-        let price = pyth_price.price.0 as u64;
+        };
 
         if pyth_price.conf.0 >= price {
             return Err(error::PriceDataError::ConfidenceIntervalTooLarge);

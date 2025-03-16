@@ -155,15 +155,9 @@ impl Market {
     }
 
     pub fn get_interest_rate_for_snapshot(&self, snapshot: &Snapshot) -> Decimal {
-        let deposited = snapshot.deposited.to_decimal();
-        let usage_ratio = if deposited.is_zero() {
-            Decimal::ZERO
-        } else {
-            snapshot.borrowed.to_decimal() / deposited
-        };
         self.configuration
             .borrow_interest_rate_strategy
-            .at(usage_ratio)
+            .at(snapshot.usage_ratio())
     }
 
     pub fn iter_supply_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
