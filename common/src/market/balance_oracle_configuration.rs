@@ -51,7 +51,6 @@ impl BalanceOracleConfiguration {
 
 #[derive(Clone, Debug)]
 pub struct Price {
-    publish_time_s: u64,
     price: u64,
     confidence: u64,
     exponent_10: i32,
@@ -103,9 +102,6 @@ impl TryFrom<&pyth::Price> for Price {
         }
 
         Ok(Self {
-            // We assume that it is a current timestamp (>0).
-            #[allow(clippy::unwrap_used)]
-            publish_time_s: u64::try_from(pyth_price.publish_time).unwrap(),
             price,
             confidence: pyth_price.conf.0,
             exponent_10: pyth_price.expo,
