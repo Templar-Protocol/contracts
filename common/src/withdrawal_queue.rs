@@ -238,13 +238,12 @@ impl WithdrawalQueue {
     }
 
     pub fn get_status(&self) -> WithdrawalQueueStatus {
-        let depth = self
-            .iter()
-            .map(|(_, amount)| amount.to_u128())
-            .sum::<u128>()
-            .into();
         WithdrawalQueueStatus {
-            depth,
+            depth: self
+                .iter()
+                .map(|(_, amount)| amount.to_u128())
+                .sum::<u128>()
+                .into(),
             length: self.len(),
         }
     }
@@ -343,8 +342,6 @@ mod tests {
     use near_sdk::AccountId;
 
     use super::WithdrawalQueue;
-
-    // TODO: Test locking.
 
     #[test]
     fn withdrawal_remove() {

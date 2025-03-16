@@ -239,7 +239,7 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
                 break;
             };
 
-            let interest_rate_per_year = self
+            let interest_rate_per_year: Decimal = self
                 .market
                 .borrow()
                 .configuration

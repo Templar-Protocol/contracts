@@ -94,7 +94,7 @@ impl<'de> Deserialize<'de> for Decimal {
 }
 
 impl Decimal {
-    /// When converting to & from strings, we don't guarantee accurate
+    /// When converting to and from strings, we do not guarantee accurate
     /// representation of bits lower than this.
     const REPR_EPSILON: U512 = U512([0b1000, 0, 0, 0, 0, 0, 0, 0]);
 
@@ -138,7 +138,7 @@ impl Decimal {
             return Self::ONE;
         }
 
-        let to_reciprocal = if exponent < 0 {
+        let exponent_is_negative = if exponent < 0 {
             exponent = -exponent;
             true
         } else {
@@ -158,7 +158,7 @@ impl Decimal {
 
         let result = x * y;
 
-        if to_reciprocal {
+        if exponent_is_negative {
             Decimal::ONE / result
         } else {
             result
@@ -284,6 +284,7 @@ impl Decimal {
             f %= d;
         }
 
+        // Safety: all digits are guaranteed to be in range 0x30..=0x39
         unsafe { String::from_utf8_unchecked(s) }
     }
 }

@@ -122,7 +122,7 @@ impl UsageCurve for Piecewise {
     fn at(&self, usage_ratio: Decimal) -> Decimal {
         require!(
             usage_ratio <= Decimal::ONE,
-            "Invariant violation: Utilization ratio cannot be over 100%.",
+            "Invariant violation: Usage ratio cannot be over 100%.",
         );
 
         if usage_ratio < self.params.optimal {
@@ -202,7 +202,7 @@ impl UsageCurve for Exponential2 {
     fn at(&self, usage_ratio: Decimal) -> Decimal {
         require!(
             usage_ratio <= Decimal::ONE,
-            "Invariant violation: Utilization ratio cannot be over 100%.",
+            "Invariant violation: Usage ratio cannot be over 100%.",
         );
 
         self.params.base

@@ -118,7 +118,7 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
                 .total_weight()
                 .get(),
         );
-        let total_yield_distribution = Decimal::from(last_snapshot.yield_distribution.to_u128());
+        let total_yield_distribution = last_snapshot.yield_distribution.to_decimal();
         let estimate_current_snapshot =
             total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
 
@@ -145,10 +145,8 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
             #[allow(clippy::cast_possible_truncation)]
             |(i, s)| (i as u32, s),
         ) {
-            let deposited = Decimal::from(snapshot.deposited.to_u128());
-            let distributed = Decimal::from(snapshot.yield_distribution.to_u128());
-            let share = amount * distributed / deposited;
-            accumulated += share;
+            accumulated +=
+                amount * snapshot.yield_distribution.to_decimal() / snapshot.deposited.to_decimal();
 
             next_snapshot_index = i + 1;
         }
@@ -210,41 +208,6 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         self.position
             .borrow_asset_yield
             .accumulate(accumulation_record);
-    }
-
-    #[allow(clippy::missing_panics_doc)]
-    pub fn calculate_yield(&self) -> AccumulationRecord<BorrowAsset> {
-        let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
-
-        if self.market.borrow().snapshots.is_empty() {
-            return AccumulationRecord::empty(next_snapshot_index);
-        }
-
-        let amount = self.position.borrow_asset_deposit.to_decimal();
-
-        let mut accumulated = Decimal::ZERO;
-
-        let mut it = self.market.borrow().snapshots.iter();
-        // Skip the last snapshot, which may be incomplete.
-        it.next_back();
-
-        for (i, snapshot) in it
-            .enumerate()
-            .skip(next_snapshot_index as usize)
-            .map(|(i, s)| (i as u32, s))
-        {
-            let deposited = Decimal::from(snapshot.deposited.to_u128());
-            let distributed = Decimal::from(snapshot.yield_distribution.to_u128());
-            let share = amount * distributed / deposited;
-            accumulated += share;
-
-            next_snapshot_index = i + 1;
-        }
-
-        AccumulationRecord {
-            amount: accumulated.to_u128_floor().unwrap().into(),
-            next_snapshot_index,
-        }
     }
 
     pub fn record_withdrawal(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
