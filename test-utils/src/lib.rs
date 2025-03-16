@@ -759,9 +759,9 @@ pub fn market_configuration(
             borrow_asset_decimals: 24, // TODO: Update test helpers to make it easier to work with assets with differing decimal places
             price_maximum_age_s: 60,
         },
-        minimum_initial_collateral_ratio: Decimal::from_str("1.25").unwrap(),
-        minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
-        maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
+        borrow_mcr_initial: Decimal::from_str("1.25").unwrap(),
+        borrow_mcr: Decimal::from_str("1.2").unwrap(),
+        borrow_asset_maximum_usage_ratio: Decimal::from_str("0.99").unwrap(),
         borrow_origination_fee: Fee::Proportional(Decimal::from_str("0.1").unwrap()),
         borrow_interest_rate_strategy: InterestRateStrategy::piecewise(
             Decimal::ZERO,
@@ -770,10 +770,10 @@ pub fn market_configuration(
             dec!("0.6"),
         )
         .unwrap(),
-        maximum_borrow_duration_ms: None,
-        minimum_borrow_amount: 1.into(),
-        maximum_borrow_amount: u128::MAX.into(),
-        maximum_liquidator_spread: Decimal::from_str("0.05").unwrap(),
+        borrow_maximum_duration_ms: None,
+        borrow_minimum_amount: 1.into(),
+        borrow_maximum_amount: u128::MAX.into(),
+        liquidate_maximum_spread: Decimal::from_str("0.05").unwrap(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
         yield_weights,
     }

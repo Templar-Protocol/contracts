@@ -16,7 +16,7 @@ async fn borrow_within_maximum_usage_ratio(#[case] percent: u16) {
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_asset_usage_ratio = Decimal::from(percent) / 100u32;
+        c.borrow_asset_maximum_usage_ratio = Decimal::from(percent) / 100u32;
     })
     .await;
 
@@ -39,7 +39,7 @@ async fn borrow_exceeds_maximum_usage_ratio(#[case] percent: u16) {
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_asset_usage_ratio = Decimal::from(percent) / 100u32;
+        c.borrow_asset_maximum_usage_ratio = Decimal::from(percent) / 100u32;
     })
     .await;
 

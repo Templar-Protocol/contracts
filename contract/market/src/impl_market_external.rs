@@ -76,11 +76,11 @@ impl MarketExternalInterface for Contract {
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
         require!(
-            amount >= self.configuration.minimum_borrow_amount,
+            amount >= self.configuration.borrow_minimum_amount,
             "Borrow amount is smaller than minimum allowed",
         );
         require!(
-            amount <= self.configuration.maximum_borrow_amount,
+            amount <= self.configuration.borrow_maximum_amount,
             "Borrow amount is greater than maximum allowed",
         );
 

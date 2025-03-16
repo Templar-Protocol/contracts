@@ -18,21 +18,21 @@ pub struct MarketConfiguration {
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub balance_oracle: BalanceOracleConfiguration,
-    pub minimum_initial_collateral_ratio: Decimal,
-    pub minimum_collateral_ratio_per_borrow: Decimal,
+    pub borrow_mcr_initial: Decimal,
+    pub borrow_mcr: Decimal,
     /// How much of the deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
     /// Set to 99% for starters.
-    pub maximum_borrow_asset_usage_ratio: Decimal,
+    pub borrow_asset_maximum_usage_ratio: Decimal,
     /// The origination fee is a one-time amount added to the principal of the
     /// borrow. That is to say, the origination fee is denominated in units of
     /// the borrow asset and is paid by the borrowing account during repayment
     /// (or liquidation).
     pub borrow_origination_fee: Fee<BorrowAsset>,
     pub borrow_interest_rate_strategy: InterestRateStrategy,
-    pub maximum_borrow_duration_ms: Option<U64>,
-    pub minimum_borrow_amount: BorrowAssetAmount,
-    pub maximum_borrow_amount: BorrowAssetAmount,
+    pub borrow_maximum_duration_ms: Option<U64>,
+    pub borrow_minimum_amount: BorrowAssetAmount,
+    pub borrow_maximum_amount: BorrowAssetAmount,
     pub supply_withdrawal_fee: TimeBasedFee<CollateralAsset>,
     pub yield_weights: YieldWeights,
     /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
@@ -41,7 +41,7 @@ pub struct MarketConfiguration {
     /// NEAR, a "maximum liquidator spread" of 10% would mean that a liquidator
     /// could liquidate this borrow by sending 109USDC, netting the liquidator
     /// ($110 - $100) * 10% = $1 of NEAR.
-    pub maximum_liquidator_spread: Decimal,
+    pub liquidate_maximum_spread: Decimal,
 }
 
 pub mod error {
@@ -80,26 +80,26 @@ impl MarketConfiguration {
     ///
     /// If the configuration is invalid.
     pub fn validate(&self) -> Result<(), error::ConfigurationValidationError> {
-        if self.minimum_initial_collateral_ratio < 1u32 {
-            return Err(error::out_of_bounds("minimum_initial_collateral_ratio"));
+        if self.borrow_mcr_initial < 1u32 {
+            return Err(error::out_of_bounds("borrow_mcr_initial"));
         }
 
-        if self.minimum_collateral_ratio_per_borrow < 1u32 {
-            return Err(error::out_of_bounds("minimum_collateral_ratio_per_borrow"));
+        if self.borrow_mcr < 1u32 {
+            return Err(error::out_of_bounds("borrow_mcr"));
         }
 
-        if self.maximum_borrow_asset_usage_ratio.is_zero()
-            || self.maximum_borrow_asset_usage_ratio > 1u32
+        if self.borrow_asset_maximum_usage_ratio.is_zero()
+            || self.borrow_asset_maximum_usage_ratio > 1u32
         {
-            return Err(error::out_of_bounds("maximum_borrow_asset_usage_ratio"));
+            return Err(error::out_of_bounds("borrow_asset_maximum_usage_ratio"));
         }
 
-        if self.maximum_borrow_amount < self.minimum_borrow_amount {
-            return Err(error::out_of_bounds("maximum_borrow_amount"));
+        if self.borrow_maximum_amount < self.borrow_minimum_amount {
+            return Err(error::out_of_bounds("borrow_maximum_amount"));
         }
 
-        if self.maximum_liquidator_spread >= 1u32 {
-            return Err(error::out_of_bounds("maximum_liquidator_spread"));
+        if self.liquidate_maximum_spread >= 1u32 {
+            return Err(error::out_of_bounds("liquidate_maximum_spread"));
         }
 
         Ok(())
@@ -127,7 +127,7 @@ impl MarketConfiguration {
         borrow_position: &BorrowPosition,
         block_timestamp_ms: u64,
     ) -> bool {
-        if let Some(U64(maximum_duration_ms)) = self.maximum_borrow_duration_ms {
+        if let Some(U64(maximum_duration_ms)) = self.borrow_maximum_duration_ms {
             borrow_position
                 .started_at_block_timestamp_ms
                 .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
@@ -143,7 +143,7 @@ impl MarketConfiguration {
         oracle_price_proof: &PricePair,
     ) -> bool {
         is_within_mcr(
-            &self.minimum_initial_collateral_ratio,
+            &self.borrow_mcr_initial,
             borrow_position,
             oracle_price_proof,
         )
@@ -154,11 +154,7 @@ impl MarketConfiguration {
         borrow_position: &BorrowPosition,
         oracle_price_proof: &PricePair,
     ) -> bool {
-        is_within_mcr(
-            &self.minimum_collateral_ratio_per_borrow,
-            borrow_position,
-            oracle_price_proof,
-        )
+        is_within_mcr(&self.borrow_mcr, borrow_position, oracle_price_proof)
     }
 
     #[allow(clippy::missing_panics_doc)]
@@ -171,7 +167,7 @@ impl MarketConfiguration {
             // Safe because the factor is guaranteed to be <=1, so the result
             // must still fit in u128.
             #[allow(clippy::unwrap_used)]
-            ((1u32 - self.maximum_liquidator_spread)
+            ((1u32 - self.liquidate_maximum_spread)
                 * price_pair.convert_pessimistic(amount).to_u128())
             .to_u128_ceil()
             .unwrap(),

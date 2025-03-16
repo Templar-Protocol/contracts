@@ -71,8 +71,8 @@ async fn successful_liquidation_good_debt_under_mcr(
         ..
     } = setup_everything(|config| {
         config.borrow_origination_fee = Fee::zero();
-        config.minimum_collateral_ratio_per_borrow = Decimal::from(mcr) / 100u32;
-        config.minimum_initial_collateral_ratio = Decimal::from(mcr) / 100u32;
+        config.borrow_mcr = Decimal::from(mcr) / 100u32;
+        config.borrow_mcr_initial = Decimal::from(mcr) / 100u32;
     })
     .await;
 
@@ -151,8 +151,8 @@ async fn successful_liquidation_with_spread(
         borrow_user,
         ..
     } = setup_everything(|config| {
-        config.minimum_collateral_ratio_per_borrow = mcr;
-        config.maximum_liquidator_spread = maximum_liquidator_spread;
+        config.borrow_mcr = mcr;
+        config.liquidate_maximum_spread = maximum_liquidator_spread;
     })
     .await;
 

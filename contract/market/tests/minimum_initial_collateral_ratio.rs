@@ -20,8 +20,8 @@ async fn success_above_minimum_initial_collateral_ratio(
         ..
     } = setup_everything(|c| {
         c.borrow_origination_fee = Fee::zero();
-        c.minimum_collateral_ratio_per_borrow = minimum;
-        c.minimum_initial_collateral_ratio = initial;
+        c.borrow_mcr = minimum;
+        c.borrow_mcr_initial = initial;
     })
     .await;
 
@@ -53,8 +53,8 @@ async fn fail_below_minimum_initial_collateral_ratio(
         ..
     } = setup_everything(|c| {
         c.borrow_origination_fee = Fee::zero();
-        c.minimum_collateral_ratio_per_borrow = minimum;
-        c.minimum_initial_collateral_ratio = initial;
+        c.borrow_mcr = minimum;
+        c.borrow_mcr_initial = initial;
     })
     .await;
 
@@ -84,8 +84,8 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
         ..
     } = setup_everything(|c| {
         c.borrow_origination_fee = Fee::zero();
-        c.minimum_collateral_ratio_per_borrow = minimum;
-        c.minimum_initial_collateral_ratio = initial;
+        c.borrow_mcr = minimum;
+        c.borrow_mcr_initial = initial;
     })
     .await;
 

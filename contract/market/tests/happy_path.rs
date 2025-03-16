@@ -74,9 +74,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         }
     }
 
-    assert!(configuration
-        .minimum_collateral_ratio_per_borrow
-        .near_equal(dec!("1.2")));
+    assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;

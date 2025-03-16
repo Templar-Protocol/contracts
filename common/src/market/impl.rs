@@ -142,7 +142,7 @@ impl Market {
     ) -> BorrowAssetAmount {
         // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
         #[allow(clippy::unwrap_used)]
-        let must_retain = ((1u32 - self.configuration.maximum_borrow_asset_usage_ratio)
+        let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
             * self.borrow_asset_deposited.to_decimal())
         .to_u128_ceil()
         .unwrap();
