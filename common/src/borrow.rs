@@ -14,6 +14,15 @@ use crate::{
     MS_IN_A_YEAR,
 };
 
+pub struct InterestAccumulationProof(());
+
+#[cfg(test)]
+impl InterestAccumulationProof {
+    pub fn test() -> Self {
+        Self(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub enum BorrowStatus {
@@ -106,6 +115,7 @@ impl BorrowPosition {
 
     pub(crate) fn increase_borrow_asset_principal(
         &mut self,
+        _proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
     ) -> Option<()> {
@@ -119,6 +129,7 @@ impl BorrowPosition {
 
     pub(crate) fn reduce_borrow_asset_liability(
         &mut self,
+        _proof: InterestAccumulationProof,
         mut amount: BorrowAssetAmount,
     ) -> Result<LiabilityReduction, error::LiquidationLockError> {
         if self.liquidation_lock {
@@ -408,14 +419,13 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
 
     pub fn record_borrow_asset_withdrawal(
         &mut self,
+        proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        self.accumulate_interest();
-
         self.position.borrow_asset_fees.add_once(fees);
         self.position
-            .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
+            .increase_borrow_asset_principal(proof, amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
 
         self.market
@@ -432,12 +442,14 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         .emit();
     }
 
-    pub fn record_repay(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
-        self.accumulate_interest();
-
+    pub fn record_repay(
+        &mut self,
+        proof: InterestAccumulationProof,
+        amount: BorrowAssetAmount,
+    ) -> BorrowAssetAmount {
         let liability_reduction = self
             .position
-            .reduce_borrow_asset_liability(amount)
+            .reduce_borrow_asset_liability(proof, amount)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         self.market
@@ -465,7 +477,7 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         liability_reduction.amount_remaining
     }
 
-    pub fn accumulate_interest(&mut self) {
+    pub fn accumulate_interest(&mut self) -> InterestAccumulationProof {
         self.market.borrow_mut().snapshot();
 
         let accumulation_record = self.calculate_interest(u32::MAX);
@@ -479,6 +491,8 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         self.position
             .borrow_asset_fees
             .accumulate(accumulation_record);
+
+        InterestAccumulationProof(())
     }
 
     pub fn liquidation_lock(&mut self) {

@@ -266,7 +266,8 @@ impl Market {
             return Ok(None);
         };
 
-        supply_position.record_withdrawal(amount);
+        let proof = supply_position.accumulate_yield();
+        supply_position.record_withdrawal(proof, amount);
 
         Ok(Some((account_id, amount)))
     }

@@ -7,6 +7,7 @@ use templar_common::{
     market::PricePair,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
+    supply::YieldAccumulationProof,
 };
 
 use crate::{Contract, ContractExt};
@@ -15,7 +16,8 @@ use crate::{Contract, ContractExt};
 impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
         let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
-        supply_position.record_deposit(amount);
+        let proof = supply_position.accumulate_yield();
+        supply_position.record_deposit(proof, amount);
     }
 
     pub fn execute_collateralize(&mut self, account_id: AccountId, amount: CollateralAssetAmount) {
@@ -44,7 +46,8 @@ impl Contract {
             // borrowed + fees/interest.
             // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923876327
 
-            borrow_position.record_repay(amount)
+            let proof = borrow_position.accumulate_interest();
+            borrow_position.record_repay(proof, amount)
         } else {
             // No borrow exists: just return the whole amount.
             amount
@@ -209,7 +212,8 @@ impl Contract {
                 //
                 // Borrow position has already been created: finalize
                 // withdrawal record.
-                borrow_position.record_borrow_asset_withdrawal(amount, fees);
+                let proof = borrow_position.accumulate_interest();
+                borrow_position.record_borrow_asset_withdrawal(proof, amount, fees);
             }
             PromiseResult::Failed => {
                 // Likely reasons for failure:
@@ -271,7 +275,8 @@ impl Contract {
                 env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
                 self.withdrawal_queue.unlock();
                 if let Some(mut supply_position) = self.get_linked_supply_position_mut(account) {
-                    supply_position.record_deposit(amount);
+                    let proof = supply_position.accumulate_yield();
+                    supply_position.record_deposit(proof, amount);
                 }
             }
         }

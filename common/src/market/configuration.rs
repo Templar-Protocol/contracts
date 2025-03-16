@@ -190,7 +190,7 @@ fn is_within_mcr(mcr: &Decimal, borrow_position: &BorrowPosition, price_pair: &P
 
 #[cfg(test)]
 mod tests {
-    use crate::{dec, oracle::pyth};
+    use crate::{borrow::InterestAccumulationProof, dec, oracle::pyth};
 
     use super::*;
 
@@ -198,7 +198,7 @@ mod tests {
     fn test_is_within_mcr() {
         let mut b = BorrowPosition::new(0);
         b.increase_collateral_asset_deposit(121u128.into());
-        b.increase_borrow_asset_principal(100u128.into(), 0);
+        b.increase_borrow_asset_principal(InterestAccumulationProof::test(), 100u128.into(), 0);
         assert!(is_within_mcr(
             &dec!("1.2"),
             &b,
