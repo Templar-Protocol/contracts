@@ -102,17 +102,9 @@ impl Decimal {
     pub const ONE_HALF: Self = Self {
         repr: U512([0, 0x8000_0000_0000_0000, 0, 0, 0, 0, 0, 0]),
     };
+    #[rustfmt::skip]
     pub const LN2: Self = Self {
-        repr: U512([
-            0xC9E3_B398_03F2_F6B0,
-            0xB172_17F7_D1CF_79AB,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ]),
+        repr: U512([0xC9E3_B398_03F2_F6B0, 0xB172_17F7_D1CF_79AB, 0, 0, 0, 0, 0, 0]),
     };
     pub const ONE: Self = Self {
         repr: U512([0, 0, 1, 0, 0, 0, 0, 0]),
@@ -120,17 +112,12 @@ impl Decimal {
     pub const TWO: Self = Self {
         repr: U512([0, 0, 2, 0, 0, 0, 0, 0]),
     };
+    #[rustfmt::skip]
     pub const E: Self = Self {
-        repr: U512([
-            0xBF71_5880_9CF4_F3C9,
-            0xB7E1_5162_8AED_2A6A,
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ]),
+        repr: U512([0xBF71_5880_9CF4_F3C9, 0xB7E1_5162_8AED_2A6A, 2, 0, 0, 0, 0, 0]),
+    };
+    pub const TEN: Self = Self {
+        repr: U512([0, 0, 10, 0, 0, 0, 0, 0]),
     };
 
     pub fn as_repr(self) -> [u64; 8] {

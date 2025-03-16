@@ -10,7 +10,7 @@ use crate::{
     number::Decimal,
 };
 
-use super::{AssetConversion, AssetValuation, BalanceOracleConfiguration, PricePair, YieldWeights};
+use super::{AssetConversion, BalanceOracleConfiguration, PricePair, YieldWeights};
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
@@ -176,10 +176,12 @@ impl MarketConfiguration {
 }
 
 fn is_within_mcr(mcr: &Decimal, borrow_position: &BorrowPosition, price_pair: &PricePair) -> bool {
-    let scaled_collateral_value =
-        price_pair.value_pessimistic(borrow_position.collateral_asset_deposit);
-    let scaled_borrow_value =
-        price_pair.value_optimistic(borrow_position.get_total_borrow_asset_liability());
+    let scaled_collateral_value = price_pair
+        .collateral_asset_price
+        .value_pessimistic(borrow_position.collateral_asset_deposit);
+    let scaled_borrow_value = price_pair
+        .borrow_asset_price
+        .value_optimistic(borrow_position.get_total_borrow_asset_liability());
 
     scaled_collateral_value >= scaled_borrow_value * mcr
 }
@@ -199,7 +201,6 @@ mod tests {
             &dec!("1.2"),
             &b,
             &PricePair::new(
-                18,
                 &pyth::Price {
                     price: near_sdk::json_types::I64(10000),
                     conf: U64(1),
@@ -213,6 +214,7 @@ mod tests {
                     expo: -4,
                     publish_time: 0,
                 },
+                18,
             )
             .unwrap()
         ));
