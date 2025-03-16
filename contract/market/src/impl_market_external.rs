@@ -5,6 +5,7 @@ use templar_common::{
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
+    snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -16,6 +17,16 @@ use crate::{Contract, ContractExt};
 impl MarketExternalInterface for Contract {
     fn get_configuration(&self) -> MarketConfiguration {
         self.configuration.clone()
+    }
+
+    fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
+        self.snapshots
+            .iter()
+            .skip(offset)
+            .take(count)
+            .collect::<Vec<_>>()
     }
 
     fn get_borrow_asset_metrics(
