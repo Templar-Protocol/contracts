@@ -2,6 +2,7 @@ pub mod accumulator;
 pub mod asset;
 pub mod borrow;
 pub mod chain_time;
+pub mod chunked_append_only_list;
 pub mod event;
 pub mod fee;
 pub mod interest_rate_strategy;
