@@ -140,7 +140,7 @@ async fn successful_liquidation_with_spread(
 ) {
     assert!(spread_pct <= maximum_spread_pct);
 
-    let maximum_liquidator_spread: Decimal = Decimal::from(maximum_spread_pct) / 100u32;
+    let liquidation_maximum_spread: Decimal = Decimal::from(maximum_spread_pct) / 100u32;
     let target_spread: Decimal = Decimal::from(spread_pct) / 100u32;
     let mcr: Decimal = Decimal::from(mcr) / 100u32;
 
@@ -152,7 +152,7 @@ async fn successful_liquidation_with_spread(
         ..
     } = setup_everything(|config| {
         config.borrow_mcr = mcr;
-        config.liquidate_maximum_spread = maximum_liquidator_spread;
+        config.liquidation_maximum_spread = liquidation_maximum_spread;
     })
     .await;
 

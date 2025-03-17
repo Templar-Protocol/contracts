@@ -41,7 +41,7 @@ pub struct MarketConfiguration {
     /// NEAR, a "maximum liquidator spread" of 10% would mean that a liquidator
     /// could liquidate this borrow by sending 109USDC, netting the liquidator
     /// ($110 - $100) * 10% = $1 of NEAR.
-    pub liquidate_maximum_spread: Decimal,
+    pub liquidation_maximum_spread: Decimal,
 }
 
 pub mod error {
@@ -98,8 +98,8 @@ impl MarketConfiguration {
             return Err(error::out_of_bounds("borrow_maximum_amount"));
         }
 
-        if self.liquidate_maximum_spread >= 1u32 {
-            return Err(error::out_of_bounds("liquidate_maximum_spread"));
+        if self.liquidation_maximum_spread >= 1u32 {
+            return Err(error::out_of_bounds("liquidation_maximum_spread"));
         }
 
         Ok(())
@@ -167,7 +167,7 @@ impl MarketConfiguration {
             // Safe because the factor is guaranteed to be <=1, so the result
             // must still fit in u128.
             #[allow(clippy::unwrap_used)]
-            ((1u32 - self.liquidate_maximum_spread)
+            ((1u32 - self.liquidation_maximum_spread)
                 * price_pair.convert_pessimistic(amount).to_u128())
             .to_u128_ceil()
             .unwrap(),

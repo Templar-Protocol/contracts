@@ -48,7 +48,7 @@ pub fn main() {
             borrow_maximum_amount: FungibleAssetAmount::new(u128::MAX),
             supply_withdrawal_fee: TimeBasedFee::zero(),
             yield_weights: YieldWeights::new_with_supply_weight(1),
-            liquidate_maximum_spread: Decimal::from_str("0.05").unwrap(),
+            liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
         })
         .unwrap(),
     );
