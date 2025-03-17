@@ -8,6 +8,7 @@ use crate::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
+    time_chunk::TimeChunkConfiguration,
 };
 
 use super::{AssetConversion, BalanceOracleConfiguration, PricePair, YieldWeights};
@@ -15,6 +16,7 @@ use super::{AssetConversion, BalanceOracleConfiguration, PricePair, YieldWeights
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
+    pub time_chunk_configuration: TimeChunkConfiguration,
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub balance_oracle: BalanceOracleConfiguration,

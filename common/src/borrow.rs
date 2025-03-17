@@ -57,7 +57,7 @@ impl BorrowPosition {
             collateral_asset_deposit: 0.into(),
             borrow_asset_principal: 0.into(),
             // Start from current (not next) snapshot to avoid the possibility
-            // of borrowing "for free". e.g. if ChainTime units are epochs (12
+            // of borrowing "for free". e.g. if TimeChunk units are epochs (12
             // hours), this prevents someone from getting 11 hours of free
             // borrowing if they create the borrow 1 hour into the epoch.
             borrow_asset_fees: Accumulator::new(current_snapshot_index),
