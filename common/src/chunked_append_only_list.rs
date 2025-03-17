@@ -90,6 +90,7 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32>
         Iter {
             list: self,
             next_index: 0,
+            until_index: self.len(),
         }
     }
 }
@@ -109,6 +110,7 @@ impl<'a, T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> IntoIterat
 pub struct Iter<'a, T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> {
     list: &'a ChunkedAppendOnlyList<T, CHUNK_SIZE>,
     next_index: u32,
+    until_index: u32,
 }
 
 impl<'a, T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> Iterator
@@ -117,8 +119,33 @@ impl<'a, T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> Iterator
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.until_index <= self.next_index {
+            return None;
+        }
+
         if let Some(value) = self.list.get(self.next_index) {
             self.next_index += 1;
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+
+impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> DoubleEndedIterator
+    for Iter<'_, T, CHUNK_SIZE>
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.until_index <= self.next_index {
+            return None;
+        }
+
+        if let Some((index, value)) = self
+            .until_index
+            .checked_sub(1)
+            .and_then(|index| self.list.get(index).map(|x| (index, x)))
+        {
+            self.until_index = index;
             Some(value)
         } else {
             None
@@ -167,5 +194,23 @@ mod tests {
         }
 
         assert_eq!(list.len(), 10_000);
+    }
+
+    #[test]
+    fn next_back() {
+        let mut list = ChunkedAppendOnlyList::<_, 47>::new(b"l");
+        for i in 0..10_000u32 {
+            list.push(i);
+        }
+
+        let mut it = list.iter();
+
+        let mut i = 10_000;
+        while let Some(x) = it.next_back() {
+            i -= 1;
+            assert_eq!(*x, i);
+        }
+
+        assert_eq!(i, 0);
     }
 }
