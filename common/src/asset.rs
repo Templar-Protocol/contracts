@@ -26,11 +26,11 @@ impl<T: AssetClass> FungibleAsset<T> {
     pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
         match self.kind {
             FungibleAssetKind::Native => {
-                Promise::new(receiver_id).transfer(NearToken::from_yoctonear(amount.to_u128()))
+                Promise::new(receiver_id).transfer(NearToken::from_yoctonear(amount.into()))
             }
             FungibleAssetKind::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
                 .with_attached_deposit(NearToken::from_yoctonear(1))
-                .ft_transfer(receiver_id, amount.to_u128().into(), None),
+                .ft_transfer(receiver_id, u128::from(amount).into(), None),
         }
     }
 
@@ -170,14 +170,6 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
         self.amount.0 == 0
     }
 
-    pub fn to_u128(&self) -> u128 {
-        self.amount.0
-    }
-
-    pub fn to_decimal(&self) -> Decimal {
-        self.amount.0.into()
-    }
-
     pub fn split(&mut self, amount: impl Into<Self>) -> Option<Self> {
         let a = amount.into();
         self.amount.0 = self.amount.0.checked_sub(a.amount.0)?;
@@ -187,6 +179,18 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
     pub fn join(&mut self, other: Self) -> Option<()> {
         self.amount.0 = self.amount.0.checked_add(other.amount.0)?;
         Some(())
+    }
+}
+
+impl<T: AssetClass> From<FungibleAssetAmount<T>> for Decimal {
+    fn from(value: FungibleAssetAmount<T>) -> Self {
+        value.amount.0.into()
+    }
+}
+
+impl<T: AssetClass> From<FungibleAssetAmount<T>> for u128 {
+    fn from(value: FungibleAssetAmount<T>) -> Self {
+        value.amount.0
     }
 }
 

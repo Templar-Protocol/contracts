@@ -241,7 +241,7 @@ impl WithdrawalQueue {
         WithdrawalQueueStatus {
             depth: self
                 .iter()
-                .map(|(_, amount)| amount.to_u128())
+                .map(|(_, amount)| u128::from(amount))
                 .sum::<u128>()
                 .into(),
             length: self.len(),

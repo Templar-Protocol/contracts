@@ -239,13 +239,13 @@ impl MarketExternalInterface for Contract {
     fn get_last_yield_rate(&self) -> Decimal {
         let last_snapshot = self.get_last_snapshot();
         let last_interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
-        let deposited = last_snapshot.deposited.to_decimal();
+        let deposited: Decimal = last_snapshot.deposited.into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed = last_snapshot.borrowed.to_decimal();
-        let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
-        let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
+        let borrowed: Decimal = last_snapshot.borrowed.into();
+        let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
+        let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
         last_interest_rate * borrowed * supply_weight / deposited / total_weight
     }

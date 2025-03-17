@@ -102,13 +102,13 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
     }
 
     pub fn calculate_last_snapshot_yield(&self) -> BorrowAssetAmount {
-        let deposit = self.position.get_borrow_asset_deposit().to_decimal();
+        let deposit: Decimal = self.position.get_borrow_asset_deposit().into();
         if deposit.is_zero() {
             return BorrowAssetAmount::zero();
         }
 
         let last_snapshot = self.market.borrow().get_last_snapshot();
-        let total_deposited = last_snapshot.deposited.to_decimal();
+        let total_deposited: Decimal = last_snapshot.deposited.into();
         if total_deposited.is_zero() {
             // divzero safety
             return BorrowAssetAmount::zero();
@@ -130,7 +130,7 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
                 .total_weight()
                 .get(),
         );
-        let total_yield_distribution = last_snapshot.yield_distribution.to_decimal();
+        let total_yield_distribution: Decimal = last_snapshot.yield_distribution.into();
         let estimate_current_snapshot =
             total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
 
@@ -144,7 +144,7 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
             return AccumulationRecord::empty(next_snapshot_index);
         }
 
-        let amount = self.position.get_borrow_asset_deposit().to_decimal();
+        let amount: Decimal = self.position.get_borrow_asset_deposit().into();
 
         let mut accumulated = Decimal::ZERO;
 
@@ -157,8 +157,8 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
             #[allow(clippy::cast_possible_truncation)]
             |(i, s)| (i as u32, s),
         ) {
-            accumulated +=
-                amount * snapshot.yield_distribution.to_decimal() / snapshot.deposited.to_decimal();
+            accumulated += amount * Decimal::from(snapshot.yield_distribution)
+                / Decimal::from(snapshot.deposited);
 
             next_snapshot_index = i + 1;
         }

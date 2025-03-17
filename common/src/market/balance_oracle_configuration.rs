@@ -110,11 +110,11 @@ impl<T: AssetClass> Price<T> {
     }
 
     pub fn value_optimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        amount.to_decimal() * self.upper_bound()
+        Decimal::from(amount) * self.upper_bound()
     }
 
     pub fn value_pessimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        amount.to_decimal() * self.lower_bound()
+        Decimal::from(amount) * self.lower_bound()
     }
 }
 
@@ -151,7 +151,7 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<CollateralAsset>,
     ) -> FungibleAssetAmount<BorrowAsset> {
-        (amount.to_decimal() * self.collateral_asset_price.upper_bound()
+        (Decimal::from(amount) * self.collateral_asset_price.upper_bound()
             / self.borrow_asset_price.lower_bound())
         .to_u128_ceil()
         .unwrap()
@@ -162,7 +162,7 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<CollateralAsset>,
     ) -> FungibleAssetAmount<BorrowAsset> {
-        (amount.to_decimal() * self.collateral_asset_price.lower_bound()
+        (Decimal::from(amount) * self.collateral_asset_price.lower_bound()
             / self.borrow_asset_price.upper_bound())
         .to_u128_floor()
         .unwrap()
@@ -175,7 +175,7 @@ impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<BorrowAsset>,
     ) -> FungibleAssetAmount<CollateralAsset> {
-        (amount.to_decimal() * self.borrow_asset_price.upper_bound()
+        (Decimal::from(amount) * self.borrow_asset_price.upper_bound()
             / self.collateral_asset_price.lower_bound())
         .to_u128_ceil()
         .unwrap()
@@ -186,7 +186,7 @@ impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<BorrowAsset>,
     ) -> FungibleAssetAmount<CollateralAsset> {
-        (amount.to_decimal() * self.borrow_asset_price.lower_bound()
+        (Decimal::from(amount) * self.borrow_asset_price.lower_bound()
             / self.collateral_asset_price.upper_bound())
         .to_u128_floor()
         .unwrap()

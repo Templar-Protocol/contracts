@@ -203,14 +203,15 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
         let interest_rate = market.get_interest_rate_for_snapshot(last_snapshot);
         let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
         let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
-        let interest_rate_part = interest_rate * duration_ms / ms_in_a_year;
-        let interest = interest_rate_part * self.position.get_borrow_asset_principal().to_decimal();
+        let interest_rate_part: Decimal = interest_rate * duration_ms / ms_in_a_year;
+        let interest =
+            interest_rate_part * Decimal::from(self.position.get_borrow_asset_principal());
 
         interest.to_u128_ceil().unwrap().into()
     }
 
     pub(crate) fn calculate_interest(&self, limit: u32) -> AccumulationRecord<BorrowAsset> {
-        let principal = self.position.get_borrow_asset_principal().to_decimal();
+        let principal: Decimal = self.position.get_borrow_asset_principal().into();
         let mut next_snapshot_index = self.position.borrow_asset_fees.get_next_snapshot_index();
 
         let mut accumulated = Decimal::ZERO;
