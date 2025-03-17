@@ -12,12 +12,16 @@ use templar_common::{
     market::{BalanceOracleConfiguration, MarketConfiguration, YieldWeights},
     number::Decimal,
     oracle::pyth::PriceIdentifier,
+    time_chunk::TimeChunkConfiguration,
 };
 
 pub fn main() {
     println!(
         "{{\"configuration\":{}}}",
         serde_json::to_string(&MarketConfiguration {
+            time_chunk_configuration: TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (1000u64 * 60 * 10).into(), // every 10 minutes
+            },
             borrow_asset: FungibleAsset::nep141("usdt.fakes.testnet".parse().unwrap()),
             collateral_asset: FungibleAsset::nep141("wrap.testnet".parse().unwrap()),
             balance_oracle: BalanceOracleConfiguration {
