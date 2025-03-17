@@ -83,16 +83,16 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         );
         let duration_outer = time_outer.elapsed();
 
-        let supply_yield_1 = supply_position_1.borrow_asset_yield.get_total().as_u128()
+        let supply_yield_1 = supply_position_1.borrow_asset_yield.get_total().to_u128()
             + supply_position_1
                 .borrow_asset_yield
                 .pending_estimate
-                .as_u128();
-        let supply_yield_2 = supply_position_2.borrow_asset_yield.get_total().as_u128()
+                .to_u128();
+        let supply_yield_2 = supply_position_2.borrow_asset_yield.get_total().to_u128()
             + supply_position_2
                 .borrow_asset_yield
                 .pending_estimate
-                .as_u128();
+                .to_u128();
 
         // No yield yet.
         assert_eq!(supply_yield_1, 0);
@@ -106,21 +106,21 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let approximation_below = (f * duration_inner.as_millis()).to_u128_ceil().unwrap();
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
 
-        let actual_1 = borrow_position_1.borrow_asset_fees.get_total().as_u128()
+        let actual_1 = borrow_position_1.borrow_asset_fees.get_total().to_u128()
             + borrow_position_1
                 .borrow_asset_fees
                 .pending_estimate
-                .as_u128();
+                .to_u128();
         println!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
         assert!(approximation_below <= actual_1);
         assert!(actual_1 <= approximation_above);
 
-        let actual_2 = borrow_position_2.borrow_asset_fees.get_total().as_u128()
+        let actual_2 = borrow_position_2.borrow_asset_fees.get_total().to_u128()
             + borrow_position_2
                 .borrow_asset_fees
                 .pending_estimate
-                .as_u128();
+                .to_u128();
         println!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
         assert!(approximation_below <= actual_2);
@@ -144,11 +144,11 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                     &borrow_user,
                     (borrow_position_before
                         .get_total_borrow_asset_liability()
-                        .as_u128()
+                        .to_u128()
                         + borrow_position_before
                             .borrow_asset_fees
                             .pending_estimate
-                            .as_u128())
+                            .to_u128())
                         * 110
                         / 100, /* overpayment */
                 )
@@ -172,11 +172,11 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                 &borrow_user_2,
                 (borrow_position_before
                     .get_total_borrow_asset_liability()
-                    .as_u128()
+                    .to_u128()
                     + borrow_position_before
                         .borrow_asset_fees
                         .pending_estimate
-                        .as_u128())
+                        .to_u128())
                     * 110
                     / 100, /* overpayment */
             )

@@ -16,8 +16,8 @@ async fn borrow_within_bounds(#[case] minimum: u128, #[case] amount: u128, #[cas
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_amount = maximum.into();
-        c.minimum_borrow_amount = minimum.into();
+        c.borrow_maximum_amount = maximum.into();
+        c.borrow_minimum_amount = minimum.into();
     })
     .await;
 
@@ -40,8 +40,8 @@ async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[cas
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_amount = maximum.into();
-        c.minimum_borrow_amount = minimum.into();
+        c.borrow_maximum_amount = maximum.into();
+        c.borrow_minimum_amount = minimum.into();
     })
     .await;
 
@@ -64,8 +64,8 @@ async fn borrow_above_maximum(#[case] minimum: u128, #[case] amount: u128, #[cas
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_amount = maximum.into();
-        c.minimum_borrow_amount = minimum.into();
+        c.borrow_maximum_amount = maximum.into();
+        c.borrow_minimum_amount = minimum.into();
     })
     .await;
 

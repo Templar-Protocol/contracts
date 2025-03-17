@@ -7,7 +7,6 @@ use templar_common::{
     market::PricePair,
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
-    snapshot::Snapshot,
 };
 
 use crate::{Contract, ContractExt};
@@ -115,16 +114,6 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.snapshots
-            .iter()
-            .skip(offset)
-            .take(count)
-            .collect::<Vec<_>>()
-    }
-
     #[private]
     pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
         value
