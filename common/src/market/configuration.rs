@@ -1,4 +1,4 @@
-use near_sdk::{json_types::U64, near};
+use near_sdk::{json_types::U64, near, AccountId};
 
 use crate::{
     asset::{
@@ -33,8 +33,9 @@ pub struct MarketConfiguration {
     pub maximum_borrow_duration_ms: Option<U64>,
     pub minimum_borrow_amount: BorrowAssetAmount,
     pub maximum_borrow_amount: BorrowAssetAmount,
-    pub supply_withdrawal_fee: TimeBasedFee<CollateralAsset>,
+    pub supply_withdrawal_fee: TimeBasedFee<BorrowAsset>,
     pub yield_weights: YieldWeights,
+    pub protocol_account_id: AccountId,
     /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
     ///
     /// For example, if a 100USDC borrow is (under)collateralized with $110 of

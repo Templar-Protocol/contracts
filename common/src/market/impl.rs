@@ -18,6 +18,8 @@ use crate::{
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
+use super::WithdrawalResolution;
+
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {
@@ -240,7 +242,7 @@ impl Market {
     /// - If the withdrawal queue is empty.
     pub fn try_lock_next_withdrawal_request(
         &mut self,
-    ) -> Result<Option<(AccountId, BorrowAssetAmount)>, WithdrawalQueueLockError> {
+    ) -> Result<Option<WithdrawalResolution>, WithdrawalQueueLockError> {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
         let Some((amount, mut supply_position)) = self
@@ -266,12 +268,24 @@ impl Market {
             return Ok(None);
         };
 
-        supply_position.record_withdrawal(amount);
+        let resolution = supply_position.record_withdrawal(amount, env::block_timestamp_ms());
 
-        Ok(Some((account_id, amount)))
+        Ok(Some(resolution))
     }
 
-    pub(crate) fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+    pub fn record_borrow_asset_protocol_yield(&mut self, amount: BorrowAssetAmount) {
+        let mut yield_record = self
+            .static_yield
+            .get(&self.configuration.protocol_account_id)
+            .unwrap_or_default();
+
+        yield_record.borrow_asset.join(amount);
+
+        self.static_yield
+            .insert(&self.configuration.protocol_account_id, &yield_record);
+    }
+
+    pub fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
         // Sanity.
         if amount.is_zero() {
             return;

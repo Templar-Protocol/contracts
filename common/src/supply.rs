@@ -3,19 +3,20 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use near_sdk::{env, near, AccountId};
+use near_sdk::{env, json_types::U64, near, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount},
     event::MarketEvent,
-    market::Market,
+    market::{Market, WithdrawalResolution},
     number::Decimal,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
+    pub started_at_block_timestamp_ms: Option<U64>,
     borrow_asset_deposit: BorrowAssetAmount,
     pub borrow_asset_yield: Accumulator<BorrowAsset>,
 }
@@ -23,6 +24,7 @@ pub struct SupplyPosition {
 impl SupplyPosition {
     pub fn new(current_snapshot_index: u32) -> Self {
         Self {
+            started_at_block_timestamp_ms: None,
             borrow_asset_deposit: 0.into(),
             // We start at next log index so that the supply starts
             // accumulating yield from the _next_ log (since they were not
@@ -35,6 +37,10 @@ impl SupplyPosition {
         self.borrow_asset_deposit
     }
 
+    pub fn get_started_at_block_timestamp_ms(&self) -> Option<u64> {
+        self.started_at_block_timestamp_ms.map(u64::from)
+    }
+
     pub fn exists(&self) -> bool {
         !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_yield.get_total().is_zero()
     }
@@ -43,7 +49,11 @@ impl SupplyPosition {
     pub(crate) fn increase_borrow_asset_deposit(
         &mut self,
         amount: BorrowAssetAmount,
+        block_timestamp_ms: u64,
     ) -> Option<()> {
+        if self.started_at_block_timestamp_ms.is_none() || self.borrow_asset_deposit.is_zero() {
+            self.started_at_block_timestamp_ms = Some(block_timestamp_ms.into());
+        }
         self.borrow_asset_deposit.join(amount)
     }
 
@@ -52,6 +62,8 @@ impl SupplyPosition {
         &mut self,
         amount: BorrowAssetAmount,
     ) -> Option<BorrowAssetAmount> {
+        // No need to reset the timer; it is a permanent indication of the
+        // initial supply event.
         self.borrow_asset_deposit.split(amount)
     }
 }
@@ -247,11 +259,14 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         }
     }
 
-    pub fn record_withdrawal(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
+    pub fn record_withdrawal(
+        &mut self,
+        mut amount: BorrowAssetAmount,
+        block_timestamp_ms: u64,
+    ) -> WithdrawalResolution {
         self.accumulate_yield();
 
-        let withdrawn = self
-            .position
+        self.position
             .decrease_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
 
@@ -263,20 +278,39 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
 
         self.market.borrow_mut().snapshot();
 
+        let started_at_block_timestamp_ms =
+            self.0.position.started_at_block_timestamp_ms.unwrap().0;
+        let supply_duration = block_timestamp_ms.saturating_sub(started_at_block_timestamp_ms);
+
+        let amount_to_fees = self
+            .market
+            .borrow()
+            .configuration
+            .supply_withdrawal_fee
+            .of(amount, supply_duration)
+            .unwrap();
+
+        amount.split(amount_to_fees).unwrap();
+
         MarketEvent::SupplyWithdrawn {
             account_id: self.account_id.clone(),
-            borrow_asset_amount: amount,
+            borrow_asset_amount_to_account: amount,
+            borrow_asset_amount_to_fees: amount_to_fees,
         }
         .emit();
 
-        withdrawn
+        WithdrawalResolution {
+            account_id: self.account_id.clone(),
+            amount_to_account: amount,
+            amount_to_fees,
+        }
     }
 
-    pub fn record_deposit(&mut self, amount: BorrowAssetAmount) {
+    pub fn record_deposit(&mut self, amount: BorrowAssetAmount, block_timestamp_ms: u64) {
         self.accumulate_yield();
 
         self.position
-            .increase_borrow_asset_deposit(amount)
+            .increase_borrow_asset_deposit(amount, block_timestamp_ms)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
 
         self.market

@@ -5,6 +5,7 @@ use near_sdk::{
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     market::PricePair,
+    market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
 };
@@ -15,7 +16,7 @@ use crate::{Contract, ContractExt};
 impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
         let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
-        supply_position.record_deposit(amount);
+        supply_position.record_deposit(amount, env::block_timestamp_ms());
     }
 
     pub fn execute_collateralize(&mut self, account_id: AccountId, amount: CollateralAssetAmount) {
@@ -237,7 +238,7 @@ impl Contract {
     }
 
     #[private]
-    pub fn after_execute_next_withdrawal(&mut self, account: AccountId, amount: BorrowAssetAmount) {
+    pub fn after_execute_next_withdrawal(&mut self, withdrawal_resolution: WithdrawalResolution) {
         // TODO: Is this check even necessary in a #[private] function?
         require!(env::promise_results_count() == 1);
 
@@ -256,9 +257,11 @@ impl Contract {
                 // head of the queue cannot change while transfers are
                 // in-flight. This should be maintained by the queue itself.
                 require!(
-                    popped_account == account,
+                    popped_account == withdrawal_resolution.account_id,
                     "Invariant violation: Queue shifted while locked/in-flight.",
                 );
+
+                self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
             }
             PromiseResult::Failed => {
                 // Withdrawal failed: unlock the queue so they can try again.
@@ -270,8 +273,14 @@ impl Contract {
 
                 env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
                 self.withdrawal_queue.unlock();
-                if let Some(mut supply_position) = self.get_linked_supply_position_mut(account) {
-                    supply_position.record_deposit(amount);
+
+                if let Some(mut supply_position) =
+                    self.get_linked_supply_position_mut(withdrawal_resolution.account_id.clone())
+                {
+                    let timestamp = env::block_timestamp_ms();
+                    let mut amount = withdrawal_resolution.amount_to_account;
+                    amount.join(withdrawal_resolution.amount_to_fees);
+                    supply_position.record_deposit(amount, timestamp);
                 }
             }
         }

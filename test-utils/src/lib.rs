@@ -742,6 +742,7 @@ pub fn market_configuration(
     balance_oracle_id: AccountId,
     borrow_asset_id: AccountId,
     collateral_asset_id: AccountId,
+    protocol_account_id: AccountId,
     yield_weights: YieldWeights,
 ) -> MarketConfiguration {
     MarketConfiguration {
@@ -776,6 +777,7 @@ pub fn market_configuration(
         maximum_liquidator_spread: Decimal::from_str("0.05").unwrap(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
         yield_weights,
+        protocol_account_id,
     }
 }
 
@@ -898,6 +900,7 @@ pub async fn setup_everything(
         balance_oracle.id().clone(),
         borrow_asset.id().clone(),
         collateral_asset.id().clone(),
+        protocol_yield_user.id().clone(),
         YieldWeights::new_with_supply_weight(8)
             .with_static(protocol_yield_user.id().clone(), 1)
             .with_static(insurance_yield_user.id().clone(), 1),
