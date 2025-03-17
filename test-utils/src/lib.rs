@@ -709,7 +709,7 @@ impl TestController {
 
         println!("Market snapshots:");
         for (i, snapshot) in snapshots.iter().enumerate() {
-            println!("\t{i}: {}", snapshot.chain_time);
+            println!("\t{i}: {}", snapshot.time_chunk.0 .0);
             println!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
             println!("\t\tDeposited:\t{}", snapshot.deposited.as_u128());
             println!("\t\tBorrowed:\t{}", snapshot.borrowed.as_u128());
@@ -745,6 +745,9 @@ pub fn market_configuration(
     yield_weights: YieldWeights,
 ) -> MarketConfiguration {
     MarketConfiguration {
+        time_chunk_configuration: templar_common::time_chunk::TimeChunkConfiguration::BlockHeight {
+            divisor: U64(1),
+        },
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         balance_oracle: BalanceOracleConfiguration {
