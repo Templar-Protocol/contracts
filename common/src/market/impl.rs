@@ -8,7 +8,6 @@ use near_sdk::{
 use crate::{
     asset::BorrowAssetAmount,
     borrow::{BorrowPosition, LinkedBorrowPosition, LinkedBorrowPositionMut},
-    chain_time::ChainTime,
     event::MarketEvent,
     market::MarketConfiguration,
     number::Decimal,
@@ -91,18 +90,18 @@ impl Market {
     }
 
     fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
-        let chain_time = ChainTime::now();
+        let time_chunk = self.configuration.time_chunk_configuration.now();
 
         if let Some((last_index, old_snapshot)) =
             self.snapshots.len().checked_sub(1).and_then(|last_index| {
                 self.snapshots
                     .get(last_index)
-                    .filter(|s| s.chain_time == chain_time)
+                    .filter(|s| s.time_chunk == time_chunk)
                     .map(|s| (last_index, s))
             })
         {
             let new_snapshot = Snapshot {
-                chain_time,
+                time_chunk,
                 timestamp_ms: old_snapshot.timestamp_ms,
                 deposited: self.borrow_asset_deposited,
                 borrowed: self.borrow_asset_borrowed,
@@ -117,7 +116,7 @@ impl Market {
         } else {
             let index = self.snapshots.len();
             let new_snapshot = Snapshot {
-                chain_time,
+                time_chunk,
                 timestamp_ms: env::block_timestamp_ms().into(),
                 deposited: self.borrow_asset_deposited,
                 borrowed: self.borrow_asset_borrowed,
