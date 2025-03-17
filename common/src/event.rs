@@ -35,7 +35,8 @@ pub enum MarketEvent {
     #[event_version("1.0.0")]
     SupplyWithdrawn {
         account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
+        borrow_asset_amount_to_account: BorrowAssetAmount,
+        borrow_asset_amount_to_fees: BorrowAssetAmount,
     },
     #[event_version("1.0.0")]
     CollateralDeposited {

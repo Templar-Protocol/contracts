@@ -190,7 +190,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
-        let Some((account_id, amount)) = self
+        let Some(withdrawal_resolution) = self
             .try_lock_next_withdrawal_request()
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
         else {
@@ -201,10 +201,13 @@ impl MarketExternalInterface for Contract {
         PromiseOrValue::Promise(
             self.configuration
                 .borrow_asset
-                .transfer(account_id.clone(), amount)
+                .transfer(
+                    withdrawal_resolution.account_id.clone(),
+                    withdrawal_resolution.amount_to_account,
+                )
                 .then(
                     Self::ext(env::current_account_id())
-                        .after_execute_next_withdrawal(account_id.clone(), amount),
+                        .after_execute_next_withdrawal(withdrawal_resolution),
                 ),
         )
     }
@@ -228,7 +231,7 @@ impl MarketExternalInterface for Contract {
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
                 supply_position.record_yield_withdrawal(total_yield);
-                supply_position.record_deposit(total_yield);
+                supply_position.record_deposit(total_yield, env::block_timestamp_ms());
             }
         }
     }
