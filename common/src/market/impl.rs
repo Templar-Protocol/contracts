@@ -142,29 +142,22 @@ impl Market {
     ) -> BorrowAssetAmount {
         // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
         #[allow(clippy::unwrap_used)]
-        let must_retain = ((1u32 - self.configuration.maximum_borrow_asset_usage_ratio)
-            * self.borrow_asset_deposited.as_u128())
+        let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
+            * self.borrow_asset_deposited.to_decimal())
         .to_u128_ceil()
         .unwrap();
 
         let known_available = current_contract_balance
-            .as_u128()
-            .saturating_sub(self.borrow_asset_in_flight.as_u128());
+            .to_u128()
+            .saturating_sub(self.borrow_asset_in_flight.to_u128());
 
         known_available.saturating_sub(must_retain).into()
     }
 
     pub fn get_interest_rate_for_snapshot(&self, snapshot: &Snapshot) -> Decimal {
-        let borrowed: Decimal = snapshot.borrowed.as_u128().into();
-        let deposited: Decimal = snapshot.deposited.as_u128().into();
-        let usage_ratio = if deposited.is_zero() {
-            Decimal::ZERO
-        } else {
-            borrowed / deposited
-        };
         self.configuration
             .borrow_interest_rate_strategy
-            .at(usage_ratio)
+            .at(snapshot.usage_ratio())
     }
 
     pub fn iter_supply_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
@@ -297,7 +290,7 @@ impl Market {
         // First, static yield.
 
         let total_weight = u128::from(u16::from(self.configuration.yield_weights.total_weight()));
-        let total_amount = amount.as_u128();
+        let total_amount = amount.to_u128();
         if total_weight != 0 {
             for (account_id, share) in &self.configuration.yield_weights.r#static {
                 #[allow(clippy::unwrap_used)]

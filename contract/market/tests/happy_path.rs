@@ -74,9 +74,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         }
     }
 
-    assert!(configuration
-        .minimum_collateral_ratio_per_borrow
-        .near_equal(dec!("1.2")));
+    assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;
@@ -84,7 +82,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        supply_position.get_borrow_asset_deposit().as_u128(),
+        supply_position.get_borrow_asset_deposit().to_u128(),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -104,7 +102,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(
-        borrow_position.collateral_asset_deposit.as_u128(),
+        borrow_position.collateral_asset_deposit.to_u128(),
         2000,
         "Collateral asset deposit should be equal to the number of collateral tokens sent",
     );
@@ -146,9 +144,9 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 2000);
+    assert_eq!(borrow_position.collateral_asset_deposit.to_u128(), 2000);
     assert_eq!(
-        borrow_position.get_total_borrow_asset_liability().as_u128(),
+        borrow_position.get_total_borrow_asset_liability().to_u128(),
         1000 + 100, // origination fee
     );
 
@@ -159,9 +157,9 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     // Ensure borrow is paid off.
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 2000);
+    assert_eq!(borrow_position.collateral_asset_deposit.to_u128(), 2000);
     assert_eq!(
-        borrow_position.get_total_borrow_asset_liability().as_u128(),
+        borrow_position.get_total_borrow_asset_liability().to_u128(),
         0
     );
 
@@ -172,7 +170,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
             {
                 c.harvest_yield(&supply_user, false).await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert_eq!(supply_position.borrow_asset_yield.get_total().as_u128(), 80);
+                assert_eq!(supply_position.borrow_asset_yield.get_total().to_u128(), 80);
 
                 let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
                 // Withdraw all
@@ -181,7 +179,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
 
                 assert_eq!(
                     balance_after - balance_before,
-                    supply_position.borrow_asset_yield.get_total().as_u128(),
+                    supply_position.borrow_asset_yield.get_total().to_u128(),
                 );
 
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
@@ -213,11 +211,11 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
                     .get_supply_withdrawal_request_status(supply_user.id())
                     .await
                     .expect("Should be enqueued now");
-                assert_eq!(request_status.amount.as_u128(), 1100);
-                assert_eq!(request_status.depth.as_u128(), 0);
+                assert_eq!(request_status.amount.to_u128(), 1100);
+                assert_eq!(request_status.depth.to_u128(), 0);
                 assert_eq!(request_status.index, 0);
                 let queue_status = c.get_supply_withdrawal_queue_status().await;
-                assert_eq!(queue_status.depth.as_u128(), 1100);
+                assert_eq!(queue_status.depth.to_u128(), 1100);
                 assert_eq!(queue_status.length, 1);
 
                 c.execute_next_supply_withdrawal_request(&supply_user).await;
@@ -248,7 +246,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         // Protocol yield.
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert_eq!(protocol_yield.borrow_asset.as_u128(), 10);
+            assert_eq!(protocol_yield.borrow_asset.to_u128(), 10);
             let balance_before = c.borrow_asset_balance_of(protocol_yield_user.id()).await;
             c.withdraw_static_yield(&protocol_yield_user, None, None)
                 .await;
@@ -258,7 +256,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         // Insurance yield.
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(insurance_yield.borrow_asset.as_u128(), 10);
+            assert_eq!(insurance_yield.borrow_asset.to_u128(), 10);
             let balance_before = c.borrow_asset_balance_of(insurance_yield_user.id()).await;
             c.withdraw_static_yield(&insurance_yield_user, None, None)
                 .await;

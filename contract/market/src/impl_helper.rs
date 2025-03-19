@@ -7,7 +7,6 @@ use templar_common::{
     market::PricePair,
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
-    snapshot::Snapshot,
 };
 
 use crate::{Contract, ContractExt};
@@ -15,8 +14,15 @@ use crate::{Contract, ContractExt};
 /// Internal helpers.
 impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+        let supply_maximum_amount = self.configuration.supply_maximum_amount;
         let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
         supply_position.record_deposit(amount, env::block_timestamp_ms());
+        if let Some(ref supply_maximum_amount) = supply_maximum_amount {
+            require!(
+                supply_position.inner().get_borrow_asset_deposit() <= *supply_maximum_amount,
+                "New supply position cannot exceed configured supply maximum",
+            );
+        }
     }
 
     pub fn execute_collateralize(&mut self, account_id: AccountId, amount: CollateralAssetAmount) {
@@ -115,16 +121,6 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.snapshots
-            .iter()
-            .skip(offset)
-            .take(count)
-            .collect::<Vec<_>>()
-    }
-
     #[private]
     pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
         value

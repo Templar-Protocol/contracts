@@ -5,6 +5,7 @@ use templar_common::{
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
+    snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -16,6 +17,16 @@ use crate::{Contract, ContractExt};
 impl MarketExternalInterface for Contract {
     fn get_configuration(&self) -> MarketConfiguration {
         self.configuration.clone()
+    }
+
+    fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
+        self.snapshots
+            .iter()
+            .skip(offset)
+            .take(count)
+            .collect::<Vec<_>>()
     }
 
     fn get_borrow_asset_metrics(
@@ -76,11 +87,11 @@ impl MarketExternalInterface for Contract {
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
         require!(
-            amount >= self.configuration.minimum_borrow_amount,
+            amount >= self.configuration.borrow_minimum_amount,
             "Borrow amount is smaller than minimum allowed",
         );
         require!(
-            amount <= self.configuration.maximum_borrow_amount,
+            amount <= self.configuration.borrow_maximum_amount,
             "Borrow amount is greater than maximum allowed",
         );
 
@@ -228,11 +239,11 @@ impl MarketExternalInterface for Contract {
     fn get_last_yield_rate(&self) -> Decimal {
         let last_snapshot = self.get_last_snapshot();
         let last_interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
-        let borrowed = Decimal::from(last_snapshot.borrowed.as_u128());
-        let deposited = Decimal::from(last_snapshot.deposited.as_u128());
+        let deposited = last_snapshot.deposited.to_decimal();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
+        let borrowed = last_snapshot.borrowed.to_decimal();
         let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
         let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
 

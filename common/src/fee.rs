@@ -20,7 +20,7 @@ impl<T: AssetClass> Fee<T> {
     pub fn of(&self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
         match self {
             Fee::Flat(f) => Some(*f),
-            Fee::Proportional(factor) => (factor * amount.as_u128())
+            Fee::Proportional(factor) => (factor * amount.to_u128())
                 .to_u128_ceil()
                 .map(FungibleAssetAmount::new),
         }
@@ -75,7 +75,7 @@ impl<T: AssetClass> TimeBasedFee<T> {
             TimeBasedFeeFunction::Linear => {
                 (Decimal::from(self.duration.0.saturating_sub(duration))
                     / Decimal::from(self.duration.0)
-                    * base_fee.as_u128())
+                    * base_fee.to_u128())
                 .to_u128_ceil()
                 .map(FungibleAssetAmount::new)
             }
