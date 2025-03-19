@@ -56,7 +56,7 @@ echo "Performing storage unregistration"
 near --quiet contract call-function as-transaction "$TOKEN_ID" storage_unregister \
   json-args '{"force":true}' \
   prepaid-gas '100.0 Tgas' \
-  attached-deposit '0 NEAR' \
+  attached-deposit '1 yoctoNEAR' \
   sign-as "$ACCOUNT_ID" \
   network-config "$NETWORK" \
   sign-with-plaintext-private-key \
