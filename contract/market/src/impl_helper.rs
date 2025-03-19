@@ -14,8 +14,15 @@ use crate::{Contract, ContractExt};
 /// Internal helpers.
 impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+        let supply_maximum_amount = self.configuration.supply_maximum_amount;
         let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
         supply_position.record_deposit(amount, env::block_timestamp_ms());
+        if let Some(ref supply_maximum_amount) = supply_maximum_amount {
+            require!(
+                supply_position.inner().get_borrow_asset_deposit() <= *supply_maximum_amount,
+                "New supply position cannot exceed configured supply maximum",
+            );
+        }
     }
 
     pub fn execute_collateralize(&mut self, account_id: AccountId, amount: CollateralAssetAmount) {
