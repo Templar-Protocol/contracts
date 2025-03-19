@@ -6,11 +6,14 @@ jobs:
   test:
     uses: ./.github/workflows/test.yml
 
+  gas-report:
+    uses: ./.github/workflows/gas-report.yml
+
   deploy-staging:
     name: Deploy to staging subaccount
     permissions:
       pull-requests: write
-    needs: [test]
+    needs: [test, gas-report]
     runs-on: ubuntu-latest
     env:
       NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID: gh-${{ github.event.number }}.${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}
@@ -130,4 +133,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment "${{ github.event.number }}" --body "Staging contract is deployed to ["'`'"${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}"'`'" account](https://explorer.${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}.near.org/accounts/${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }})"
+          echo "Staging contract is deployed to ["'`'"${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}"'`'" account](https://explorer.${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}.near.org/accounts/${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }})" > comment.md
+          echo '' >> comment.md
+          echo "---" >> comment.md
+          echo '' >> comment.md
+          echo '${{ needs.gas-report.outputs.comment }}' >> comment.md
+          gh pr comment "${{ github.event.number }}" -F comment.md --create-if-none --edit-last

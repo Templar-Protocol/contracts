@@ -43,3 +43,6 @@ tokio.workspace = true
 
 [lints]
 workspace = true
+
+[[example]]
+name = "gas_report"
