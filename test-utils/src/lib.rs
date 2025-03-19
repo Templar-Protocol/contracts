@@ -66,7 +66,7 @@ pub struct TestController {
 
 impl TestController {
     pub async fn storage_deposits(&self, account: &Account) {
-        println!("Performing storage deposits for {}...", account.id());
+        eprintln!("Performing storage deposits for {}...", account.id());
         if let TestAsset::Nep141(ref borrow_asset) = self.borrow_asset {
             account
                 .call(borrow_asset.id(), "storage_deposit")
@@ -100,7 +100,7 @@ impl TestController {
     }
 
     pub async fn set_collateral_asset_price(&self, price: f64) -> ExecutionSuccess {
-        println!("Setting collateral asset price...",);
+        eprintln!("Setting collateral asset price...",);
         self.balance_oracle
             .call("set_price")
             .args_json(json!({
@@ -114,7 +114,7 @@ impl TestController {
     }
 
     pub async fn set_borrow_asset_price(&self, price: f64) -> ExecutionSuccess {
-        println!("Setting borrow asset price...",);
+        eprintln!("Setting borrow asset price...",);
         self.balance_oracle
             .call("set_price")
             .args_json(json!({
@@ -152,7 +152,7 @@ impl TestController {
     }
 
     pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
-        println!(
+        eprintln!(
             "{} transferring {amount} tokens for supply...",
             supply_user.id()
         );
@@ -204,7 +204,7 @@ impl TestController {
     }
 
     pub async fn collateralize(&self, borrow_user: &Account, amount: u128) {
-        println!(
+        eprintln!(
             "{} transferring {amount} tokens for collateral...",
             borrow_user.id(),
         );
@@ -262,7 +262,7 @@ impl TestController {
     }
 
     pub async fn borrow(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
-        println!("{} borrowing {amount} tokens...", borrow_user.id());
+        eprintln!("{} borrowing {amount} tokens...", borrow_user.id());
         borrow_user
             .call(self.contract.id(), "borrow")
             .args_json(json!({
@@ -328,7 +328,7 @@ impl TestController {
         receiver_id: &AccountId,
         amount: u128,
     ) {
-        println!(
+        eprintln!(
             "{} sending {amount} tokens of {asset_id} to {receiver_id}...",
             sender.id(),
         );
@@ -353,7 +353,7 @@ impl TestController {
         amount: u128,
         msg: &str,
     ) -> ExecutionSuccess {
-        println!(
+        eprintln!(
             "{} sending {amount} tokens of {asset_id} to {receiver_id} with msg {msg}...",
             sender.id(),
         );
@@ -435,7 +435,7 @@ impl TestController {
     }
 
     pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
-        println!("{} repaying {amount} tokens...", borrow_user.id());
+        eprintln!("{} repaying {amount} tokens...", borrow_user.id());
         match self.borrow_asset {
             TestAsset::Native => self.repay_native(borrow_user, amount).await,
             TestAsset::Nep141(_) => {
@@ -451,7 +451,7 @@ impl TestController {
     }
 
     pub async fn apply_interest(&self, borrow_user: &Account) -> ExecutionSuccess {
-        println!("{} applying interest...", borrow_user.id());
+        eprintln!("{} applying interest...", borrow_user.id());
         borrow_user
             .call(self.contract.id(), "apply_interest")
             .args_json(json!({}))
@@ -466,7 +466,7 @@ impl TestController {
         supply_user: &Account,
         compounding: bool,
     ) -> ExecutionSuccess {
-        println!("{} harvesting yield...", supply_user.id());
+        eprintln!("{} harvesting yield...", supply_user.id());
         supply_user
             .call(self.contract.id(), "harvest_yield")
             .args_json(json!({
@@ -485,7 +485,7 @@ impl TestController {
         borrow_asset_amount: Option<BorrowAssetAmount>,
         collateral_asset_amount: Option<CollateralAssetAmount>,
     ) {
-        println!("{} withdrawing static yield...", account.id());
+        eprintln!("{} withdrawing static yield...", account.id());
         account
             .call(self.contract.id(), "withdraw_static_yield")
             .args_json(json!({
@@ -503,7 +503,7 @@ impl TestController {
         supply_user: &Account,
         amount: Option<u128>,
     ) -> ExecutionSuccess {
-        println!("{} withdrawing supply yield...", supply_user.id());
+        eprintln!("{} withdrawing supply yield...", supply_user.id());
         supply_user
             .call(self.contract.id(), "withdraw_supply_yield")
             .args_json(json!({
@@ -532,7 +532,7 @@ impl TestController {
         borrow_user: &Account,
         amount: u128,
     ) -> ExecutionSuccess {
-        println!("{} withdrawing {amount} collateral...", borrow_user.id());
+        eprintln!("{} withdrawing {amount} collateral...", borrow_user.id());
         borrow_user
             .call(self.contract.id(), "withdraw_collateral")
             .args_json(json!({
@@ -545,7 +545,7 @@ impl TestController {
     }
 
     pub async fn create_supply_withdrawal_request(&self, supply_user: &Account, amount: u128) {
-        println!(
+        eprintln!(
             "{} creating supply withdrawal request for {amount}...",
             supply_user.id()
         );
@@ -586,7 +586,7 @@ impl TestController {
     }
 
     pub async fn execute_next_supply_withdrawal_request(&self, account: &Account) {
-        println!(
+        eprintln!(
             "{} executing next supply withdrawal request...",
             account.id(),
         );
@@ -623,7 +623,7 @@ impl TestController {
         account_id: &AccountId,
         borrow_asset_amount: u128,
     ) {
-        println!(
+        eprintln!(
             "{} executing liquidation against {} for {}...",
             liquidator_user.id(),
             account_id,
@@ -650,7 +650,7 @@ impl TestController {
     }
 
     pub async fn mint_asset(&self, ft_id: &AccountId, receiver: &Account, amount: u128) {
-        println!("{} minting {amount} of {}...", receiver.id(), ft_id);
+        eprintln!("{} minting {amount} of {}...", receiver.id(), ft_id);
         receiver
             .call(ft_id, "mint")
             .args_json(json!({
@@ -707,13 +707,13 @@ impl TestController {
             .json::<Vec<Snapshot>>()
             .unwrap();
 
-        println!("Market snapshots:");
+        eprintln!("Market snapshots:");
         for (i, snapshot) in snapshots.iter().enumerate() {
-            println!("\t{i}: {}", snapshot.time_chunk.0 .0);
-            println!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
-            println!("\t\tDeposited:\t{}", snapshot.deposited.to_u128());
-            println!("\t\tBorrowed:\t{}", snapshot.borrowed.to_u128());
-            println!(
+            eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
+            eprintln!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
+            eprintln!("\t\tDeposited:\t{}", snapshot.deposited.to_u128());
+            eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed.to_u128());
+            eprintln!(
                 "\t\tDistribution:\t{}",
                 snapshot.yield_distribution.to_u128()
             );
