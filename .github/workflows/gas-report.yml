@@ -1,17 +1,28 @@
 name: Generate gas report
 on:
   workflow_call:
+    outputs:
+      comment:
+        description: Markdown gas report
+        value: ${{ jobs.gas-report.outputs.comment }}
 
 jobs:
   gas-report:
     name: Gas report
     runs-on: ubuntu-latest
+    outputs:
+      comment: ${{ steps.generate.outputs.comment }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install cargo-near CLI
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.13.3/cargo-near-installer.sh | sh
       - name: Generate gas report
+        id: generate
         run: |
           ./gas_report.sh > gas-report.md
           cat gas-report.md >> $GITHUB_STEP_SUMMARY
+
+          echo "comment<<EOF" >> $GITHUB_OUTPUT
+          cat gas-report.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
