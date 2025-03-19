@@ -6,6 +6,9 @@ jobs:
   test:
     uses: ./.github/workflows/test.yml
 
+  gas-report:
+    uses: ./.github/workflows/gas-report.yml
+
   deploy-staging:
     name: Deploy to staging subaccount
     permissions:

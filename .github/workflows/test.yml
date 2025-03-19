@@ -35,19 +35,3 @@ jobs:
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.13.3/cargo-near-installer.sh | sh
       - name: Run tests
         run: ./test.sh
-
-  gas-report:
-    name: Gas report
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Install cargo-near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.13.3/cargo-near-installer.sh | sh
-      - name: Generate gas report
-        run: ./gas_report.sh > gas-report.md
-      - name: Comment on pull request
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr comment "${{ github.event.number }}" -F gas-report.md
