@@ -47,7 +47,7 @@ near tokens "$ACCOUNT_ID" send-ft "$TOKEN_ID" "$BENEFICIARY_ID" all memo "" \
   sign-with-plaintext-private-key \
     --signer-public-key "$PUBLIC_KEY" \
     --signer-private-key "$PRIVATE_KEY" \
-  display
+  send
 
 echo "Performing storage unregistration"
 
@@ -60,6 +60,6 @@ near contract call-function as-transaction "$TOKEN_ID" storage_unregister \
   sign-with-plaintext-private-key \
     --signer-public-key "$PUBLIC_KEY" \
     --signer-private-key "$PRIVATE_KEY" \
-  display
+  send
 
 echo "Done"
