@@ -82,6 +82,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "Staging contract is deployed to ["'`'"${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}"'`'" account](https://explorer.${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}.near.org/accounts/${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }})" > comment.md
-          echo "\n---\n" >> comment.md
+          echo '' >> comment.md
+          echo "---" >> comment.md
+          echo '' >> comment.md
           echo '${{ needs.gas-report.outputs.comment }}' >> comment.md
           gh pr comment "${{ github.event.number }}" -F comment.md --create-if-none --edit-last
