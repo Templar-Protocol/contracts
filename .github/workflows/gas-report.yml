@@ -14,3 +14,4 @@ jobs:
       - name: Generate gas report
         run: |
           ./gas_report.sh > gas-report.md
+          cat gas-report.md >> $GITHUB_STEP_SUMMARY
