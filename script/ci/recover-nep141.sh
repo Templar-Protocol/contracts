@@ -42,12 +42,13 @@ echo "Recovering $TOKEN_ID tokens for $ACCOUNT_ID on $NETWORK"
 
 echo "Transferring balance to $BENEFICIARY_ID"
 
+( set +e; # send all errors if balance is zero
 near tokens "$ACCOUNT_ID" send-ft "$TOKEN_ID" "$BENEFICIARY_ID" all memo "" \
   network-config "$NETWORK" \
   sign-with-plaintext-private-key \
     --signer-public-key "$PUBLIC_KEY" \
     --signer-private-key "$PRIVATE_KEY" \
-  send
+  send)
 
 echo "Performing storage unregistration"
 
