@@ -14,28 +14,35 @@ jobs:
         uses: actions/checkout@v4
       - name: Install near CLI
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.19.0/near-cli-rs-installer.sh | sh
+      - name: Cache init args
+        id: cache-init-args
+        uses: actions/cache@v4
+        with:
+          path: init-args.json
+          key: ${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}-init-args
+      - name: Generate init args
+        if: steps.cache-init-args.outputs.cache-hit != 'true'
+        run: cargo run --package test-utils --example generate_testnet_configuration > init-args.json
       - name: Recover and unregister tokens
         run: |
-          INIT_ARGS=$(cargo run --package test-utils --example generate_testnet_configuration)
-
-          BORROW_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.borrow_asset.Nep141')
+          BORROW_ID=$(cat init-args.json | jq -r '.configuration.borrow_asset.Nep141')
           if [ -n "$BORROW_ID" ]; then
-          ./script/ci/recover-nep141.sh --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-            --token "$BORROW_ID" \
-            --beneficiary "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
-            --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
+            ./script/ci/recover-nep141.sh --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+              --token "$BORROW_ID" \
+              --beneficiary "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
+              --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+              --public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
           fi
 
-          COLLATERAL_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.collateral_asset.Nep141')
+          COLLATERAL_ID=$(cat init-args.json | jq -r '.configuration.collateral_asset.Nep141')
           if [ -n "$COLLATERAL_ID" ]; then
-          ./script/ci/recover-nep141.sh --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-            --token "$COLLATERAL_ID" \
-            --beneficiary "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
-            --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
+            ./script/ci/recover-nep141.sh --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+              --token "$COLLATERAL_ID" \
+              --beneficiary "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
+              --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+              --public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
           fi
       - name: Remove staging account
         run: |

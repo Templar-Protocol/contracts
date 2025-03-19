@@ -21,78 +21,99 @@ jobs:
 
       - name: Install near CLI
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.19.0/near-cli-rs-installer.sh | sh
-      - name: Create staging account
+
+      - name: Check if staging account exists
+        id: existence
+        continue-on-error: true
         run: |
-          set +e
           near account \
             view-account-summary "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
             now
 
-          if [ $? -eq 1 ]; then
-            set -e
-            near account create-account fund-myself "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '10 NEAR' \
-              use-manually-provided-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-              sign-as "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
-              network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              sign-with-plaintext-private-key \
-                --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-                --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-              send
-
-            echo "NEWLY_CREATED=1" >> $GITHUB_ENV
-          fi
-
+      - name: Create staging account
+        if: steps.existence.outcome != 'success'
+        run: |
+          near account create-account fund-myself "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '10 NEAR' \
+            use-manually-provided-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+            sign-as "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
+            network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+            sign-with-plaintext-private-key \
+              --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+              --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+            send
       - name: Install cargo-near CLI
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.13.3/cargo-near-installer.sh | sh
+
+        # This step runs when the contract already exists and we are redeploying a new version.
       - name: Deploy to staging
+        if: steps.existence.outcome == 'success'
+        run: |
+          cd contract/market
+          cargo near deploy build-reproducible-wasm --skip-git-remote-check "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+            without-init-call \
+            network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+            sign-with-plaintext-private-key \
+              --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+              --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+            send
+
+      - name: Cache init args
+        id: cache-init-args
+        uses: actions/cache@v4
+        with:
+          path: init-args.json
+          key: ${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}-init-args
+
+      - name: Generate init args
+        if: steps.cache-init-args.outputs.cache-hit != 'true'
+        run: cargo run --package test-utils --example generate_testnet_configuration > init-args.json
+
+        # This step runs when the contract does not already exist, so we also call the initialization function.
+      - name: Deploy to staging & init
+        if: steps.existence.outcome != 'success'
         # `--skip-git-remote-check` was used
         # as pull request git refs `refs/pull/NUMBER/merge` are somewhat harder to access and live only as long as PRs do
         #
         # WASM reproducibility check akin to SourceScan won't be available for staging contracts, deployed from PRs
         run: |
+          INIT_ARGS=$(cat init-args.json)
+
           cd contract/market
-          if [ -n "$NEWLY_CREATED" ]; then
-            INIT_ARGS=$(cargo run --package test-utils --example generate_testnet_configuration)
-            cargo near deploy build-reproducible-wasm --skip-git-remote-check "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-              with-init-call new \
-                json-args "$INIT_ARGS" \
-                prepaid-gas '100.0 Tgas' \
-                attached-deposit '0 NEAR' \
+
+          cargo near deploy build-reproducible-wasm --skip-git-remote-check "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+            with-init-call new \
+              json-args "$INIT_ARGS" \
+              prepaid-gas '100.0 Tgas' \
+              attached-deposit '0 NEAR' \
+            network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+            sign-with-plaintext-private-key \
+              --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+              --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+            send
+
+      - name: Perform storage deposits
+        if: steps.existence.outcome != 'success'
+        run: |
+          BORROW_ID=$(cat init-args.json | jq -r '.configuration.borrow_asset.Nep141')
+          if [ -n "$BORROW_ID" ]; then
+            near account \
+              manage-storage-deposit "$BORROW_ID" \
+              deposit "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '0.00125 NEAR' \
+              sign-as "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
               network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
               sign-with-plaintext-private-key \
                 --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
                 --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
               send
+          fi
 
-            # perform storage deposits
-            BORROW_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.borrow_asset.Nep141')
-            if [ -n "$BORROW_ID" ]; then
-              near account \
-                manage-storage-deposit "$BORROW_ID" \
-                deposit "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '0.00125 NEAR' \
-                sign-as "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-                network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-                sign-with-plaintext-private-key \
-                  --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-                  --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-                send
-            fi
-            COLLATERAL_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.collateral_asset.Nep141')
-            if [ -n "$COLLATERAL_ID" ]; then
-              near account \
-                manage-storage-deposit "$COLLATERAL_ID" \
-                deposit "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '0.00125 NEAR' \
-                sign-as "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-                network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-                sign-with-plaintext-private-key \
-                  --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-                  --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-                send
-            fi
-          else
-            cargo near deploy build-reproducible-wasm --skip-git-remote-check "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-              without-init-call \
+          COLLATERAL_ID=$(cat init-args.json | jq -r '.configuration.collateral_asset.Nep141')
+          if [ -n "$COLLATERAL_ID" ]; then
+            near account \
+              manage-storage-deposit "$COLLATERAL_ID" \
+              deposit "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '0.00125 NEAR' \
+              sign-as "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
               network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
               sign-with-plaintext-private-key \
                 --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
