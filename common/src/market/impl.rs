@@ -1,13 +1,12 @@
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
-    env, near,
-    store::Vector,
-    AccountId, BorshStorageKey, IntoStorageKey,
+    env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
 use crate::{
     asset::BorrowAssetAmount,
     borrow::{BorrowPosition, LinkedBorrowPosition, LinkedBorrowPositionMut},
+    chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
     market::MarketConfiguration,
     number::Decimal,
@@ -38,7 +37,7 @@ pub struct Market {
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub snapshots: Vector<Snapshot>,
+    pub snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -67,7 +66,7 @@ impl Market {
             borrow_asset_borrowed: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            snapshots: Vector::new(key!(Snapshots)),
+            snapshots: ChunkedAppendOnlyList::new(key!(Snapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         };
@@ -111,7 +110,7 @@ impl Market {
                     y
                 },
             };
-            self.snapshots.replace(last_index, new_snapshot);
+            self.snapshots.replace_last(new_snapshot);
             last_index
         } else {
             let index = self.snapshots.len();
