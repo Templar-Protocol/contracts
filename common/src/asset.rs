@@ -194,6 +194,12 @@ impl<T: AssetClass> From<FungibleAssetAmount<T>> for u128 {
     }
 }
 
+impl<T: AssetClass> std::fmt::Display for FungibleAssetAmount<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.amount.0)
+    }
+}
+
 pub type BorrowAssetAmount = FungibleAssetAmount<BorrowAsset>;
 pub type CollateralAssetAmount = FungibleAssetAmount<CollateralAsset>;
 
