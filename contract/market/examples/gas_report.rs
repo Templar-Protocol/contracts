@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 #[tokio::main]
 async fn main() {
     const STEP: usize = 10;
-    const COUNT: usize = 2;
+    const COUNT: usize = 3;
 
     let mut handles = JoinSet::new();
 
