@@ -42,17 +42,18 @@ echo "Recovering $TOKEN_ID tokens for $ACCOUNT_ID on $NETWORK"
 
 echo "Transferring balance to $BENEFICIARY_ID"
 
-( set +e; # send all errors if balance is zero
-near tokens "$ACCOUNT_ID" send-ft "$TOKEN_ID" "$BENEFICIARY_ID" all memo "" \
+set +e # send all errors if balance is zero
+near --quiet tokens "$ACCOUNT_ID" send-ft "$TOKEN_ID" "$BENEFICIARY_ID" all memo "" \
   network-config "$NETWORK" \
   sign-with-plaintext-private-key \
     --signer-public-key "$PUBLIC_KEY" \
     --signer-private-key "$PRIVATE_KEY" \
-  send)
+  send
+set -e
 
 echo "Performing storage unregistration"
 
-near contract call-function as-transaction "$TOKEN_ID" storage_unregister \
+near --quiet contract call-function as-transaction "$TOKEN_ID" storage_unregister \
   json-args '{"force":true}' \
   prepaid-gas '100.0 Tgas' \
   attached-deposit '0 NEAR' \
