@@ -779,6 +779,7 @@ pub fn market_configuration(
         borrow_maximum_amount: u128::MAX.into(),
         liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
+        supply_maximum_amount: None,
         yield_weights,
         protocol_account_id,
     }
