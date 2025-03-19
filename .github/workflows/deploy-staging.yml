@@ -67,7 +67,10 @@ jobs:
 
       - name: Generate init args
         if: steps.cache-init-args.outputs.cache-hit != 'true'
-        run: cargo run --package test-utils --example generate_testnet_configuration > init-args.json
+        run: |
+          echo "INIT_ARGS<<EOF" >> $GITHUB_ENV
+          cargo run --package test-utils --example generate_testnet_configuration >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
         # This step runs when the contract does not already exist, so we also call the initialization function.
       - name: Deploy to staging & init
@@ -77,8 +80,6 @@ jobs:
         #
         # WASM reproducibility check akin to SourceScan won't be available for staging contracts, deployed from PRs
         run: |
-          INIT_ARGS=$(cat init-args.json)
-
           cd contract/market
 
           cargo near deploy build-reproducible-wasm --skip-git-remote-check "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
@@ -95,7 +96,7 @@ jobs:
       - name: Perform storage deposits
         if: steps.existence.outcome != 'success'
         run: |
-          BORROW_ID=$(cat init-args.json | jq -r '.configuration.borrow_asset.Nep141')
+          BORROW_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.borrow_asset.Nep141')
           if [ -n "$BORROW_ID" ]; then
             near account \
               manage-storage-deposit "$BORROW_ID" \
@@ -108,7 +109,7 @@ jobs:
               send
           fi
 
-          COLLATERAL_ID=$(cat init-args.json | jq -r '.configuration.collateral_asset.Nep141')
+          COLLATERAL_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.collateral_asset.Nep141')
           if [ -n "$COLLATERAL_ID" ]; then
             near account \
               manage-storage-deposit "$COLLATERAL_ID" \
