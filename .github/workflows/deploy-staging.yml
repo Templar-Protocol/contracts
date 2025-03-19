@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.18.0/near-cli-rs-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.19.0/near-cli-rs-installer.sh | sh
       - name: Create staging account
         run: |
           set +e
@@ -64,6 +64,32 @@ jobs:
                 --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
                 --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
               send
+
+            # perform storage deposits
+            BORROW_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.borrow_asset.Nep141')
+            if [ -n "$BORROW_ID" ]; then
+              near account \
+                manage-storage-deposit "$BORROW_ID" \
+                deposit "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '0.00125 NEAR' \
+                sign-as "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+                network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+                sign-with-plaintext-private-key \
+                  --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+                  --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+                send
+            fi
+            COLLATERAL_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.collateral_asset.Nep141')
+            if [ -n "$COLLATERAL_ID" ]; then
+              near account \
+                manage-storage-deposit "$COLLATERAL_ID" \
+                deposit "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '0.00125 NEAR' \
+                sign-as "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+                network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+                sign-with-plaintext-private-key \
+                  --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+                  --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+                send
+            fi
           else
             cargo near deploy build-reproducible-wasm --skip-git-remote-check "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
               without-init-call \
