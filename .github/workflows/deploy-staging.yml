@@ -122,6 +122,10 @@ jobs:
               send
           fi
 
+      - name: Write init args for cache
+        run: |
+          echo "$INIT_ARGS" > init-args.json
+
       - name: Comment on pull request
         env:
           GH_TOKEN: ${{ github.token }}
