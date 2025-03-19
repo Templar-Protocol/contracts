@@ -129,7 +129,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     // Step 3: Withdraw some of the borrow asset
     let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
 
-    println!("Price pair: {:#?}", c.get_prices().await);
+    eprintln!("Price pair: {:#?}", c.get_prices().await);
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
     c.borrow(&borrow_user, 1000).await;
