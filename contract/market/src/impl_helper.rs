@@ -127,15 +127,12 @@ impl Contract {
     }
 
     #[private]
-    pub fn borrow_01_consume_balance_and_price(
+    pub fn borrow_01_consume_price(
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        #[callback_result] current_balance: Result<BorrowAssetAmount, PromiseError>,
         #[callback_result] oracle_response_result: Result<OracleResponse, PromiseError>,
     ) -> Promise {
-        let current_balance = current_balance
-            .unwrap_or_else(|_| env::panic_str("Failed to fetch borrow asset current balance."));
         let oracle_response = oracle_response_result
             .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
         let price_pair = self
@@ -145,7 +142,7 @@ impl Contract {
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         // Ensure we have enough funds to dispense.
-        let available_to_borrow = self.get_borrow_asset_available_to_borrow(current_balance);
+        let available_to_borrow = self.get_borrow_asset_available_to_borrow();
         require!(
             amount <= available_to_borrow,
             "Insufficient borrow asset available",

@@ -29,12 +29,9 @@ impl MarketExternalInterface for Contract {
             .collect::<Vec<_>>()
     }
 
-    fn get_borrow_asset_metrics(
-        &self,
-        borrow_asset_balance: BorrowAssetAmount,
-    ) -> BorrowAssetMetrics {
+    fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics {
         BorrowAssetMetrics {
-            available: self.get_borrow_asset_available_to_borrow(borrow_asset_balance),
+            available: self.get_borrow_asset_available_to_borrow(),
             deposited: self.borrow_asset_deposited,
             borrowed: self.borrow_asset_borrowed,
         }
@@ -97,15 +94,10 @@ impl MarketExternalInterface for Contract {
 
         let account_id = env::predecessor_account_id();
 
-        // -> (current asset balance, price data)
         self.configuration
-            .borrow_asset
-            .current_account_balance()
-            .and(self.configuration.balance_oracle.retrieve_price_pair())
-            .then(
-                Self::ext(env::current_account_id())
-                    .borrow_01_consume_balance_and_price(account_id, amount),
-            )
+            .balance_oracle
+            .retrieve_price_pair()
+            .then(Self::ext(env::current_account_id()).borrow_01_consume_price(account_id, amount))
     }
 
     fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise {

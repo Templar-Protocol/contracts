@@ -1,8 +1,7 @@
-use rstest::rstest;
 use test_utils::*;
 
-#[rstest]
 #[tokio::test]
+#[should_panic = "Smart contract panicked: Insufficient borrow asset available"]
 async fn usage_ratio_over_1() {
     let SetupEverything {
         c,
@@ -16,5 +15,4 @@ async fn usage_ratio_over_1() {
         .await;
     c.collateralize(&borrow_user, 20_000).await;
     c.borrow(&borrow_user, 12_000).await;
-    c.borrow(&borrow_user, 2_000).await;
 }
