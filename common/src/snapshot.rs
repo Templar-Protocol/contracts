@@ -14,8 +14,10 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub fn usage_ratio(&self) -> Decimal {
-        if self.deposited.is_zero() {
+        if self.deposited.is_zero() || self.borrowed.is_zero() {
             Decimal::ZERO
+        } else if self.borrowed >= self.deposited {
+            Decimal::ONE
         } else {
             self.borrowed.to_decimal() / self.deposited.to_decimal()
         }
