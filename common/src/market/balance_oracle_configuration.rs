@@ -77,8 +77,14 @@ mod error {
         NegativePrice,
         #[error("Confidence interval too large")]
         ConfidenceIntervalTooLarge,
+        #[error("Exponent too large")]
+        ExponentTooLarge,
     }
 }
+
+// Maximum number of fully-representable whole digits in 384 bits: floor(log_10(2^384)) = 115
+// Maximum number of digits in a 64-bit integer: floor(log_10(2^64)) + 1 = 20
+const MAXIMUM_POSITIVE_EXPONENT: i32 = 115 - 20;
 
 fn from_pyth_price<T: AssetClass>(
     pyth_price: &pyth::Price,
@@ -92,6 +98,13 @@ fn from_pyth_price<T: AssetClass>(
         return Err(error::PriceDataError::ConfidenceIntervalTooLarge);
     }
 
+    if pyth_price.expo > MAXIMUM_POSITIVE_EXPONENT {
+        return Err(error::PriceDataError::ExponentTooLarge);
+    }
+
+    // TODO: If price falls below minimum representation, it will get truncated to zero.
+    // Is this okay?
+
     Ok(Price {
         _asset: PhantomData,
         price: u128::from(price),
@@ -101,11 +114,11 @@ fn from_pyth_price<T: AssetClass>(
 }
 
 impl<T: AssetClass> Price<T> {
-    fn upper_bound(&self) -> Decimal {
+    pub fn upper_bound(&self) -> Decimal {
         (self.price + self.confidence) * self.power_of_10
     }
 
-    fn lower_bound(&self) -> Decimal {
+    pub fn lower_bound(&self) -> Decimal {
         (self.price - self.confidence) * self.power_of_10
     }
 
@@ -127,7 +140,7 @@ pub struct PricePair {
 impl PricePair {
     /// # Errors
     ///
-    /// If the price data are invalid.
+    /// - If the price data are invalid.
     pub fn new(
         collateral_price: &pyth::Price,
         collateral_decimals: i32,
@@ -138,58 +151,5 @@ impl PricePair {
             collateral_asset_price: from_pyth_price(collateral_price, collateral_decimals)?,
             borrow_asset_price: from_pyth_price(borrow_price, borrow_decimals)?,
         })
-    }
-}
-
-pub trait AssetConversion<F: AssetClass, T: AssetClass> {
-    fn convert_optimistic(&self, amount: FungibleAssetAmount<F>) -> FungibleAssetAmount<T>;
-    fn convert_pessimistic(&self, amount: FungibleAssetAmount<F>) -> FungibleAssetAmount<T>;
-}
-
-impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
-    fn convert_optimistic(
-        &self,
-        amount: FungibleAssetAmount<CollateralAsset>,
-    ) -> FungibleAssetAmount<BorrowAsset> {
-        (Decimal::from(amount) * self.collateral_asset_price.upper_bound()
-            / self.borrow_asset_price.lower_bound())
-        .to_u128_ceil()
-        .unwrap()
-        .into()
-    }
-
-    fn convert_pessimistic(
-        &self,
-        amount: FungibleAssetAmount<CollateralAsset>,
-    ) -> FungibleAssetAmount<BorrowAsset> {
-        (Decimal::from(amount) * self.collateral_asset_price.lower_bound()
-            / self.borrow_asset_price.upper_bound())
-        .to_u128_floor()
-        .unwrap()
-        .into()
-    }
-}
-
-impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
-    fn convert_optimistic(
-        &self,
-        amount: FungibleAssetAmount<BorrowAsset>,
-    ) -> FungibleAssetAmount<CollateralAsset> {
-        (Decimal::from(amount) * self.borrow_asset_price.upper_bound()
-            / self.collateral_asset_price.lower_bound())
-        .to_u128_ceil()
-        .unwrap()
-        .into()
-    }
-
-    fn convert_pessimistic(
-        &self,
-        amount: FungibleAssetAmount<BorrowAsset>,
-    ) -> FungibleAssetAmount<CollateralAsset> {
-        (Decimal::from(amount) * self.borrow_asset_price.lower_bound()
-            / self.collateral_asset_price.upper_bound())
-        .to_u128_floor()
-        .unwrap()
-        .into()
     }
 }

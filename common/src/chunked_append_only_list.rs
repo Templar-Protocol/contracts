@@ -184,7 +184,7 @@ mod tests {
         for i in 0..10_000u32 {
             list.push(i);
             list.replace_last(i * 2);
-            assert_eq!(list.len() as u32, i + 1);
+            assert_eq!(list.len(), i + 1);
             assert!(!list.is_empty());
         }
 

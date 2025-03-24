@@ -214,7 +214,7 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
     }
 
     pub(crate) fn calculate_last_snapshot_interest(&self) -> BorrowAssetAmount {
-        let market = self.market.borrow();
+        let market: &Market = self.market.borrow();
         let last_snapshot = market.get_last_snapshot();
         let interest_rate = market.get_interest_rate_for_snapshot(last_snapshot);
         let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
@@ -223,6 +223,10 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
         let interest =
             interest_rate_part * Decimal::from(self.position.get_borrow_asset_principal());
 
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Assume interest will never exceed u128::MAX"
+        )]
         interest.to_u128_ceil().unwrap().into()
     }
 
@@ -232,8 +236,10 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
 
         let mut accumulated = Decimal::ZERO;
 
-        // Assume # of snapshots will never be > u32::MAX.
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "Assume # of snapshots will never be > u32::MAX"
+        )]
         let mut it = self
             .market
             .borrow()
@@ -280,6 +286,10 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
         }
 
         AccumulationRecord {
+            #[allow(
+                clippy::unwrap_used,
+                reason = "Assume accumulated interest will never exceed u128::MAX"
+            )]
             amount: accumulated.to_u128_ceil().unwrap().into(),
             next_snapshot_index,
         }
@@ -310,7 +320,7 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
     pub fn minimum_acceptable_liquidation_amount(
         &self,
         price_pair: &PricePair,
-    ) -> BorrowAssetAmount {
+    ) -> Option<BorrowAssetAmount> {
         self.market
             .borrow()
             .configuration

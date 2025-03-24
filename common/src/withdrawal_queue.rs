@@ -197,7 +197,6 @@ impl WithdrawalQueue {
         }
     }
 
-    #[allow(clippy::missing_panics_doc)]
     pub fn insert_or_update(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
         if let Some(node_id) = self.entries.get(account_id) {
             // update existing
@@ -257,8 +256,10 @@ impl WithdrawalQueue {
         for (index, (current_account, amount)) in self.iter().enumerate() {
             if &current_account == account_id {
                 return Some(WithdrawalRequestStatus {
-                    // The queue's length is u32, so this will never truncate.
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "Queue length is u32, so this will never truncate"
+                    )]
                     index: index as u32,
                     depth,
                     amount,

@@ -236,7 +236,8 @@ impl Decimal {
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap
+        clippy::cast_possible_wrap,
+        reason = "Lossiness is acceptable for this function"
     )]
     pub fn to_f64_lossy(self) -> f64 {
         let frac = self.repr.low_u128() as f64 / 2f64.powi(FRACTIONAL_BITS as i32);
@@ -270,7 +271,6 @@ impl Decimal {
         (repr + (Self::REPR_EPSILON >> 1)) & !(Self::REPR_EPSILON - 1)
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     fn fractional_part_to_dec_string(&self, precision: usize, round_up: bool) -> (String, bool) {
         let mut s = Vec::with_capacity(precision);
         let mut f = self.fractional_part();
@@ -290,6 +290,7 @@ impl Decimal {
             f *= 10;
 
             let digit = (f / Self::ONE.repr).low_u64();
+            #[allow(clippy::cast_possible_truncation)]
             s.push(digit as u8 + b'0');
 
             f %= Self::ONE.repr;

@@ -617,7 +617,7 @@ pub fn market_configuration(
             borrow_asset_price_id: PriceIdentifier(hex_literal::hex!(
                 "27e867f0f4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
             )),
-            borrow_asset_decimals: 24, // TODO: Update test helpers to make it easier to work with assets with differing decimal places
+            borrow_asset_decimals: 24,
             price_maximum_age_s: 60,
         },
         borrow_mcr_initial: Decimal::from_str("1.25").unwrap(),
