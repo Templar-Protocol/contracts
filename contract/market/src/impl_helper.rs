@@ -3,9 +3,9 @@ use near_sdk::{
 };
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    market::PricePair,
-    market::WithdrawalResolution,
+    market::{PricePair, WithdrawalResolution},
     oracle::pyth::OracleResponse,
+    self_ext,
 };
 
 use crate::{Contract, ContractExt};
@@ -173,7 +173,7 @@ impl Contract {
         self.configuration
             .borrow_asset
             .transfer(account_id.clone(), amount)
-            .then(Self::ext(env::current_account_id()).borrow_02_finalize(account_id, amount, fees))
+            .then(self_ext!().borrow_02_finalize(account_id, amount, fees))
     }
 
     #[private]
@@ -294,13 +294,11 @@ impl Contract {
         self.configuration
             .collateral_asset
             .transfer(liquidator_id.clone(), liquidated_collateral)
-            .then(
-                Self::ext(env::current_account_id()).liquidate_ft_transfer_call_02_finalize(
-                    liquidator_id,
-                    account_id,
-                    amount,
-                ),
-            )
+            .then(self_ext!().liquidate_ft_transfer_call_02_finalize(
+                liquidator_id,
+                account_id,
+                amount,
+            ))
     }
 
     /// Called during liquidation process; checks whether the transfer of
@@ -352,10 +350,7 @@ impl Contract {
         self.configuration
             .collateral_asset
             .transfer(account_id.clone(), amount)
-            .then(
-                Self::ext(env::current_account_id())
-                    .withdraw_collateral_02_finalize(account_id, amount),
-            )
+            .then(self_ext!().withdraw_collateral_02_finalize(account_id, amount))
     }
 
     #[private]

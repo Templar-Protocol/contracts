@@ -15,3 +15,10 @@ pub mod time_chunk;
 pub mod withdrawal_queue;
 
 pub const MS_IN_A_YEAR: u128 = 31_556_952_000; // 1000 * 60 * 60 * 24 * 365.2425
+
+#[macro_export]
+macro_rules! self_ext {
+    () => {
+        Self::ext(::near_sdk::env::current_account_id())
+    };
+}

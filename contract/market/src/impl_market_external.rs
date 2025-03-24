@@ -5,6 +5,7 @@ use templar_common::{
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
+    self_ext,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -97,7 +98,7 @@ impl MarketExternalInterface for Contract {
         self.configuration
             .balance_oracle
             .retrieve_price_pair()
-            .then(Self::ext(env::current_account_id()).borrow_01_consume_price(account_id, amount))
+            .then(self_ext!().borrow_01_consume_price(account_id, amount))
     }
 
     fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise {
@@ -120,20 +121,14 @@ impl MarketExternalInterface for Contract {
             self.configuration
                 .collateral_asset
                 .transfer(account_id.clone(), amount)
-                .then(
-                    Self::ext(env::current_account_id())
-                        .withdraw_collateral_02_finalize(account_id, amount),
-                )
+                .then(self_ext!().withdraw_collateral_02_finalize(account_id, amount))
         } else {
             drop(borrow_position);
             // They still have liability, so we need to check prices.
             self.configuration
                 .balance_oracle
                 .retrieve_price_pair()
-                .then(
-                    Self::ext(env::current_account_id())
-                        .withdraw_collateral_01_consume_price(account_id, amount),
-                )
+                .then(self_ext!().withdraw_collateral_01_consume_price(account_id, amount))
         }
     }
 
@@ -197,10 +192,7 @@ impl MarketExternalInterface for Contract {
                     withdrawal_resolution.account_id.clone(),
                     withdrawal_resolution.amount_to_account,
                 )
-                .then(
-                    Self::ext(env::current_account_id())
-                        .after_execute_next_withdrawal(withdrawal_resolution),
-                ),
+                .then(self_ext!().after_execute_next_withdrawal(withdrawal_resolution)),
         )
     }
 
