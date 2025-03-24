@@ -39,6 +39,7 @@ impl<T: AssetClass> FungibleAsset<T> {
     }
 
     pub fn is_nep141(&self, account_id: &AccountId) -> bool {
+        #[allow(irrefutable_let_patterns)]
         if let FungibleAssetKind::Nep141(ref contract_id) = self.kind {
             contract_id == account_id
         } else {
@@ -47,7 +48,7 @@ impl<T: AssetClass> FungibleAsset<T> {
     }
 
     pub fn into_nep141(self) -> Option<AccountId> {
-        #[allow(clippy::match_wildcard_for_single_variants)]
+        #[allow(clippy::match_wildcard_for_single_variants, unreachable_patterns)]
         match self.kind {
             FungibleAssetKind::Nep141(contract_id) => Some(contract_id),
             _ => None,

@@ -79,7 +79,7 @@ impl Market {
         self_
     }
 
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
+    #[allow(clippy::unwrap_used)]
     pub fn get_last_snapshot(&self) -> &Snapshot {
         self.snapshots.get(self.snapshots.len() - 1).unwrap()
     }
@@ -135,7 +135,6 @@ impl Market {
         }
     }
 
-    #[allow(clippy::missing_panics_doc)]
     pub fn get_borrow_asset_available_to_borrow(&self) -> BorrowAssetAmount {
         // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
         #[allow(clippy::unwrap_used)]

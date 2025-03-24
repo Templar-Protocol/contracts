@@ -26,6 +26,8 @@ redundant_closure_for_method_calls = "allow"
 module_name_repetitions = "allow"
 unwrap_used = "warn"
 expect_used = "warn"
+large_digit_groups = "warn"
+missing_panics_doc = "allow"
 
 [profile.release]
 codegen-units = 1

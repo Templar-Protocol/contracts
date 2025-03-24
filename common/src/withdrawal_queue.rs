@@ -197,7 +197,6 @@ impl WithdrawalQueue {
         }
     }
 
-    #[allow(clippy::missing_panics_doc)]
     pub fn insert_or_update(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
         if let Some(node_id) = self.entries.get(account_id) {
             // update existing

@@ -161,7 +161,6 @@ impl MarketConfiguration {
         is_within_mcr(&self.borrow_mcr, borrow_position, oracle_price_proof)
     }
 
-    #[allow(clippy::missing_panics_doc)]
     pub fn minimum_acceptable_liquidation_amount(
         &self,
         amount: CollateralAssetAmount,

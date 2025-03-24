@@ -1,6 +1,6 @@
 use near_sdk::{
     env, json_types::U128, near, require, serde_json, AccountId, Promise, PromiseError,
-    PromiseOrValue, PromiseResult,
+    PromiseResult,
 };
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},

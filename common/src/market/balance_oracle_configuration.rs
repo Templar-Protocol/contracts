@@ -77,8 +77,14 @@ mod error {
         NegativePrice,
         #[error("Confidence interval too large")]
         ConfidenceIntervalTooLarge,
+        #[error("Exponent too large")]
+        ExponentTooLarge,
     }
 }
+
+// Maximum number of fully-representable whole digits in 384 bits: floor(log_10(2^384)) = 115
+// Maximum number of digits in a 64-bit integer: floor(log_10(2^64)) + 1 = 20
+const MAXIMUM_POSITIVE_EXPONENT: i32 = 115 - 20;
 
 fn from_pyth_price<T: AssetClass>(
     pyth_price: &pyth::Price,
@@ -91,6 +97,13 @@ fn from_pyth_price<T: AssetClass>(
     if pyth_price.conf.0 >= price {
         return Err(error::PriceDataError::ConfidenceIntervalTooLarge);
     }
+
+    if pyth_price.expo > MAXIMUM_POSITIVE_EXPONENT {
+        return Err(error::PriceDataError::ExponentTooLarge);
+    }
+
+    // TODO: If price falls below minimum representation, it will get truncated to zero.
+    // Is this okay?
 
     Ok(Price {
         _asset: PhantomData,
@@ -146,12 +159,16 @@ pub trait AssetConversion<F: AssetClass, T: AssetClass> {
     fn convert_pessimistic(&self, amount: FungibleAssetAmount<F>) -> FungibleAssetAmount<T>;
 }
 
+// Safety:
+//
+
+#[allow(clippy::unwrap_used)]
 impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
     fn convert_optimistic(
         &self,
         amount: FungibleAssetAmount<CollateralAsset>,
     ) -> FungibleAssetAmount<BorrowAsset> {
-        (amount.to_decimal() * self.collateral_asset_price.upper_bound()
+        (self.collateral_asset_price.value_optimistic(amount)
             / self.borrow_asset_price.lower_bound())
         .to_u128_ceil()
         .unwrap()
@@ -162,7 +179,7 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<CollateralAsset>,
     ) -> FungibleAssetAmount<BorrowAsset> {
-        (amount.to_decimal() * self.collateral_asset_price.lower_bound()
+        (self.collateral_asset_price.value_pessimistic(amount)
             / self.borrow_asset_price.upper_bound())
         .to_u128_floor()
         .unwrap()
@@ -170,12 +187,13 @@ impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
     fn convert_optimistic(
         &self,
         amount: FungibleAssetAmount<BorrowAsset>,
     ) -> FungibleAssetAmount<CollateralAsset> {
-        (amount.to_decimal() * self.borrow_asset_price.upper_bound()
+        (self.borrow_asset_price.value_optimistic(amount)
             / self.collateral_asset_price.lower_bound())
         .to_u128_ceil()
         .unwrap()
@@ -186,7 +204,7 @@ impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
         &self,
         amount: FungibleAssetAmount<BorrowAsset>,
     ) -> FungibleAssetAmount<CollateralAsset> {
-        (amount.to_decimal() * self.borrow_asset_price.lower_bound()
+        (self.borrow_asset_price.value_pessimistic(amount)
             / self.collateral_asset_price.upper_bound())
         .to_u128_floor()
         .unwrap()

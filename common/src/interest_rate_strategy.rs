@@ -175,7 +175,6 @@ pub struct Exponential2 {
 }
 
 impl Exponential2 {
-    #[allow(clippy::missing_panics_doc)]
     pub fn new(base: Decimal, top: Decimal, eccentricity: Decimal) -> Option<Self> {
         if base > top {
             return None;

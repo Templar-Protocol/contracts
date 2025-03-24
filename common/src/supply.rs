@@ -7,7 +7,7 @@ use near_sdk::{env, json_types::U64, near, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
-    asset::{BorrowAsset, BorrowAssetAmount},
+    asset::{BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
     event::MarketEvent,
     market::{Market, WithdrawalResolution},
     number::Decimal,
@@ -16,7 +16,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
-    pub started_at_block_timestamp_ms: Option<U64>,
+    started_at_block_timestamp_ms: Option<U64>,
     borrow_asset_deposit: BorrowAssetAmount,
     pub borrow_asset_yield: Accumulator<BorrowAsset>,
 }
@@ -134,36 +134,36 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
         let estimate_current_snapshot =
             total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
 
+        // We know this must be <= total_yield_distribution.
+        // We know that total_yield_distribution <= sum total of fees collected during a snapshot.
+        // Therefore, assuming the underlying token is (correctly) represented
+        // in u128, this will never panic.
+        #[allow(clippy::unwrap_used)]
         estimate_current_snapshot.to_u128_floor().unwrap().into()
     }
 
     pub fn calculate_yield(&self) -> AccumulationRecord<BorrowAsset> {
         let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
-
-        if self.market.borrow().snapshots.is_empty() {
-            return AccumulationRecord::empty(next_snapshot_index);
-        }
-
         let amount = self.position.get_borrow_asset_deposit().to_decimal();
-
         let mut accumulated = Decimal::ZERO;
 
         let mut it = self.market.borrow().snapshots.iter();
         // Skip the last snapshot, which may be incomplete.
         it.next_back();
 
-        for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize).map(
-            // Assume # of snapshots is never >u32::MAX.
-            #[allow(clippy::cast_possible_truncation)]
-            |(i, s)| (i as u32, s),
-        ) {
+        #[allow(clippy::cast_possible_truncation)]
+        for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize) {
             accumulated +=
                 amount * snapshot.yield_distribution.to_decimal() / snapshot.deposited.to_decimal();
 
-            next_snapshot_index = i + 1;
+            // Assume # of snapshots is never >u32::MAX.
+            next_snapshot_index = i as u32 + 1;
         }
 
         AccumulationRecord {
+            // Accumulated amount is derived from real balances, so it should
+            // never overflow underlying data type.
+            #[allow(clippy::unwrap_used)]
             amount: accumulated.to_u128_floor().unwrap().into(),
             next_snapshot_index,
         }
@@ -235,27 +235,31 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
             .decrease_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
 
-        self.market
-            .borrow_mut()
-            .borrow_asset_deposited
-            .split(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
-
-        self.market.borrow_mut().snapshot();
-
+        // The only way to withdraw from a position is if it already has a deposit.
+        // Adding a deposit guarantees started_at_block_timestamp_ms != None
+        #[allow(clippy::unwrap_used)]
         let started_at_block_timestamp_ms =
             self.0.position.started_at_block_timestamp_ms.unwrap().0;
         let supply_duration = block_timestamp_ms.saturating_sub(started_at_block_timestamp_ms);
 
-        let amount_to_fees = self
-            .market
-            .borrow()
+        let market: &mut Market = self.market.borrow_mut();
+
+        market
+            .borrow_asset_deposited
+            .split(amount)
+            .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
+
+        market.snapshot();
+
+        let amount_to_fees = market
             .configuration
             .supply_withdrawal_fee
             .of(amount, supply_duration)
-            .unwrap();
+            .unwrap_or_else(|| env::panic_str("Fee calculation overflow"));
 
-        amount.split(amount_to_fees).unwrap();
+        if amount.split(amount_to_fees).is_none() {
+            amount = FungibleAssetAmount::zero();
+        }
 
         MarketEvent::SupplyWithdrawn {
             account_id: self.account_id.clone(),
