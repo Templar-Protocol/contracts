@@ -256,7 +256,9 @@ impl Market {
             return Ok(None);
         };
 
-        let resolution = supply_position.record_withdrawal(amount, env::block_timestamp_ms());
+        let proof = supply_position.accumulate_yield();
+        let resolution =
+            supply_position.record_withdrawal(proof, amount, env::block_timestamp_ms());
 
         Ok(Some(resolution))
     }

@@ -13,6 +13,11 @@ use crate::{
     number::Decimal,
 };
 
+/// This struct can only be constructed after accumulating yield on a
+/// supply position. This serves as proof that the yield has accrued, so it
+/// is safe to perform certain other operations.
+pub struct YieldAccumulationProof(());
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
@@ -45,9 +50,10 @@ impl SupplyPosition {
         !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_yield.get_total().is_zero()
     }
 
-    /// MUST always be paired with a yield recalculation!
+    /// Yield accumulation MUST be applied before calling this function.
     pub(crate) fn increase_borrow_asset_deposit(
         &mut self,
+        _proof: YieldAccumulationProof,
         amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
     ) -> Option<()> {
@@ -57,9 +63,10 @@ impl SupplyPosition {
         self.borrow_asset_deposit.join(amount)
     }
 
-    /// MUST always be paired with a yield recalculation!
+    /// Yield accumulation MUST be applied before calling this function.
     pub(crate) fn decrease_borrow_asset_deposit(
         &mut self,
+        _proof: YieldAccumulationProof,
         amount: BorrowAssetAmount,
     ) -> Option<BorrowAssetAmount> {
         // No need to reset the timer; it is a permanent indication of the
@@ -201,12 +208,7 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         Self(LinkedSupplyPosition::new(market, account_id, position))
     }
 
-    /// In order for yield calculations to be accurate, this function MUST
-    /// BE CALLED every time a supply position's deposit changes. This
-    /// requirement is largely met by virtue of the fact that
-    /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
-    /// be modified via methods on this type.
-    pub fn accumulate_yield(&mut self) {
+    pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
         self.market.borrow_mut().snapshot();
 
         let accumulation_record = self.calculate_yield();
@@ -222,17 +224,18 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         self.position
             .borrow_asset_yield
             .accumulate(accumulation_record);
+
+        YieldAccumulationProof(())
     }
 
     pub fn record_withdrawal(
         &mut self,
+        proof: YieldAccumulationProof,
         mut amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
     ) -> WithdrawalResolution {
-        self.accumulate_yield();
-
         self.position
-            .decrease_borrow_asset_deposit(amount)
+            .decrease_borrow_asset_deposit(proof, amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
 
         self.market
@@ -271,11 +274,14 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         }
     }
 
-    pub fn record_deposit(&mut self, amount: BorrowAssetAmount, block_timestamp_ms: u64) {
-        self.accumulate_yield();
-
+    pub fn record_deposit(
+        &mut self,
+        proof: YieldAccumulationProof,
+        amount: BorrowAssetAmount,
+        block_timestamp_ms: u64,
+    ) {
         self.position
-            .increase_borrow_asset_deposit(amount, block_timestamp_ms)
+            .increase_borrow_asset_deposit(proof, amount, block_timestamp_ms)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
 
         self.market

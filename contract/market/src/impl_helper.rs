@@ -16,7 +16,8 @@ impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
         let supply_maximum_amount = self.configuration.supply_maximum_amount;
         let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
-        supply_position.record_deposit(amount, env::block_timestamp_ms());
+        let proof = supply_position.accumulate_yield();
+        supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         if let Some(ref supply_maximum_amount) = supply_maximum_amount {
             require!(
                 supply_position.inner().get_borrow_asset_deposit() <= *supply_maximum_amount,
@@ -51,7 +52,8 @@ impl Contract {
             // borrowed + fees/interest.
             // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923876327
 
-            borrow_position.record_repay(amount)
+            let proof = borrow_position.accumulate_interest();
+            borrow_position.record_repay(proof, amount)
         } else {
             // No borrow exists: just return the whole amount.
             amount
@@ -203,7 +205,8 @@ impl Contract {
                 //
                 // Borrow position has already been created: finalize
                 // withdrawal record.
-                borrow_position.record_borrow_asset_withdrawal(amount, fees);
+                let proof = borrow_position.accumulate_interest();
+                borrow_position.record_borrow_asset_withdrawal(proof, amount, fees);
             }
             PromiseResult::Failed => {
                 // Likely reasons for failure:
@@ -266,14 +269,13 @@ impl Contract {
 
                 env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
                 self.withdrawal_queue.unlock();
-
                 if let Some(mut supply_position) =
                     self.get_linked_supply_position_mut(withdrawal_resolution.account_id.clone())
                 {
-                    let timestamp = env::block_timestamp_ms();
+                    let proof = supply_position.accumulate_yield();
                     let mut amount = withdrawal_resolution.amount_to_account;
                     amount.join(withdrawal_resolution.amount_to_fees);
-                    supply_position.record_deposit(amount, timestamp);
+                    supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
                 }
             }
         }
