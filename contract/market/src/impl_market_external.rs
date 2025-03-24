@@ -331,6 +331,13 @@ impl MarketExternalInterface for Contract {
             (Some(b), Some(c)) => b.and(c),
             (Some(p), _) | (_, Some(p)) => p,
             _ => env::panic_str("No yield to withdraw"),
-        } // TODO: Check for success
+        }
+        .then(
+            Self::ext(env::current_account_id()).withdraw_static_yield_01_finalize(
+                predecessor,
+                borrow_asset_amount,
+                collateral_asset_amount,
+            ),
+        )
     }
 }
