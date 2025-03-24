@@ -388,23 +388,6 @@ impl TestController {
             .unwrap();
     }
 
-    pub async fn withdraw_supply_yield(
-        &self,
-        supply_user: &Account,
-        amount: Option<u128>,
-    ) -> ExecutionSuccess {
-        eprintln!("{} withdrawing supply yield...", supply_user.id());
-        supply_user
-            .call(self.contract.id(), "withdraw_supply_yield")
-            .args_json(json!({
-                "amount": amount.map(U128),
-            }))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap()
-    }
-
     pub async fn get_static_yield(&self, account_id: &AccountId) -> Option<StaticYieldRecord> {
         self.contract
             .view("get_static_yield")

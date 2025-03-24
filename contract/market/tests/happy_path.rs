@@ -134,10 +134,13 @@ async fn test_happy() {
                     u128::from(supply_position.borrow_asset_yield.get_total()),
                     80,
                 );
+                // Move the yield to the principal so that it can be withdrawn
+                c.harvest_yield(&supply_user, true).await;
 
                 let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
                 // Withdraw all
-                c.withdraw_supply_yield(&supply_user, None).await;
+                c.create_supply_withdrawal_request(&supply_user, 80).await;
+                c.execute_next_supply_withdrawal_request(&supply_user).await;
                 let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
 
                 assert_eq!(

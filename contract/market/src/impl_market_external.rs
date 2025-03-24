@@ -246,32 +246,6 @@ impl MarketExternalInterface for Contract {
         self.static_yield.get(&account_id)
     }
 
-    fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
-        let predecessor = env::predecessor_account_id();
-        let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor.clone())
-        else {
-            env::panic_str("Supply position does not exist");
-        };
-
-        let amount =
-            amount.unwrap_or_else(|| supply_position.inner().borrow_asset_yield.get_total());
-
-        let withdrawn = supply_position
-            .record_yield_withdrawal(amount)
-            .unwrap_or_else(|| {
-                env::panic_str("Attempt to withdraw more yield than has accumulated")
-            });
-        if withdrawn.is_zero() {
-            env::panic_str("No rewards can be withdrawn");
-        }
-        drop(supply_position);
-
-        // TODO: Check for transfer success.
-        self.configuration
-            .borrow_asset
-            .transfer(predecessor, withdrawn)
-    }
-
     fn withdraw_static_yield(
         &mut self,
         borrow_asset_amount: Option<BorrowAssetAmount>,

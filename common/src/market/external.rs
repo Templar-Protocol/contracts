@@ -96,7 +96,6 @@ pub trait MarketExternalInterface {
     // YIELD FUNCTIONS
     // =================
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord>;
-    fn withdraw_supply_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise;
     fn withdraw_static_yield(
         &mut self,
         borrow_asset_amount: Option<BorrowAssetAmount>,
