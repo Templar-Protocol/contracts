@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-source ../prebuild-test-contracts.sh
+SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
+source "$SCRIPT_DIR/../prebuild-test-contracts.sh"
 
 cargo run --package templar-market-contract --example gas_report
