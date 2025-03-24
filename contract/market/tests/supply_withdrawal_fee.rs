@@ -31,18 +31,18 @@ async fn supply_withdrawal_fee_flat() {
     let yield_before = c
         .get_static_yield(protocol_yield_user.id())
         .await
-        .map_or(0, |r| r.borrow_asset.to_u128());
+        .map_or(0, |r| u128::from(r.borrow_asset));
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
 
     let supply_user_balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
-    let yield_after = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .borrow_asset
-        .to_u128();
+    let yield_after = u128::from(
+        c.get_static_yield(protocol_yield_user.id())
+            .await
+            .unwrap()
+            .borrow_asset,
+    );
 
     assert_eq!(
         supply_user_balance_after,
@@ -84,18 +84,18 @@ async fn supply_withdrawal_fee_expired() {
     let yield_before = c
         .get_static_yield(protocol_yield_user.id())
         .await
-        .map_or(0, |r| r.borrow_asset.to_u128());
+        .map_or(0, |r| u128::from(r.borrow_asset));
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
 
     let supply_user_balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
-    let yield_after = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .borrow_asset
-        .to_u128();
+    let yield_after = u128::from(
+        c.get_static_yield(protocol_yield_user.id())
+            .await
+            .unwrap()
+            .borrow_asset,
+    );
 
     assert_eq!(
         supply_user_balance_after,

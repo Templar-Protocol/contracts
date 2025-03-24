@@ -19,7 +19,7 @@ impl Snapshot {
         } else if self.borrowed >= self.deposited {
             Decimal::ONE
         } else {
-            self.borrowed.to_decimal() / self.deposited.to_decimal()
+            Decimal::from(self.borrowed) / Decimal::from(self.deposited)
         }
     }
 }
