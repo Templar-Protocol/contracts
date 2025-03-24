@@ -34,4 +34,4 @@ jobs:
       - name: Install cargo-near CLI
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.13.3/cargo-near-installer.sh | sh
       - name: Run tests
-        run: ./test.sh
+        run: ./script/test.sh
