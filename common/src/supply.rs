@@ -145,7 +145,10 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
         // We know that total_yield_distribution <= sum total of fees collected during a snapshot.
         // Therefore, assuming the underlying token is (correctly) represented
         // in u128, this will never panic.
-        #[allow(clippy::unwrap_used)]
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Assume underlying token is implemented correctly"
+        )]
         estimate_current_snapshot.to_u128_floor().unwrap().into()
     }
 
@@ -160,19 +163,21 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
         // Skip the last snapshot, which may be incomplete.
         it.next_back();
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "Assume # of snapshots is never >u32::MAX"
+        )]
         for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize) {
             accumulated += amount * Decimal::from(snapshot.yield_distribution)
                 / Decimal::from(snapshot.deposited);
 
-            // Assume # of snapshots is never >u32::MAX.
             next_snapshot_index = i as u32 + 1;
         }
 
         AccumulationRecord {
             // Accumulated amount is derived from real balances, so it should
             // never overflow underlying data type.
-            #[allow(clippy::unwrap_used)]
+            #[allow(clippy::unwrap_used, reason = "Derived from real balances")]
             amount: accumulated.to_u128_floor().unwrap().into(),
             next_snapshot_index,
         }
@@ -242,7 +247,7 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
 
         // The only way to withdraw from a position is if it already has a deposit.
         // Adding a deposit guarantees started_at_block_timestamp_ms != None
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, reason = "Guaranteed to never panic")]
         let started_at_block_timestamp_ms =
             self.0.position.started_at_block_timestamp_ms.unwrap().0;
         let supply_duration = block_timestamp_ms.saturating_sub(started_at_block_timestamp_ms);

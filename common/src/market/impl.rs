@@ -79,7 +79,7 @@ impl Market {
         self_
     }
 
-    #[allow(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used, reason = "Snapshots are never empty")]
     pub fn get_last_snapshot(&self) -> &Snapshot {
         self.snapshots.get(self.snapshots.len() - 1).unwrap()
     }
@@ -136,8 +136,10 @@ impl Market {
     }
 
     pub fn get_borrow_asset_available_to_borrow(&self) -> BorrowAssetAmount {
-        // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
-        #[allow(clippy::unwrap_used)]
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Factor is guaranteed to be <=1, so value must still fit in u128"
+        )]
         let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
             * Decimal::from(self.borrow_asset_deposited))
         .to_u128_ceil()
@@ -287,29 +289,19 @@ impl Market {
 
         // First, static yield.
 
-        let total_weight = u128::from(u16::from(self.configuration.yield_weights.total_weight()));
-        let total_amount = u128::from(amount);
-        if total_weight != 0 {
-            for (account_id, share) in &self.configuration.yield_weights.r#static {
-                #[allow(clippy::unwrap_used)]
-                let portion = amount
-                    .split(
-                        // Safety:
-                        // total_weight is guaranteed >0 and <=u16::MAX
-                        // share is guaranteed <=u16::MAX
-                        // Therefore, as long as total_amount <= u128::MAX / u16::MAX, this will never overflow.
-                        // u128::MAX / u16::MAX == 5192376087906286159508272029171713 (0x10001000100010001000100010001)
-                        // With 24 decimals, that's about 5,192,376,087 tokens.
-                        // TODO: Fix.
-                        total_amount
-                            .checked_mul(u128::from(*share))
-                            .unwrap() // TODO: This one might panic.
-                        / total_weight, // This will never panic: is never div0
-                    )
+        let total_weight =
+            Decimal::from(u16::from(self.configuration.yield_weights.total_weight()));
+        let total_amount = Decimal::from(u128::from(amount));
+        let amount_per_weight = total_amount / total_weight;
+        if !total_weight.is_zero() {
+            for (account_id, share_weight) in &self.configuration.yield_weights.r#static {
+                #[allow(clippy::unwrap_used, reason = "share_weight / total_weight <= 1")]
+                let share = amount
+                    .split((*share_weight * amount_per_weight).to_u128_floor().unwrap())
                     // Safety:
-                    // Guaranteed share <= total_weight
-                    // Guaranteed sum(shares) == total_weight
-                    // Guaranteed sum(floor(total_amount * share / total_weight) for each share in shares) <= total_amount
+                    // Guaranteed share_weight <= total_weight
+                    // Guaranteed sum(share_weights) == total_weight
+                    // Guaranteed sum(floor(total_amount * share_weight / total_weight) for each share_weight in share_weights) <= total_amount
                     // Therefore this should never panic.
                     .unwrap();
 
@@ -317,12 +309,21 @@ impl Market {
                 // Assuming borrow_asset is implemented correctly:
                 // this only panics if the circulating supply is somehow >u128::MAX
                 // and we have somehow obtained >u128::MAX amount.
-                // TODO: Include warning somewhere about tokens with >u128::MAX supply.
+                //
+                // NOTE: This is not necessary when working with NEP-141
+                // tokens, which are required by standard to use 128-bit balances.
                 //
                 // Otherwise, borrow_asset is implemented incorrectly.
                 // TODO: If that is the case, how to deal?
-                #[allow(clippy::unwrap_used)]
-                yield_record.borrow_asset.join(portion).unwrap();
+                //
+                // Probably, it is okay to ignore this case. We can assume
+                // that the configuration will only specify
+                // correctly-implemented token contracts.
+                #[allow(
+                    clippy::unwrap_used,
+                    reason = "Assume borrow asset is implemented correctly"
+                )]
+                yield_record.borrow_asset.join(share).unwrap();
                 self.static_yield.insert(account_id, &yield_record);
             }
         }

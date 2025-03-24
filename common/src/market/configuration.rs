@@ -11,7 +11,7 @@ use crate::{
     time_chunk::TimeChunkConfiguration,
 };
 
-use super::{AssetConversion, BalanceOracleConfiguration, PricePair, YieldWeights};
+use super::{BalanceOracleConfiguration, PricePair, YieldWeights};
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
@@ -165,16 +165,12 @@ impl MarketConfiguration {
         &self,
         amount: CollateralAssetAmount,
         price_pair: &PricePair,
-    ) -> BorrowAssetAmount {
-        BorrowAssetAmount::new(
-            // Safe because the factor is guaranteed to be <=1, so the result
-            // must still fit in u128.
-            #[allow(clippy::unwrap_used)]
-            ((1u32 - self.liquidation_maximum_spread)
-                * u128::from(price_pair.convert_pessimistic(amount)))
-            .to_u128_ceil()
-            .unwrap(),
-        )
+    ) -> Option<BorrowAssetAmount> {
+        ((1u32 - self.liquidation_maximum_spread)
+            * price_pair.collateral_asset_price.value_pessimistic(amount)
+            / price_pair.borrow_asset_price.upper_bound())
+        .to_u128_ceil()
+        .map(BorrowAssetAmount::new)
     }
 }
 

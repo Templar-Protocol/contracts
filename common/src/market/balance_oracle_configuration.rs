@@ -114,11 +114,11 @@ fn from_pyth_price<T: AssetClass>(
 }
 
 impl<T: AssetClass> Price<T> {
-    fn upper_bound(&self) -> Decimal {
+    pub fn upper_bound(&self) -> Decimal {
         (self.price + self.confidence) * self.power_of_10
     }
 
-    fn lower_bound(&self) -> Decimal {
+    pub fn lower_bound(&self) -> Decimal {
         (self.price - self.confidence) * self.power_of_10
     }
 
@@ -140,7 +140,7 @@ pub struct PricePair {
 impl PricePair {
     /// # Errors
     ///
-    /// If the price data are invalid.
+    /// - If the price data are invalid.
     pub fn new(
         collateral_price: &pyth::Price,
         collateral_decimals: i32,
@@ -151,63 +151,5 @@ impl PricePair {
             collateral_asset_price: from_pyth_price(collateral_price, collateral_decimals)?,
             borrow_asset_price: from_pyth_price(borrow_price, borrow_decimals)?,
         })
-    }
-}
-
-pub trait AssetConversion<F: AssetClass, T: AssetClass> {
-    fn convert_optimistic(&self, amount: FungibleAssetAmount<F>) -> FungibleAssetAmount<T>;
-    fn convert_pessimistic(&self, amount: FungibleAssetAmount<F>) -> FungibleAssetAmount<T>;
-}
-
-// Safety:
-//
-
-#[allow(clippy::unwrap_used)]
-impl AssetConversion<CollateralAsset, BorrowAsset> for PricePair {
-    fn convert_optimistic(
-        &self,
-        amount: FungibleAssetAmount<CollateralAsset>,
-    ) -> FungibleAssetAmount<BorrowAsset> {
-        (self.collateral_asset_price.value_optimistic(amount)
-            / self.borrow_asset_price.lower_bound())
-        .to_u128_ceil()
-        .unwrap()
-        .into()
-    }
-
-    fn convert_pessimistic(
-        &self,
-        amount: FungibleAssetAmount<CollateralAsset>,
-    ) -> FungibleAssetAmount<BorrowAsset> {
-        (self.collateral_asset_price.value_pessimistic(amount)
-            / self.borrow_asset_price.upper_bound())
-        .to_u128_floor()
-        .unwrap()
-        .into()
-    }
-}
-
-#[allow(clippy::unwrap_used)]
-impl AssetConversion<BorrowAsset, CollateralAsset> for PricePair {
-    fn convert_optimistic(
-        &self,
-        amount: FungibleAssetAmount<BorrowAsset>,
-    ) -> FungibleAssetAmount<CollateralAsset> {
-        (self.borrow_asset_price.value_optimistic(amount)
-            / self.collateral_asset_price.lower_bound())
-        .to_u128_ceil()
-        .unwrap()
-        .into()
-    }
-
-    fn convert_pessimistic(
-        &self,
-        amount: FungibleAssetAmount<BorrowAsset>,
-    ) -> FungibleAssetAmount<CollateralAsset> {
-        (self.borrow_asset_price.value_pessimistic(amount)
-            / self.collateral_asset_price.upper_bound())
-        .to_u128_floor()
-        .unwrap()
-        .into()
     }
 }

@@ -23,12 +23,6 @@ pub trait MarketExternalInterface {
     fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
 
-    // TODO: Decide how to work with remote balances:
-    // Option 1:
-    // Balance oracle calls a function directly.
-    // Option 2: Balance oracle creates/maintains separate NEP-141-ish contracts that track remote
-    // balances.
-
     fn list_borrows(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
     fn list_supplys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
 

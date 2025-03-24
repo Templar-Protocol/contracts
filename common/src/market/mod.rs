@@ -32,7 +32,7 @@ pub struct YieldWeights {
 impl YieldWeights {
     /// # Panics
     /// - If `supply` is zero.
-    #[allow(clippy::unwrap_used)]
+    #[allow(clippy::unwrap_used, reason = "Only used during initial construction")]
     pub fn new_with_supply_weight(supply: u16) -> Self {
         Self {
             supply: supply.try_into().unwrap(),

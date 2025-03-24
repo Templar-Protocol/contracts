@@ -17,7 +17,6 @@ pub struct FungibleAsset<T: AssetClass> {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
-#[non_exhaustive]
 enum FungibleAssetKind {
     Nep141(AccountId),
 }
@@ -39,29 +38,19 @@ impl<T: AssetClass> FungibleAsset<T> {
     }
 
     pub fn is_nep141(&self, account_id: &AccountId) -> bool {
-        #[allow(irrefutable_let_patterns)]
-        if let FungibleAssetKind::Nep141(ref contract_id) = self.kind {
-            contract_id == account_id
-        } else {
-            false
-        }
+        let FungibleAssetKind::Nep141(ref contract_id) = self.kind;
+        contract_id == account_id
     }
 
     pub fn into_nep141(self) -> Option<AccountId> {
-        #[allow(clippy::match_wildcard_for_single_variants, unreachable_patterns)]
-        match self.kind {
-            FungibleAssetKind::Nep141(contract_id) => Some(contract_id),
-            _ => None,
-        }
+        let FungibleAssetKind::Nep141(contract_id) = self.kind;
+        Some(contract_id)
     }
 
     pub fn current_account_balance(&self) -> Promise {
         let current_account_id = env::current_account_id();
-        match self.kind {
-            FungibleAssetKind::Nep141(ref account_id) => {
-                ext_ft_core::ext(account_id.clone()).ft_balance_of(current_account_id.clone())
-            }
-        }
+        let FungibleAssetKind::Nep141(ref account_id) = self.kind;
+        ext_ft_core::ext(account_id.clone()).ft_balance_of(current_account_id.clone())
     }
 }
 

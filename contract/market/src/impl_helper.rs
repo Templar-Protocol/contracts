@@ -72,8 +72,9 @@ impl Contract {
             "Borrow position cannot be liquidated",
         );
 
-        let minimum_acceptable_amount =
-            borrow_position.minimum_acceptable_liquidation_amount(price_pair);
+        let minimum_acceptable_amount = borrow_position
+            .minimum_acceptable_liquidation_amount(price_pair)
+            .unwrap_or_else(|| env::panic_str("Minimum acceptable amount calculation overflow"));
 
         require!(
             amount >= minimum_acceptable_amount,
@@ -171,15 +172,12 @@ impl Contract {
 
         self.configuration
             .borrow_asset
-            .transfer(account_id.clone(), amount) // TODO: Check for failure
-            .then(
-                Self::ext(env::current_account_id())
-                    .borrow_02_after_transfer(account_id, amount, fees),
-            )
+            .transfer(account_id.clone(), amount)
+            .then(Self::ext(env::current_account_id()).borrow_02_finalize(account_id, amount, fees))
     }
 
     #[private]
-    pub fn borrow_02_after_transfer(
+    pub fn borrow_02_finalize(
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
@@ -223,6 +221,7 @@ impl Contract {
                 // assets, so we IGNORE THIS CASE FOR NOW.
                 //
                 // TODO: Implement case 2 mitigation.
+                // NOTE: Not needed for chain-local (NEP-141-only) tokens.
             }
         }
     }

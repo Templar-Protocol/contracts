@@ -175,6 +175,8 @@ pub struct Exponential2 {
 }
 
 impl Exponential2 {
+    /// # Panics
+    /// - If 2^eccentricity overflows `Decimal`.
     pub fn new(base: Decimal, top: Decimal, eccentricity: Decimal) -> Option<Self> {
         if base > top {
             return None;

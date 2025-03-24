@@ -256,8 +256,10 @@ impl WithdrawalQueue {
         for (index, (current_account, amount)) in self.iter().enumerate() {
             if &current_account == account_id {
                 return Some(WithdrawalRequestStatus {
-                    // The queue's length is u32, so this will never truncate.
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "Queue length is u32, so this will never truncate"
+                    )]
                     index: index as u32,
                     depth,
                     amount,
