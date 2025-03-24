@@ -211,11 +211,13 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
 
         let accumulation_record = self.calculate_yield();
 
-        MarketEvent::YieldAccumulated {
-            account_id: self.account_id.clone(),
-            borrow_asset_amount: accumulation_record.amount,
+        if !accumulation_record.amount.is_zero() {
+            MarketEvent::YieldAccumulated {
+                account_id: self.account_id.clone(),
+                borrow_asset_amount: accumulation_record.amount,
+            }
+            .emit();
         }
-        .emit();
 
         self.position
             .borrow_asset_yield
