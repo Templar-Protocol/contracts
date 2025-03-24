@@ -136,10 +136,7 @@ impl Market {
     }
 
     #[allow(clippy::missing_panics_doc)]
-    pub fn get_borrow_asset_available_to_borrow(
-        &self,
-        current_contract_balance: BorrowAssetAmount,
-    ) -> BorrowAssetAmount {
+    pub fn get_borrow_asset_available_to_borrow(&self) -> BorrowAssetAmount {
         // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
         #[allow(clippy::unwrap_used)]
         let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
@@ -147,10 +144,11 @@ impl Market {
         .to_u128_ceil()
         .unwrap();
 
-        let known_available = u128::from(current_contract_balance)
-            .saturating_sub(u128::from(self.borrow_asset_in_flight));
-
-        known_available.saturating_sub(must_retain).into()
+        u128::from(self.borrow_asset_deposited)
+            .saturating_sub(u128::from(self.borrow_asset_borrowed))
+            .saturating_sub(u128::from(self.borrow_asset_in_flight))
+            .saturating_sub(must_retain)
+            .into()
     }
 
     pub fn get_interest_rate_for_snapshot(&self, snapshot: &Snapshot) -> Decimal {

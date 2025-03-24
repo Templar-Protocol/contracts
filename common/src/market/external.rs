@@ -21,13 +21,7 @@ pub trait MarketExternalInterface {
 
     fn get_configuration(&self) -> MarketConfiguration;
     fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
-    /// Takes current balance as an argument so that it can be called as view.
-    /// `borrow_asset_balance` should be retrieved from the borrow asset
-    /// contract specified in the market configuration.
-    fn get_borrow_asset_metrics(
-        &self,
-        borrow_asset_balance: BorrowAssetAmount,
-    ) -> BorrowAssetMetrics;
+    fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
 
     // TODO: Decide how to work with remote balances:
     // Option 1:
