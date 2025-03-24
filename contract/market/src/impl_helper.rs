@@ -1,5 +1,5 @@
 use near_sdk::{
-    env, json_types::U128, near, require, serde_json, AccountId, Promise, PromiseError,
+    env, json_types::U128, near, require, AccountId, Promise, PromiseError,
     PromiseResult,
 };
 use templar_common::{
@@ -121,11 +121,6 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    #[private]
-    pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
-        value
-    }
-
     #[private]
     pub fn borrow_01_consume_price(
         &mut self,
