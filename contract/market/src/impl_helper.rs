@@ -331,64 +331,6 @@ impl Contract {
     }
 
     #[private]
-    pub fn liquidate_native_01_consume_price(
-        &mut self,
-        liquidator_id: AccountId,
-        account_id: AccountId,
-        amount: BorrowAssetAmount,
-        #[callback_unwrap] oracle_response: OracleResponse,
-    ) -> Promise {
-        let price_pair = self
-            .configuration
-            .balance_oracle
-            .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-        let liquidated_collateral =
-            self.execute_liquidate_initial(account_id.clone(), amount, &price_pair);
-
-        self.configuration
-            .collateral_asset
-            .transfer(liquidator_id.clone(), liquidated_collateral)
-            .then(
-                Self::ext(env::current_account_id()).liquidate_native_02_finalize(
-                    liquidator_id,
-                    account_id,
-                    amount,
-                ),
-            )
-    }
-
-    #[private]
-    pub fn liquidate_native_02_finalize(
-        &mut self,
-        liquidator_id: AccountId,
-        account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
-    ) -> PromiseOrValue<()> {
-        require!(env::promise_results_count() == 1);
-
-        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
-
-        let refund_to_liquidator = self.execute_liquidate_final(
-            liquidator_id.clone(),
-            account_id,
-            borrow_asset_amount,
-            success,
-        );
-
-        if refund_to_liquidator.is_zero() {
-            PromiseOrValue::Value(())
-        } else {
-            PromiseOrValue::Promise(
-                self.configuration
-                    .borrow_asset
-                    .transfer(liquidator_id, refund_to_liquidator),
-            )
-        }
-    }
-
-    #[private]
     pub fn withdraw_collateral_01_consume_price(
         &mut self,
         account_id: AccountId,

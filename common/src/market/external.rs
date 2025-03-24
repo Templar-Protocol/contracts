@@ -43,9 +43,7 @@ pub trait MarketExternalInterface {
     // ==================
 
     // ft_on_receive :: where msg = Collateralize
-    fn collateralize_native(&mut self);
     // ft_on_receive :: where msg = Repay
-    fn repay_native(&mut self) -> PromiseOrValue<()>;
 
     /// This function may report fees slightly inaccurately. This is because
     /// the function has to estimate what fees will be applied between the last
@@ -76,7 +74,6 @@ pub trait MarketExternalInterface {
     // don't yet support supplying of remote assets.
 
     // ft_on_receive :: where msg = Supply
-    fn supply_native(&mut self);
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
@@ -106,7 +103,6 @@ pub trait MarketExternalInterface {
     // =====================
 
     // ft_on_receive :: where msg = Liquidate { account_id }
-    fn liquidate_native(&mut self, account_id: AccountId) -> Promise;
 
     // =================
     // YIELD FUNCTIONS

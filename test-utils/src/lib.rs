@@ -36,57 +36,34 @@ pub fn to_price(price: f64) -> pyth::Price {
     }
 }
 
-pub enum TestAsset {
-    Native,
-    Nep141(Contract),
-}
-
-impl TestAsset {
-    pub fn is_native(&self) -> bool {
-        matches!(self, Self::Native)
-    }
-
-    pub fn nep141_id(&self) -> Option<&AccountId> {
-        if let Self::Nep141(ref contract) = self {
-            Some(contract.id())
-        } else {
-            None
-        }
-    }
-}
-
 pub struct TestController {
     pub worker: Worker<Sandbox>,
     pub contract: Contract,
     pub config: MarketConfiguration,
     pub balance_oracle: Contract,
-    pub borrow_asset: TestAsset,
-    pub collateral_asset: TestAsset,
+    pub borrow_asset: Contract,
+    pub collateral_asset: Contract,
 }
 
 impl TestController {
     pub async fn storage_deposits(&self, account: &Account) {
         eprintln!("Performing storage deposits for {}...", account.id());
-        if let TestAsset::Nep141(ref borrow_asset) = self.borrow_asset {
-            account
-                .call(borrow_asset.id(), "storage_deposit")
-                .args_json(json!({}))
-                .deposit(NearToken::from_near(1))
-                .transact()
-                .await
-                .unwrap()
-                .unwrap();
-        }
-        if let TestAsset::Nep141(ref collateral_asset) = self.collateral_asset {
-            account
-                .call(collateral_asset.id(), "storage_deposit")
-                .args_json(json!({}))
-                .deposit(NearToken::from_near(1))
-                .transact()
-                .await
-                .unwrap()
-                .unwrap();
-        }
+        account
+            .call(self.borrow_asset.id(), "storage_deposit")
+            .args_json(json!({}))
+            .deposit(NearToken::from_near(1))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+        account
+            .call(self.collateral_asset.id(), "storage_deposit")
+            .args_json(json!({}))
+            .deposit(NearToken::from_near(1))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     pub async fn get_configuration(&self) -> MarketConfiguration {
@@ -140,34 +117,18 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn supply_native(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
-        supply_user
-            .call(self.contract.id(), "supply_native")
-            .args_json(json!({}))
-            .deposit(NearToken::from_yoctonear(amount))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap()
-    }
-
     pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
         eprintln!(
             "{} transferring {amount} tokens for supply...",
             supply_user.id()
         );
-        match self.borrow_asset {
-            TestAsset::Native => self.supply_native(supply_user, amount).await,
-            TestAsset::Nep141(_) => {
-                self.borrow_asset_transfer_call(
-                    supply_user,
-                    self.contract.id(),
-                    amount,
-                    &serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
-                )
-                .await
-            }
-        }
+        self.borrow_asset_transfer_call(
+            supply_user,
+            self.contract.id(),
+            amount,
+            &serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
+        )
+        .await
     }
 
     pub async fn get_supply_position(&self, account_id: &AccountId) -> Option<SupplyPosition> {
@@ -192,34 +153,18 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn collateralize_native(&self, borrow_user: &Account, amount: u128) {
-        borrow_user
-            .call(self.contract.id(), "collateralize_native")
-            .args_json(json!({}))
-            .deposit(NearToken::from_yoctonear(amount))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
     pub async fn collateralize(&self, borrow_user: &Account, amount: u128) {
         eprintln!(
             "{} transferring {amount} tokens for collateral...",
             borrow_user.id(),
         );
-        match self.collateral_asset {
-            TestAsset::Native => self.collateralize_native(borrow_user, amount).await,
-            TestAsset::Nep141(_) => {
-                self.collateral_asset_transfer_call(
-                    borrow_user,
-                    self.contract.id(),
-                    amount,
-                    &serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
-                )
-                .await;
-            }
-        }
+        self.collateral_asset_transfer_call(
+            borrow_user,
+            self.contract.id(),
+            amount,
+            &serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
+        )
+        .await;
     }
 
     pub async fn get_borrow_position(&self, account_id: &AccountId) -> Option<BorrowPosition> {
@@ -276,49 +221,29 @@ impl TestController {
     }
 
     pub async fn collateral_asset_balance_of(&self, account_id: &AccountId) -> u128 {
-        match self.collateral_asset {
-            TestAsset::Native => self
-                .worker
-                .view_account(self.contract.id())
-                .await
-                .map(|v| v.balance.as_yoctonear())
-                .unwrap(),
-            TestAsset::Nep141(ref collateral_asset) => {
-                collateral_asset
-                    .view("ft_balance_of")
-                    .args_json(json!({
-                        "account_id": account_id,
-                    }))
-                    .await
-                    .unwrap()
-                    .json::<U128>()
-                    .unwrap()
-                    .0
-            }
-        }
+        self.collateral_asset
+            .view("ft_balance_of")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<U128>()
+            .unwrap()
+            .0
     }
 
     pub async fn borrow_asset_balance_of(&self, account_id: &AccountId) -> u128 {
-        match self.borrow_asset {
-            TestAsset::Native => self
-                .worker
-                .view_account(self.contract.id())
-                .await
-                .map(|v| v.balance.as_yoctonear() - v.locked.as_yoctonear())
-                .unwrap(),
-            TestAsset::Nep141(ref borrow_asset) => {
-                borrow_asset
-                    .view("ft_balance_of")
-                    .args_json(json!({
-                        "account_id": account_id,
-                    }))
-                    .await
-                    .unwrap()
-                    .json::<U128>()
-                    .unwrap()
-                    .0
-            }
-        }
+        self.borrow_asset
+            .view("ft_balance_of")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<U128>()
+            .unwrap()
+            .0
     }
 
     pub async fn asset_transfer(
@@ -378,19 +303,8 @@ impl TestController {
         receiver_id: &AccountId,
         amount: u128,
     ) {
-        match self.borrow_asset {
-            TestAsset::Native => {
-                sender
-                    .transfer_near(receiver_id, NearToken::from_yoctonear(amount))
-                    .await
-                    .unwrap()
-                    .unwrap();
-            }
-            TestAsset::Nep141(ref contract) => {
-                self.asset_transfer(contract.id(), sender, receiver_id, amount)
-                    .await;
-            }
-        }
+        self.asset_transfer(self.borrow_asset.id(), sender, receiver_id, amount)
+            .await;
     }
 
     pub async fn borrow_asset_transfer_call(
@@ -400,12 +314,8 @@ impl TestController {
         amount: u128,
         msg: &str,
     ) -> ExecutionSuccess {
-        if let TestAsset::Nep141(ref borrow_asset) = self.borrow_asset {
-            self.asset_transfer_call(borrow_asset.id(), sender, receiver_id, amount, msg)
-                .await
-        } else {
-            panic!("Cannot perform an ft_transfer_call with a native asset");
-        }
+        self.asset_transfer_call(self.borrow_asset.id(), sender, receiver_id, amount, msg)
+            .await
     }
 
     pub async fn collateral_asset_transfer_call(
@@ -415,39 +325,19 @@ impl TestController {
         amount: u128,
         msg: &str,
     ) -> ExecutionSuccess {
-        if let TestAsset::Nep141(ref collateral_asset) = self.collateral_asset {
-            self.asset_transfer_call(collateral_asset.id(), sender, receiver_id, amount, msg)
-                .await
-        } else {
-            panic!("Cannot perform an ft_transfer_call with a native asset");
-        }
-    }
-
-    pub async fn repay_native(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
-        borrow_user
-            .call(self.contract.id(), "repay_native")
-            .args_json(json!({}))
-            .deposit(NearToken::from_yoctonear(amount))
-            .transact()
+        self.asset_transfer_call(self.collateral_asset.id(), sender, receiver_id, amount, msg)
             .await
-            .unwrap()
-            .unwrap()
     }
 
     pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         eprintln!("{} repaying {amount} tokens...", borrow_user.id());
-        match self.borrow_asset {
-            TestAsset::Native => self.repay_native(borrow_user, amount).await,
-            TestAsset::Nep141(_) => {
-                self.borrow_asset_transfer_call(
-                    borrow_user,
-                    self.contract.id(),
-                    amount,
-                    &serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
-                )
-                .await
-            }
-        }
+        self.borrow_asset_transfer_call(
+            borrow_user,
+            self.contract.id(),
+            amount,
+            &serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
+        )
+        .await
     }
 
     pub async fn apply_interest(&self, borrow_user: &Account) -> ExecutionSuccess {
@@ -599,24 +489,6 @@ impl TestController {
             .unwrap();
     }
 
-    pub async fn liquidate_native(
-        &self,
-        liquidator_user: &Account,
-        account_id: &AccountId,
-        borrow_asset_amount: u128,
-    ) {
-        liquidator_user
-            .call(self.contract.id(), "liquidate_native")
-            .args_json(json!({
-                "account_id": account_id,
-            }))
-            .deposit(NearToken::from_yoctonear(borrow_asset_amount))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
     pub async fn liquidate(
         &self,
         liquidator_user: &Account,
@@ -629,24 +501,16 @@ impl TestController {
             account_id,
             borrow_asset_amount,
         );
-        match self.borrow_asset {
-            TestAsset::Native => {
-                self.liquidate_native(liquidator_user, account_id, borrow_asset_amount)
-                    .await
-            }
-            TestAsset::Nep141(_) => {
-                self.borrow_asset_transfer_call(
-                    liquidator_user,
-                    self.contract.id(),
-                    borrow_asset_amount,
-                    &serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
-                        account_id: account_id.clone(),
-                    }))
-                    .unwrap(),
-                )
-                .await;
-            }
-        }
+        self.borrow_asset_transfer_call(
+            liquidator_user,
+            self.contract.id(),
+            borrow_asset_amount,
+            &serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
+                account_id: account_id.clone(),
+            }))
+            .unwrap(),
+        )
+        .await;
     }
 
     pub async fn mint_asset(&self, ft_id: &AccountId, receiver: &Account, amount: u128) {
@@ -663,17 +527,13 @@ impl TestController {
     }
 
     pub async fn mint_collateral_asset(&self, receiver: &Account, amount: u128) {
-        match &self.collateral_asset {
-            TestAsset::Nep141(contract) => self.mint_asset(contract.id(), receiver, amount).await,
-            TestAsset::Native => todo!(),
-        }
+        self.mint_asset(self.collateral_asset.id(), receiver, amount)
+            .await;
     }
 
     pub async fn mint_borrow_asset(&self, receiver: &Account, amount: u128) {
-        match &self.borrow_asset {
-            TestAsset::Nep141(contract) => self.mint_asset(contract.id(), receiver, amount).await,
-            TestAsset::Native => todo!(),
-        }
+        self.mint_asset(self.borrow_asset.id(), receiver, amount)
+            .await;
     }
 
     pub async fn get_last_interest_rate(&self) -> Decimal {
@@ -917,17 +777,6 @@ pub async fn setup_everything(
         deploy_ft(borrow_asset, "Borrow Asset", "BORROW"),
         deploy_ft(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
-
-    let collateral_asset = config
-        .collateral_asset
-        .clone()
-        .into_nep141()
-        .map_or(TestAsset::Native, |_| TestAsset::Nep141(collateral_asset));
-    let borrow_asset = config
-        .borrow_asset
-        .clone()
-        .into_nep141()
-        .map_or(TestAsset::Native, |_| TestAsset::Nep141(borrow_asset));
 
     let c = TestController {
         worker,
