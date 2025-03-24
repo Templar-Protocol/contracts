@@ -74,3 +74,11 @@ pub enum Nep141MarketDepositMessage {
 pub struct LiquidateMsg {
     pub account_id: AccountId,
 }
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json, borsh])]
+pub struct WithdrawalResolution {
+    pub account_id: AccountId,
+    pub amount_to_account: BorrowAssetAmount,
+    pub amount_to_fees: BorrowAssetAmount,
+}

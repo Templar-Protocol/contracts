@@ -71,8 +71,8 @@ async fn successful_liquidation_good_debt_under_mcr(
         ..
     } = setup_everything(|config| {
         config.borrow_origination_fee = Fee::zero();
-        config.minimum_collateral_ratio_per_borrow = Decimal::from(mcr) / 100u32;
-        config.minimum_initial_collateral_ratio = Decimal::from(mcr) / 100u32;
+        config.borrow_mcr = Decimal::from(mcr) / 100u32;
+        config.borrow_mcr_initial = Decimal::from(mcr) / 100u32;
     })
     .await;
 
@@ -111,17 +111,17 @@ async fn successful_liquidation_good_debt_under_mcr(
             c.harvest_yield(&supply_user, false).await;
             let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
             assert_eq!(
-                supply_position.borrow_asset_yield.get_total().as_u128(),
+                supply_position.borrow_asset_yield.get_total().to_u128(),
                 yield_amount * 8 / 10,
             );
         },
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert_eq!(protocol_yield.borrow_asset.as_u128(), yield_amount / 10);
+            assert_eq!(protocol_yield.borrow_asset.to_u128(), yield_amount / 10);
         },
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(insurance_yield.borrow_asset.as_u128(), yield_amount / 10);
+            assert_eq!(insurance_yield.borrow_asset.to_u128(), yield_amount / 10);
         },
     );
 }
@@ -140,7 +140,7 @@ async fn successful_liquidation_with_spread(
 ) {
     assert!(spread_pct <= maximum_spread_pct);
 
-    let maximum_liquidator_spread: Decimal = Decimal::from(maximum_spread_pct) / 100u32;
+    let liquidation_maximum_spread: Decimal = Decimal::from(maximum_spread_pct) / 100u32;
     let target_spread: Decimal = Decimal::from(spread_pct) / 100u32;
     let mcr: Decimal = Decimal::from(mcr) / 100u32;
 
@@ -151,8 +151,8 @@ async fn successful_liquidation_with_spread(
         borrow_user,
         ..
     } = setup_everything(|config| {
-        config.minimum_collateral_ratio_per_borrow = mcr;
-        config.maximum_liquidator_spread = maximum_liquidator_spread;
+        config.borrow_mcr = mcr;
+        config.liquidation_maximum_spread = liquidation_maximum_spread;
     })
     .await;
 
@@ -225,8 +225,8 @@ async fn fail_liquidation_too_little_attached() {
 
     // ensure borrow position remains unchanged
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(borrow_position.get_borrow_asset_principal().as_u128(), 300);
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 500);
+    assert_eq!(borrow_position.get_borrow_asset_principal().to_u128(), 300);
+    assert_eq!(borrow_position.collateral_asset_deposit.to_u128(), 500);
 }
 
 #[tokio::test]
@@ -262,6 +262,6 @@ async fn fail_liquidation_healthy_borrow() {
 
     // ensure borrow position remains unchanged
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(borrow_position.get_borrow_asset_principal().as_u128(), 300);
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 500);
+    assert_eq!(borrow_position.get_borrow_asset_principal().to_u128(), 300);
+    assert_eq!(borrow_position.collateral_asset_deposit.to_u128(), 500);
 }

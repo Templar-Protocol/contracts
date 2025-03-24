@@ -5,6 +5,7 @@ use templar_common::{
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
+    snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -16,6 +17,16 @@ use crate::{Contract, ContractExt};
 impl MarketExternalInterface for Contract {
     fn get_configuration(&self) -> MarketConfiguration {
         self.configuration.clone()
+    }
+
+    fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
+        self.snapshots
+            .iter()
+            .skip(offset)
+            .take(count)
+            .collect::<Vec<_>>()
     }
 
     fn get_borrow_asset_metrics(
@@ -76,11 +87,11 @@ impl MarketExternalInterface for Contract {
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
         require!(
-            amount >= self.configuration.minimum_borrow_amount,
+            amount >= self.configuration.borrow_minimum_amount,
             "Borrow amount is smaller than minimum allowed",
         );
         require!(
-            amount <= self.configuration.maximum_borrow_amount,
+            amount <= self.configuration.borrow_maximum_amount,
             "Borrow amount is greater than maximum allowed",
         );
 
@@ -179,7 +190,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
-        let Some((account_id, amount)) = self
+        let Some(withdrawal_resolution) = self
             .try_lock_next_withdrawal_request()
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
         else {
@@ -190,10 +201,13 @@ impl MarketExternalInterface for Contract {
         PromiseOrValue::Promise(
             self.configuration
                 .borrow_asset
-                .transfer(account_id.clone(), amount)
+                .transfer(
+                    withdrawal_resolution.account_id.clone(),
+                    withdrawal_resolution.amount_to_account,
+                )
                 .then(
                     Self::ext(env::current_account_id())
-                        .after_execute_next_withdrawal(account_id.clone(), amount),
+                        .after_execute_next_withdrawal(withdrawal_resolution),
                 ),
         )
     }
@@ -217,7 +231,7 @@ impl MarketExternalInterface for Contract {
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
                 supply_position.record_yield_withdrawal(total_yield);
-                supply_position.record_deposit(proof, total_yield);
+                supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
             }
         }
     }
@@ -225,11 +239,11 @@ impl MarketExternalInterface for Contract {
     fn get_last_yield_rate(&self) -> Decimal {
         let last_snapshot = self.get_last_snapshot();
         let last_interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
-        let borrowed = Decimal::from(last_snapshot.borrowed.as_u128());
-        let deposited = Decimal::from(last_snapshot.deposited.as_u128());
+        let deposited = last_snapshot.deposited.to_decimal();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
+        let borrowed = last_snapshot.borrowed.to_decimal();
         let supply_weight = Decimal::from(self.configuration.yield_weights.supply.get());
         let total_weight = Decimal::from(self.configuration.yield_weights.total_weight().get());
 
@@ -326,82 +340,5 @@ impl MarketExternalInterface for Contract {
             (Some(p), _) | (_, Some(p)) => p,
             _ => env::panic_str("No yield to withdraw"),
         } // TODO: Check for success
-    }
-
-    #[payable]
-    fn supply_native(&mut self) {
-        require!(
-            self.configuration.borrow_asset.is_native(),
-            "Unsupported borrow asset",
-        );
-
-        let amount = BorrowAssetAmount::from(env::attached_deposit().as_yoctonear());
-
-        require!(!amount.is_zero(), "Deposit must be nonzero");
-
-        self.execute_supply(env::predecessor_account_id(), amount);
-    }
-
-    #[payable]
-    fn collateralize_native(&mut self) {
-        require!(
-            self.configuration.collateral_asset.is_native(),
-            "Unsupported collateral asset",
-        );
-
-        let amount = CollateralAssetAmount::from(env::attached_deposit().as_yoctonear());
-
-        require!(!amount.is_zero(), "Deposit must be nonzero");
-
-        self.execute_collateralize(env::predecessor_account_id(), amount);
-    }
-
-    #[payable]
-    fn repay_native(&mut self) -> PromiseOrValue<()> {
-        require!(
-            self.configuration.borrow_asset.is_native(),
-            "Unsupported borrow asset",
-        );
-
-        let amount = BorrowAssetAmount::from(env::attached_deposit().as_yoctonear());
-
-        require!(!amount.is_zero(), "Deposit must be nonzero");
-
-        let predecessor = env::predecessor_account_id();
-
-        let refund = self.execute_repay(predecessor.clone(), amount);
-
-        if refund.is_zero() {
-            PromiseOrValue::Value(())
-        } else {
-            PromiseOrValue::Promise(
-                self.configuration
-                    .borrow_asset
-                    .transfer(predecessor, amount),
-            )
-        }
-    }
-
-    #[payable]
-    fn liquidate_native(&mut self, account_id: AccountId) -> Promise {
-        require!(
-            self.configuration.borrow_asset.is_native(),
-            "Unsupported borrow asset",
-        );
-
-        let amount = BorrowAssetAmount::from(env::attached_deposit().as_yoctonear());
-
-        require!(!amount.is_zero(), "Deposit must be nonzero");
-
-        self.configuration
-            .balance_oracle
-            .retrieve_price_pair()
-            .then(
-                Self::ext(env::current_account_id()).liquidate_native_01_consume_price(
-                    env::predecessor_account_id(),
-                    account_id,
-                    amount,
-                ),
-            )
     }
 }

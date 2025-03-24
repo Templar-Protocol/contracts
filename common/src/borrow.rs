@@ -11,6 +11,7 @@ use crate::{
     event::MarketEvent,
     market::{Market, PricePair},
     number::Decimal,
+    snapshot::Snapshot,
     MS_IN_A_YEAR,
 };
 
@@ -68,7 +69,7 @@ impl BorrowPosition {
             collateral_asset_deposit: 0.into(),
             borrow_asset_principal: 0.into(),
             // Start from current (not next) snapshot to avoid the possibility
-            // of borrowing "for free". e.g. if ChainTime units are epochs (12
+            // of borrowing "for free". e.g. if TimeChunk units are epochs (12
             // hours), this prevents someone from getting 11 hours of free
             // borrowing if they create the borrow 1 hour into the epoch.
             borrow_asset_fees: Accumulator::new(current_snapshot_index),
@@ -219,14 +220,13 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
         let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
         let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
         let interest_rate_part = interest_rate * duration_ms / ms_in_a_year;
-        let interest = interest_rate_part
-            * Decimal::from(self.position.get_borrow_asset_principal().as_u128());
+        let interest = interest_rate_part * self.position.get_borrow_asset_principal().to_decimal();
 
         interest.to_u128_ceil().unwrap().into()
     }
 
     pub(crate) fn calculate_interest(&self, limit: u32) -> AccumulationRecord<BorrowAsset> {
-        let principal = Decimal::from(self.position.get_borrow_asset_principal().as_u128());
+        let principal = self.position.get_borrow_asset_principal().to_decimal();
         let mut next_snapshot_index = self.position.borrow_asset_fees.get_next_snapshot_index();
 
         let mut accumulated = Decimal::ZERO;
@@ -241,7 +241,7 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
             .enumerate()
             .skip(next_snapshot_index as usize)
             .take(limit as usize)
-            .map(|(i, s)| (i as u32, s))
+            .map(|(i, s): (usize, &Snapshot)| (i as u32, s))
             .peekable();
 
         let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
@@ -255,15 +255,12 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
                 break;
             };
 
-            let total_borrowed = Decimal::from(snapshot.borrowed.as_u128());
-            let total_deposited = Decimal::from(snapshot.deposited.as_u128());
-            let utilization_ratio = total_borrowed / total_deposited;
-            let interest_rate_per_year = self
+            let interest_rate_per_year: Decimal = self
                 .market
                 .borrow()
                 .configuration
                 .borrow_interest_rate_strategy
-                .at(utilization_ratio);
+                .at(snapshot.usage_ratio());
             let duration_ms: Decimal = end_timestamp_ms
                 .checked_sub(snapshot.timestamp_ms.0)
                 .unwrap_or_else(|| {
@@ -487,11 +484,13 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
 
         let accumulation_record = self.calculate_interest(u32::MAX);
 
-        MarketEvent::InterestAccumulated {
-            account_id: self.account_id.clone(),
-            borrow_asset_amount: accumulation_record.amount,
+        if !accumulation_record.amount.is_zero() {
+            MarketEvent::InterestAccumulated {
+                account_id: self.account_id.clone(),
+                borrow_asset_amount: accumulation_record.amount,
+            }
+            .emit();
         }
-        .emit();
 
         self.position
             .borrow_asset_fees

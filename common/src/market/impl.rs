@@ -1,14 +1,12 @@
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
-    env, near,
-    store::Vector,
-    AccountId, BorshStorageKey, IntoStorageKey,
+    env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
 use crate::{
     asset::BorrowAssetAmount,
     borrow::{BorrowPosition, LinkedBorrowPosition, LinkedBorrowPositionMut},
-    chain_time::ChainTime,
+    chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
     market::MarketConfiguration,
     number::Decimal,
@@ -17,6 +15,8 @@ use crate::{
     supply::{LinkedSupplyPosition, LinkedSupplyPositionMut, SupplyPosition},
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
+
+use super::WithdrawalResolution;
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -37,7 +37,7 @@ pub struct Market {
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub snapshots: Vector<Snapshot>,
+    pub snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -66,7 +66,7 @@ impl Market {
             borrow_asset_borrowed: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            snapshots: Vector::new(key!(Snapshots)),
+            snapshots: ChunkedAppendOnlyList::new(key!(Snapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         };
@@ -89,18 +89,18 @@ impl Market {
     }
 
     fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
-        let chain_time = ChainTime::now();
+        let time_chunk = self.configuration.time_chunk_configuration.now();
 
         if let Some((last_index, old_snapshot)) =
             self.snapshots.len().checked_sub(1).and_then(|last_index| {
                 self.snapshots
                     .get(last_index)
-                    .filter(|s| s.chain_time == chain_time)
+                    .filter(|s| s.time_chunk == time_chunk)
                     .map(|s| (last_index, s))
             })
         {
             let new_snapshot = Snapshot {
-                chain_time,
+                time_chunk,
                 timestamp_ms: old_snapshot.timestamp_ms,
                 deposited: self.borrow_asset_deposited,
                 borrowed: self.borrow_asset_borrowed,
@@ -110,12 +110,12 @@ impl Market {
                     y
                 },
             };
-            self.snapshots.replace(last_index, new_snapshot);
+            self.snapshots.replace_last(new_snapshot);
             last_index
         } else {
             let index = self.snapshots.len();
             let new_snapshot = Snapshot {
-                chain_time,
+                time_chunk,
                 timestamp_ms: env::block_timestamp_ms().into(),
                 deposited: self.borrow_asset_deposited,
                 borrowed: self.borrow_asset_borrowed,
@@ -142,29 +142,22 @@ impl Market {
     ) -> BorrowAssetAmount {
         // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
         #[allow(clippy::unwrap_used)]
-        let must_retain = ((1u32 - self.configuration.maximum_borrow_asset_usage_ratio)
-            * self.borrow_asset_deposited.as_u128())
+        let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
+            * self.borrow_asset_deposited.to_decimal())
         .to_u128_ceil()
         .unwrap();
 
         let known_available = current_contract_balance
-            .as_u128()
-            .saturating_sub(self.borrow_asset_in_flight.as_u128());
+            .to_u128()
+            .saturating_sub(self.borrow_asset_in_flight.to_u128());
 
         known_available.saturating_sub(must_retain).into()
     }
 
     pub fn get_interest_rate_for_snapshot(&self, snapshot: &Snapshot) -> Decimal {
-        let borrowed: Decimal = snapshot.borrowed.as_u128().into();
-        let deposited: Decimal = snapshot.deposited.as_u128().into();
-        let usage_ratio = if deposited.is_zero() {
-            Decimal::ZERO
-        } else {
-            borrowed / deposited
-        };
         self.configuration
             .borrow_interest_rate_strategy
-            .at(usage_ratio)
+            .at(snapshot.usage_ratio())
     }
 
     pub fn iter_supply_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
@@ -240,7 +233,7 @@ impl Market {
     /// - If the withdrawal queue is empty.
     pub fn try_lock_next_withdrawal_request(
         &mut self,
-    ) -> Result<Option<(AccountId, BorrowAssetAmount)>, WithdrawalQueueLockError> {
+    ) -> Result<Option<WithdrawalResolution>, WithdrawalQueueLockError> {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
         let Some((amount, mut supply_position)) = self
@@ -267,12 +260,25 @@ impl Market {
         };
 
         let proof = supply_position.accumulate_yield();
-        supply_position.record_withdrawal(proof, amount);
+        let resolution =
+            supply_position.record_withdrawal(proof, amount, env::block_timestamp_ms());
 
-        Ok(Some((account_id, amount)))
+        Ok(Some(resolution))
     }
 
-    pub(crate) fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+    pub fn record_borrow_asset_protocol_yield(&mut self, amount: BorrowAssetAmount) {
+        let mut yield_record = self
+            .static_yield
+            .get(&self.configuration.protocol_account_id)
+            .unwrap_or_default();
+
+        yield_record.borrow_asset.join(amount);
+
+        self.static_yield
+            .insert(&self.configuration.protocol_account_id, &yield_record);
+    }
+
+    pub fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
         // Sanity.
         if amount.is_zero() {
             return;
@@ -286,7 +292,7 @@ impl Market {
         // First, static yield.
 
         let total_weight = u128::from(u16::from(self.configuration.yield_weights.total_weight()));
-        let total_amount = amount.as_u128();
+        let total_amount = amount.to_u128();
         if total_weight != 0 {
             for (account_id, share) in &self.configuration.yield_weights.r#static {
                 #[allow(clippy::unwrap_used)]

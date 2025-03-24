@@ -94,7 +94,7 @@ impl<'de> Deserialize<'de> for Decimal {
 }
 
 impl Decimal {
-    /// When converting to & from strings, we don't guarantee accurate
+    /// When converting to and from strings, we do not guarantee accurate
     /// representation of bits lower than this.
     const REPR_EPSILON: U512 = U512([0b1000, 0, 0, 0, 0, 0, 0, 0]);
 
@@ -102,17 +102,9 @@ impl Decimal {
     pub const ONE_HALF: Self = Self {
         repr: U512([0, 0x8000_0000_0000_0000, 0, 0, 0, 0, 0, 0]),
     };
+    #[rustfmt::skip]
     pub const LN2: Self = Self {
-        repr: U512([
-            0xC9E3_B398_03F2_F6B0,
-            0xB172_17F7_D1CF_79AB,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ]),
+        repr: U512([0xC9E3_B398_03F2_F6B0, 0xB172_17F7_D1CF_79AB, 0, 0, 0, 0, 0, 0]),
     };
     pub const ONE: Self = Self {
         repr: U512([0, 0, 1, 0, 0, 0, 0, 0]),
@@ -120,17 +112,12 @@ impl Decimal {
     pub const TWO: Self = Self {
         repr: U512([0, 0, 2, 0, 0, 0, 0, 0]),
     };
+    #[rustfmt::skip]
     pub const E: Self = Self {
-        repr: U512([
-            0xBF71_5880_9CF4_F3C9,
-            0xB7E1_5162_8AED_2A6A,
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ]),
+        repr: U512([0xBF71_5880_9CF4_F3C9, 0xB7E1_5162_8AED_2A6A, 2, 0, 0, 0, 0, 0]),
+    };
+    pub const TEN: Self = Self {
+        repr: U512([0, 0, 10, 0, 0, 0, 0, 0]),
     };
 
     pub fn as_repr(self) -> [u64; 8] {
@@ -151,7 +138,7 @@ impl Decimal {
             return Self::ONE;
         }
 
-        let to_reciprocal = if exponent < 0 {
+        let exponent_is_negative = if exponent < 0 {
             exponent = -exponent;
             true
         } else {
@@ -171,7 +158,7 @@ impl Decimal {
 
         let result = x * y;
 
-        if to_reciprocal {
+        if exponent_is_negative {
             Decimal::ONE / result
         } else {
             result
@@ -261,29 +248,40 @@ impl Decimal {
 
     pub fn to_fixed(&self, precision: usize) -> String {
         let precision = precision.min(MAX_DECIMAL_PRECISION);
-        let fractional_part = self.fractional_part_to_dec_string(precision);
+        let (fractional_part, overflow) = self.fractional_part_to_dec_string(precision, false);
         let fractional_part_trimmed = fractional_part.trim_end_matches('0');
-        if fractional_part_trimmed.is_empty() {
-            format!("{}", self.repr >> FRACTIONAL_BITS)
+        let repr = if overflow {
+            self.repr.saturating_add(Self::ONE.repr)
         } else {
-            format!("{}.{fractional_part_trimmed}", self.repr >> FRACTIONAL_BITS)
+            self.repr
+        };
+        if fractional_part_trimmed.is_empty() {
+            format!("{}", repr >> FRACTIONAL_BITS)
+        } else {
+            format!("{}.{fractional_part_trimmed}", repr >> FRACTIONAL_BITS)
         }
     }
 
     fn fractional_part(&self) -> U512 {
-        U512::from(self.repr.low_u128())
+        U512([self.repr.0[0], self.repr.0[1], 0, 0, 0, 0, 0, 0])
     }
 
     fn epsilon_round(repr: U512) -> U512 {
         (repr + (Self::REPR_EPSILON >> 1)) & !(Self::REPR_EPSILON - 1)
     }
 
-    fn fractional_part_to_dec_string(&self, precision: usize) -> String {
+    #[allow(clippy::cast_possible_truncation)]
+    fn fractional_part_to_dec_string(&self, precision: usize, round_up: bool) -> (String, bool) {
         let mut s = Vec::with_capacity(precision);
         let mut f = self.fractional_part();
-        let d = Self::ONE.repr;
+        let mut overflow = false;
 
-        #[allow(clippy::cast_possible_truncation)]
+        if round_up {
+            let plus_two = f.saturating_add(2.into());
+            overflow = plus_two.0[2] != 0;
+            f = U512([plus_two.0[0], plus_two.0[1], 0, 0, 0, 0, 0, 0]);
+        }
+
         for _ in 0..precision {
             if f.is_zero() {
                 break;
@@ -291,13 +289,18 @@ impl Decimal {
 
             f *= 10;
 
-            let digit = (f / d).low_u64();
+            let digit = (f / Self::ONE.repr).low_u64();
             s.push(digit as u8 + b'0');
 
-            f %= d;
+            f %= Self::ONE.repr;
         }
 
-        unsafe { String::from_utf8_unchecked(s) }
+        if !round_up && !f.is_zero() && (U512::MAX - 2 >= self.repr) {
+            return self.fractional_part_to_dec_string(precision, true);
+        }
+
+        // Safety: all digits are guaranteed to be in range 0x30..=0x39
+        (unsafe { String::from_utf8_unchecked(s) }, overflow)
     }
 }
 
@@ -343,7 +346,7 @@ impl FromStr for Decimal {
             }
 
             Ok(Self {
-                repr: (whole + Decimal::epsilon_round(f >> FRACTIONAL_BITS)),
+                repr: whole.saturating_add(Decimal::epsilon_round(f >> FRACTIONAL_BITS)),
             })
         } else {
             Ok(Self { repr: whole })
@@ -687,14 +690,19 @@ mod tests {
     #[test]
     fn from_self_string_serialization_precision() {
         const ITERATIONS: usize = 1_024;
-        const TRANSFORMATIONS: usize = 32;
+        const TRANSFORMATIONS: usize = 16;
 
         let mut rng = rand::thread_rng();
 
         let mut max_error = U512::zero();
+        let mut error_distribution = [0u32; 16];
+        let mut value_with_max_error = Decimal::ZERO;
 
+        #[allow(clippy::cast_possible_truncation)]
         for _ in 0..ITERATIONS {
-            let actual = Decimal::from(rng.gen::<u128>()) / Decimal::from(rng.gen::<u128>());
+            let actual = Decimal {
+                repr: U512(rng.gen()),
+            };
 
             let mut s = actual.to_fixed(MAX_DECIMAL_PRECISION);
             for _ in 0..(TRANSFORMATIONS - 1) {
@@ -708,17 +716,24 @@ mod tests {
 
             if e > max_error {
                 max_error = e;
+                value_with_max_error = actual;
             }
 
-            assert!(
-                e <= Decimal::REPR_EPSILON,
-                "Stringification error of repr {:?} is repr {:?}",
-                actual.repr.0,
-                e.0,
-            );
+            error_distribution[e.0[0] as usize] += 1;
         }
 
+        println!("Error distribution:");
+        for (i, x) in error_distribution.iter().enumerate() {
+            println!("\t{i}: {x:b}");
+        }
         println!("Max error: {:?}", max_error.0);
+
+        assert!(
+            max_error <= Decimal::REPR_EPSILON,
+            "Stringification error of repr {:?} is repr {:?}",
+            value_with_max_error.repr.0,
+            max_error.0,
+        );
     }
 
     #[test]
@@ -743,6 +758,62 @@ mod tests {
 
         for _ in 0..ITERATIONS {
             t(rng.gen::<f64>() * rng.gen::<u128>() as f64);
+        }
+    }
+
+    #[test]
+    fn round_up_repr() {
+        let cases = [
+            Decimal {
+                #[rustfmt::skip]
+                repr: U512([ 0x0966_4E4C_9169_501F, 0xB226_2812_5CF2_3CD0, 1, 0, 0, 0, 0, 0 ]),
+            },
+            Decimal {
+                repr: U512([u64::MAX, u64::MAX, 1, 0, 0, 0, 0, 0]),
+                // 1.99999999999999999999999999999999999999706126412294428123007815865694438580...
+            },
+            Decimal {
+                repr: U512([u64::MAX - 1, u64::MAX, 1, 0, 0, 0, 0, 0]),
+            },
+            Decimal { repr: U512::MAX },
+            Decimal {
+                repr: U512::MAX.saturating_sub(U512::one()),
+            },
+            Decimal { repr: U512::zero() },
+        ];
+
+        for case in cases {
+            let p: Decimal = case.to_fixed(MAX_DECIMAL_PRECISION).parse().unwrap();
+
+            eprintln!("{:x?}", case.repr.0);
+            eprintln!("{:x?}", p.repr.0);
+            eprintln!("|{p:?} - {case:?}| = {:?}", p.abs_diff(case).as_repr());
+
+            assert!(p.near_equal(case));
+        }
+    }
+
+    #[test]
+    fn round_up_str() {
+        // Cases that are (generally) not evenly representable in binary fraction.
+        let cases = [
+            "1",
+            "0",
+            "1.6958947224456518",
+            "2.79",
+            "0.6",
+            "10.6",
+            "0.01",
+            "0.599999999999999999999999999999999999",
+        ];
+        for case in cases {
+            println!("Testing {case}...");
+            let n = Decimal::from_str(case).unwrap();
+            let s = n.to_fixed(MAX_DECIMAL_PRECISION);
+            let parsed = Decimal::from_str(&s).unwrap();
+            assert_eq!(n, parsed);
+            println!("{n:?}");
+            println!();
         }
     }
 }

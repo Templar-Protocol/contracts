@@ -31,7 +31,7 @@ async fn compounding_yield(
 
     c.borrow(&borrow_user, principal).await;
 
-    println!("Sleeping...");
+    eprintln!("Sleeping...");
     let mut iters = 0;
     let done = std::sync::atomic::AtomicBool::new(false);
     tokio::join!(
@@ -46,7 +46,7 @@ async fn compounding_yield(
                 let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
                 c.repay(
                     &borrow_user,
-                    position.get_total_borrow_asset_liability().as_u128() * 120 / 100,
+                    position.get_total_borrow_asset_liability().to_u128() * 120 / 100,
                 )
                 .await;
                 c.borrow(&borrow_user, principal).await;
@@ -57,7 +57,7 @@ async fn compounding_yield(
             done.store(true, Ordering::Relaxed);
         }
     );
-    println!("Done sleeping!");
+    eprintln!("Done sleeping!");
 
     c.harvest_yield(&supply_user, false).await;
 
@@ -66,30 +66,30 @@ async fn compounding_yield(
         async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
     );
 
-    let supply_yield_1 = supply_position_1_after.get_borrow_asset_deposit().as_u128()
+    let supply_yield_1 = supply_position_1_after.get_borrow_asset_deposit().to_u128()
         + supply_position_1_after
             .borrow_asset_yield
             .get_total()
-            .as_u128()
+            .to_u128()
         + supply_position_1_after
             .borrow_asset_yield
             .pending_estimate
-            .as_u128()
+            .to_u128()
         - principal * 5;
-    let supply_yield_2 = supply_position_2_after.get_borrow_asset_deposit().as_u128()
+    let supply_yield_2 = supply_position_2_after.get_borrow_asset_deposit().to_u128()
         + supply_position_2_after
             .borrow_asset_yield
             .get_total()
-            .as_u128()
+            .to_u128()
         + supply_position_2_after
             .borrow_asset_yield
             .pending_estimate
-            .as_u128()
+            .to_u128()
         - principal * 5;
 
-    println!("supply 1 yield: {supply_yield_1:#?}");
-    println!("supply 2 yield: {supply_yield_2:#?}");
-    println!("iterations: {iters}");
+    eprintln!("supply 1 yield: {supply_yield_1:#?}");
+    eprintln!("supply 2 yield: {supply_yield_2:#?}");
+    eprintln!("iterations: {iters}");
 
     if compounding {
         // Supply user 2 will be rounded DOWN each iteration.

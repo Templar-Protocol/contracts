@@ -5,8 +5,8 @@ use near_sdk::{
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     market::PricePair,
+    market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
-    snapshot::Snapshot,
 };
 
 use crate::{Contract, ContractExt};
@@ -14,9 +14,16 @@ use crate::{Contract, ContractExt};
 /// Internal helpers.
 impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+        let supply_maximum_amount = self.configuration.supply_maximum_amount;
         let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
         let proof = supply_position.accumulate_yield();
-        supply_position.record_deposit(proof, amount);
+        supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
+        if let Some(ref supply_maximum_amount) = supply_maximum_amount {
+            require!(
+                supply_position.inner().get_borrow_asset_deposit() <= *supply_maximum_amount,
+                "New supply position cannot exceed configured supply maximum",
+            );
+        }
     }
 
     pub fn execute_collateralize(&mut self, account_id: AccountId, amount: CollateralAssetAmount) {
@@ -116,16 +123,6 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.snapshots
-            .iter()
-            .skip(offset)
-            .take(count)
-            .collect::<Vec<_>>()
-    }
-
     #[private]
     pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
         value
@@ -240,7 +237,7 @@ impl Contract {
     }
 
     #[private]
-    pub fn after_execute_next_withdrawal(&mut self, account: AccountId, amount: BorrowAssetAmount) {
+    pub fn after_execute_next_withdrawal(&mut self, withdrawal_resolution: WithdrawalResolution) {
         // TODO: Is this check even necessary in a #[private] function?
         require!(env::promise_results_count() == 1);
 
@@ -259,9 +256,11 @@ impl Contract {
                 // head of the queue cannot change while transfers are
                 // in-flight. This should be maintained by the queue itself.
                 require!(
-                    popped_account == account,
+                    popped_account == withdrawal_resolution.account_id,
                     "Invariant violation: Queue shifted while locked/in-flight.",
                 );
+
+                self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
             }
             PromiseResult::Failed => {
                 // Withdrawal failed: unlock the queue so they can try again.
@@ -273,9 +272,13 @@ impl Contract {
 
                 env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
                 self.withdrawal_queue.unlock();
-                if let Some(mut supply_position) = self.get_linked_supply_position_mut(account) {
+                if let Some(mut supply_position) =
+                    self.get_linked_supply_position_mut(withdrawal_resolution.account_id.clone())
+                {
                     let proof = supply_position.accumulate_yield();
-                    supply_position.record_deposit(proof, amount);
+                    let mut amount = withdrawal_resolution.amount_to_account;
+                    amount.join(withdrawal_resolution.amount_to_fees);
+                    supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
                 }
             }
         }
@@ -327,64 +330,6 @@ impl Contract {
             self.execute_liquidate_final(liquidator_id, account_id, borrow_asset_amount, success);
 
         refund_to_liquidator.into()
-    }
-
-    #[private]
-    pub fn liquidate_native_01_consume_price(
-        &mut self,
-        liquidator_id: AccountId,
-        account_id: AccountId,
-        amount: BorrowAssetAmount,
-        #[callback_unwrap] oracle_response: OracleResponse,
-    ) -> Promise {
-        let price_pair = self
-            .configuration
-            .balance_oracle
-            .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-        let liquidated_collateral =
-            self.execute_liquidate_initial(account_id.clone(), amount, &price_pair);
-
-        self.configuration
-            .collateral_asset
-            .transfer(liquidator_id.clone(), liquidated_collateral)
-            .then(
-                Self::ext(env::current_account_id()).liquidate_native_02_finalize(
-                    liquidator_id,
-                    account_id,
-                    amount,
-                ),
-            )
-    }
-
-    #[private]
-    pub fn liquidate_native_02_finalize(
-        &mut self,
-        liquidator_id: AccountId,
-        account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
-    ) -> PromiseOrValue<()> {
-        require!(env::promise_results_count() == 1);
-
-        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
-
-        let refund_to_liquidator = self.execute_liquidate_final(
-            liquidator_id.clone(),
-            account_id,
-            borrow_asset_amount,
-            success,
-        );
-
-        if refund_to_liquidator.is_zero() {
-            PromiseOrValue::Value(())
-        } else {
-            PromiseOrValue::Promise(
-                self.configuration
-                    .borrow_asset
-                    .transfer(liquidator_id, refund_to_liquidator),
-            )
-        }
     }
 
     #[private]
