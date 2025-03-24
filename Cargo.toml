@@ -28,6 +28,7 @@ unwrap_used = "warn"
 expect_used = "warn"
 large_digit_groups = "warn"
 missing_panics_doc = "allow"
+wildcard_imports = "warn"
 
 [profile.release]
 codegen-units = 1
