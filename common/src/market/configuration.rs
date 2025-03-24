@@ -36,6 +36,7 @@ pub struct MarketConfiguration {
     pub borrow_minimum_amount: BorrowAssetAmount,
     pub borrow_maximum_amount: BorrowAssetAmount,
     pub supply_withdrawal_fee: TimeBasedFee<BorrowAsset>,
+    pub supply_maximum_amount: Option<BorrowAssetAmount>,
     pub yield_weights: YieldWeights,
     pub protocol_account_id: AccountId,
     /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.

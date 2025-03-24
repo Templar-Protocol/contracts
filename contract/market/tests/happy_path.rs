@@ -2,27 +2,14 @@ use rstest::rstest;
 use tokio::join;
 
 use templar_common::{
-    asset::FungibleAsset, borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy,
-    number::Decimal,
+    borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy, number::Decimal,
 };
 use test_utils::*;
 
-#[allow(dead_code)]
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-enum NativeAssetCase {
-    Neither,
-    BorrowAsset,
-    CollateralAsset,
-}
-
 #[rstest]
-#[case(NativeAssetCase::Neither)]
-// TODO: Figure out gas accounting for native asset borrows.
-// #[case(NativeAssetCase::BorrowAsset)]
-// #[case(NativeAssetCase::CollateralAsset)]
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
+async fn test_happy() {
     let SetupEverything {
         c,
         supply_user,
@@ -31,15 +18,6 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         insurance_yield_user,
         ..
     } = setup_everything(|c| {
-        match native_asset_case {
-            NativeAssetCase::Neither => {}
-            NativeAssetCase::BorrowAsset => {
-                c.borrow_asset = FungibleAsset::native();
-            }
-            NativeAssetCase::CollateralAsset => {
-                c.collateral_asset = FungibleAsset::native();
-            }
-        }
         c.borrow_interest_rate_strategy =
             InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
     })
@@ -47,32 +25,14 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
 
     let configuration = c.get_configuration().await;
 
-    match native_asset_case {
-        NativeAssetCase::Neither => {
-            assert_eq!(
-                &configuration.collateral_asset.into_nep141().unwrap(),
-                c.collateral_asset.nep141_id().unwrap(),
-            );
-            assert_eq!(
-                &configuration.borrow_asset.into_nep141().unwrap(),
-                c.borrow_asset.nep141_id().unwrap(),
-            );
-        }
-        NativeAssetCase::BorrowAsset => {
-            assert_eq!(
-                &configuration.collateral_asset.into_nep141().unwrap(),
-                c.collateral_asset.nep141_id().unwrap(),
-            );
-            assert!(&configuration.borrow_asset.is_native());
-        }
-        NativeAssetCase::CollateralAsset => {
-            assert!(&configuration.collateral_asset.is_native());
-            assert_eq!(
-                &configuration.borrow_asset.into_nep141().unwrap(),
-                c.borrow_asset.nep141_id().unwrap(),
-            );
-        }
-    }
+    assert_eq!(
+        &configuration.collateral_asset.into_nep141().unwrap(),
+        c.collateral_asset.id(),
+    );
+    assert_eq!(
+        &configuration.borrow_asset.into_nep141().unwrap(),
+        c.borrow_asset.id(),
+    );
 
     assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
 
@@ -129,7 +89,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     // Step 3: Withdraw some of the borrow asset
     let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
 
-    println!("Price pair: {:#?}", c.get_prices().await);
+    eprintln!("Price pair: {:#?}", c.get_prices().await);
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
     c.borrow(&borrow_user, 1000).await;

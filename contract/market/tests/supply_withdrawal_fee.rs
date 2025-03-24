@@ -24,7 +24,7 @@ async fn supply_withdrawal_fee_flat() {
 
     c.supply(&supply_user, 1000).await;
 
-    println!("Sleeping 10s...");
+    eprintln!("Sleeping 10s...");
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     let supply_user_balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
@@ -77,7 +77,7 @@ async fn supply_withdrawal_fee_expired() {
 
     c.supply(&supply_user, 1000).await;
 
-    println!("Sleeping 10s...");
+    eprintln!("Sleeping 10s...");
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     let supply_user_balance_before = c.borrow_asset_balance_of(supply_user.id()).await;

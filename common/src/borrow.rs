@@ -468,11 +468,13 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
 
         let accumulation_record = self.calculate_interest(u32::MAX);
 
-        MarketEvent::InterestAccumulated {
-            account_id: self.account_id.clone(),
-            borrow_asset_amount: accumulation_record.amount,
+        if !accumulation_record.amount.is_zero() {
+            MarketEvent::InterestAccumulated {
+                account_id: self.account_id.clone(),
+                borrow_asset_amount: accumulation_record.amount,
+            }
+            .emit();
         }
-        .emit();
 
         self.position
             .borrow_asset_fees

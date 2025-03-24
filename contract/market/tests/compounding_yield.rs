@@ -31,7 +31,7 @@ async fn compounding_yield(
 
     c.borrow(&borrow_user, principal).await;
 
-    println!("Sleeping...");
+    eprintln!("Sleeping...");
     let mut iters = 0;
     let done = std::sync::atomic::AtomicBool::new(false);
     tokio::join!(
@@ -57,7 +57,7 @@ async fn compounding_yield(
             done.store(true, Ordering::Relaxed);
         }
     );
-    println!("Done sleeping!");
+    eprintln!("Done sleeping!");
 
     c.harvest_yield(&supply_user, false).await;
 
@@ -75,9 +75,9 @@ async fn compounding_yield(
         + u128::from(supply_position_2_after.borrow_asset_yield.pending_estimate)
         - principal * 5;
 
-    println!("supply 1 yield: {supply_yield_1:#?}");
-    println!("supply 2 yield: {supply_yield_2:#?}");
-    println!("iterations: {iters}");
+    eprintln!("supply 1 yield: {supply_yield_1:#?}");
+    eprintln!("supply 2 yield: {supply_yield_2:#?}");
+    eprintln!("iterations: {iters}");
 
     if compounding {
         // Supply user 2 will be rounded DOWN each iteration.

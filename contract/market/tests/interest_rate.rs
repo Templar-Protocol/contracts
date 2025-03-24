@@ -48,7 +48,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
     let mut iters = 0;
 
     for _ in 0..3 {
-        println!("Sleeping...");
+        eprintln!("Sleeping...");
         let done = std::sync::atomic::AtomicBool::new(false);
         tokio::join!(
             async {
@@ -72,7 +72,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                 done.store(true, Ordering::Relaxed);
             }
         );
-        println!("Done sleeping!");
+        eprintln!("Done sleeping!");
 
         let duration_inner = time_inner.elapsed();
         let (borrow_position_1, borrow_position_2, supply_position_1, supply_position_2) = tokio::join!(
@@ -92,8 +92,8 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         assert_eq!(supply_yield_1, 0);
         assert_eq!(supply_yield_2, 0);
 
-        println!("Borrow position 1: {borrow_position_1:#?}");
-        println!("Borrow position 2: {borrow_position_2:#?}");
+        eprintln!("Borrow position 1: {borrow_position_1:#?}");
+        eprintln!("Borrow position 2: {borrow_position_2:#?}");
 
         let f = principal * strategy.at(dec!("0.2")) / Decimal::from(MS_IN_A_YEAR);
 
@@ -102,14 +102,14 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
         let actual_1 = u128::from(borrow_position_1.borrow_asset_fees.get_total())
             + u128::from(borrow_position_1.borrow_asset_fees.pending_estimate);
-        println!("{approximation_below} <= {actual_1} <= {approximation_above}?");
+        eprintln!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
         assert!(approximation_below <= actual_1);
         assert!(actual_1 <= approximation_above);
 
         let actual_2 = u128::from(borrow_position_2.borrow_asset_fees.get_total())
             + u128::from(borrow_position_2.borrow_asset_fees.pending_estimate);
-        println!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
+        eprintln!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
         assert!(approximation_below <= actual_2);
         assert!(actual_2 <= approximation_above + iters);
@@ -136,10 +136,10 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                         / 100, /* overpayment */
                 )
                 .await;
-            println!("{r:#?}");
-            println!("logs");
+            eprintln!("{r:#?}");
+            eprintln!("logs");
             for log in r.logs() {
-                println!("\t{log}");
+                eprintln!("\t{log}");
             }
             let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
