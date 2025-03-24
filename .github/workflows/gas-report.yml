@@ -20,7 +20,7 @@ jobs:
       - name: Generate gas report
         id: generate
         run: |
-          ./gas_report.sh > gas-report.md
+          ./script/ci/gas-report.sh > gas-report.md
           cat gas-report.md >> $GITHUB_STEP_SUMMARY
 
           echo "comment<<EOF" >> $GITHUB_OUTPUT
