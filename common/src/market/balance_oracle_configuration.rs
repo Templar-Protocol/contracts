@@ -123,11 +123,11 @@ impl<T: AssetClass> Price<T> {
     }
 
     pub fn value_optimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        amount.to_decimal() * self.upper_bound()
+        Decimal::from(amount) * self.upper_bound()
     }
 
     pub fn value_pessimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        amount.to_decimal() * self.lower_bound()
+        Decimal::from(amount) * self.lower_bound()
     }
 }
 

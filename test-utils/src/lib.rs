@@ -571,12 +571,9 @@ impl TestController {
         for (i, snapshot) in snapshots.iter().enumerate() {
             eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
             eprintln!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
-            eprintln!("\t\tDeposited:\t{}", snapshot.deposited.to_u128());
-            eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed.to_u128());
-            eprintln!(
-                "\t\tDistribution:\t{}",
-                snapshot.yield_distribution.to_u128()
-            );
+            eprintln!("\t\tDeposited:\t{}", snapshot.deposited);
+            eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed);
+            eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
         }
     }
 }

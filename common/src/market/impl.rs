@@ -139,14 +139,13 @@ impl Market {
         // Safe because factor is guaranteed to be <=1, so value must still fit in u128.
         #[allow(clippy::unwrap_used)]
         let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
-            * self.borrow_asset_deposited.to_decimal())
+            * Decimal::from(self.borrow_asset_deposited))
         .to_u128_ceil()
         .unwrap();
 
-        self.borrow_asset_deposited
-            .to_u128()
-            .saturating_sub(self.borrow_asset_borrowed.to_u128())
-            .saturating_sub(self.borrow_asset_in_flight.to_u128())
+        u128::from(self.borrow_asset_deposited)
+            .saturating_sub(u128::from(self.borrow_asset_borrowed))
+            .saturating_sub(u128::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
             .into()
     }
@@ -256,7 +255,9 @@ impl Market {
             return Ok(None);
         };
 
-        let resolution = supply_position.record_withdrawal(amount, env::block_timestamp_ms());
+        let proof = supply_position.accumulate_yield();
+        let resolution =
+            supply_position.record_withdrawal(proof, amount, env::block_timestamp_ms());
 
         Ok(Some(resolution))
     }
@@ -287,7 +288,7 @@ impl Market {
         // First, static yield.
 
         let total_weight = u128::from(u16::from(self.configuration.yield_weights.total_weight()));
-        let total_amount = amount.to_u128();
+        let total_amount = u128::from(amount);
         if total_weight != 0 {
             for (account_id, share) in &self.configuration.yield_weights.r#static {
                 #[allow(clippy::unwrap_used)]

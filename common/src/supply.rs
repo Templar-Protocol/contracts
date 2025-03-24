@@ -13,6 +13,11 @@ use crate::{
     number::Decimal,
 };
 
+/// This struct can only be constructed after accumulating yield on a
+/// supply position. This serves as proof that the yield has accrued, so it
+/// is safe to perform certain other operations.
+pub struct YieldAccumulationProof(());
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
@@ -45,9 +50,10 @@ impl SupplyPosition {
         !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_yield.get_total().is_zero()
     }
 
-    /// MUST always be paired with a yield recalculation!
+    /// Yield accumulation MUST be applied before calling this function.
     pub(crate) fn increase_borrow_asset_deposit(
         &mut self,
+        _proof: YieldAccumulationProof,
         amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
     ) -> Option<()> {
@@ -57,9 +63,10 @@ impl SupplyPosition {
         self.borrow_asset_deposit.join(amount)
     }
 
-    /// MUST always be paired with a yield recalculation!
+    /// Yield accumulation MUST be applied before calling this function.
     pub(crate) fn decrease_borrow_asset_deposit(
         &mut self,
+        _proof: YieldAccumulationProof,
         amount: BorrowAssetAmount,
     ) -> Option<BorrowAssetAmount> {
         // No need to reset the timer; it is a permanent indication of the
@@ -102,13 +109,13 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
     }
 
     pub fn calculate_last_snapshot_yield(&self) -> BorrowAssetAmount {
-        let deposit = self.position.get_borrow_asset_deposit().to_decimal();
+        let deposit: Decimal = self.position.get_borrow_asset_deposit().into();
         if deposit.is_zero() {
             return BorrowAssetAmount::zero();
         }
 
         let last_snapshot = self.market.borrow().get_last_snapshot();
-        let total_deposited = last_snapshot.deposited.to_decimal();
+        let total_deposited: Decimal = last_snapshot.deposited.into();
         if total_deposited.is_zero() {
             // divzero safety
             return BorrowAssetAmount::zero();
@@ -130,7 +137,7 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
                 .total_weight()
                 .get(),
         );
-        let total_yield_distribution = last_snapshot.yield_distribution.to_decimal();
+        let total_yield_distribution: Decimal = last_snapshot.yield_distribution.into();
         let estimate_current_snapshot =
             total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
 
@@ -144,7 +151,9 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
 
     pub fn calculate_yield(&self) -> AccumulationRecord<BorrowAsset> {
         let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
-        let amount = self.position.get_borrow_asset_deposit().to_decimal();
+
+        let amount: Decimal = self.position.get_borrow_asset_deposit().into();
+
         let mut accumulated = Decimal::ZERO;
 
         let mut it = self.market.borrow().snapshots.iter();
@@ -153,8 +162,8 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
 
         #[allow(clippy::cast_possible_truncation)]
         for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize) {
-            accumulated +=
-                amount * snapshot.yield_distribution.to_decimal() / snapshot.deposited.to_decimal();
+            accumulated += amount * Decimal::from(snapshot.yield_distribution)
+                / Decimal::from(snapshot.deposited);
 
             // Assume # of snapshots is never >u32::MAX.
             next_snapshot_index = i as u32 + 1;
@@ -201,12 +210,7 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         Self(LinkedSupplyPosition::new(market, account_id, position))
     }
 
-    /// In order for yield calculations to be accurate, this function MUST
-    /// BE CALLED every time a supply position's deposit changes. This
-    /// requirement is largely met by virtue of the fact that
-    /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
-    /// be modified via methods on this type.
-    pub fn accumulate_yield(&mut self) {
+    pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
         self.market.borrow_mut().snapshot();
 
         let accumulation_record = self.calculate_yield();
@@ -222,17 +226,18 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         self.position
             .borrow_asset_yield
             .accumulate(accumulation_record);
+
+        YieldAccumulationProof(())
     }
 
     pub fn record_withdrawal(
         &mut self,
+        proof: YieldAccumulationProof,
         mut amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
     ) -> WithdrawalResolution {
-        self.accumulate_yield();
-
         self.position
-            .decrease_borrow_asset_deposit(amount)
+            .decrease_borrow_asset_deposit(proof, amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
 
         // The only way to withdraw from a position is if it already has a deposit.
@@ -275,11 +280,14 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
         }
     }
 
-    pub fn record_deposit(&mut self, amount: BorrowAssetAmount, block_timestamp_ms: u64) {
-        self.accumulate_yield();
-
+    pub fn record_deposit(
+        &mut self,
+        proof: YieldAccumulationProof,
+        amount: BorrowAssetAmount,
+        block_timestamp_ms: u64,
+    ) {
         self.position
-            .increase_borrow_asset_deposit(amount, block_timestamp_ms)
+            .increase_borrow_asset_deposit(proof, amount, block_timestamp_ms)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
 
         self.market

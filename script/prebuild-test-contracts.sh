@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 
 cd "$ROOT_DIR/mock/oracle"
 cargo near build non-reproducible-wasm 1>&2
@@ -14,4 +14,3 @@ cargo near build non-reproducible-wasm 1>&2
 
 cd "$ROOT_DIR"
 export TEST_CONTRACTS_PREBUILT=1
-cargo run --package templar-market-contract --example gas_report

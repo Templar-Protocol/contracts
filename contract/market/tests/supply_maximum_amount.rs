@@ -22,7 +22,7 @@ async fn supply_within_maximum(
     }
 
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-    assert_eq!(supply_position.get_borrow_asset_deposit().to_u128(), sum);
+    assert_eq!(u128::from(supply_position.get_borrow_asset_deposit()), sum);
 }
 
 #[rstest]
