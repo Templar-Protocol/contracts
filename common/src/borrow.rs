@@ -1,7 +1,4 @@
-use std::{
-    borrow::{Borrow, BorrowMut},
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use near_sdk::{env, json_types::U64, near, AccountId};
 
@@ -203,7 +200,7 @@ impl<M> LinkedBorrowPosition<M> {
     }
 }
 
-impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
+impl<M: Deref<Target = Market>> LinkedBorrowPosition<M> {
     pub fn with_pending_interest(&mut self) {
         self.position.borrow_asset_fees.pending_estimate =
             self.calculate_interest(u32::MAX).get_amount();
@@ -214,9 +211,8 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
     }
 
     pub(crate) fn calculate_last_snapshot_interest(&self) -> BorrowAssetAmount {
-        let market: &Market = self.market.borrow();
-        let last_snapshot = market.get_last_snapshot();
-        let interest_rate = market.get_interest_rate_for_snapshot(last_snapshot);
+        let last_snapshot = self.market.get_last_snapshot();
+        let interest_rate = self.market.get_interest_rate_for_snapshot(last_snapshot);
         let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
         let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
         let interest_rate_part: Decimal = interest_rate * duration_ms / ms_in_a_year;
@@ -242,7 +238,6 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
         )]
         let mut it = self
             .market
-            .borrow()
             .snapshots
             .iter()
             .enumerate()
@@ -264,7 +259,6 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
 
             let interest_rate_per_year: Decimal = self
                 .market
-                .borrow()
                 .configuration
                 .borrow_interest_rate_strategy
                 .at(snapshot.usage_ratio());
@@ -297,7 +291,6 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
 
     pub fn can_be_liquidated(&self, price_pair: &PricePair, block_timestamp_ms: u64) -> bool {
         self.market
-            .borrow()
             .configuration
             .borrow_status(&self.position, price_pair, block_timestamp_ms)
             .is_liquidation()
@@ -305,14 +298,12 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
 
     pub fn is_within_minimum_initial_collateral_ratio(&self, price_pair: &PricePair) -> bool {
         self.market
-            .borrow()
             .configuration
             .is_within_minimum_initial_collateral_ratio(&self.position, price_pair)
     }
 
     pub fn is_within_minimum_collateral_ratio(&self, price_pair: &PricePair) -> bool {
         self.market
-            .borrow()
             .configuration
             .is_within_minimum_collateral_ratio(&self.position, price_pair)
     }
@@ -322,7 +313,6 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
         price_pair: &PricePair,
     ) -> Option<BorrowAssetAmount> {
         self.market
-            .borrow()
             .configuration
             .minimum_acceptable_liquidation_amount(
                 self.position.collateral_asset_deposit,
@@ -331,34 +321,33 @@ impl<M: Borrow<Market>> LinkedBorrowPosition<M> {
     }
 }
 
-pub struct LinkedBorrowPositionMut<M: BorrowMut<Market>>(LinkedBorrowPosition<M>);
+pub struct LinkedBorrowPositionMut<'a>(LinkedBorrowPosition<&'a mut Market>);
 
-impl<M: BorrowMut<Market>> Drop for LinkedBorrowPositionMut<M> {
+impl Drop for LinkedBorrowPositionMut<'_> {
     fn drop(&mut self) {
         self.0
             .market
-            .borrow_mut()
             .borrow_positions
             .insert(&self.0.account_id, &self.0.position);
     }
 }
 
-impl<M: BorrowMut<Market>> Deref for LinkedBorrowPositionMut<M> {
-    type Target = LinkedBorrowPosition<M>;
+impl<'a> Deref for LinkedBorrowPositionMut<'a> {
+    type Target = LinkedBorrowPosition<&'a mut Market>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<M: BorrowMut<Market>> DerefMut for LinkedBorrowPositionMut<M> {
+impl DerefMut for LinkedBorrowPositionMut<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
-    pub fn new(market: M, account_id: AccountId, position: BorrowPosition) -> Self {
+impl<'a> LinkedBorrowPositionMut<'a> {
+    pub fn new(market: &'a mut Market, account_id: AccountId, position: BorrowPosition) -> Self {
         Self(LinkedBorrowPosition::new(market, account_id, position))
     }
 
@@ -398,7 +387,6 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         self.accumulate_interest();
 
         self.market
-            .borrow_mut()
             .borrow_asset_in_flight
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount overflow"));
@@ -419,7 +407,6 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
         self.market
-            .borrow_mut()
             .borrow_asset_in_flight
             .split(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount underflow"));
@@ -442,11 +429,10 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
 
         self.market
-            .borrow_mut()
             .borrow_asset_borrowed
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed overflow"));
-        self.market.borrow_mut().snapshot();
+        self.market.snapshot();
 
         MarketEvent::BorrowWithdrawn {
             account_id: self.account_id.clone(),
@@ -466,18 +452,16 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         self.market
-            .borrow_mut()
             .record_borrow_asset_yield_distribution(liability_reduction.amount_to_fees);
 
         // SAFETY: It should be impossible to panic here, since assets that
         // have not yet been borrowed cannot be repaid.
         self.market
-            .borrow_mut()
             .borrow_asset_borrowed
             .split(liability_reduction.amount_to_principal)
             .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
 
-        self.market.borrow_mut().snapshot();
+        self.market.snapshot();
 
         MarketEvent::BorrowRepaid {
             account_id: self.account_id.clone(),
@@ -491,7 +475,7 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
     }
 
     pub fn accumulate_interest(&mut self) -> InterestAccumulationProof {
-        self.market.borrow_mut().snapshot();
+        self.market.snapshot();
 
         let accumulation_record = self.calculate_interest(u32::MAX);
 
@@ -535,29 +519,21 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         }
         .emit();
 
-        let snapshot_index = self.market.borrow_mut().snapshot();
+        let snapshot_index = self.market.snapshot();
         self.position.full_liquidation(snapshot_index);
 
-        self.market
-            .borrow_mut()
-            .borrow_asset_borrowed
-            .split(principal);
+        self.market.borrow_asset_borrowed.split(principal);
 
-        // TODO: Is it correct to only care about the original principal here?
         if recovered_amount.split(principal).is_some() {
-            // distribute yield
+            // Distribute yield.
             // record_borrow_asset_yield_distribution will take snapshot, no need to do it.
             self.market
-                .borrow_mut()
                 .record_borrow_asset_yield_distribution(recovered_amount);
         } else {
-            // we took a loss
-            // TODO: some sort of recovery for suppliers
-            //
-            // Might look something like this:
-            // self.borrow_asset_deposited.split(principal);
-            // (?)
-            todo!("Took a loss during liquidation");
+            // Took a loss on liquidation.
+            // This can be detected from the event (borrow_asset_principal > borrow_asset_recovered?).
+            // Deficit should be covered by protocol insurance.
+            // No need for additional action.
         }
     }
 }

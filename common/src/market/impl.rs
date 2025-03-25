@@ -174,7 +174,7 @@ impl Market {
     pub fn get_linked_supply_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> Option<LinkedSupplyPositionMut<&mut Self>> {
+    ) -> Option<LinkedSupplyPositionMut> {
         self.supply_positions
             .get(&account_id)
             .map(|position| LinkedSupplyPositionMut::new(self, account_id, position))
@@ -183,7 +183,7 @@ impl Market {
     pub fn get_or_create_linked_supply_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> LinkedSupplyPositionMut<&mut Self> {
+    ) -> LinkedSupplyPositionMut {
         let position = self
             .supply_positions
             .get(&account_id)
@@ -208,7 +208,7 @@ impl Market {
     pub fn get_linked_borrow_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> Option<LinkedBorrowPositionMut<&mut Self>> {
+    ) -> Option<LinkedBorrowPositionMut> {
         self.borrow_positions
             .get(&account_id)
             .map(|position| LinkedBorrowPositionMut::new(self, account_id, position))
@@ -217,7 +217,7 @@ impl Market {
     pub fn get_or_create_linked_borrow_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> LinkedBorrowPositionMut<&mut Self> {
+    ) -> LinkedBorrowPositionMut {
         let position = self
             .borrow_positions
             .get(&account_id)

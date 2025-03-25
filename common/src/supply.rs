@@ -1,7 +1,4 @@
-use std::{
-    borrow::{Borrow, BorrowMut},
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use near_sdk::{env, json_types::U64, near, AccountId};
 
@@ -99,7 +96,7 @@ impl<M> LinkedSupplyPosition<M> {
     }
 }
 
-impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
+impl<M: Deref<Target = Market>> LinkedSupplyPosition<M> {
     pub fn with_pending_yield_estimate(&mut self) {
         self.position.borrow_asset_yield.pending_estimate = self.calculate_yield().get_amount();
         self.position
@@ -114,29 +111,16 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
             return BorrowAssetAmount::zero();
         }
 
-        let last_snapshot = self.market.borrow().get_last_snapshot();
+        let last_snapshot = self.market.get_last_snapshot();
         let total_deposited: Decimal = last_snapshot.deposited.into();
         if total_deposited.is_zero() {
             // divzero safety
             return BorrowAssetAmount::zero();
         }
-        let supply_weight = Decimal::from(
-            self.market
-                .borrow()
-                .configuration
-                .yield_weights
-                .supply
-                .get(),
-        );
+        let supply_weight = Decimal::from(self.market.configuration.yield_weights.supply.get());
         // This is guaranteed to be nonzero, so no divzero issue.
-        let total_weight = Decimal::from(
-            self.market
-                .borrow()
-                .configuration
-                .yield_weights
-                .total_weight()
-                .get(),
-        );
+        let total_weight =
+            Decimal::from(self.market.configuration.yield_weights.total_weight().get());
         let total_yield_distribution: Decimal = last_snapshot.yield_distribution.into();
         let estimate_current_snapshot =
             total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
@@ -159,7 +143,7 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
 
         let mut accumulated = Decimal::ZERO;
 
-        let mut it = self.market.borrow().snapshots.iter();
+        let mut it = self.market.snapshots.iter();
         // Skip the last snapshot, which may be incomplete.
         it.next_back();
 
@@ -184,39 +168,38 @@ impl<M: Borrow<Market>> LinkedSupplyPosition<M> {
     }
 }
 
-pub struct LinkedSupplyPositionMut<M: BorrowMut<Market>>(LinkedSupplyPosition<M>);
+pub struct LinkedSupplyPositionMut<'a>(LinkedSupplyPosition<&'a mut Market>);
 
-impl<M: BorrowMut<Market>> Drop for LinkedSupplyPositionMut<M> {
+impl Drop for LinkedSupplyPositionMut<'_> {
     fn drop(&mut self) {
         self.0
             .market
-            .borrow_mut()
             .supply_positions
             .insert(&self.0.account_id, &self.0.position);
     }
 }
 
-impl<M: BorrowMut<Market>> Deref for LinkedSupplyPositionMut<M> {
-    type Target = LinkedSupplyPosition<M>;
+impl<'a> Deref for LinkedSupplyPositionMut<'a> {
+    type Target = LinkedSupplyPosition<&'a mut Market>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<M: BorrowMut<Market>> DerefMut for LinkedSupplyPositionMut<M> {
+impl DerefMut for LinkedSupplyPositionMut<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
-    pub fn new(market: M, account_id: AccountId, position: SupplyPosition) -> Self {
+impl<'a> LinkedSupplyPositionMut<'a> {
+    pub fn new(market: &'a mut Market, account_id: AccountId, position: SupplyPosition) -> Self {
         Self(LinkedSupplyPosition::new(market, account_id, position))
     }
 
     pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
-        self.market.borrow_mut().snapshot();
+        self.market.snapshot();
 
         let accumulation_record = self.calculate_yield();
 
@@ -252,16 +235,15 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
             self.0.position.started_at_block_timestamp_ms.unwrap().0;
         let supply_duration = block_timestamp_ms.saturating_sub(started_at_block_timestamp_ms);
 
-        let market: &mut Market = self.market.borrow_mut();
-
-        market
+        self.market
             .borrow_asset_deposited
             .split(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
 
-        market.snapshot();
+        self.market.snapshot();
 
-        let amount_to_fees = market
+        let amount_to_fees = self
+            .market
             .configuration
             .supply_withdrawal_fee
             .of(amount, supply_duration)
@@ -296,12 +278,11 @@ impl<M: BorrowMut<Market>> LinkedSupplyPositionMut<M> {
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
 
         self.market
-            .borrow_mut()
             .borrow_asset_deposited
             .join(amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset deposited overflow"));
 
-        self.market.borrow_mut().snapshot();
+        self.market.snapshot();
 
         MarketEvent::SupplyDeposited {
             account_id: self.account_id.clone(),
