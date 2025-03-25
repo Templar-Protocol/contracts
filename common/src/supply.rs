@@ -72,13 +72,13 @@ impl SupplyPosition {
     }
 }
 
-pub struct LinkedSupplyPosition<M> {
+pub struct SupplyPositionRef<M> {
     market: M,
     account_id: AccountId,
     position: SupplyPosition,
 }
 
-impl<M> LinkedSupplyPosition<M> {
+impl<M> SupplyPositionRef<M> {
     pub fn new(market: M, account_id: AccountId, position: SupplyPosition) -> Self {
         Self {
             market,
@@ -96,7 +96,7 @@ impl<M> LinkedSupplyPosition<M> {
     }
 }
 
-impl<M: Deref<Target = Market>> LinkedSupplyPosition<M> {
+impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
     pub fn with_pending_yield_estimate(&mut self) {
         self.position.borrow_asset_yield.pending_estimate = self.calculate_yield().get_amount();
         self.position
@@ -168,9 +168,9 @@ impl<M: Deref<Target = Market>> LinkedSupplyPosition<M> {
     }
 }
 
-pub struct LinkedSupplyPositionMut<'a>(LinkedSupplyPosition<&'a mut Market>);
+pub struct SupplyPositionGuard<'a>(SupplyPositionRef<&'a mut Market>);
 
-impl Drop for LinkedSupplyPositionMut<'_> {
+impl Drop for SupplyPositionGuard<'_> {
     fn drop(&mut self) {
         self.0
             .market
@@ -179,23 +179,23 @@ impl Drop for LinkedSupplyPositionMut<'_> {
     }
 }
 
-impl<'a> Deref for LinkedSupplyPositionMut<'a> {
-    type Target = LinkedSupplyPosition<&'a mut Market>;
+impl<'a> Deref for SupplyPositionGuard<'a> {
+    type Target = SupplyPositionRef<&'a mut Market>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl DerefMut for LinkedSupplyPositionMut<'_> {
+impl DerefMut for SupplyPositionGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<'a> LinkedSupplyPositionMut<'a> {
+impl<'a> SupplyPositionGuard<'a> {
     pub fn new(market: &'a mut Market, account_id: AccountId, position: SupplyPosition) -> Self {
-        Self(LinkedSupplyPosition::new(market, account_id, position))
+        Self(SupplyPositionRef::new(market, account_id, position))
     }
 
     pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {

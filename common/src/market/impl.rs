@@ -5,14 +5,14 @@ use near_sdk::{
 
 use crate::{
     asset::BorrowAssetAmount,
-    borrow::{BorrowPosition, LinkedBorrowPosition, LinkedBorrowPositionMut},
+    borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
     market::MarketConfiguration,
     number::Decimal,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
-    supply::{LinkedSupplyPosition, LinkedSupplyPositionMut, SupplyPosition},
+    supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
@@ -165,31 +165,31 @@ impl Market {
     pub fn get_linked_supply_position(
         &self,
         account_id: AccountId,
-    ) -> Option<LinkedSupplyPosition<&Self>> {
+    ) -> Option<SupplyPositionRef<&Self>> {
         self.supply_positions
             .get(&account_id)
-            .map(|position| LinkedSupplyPosition::new(self, account_id, position))
+            .map(|position| SupplyPositionRef::new(self, account_id, position))
     }
 
     pub fn get_linked_supply_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> Option<LinkedSupplyPositionMut> {
+    ) -> Option<SupplyPositionGuard> {
         self.supply_positions
             .get(&account_id)
-            .map(|position| LinkedSupplyPositionMut::new(self, account_id, position))
+            .map(|position| SupplyPositionGuard::new(self, account_id, position))
     }
 
     pub fn get_or_create_linked_supply_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> LinkedSupplyPositionMut {
+    ) -> SupplyPositionGuard {
         let position = self
             .supply_positions
             .get(&account_id)
             .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
 
-        LinkedSupplyPositionMut::new(self, account_id, position)
+        SupplyPositionGuard::new(self, account_id, position)
     }
 
     pub fn iter_borrow_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
@@ -199,31 +199,31 @@ impl Market {
     pub fn get_linked_borrow_position(
         &self,
         account_id: AccountId,
-    ) -> Option<LinkedBorrowPosition<&Self>> {
+    ) -> Option<BorrowPositionRef<&Self>> {
         self.borrow_positions
             .get(&account_id)
-            .map(|position| LinkedBorrowPosition::new(self, account_id, position))
+            .map(|position| BorrowPositionRef::new(self, account_id, position))
     }
 
     pub fn get_linked_borrow_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> Option<LinkedBorrowPositionMut> {
+    ) -> Option<BorrowPositionGuard> {
         self.borrow_positions
             .get(&account_id)
-            .map(|position| LinkedBorrowPositionMut::new(self, account_id, position))
+            .map(|position| BorrowPositionGuard::new(self, account_id, position))
     }
 
     pub fn get_or_create_linked_borrow_position_mut(
         &mut self,
         account_id: AccountId,
-    ) -> LinkedBorrowPositionMut {
+    ) -> BorrowPositionGuard {
         let position = self
             .borrow_positions
             .get(&account_id)
             .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
 
-        LinkedBorrowPositionMut::new(self, account_id, position)
+        BorrowPositionGuard::new(self, account_id, position)
     }
 
     /// # Errors
