@@ -455,6 +455,9 @@ impl<M: BorrowMut<Market>> LinkedBorrowPositionMut<M> {
         .emit();
     }
 
+    /// Returns the amount that is left over after repaying the whole
+    /// position. That is, the return value is the number of tokens that may
+    /// be returned to the owner of the borrow position.
     pub fn record_repay(
         &mut self,
         proof: InterestAccumulationProof,
