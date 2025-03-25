@@ -389,9 +389,9 @@ impl Contract {
         let mut static_yield = self.static_yield.get(&account_id).unwrap_or_else(|| {
             env::panic_str("Invariant violation: static yield entry must exist during callback")
         });
-        let i = if borrow_asset_amount.is_zero() {
-            0
-        } else {
+        let mut i = 0;
+
+        if !borrow_asset_amount.is_zero() {
             if matches!(env::promise_result(i), PromiseResult::Failed) {
                 static_yield
                     .borrow_asset
@@ -400,8 +400,8 @@ impl Contract {
                         env::panic_str("Borrow asset static yield returned overflows")
                     });
             }
-            1
-        };
+            i += 1;
+        }
 
         if !collateral_asset_amount.is_zero()
             && matches!(env::promise_result(i), PromiseResult::Failed)
