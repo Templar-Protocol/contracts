@@ -14,7 +14,7 @@ use crate::{Contract, ContractExt};
 impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
         let supply_maximum_amount = self.configuration.supply_maximum_amount;
-        let mut supply_position = self.get_or_create_linked_supply_position_mut(account_id);
+        let mut supply_position = self.get_or_create_supply_position_guard(account_id);
         let proof = supply_position.accumulate_yield();
         supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         if let Some(ref supply_maximum_amount) = supply_maximum_amount {
@@ -33,7 +33,7 @@ impl Contract {
         // The sign-up step would only be NFT gating or something of
         // that sort, which is just an additional pre condition check.
         // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923871982
-        let mut borrow_position = self.get_or_create_linked_borrow_position_mut(account_id);
+        let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
         borrow_position.record_collateral_asset_deposit(amount);
     }
 
@@ -43,7 +43,7 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        if let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id) {
+        if let Some(mut borrow_position) = self.borrow_position_guard(account_id) {
             // TODO:
             // Due to the slightly imprecise calculation of yield and
             // other fees, the returning of the excess should be
@@ -65,7 +65,7 @@ impl Contract {
         amount: BorrowAssetAmount,
         price_pair: &PricePair,
     ) -> CollateralAssetAmount {
-        let mut borrow_position = self.get_or_create_linked_borrow_position_mut(account_id);
+        let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
 
         require!(
             borrow_position.can_be_liquidated(price_pair, env::block_timestamp_ms()),
@@ -94,11 +94,9 @@ impl Contract {
         amount: BorrowAssetAmount,
         success: bool,
     ) -> BorrowAssetAmount {
-        let mut borrow_position = self
-            .get_linked_borrow_position_mut(account_id)
-            .unwrap_or_else(|| {
-                env::panic_str("Invariant violation: Liquidation of nonexistent position.")
-            });
+        let mut borrow_position = self.borrow_position_guard(account_id).unwrap_or_else(|| {
+            env::panic_str("Invariant violation: Liquidation of nonexistent position.")
+        });
 
         if success {
             borrow_position.record_full_liquidation(liquidator_id, amount);
@@ -151,8 +149,7 @@ impl Contract {
             .of(amount)
             .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
 
-        let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id.clone())
-        else {
+        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -185,7 +182,7 @@ impl Contract {
     ) {
         require!(env::promise_results_count() == 1);
 
-        let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id) else {
+        let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
             env::panic_str("Invariant violation: borrow position does not exist after transfer.");
         };
 
@@ -263,7 +260,7 @@ impl Contract {
                 env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
                 self.withdrawal_queue.unlock();
                 if let Some(mut supply_position) =
-                    self.get_linked_supply_position_mut(withdrawal_resolution.account_id.clone())
+                    self.supply_position_guard(withdrawal_resolution.account_id.clone())
                 {
                     let proof = supply_position.accumulate_yield();
                     let mut amount = withdrawal_resolution.amount_to_account;
@@ -333,8 +330,7 @@ impl Contract {
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-        let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id.clone())
-        else {
+        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -366,7 +362,7 @@ impl Contract {
         if transfer_was_successful {
             // Do nothing
         } else {
-            let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id) else {
+            let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
                 env::panic_str("Invariant violation: Borrow position must exist after collateral withdrawal failure.");
             };
 

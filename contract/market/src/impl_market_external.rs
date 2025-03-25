@@ -57,7 +57,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
-        let mut borrow_position = self.get_linked_borrow_position(account_id)?;
+        let mut borrow_position = self.borrow_position_ref(account_id)?;
         borrow_position.with_pending_interest();
         Some(borrow_position.inner().clone())
     }
@@ -104,8 +104,7 @@ impl MarketExternalInterface for Contract {
     fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise {
         let account_id = env::predecessor_account_id();
 
-        let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id.clone())
-        else {
+        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -134,7 +133,7 @@ impl MarketExternalInterface for Contract {
 
     fn apply_interest(&mut self) {
         let predecessor = env::predecessor_account_id();
-        if let Some(mut borrow_position) = self.get_linked_borrow_position_mut(predecessor) {
+        if let Some(mut borrow_position) = self.borrow_position_guard(predecessor) {
             borrow_position.accumulate_interest();
         }
     }
@@ -144,7 +143,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
-        let mut supply_position = self.get_linked_supply_position(account_id)?;
+        let mut supply_position = self.supply_position_ref(account_id)?;
         supply_position.with_pending_yield_estimate();
         Some(supply_position.inner().clone())
     }
@@ -158,7 +157,7 @@ impl MarketExternalInterface for Contract {
         );
         let predecessor = env::predecessor_account_id();
         if self
-            .get_linked_supply_position(predecessor.clone())
+            .supply_position_ref(predecessor.clone())
             .filter(|supply_position| !supply_position.inner().get_borrow_asset_deposit().is_zero())
             .is_none()
         {
@@ -209,7 +208,7 @@ impl MarketExternalInterface for Contract {
 
     fn harvest_yield(&mut self, compounding: Option<bool>) {
         let predecessor = env::predecessor_account_id();
-        if let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) {
+        if let Some(mut supply_position) = self.supply_position_guard(predecessor) {
             let proof = supply_position.accumulate_yield();
             if compounding.unwrap_or(false) {
                 // Compound yield by withdrawing it and recording it as an immediate deposit.

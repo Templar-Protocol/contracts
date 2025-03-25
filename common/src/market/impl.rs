@@ -162,25 +162,19 @@ impl Market {
         self.supply_positions.keys()
     }
 
-    pub fn get_linked_supply_position(
-        &self,
-        account_id: AccountId,
-    ) -> Option<SupplyPositionRef<&Self>> {
+    pub fn supply_position_ref(&self, account_id: AccountId) -> Option<SupplyPositionRef<&Self>> {
         self.supply_positions
             .get(&account_id)
             .map(|position| SupplyPositionRef::new(self, account_id, position))
     }
 
-    pub fn get_linked_supply_position_mut(
-        &mut self,
-        account_id: AccountId,
-    ) -> Option<SupplyPositionGuard> {
+    pub fn supply_position_guard(&mut self, account_id: AccountId) -> Option<SupplyPositionGuard> {
         self.supply_positions
             .get(&account_id)
             .map(|position| SupplyPositionGuard::new(self, account_id, position))
     }
 
-    pub fn get_or_create_linked_supply_position_mut(
+    pub fn get_or_create_supply_position_guard(
         &mut self,
         account_id: AccountId,
     ) -> SupplyPositionGuard {
@@ -196,25 +190,19 @@ impl Market {
         self.borrow_positions.keys()
     }
 
-    pub fn get_linked_borrow_position(
-        &self,
-        account_id: AccountId,
-    ) -> Option<BorrowPositionRef<&Self>> {
+    pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {
         self.borrow_positions
             .get(&account_id)
             .map(|position| BorrowPositionRef::new(self, account_id, position))
     }
 
-    pub fn get_linked_borrow_position_mut(
-        &mut self,
-        account_id: AccountId,
-    ) -> Option<BorrowPositionGuard> {
+    pub fn borrow_position_guard(&mut self, account_id: AccountId) -> Option<BorrowPositionGuard> {
         self.borrow_positions
             .get(&account_id)
             .map(|position| BorrowPositionGuard::new(self, account_id, position))
     }
 
-    pub fn get_or_create_linked_borrow_position_mut(
+    pub fn get_or_create_borrow_position_guard(
         &mut self,
         account_id: AccountId,
     ) -> BorrowPositionGuard {
@@ -235,7 +223,7 @@ impl Market {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
         let Some((amount, mut supply_position)) = self
-            .get_linked_supply_position_mut(account_id.clone())
+            .supply_position_guard(account_id.clone())
             .and_then(|supply_position| {
                 // Cap withdrawal amount to deposit amount at most.
                 let amount = supply_position
