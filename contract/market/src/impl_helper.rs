@@ -1,11 +1,12 @@
 use near_sdk::{
-    env, json_types::U128, near, require, AccountId, Promise, PromiseError, PromiseResult,
+    env, json_types::U128, near, require, AccountId, Gas, Promise, PromiseError, PromiseResult,
 };
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset::{
+        BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+    },
     market::{PricePair, WithdrawalResolution},
     oracle::pyth::OracleResponse,
-    self_ext,
 };
 
 use crate::{Contract, ContractExt};
@@ -34,7 +35,8 @@ impl Contract {
         // that sort, which is just an additional pre condition check.
         // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923871982
         let mut borrow_position = self.get_or_create_linked_borrow_position_mut(account_id);
-        borrow_position.record_collateral_asset_deposit(amount);
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_collateral_asset_deposit(proof, amount);
     }
 
     /// Returns the amount that should be returned to the account.
@@ -123,6 +125,10 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
+    pub const GAS_BORROW_01_CONSUME_PRICE: Gas = Gas::from_tgas(9)
+        .saturating_add(FungibleAsset::<BorrowAsset>::GAS_FT_TRANSFER)
+        .saturating_add(Self::GAS_BORROW_02_FINALIZE);
+
     #[private]
     pub fn borrow_01_consume_price(
         &mut self,
@@ -156,7 +162,8 @@ impl Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
-        borrow_position.record_borrow_asset_in_flight_start(amount, fees);
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
             borrow_position.is_within_minimum_initial_collateral_ratio(&price_pair),
@@ -173,8 +180,13 @@ impl Contract {
         self.configuration
             .borrow_asset
             .transfer(account_id.clone(), amount)
-            .then(self_ext!().borrow_02_finalize(account_id, amount, fees))
+            .then(
+                self_ext!(Self::GAS_BORROW_02_FINALIZE)
+                    .borrow_02_finalize(account_id, amount, fees),
+            )
     }
+
+    pub const GAS_BORROW_02_FINALIZE: Gas = Gas::from_tgas(9);
 
     #[private]
     pub fn borrow_02_finalize(
@@ -189,7 +201,8 @@ impl Contract {
             env::panic_str("Invariant violation: borrow position does not exist after transfer.");
         };
 
-        borrow_position.record_borrow_asset_in_flight_end(amount, fees);
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_borrow_asset_in_flight_end(proof, amount, fees);
 
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {
@@ -197,7 +210,6 @@ impl Contract {
                 //
                 // Borrow position has already been created: finalize
                 // withdrawal record.
-                let proof = borrow_position.accumulate_interest();
                 borrow_position.record_borrow_asset_withdrawal(proof, amount, fees);
             }
             PromiseResult::Failed => {
@@ -225,6 +237,8 @@ impl Contract {
             }
         }
     }
+
+    pub const GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL: Gas = Gas::from_tgas(5);
 
     #[private]
     pub fn after_execute_next_withdrawal(&mut self, withdrawal_resolution: WithdrawalResolution) {
@@ -265,6 +279,8 @@ impl Contract {
                 if let Some(mut supply_position) =
                     self.get_linked_supply_position_mut(withdrawal_resolution.account_id.clone())
                 {
+                    // This should not do very much since we also accumulate
+                    // yield in the initial function call of execute_next_supply_withdrawal_request()
                     let proof = supply_position.accumulate_yield();
                     let mut amount = withdrawal_resolution.amount_to_account;
                     amount.join(withdrawal_resolution.amount_to_fees);
@@ -273,6 +289,11 @@ impl Contract {
             }
         }
     }
+
+    // ~3.3 Tgas
+    pub const GAS_LIQUIDATE_FT_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE: Gas = Gas::from_tgas(4)
+        .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
+        .saturating_add(Self::GAS_LIQUIDATE_FT_TRANSFER_CALL_02_FINALIZE);
 
     #[private]
     pub fn liquidate_ft_transfer_call_01_consume_oracle_response(
@@ -294,12 +315,14 @@ impl Contract {
         self.configuration
             .collateral_asset
             .transfer(liquidator_id.clone(), liquidated_collateral)
-            .then(self_ext!().liquidate_ft_transfer_call_02_finalize(
-                liquidator_id,
-                account_id,
-                amount,
-            ))
+            .then(
+                self_ext!(Self::GAS_LIQUIDATE_FT_TRANSFER_CALL_02_FINALIZE)
+                    .liquidate_ft_transfer_call_02_finalize(liquidator_id, account_id, amount),
+            )
     }
+
+    // ~3.2 Tgas
+    pub const GAS_LIQUIDATE_FT_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(4);
 
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
@@ -320,6 +343,11 @@ impl Contract {
         refund_to_liquidator.into()
     }
 
+    // ~7.25 Tgas
+    pub const GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE: Gas = Gas::from_tgas(9)
+        .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
+        .saturating_add(Self::GAS_WITHDRAW_COLLATERAL_02_FINALIZE);
+
     #[private]
     pub fn withdraw_collateral_01_consume_price(
         &mut self,
@@ -338,7 +366,8 @@ impl Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
-        borrow_position.record_collateral_asset_withdrawal(amount);
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_collateral_asset_withdrawal(proof, amount);
 
         require!(
             borrow_position.is_within_minimum_collateral_ratio(&price_pair),
@@ -350,8 +379,14 @@ impl Contract {
         self.configuration
             .collateral_asset
             .transfer(account_id.clone(), amount)
-            .then(self_ext!().withdraw_collateral_02_finalize(account_id, amount))
+            .then(
+                self_ext!(Self::GAS_WITHDRAW_COLLATERAL_02_FINALIZE)
+                    .withdraw_collateral_02_finalize(account_id, amount),
+            )
     }
+
+    // ~1.96 Tgas
+    pub const GAS_WITHDRAW_COLLATERAL_02_FINALIZE: Gas = Gas::from_tgas(3);
 
     #[private]
     pub fn withdraw_collateral_02_finalize(
@@ -370,9 +405,13 @@ impl Contract {
                 env::panic_str("Invariant violation: Borrow position must exist after collateral withdrawal failure.");
             };
 
-            borrow_position.record_collateral_asset_deposit(amount);
+            let proof = borrow_position.accumulate_interest();
+            borrow_position.record_collateral_asset_deposit(proof, amount);
         }
     }
+
+    // ~2.0 Tgas
+    pub const GAS_WITHDRAW_STATIC_YIELD_01_FINALIZE: Gas = Gas::from_tgas(3);
 
     #[private]
     pub fn withdraw_static_yield_01_finalize(

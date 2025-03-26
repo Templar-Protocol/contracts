@@ -5,7 +5,6 @@ use templar_common::{
     market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
-    self_ext,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -98,7 +97,10 @@ impl MarketExternalInterface for Contract {
         self.configuration
             .balance_oracle
             .retrieve_price_pair()
-            .then(self_ext!().borrow_01_consume_price(account_id, amount))
+            .then(
+                self_ext!(Self::GAS_BORROW_01_CONSUME_PRICE)
+                    .borrow_01_consume_price(account_id, amount),
+            )
     }
 
     fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise {
@@ -115,20 +117,27 @@ impl MarketExternalInterface for Contract {
             .is_zero()
         {
             // No need to retrieve prices, since there is zero liability.
-            borrow_position.record_collateral_asset_withdrawal(amount);
+            let proof = borrow_position.accumulate_interest();
+            borrow_position.record_collateral_asset_withdrawal(proof, amount);
             drop(borrow_position);
 
             self.configuration
                 .collateral_asset
                 .transfer(account_id.clone(), amount)
-                .then(self_ext!().withdraw_collateral_02_finalize(account_id, amount))
+                .then(
+                    self_ext!(Self::GAS_WITHDRAW_COLLATERAL_02_FINALIZE)
+                        .withdraw_collateral_02_finalize(account_id, amount),
+                )
         } else {
             drop(borrow_position);
             // They still have liability, so we need to check prices.
             self.configuration
                 .balance_oracle
                 .retrieve_price_pair()
-                .then(self_ext!().withdraw_collateral_01_consume_price(account_id, amount))
+                .then(
+                    self_ext!(Self::GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE)
+                        .withdraw_collateral_01_consume_price(account_id, amount),
+                )
         }
     }
 
@@ -192,7 +201,10 @@ impl MarketExternalInterface for Contract {
                     withdrawal_resolution.account_id.clone(),
                     withdrawal_resolution.amount_to_account,
                 )
-                .then(self_ext!().after_execute_next_withdrawal(withdrawal_resolution)),
+                .then(
+                    self_ext!(Self::GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL)
+                        .after_execute_next_withdrawal(withdrawal_resolution),
+                ),
         )
     }
 
@@ -299,11 +311,12 @@ impl MarketExternalInterface for Contract {
             _ => env::panic_str("No yield to withdraw"),
         }
         .then(
-            Self::ext(env::current_account_id()).withdraw_static_yield_01_finalize(
-                predecessor,
-                borrow_asset_amount,
-                collateral_asset_amount,
-            ),
+            self_ext!(Self::GAS_WITHDRAW_STATIC_YIELD_01_FINALIZE)
+                .withdraw_static_yield_01_finalize(
+                    predecessor,
+                    borrow_asset_amount,
+                    collateral_asset_amount,
+                ),
         )
     }
 }

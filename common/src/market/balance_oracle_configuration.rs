@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use near_sdk::{near, AccountId, Promise};
+use near_sdk::{near, AccountId, Gas, Promise};
 
 use crate::{
     asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAssetAmount},
@@ -20,11 +20,16 @@ pub struct BalanceOracleConfiguration {
 }
 
 impl BalanceOracleConfiguration {
+    // Usually seems to take 1.64 TGas.
+    pub const GAS_RETRIEVE_PRICE_PAIR: Gas = Gas::from_tgas(3);
+
     pub fn retrieve_price_pair(&self) -> Promise {
-        ext_pyth::ext(self.account_id.clone()).list_ema_prices_no_older_than(
-            vec![self.borrow_asset_price_id, self.collateral_asset_price_id],
-            u64::from(self.price_maximum_age_s),
-        )
+        ext_pyth::ext(self.account_id.clone())
+            .with_static_gas(Self::GAS_RETRIEVE_PRICE_PAIR)
+            .list_ema_prices_no_older_than(
+                vec![self.borrow_asset_price_id, self.collateral_asset_price_id],
+                u64::from(self.price_maximum_age_s),
+            )
     }
 
     /// # Errors

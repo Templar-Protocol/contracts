@@ -46,3 +46,6 @@ workspace = true
 
 [[example]]
 name = "gas_report"
+
+[[example]]
+name = "receipt_gas"

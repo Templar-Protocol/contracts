@@ -3,7 +3,6 @@ use near_sdk::{env, json_types::U128, near, AccountId, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     market::{LiquidateMsg, Nep141MarketDepositMessage},
-    self_ext,
 };
 
 use crate::{Contract, ContractExt};
@@ -67,7 +66,10 @@ impl FungibleTokenReceiver for Contract {
                         .balance_oracle
                         .retrieve_price_pair()
                         .then(
-                            self_ext!().liquidate_ft_transfer_call_01_consume_oracle_response(
+                            self_ext!(
+                                Self::GAS_LIQUIDATE_FT_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE
+                            )
+                            .liquidate_ft_transfer_call_01_consume_oracle_response(
                                 sender_id, account_id, amount,
                             ),
                         ),

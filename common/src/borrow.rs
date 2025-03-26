@@ -15,6 +15,7 @@ use crate::{
 /// This struct can only be constructed after accumulating interest on a
 /// borrow position. This serves as proof that the interest has accrued, so it
 /// is safe to perform certain other operations.
+#[derive(Clone, Copy)]
 pub struct InterestAccumulationProof(());
 
 #[cfg(test)]
@@ -351,9 +352,11 @@ impl<'a> LinkedBorrowPositionMut<'a> {
         Self(LinkedBorrowPosition::new(market, account_id, position))
     }
 
-    pub fn record_collateral_asset_deposit(&mut self, amount: CollateralAssetAmount) {
-        self.accumulate_interest();
-
+    pub fn record_collateral_asset_deposit(
+        &mut self,
+        _proof: InterestAccumulationProof,
+        amount: CollateralAssetAmount,
+    ) {
         self.position
             .increase_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset overflow"));
@@ -365,9 +368,11 @@ impl<'a> LinkedBorrowPositionMut<'a> {
         .emit();
     }
 
-    pub fn record_collateral_asset_withdrawal(&mut self, amount: CollateralAssetAmount) {
-        self.accumulate_interest();
-
+    pub fn record_collateral_asset_withdrawal(
+        &mut self,
+        _proof: InterestAccumulationProof,
+        amount: CollateralAssetAmount,
+    ) {
         self.position
             .decrease_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
@@ -381,11 +386,10 @@ impl<'a> LinkedBorrowPositionMut<'a> {
 
     pub fn record_borrow_asset_in_flight_start(
         &mut self,
+        _proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        self.accumulate_interest();
-
         self.market
             .borrow_asset_in_flight
             .join(amount)
@@ -399,11 +403,10 @@ impl<'a> LinkedBorrowPositionMut<'a> {
 
     pub fn record_borrow_asset_in_flight_end(
         &mut self,
+        _proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        self.accumulate_interest();
-
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
         self.market
