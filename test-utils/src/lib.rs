@@ -382,7 +382,7 @@ impl TestController {
                 "borrow_asset_amount": borrow_asset_amount,
                 "collateral_asset_amount": collateral_asset_amount,
             }))
-            .gas(Gas::from_tgas(30))
+            .gas(Gas::from_tgas(20))
             .transact()
             .await
             .unwrap()
@@ -412,6 +412,7 @@ impl TestController {
             .args_json(json!({
                 "amount": U128(amount),
             }))
+            .gas(Gas::from_tgas(20))
             .transact()
             .await
             .unwrap()
@@ -459,7 +460,10 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn execute_next_supply_withdrawal_request(&self, account: &Account) {
+    pub async fn execute_next_supply_withdrawal_request(
+        &self,
+        account: &Account,
+    ) -> ExecutionSuccess {
         eprintln!(
             "{} executing next supply withdrawal request...",
             account.id(),
@@ -467,10 +471,11 @@ impl TestController {
         account
             .call(self.contract.id(), "execute_next_supply_withdrawal_request")
             .args_json(json!({}))
+            .gas(Gas::from_tgas(15))
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
     pub async fn liquidate(

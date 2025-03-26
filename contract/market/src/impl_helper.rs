@@ -238,7 +238,8 @@ impl Contract {
         }
     }
 
-    pub const GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL: Gas = Gas::from_tgas(5);
+    // ~2.4 Tgas
+    pub const GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL: Gas = Gas::from_tgas(4);
 
     #[private]
     pub fn after_execute_next_withdrawal(&mut self, withdrawal_resolution: WithdrawalResolution) {
