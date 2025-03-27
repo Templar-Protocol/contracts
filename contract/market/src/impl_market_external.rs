@@ -207,7 +207,7 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.get_status()
     }
 
-    fn harvest_yield(&mut self, compounding: Option<bool>) {
+    fn harvest_yield(&mut self, compounding: Option<bool>) -> BorrowAssetAmount {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) {
             let proof = supply_position.accumulate_yield();
@@ -216,8 +216,11 @@ impl MarketExternalInterface for Contract {
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
                 supply_position.record_yield_withdrawal(total_yield);
                 supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
+                return total_yield;
             }
         }
+
+        BorrowAssetAmount::zero()
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
