@@ -207,15 +207,26 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.get_status()
     }
 
-    fn harvest_yield(&mut self, compounding: Option<bool>) {
+    fn harvest_yield(&mut self, compounding: Option<bool>, snapshot_limit: Option<u32>) {
         let predecessor = env::predecessor_account_id();
-        if let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) {
-            let proof = supply_position.accumulate_yield();
-            if compounding.unwrap_or(false) {
+        let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) else {
+            return;
+        };
+
+        match (compounding.unwrap_or(false), snapshot_limit) {
+            (true, Some(_)) => env::panic_str("`compounding` and `snapshot_limit` are exclusive"),
+            (true, None) => {
+                let proof = supply_position.accumulate_yield();
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
                 supply_position.record_yield_withdrawal(total_yield);
                 supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
+            }
+            (false, Some(snapshot_limit)) => {
+                supply_position.accumulate_yield_partial(snapshot_limit);
+            }
+            _ => {
+                supply_position.accumulate_yield();
             }
         }
     }
