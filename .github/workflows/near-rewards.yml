@@ -1,10 +1,10 @@
 name: NEAR Protocol Rewards Tracking
 on:
   schedule:
-    - cron: '0 */12 * * *'  # Every 12 hours
-  workflow_dispatch:        # Manual trigger
+    - cron: "0 */12 * * *" # Every 12 hours
+  workflow_dispatch: # Manual trigger
   push:
-    branches: [ main ]     # Start on main branch updates
+    branches: [main, dev]
 
 jobs:
   calculate-rewards:
@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: "18"
 
       - name: Calculate Rewards
         env:
