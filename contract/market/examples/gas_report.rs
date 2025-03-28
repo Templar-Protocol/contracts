@@ -46,7 +46,7 @@ async fn main() {
     // will maximize iterations while safely staying within the maximum gas limit.
     let at_0 = results.get(&0).unwrap();
     let max_snapshots = (COUNT - 1) * STEP;
-    let at_max_snapshots = results.get(&max_snapshots).unwrap();
+    let at_max_snapshots = results.get(&(COUNT - 1)).unwrap();
     let snapshot_limit = calculate_snapshot_limit(
         *at_0,
         max_snapshots as u64,
