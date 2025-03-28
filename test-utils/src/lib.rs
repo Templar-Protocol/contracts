@@ -351,7 +351,7 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn harvest_yield(
+    pub async fn harvest_yield_execution(
         &self,
         supply_user: &Account,
         compounding: bool,
@@ -366,6 +366,25 @@ impl TestController {
             .transact()
             .await
             .unwrap()
+            .unwrap()
+    }
+
+    pub async fn harvest_yield(
+        &self,
+        supply_user: &Account,
+        compounding: bool,
+    ) -> BorrowAssetAmount {
+        eprintln!("{} harvesting yield...", supply_user.id());
+        supply_user
+            .call(self.contract.id(), "harvest_yield")
+            .args_json(json!({
+                "compounding": compounding,
+            }))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .json::<BorrowAssetAmount>()
             .unwrap()
     }
 
