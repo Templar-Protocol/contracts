@@ -226,7 +226,10 @@ impl<M: Deref<Target = Market>> LinkedBorrowPosition<M> {
         interest.to_u128_ceil().unwrap().into()
     }
 
-    pub(crate) fn calculate_interest(&self, limit: u32) -> AccumulationRecord<BorrowAsset> {
+    pub(crate) fn calculate_interest(
+        &self,
+        snapshot_limit: u32,
+    ) -> AccumulationRecord<BorrowAsset> {
         let principal: Decimal = self.position.get_borrow_asset_principal().into();
         let mut next_snapshot_index = self.position.borrow_asset_fees.get_next_snapshot_index();
 
@@ -242,7 +245,7 @@ impl<M: Deref<Target = Market>> LinkedBorrowPosition<M> {
             .iter()
             .enumerate()
             .skip(next_snapshot_index as usize)
-            .take(limit as usize)
+            .take(snapshot_limit as usize)
             .map(|(i, s): (usize, &Snapshot)| (i as u32, s))
             .peekable();
 
@@ -474,10 +477,10 @@ impl<'a> LinkedBorrowPositionMut<'a> {
         liability_reduction.amount_remaining
     }
 
-    pub fn accumulate_interest(&mut self) -> InterestAccumulationProof {
+    pub fn accumulate_interest_partial(&mut self, snapshot_limit: u32) {
         self.market.snapshot();
 
-        let accumulation_record = self.calculate_interest(u32::MAX);
+        let accumulation_record = self.calculate_interest(snapshot_limit);
 
         if !accumulation_record.amount.is_zero() {
             MarketEvent::InterestAccumulated {
@@ -490,7 +493,10 @@ impl<'a> LinkedBorrowPositionMut<'a> {
         self.position
             .borrow_asset_fees
             .accumulate(accumulation_record);
+    }
 
+    pub fn accumulate_interest(&mut self) -> InterestAccumulationProof {
+        self.accumulate_interest_partial(u32::MAX);
         InterestAccumulationProof(())
     }
 

@@ -132,10 +132,10 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    fn apply_interest(&mut self) {
+    fn apply_interest(&mut self, snapshot_limit: Option<u32>) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut borrow_position) = self.get_linked_borrow_position_mut(predecessor) {
-            borrow_position.accumulate_interest();
+            borrow_position.accumulate_interest_partial(snapshot_limit.unwrap_or(u32::MAX));
         }
     }
 
