@@ -293,11 +293,13 @@ impl<'a> LinkedSupplyPositionMut<'a> {
 
         self.market.snapshot();
 
-        MarketEvent::SupplyDeposited {
-            account_id: self.account_id.clone(),
-            borrow_asset_amount: amount,
+        if !amount.is_zero() {
+            MarketEvent::SupplyDeposited {
+                account_id: self.account_id.clone(),
+                borrow_asset_amount: amount,
+            }
+            .emit();
         }
-        .emit();
     }
 
     pub fn record_yield_withdrawal(
