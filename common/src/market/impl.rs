@@ -5,14 +5,14 @@ use near_sdk::{
 
 use crate::{
     asset::BorrowAssetAmount,
-    borrow::{BorrowPosition, LinkedBorrowPosition, LinkedBorrowPositionMut},
+    borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
     market::MarketConfiguration,
     number::Decimal,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
-    supply::{LinkedSupplyPosition, LinkedSupplyPositionMut, SupplyPosition},
+    supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
@@ -162,68 +162,56 @@ impl Market {
         self.supply_positions.keys()
     }
 
-    pub fn get_linked_supply_position(
-        &self,
-        account_id: AccountId,
-    ) -> Option<LinkedSupplyPosition<&Self>> {
+    pub fn supply_position_ref(&self, account_id: AccountId) -> Option<SupplyPositionRef<&Self>> {
         self.supply_positions
             .get(&account_id)
-            .map(|position| LinkedSupplyPosition::new(self, account_id, position))
+            .map(|position| SupplyPositionRef::new(self, account_id, position))
     }
 
-    pub fn get_linked_supply_position_mut(
-        &mut self,
-        account_id: AccountId,
-    ) -> Option<LinkedSupplyPositionMut> {
+    pub fn supply_position_guard(&mut self, account_id: AccountId) -> Option<SupplyPositionGuard> {
         self.supply_positions
             .get(&account_id)
-            .map(|position| LinkedSupplyPositionMut::new(self, account_id, position))
+            .map(|position| SupplyPositionGuard::new(self, account_id, position))
     }
 
-    pub fn get_or_create_linked_supply_position_mut(
+    pub fn get_or_create_supply_position_guard(
         &mut self,
         account_id: AccountId,
-    ) -> LinkedSupplyPositionMut {
+    ) -> SupplyPositionGuard {
         let position = self
             .supply_positions
             .get(&account_id)
             .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
 
-        LinkedSupplyPositionMut::new(self, account_id, position)
+        SupplyPositionGuard::new(self, account_id, position)
     }
 
     pub fn iter_borrow_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
         self.borrow_positions.keys()
     }
 
-    pub fn get_linked_borrow_position(
-        &self,
-        account_id: AccountId,
-    ) -> Option<LinkedBorrowPosition<&Self>> {
+    pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {
         self.borrow_positions
             .get(&account_id)
-            .map(|position| LinkedBorrowPosition::new(self, account_id, position))
+            .map(|position| BorrowPositionRef::new(self, account_id, position))
     }
 
-    pub fn get_linked_borrow_position_mut(
-        &mut self,
-        account_id: AccountId,
-    ) -> Option<LinkedBorrowPositionMut> {
+    pub fn borrow_position_guard(&mut self, account_id: AccountId) -> Option<BorrowPositionGuard> {
         self.borrow_positions
             .get(&account_id)
-            .map(|position| LinkedBorrowPositionMut::new(self, account_id, position))
+            .map(|position| BorrowPositionGuard::new(self, account_id, position))
     }
 
-    pub fn get_or_create_linked_borrow_position_mut(
+    pub fn get_or_create_borrow_position_guard(
         &mut self,
         account_id: AccountId,
-    ) -> LinkedBorrowPositionMut {
+    ) -> BorrowPositionGuard {
         let position = self
             .borrow_positions
             .get(&account_id)
             .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
 
-        LinkedBorrowPositionMut::new(self, account_id, position)
+        BorrowPositionGuard::new(self, account_id, position)
     }
 
     /// # Errors
@@ -234,17 +222,17 @@ impl Market {
     ) -> Result<Option<WithdrawalResolution>, WithdrawalQueueLockError> {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
-        let Some((amount, mut supply_position)) = self
-            .get_linked_supply_position_mut(account_id)
-            .and_then(|supply_position| {
-                // Cap withdrawal amount to deposit amount at most.
-                let amount = supply_position
-                    .inner()
-                    .get_borrow_asset_deposit()
-                    .min(requested_amount);
+        let Some((amount, mut supply_position)) =
+            self.supply_position_guard(account_id)
+                .and_then(|supply_position| {
+                    // Cap withdrawal amount to deposit amount at most.
+                    let amount = supply_position
+                        .inner()
+                        .get_borrow_asset_deposit()
+                        .min(requested_amount);
 
-                (!amount.is_zero()).then_some((amount, supply_position))
-            })
+                    (!amount.is_zero()).then_some((amount, supply_position))
+                })
         else {
             // The amount that the entry is eligible to withdraw is zero, so skip it.
             self.withdrawal_queue

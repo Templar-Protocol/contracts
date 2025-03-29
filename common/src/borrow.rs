@@ -177,13 +177,13 @@ pub mod error {
     pub struct LiquidationLockError;
 }
 
-pub struct LinkedBorrowPosition<M> {
+pub struct BorrowPositionRef<M> {
     market: M,
     account_id: AccountId,
     position: BorrowPosition,
 }
 
-impl<M> LinkedBorrowPosition<M> {
+impl<M> BorrowPositionRef<M> {
     pub fn new(market: M, account_id: AccountId, position: BorrowPosition) -> Self {
         Self {
             market,
@@ -201,7 +201,7 @@ impl<M> LinkedBorrowPosition<M> {
     }
 }
 
-impl<M: Deref<Target = Market>> LinkedBorrowPosition<M> {
+impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn with_pending_interest(&mut self) {
         self.position.borrow_asset_fees.pending_estimate =
             self.calculate_interest(u32::MAX).get_amount();
@@ -322,9 +322,9 @@ impl<M: Deref<Target = Market>> LinkedBorrowPosition<M> {
     }
 }
 
-pub struct LinkedBorrowPositionMut<'a>(LinkedBorrowPosition<&'a mut Market>);
+pub struct BorrowPositionGuard<'a>(BorrowPositionRef<&'a mut Market>);
 
-impl Drop for LinkedBorrowPositionMut<'_> {
+impl Drop for BorrowPositionGuard<'_> {
     fn drop(&mut self) {
         self.0
             .market
@@ -333,23 +333,23 @@ impl Drop for LinkedBorrowPositionMut<'_> {
     }
 }
 
-impl<'a> Deref for LinkedBorrowPositionMut<'a> {
-    type Target = LinkedBorrowPosition<&'a mut Market>;
+impl<'a> Deref for BorrowPositionGuard<'a> {
+    type Target = BorrowPositionRef<&'a mut Market>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl DerefMut for LinkedBorrowPositionMut<'_> {
+impl DerefMut for BorrowPositionGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<'a> LinkedBorrowPositionMut<'a> {
+impl<'a> BorrowPositionGuard<'a> {
     pub fn new(market: &'a mut Market, account_id: AccountId, position: BorrowPosition) -> Self {
-        Self(LinkedBorrowPosition::new(market, account_id, position))
+        Self(BorrowPositionRef::new(market, account_id, position))
     }
 
     pub fn record_collateral_asset_deposit(
