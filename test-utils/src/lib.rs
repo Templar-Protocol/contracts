@@ -86,9 +86,9 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot> {
+    pub async fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot> {
         self.contract
-            .view("get_snapshots")
+            .view("list_snapshots")
             .args_json(json!({
                 "offset": offset,
                 "count": count,
@@ -592,7 +592,7 @@ impl TestController {
     pub async fn print_snapshots(&self) {
         let snapshots = self
             .contract
-            .view("get_snapshots")
+            .view("list_snapshots")
             .args_json(json!({}))
             .await
             .unwrap()

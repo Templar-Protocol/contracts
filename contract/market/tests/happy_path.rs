@@ -39,7 +39,7 @@ async fn test_happy() {
     let snapshots_len = c.get_snapshots_len().await;
     assert_eq!(snapshots_len, 1, "Should generate single snapshot on init");
 
-    let snapshots = c.get_snapshots(None, None).await;
+    let snapshots = c.list_snapshots(None, None).await;
     assert_eq!(snapshots.len(), 1);
     assert!(snapshots[0].yield_distribution.is_zero());
     assert!(snapshots[0].deposited.is_zero());
