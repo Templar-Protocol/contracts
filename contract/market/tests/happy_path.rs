@@ -2,7 +2,8 @@ use rstest::rstest;
 use tokio::join;
 
 use templar_common::{
-    borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy, number::Decimal,
+    borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy,
+    market::HarvestYieldMode, number::Decimal,
 };
 use test_utils::*;
 
@@ -137,14 +138,17 @@ async fn test_happy() {
         async {
             // Withdraw yield.
             {
-                c.harvest_yield(&supply_user, false).await;
+                c.harvest_yield(&supply_user, HarvestYieldMode::Default)
+                    .await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert_eq!(
                     u128::from(supply_position.borrow_asset_yield.get_total()),
                     80,
                 );
                 // Move the yield to the principal so that it can be withdrawn
-                let amount_moved_to_principal = c.harvest_yield(&supply_user, true).await;
+                let amount_moved_to_principal = c
+                    .harvest_yield(&supply_user, HarvestYieldMode::Compounding)
+                    .await;
 
                 assert_eq!(
                     amount_moved_to_principal,

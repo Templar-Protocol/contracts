@@ -1,17 +1,19 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use rstest::rstest;
-use templar_common::{dec, fee::Fee, interest_rate_strategy::InterestRateStrategy};
+use templar_common::{
+    dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
+};
 use test_utils::*;
 
 #[rstest]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), true)]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), false)]
+#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), HarvestYieldMode::Compounding)]
+#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), HarvestYieldMode::Default)]
 #[tokio::test]
 async fn compounding_yield(
     #[case] principal: u128,
     #[case] strategy: InterestRateStrategy,
-    #[case] compounding: bool,
+    #[case] compounding: HarvestYieldMode,
 ) {
     let SetupEverything {
         c,
@@ -59,7 +61,8 @@ async fn compounding_yield(
     );
     eprintln!("Done sleeping!");
 
-    c.harvest_yield(&supply_user, false).await;
+    c.harvest_yield(&supply_user, HarvestYieldMode::Default)
+        .await;
 
     let (supply_position_1_after, supply_position_2_after) = tokio::join!(
         async { c.get_supply_position(supply_user.id()).await.unwrap() },

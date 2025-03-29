@@ -2,8 +2,8 @@
 
 use near_sdk::{json_types::U64, Gas};
 use templar_common::{
-    fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal,
-    time_chunk::TimeChunkConfiguration,
+    fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
+    number::Decimal, time_chunk::TimeChunkConfiguration,
 };
 use test_utils::{setup_everything, SetupEverything};
 
@@ -27,7 +27,9 @@ async fn main() {
     .await;
 
     c.supply(&supply_user, 120_000).await;
-    let harvest_yield_0 = c.harvest_yield_execution(&supply_user, true).await;
+    let harvest_yield_0 = c
+        .harvest_yield_execution(&supply_user, HarvestYieldMode::Compounding)
+        .await;
     let snapshot_count_before = c.list_snapshots(None, None).await.len();
     c.collateralize(&borrow_user, 2000).await;
     c.collateralize(&borrow_user_2, 2000).await;
@@ -41,7 +43,9 @@ async fn main() {
     }
 
     let apply_interest_max = c.apply_interest(&borrow_user_2, None).await;
-    let harvest_yield_max = c.harvest_yield_execution(&supply_user, true).await;
+    let harvest_yield_max = c
+        .harvest_yield_execution(&supply_user, HarvestYieldMode::Compounding)
+        .await;
 
     let snapshot_count_after = c.list_snapshots(None, None).await.len();
     let snapshot_count = snapshot_count_after - snapshot_count_before;
