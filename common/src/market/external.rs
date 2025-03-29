@@ -13,7 +13,7 @@ use crate::{
 
 use super::{BorrowAssetMetrics, MarketConfiguration};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 #[near(serializers = [json, borsh])]
 pub enum HarvestYieldMode {
     #[default]
