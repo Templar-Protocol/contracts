@@ -135,7 +135,12 @@ async fn test_happy() {
                     80,
                 );
                 // Move the yield to the principal so that it can be withdrawn
-                c.harvest_yield(&supply_user, true).await;
+                let amount_moved_to_principal = c.harvest_yield(&supply_user, true).await;
+
+                assert_eq!(
+                    amount_moved_to_principal,
+                    supply_position.borrow_asset_yield.get_total(),
+                );
 
                 let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
                 // Withdraw all

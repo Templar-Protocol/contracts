@@ -235,7 +235,7 @@ impl Market {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
         let Some((amount, mut supply_position)) = self
-            .get_linked_supply_position_mut(account_id.clone())
+            .get_linked_supply_position_mut(account_id)
             .and_then(|supply_position| {
                 // Cap withdrawal amount to deposit amount at most.
                 let amount = supply_position
@@ -243,11 +243,7 @@ impl Market {
                     .get_borrow_asset_deposit()
                     .min(requested_amount);
 
-                if amount.is_zero() {
-                    None
-                } else {
-                    Some((amount, supply_position))
-                }
+                (!amount.is_zero()).then_some((amount, supply_position))
             })
         else {
             // The amount that the entry is eligible to withdraw is zero, so skip it.

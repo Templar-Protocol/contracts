@@ -166,17 +166,23 @@ impl MarketExternalInterface for Contract {
             "Amount to withdraw must be greater than zero",
         );
         let predecessor = env::predecessor_account_id();
-        if self
-            .get_linked_supply_position(predecessor.clone())
-            .filter(|supply_position| !supply_position.inner().get_borrow_asset_deposit().is_zero())
-            .is_none()
-        {
+        let Some(supply_position) =
+            self.get_linked_supply_position(predecessor.clone())
+                .filter(|supply_position| {
+                    !supply_position.inner().get_borrow_asset_deposit().is_zero()
+                })
+        else {
             env::panic_str("Supply position does not exist");
-        }
+        };
 
-        // TODO: Check that amount is a sane value? i.e. within the amount actually deposited?
-        // Probably not, since this should be checked during the actual execution of the withdrawal.
-        // No sense duplicating the check, probably.
+        // We do check here, as well as during the execution.
+        // This check really only ensures that the `depth` reported by
+        // get_supply_withdrawal_queue_status() is realistically accurate.
+        require!(
+            supply_position.inner().get_borrow_asset_deposit() >= amount,
+            "Attempt to withdraw more than current deposit",
+        );
+
         self.withdrawal_queue.remove(&predecessor);
         self.withdrawal_queue.insert_or_update(&predecessor, amount);
     }
@@ -203,7 +209,7 @@ impl MarketExternalInterface for Contract {
                 )
                 .then(
                     self_ext!(Self::GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL)
-                        .after_execute_next_withdrawal(withdrawal_resolution),
+                        .execute_next_supply_withdrawal_request_01_finalize(withdrawal_resolution),
                 ),
         )
     }
@@ -219,7 +225,7 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.get_status()
     }
 
-    fn harvest_yield(&mut self, compounding: Option<bool>) {
+    fn harvest_yield(&mut self, compounding: Option<bool>) -> BorrowAssetAmount {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.get_linked_supply_position_mut(predecessor) {
             let proof = supply_position.accumulate_yield();
@@ -228,8 +234,11 @@ impl MarketExternalInterface for Contract {
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
                 supply_position.record_yield_withdrawal(total_yield);
                 supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
+                return total_yield;
             }
         }
+
+        BorrowAssetAmount::zero()
     }
 
     fn get_last_yield_rate(&self) -> Decimal {

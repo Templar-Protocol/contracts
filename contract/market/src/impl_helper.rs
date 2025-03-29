@@ -46,14 +46,8 @@ impl Contract {
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
         if let Some(mut borrow_position) = self.get_linked_borrow_position_mut(account_id) {
-            // TODO:
-            // Due to the slightly imprecise calculation of yield and
-            // other fees, the returning of the excess should be
-            // anything >1%, for example, over the total amount
-            // borrowed + fees/interest.
-            // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923876327
-
             let proof = borrow_position.accumulate_interest();
+            // Returns the amount that should be returned to the borrower.
             borrow_position.record_repay(proof, amount)
         } else {
             // No borrow exists: just return the whole amount.
@@ -242,7 +236,10 @@ impl Contract {
     pub const GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL: Gas = Gas::from_tgas(4);
 
     #[private]
-    pub fn after_execute_next_withdrawal(&mut self, withdrawal_resolution: WithdrawalResolution) {
+    pub fn execute_next_supply_withdrawal_request_01_finalize(
+        &mut self,
+        withdrawal_resolution: WithdrawalResolution,
+    ) {
         // TODO: Is this check even necessary in a #[private] function?
         require!(env::promise_results_count() == 1);
 
