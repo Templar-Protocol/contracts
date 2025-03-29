@@ -82,7 +82,7 @@ async fn compounding_yield(
     eprintln!("supply 2 yield: {supply_yield_2:#?}");
     eprintln!("iterations: {iters}");
 
-    if compounding {
+    if matches!(compounding, HarvestYieldMode::Compounding) {
         // Supply user 2 will be rounded DOWN each iteration.
         // Ensure that it is compounding, so each iteration should add (much) more
         // than 1.
