@@ -2,7 +2,7 @@ use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    market::{BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface},
+    market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
@@ -228,19 +228,14 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.get_status()
     }
 
-    fn harvest_yield(
-        &mut self,
-        compounding: Option<bool>,
-        snapshot_limit: Option<u32>,
-    ) -> BorrowAssetAmount {
+    fn harvest_yield(&mut self, mode: HarvestYieldMode) -> BorrowAssetAmount {
         let predecessor = env::predecessor_account_id();
         let Some(mut supply_position) = self.supply_position_guard(predecessor) else {
             return BorrowAssetAmount::zero();
         };
 
-        match (compounding.unwrap_or(false), snapshot_limit) {
-            (true, Some(_)) => env::panic_str("`compounding` and `snapshot_limit` are exclusive"),
-            (true, None) => {
+        match mode {
+            HarvestYieldMode::Compounding => {
                 let proof = supply_position.accumulate_yield();
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
@@ -248,10 +243,10 @@ impl MarketExternalInterface for Contract {
                 supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
                 return total_yield;
             }
-            (false, Some(snapshot_limit)) => {
-                supply_position.accumulate_yield_partial(snapshot_limit);
+            HarvestYieldMode::Snapshot(limit) => {
+                supply_position.accumulate_yield_partial(limit);
             }
-            _ => {
+            HarvestYieldMode::Default => {
                 supply_position.accumulate_yield();
             }
         }
@@ -312,25 +307,17 @@ impl MarketExternalInterface for Contract {
 
         self.static_yield.insert(&predecessor, &static_yield_record);
 
-        let borrow_promise = if borrow_asset_amount.is_zero() {
-            None
-        } else {
-            Some(
-                self.configuration
-                    .borrow_asset
-                    .transfer(predecessor.clone(), borrow_asset_amount),
-            )
-        };
+        let borrow_promise = (!borrow_asset_amount.is_zero()).then_some(
+            self.configuration
+                .borrow_asset
+                .transfer(predecessor.clone(), borrow_asset_amount),
+        );
 
-        let collateral_promise = if collateral_asset_amount.is_zero() {
-            None
-        } else {
-            Some(
-                self.configuration
-                    .collateral_asset
-                    .transfer(predecessor.clone(), collateral_asset_amount),
-            )
-        };
+        let collateral_promise = (!collateral_asset_amount.is_zero()).then_some(
+            self.configuration
+                .collateral_asset
+                .transfer(predecessor.clone(), collateral_asset_amount),
+        );
 
         match (borrow_promise, collateral_promise) {
             (Some(b), Some(c)) => b.and(c),

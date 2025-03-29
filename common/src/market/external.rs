@@ -1,4 +1,4 @@
-use near_sdk::{AccountId, Promise, PromiseOrValue};
+use near_sdk::{near, AccountId, Promise, PromiseOrValue};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
@@ -12,6 +12,15 @@ use crate::{
 };
 
 use super::{BorrowAssetMetrics, MarketConfiguration};
+
+#[derive(Debug, Clone, Default)]
+#[near(serializers = [json, borsh])]
+pub enum HarvestYieldMode {
+    #[default]
+    Default,
+    Compounding,
+    Snapshot(u32),
+}
 
 #[near_sdk::ext_contract(ext_market)]
 pub trait MarketExternalInterface {
@@ -76,15 +85,11 @@ pub trait MarketExternalInterface {
     fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
 
     /// Claim any distributed yield to the supply record.
-    /// If `compounding` is `true`, the all of the yield (including any
+    /// If mode is set to `compounding`, the all of the yield (including any
     /// harvested in previous, non-compounding `harvest_yield` calls) is
     /// deposited to the supply record, so it will contribute to future yield
     /// calculations.
-    fn harvest_yield(
-        &mut self,
-        compounding: Option<bool>,
-        snapshot_limit: Option<u32>,
-    ) -> BorrowAssetAmount;
+    fn harvest_yield(&mut self, mode: HarvestYieldMode) -> BorrowAssetAmount;
 
     /// This value is an *expected average over time*.
     /// Supply positions actually earn all of their yield the instant it is
