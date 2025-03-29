@@ -20,7 +20,8 @@ pub trait MarketExternalInterface {
     // ========================
 
     fn get_configuration(&self) -> MarketConfiguration;
-    fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
+    fn get_snapshots_len(&self) -> u32;
+    fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
 
     fn list_borrows(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
@@ -51,7 +52,7 @@ pub trait MarketExternalInterface {
     /// Applies interest to the predecessor's borrow record.
     /// Not likely to be used in real life, since there it does not affect the
     /// final interest calculation, and rounds fractional interest UP.
-    fn apply_interest(&mut self);
+    fn apply_interest(&mut self, snapshot_limit: Option<u32>);
 
     fn get_last_interest_rate(&self) -> Decimal;
 
@@ -79,7 +80,11 @@ pub trait MarketExternalInterface {
     /// harvested in previous, non-compounding `harvest_yield` calls) is
     /// deposited to the supply record, so it will contribute to future yield
     /// calculations.
-    fn harvest_yield(&mut self, compounding: Option<bool>) -> BorrowAssetAmount;
+    fn harvest_yield(
+        &mut self,
+        compounding: Option<bool>,
+        snapshot_limit: Option<u32>,
+    ) -> BorrowAssetAmount;
 
     /// This value is an *expected average over time*.
     /// Supply positions actually earn all of their yield the instant it is

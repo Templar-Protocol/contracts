@@ -19,7 +19,11 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
-    fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
+    fn get_snapshots_len(&self) -> u32 {
+        self.snapshots.len()
+    }
+
+    fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
         self.snapshots
@@ -140,10 +144,10 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    fn apply_interest(&mut self) {
+    fn apply_interest(&mut self, snapshot_limit: Option<u32>) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut borrow_position) = self.borrow_position_guard(predecessor) {
-            borrow_position.accumulate_interest();
+            borrow_position.accumulate_interest_partial(snapshot_limit.unwrap_or(u32::MAX));
         }
     }
 
@@ -224,16 +228,31 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.get_status()
     }
 
-    fn harvest_yield(&mut self, compounding: Option<bool>) -> BorrowAssetAmount {
+    fn harvest_yield(
+        &mut self,
+        compounding: Option<bool>,
+        snapshot_limit: Option<u32>,
+    ) -> BorrowAssetAmount {
         let predecessor = env::predecessor_account_id();
-        if let Some(mut supply_position) = self.supply_position_guard(predecessor) {
-            let proof = supply_position.accumulate_yield();
-            if compounding.unwrap_or(false) {
+        let Some(mut supply_position) = self.supply_position_guard(predecessor) else {
+            return BorrowAssetAmount::zero();
+        };
+
+        match (compounding.unwrap_or(false), snapshot_limit) {
+            (true, Some(_)) => env::panic_str("`compounding` and `snapshot_limit` are exclusive"),
+            (true, None) => {
+                let proof = supply_position.accumulate_yield();
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.inner().borrow_asset_yield.get_total();
                 supply_position.record_yield_withdrawal(total_yield);
                 supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
                 return total_yield;
+            }
+            (false, Some(snapshot_limit)) => {
+                supply_position.accumulate_yield_partial(snapshot_limit);
+            }
+            _ => {
+                supply_position.accumulate_yield();
             }
         }
 

@@ -76,6 +76,29 @@ impl TestController {
             .unwrap()
     }
 
+    pub async fn get_snapshots_len(&self) -> u32 {
+        self.contract
+            .view("get_snapshots_len")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<u32>()
+            .unwrap()
+    }
+
+    pub async fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot> {
+        self.contract
+            .view("list_snapshots")
+            .args_json(json!({
+                "offset": offset,
+                "count": count,
+            }))
+            .await
+            .unwrap()
+            .json::<Vec<Snapshot>>()
+            .unwrap()
+    }
+
     pub async fn set_collateral_asset_price(&self, price: f64) -> ExecutionSuccess {
         eprintln!("Setting collateral asset price...",);
         self.balance_oracle
@@ -340,11 +363,18 @@ impl TestController {
         .await
     }
 
-    pub async fn apply_interest(&self, borrow_user: &Account) -> ExecutionSuccess {
+    pub async fn apply_interest(
+        &self,
+        borrow_user: &Account,
+        snapshot_limit: Option<u32>,
+    ) -> ExecutionSuccess {
         eprintln!("{} applying interest...", borrow_user.id());
         borrow_user
             .call(self.contract.id(), "apply_interest")
-            .args_json(json!({}))
+            .args_json(json!({
+                "snapshot_limit": snapshot_limit,
+            }))
+            .max_gas()
             .transact()
             .await
             .unwrap()
@@ -568,7 +598,7 @@ impl TestController {
     pub async fn print_snapshots(&self) {
         let snapshots = self
             .contract
-            .view("get_snapshots")
+            .view("list_snapshots")
             .args_json(json!({}))
             .await
             .unwrap()

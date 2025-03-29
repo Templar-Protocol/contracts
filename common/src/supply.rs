@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, json_types::U64, near, AccountId};
+use near_sdk::{env, json_types::U64, near, require, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -98,7 +98,8 @@ impl<M> SupplyPositionRef<M> {
 
 impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
     pub fn with_pending_yield_estimate(&mut self) {
-        self.position.borrow_asset_yield.pending_estimate = self.calculate_yield().get_amount();
+        self.position.borrow_asset_yield.pending_estimate =
+            self.calculate_yield(u32::MAX).get_amount();
         self.position
             .borrow_asset_yield
             .pending_estimate
@@ -136,7 +137,7 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
         estimate_current_snapshot.to_u128_floor().unwrap().into()
     }
 
-    pub fn calculate_yield(&self) -> AccumulationRecord<BorrowAsset> {
+    pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
         let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
 
         let amount: Decimal = self.position.get_borrow_asset_deposit().into();
@@ -151,7 +152,11 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             clippy::cast_possible_truncation,
             reason = "Assume # of snapshots is never >u32::MAX"
         )]
-        for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize) {
+        for (i, snapshot) in it
+            .enumerate()
+            .skip(next_snapshot_index as usize)
+            .take(snapshot_limit as usize)
+        {
             if !snapshot.deposited.is_zero() {
                 accumulated += amount * Decimal::from(snapshot.yield_distribution)
                     / Decimal::from(snapshot.deposited);
@@ -200,10 +205,11 @@ impl<'a> SupplyPositionGuard<'a> {
         Self(SupplyPositionRef::new(market, account_id, position))
     }
 
-    pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
+    pub fn accumulate_yield_partial(&mut self, snapshot_limit: u32) {
+        require!(snapshot_limit > 0, "snapshot_limit must be nonzero");
         self.market.snapshot();
 
-        let accumulation_record = self.calculate_yield();
+        let accumulation_record = self.calculate_yield(snapshot_limit);
 
         if !accumulation_record.amount.is_zero() {
             MarketEvent::YieldAccumulated {
@@ -216,7 +222,10 @@ impl<'a> SupplyPositionGuard<'a> {
         self.position
             .borrow_asset_yield
             .accumulate(accumulation_record);
+    }
 
+    pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
+        self.accumulate_yield_partial(u32::MAX);
         YieldAccumulationProof(())
     }
 
