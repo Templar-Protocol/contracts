@@ -131,14 +131,13 @@ impl MarketConfiguration {
         borrow_position: &BorrowPosition,
         block_timestamp_ms: u64,
     ) -> bool {
-        if let Some(U64(maximum_duration_ms)) = self.borrow_maximum_duration_ms {
-            borrow_position
-                .started_at_block_timestamp_ms
-                .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
-                .is_none_or(|duration_ms| duration_ms <= maximum_duration_ms)
-        } else {
-            true
-        }
+        let Some(U64(maximum_duration_ms)) = self.borrow_maximum_duration_ms else {
+            return true;
+        };
+        borrow_position
+            .started_at_block_timestamp_ms
+            .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
+            .is_none_or(|duration_ms| duration_ms <= maximum_duration_ms)
     }
 
     pub fn is_within_minimum_initial_collateral_ratio(
