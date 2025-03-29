@@ -152,8 +152,10 @@ impl<M: Deref<Target = Market>> LinkedSupplyPosition<M> {
             reason = "Assume # of snapshots is never >u32::MAX"
         )]
         for (i, snapshot) in it.enumerate().skip(next_snapshot_index as usize) {
-            accumulated += amount * Decimal::from(snapshot.yield_distribution)
-                / Decimal::from(snapshot.deposited);
+            if !snapshot.deposited.is_zero() {
+                accumulated += amount * Decimal::from(snapshot.yield_distribution)
+                    / Decimal::from(snapshot.deposited);
+            }
 
             next_snapshot_index = i as u32 + 1;
         }
