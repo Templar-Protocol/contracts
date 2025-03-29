@@ -1,8 +1,5 @@
 # Liquidation
 
-> [!NOTE]
-> Until price oracle support is fully implemented, the test version of the contract uses price data provided as an argument to the function call.
-
 Liquidation is the process by which the asset collateralizing certain positions may be reappropriated e.g. to recover assets for an undercollateralized position.
 
 A liquidator is a third party willing to send a quantity of a market's borrow asset (usually a stablecoin) to the market in exchange for the amount of collateral asset supporting a specific account's position. As compensation for this service, the liquidator receives an exchange rate that is slightly better than the current rate. This difference in rates is called the "liquidator spread," and the maximum liquidator spread is configurable on a per-market basis.
