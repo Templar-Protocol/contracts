@@ -42,9 +42,9 @@ pub struct MarketConfiguration {
     /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
     ///
     /// For example, if a 100USDC borrow is (under)collateralized with $110 of
-    /// NEAR, a "maximum liquidator spread" of 10% would mean that a liquidator
-    /// could liquidate this borrow by sending 109USDC, netting the liquidator
-    /// ($110 - $100) * 10% = $1 of NEAR.
+    /// NEAR, a "maximum liquidator spread" of 1% would mean that a liquidator
+    /// could liquidate this borrow by sending 108.9USDC, netting the liquidator
+    /// $110 * 1% = $1.1 of NEAR.
     pub liquidation_maximum_spread: Decimal,
 }
 
