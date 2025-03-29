@@ -36,6 +36,15 @@ async fn test_happy() {
 
     assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
 
+    let snapshots_len = c.get_snapshots_len().await;
+    assert_eq!(snapshots_len, 1, "Should generate single snapshot on init");
+
+    let snapshots = c.get_snapshots(None, None).await;
+    assert_eq!(snapshots.len(), 1);
+    assert!(snapshots[0].yield_distribution.is_zero());
+    assert!(snapshots[0].deposited.is_zero());
+    assert!(snapshots[0].borrowed.is_zero());
+
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;
 

@@ -20,6 +20,10 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
+    fn get_snapshots_len(&self) -> u32 {
+        self.snapshots.len()
+    }
+
     fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);

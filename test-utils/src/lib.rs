@@ -76,6 +76,16 @@ impl TestController {
             .unwrap()
     }
 
+    pub async fn get_snapshots_len(&self) -> u32 {
+        self.contract
+            .view("get_snapshots_len")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<u32>()
+            .unwrap()
+    }
+
     pub async fn get_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot> {
         self.contract
             .view("get_snapshots")
