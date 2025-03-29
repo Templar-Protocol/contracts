@@ -3,7 +3,7 @@ use std::{path::Path, str::FromStr};
 use near_sdk::{
     json_types::{I64, U128, U64},
     serde_json::{self, json},
-    AccountId, NearToken,
+    AccountId, Gas, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, prelude::*, result::ExecutionSuccess, Account, Contract, DevNetwork, Worker,
@@ -393,7 +393,7 @@ impl TestController {
         account: &Account,
         borrow_asset_amount: Option<BorrowAssetAmount>,
         collateral_asset_amount: Option<CollateralAssetAmount>,
-    ) {
+    ) -> ExecutionSuccess {
         eprintln!("{} withdrawing static yield...", account.id());
         account
             .call(self.contract.id(), "withdraw_static_yield")
@@ -401,10 +401,11 @@ impl TestController {
                 "borrow_asset_amount": borrow_asset_amount,
                 "collateral_asset_amount": collateral_asset_amount,
             }))
+            .gas(Gas::from_tgas(20))
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
     pub async fn get_static_yield(&self, account_id: &AccountId) -> Option<StaticYieldRecord> {
@@ -430,6 +431,7 @@ impl TestController {
             .args_json(json!({
                 "amount": U128(amount),
             }))
+            .gas(Gas::from_tgas(20))
             .transact()
             .await
             .unwrap()
@@ -477,7 +479,10 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn execute_next_supply_withdrawal_request(&self, account: &Account) {
+    pub async fn execute_next_supply_withdrawal_request(
+        &self,
+        account: &Account,
+    ) -> ExecutionSuccess {
         eprintln!(
             "{} executing next supply withdrawal request...",
             account.id(),
@@ -485,10 +490,11 @@ impl TestController {
         account
             .call(self.contract.id(), "execute_next_supply_withdrawal_request")
             .args_json(json!({}))
+            .gas(Gas::from_tgas(15))
             .transact()
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
     }
 
     pub async fn liquidate(
@@ -496,7 +502,7 @@ impl TestController {
         liquidator_user: &Account,
         account_id: &AccountId,
         borrow_asset_amount: u128,
-    ) {
+    ) -> ExecutionSuccess {
         eprintln!(
             "{} executing liquidation against {} for {}...",
             liquidator_user.id(),
@@ -512,7 +518,7 @@ impl TestController {
             }))
             .unwrap(),
         )
-        .await;
+        .await
     }
 
     pub async fn mint_asset(&self, ft_id: &AccountId, receiver: &Account, amount: u128) {

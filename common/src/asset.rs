@@ -1,7 +1,7 @@
 use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{env, json_types::U128, near, AccountId, NearToken, Promise};
+use near_sdk::{env, json_types::U128, near, AccountId, Gas, NearToken, Promise};
 
 use crate::number::Decimal;
 
@@ -22,9 +22,14 @@ enum FungibleAssetKind {
 }
 
 impl<T: AssetClass> FungibleAsset<T> {
+    /// Really depends on the implementation, but this should suffice, since
+    /// normal implementations use < 3TGas.
+    pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
+
     pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
         match self.kind {
             FungibleAssetKind::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
+                .with_static_gas(Self::GAS_FT_TRANSFER)
                 .with_attached_deposit(NearToken::from_yoctonear(1))
                 .ft_transfer(receiver_id, u128::from(amount).into(), None),
         }

@@ -5,6 +5,12 @@ use std::ops::{Deref, DerefMut};
 use near_sdk::{near, BorshStorageKey, PanicOnDefault};
 use templar_common::market::{Market, MarketConfiguration};
 
+macro_rules! self_ext {
+    ($gas:expr) => {
+        Self::ext(::near_sdk::env::current_account_id()).with_static_gas($gas)
+    };
+}
+
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
 enum StorageKey {
