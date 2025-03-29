@@ -1,3 +1,5 @@
+use near_sdk::serde_json::json;
+use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use rstest::rstest;
 use tokio::join;
 
@@ -36,6 +38,17 @@ async fn test_happy() {
 
     assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
 
+    let bounds = c
+        .contract
+        .view("storage_balance_bounds")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json::<StorageBalanceBounds>()
+        .unwrap();
+
+    assert!(!bounds.min.is_zero());
+
     let snapshots_len = c.get_snapshots_len().await;
     assert_eq!(snapshots_len, 1, "Should generate single snapshot on init");
 
@@ -60,7 +73,7 @@ async fn test_happy() {
 
     assert_eq!(
         list_supplys,
-        [supply_user.id().clone()],
+        ["0".repeat(64).parse().unwrap(), supply_user.id().clone()],
         "Supply user should be the only account listed",
     );
 
@@ -80,7 +93,7 @@ async fn test_happy() {
 
     assert_eq!(
         list_borrows,
-        [borrow_user.id().clone()],
+        ["0".repeat(64).parse().unwrap(), borrow_user.id().clone()],
         "Borrow user should be the only account listed",
     );
 
@@ -97,8 +110,6 @@ async fn test_happy() {
 
     // Step 3: Withdraw some of the borrow asset
     let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
-
-    eprintln!("Price pair: {:#?}", c.get_prices().await);
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
     c.borrow(&borrow_user, 1000).await;

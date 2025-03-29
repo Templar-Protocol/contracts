@@ -5,6 +5,7 @@ use near_sdk::{
     serde_json::{self, json},
     AccountId, Gas, NearToken,
 };
+use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use near_workspaces::{
     network::Sandbox, prelude::*, result::ExecutionSuccess, Account, Contract, DevNetwork, Worker,
 };
@@ -48,6 +49,23 @@ pub struct TestController {
 impl TestController {
     pub async fn storage_deposits(&self, account: &Account) {
         eprintln!("Performing storage deposits for {}...", account.id());
+        let market_storage_bounds = self
+            .contract
+            .view("storage_balance_bounds")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<StorageBalanceBounds>()
+            .unwrap();
+        eprintln!("Bounds: {market_storage_bounds:#?}");
+        account
+            .call(self.contract.id(), "storage_deposit")
+            .args_json(json!({}))
+            .deposit(market_storage_bounds.min)
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
         account
             .call(self.borrow_asset.id(), "storage_deposit")
             .args_json(json!({}))
@@ -717,7 +735,7 @@ pub async fn setup_market(
         .await;
 
     let contract = worker.dev_deploy(wasm).await.unwrap();
-    contract
+    let init_call = contract
         .call("new")
         .args_json(json!({
             "configuration": configuration,
@@ -726,6 +744,13 @@ pub async fn setup_market(
         .await
         .unwrap()
         .unwrap();
+
+    eprintln!("Init call logs");
+    eprintln!("--------------");
+    for log in init_call.logs() {
+        eprintln!("\t{log}");
+    }
+    eprintln!("--------------");
 
     contract
 }

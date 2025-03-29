@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 hex-literal = "0.4"
 near-sdk.workspace = true
+near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true
 templar-common.workspace = true
 tokio.workspace = true
