@@ -39,7 +39,7 @@ async fn compounding_yield(
     tokio::join!(
         async {
             while !done.load(Ordering::Relaxed) {
-                c.harvest_yield(&supply_user_2, compounding).await;
+                c.harvest_yield(&supply_user_2, Some(compounding)).await;
                 iters += 1;
             }
         },
@@ -61,7 +61,7 @@ async fn compounding_yield(
     );
     eprintln!("Done sleeping!");
 
-    c.harvest_yield(&supply_user, HarvestYieldMode::Default)
+    c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
         .await;
 
     let (supply_position_1_after, supply_position_2_after) = tokio::join!(

@@ -384,7 +384,7 @@ impl TestController {
     pub async fn harvest_yield_execution(
         &self,
         supply_user: &Account,
-        mode: HarvestYieldMode,
+        mode: Option<HarvestYieldMode>,
     ) -> ExecutionSuccess {
         eprintln!("{} harvesting yield...", supply_user.id());
         supply_user
@@ -402,7 +402,7 @@ impl TestController {
     pub async fn harvest_yield(
         &self,
         supply_user: &Account,
-        mode: HarvestYieldMode,
+        mode: Option<HarvestYieldMode>,
     ) -> BorrowAssetAmount {
         eprintln!("{} harvesting yield...", supply_user.id());
         supply_user

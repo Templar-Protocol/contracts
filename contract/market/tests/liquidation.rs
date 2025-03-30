@@ -110,7 +110,7 @@ async fn successful_liquidation_good_debt_under_mcr(
 
     tokio::join!(
         async {
-            c.harvest_yield(&supply_user, HarvestYieldMode::Default)
+            c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
                 .await;
             let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
             assert_eq!(

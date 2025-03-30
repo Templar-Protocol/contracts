@@ -138,7 +138,7 @@ async fn test_happy() {
         async {
             // Withdraw yield.
             {
-                c.harvest_yield(&supply_user, HarvestYieldMode::Default)
+                c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
                     .await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert_eq!(
@@ -147,7 +147,7 @@ async fn test_happy() {
                 );
                 // Move the yield to the principal so that it can be withdrawn
                 let amount_moved_to_principal = c
-                    .harvest_yield(&supply_user, HarvestYieldMode::Compounding)
+                    .harvest_yield(&supply_user, Some(HarvestYieldMode::Compounding))
                     .await;
 
                 assert_eq!(
