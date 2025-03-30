@@ -61,6 +61,8 @@ async fn successful_liquidation_good_debt_under_mcr(
     #[case] collateral_asset_price_pct: u128,
     #[case] liquidation_amount: u128,
 ) {
+    use templar_common::market::HarvestYieldMode;
+
     let SetupEverything {
         c,
         liquidator_user,
@@ -108,7 +110,8 @@ async fn successful_liquidation_good_debt_under_mcr(
 
     tokio::join!(
         async {
-            c.harvest_yield(&supply_user, false).await;
+            c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+                .await;
             let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
             assert_eq!(
                 u128::from(supply_position.borrow_asset_yield.get_total()),

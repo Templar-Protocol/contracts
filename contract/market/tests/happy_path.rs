@@ -4,7 +4,8 @@ use rstest::rstest;
 use tokio::join;
 
 use templar_common::{
-    borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy, number::Decimal,
+    borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy,
+    market::HarvestYieldMode, number::Decimal,
 };
 use test_utils::*;
 
@@ -148,14 +149,17 @@ async fn test_happy() {
         async {
             // Withdraw yield.
             {
-                c.harvest_yield(&supply_user, false).await;
+                c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+                    .await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert_eq!(
                     u128::from(supply_position.borrow_asset_yield.get_total()),
                     80,
                 );
                 // Move the yield to the principal so that it can be withdrawn
-                let amount_moved_to_principal = c.harvest_yield(&supply_user, true).await;
+                let amount_moved_to_principal = c
+                    .harvest_yield(&supply_user, Some(HarvestYieldMode::Compounding))
+                    .await;
 
                 assert_eq!(
                     amount_moved_to_principal,
@@ -237,20 +241,32 @@ async fn test_happy() {
         // Protocol yield.
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
+            assert!(protocol_yield.collateral_asset.is_zero());
             assert_eq!(u128::from(protocol_yield.borrow_asset), 10);
             let balance_before = c.borrow_asset_balance_of(protocol_yield_user.id()).await;
-            c.withdraw_static_yield(&protocol_yield_user, None, None)
+            let result = c
+                .withdraw_static_yield(&protocol_yield_user, None, None)
                 .await;
+            for receipt in result.receipt_outcomes() {
+                assert!(&receipt.executor_id != c.collateral_asset.id());
+            }
+            assert!(result.failures().is_empty());
             let balance_after = c.borrow_asset_balance_of(protocol_yield_user.id()).await;
             assert_eq!(balance_after - balance_before, 10);
         },
         // Insurance yield.
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
+            assert!(insurance_yield.collateral_asset.is_zero());
             assert_eq!(u128::from(insurance_yield.borrow_asset), 10);
             let balance_before = c.borrow_asset_balance_of(insurance_yield_user.id()).await;
-            c.withdraw_static_yield(&insurance_yield_user, None, None)
+            let result = c
+                .withdraw_static_yield(&insurance_yield_user, None, None)
                 .await;
+            for receipt in result.receipt_outcomes() {
+                assert!(&receipt.executor_id != c.collateral_asset.id());
+            }
+            assert!(result.failures().is_empty());
             let balance_after = c.borrow_asset_balance_of(insurance_yield_user.id()).await;
             assert_eq!(balance_after - balance_before, 10);
         },

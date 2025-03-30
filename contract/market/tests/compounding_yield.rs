@@ -1,17 +1,19 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use rstest::rstest;
-use templar_common::{dec, fee::Fee, interest_rate_strategy::InterestRateStrategy};
+use templar_common::{
+    dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
+};
 use test_utils::*;
 
 #[rstest]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), true)]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), false)]
+#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), HarvestYieldMode::Compounding)]
+#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), HarvestYieldMode::Default)]
 #[tokio::test]
 async fn compounding_yield(
     #[case] principal: u128,
     #[case] strategy: InterestRateStrategy,
-    #[case] compounding: bool,
+    #[case] compounding: HarvestYieldMode,
 ) {
     let SetupEverything {
         c,
@@ -37,7 +39,7 @@ async fn compounding_yield(
     tokio::join!(
         async {
             while !done.load(Ordering::Relaxed) {
-                c.harvest_yield(&supply_user_2, compounding).await;
+                c.harvest_yield(&supply_user_2, Some(compounding)).await;
                 iters += 1;
             }
         },
@@ -59,7 +61,8 @@ async fn compounding_yield(
     );
     eprintln!("Done sleeping!");
 
-    c.harvest_yield(&supply_user, false).await;
+    c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+        .await;
 
     let (supply_position_1_after, supply_position_2_after) = tokio::join!(
         async { c.get_supply_position(supply_user.id()).await.unwrap() },
@@ -79,7 +82,7 @@ async fn compounding_yield(
     eprintln!("supply 2 yield: {supply_yield_2:#?}");
     eprintln!("iterations: {iters}");
 
-    if compounding {
+    if matches!(compounding, HarvestYieldMode::Compounding) {
         // Supply user 2 will be rounded DOWN each iteration.
         // Ensure that it is compounding, so each iteration should add (much) more
         // than 1.

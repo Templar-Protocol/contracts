@@ -16,8 +16,8 @@ use templar_common::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     market::{
-        BalanceOracleConfiguration, LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage,
-        YieldWeights,
+        BalanceOracleConfiguration, HarvestYieldMode, LiquidateMsg, MarketConfiguration,
+        Nep141MarketDepositMessage, YieldWeights,
     },
     number::Decimal,
     oracle::pyth::{self, OracleResponse, PriceIdentifier},
@@ -402,13 +402,13 @@ impl TestController {
     pub async fn harvest_yield_execution(
         &self,
         supply_user: &Account,
-        compounding: bool,
+        mode: Option<HarvestYieldMode>,
     ) -> ExecutionSuccess {
         eprintln!("{} harvesting yield...", supply_user.id());
         supply_user
             .call(self.contract.id(), "harvest_yield")
             .args_json(json!({
-                "compounding": compounding,
+                "mode": mode,
             }))
             .max_gas()
             .transact()
@@ -420,13 +420,13 @@ impl TestController {
     pub async fn harvest_yield(
         &self,
         supply_user: &Account,
-        compounding: bool,
+        mode: Option<HarvestYieldMode>,
     ) -> BorrowAssetAmount {
         eprintln!("{} harvesting yield...", supply_user.id());
         supply_user
             .call(self.contract.id(), "harvest_yield")
             .args_json(json!({
-                "compounding": compounding,
+                "mode": mode,
             }))
             .max_gas()
             .transact()
