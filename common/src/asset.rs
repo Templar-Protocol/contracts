@@ -43,8 +43,7 @@ impl<T: AssetClass> FungibleAsset<T> {
     }
 
     pub fn is_nep141(&self, account_id: &AccountId) -> bool {
-        let FungibleAssetKind::Nep141(ref contract_id) = self.kind;
-        contract_id == account_id
+        matches!(self.kind, FungibleAssetKind::Nep141(ref contract_id) if contract_id == account_id)
     }
 
     pub fn into_nep141(self) -> Option<AccountId> {
@@ -81,6 +80,7 @@ pub trait AssetClass: sealed::Sealed + Copy + Clone {}
 pub struct CollateralAsset;
 impl sealed::Sealed for CollateralAsset {}
 impl AssetClass for CollateralAsset {}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowAsset;
