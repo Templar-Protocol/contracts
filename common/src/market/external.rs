@@ -33,9 +33,6 @@ pub trait MarketExternalInterface {
     fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
 
-    fn list_borrows(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
-    fn list_supplys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
-
     // ==================
     // BORROW FUNCTIONS
     // ==================

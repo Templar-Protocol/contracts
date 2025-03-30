@@ -1,7 +1,4 @@
-use near_sdk::{
-    collections::{LookupMap, UnorderedMap},
-    env, near, AccountId, BorshStorageKey, IntoStorageKey,
-};
+use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
 use crate::{
     asset::BorrowAssetAmount,
@@ -35,8 +32,8 @@ pub struct Market {
     pub borrow_asset_deposited: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
-    pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
-    pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
+    pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
+    pub(crate) borrow_positions: LookupMap<AccountId, BorrowPosition>,
     pub snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
@@ -64,8 +61,8 @@ impl Market {
             borrow_asset_deposited: 0.into(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
-            supply_positions: UnorderedMap::new(key!(SupplyPositions)),
-            borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
+            supply_positions: LookupMap::new(key!(SupplyPositions)),
+            borrow_positions: LookupMap::new(key!(BorrowPositions)),
             snapshots: ChunkedAppendOnlyList::new(key!(Snapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
@@ -158,10 +155,6 @@ impl Market {
             .at(snapshot.usage_ratio())
     }
 
-    pub fn iter_supply_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
-        self.supply_positions.keys()
-    }
-
     pub fn supply_position_ref(&self, account_id: AccountId) -> Option<SupplyPositionRef<&Self>> {
         self.supply_positions
             .get(&account_id)
@@ -184,10 +177,6 @@ impl Market {
             .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
 
         SupplyPositionGuard::new(self, account_id, position)
-    }
-
-    pub fn iter_borrow_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
-        self.borrow_positions.keys()
     }
 
     pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {

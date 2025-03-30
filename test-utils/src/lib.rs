@@ -184,16 +184,6 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn list_supplys(&self) -> Vec<AccountId> {
-        self.contract
-            .view("list_supplys")
-            .args_json(json!({}))
-            .await
-            .unwrap()
-            .json::<Vec<AccountId>>()
-            .unwrap()
-    }
-
     pub async fn collateralize(&self, borrow_user: &Account, amount: u128) {
         eprintln!(
             "{} transferring {amount} tokens for collateral...",
@@ -217,16 +207,6 @@ impl TestController {
             .await
             .unwrap()
             .json::<Option<BorrowPosition>>()
-            .unwrap()
-    }
-
-    pub async fn list_borrows(&self) -> Vec<AccountId> {
-        self.contract
-            .view("list_borrows")
-            .args_json(json!({}))
-            .await
-            .unwrap()
-            .json::<Vec<AccountId>>()
             .unwrap()
     }
 
