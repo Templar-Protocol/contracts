@@ -68,11 +68,7 @@ pub struct Linear {
 
 impl Linear {
     pub fn new(base: Decimal, top: Decimal) -> Option<Self> {
-        if base > top {
-            None
-        } else {
-            Some(Self { base, top })
-        }
+        (base <= top).then_some(Self { base, top })
     }
 }
 
@@ -186,7 +182,7 @@ impl Exponential2 {
             return None;
         }
 
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used, reason = "Invariant checked above")]
         Some(Self {
             i_factor: (top - base) / (eccentricity.pow2().unwrap() - 1u32),
             params: Exponential2Params {
@@ -199,15 +195,15 @@ impl Exponential2 {
 }
 
 impl UsageCurve for Exponential2 {
-    #[allow(clippy::unwrap_used)]
     fn at(&self, usage_ratio: Decimal) -> Decimal {
         require!(
             usage_ratio <= Decimal::ONE,
             "Invariant violation: Usage ratio cannot be over 100%.",
         );
 
-        self.params.base
-            + self.i_factor * ((self.params.eccentricity * usage_ratio).pow2().unwrap() - 1u32)
+        #[allow(clippy::unwrap_used, reason = "Invariant checked above")]
+        (self.params.base
+            + self.i_factor * ((self.params.eccentricity * usage_ratio).pow2().unwrap() - 1u32))
     }
 }
 
