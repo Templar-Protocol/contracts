@@ -111,28 +111,28 @@ impl Market {
                 },
             };
             self.snapshots.replace_last(new_snapshot);
-            last_index
-        } else {
-            let index = self.snapshots.len();
-            let new_snapshot = Snapshot {
-                time_chunk,
-                timestamp_ms: env::block_timestamp_ms().into(),
-                deposited: self.borrow_asset_deposited,
-                borrowed: self.borrow_asset_borrowed,
-                yield_distribution,
-            };
-            self.snapshots.push(new_snapshot);
-            if let Some(previous_snapshot_index) = index.checked_sub(1) {
-                if let Some(previous_snapshot) = self.snapshots.get(previous_snapshot_index) {
-                    MarketEvent::SnapshotFinalized {
-                        index: previous_snapshot_index,
-                        snapshot: previous_snapshot.clone(),
-                    }
-                    .emit();
-                }
-            }
-            index
+            return last_index;
         }
+
+        let index = self.snapshots.len();
+        let new_snapshot = Snapshot {
+            time_chunk,
+            timestamp_ms: env::block_timestamp_ms().into(),
+            deposited: self.borrow_asset_deposited,
+            borrowed: self.borrow_asset_borrowed,
+            yield_distribution,
+        };
+        self.snapshots.push(new_snapshot);
+        if let Some(previous_snapshot_index) = index.checked_sub(1) {
+            if let Some(previous_snapshot) = self.snapshots.get(previous_snapshot_index) {
+                MarketEvent::SnapshotFinalized {
+                    index: previous_snapshot_index,
+                    snapshot: previous_snapshot.clone(),
+                }
+                .emit();
+            }
+        }
+        index
     }
 
     pub fn get_borrow_asset_available_to_borrow(&self) -> BorrowAssetAmount {
