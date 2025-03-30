@@ -307,17 +307,17 @@ impl MarketExternalInterface for Contract {
 
         self.static_yield.insert(&predecessor, &static_yield_record);
 
-        let borrow_promise = (!borrow_asset_amount.is_zero()).then_some(
+        let borrow_promise = (!borrow_asset_amount.is_zero()).then(|| {
             self.configuration
                 .borrow_asset
-                .transfer(predecessor.clone(), borrow_asset_amount),
-        );
+                .transfer(predecessor.clone(), borrow_asset_amount)
+        });
 
-        let collateral_promise = (!collateral_asset_amount.is_zero()).then_some(
+        let collateral_promise = (!collateral_asset_amount.is_zero()).then(|| {
             self.configuration
                 .collateral_asset
-                .transfer(predecessor.clone(), collateral_asset_amount),
-        );
+                .transfer(predecessor.clone(), collateral_asset_amount)
+        });
 
         match (borrow_promise, collateral_promise) {
             (Some(b), Some(c)) => b.and(c),
