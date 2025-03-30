@@ -32,15 +32,15 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32>
     }
 
     pub fn len(&self) -> u32 {
-        if let Some(last_index) = self.inner.len().checked_sub(1) {
-            let mut full_count = last_index * CHUNK_SIZE;
-            if self.last_chunk_next_index == 0 {
-                full_count += CHUNK_SIZE;
+        let Some(last_index) = self.inner.len().checked_sub(1) else {
+            return 0;
+        };
+        last_index * CHUNK_SIZE
+            + if self.last_chunk_next_index == 0 {
+                CHUNK_SIZE
+            } else {
+                self.last_chunk_next_index
             }
-            full_count + self.last_chunk_next_index
-        } else {
-            0
-        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -52,14 +52,14 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32>
             let v = vec![item];
             self.inner.push(v);
         } else {
+            let last_inner = self
+                .inner
+                .len()
+                .checked_sub(1)
+                .unwrap_or_else(|| env::panic_str("Inconsistent state: len == 0"));
             let v = self
                 .inner
-                .get_mut(
-                    self.inner
-                        .len()
-                        .checked_sub(1)
-                        .unwrap_or_else(|| env::panic_str("Inconsistent state: len == 0")),
-                )
+                .get_mut(last_inner)
                 .unwrap_or_else(|| env::panic_str("Inconsistent state: tail dne"));
             v.push(item);
         }
@@ -73,17 +73,16 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32>
     }
 
     pub fn replace_last(&mut self, item: T) {
-        if let Some(entry) = self
+        let Some(entry) = self
             .inner
             .len()
             .checked_sub(1)
             .and_then(|last_index| self.inner.get_mut(last_index))
             .and_then(|v| v.last_mut())
-        {
-            *entry = item;
-        } else {
+        else {
             env::panic_str("Cannot replace_last in empty list");
-        }
+        };
+        *entry = item;
     }
 
     pub fn iter(&self) -> Iter<'_, T, CHUNK_SIZE> {
@@ -122,13 +121,9 @@ impl<'a, T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> Iterator
         if self.until_index <= self.next_index {
             return None;
         }
-
-        if let Some(value) = self.list.get(self.next_index) {
-            self.next_index += 1;
-            Some(value)
-        } else {
-            None
-        }
+        let value = self.list.get(self.next_index)?;
+        self.next_index += 1;
+        Some(value)
     }
 }
 
@@ -139,17 +134,12 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> DoubleEndedIte
         if self.until_index <= self.next_index {
             return None;
         }
-
-        if let Some((index, value)) = self
+        let (index, value) = self
             .until_index
             .checked_sub(1)
-            .and_then(|index| self.list.get(index).map(|x| (index, x)))
-        {
-            self.until_index = index;
-            Some(value)
-        } else {
-            None
-        }
+            .and_then(|index| self.list.get(index).map(|x| (index, x)))?;
+        self.until_index = index;
+        Some(value)
     }
 }
 
