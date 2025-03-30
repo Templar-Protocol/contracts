@@ -92,6 +92,10 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32>
             until_index: self.len(),
         }
     }
+
+    pub fn flush(&mut self) {
+        self.inner.flush();
+    }
 }
 
 impl<'a, T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> IntoIterator

@@ -14,6 +14,13 @@ use crate::{Contract, ContractExt};
 /// Internal helpers.
 impl Contract {
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+        if self.supply_position_ref(account_id.clone()).is_none() {
+            self.charge_for_storage(
+                &account_id,
+                self.storage_usage_supply_position + self.storage_usage_snapshot * 2,
+            );
+        }
+
         let supply_maximum_amount = self.configuration.supply_maximum_amount;
         let mut supply_position = self.get_or_create_supply_position_guard(account_id);
         let proof = supply_position.accumulate_yield();
@@ -34,6 +41,13 @@ impl Contract {
         // The sign-up step would only be NFT gating or something of
         // that sort, which is just an additional pre condition check.
         // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923871982
+        if self.borrow_position_ref(account_id.clone()).is_none() {
+            self.charge_for_storage(
+                &account_id,
+                self.storage_usage_borrow_position + self.storage_usage_snapshot * 2,
+            );
+        }
+
         let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
         let proof = borrow_position.accumulate_interest();
         borrow_position.record_collateral_asset_deposit(proof, amount);
