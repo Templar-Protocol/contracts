@@ -228,13 +228,13 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.get_status()
     }
 
-    fn harvest_yield(&mut self, mode: HarvestYieldMode) -> BorrowAssetAmount {
+    fn harvest_yield(&mut self, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount {
         let predecessor = env::predecessor_account_id();
         let Some(mut supply_position) = self.supply_position_guard(predecessor) else {
             return BorrowAssetAmount::zero();
         };
 
-        match mode {
+        match mode.unwrap_or_default() {
             HarvestYieldMode::Compounding => {
                 let proof = supply_position.accumulate_yield();
                 // Compound yield by withdrawing it and recording it as an immediate deposit.

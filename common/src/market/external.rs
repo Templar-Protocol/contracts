@@ -89,7 +89,7 @@ pub trait MarketExternalInterface {
     /// harvested in previous, non-compounding `harvest_yield` calls) is
     /// deposited to the supply record, so it will contribute to future yield
     /// calculations.
-    fn harvest_yield(&mut self, mode: HarvestYieldMode) -> BorrowAssetAmount;
+    fn harvest_yield(&mut self, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
 
     /// This value is an *expected average over time*.
     /// Supply positions actually earn all of their yield the instant it is
