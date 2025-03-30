@@ -185,8 +185,6 @@ impl Contract {
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        require!(env::promise_results_count() == 1);
-
         let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
             env::panic_str("Invariant violation: borrow position does not exist after transfer.");
         };
@@ -324,8 +322,6 @@ impl Contract {
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
     ) -> U128 {
-        require!(env::promise_results_count() == 1);
-
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
         let refund_to_liquidator =
@@ -384,7 +380,6 @@ impl Contract {
         account_id: AccountId,
         amount: CollateralAssetAmount,
     ) {
-        require!(env::promise_results_count() == 1);
         let transfer_was_successful =
             matches!(env::promise_result(0), PromiseResult::Successful(_));
 
