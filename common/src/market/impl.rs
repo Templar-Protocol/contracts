@@ -1,7 +1,4 @@
-use near_sdk::{
-    collections::{LookupMap, UnorderedMap},
-    env, near, AccountId, BorshStorageKey, IntoStorageKey,
-};
+use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
 use crate::{
     asset::BorrowAssetAmount,
@@ -35,8 +32,9 @@ pub struct Market {
     pub borrow_asset_deposited: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
-    pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
-    pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
+    pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
+    pub(crate) borrow_positions: LookupMap<AccountId, BorrowPosition>,
+    pub current_snapshot: Snapshot,
     pub snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
@@ -48,6 +46,14 @@ impl Market {
             env::panic_str(&e.to_string());
         }
 
+        let time_chunk = configuration.time_chunk_configuration.now();
+        let snapshot = Snapshot {
+            time_chunk,
+            timestamp_ms: env::block_timestamp_ms().into(),
+            deposited: 0.into(),
+            borrowed: 0.into(),
+            yield_distribution: BorrowAssetAmount::zero(),
+        };
         let prefix = prefix.into_storage_key();
         macro_rules! key {
             ($key: ident) => {
@@ -64,23 +70,21 @@ impl Market {
             borrow_asset_deposited: 0.into(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
-            supply_positions: UnorderedMap::new(key!(SupplyPositions)),
-            borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
+            supply_positions: LookupMap::new(key!(SupplyPositions)),
+            borrow_positions: LookupMap::new(key!(BorrowPositions)),
+            current_snapshot: snapshot.clone(),
             snapshots: ChunkedAppendOnlyList::new(key!(Snapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         };
 
-        // So we never have to worry about snapshots being empty.
-        // This means that expressions like `self.snapshots.len() - 1` will never
-        // underflow.
-        self_.snapshot();
+        self_.snapshots.push(snapshot.clone());
 
         self_
     }
 
-    #[allow(clippy::unwrap_used, reason = "Snapshots are never empty")]
     pub fn get_last_snapshot(&self) -> &Snapshot {
+        #[allow(clippy::unwrap_used, reason = "Snapshots are never empty")]
         self.snapshots.get(self.snapshots.len() - 1).unwrap()
     }
 
@@ -91,47 +95,33 @@ impl Market {
     fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
         let time_chunk = self.configuration.time_chunk_configuration.now();
 
-        if let Some((last_index, old_snapshot)) =
-            self.snapshots.len().checked_sub(1).and_then(|last_index| {
-                self.snapshots
-                    .get(last_index)
-                    .filter(|s| s.time_chunk == time_chunk)
-                    .map(|s| (last_index, s))
-            })
-        {
-            let new_snapshot = Snapshot {
-                time_chunk,
-                timestamp_ms: old_snapshot.timestamp_ms,
-                deposited: self.borrow_asset_deposited,
-                borrowed: self.borrow_asset_borrowed,
-                yield_distribution: {
-                    let mut y = old_snapshot.yield_distribution;
-                    y.join(yield_distribution);
-                    y
-                },
-            };
-            self.snapshots.replace_last(new_snapshot);
-            return last_index;
+        // If still in current time chunk, just update the current snapshot.
+        if self.current_snapshot.time_chunk == time_chunk {
+            self.current_snapshot.timestamp_ms = env::block_timestamp_ms().into();
+            self.current_snapshot.deposited = self.borrow_asset_deposited;
+            self.current_snapshot.borrowed = self.borrow_asset_borrowed;
+            self.current_snapshot
+                .yield_distribution
+                .join(yield_distribution);
+            return self.snapshots.len() - 1;
         }
 
+        // Otherwise, finalize the current snapshot and create a new one.
         let index = self.snapshots.len();
-        let new_snapshot = Snapshot {
+        let previous_snapshot = self.current_snapshot.clone();
+        MarketEvent::SnapshotFinalized {
+            index,
+            snapshot: previous_snapshot.clone(),
+        }
+        .emit();
+        self.snapshots.push(previous_snapshot.clone());
+        self.current_snapshot = Snapshot {
             time_chunk,
-            timestamp_ms: env::block_timestamp_ms().into(),
+            yield_distribution,
             deposited: self.borrow_asset_deposited,
             borrowed: self.borrow_asset_borrowed,
-            yield_distribution,
+            timestamp_ms: env::block_timestamp_ms().into(),
         };
-        self.snapshots.push(new_snapshot);
-        if let Some(previous_snapshot_index) = index.checked_sub(1) {
-            if let Some(previous_snapshot) = self.snapshots.get(previous_snapshot_index) {
-                MarketEvent::SnapshotFinalized {
-                    index: previous_snapshot_index,
-                    snapshot: previous_snapshot.clone(),
-                }
-                .emit();
-            }
-        }
         index
     }
 
@@ -158,10 +148,6 @@ impl Market {
             .at(snapshot.usage_ratio())
     }
 
-    pub fn iter_supply_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
-        self.supply_positions.keys()
-    }
-
     pub fn supply_position_ref(&self, account_id: AccountId) -> Option<SupplyPositionRef<&Self>> {
         self.supply_positions
             .get(&account_id)
@@ -184,10 +170,6 @@ impl Market {
             .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
 
         SupplyPositionGuard::new(self, account_id, position)
-    }
-
-    pub fn iter_borrow_account_ids(&self) -> impl Iterator<Item = AccountId> + '_ {
-        self.borrow_positions.keys()
     }
 
     pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {

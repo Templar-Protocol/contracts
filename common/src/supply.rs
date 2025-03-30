@@ -100,41 +100,6 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
     pub fn with_pending_yield_estimate(&mut self) {
         self.position.borrow_asset_yield.pending_estimate =
             self.calculate_yield(u32::MAX).get_amount();
-        self.position
-            .borrow_asset_yield
-            .pending_estimate
-            .join(self.calculate_last_snapshot_yield());
-    }
-
-    pub fn calculate_last_snapshot_yield(&self) -> BorrowAssetAmount {
-        let deposit: Decimal = self.position.get_borrow_asset_deposit().into();
-        if deposit.is_zero() {
-            return BorrowAssetAmount::zero();
-        }
-
-        let last_snapshot = self.market.get_last_snapshot();
-        let total_deposited: Decimal = last_snapshot.deposited.into();
-        if total_deposited.is_zero() {
-            // divzero safety
-            return BorrowAssetAmount::zero();
-        }
-        let supply_weight = Decimal::from(self.market.configuration.yield_weights.supply.get());
-        // This is guaranteed to be nonzero, so no divzero issue.
-        let total_weight =
-            Decimal::from(self.market.configuration.yield_weights.total_weight().get());
-        let total_yield_distribution: Decimal = last_snapshot.yield_distribution.into();
-        let estimate_current_snapshot =
-            total_yield_distribution * deposit * supply_weight / total_deposited / total_weight;
-
-        // We know this must be <= total_yield_distribution.
-        // We know that total_yield_distribution <= sum total of fees collected during a snapshot.
-        // Therefore, assuming the underlying token is (correctly) represented
-        // in u128, this will never panic.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Assume underlying token is implemented correctly"
-        )]
-        estimate_current_snapshot.to_u128_floor().unwrap().into()
     }
 
     pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
@@ -144,15 +109,14 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
 
         let mut accumulated = Decimal::ZERO;
 
-        let mut it = self.market.snapshots.iter();
-        // Skip the last snapshot, which may be incomplete.
-        it.next_back();
-
         #[allow(
             clippy::cast_possible_truncation,
             reason = "Assume # of snapshots is never >u32::MAX"
         )]
-        for (i, snapshot) in it
+        for (i, snapshot) in self
+            .market
+            .snapshots
+            .iter()
             .enumerate()
             .skip(next_snapshot_index as usize)
             .take(snapshot_limit as usize)

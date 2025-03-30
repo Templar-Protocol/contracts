@@ -205,26 +205,6 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn with_pending_interest(&mut self) {
         self.position.borrow_asset_fees.pending_estimate =
             self.calculate_interest(u32::MAX).get_amount();
-        self.position
-            .borrow_asset_fees
-            .pending_estimate
-            .join(self.calculate_last_snapshot_interest());
-    }
-
-    pub(crate) fn calculate_last_snapshot_interest(&self) -> BorrowAssetAmount {
-        let last_snapshot = self.market.get_last_snapshot();
-        let interest_rate = self.market.get_interest_rate_for_snapshot(last_snapshot);
-        let duration_ms = Decimal::from(env::block_timestamp_ms() - last_snapshot.timestamp_ms.0);
-        let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
-        let interest_rate_part: Decimal = interest_rate * duration_ms / ms_in_a_year;
-        let interest =
-            interest_rate_part * Decimal::from(self.position.get_borrow_asset_principal());
-
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Assume interest will never exceed u128::MAX"
-        )]
-        interest.to_u128_ceil().unwrap().into()
     }
 
     pub(crate) fn calculate_interest(
