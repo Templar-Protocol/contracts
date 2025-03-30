@@ -19,7 +19,7 @@ pub enum HarvestYieldMode {
     #[default]
     Default,
     Compounding,
-    Snapshot(u32),
+    SnapshotLimit(u32),
 }
 
 #[near_sdk::ext_contract(ext_market)]

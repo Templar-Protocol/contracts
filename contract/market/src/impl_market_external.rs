@@ -243,7 +243,7 @@ impl MarketExternalInterface for Contract {
                 supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
                 return total_yield;
             }
-            HarvestYieldMode::Snapshot(limit) => {
+            HarvestYieldMode::SnapshotLimit(limit) => {
                 supply_position.accumulate_yield_partial(limit);
             }
             HarvestYieldMode::Default => {
