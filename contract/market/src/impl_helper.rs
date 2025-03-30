@@ -59,14 +59,13 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        if let Some(mut borrow_position) = self.borrow_position_guard(account_id) {
-            let proof = borrow_position.accumulate_interest();
-            // Returns the amount that should be returned to the borrower.
-            borrow_position.record_repay(proof, amount)
-        } else {
+        let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
             // No borrow exists: just return the whole amount.
-            amount
-        }
+            return amount;
+        };
+        let proof = borrow_position.accumulate_interest();
+        // Returns the amount that should be returned to the borrower.
+        borrow_position.record_repay(proof, amount)
     }
 
     pub fn execute_liquidate_initial(
@@ -200,8 +199,6 @@ impl Contract {
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        require!(env::promise_results_count() == 1);
-
         let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
             env::panic_str("Invariant violation: borrow position does not exist after transfer.");
         };
@@ -251,9 +248,6 @@ impl Contract {
         &mut self,
         withdrawal_resolution: WithdrawalResolution,
     ) {
-        // TODO: Is this check even necessary in a #[private] function?
-        require!(env::promise_results_count() == 1);
-
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {
                 // Withdrawal succeeded: remove the withdrawal request from the queue.
@@ -342,8 +336,6 @@ impl Contract {
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
     ) -> U128 {
-        require!(env::promise_results_count() == 1);
-
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
         let refund_to_liquidator =
@@ -402,7 +394,6 @@ impl Contract {
         account_id: AccountId,
         amount: CollateralAssetAmount,
     ) {
-        require!(env::promise_results_count() == 1);
         let transfer_was_successful =
             matches!(env::promise_result(0), PromiseResult::Successful(_));
 
