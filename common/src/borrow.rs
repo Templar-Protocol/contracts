@@ -8,7 +8,6 @@ use crate::{
     event::MarketEvent,
     market::{Market, PricePair},
     number::Decimal,
-    snapshot::Snapshot,
     MS_IN_A_YEAR,
 };
 
@@ -205,41 +204,15 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn with_pending_interest(&mut self) {
         let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
         let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
-        let interest_in_current_snapshot =
-            self.calculate_interest_rate_for_snapshot(
-                prev_end_timestamp_ms,
-                &self.market.current_snapshot,
-            ) * Decimal::from(self.position.get_borrow_asset_principal());
+        let current_snapshot = &self.market.current_snapshot;
+        let interest_in_current_snapshot = current_snapshot.interest_rate
+            * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
+            * Decimal::from(self.position.get_borrow_asset_principal())
+            / *MS_IN_A_YEAR;
         #[allow(clippy::unwrap_used, reason = "This is a view method")]
         pending_estimate.join(interest_in_current_snapshot.to_u128_ceil().unwrap().into());
 
         self.position.borrow_asset_fees.pending_estimate = pending_estimate;
-    }
-
-    pub(crate) fn calculate_interest_rate_for_snapshot(
-        &self,
-        prev_end_timestamp_ms: u64,
-        snapshot: &Snapshot,
-    ) -> Decimal {
-        let interest_rate_per_year = self
-            .market
-            .configuration
-            .borrow_interest_rate_strategy
-            .at(snapshot.usage_ratio());
-        let duration_ms = Decimal::from(
-            snapshot
-                .end_timestamp_ms
-                .0
-                .checked_sub(prev_end_timestamp_ms)
-                .unwrap_or_else(|| {
-                    env::panic_str(&format!(
-                        "Invariant violation: Snapshot timestamp decrease at time chunk #{}.",
-                        u64::from(snapshot.time_chunk.0),
-                    ))
-                }),
-        );
-
-        interest_rate_per_year * duration_ms / *MS_IN_A_YEAR
     }
 
     pub(crate) fn calculate_interest(
@@ -271,8 +244,19 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
             .skip(next_snapshot_index as usize)
             .take(snapshot_limit as usize)
         {
-            accumulated += principal
-                * self.calculate_interest_rate_for_snapshot(prev_end_timestamp_ms, snapshot);
+            let duration_ms = Decimal::from(
+                snapshot
+                    .end_timestamp_ms
+                    .0
+                    .checked_sub(prev_end_timestamp_ms)
+                    .unwrap_or_else(|| {
+                        env::panic_str(&format!(
+                            "Invariant violation: Snapshot timestamp decrease at time chunk #{}.",
+                            u64::from(snapshot.time_chunk.0),
+                        ))
+                    }),
+            );
+            accumulated += principal * snapshot.interest_rate * duration_ms / *MS_IN_A_YEAR;
 
             prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
             next_snapshot_index = i as u32 + 1;

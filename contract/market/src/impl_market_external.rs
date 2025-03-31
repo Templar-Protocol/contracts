@@ -137,10 +137,6 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    fn get_last_interest_rate(&self) -> Decimal {
-        self.get_interest_rate_for_snapshot(&self.current_snapshot)
-    }
-
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
         let mut supply_position = self.supply_position_ref(account_id)?;
         supply_position.with_pending_yield_estimate();
@@ -241,17 +237,15 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let last_snapshot = &self.current_snapshot;
-        let last_interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
-        let deposited: Decimal = last_snapshot.deposited.into();
+        let deposited: Decimal = self.current_snapshot.deposited.into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = last_snapshot.borrowed.into();
+        let borrowed: Decimal = self.current_snapshot.borrowed.into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
-        last_interest_rate * borrowed * supply_weight / deposited / total_weight
+        self.current_snapshot.interest_rate * borrowed * supply_weight / deposited / total_weight
     }
 
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {

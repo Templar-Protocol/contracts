@@ -522,7 +522,7 @@ impl TestController {
         account
             .call(self.contract.id(), "execute_next_supply_withdrawal_request")
             .args_json(json!({}))
-            .gas(Gas::from_tgas(15))
+            .gas(Gas::from_tgas(20))
             .transact()
             .await
             .unwrap()
@@ -574,16 +574,6 @@ impl TestController {
     pub async fn mint_borrow_asset(&self, receiver: &Account, amount: u128) {
         self.mint_asset(self.borrow_asset.id(), receiver, amount)
             .await;
-    }
-
-    pub async fn get_last_interest_rate(&self) -> Decimal {
-        self.contract
-            .view("get_last_interest_rate")
-            .args_json(json!({}))
-            .await
-            .unwrap()
-            .json()
-            .unwrap()
     }
 
     pub async fn get_last_yield_rate(&self) -> Decimal {
