@@ -21,6 +21,12 @@ impl TimeChunkConfiguration {
         }
         TimeChunk(U64(time / divisor))
     }
+
+    pub fn previous(&self) -> TimeChunk {
+        let TimeChunk(U64(time)) = self.now();
+        #[allow(clippy::unwrap_used, reason = "Assume now > 0")]
+        TimeChunk(U64(time.checked_sub(1).unwrap()))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

@@ -30,7 +30,7 @@ async fn main() {
     let harvest_yield_0 = c
         .harvest_yield_execution(&supply_user, Some(HarvestYieldMode::Compounding))
         .await;
-    let snapshot_count_before = c.list_snapshots(None, None).await.len();
+    let snapshot_count_before = c.list_finalized_snapshots(None, None).await.len();
     c.collateralize(&borrow_user, 2000).await;
     c.collateralize(&borrow_user_2, 2000).await;
 
@@ -47,7 +47,7 @@ async fn main() {
         .harvest_yield_execution(&supply_user, Some(HarvestYieldMode::Compounding))
         .await;
 
-    let snapshot_count_after = c.list_snapshots(None, None).await.len();
+    let snapshot_count_after = c.list_finalized_snapshots(None, None).await.len();
     let snapshot_count = snapshot_count_after - snapshot_count_before;
     eprintln!("Snapshot count: {snapshot_count}");
     let target_gas = Gas::from_tgas(285); // Max gas is 300, so this is a bit conservative

@@ -37,7 +37,7 @@ impl Contract {
     pub fn new(configuration: MarketConfiguration) -> Self {
         let mut market = Market::new(StorageKey::Market, configuration);
         let storage_usage_1 = env::storage_usage();
-        market.snapshots.flush();
+        market.finalized_snapshots.flush();
         let storage_usage_2 = env::storage_usage();
         let storage_usage_snapshot = storage_usage_2.saturating_sub(storage_usage_1);
 

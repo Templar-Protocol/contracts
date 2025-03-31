@@ -20,7 +20,7 @@ use super::WithdrawalResolution;
 enum StorageKey {
     SupplyPositions,
     BorrowPositions,
-    Snapshots,
+    FinalizedSnapshots,
     WithdrawalQueue,
     StaticYield,
 }
@@ -35,7 +35,7 @@ pub struct Market {
     pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: LookupMap<AccountId, BorrowPosition>,
     pub current_snapshot: Snapshot,
-    pub snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
+    pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -46,14 +46,6 @@ impl Market {
             env::panic_str(&e.to_string());
         }
 
-        let time_chunk = configuration.time_chunk_configuration.now();
-        let snapshot = Snapshot {
-            time_chunk,
-            timestamp_ms: env::block_timestamp_ms().into(),
-            deposited: 0.into(),
-            borrowed: 0.into(),
-            yield_distribution: BorrowAssetAmount::zero(),
-        };
         let prefix = prefix.into_storage_key();
         macro_rules! key {
             ($key: ident) => {
@@ -64,6 +56,18 @@ impl Market {
                 .concat()
             };
         }
+
+        let first_snapshot = Snapshot {
+            time_chunk: configuration.time_chunk_configuration.previous(),
+            end_timestamp_ms: env::block_timestamp_ms().into(),
+            deposited: 0.into(),
+            borrowed: 0.into(),
+            yield_distribution: BorrowAssetAmount::zero(),
+        };
+        let current_snapshot = Snapshot {
+            time_chunk: configuration.time_chunk_configuration.now(),
+            ..first_snapshot.clone()
+        };
         let mut self_ = Self {
             prefix: prefix.clone(),
             configuration,
@@ -72,20 +76,22 @@ impl Market {
             borrow_asset_borrowed: 0.into(),
             supply_positions: LookupMap::new(key!(SupplyPositions)),
             borrow_positions: LookupMap::new(key!(BorrowPositions)),
-            current_snapshot: snapshot.clone(),
-            snapshots: ChunkedAppendOnlyList::new(key!(Snapshots)),
+            current_snapshot,
+            finalized_snapshots: ChunkedAppendOnlyList::new(key!(FinalizedSnapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         };
 
-        self_.snapshots.push(snapshot.clone());
+        self_.finalized_snapshots.push(first_snapshot);
 
         self_
     }
 
-    pub fn get_last_snapshot(&self) -> &Snapshot {
+    pub fn get_last_finalized_snapshot(&self) -> &Snapshot {
         #[allow(clippy::unwrap_used, reason = "Snapshots are never empty")]
-        self.snapshots.get(self.snapshots.len() - 1).unwrap()
+        self.finalized_snapshots
+            .get(self.finalized_snapshots.len() - 1)
+            .unwrap()
     }
 
     pub fn snapshot(&mut self) -> u32 {
@@ -97,32 +103,31 @@ impl Market {
 
         // If still in current time chunk, just update the current snapshot.
         if self.current_snapshot.time_chunk == time_chunk {
-            self.current_snapshot.timestamp_ms = env::block_timestamp_ms().into();
+            self.current_snapshot.end_timestamp_ms = env::block_timestamp_ms().into();
             self.current_snapshot.deposited = self.borrow_asset_deposited;
             self.current_snapshot.borrowed = self.borrow_asset_borrowed;
             self.current_snapshot
                 .yield_distribution
                 .join(yield_distribution);
-            return self.snapshots.len() - 1;
+        } else {
+            // Otherwise, finalize the current snapshot and create a new one.
+            let mut snapshot = Snapshot {
+                time_chunk,
+                yield_distribution,
+                deposited: self.borrow_asset_deposited,
+                borrowed: self.borrow_asset_borrowed,
+                end_timestamp_ms: env::block_timestamp_ms().into(),
+            };
+            std::mem::swap(&mut snapshot, &mut self.current_snapshot);
+            MarketEvent::SnapshotFinalized {
+                index: self.finalized_snapshots.len(),
+                snapshot: snapshot.clone(),
+            }
+            .emit();
+            self.finalized_snapshots.push(snapshot);
         }
 
-        // Otherwise, finalize the current snapshot and create a new one.
-        let index = self.snapshots.len();
-        let previous_snapshot = self.current_snapshot.clone();
-        MarketEvent::SnapshotFinalized {
-            index,
-            snapshot: previous_snapshot.clone(),
-        }
-        .emit();
-        self.snapshots.push(previous_snapshot.clone());
-        self.current_snapshot = Snapshot {
-            time_chunk,
-            yield_distribution,
-            deposited: self.borrow_asset_deposited,
-            borrowed: self.borrow_asset_borrowed,
-            timestamp_ms: env::block_timestamp_ms().into(),
-        };
-        index
+        self.finalized_snapshots.len()
     }
 
     pub fn get_borrow_asset_available_to_borrow(&self) -> BorrowAssetAmount {

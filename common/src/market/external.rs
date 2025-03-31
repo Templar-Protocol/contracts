@@ -29,8 +29,9 @@ pub trait MarketExternalInterface {
     // ========================
 
     fn get_configuration(&self) -> MarketConfiguration;
-    fn get_snapshots_len(&self) -> u32;
-    fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
+    fn get_current_snapshot(&self) -> &Snapshot;
+    fn get_finalized_snapshots_len(&self) -> u32;
+    fn list_finalized_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
 
     // ==================

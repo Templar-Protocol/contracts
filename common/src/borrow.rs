@@ -203,8 +203,43 @@ impl<M> BorrowPositionRef<M> {
 
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn with_pending_interest(&mut self) {
-        self.position.borrow_asset_fees.pending_estimate =
-            self.calculate_interest(u32::MAX).get_amount();
+        let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
+        let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
+        let interest_in_current_snapshot =
+            self.calculate_interest_rate_for_snapshot(
+                prev_end_timestamp_ms,
+                &self.market.current_snapshot,
+            ) * Decimal::from(self.position.get_borrow_asset_principal());
+        #[allow(clippy::unwrap_used, reason = "This is a view method")]
+        pending_estimate.join(interest_in_current_snapshot.to_u128_ceil().unwrap().into());
+
+        self.position.borrow_asset_fees.pending_estimate = pending_estimate;
+    }
+
+    pub(crate) fn calculate_interest_rate_for_snapshot(
+        &self,
+        prev_end_timestamp_ms: u64,
+        snapshot: &Snapshot,
+    ) -> Decimal {
+        let interest_rate_per_year = self
+            .market
+            .configuration
+            .borrow_interest_rate_strategy
+            .at(snapshot.usage_ratio());
+        let duration_ms = Decimal::from(
+            snapshot
+                .end_timestamp_ms
+                .0
+                .checked_sub(prev_end_timestamp_ms)
+                .unwrap_or_else(|| {
+                    env::panic_str(&format!(
+                        "Invariant violation: Snapshot timestamp decrease at time chunk #{}.",
+                        u64::from(snapshot.time_chunk.0),
+                    ))
+                }),
+        );
+
+        interest_rate_per_year * duration_ms / *MS_IN_A_YEAR
     }
 
     pub(crate) fn calculate_interest(
@@ -215,52 +250,32 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         let mut next_snapshot_index = self.position.borrow_asset_fees.get_next_snapshot_index();
 
         let mut accumulated = Decimal::ZERO;
+        #[allow(clippy::unwrap_used, reason = "1 finalized snapshot guaranteed")]
+        let mut prev_end_timestamp_ms = self
+            .market
+            .finalized_snapshots
+            .get(next_snapshot_index.checked_sub(1).unwrap())
+            .unwrap()
+            .end_timestamp_ms
+            .0;
 
         #[allow(
             clippy::cast_possible_truncation,
             reason = "Assume # of snapshots will never be > u32::MAX"
         )]
-        let mut it = self
+        for (i, snapshot) in self
             .market
-            .snapshots
+            .finalized_snapshots
             .iter()
             .enumerate()
             .skip(next_snapshot_index as usize)
             .take(snapshot_limit as usize)
-            .map(|(i, s): (usize, &Snapshot)| (i as u32, s))
-            .peekable();
+        {
+            accumulated += principal
+                * self.calculate_interest_rate_for_snapshot(prev_end_timestamp_ms, snapshot);
 
-        let ms_in_a_year = Decimal::from(MS_IN_A_YEAR);
-
-        while let Some((i, snapshot)) = it.next() {
-            let Some(end_timestamp_ms) = it
-                .peek()
-                .map(|(_, next_snapshot)| next_snapshot.timestamp_ms.0)
-            else {
-                // Cannot calculate duration.
-                break;
-            };
-
-            let interest_rate_per_year: Decimal = self
-                .market
-                .configuration
-                .borrow_interest_rate_strategy
-                .at(snapshot.usage_ratio());
-            let duration_ms: Decimal = end_timestamp_ms
-                .checked_sub(snapshot.timestamp_ms.0)
-                .unwrap_or_else(|| {
-                    env::panic_str(&format!(
-                        "Invariant violation: Snapshot timestamp decrease at #{}.",
-                        i + 1,
-                    ))
-                })
-                .into();
-
-            let interest = principal * interest_rate_per_year * duration_ms / ms_in_a_year;
-
-            accumulated += interest;
-
-            next_snapshot_index = i + 1;
+            prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
+            next_snapshot_index = i as u32 + 1;
         }
 
         AccumulationRecord {
