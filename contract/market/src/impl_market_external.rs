@@ -41,24 +41,6 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    fn list_borrows(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.iter_borrow_account_ids()
-            .skip(offset)
-            .take(count)
-            .collect()
-    }
-
-    fn list_supplys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.iter_supply_account_ids()
-            .skip(offset)
-            .take(count)
-            .collect()
-    }
-
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
         let mut borrow_position = self.borrow_position_ref(account_id)?;
         borrow_position.with_pending_interest();

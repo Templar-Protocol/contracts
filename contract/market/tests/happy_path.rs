@@ -70,14 +70,6 @@ async fn test_happy() {
         "Supply position should match amount of tokens supplied to contract",
     );
 
-    let list_supplys = c.list_supplys().await;
-
-    assert_eq!(
-        list_supplys,
-        ["0".repeat(64).parse().unwrap(), supply_user.id().clone()],
-        "Supply user should be the only account listed",
-    );
-
     // Step 2: Borrow user deposits collateral
 
     c.collateralize(&borrow_user, 2000).await;
@@ -88,14 +80,6 @@ async fn test_happy() {
         u128::from(borrow_position.collateral_asset_deposit),
         2000,
         "Collateral asset deposit should be equal to the number of collateral tokens sent",
-    );
-
-    let list_borrows = c.list_borrows().await;
-
-    assert_eq!(
-        list_borrows,
-        ["0".repeat(64).parse().unwrap(), borrow_user.id().clone()],
-        "Borrow user should be the only account listed",
     );
 
     let borrow_status = c
