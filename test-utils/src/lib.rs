@@ -94,9 +94,9 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn get_snapshots_len(&self) -> u32 {
+    pub async fn get_finalized_snapshots_len(&self) -> u32 {
         self.contract
-            .view("get_snapshots_len")
+            .view("get_finalized_snapshots_len")
             .args_json(json!({}))
             .await
             .unwrap()
@@ -104,9 +104,13 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot> {
+    pub async fn list_finalized_snapshots(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> Vec<Snapshot> {
         self.contract
-            .view("list_snapshots")
+            .view("list_finalized_snapshots")
             .args_json(json!({
                 "offset": offset,
                 "count": count,
@@ -596,7 +600,7 @@ impl TestController {
     pub async fn print_snapshots(&self) {
         let snapshots = self
             .contract
-            .view("list_snapshots")
+            .view("list_finalized_snapshots")
             .args_json(json!({}))
             .await
             .unwrap()
@@ -606,7 +610,7 @@ impl TestController {
         eprintln!("Market snapshots:");
         for (i, snapshot) in snapshots.iter().enumerate() {
             eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
-            eprintln!("\t\tTimestamp:\t{}", snapshot.timestamp_ms.0);
+            eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
             eprintln!("\t\tDeposited:\t{}", snapshot.deposited);
             eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed);
             eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);

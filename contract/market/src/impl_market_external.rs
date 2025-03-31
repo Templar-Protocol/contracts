@@ -19,14 +19,18 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
-    fn get_snapshots_len(&self) -> u32 {
-        self.snapshots.len()
+    fn get_current_snapshot(&self) -> &Snapshot {
+        &self.current_snapshot
     }
 
-    fn list_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
+    fn get_finalized_snapshots_len(&self) -> u32 {
+        self.finalized_snapshots.len()
+    }
+
+    fn list_finalized_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
         let offset = offset.map_or(0, |o| o as usize);
         let count = count.map_or(usize::MAX, |c| c as usize);
-        self.snapshots
+        self.finalized_snapshots
             .iter()
             .skip(offset)
             .take(count)
@@ -134,7 +138,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_interest_rate(&self) -> Decimal {
-        self.get_interest_rate_for_snapshot(self.get_last_snapshot())
+        self.get_interest_rate_for_snapshot(&self.current_snapshot)
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
@@ -237,7 +241,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let last_snapshot = self.get_last_snapshot();
+        let last_snapshot = &self.current_snapshot;
         let last_interest_rate = self.get_interest_rate_for_snapshot(last_snapshot);
         let deposited: Decimal = last_snapshot.deposited.into();
         if deposited.is_zero() {

@@ -6,7 +6,7 @@ use crate::{asset::BorrowAssetAmount, number::Decimal, time_chunk::TimeChunk};
 #[near(serializers = [borsh, json])]
 pub struct Snapshot {
     pub time_chunk: TimeChunk,
-    pub timestamp_ms: U64,
+    pub end_timestamp_ms: U64,
     pub deposited: BorrowAssetAmount,
     pub borrowed: BorrowAssetAmount,
     pub yield_distribution: BorrowAssetAmount,
