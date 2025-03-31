@@ -63,6 +63,9 @@ impl Market {
             deposited: 0.into(),
             borrowed: 0.into(),
             yield_distribution: BorrowAssetAmount::zero(),
+            interest_rate: configuration
+                .borrow_interest_rate_strategy
+                .at(Decimal::ZERO),
         };
         let current_snapshot = Snapshot {
             time_chunk: configuration.time_chunk_configuration.now(),
@@ -109,6 +112,10 @@ impl Market {
             self.current_snapshot
                 .yield_distribution
                 .join(yield_distribution);
+            self.current_snapshot.interest_rate = self
+                .configuration
+                .borrow_interest_rate_strategy
+                .at(self.current_snapshot.usage_ratio());
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
             let mut snapshot = Snapshot {
@@ -117,7 +124,12 @@ impl Market {
                 deposited: self.borrow_asset_deposited,
                 borrowed: self.borrow_asset_borrowed,
                 end_timestamp_ms: env::block_timestamp_ms().into(),
+                interest_rate: Decimal::ZERO,
             };
+            snapshot.interest_rate = self
+                .configuration
+                .borrow_interest_rate_strategy
+                .at(snapshot.usage_ratio());
             std::mem::swap(&mut snapshot, &mut self.current_snapshot);
             MarketEvent::SnapshotFinalized {
                 index: self.finalized_snapshots.len(),
@@ -145,12 +157,6 @@ impl Market {
             .saturating_sub(u128::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
             .into()
-    }
-
-    pub fn get_interest_rate_for_snapshot(&self, snapshot: &Snapshot) -> Decimal {
-        self.configuration
-            .borrow_interest_rate_strategy
-            .at(snapshot.usage_ratio())
     }
 
     pub fn supply_position_ref(&self, account_id: AccountId) -> Option<SupplyPositionRef<&Self>> {

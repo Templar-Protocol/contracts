@@ -61,8 +61,6 @@ pub trait MarketExternalInterface {
     /// final interest calculation, and rounds fractional interest UP.
     fn apply_interest(&mut self, snapshot_limit: Option<u32>);
 
-    fn get_last_interest_rate(&self) -> Decimal;
-
     // ================
     // SUPPLY FUNCTIONS
     // ================

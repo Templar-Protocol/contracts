@@ -10,6 +10,7 @@ pub struct Snapshot {
     pub deposited: BorrowAssetAmount,
     pub borrowed: BorrowAssetAmount,
     pub yield_distribution: BorrowAssetAmount,
+    pub interest_rate: Decimal,
 }
 
 impl Snapshot {
