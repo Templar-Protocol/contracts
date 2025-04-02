@@ -52,7 +52,8 @@ pub fn main() {
             borrow_maximum_amount: FungibleAssetAmount::new(u128::MAX),
             supply_withdrawal_fee: TimeBasedFee::zero(),
             supply_maximum_amount: Some(FungibleAssetAmount::new(500 * 10u128.pow(6))),
-            yield_weights: YieldWeights::new_with_supply_weight(1),
+            yield_weights: YieldWeights::new_with_supply_weight(8)
+                .with_static("templar-in-training.testnet".parse().unwrap(), 2),
             liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
             protocol_account_id: "templar-in-training.testnet".parse().unwrap(),
         })

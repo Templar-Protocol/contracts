@@ -205,7 +205,7 @@ async fn test_happy() {
                     .await;
                 assert!(
                     request_status.is_none(),
-                    "Supply user should not be enqueued yet.",
+                    "Supply user should not be enqueued any more.",
                 );
                 let queue_status = c.get_supply_withdrawal_queue_status().await;
                 assert!(queue_status.depth.is_zero());
