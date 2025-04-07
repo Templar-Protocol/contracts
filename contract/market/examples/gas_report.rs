@@ -34,11 +34,11 @@ async fn main() {
     c.collateralize(&borrow_user, 2000).await;
     c.collateralize(&borrow_user_2, 2000).await;
 
-    c.borrow(&borrow_user_2, 1000).await;
+    c.borrow(&borrow_user_2, 1000.into()).await;
     let apply_interest_0 = c.apply_interest(&borrow_user_2, None).await;
 
     for _ in 0..ITERATIONS {
-        c.borrow(&borrow_user, 1000).await;
+        c.borrow(&borrow_user, 1000.into()).await;
         c.repay(&borrow_user, 1100).await;
     }
 

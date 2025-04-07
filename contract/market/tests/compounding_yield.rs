@@ -31,7 +31,7 @@ async fn compounding_yield(
     c.supply(&supply_user_2, principal * 5).await;
     c.collateralize(&borrow_user, principal * 2).await;
 
-    c.borrow(&borrow_user, principal).await;
+    c.borrow(&borrow_user, principal.into()).await;
 
     eprintln!("Sleeping...");
     let mut iters = 0;
@@ -51,7 +51,7 @@ async fn compounding_yield(
                     u128::from(position.get_total_borrow_asset_liability()) * 120 / 100,
                 )
                 .await;
-                c.borrow(&borrow_user, principal).await;
+                c.borrow(&borrow_user, principal.into()).await;
             }
         },
         async {

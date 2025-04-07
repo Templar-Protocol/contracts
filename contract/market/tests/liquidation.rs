@@ -15,14 +15,18 @@ async fn successful_liquidation_totally_underwater() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
-    c.borrow(&borrow_user, 300).await;
+    c.borrow(&borrow_user, 300.into()).await;
 
     // value of collateral will go 500->250
     // collateralization: 250/300 ~= 83%
     // which is bad debt (<100%).
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.set_collateral_asset_price(0.5).await;
     c.liquidate(
@@ -32,8 +36,12 @@ async fn successful_liquidation_totally_underwater() {
     )
     .await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
@@ -80,10 +88,14 @@ async fn successful_liquidation_good_debt_under_mcr(
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, collateral_amount).await;
-    c.borrow(&borrow_user, borrow_amount).await;
+    c.borrow(&borrow_user, borrow_amount.into()).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.set_collateral_asset_price(
         (Decimal::from(collateral_asset_price_pct) / 100u32).to_f64_lossy(),
@@ -92,8 +104,12 @@ async fn successful_liquidation_good_debt_under_mcr(
     c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
         .await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
@@ -161,10 +177,14 @@ async fn successful_liquidation_with_spread(
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, 2000).await; // 2:1 collateralization
-    c.borrow(&borrow_user, 1000).await;
+    c.borrow(&borrow_user, 1000.into()).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     let collateral_asset_price: Decimal = mcr /
         201u32 * 100u32 // 2:1 collateralization + a bit to ensure we're under MCR
@@ -179,8 +199,12 @@ async fn successful_liquidation_with_spread(
     c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
         .await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
@@ -206,16 +230,24 @@ async fn fail_liquidation_too_little_attached() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
-    c.borrow(&borrow_user, 300).await;
+    c.borrow(&borrow_user, 300.into()).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.set_collateral_asset_price(0.5).await;
     c.liquidate(&liquidator_user, borrow_user.id(), 150).await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_before, collateral_balance_after,
@@ -247,15 +279,23 @@ async fn fail_liquidation_healthy_borrow() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
-    c.borrow(&borrow_user, 300).await;
+    c.borrow(&borrow_user, 300.into()).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.liquidate(&liquidator_user, borrow_user.id(), 300).await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_before, collateral_balance_after,

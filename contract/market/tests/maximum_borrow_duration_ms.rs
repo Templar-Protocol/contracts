@@ -6,6 +6,7 @@ use test_utils::*;
 async fn liquidation_after_expiration() {
     let SetupEverything {
         c,
+        worker,
         supply_user,
         borrow_user,
         ..
@@ -16,7 +17,7 @@ async fn liquidation_after_expiration() {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, 100).await;
+    c.borrow(&borrow_user, 100.into()).await;
 
     let prices = c.get_prices().await;
 
@@ -27,7 +28,7 @@ async fn liquidation_after_expiration() {
 
     assert!(status.is_healthy());
 
-    c.worker.fast_forward(10).await.unwrap();
+    worker.fast_forward(10).await.unwrap();
 
     let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
 
