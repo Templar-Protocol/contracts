@@ -19,7 +19,7 @@ impl ContractController for FtController {
 impl StorageManagementController for FtController {}
 
 impl FtController {
-    pub async fn setup(account: Account, name: impl AsRef<str>, symbol: impl AsRef<str>) -> Self {
+    pub async fn deploy(account: Account, name: impl AsRef<str>, symbol: impl AsRef<str>) -> Self {
         static WASM_MOCK_FT: OnceCell<Vec<u8>> = OnceCell::const_new();
 
         let wasm = WASM_MOCK_FT

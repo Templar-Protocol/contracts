@@ -18,7 +18,7 @@ impl ContractController for OracleController {
 }
 
 impl OracleController {
-    pub async fn setup(account: Account) -> Self {
+    pub async fn deploy(account: Account) -> Self {
         static WASM_MOCK_ORACLE: OnceCell<Vec<u8>> = OnceCell::const_new();
 
         let wasm = WASM_MOCK_ORACLE

@@ -1,6 +1,9 @@
 use std::{path::Path, str::FromStr};
 
-use controller::{ft::FtController, market::MarketController, oracle::OracleController};
+use controller::{
+    ft::FtController, market::MarketController, oracle::OracleController,
+    registry::RegistryController,
+};
 use near_sdk::{
     json_types::{I64, U64},
     AccountId,
@@ -38,9 +41,10 @@ pub async fn create_prefixed_account<T: DevNetwork + TopLevelAccountCreator + 's
     worker.create_tla(new_id, sk).await.unwrap().unwrap()
 }
 
+#[macro_export]
 macro_rules! accounts {
     ($w: ident, $($n:ident),*) => {
-        $(let $n = create_prefixed_account(stringify!($n), &$w).await;)*
+        $(let $n = $crate::create_prefixed_account(stringify!($n), &$w).await;)*
     };
 }
 
@@ -157,12 +161,12 @@ pub async fn setup_everything(
     customize_market_configuration(&mut config);
 
     let (balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
-        OracleController::setup(balance_oracle),
-        FtController::setup(borrow_asset, "Borrow Asset", "BORROW"),
-        FtController::setup(collateral_asset, "Collateral Asset", "COLLATERAL"),
+        OracleController::deploy(balance_oracle),
+        FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
+        FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
-    let c = MarketController::setup(
+    let c = MarketController::deploy(
         market,
         config,
         balance_oracle,
@@ -224,4 +228,18 @@ pub async fn setup_everything(
         protocol_yield_user,
         insurance_yield_user,
     }
+}
+
+pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
+    accounts!(worker, registry);
+
+    let r = RegistryController::deploy(registry).await;
+
+    r.add_version(
+        "market".to_string(),
+        controller::market::load_wasm().await.to_vec(),
+    )
+    .await;
+
+    r
 }

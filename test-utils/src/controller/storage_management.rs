@@ -1,4 +1,7 @@
-use near_sdk::{serde_json::json, Gas, NearToken};
+use near_sdk::{
+    serde_json::{self, json},
+    Gas, NearToken,
+};
 use near_sdk_contract_tools::ft::StorageBalanceBounds;
 use near_workspaces::{result::ExecutionSuccess, Account};
 
@@ -11,7 +14,7 @@ pub trait StorageManagementController: ContractController {
         self.call_exec(
             account,
             "storage_deposit",
-            json!({}),
+            serde_json::to_vec(&json!({})).unwrap(),
             amount,
             Gas::from_tgas(10),
         )

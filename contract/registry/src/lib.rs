@@ -56,13 +56,19 @@ impl Contract {
     #[payable]
     pub fn deploy_market(&mut self, version_key: String, init_args: serde_json::Value) -> Promise {
         const HASH_LEN: usize = 3;
-
-        assert_one_yocto();
         self.assert_owner();
 
         let Some(version_code) = self.versions.get(&version_key) else {
             env::panic_str("Version key does not exist");
         };
+
+        let attached_deposit = env::attached_deposit();
+
+        require!(
+            attached_deposit
+                >= env::storage_byte_cost().saturating_mul(version_code.len() as u128 + 300),
+            "Insufficient deposit to pay for storage",
+        );
 
         let hash = &env::sha256_array(
             &borsh::to_vec(&(
@@ -70,7 +76,7 @@ impl Contract {
                 self.registry.len(),
                 version_key.clone(),
             ))
-            .unwrap(),
+            .unwrap_or_else(|_| env::panic_str("Failed to serialize deployment triple")),
         )[0..HASH_LEN];
 
         let current_account_id = env::current_account_id();
@@ -83,7 +89,9 @@ impl Contract {
         market_id.push('.');
         market_id.push_str(current_account_id.as_str());
 
-        let market_id: AccountId = market_id.parse().unwrap();
+        let market_id: AccountId = market_id
+            .parse()
+            .unwrap_or_else(|_| env::panic_str("New market ID is not a valid account ID"));
 
         require!(
             !self.registry.contains_key(&market_id),
@@ -94,19 +102,17 @@ impl Contract {
 
         Promise::new(market_id.clone())
             .create_account()
-            .then(
-                Promise::new(market_id.clone())
-                    .deploy_contract(version_code.clone())
-                    .then(
-                        Promise::new(market_id.clone()).function_call(
-                            "new".to_string(),
-                            serde_json::to_vec(&init_args).unwrap(),
-                            NearToken::from_near(0),
-                            env::prepaid_gas()
-                                .saturating_sub(env::used_gas())
-                                .saturating_div(2),
-                        ),
-                    ),
+            .transfer(env::attached_deposit())
+            .deploy_contract(version_code.clone())
+            .function_call(
+                "new".to_string(),
+                serde_json::to_vec(&init_args).unwrap_or_else(|_| {
+                    env::panic_str("Failed to serialize initialization arguments")
+                }),
+                NearToken::from_near(0),
+                env::prepaid_gas()
+                    .saturating_sub(env::used_gas())
+                    .saturating_div(2),
             )
             .then(
                 Self::ext(env::current_account_id())

@@ -3644,6 +3644,7 @@ dependencies = [
  "near-sdk-contract-tools",
  "near-workspaces",
  "rstest",
+ "templar-common",
  "test-utils",
  "tokio",
 ]

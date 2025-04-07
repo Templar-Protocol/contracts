@@ -39,21 +39,21 @@ impl ContractController for MarketController {
 
 impl StorageManagementController for MarketController {}
 
+static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+
+pub async fn load_wasm() -> &'static [u8] {
+    WASM.get_or_init(|| get_contract("templar_market_contract", "contract/market"))
+        .await
+}
+
 impl MarketController {
-    pub async fn setup(
-        account: Account,
+    pub async fn initialize(
+        contract: Contract,
         configuration: MarketConfiguration,
         balance_oracle: OracleController,
         borrow_asset: FtController,
         collateral_asset: FtController,
     ) -> Self {
-        static WASM_MARKET: OnceCell<Vec<u8>> = OnceCell::const_new();
-
-        let wasm = WASM_MARKET
-            .get_or_init(|| get_contract("templar_market_contract", "contract/market"))
-            .await;
-
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
         let init_call = contract
             .call("new")
             .args_json(json!({
@@ -78,6 +78,26 @@ impl MarketController {
             borrow_asset,
             collateral_asset,
         }
+    }
+
+    pub async fn deploy(
+        account: Account,
+        configuration: MarketConfiguration,
+        balance_oracle: OracleController,
+        borrow_asset: FtController,
+        collateral_asset: FtController,
+    ) -> Self {
+        let wasm = load_wasm().await;
+        let contract = account.deploy(wasm).await.unwrap().unwrap();
+
+        Self::initialize(
+            contract,
+            configuration,
+            balance_oracle,
+            borrow_asset,
+            collateral_asset,
+        )
+        .await
     }
 
     pub async fn storage_deposits(&self, account: &Account) {
@@ -205,7 +225,7 @@ impl MarketController {
         self.call_exec(
             supply_user,
             "harvest_yield",
-            json!({ "mode": mode }),
+            serde_json::to_vec(&json!({ "mode": mode })).unwrap(),
             NearToken::from_near(0),
             Gas::from_tgas(300),
         )

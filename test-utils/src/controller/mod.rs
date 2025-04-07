@@ -29,19 +29,18 @@ pub trait ContractController {
         &self,
         account: &Account,
         function_name: &str,
-        args: impl Serialize,
+        args: Vec<u8>,
         deposit: NearToken,
         gas: Gas,
     ) -> ExecutionSuccess {
         eprintln!(
-            "{} calls {}->{function_name}({})",
+            "{} calls {}->{function_name}(...)",
             &account.id().as_str()[0..16],
             &self.contract().id().as_str()[0..16],
-            serde_json::to_string(&args).unwrap(),
         );
         account
             .call(self.contract().id(), function_name)
-            .args_json(args)
+            .args(args)
             .deposit(deposit)
             .gas(gas)
             .transact()
@@ -62,7 +61,7 @@ pub trait ContractController {
             "{} calls {}->{function_name}({})",
             &account.id().as_str()[0..16],
             &self.contract().id().as_str()[0..16],
-            serde_json::to_string(&args).unwrap(),
+            &serde_json::to_string(&args).unwrap()[0..256],
         );
         account
             .call(self.contract().id(), function_name)
@@ -125,9 +124,11 @@ macro_rules! define {
                 self,
                 executor,
                 stringify!($fn_name),
-                ::near_sdk::serde_json::json!({
-                    $(stringify!($arg) : $arg),*
-                }),
+                ::near_sdk::serde_json::to_vec(
+                    &::near_sdk::serde_json::json!({
+                        $(stringify!($arg) : $arg),*
+                    }),
+                ).unwrap(),
                 $d,
                 $g,
             )
