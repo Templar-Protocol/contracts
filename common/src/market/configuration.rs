@@ -13,7 +13,7 @@ use crate::{
 
 use super::{BalanceOracleConfiguration, PricePair, YieldWeights};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
     pub time_chunk_configuration: TimeChunkConfiguration,

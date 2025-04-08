@@ -6,7 +6,7 @@ use test_utils::*;
 #[rstest]
 #[tokio::test]
 async fn successful_withdrawal() {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
 
@@ -33,12 +33,10 @@ async fn successful_withdrawal() {
 #[rstest]
 #[tokio::test]
 async fn unsuccessful_withdrawal() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+    );
 
     c.supply(&supply_user, 10_000).await;
     c.collateralize(&borrow_user, 20_000).await;
@@ -77,7 +75,7 @@ async fn unsuccessful_withdrawal() {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
 async fn attempt_to_withdraw_more_than_deposit() {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
     c.create_supply_withdrawal_request(&supply_user, 12_000.into())

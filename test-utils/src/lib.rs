@@ -1,14 +1,18 @@
 use std::{path::Path, str::FromStr};
 
-use controller::{
-    ft::FtController, market::MarketController, oracle::OracleController,
+pub use controller::{
+    ft::FtController,
+    market::{MarketController, UnifiedMarketController},
+    oracle::OracleController,
     registry::RegistryController,
+    storage_management::StorageManagementController,
+    ContractController,
 };
 use near_sdk::{
     json_types::{I64, U64},
     AccountId,
 };
-use near_workspaces::{network::Sandbox, prelude::*, Account, DevNetwork, Worker};
+use near_workspaces::{network::Sandbox, Account, DevNetwork, Worker};
 use templar_common::{
     asset::FungibleAsset,
     dec,
@@ -30,9 +34,9 @@ pub fn to_price(price: f64) -> pyth::Price {
     }
 }
 
-pub async fn create_prefixed_account<T: DevNetwork + TopLevelAccountCreator + 'static>(
+pub async fn create_prefixed_account(
     prefix: &str,
-    worker: &near_workspaces::Worker<T>,
+    worker: &near_workspaces::Worker<impl DevNetwork + 'static>,
 ) -> Account {
     let (genid, sk) = worker.dev_generate().await;
     let new_id: AccountId = format!("{prefix}{}", &genid.as_str()[prefix.len()..])
@@ -43,8 +47,23 @@ pub async fn create_prefixed_account<T: DevNetwork + TopLevelAccountCreator + 's
 
 #[macro_export]
 macro_rules! accounts {
-    ($w: ident, $($n:ident),*) => {
+    ($w: expr, $($n:ident),*) => {
         $(let $n = $crate::create_prefixed_account(stringify!($n), &$w).await;)*
+    };
+}
+
+#[macro_export]
+macro_rules! setup_test {
+    (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
+        let s = $crate::setup_everything($f).await;
+        $crate::accounts!(s.worker, $($n),*);
+        ::tokio::join!(
+            $(s.c.init_account(&$n)),*
+        );
+        let $crate::SetupEverything { $($e,)* .. } = s;
+    };
+    (extract($($e:ident),*) accounts($($n:ident),*)) => {
+        $crate::setup_test!(extract($($e),*) accounts($($n),*) config(|_| {}))
     };
 }
 
@@ -121,12 +140,7 @@ async fn get_contract(name: &str, path: &str) -> Vec<u8> {
 
 pub struct SetupEverything {
     pub worker: Worker<Sandbox>,
-    pub c: MarketController,
-    pub liquidator_user: Account,
-    pub supply_user: Account,
-    pub supply_user_2: Account,
-    pub borrow_user: Account,
-    pub borrow_user_2: Account,
+    pub c: UnifiedMarketController,
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
 }
@@ -138,11 +152,6 @@ pub async fn setup_everything(
     accounts!(
         worker,
         market,
-        liquidator_user,
-        supply_user,
-        supply_user_2,
-        borrow_user,
-        borrow_user_2,
         protocol_yield_user,
         insurance_yield_user,
         collateral_asset,
@@ -160,71 +169,34 @@ pub async fn setup_everything(
     );
     customize_market_configuration(&mut config);
 
-    let (balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
+    let (market, balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
+        MarketController::deploy(market, &config),
         OracleController::deploy(balance_oracle),
         FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
-    let c = MarketController::deploy(
+    let c = UnifiedMarketController::new(
         market,
         config,
         balance_oracle,
         borrow_asset,
         collateral_asset,
-    )
-    .await;
+    );
 
     c.set_borrow_asset_price(1.0).await;
     c.set_collateral_asset_price(1.0).await;
 
     // Asset opt-ins.
     tokio::join!(
-        c.storage_deposits(c.contract.as_account()),
-        async {
-            c.storage_deposits(&liquidator_user).await;
-            c.borrow_asset
-                .mint(&liquidator_user, 100_000_000.into())
-                .await;
-        },
-        async {
-            c.storage_deposits(&borrow_user).await;
-            c.collateral_asset
-                .mint(&borrow_user, 100_000_000.into())
-                .await;
-            c.borrow_asset.mint(&borrow_user, 100_000_000.into()).await;
-        },
-        async {
-            c.storage_deposits(&borrow_user_2).await;
-            c.collateral_asset
-                .mint(&borrow_user_2, 100_000_000.into())
-                .await;
-            c.borrow_asset
-                .mint(&borrow_user_2, 100_000_000.into())
-                .await;
-        },
-        async {
-            c.storage_deposits(&supply_user).await;
-            c.borrow_asset.mint(&supply_user, 100_000_000.into()).await;
-        },
-        async {
-            c.storage_deposits(&supply_user_2).await;
-            c.borrow_asset
-                .mint(&supply_user_2, 100_000_000.into())
-                .await;
-        },
-        c.storage_deposits(&protocol_yield_user),
-        c.storage_deposits(&insurance_yield_user),
+        c.storage_deposits(c.market.contract().as_account()),
+        c.init_account(&protocol_yield_user),
+        c.init_account(&insurance_yield_user),
     );
 
     SetupEverything {
         worker,
         c,
-        liquidator_user,
-        supply_user,
-        supply_user_2,
-        borrow_user,
-        borrow_user_2,
         protocol_yield_user,
         insurance_yield_user,
     }

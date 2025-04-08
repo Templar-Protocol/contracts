@@ -8,7 +8,7 @@ use crate::{define, get_contract};
 use super::ContractController;
 
 pub struct OracleController {
-    contract: Contract,
+    pub contract: Contract,
 }
 
 impl ContractController for OracleController {

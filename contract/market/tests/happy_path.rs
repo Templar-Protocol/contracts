@@ -1,5 +1,3 @@
-use near_sdk::serde_json::json;
-use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use rstest::rstest;
 use tokio::join;
 
@@ -7,24 +5,20 @@ use templar_common::{
     borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy,
     market::HarvestYieldMode, number::Decimal,
 };
-use test_utils::{controller::ContractController, *};
+use test_utils::*;
 
 #[rstest]
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_happy() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        protocol_yield_user,
-        insurance_yield_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_interest_rate_strategy =
-            InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-    })
-    .await;
+    setup_test!(
+        extract(c, protocol_yield_user, insurance_yield_user)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
 
     let configuration = c.get_configuration().await;
 
@@ -39,14 +33,7 @@ async fn test_happy() {
 
     assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
 
-    let bounds = c
-        .contract
-        .view("storage_balance_bounds")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<StorageBalanceBounds>()
-        .unwrap();
+    let bounds = c.storage_balance_bounds().await;
 
     assert!(!bounds.min.is_zero());
 

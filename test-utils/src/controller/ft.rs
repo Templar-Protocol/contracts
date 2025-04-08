@@ -7,7 +7,7 @@ use crate::{define, get_contract};
 use super::{storage_management::StorageManagementController, ContractController};
 
 pub struct FtController {
-    contract: Contract,
+    pub contract: Contract,
 }
 
 impl ContractController for FtController {

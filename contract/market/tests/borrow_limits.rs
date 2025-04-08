@@ -10,16 +10,14 @@ use test_utils::*;
 #[case(100, 100, 100)]
 #[tokio::test]
 async fn borrow_within_bounds(#[case] minimum: u128, #[case] amount: u128, #[case] maximum: u128) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_maximum_amount = maximum.into();
-        c.borrow_minimum_amount = minimum.into();
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_maximum_amount = maximum.into();
+            c.borrow_minimum_amount = minimum.into();
+        })
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
@@ -34,16 +32,14 @@ async fn borrow_within_bounds(#[case] minimum: u128, #[case] amount: u128, #[cas
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Borrow amount is smaller than minimum allowed"]
 async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[case] maximum: u128) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_maximum_amount = maximum.into();
-        c.borrow_minimum_amount = minimum.into();
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_maximum_amount = maximum.into();
+            c.borrow_minimum_amount = minimum.into();
+        })
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
@@ -58,16 +54,14 @@ async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[cas
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Borrow amount is greater than maximum allowed"]
 async fn borrow_above_maximum(#[case] minimum: u128, #[case] amount: u128, #[case] maximum: u128) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_maximum_amount = maximum.into();
-        c.borrow_minimum_amount = minimum.into();
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_maximum_amount = maximum.into();
+            c.borrow_minimum_amount = minimum.into();
+        })
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;

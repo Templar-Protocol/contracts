@@ -61,7 +61,11 @@ pub trait ContractController {
             "{} calls {}->{function_name}({})",
             &account.id().as_str()[0..16],
             &self.contract().id().as_str()[0..16],
-            &serde_json::to_string(&args).unwrap()[0..256],
+            &{
+                let mut a = serde_json::to_string(&args).unwrap();
+                a.truncate(256);
+                a
+            },
         );
         account
             .call(self.contract().id(), function_name)

@@ -8,7 +8,7 @@ use crate::{
     oracle::pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct BalanceOracleConfiguration {
     pub account_id: AccountId,

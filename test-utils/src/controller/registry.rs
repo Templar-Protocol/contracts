@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use near_sdk::{
-    borsh,
     serde_json::{self, json},
     AccountId, Gas, NearToken,
 };
@@ -13,7 +12,7 @@ use crate::{define, get_contract};
 use super::ContractController;
 
 pub struct RegistryController {
-    contract: Contract,
+    pub contract: Contract,
 }
 
 impl ContractController for RegistryController {
@@ -41,17 +40,6 @@ impl RegistryController {
             .unwrap();
 
         Self { contract }
-    }
-
-    pub async fn add_version2(&self, version_key: String, code: Vec<u8>) -> ExecutionSuccess {
-        self.call_exec(
-            self.contract.as_account(),
-            "add_version",
-            borsh::to_vec(&(version_key, code)).unwrap(),
-            NearToken::from_yoctonear(1),
-            Gas::from_tgas(300),
-        )
-        .await
     }
 
     pub async fn add_version(&self, version_key: String, code: Vec<u8>) {

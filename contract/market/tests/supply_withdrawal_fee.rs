@@ -12,15 +12,13 @@ async fn supply_withdrawal_fee_flat() {
         behavior: TimeBasedFeeFunction::Fixed,
     };
 
-    let SetupEverything {
-        c,
-        supply_user,
-        protocol_yield_user,
-        ..
-    } = setup_everything(|c| {
-        c.supply_withdrawal_fee = fee;
-    })
-    .await;
+    setup_test!(
+        extract(c, protocol_yield_user)
+        accounts(supply_user)
+        config(|c| {
+            c.supply_withdrawal_fee = fee;
+        })
+    );
 
     c.supply(&supply_user, 1000).await;
 
@@ -66,15 +64,13 @@ async fn supply_withdrawal_fee_expired() {
         behavior: TimeBasedFeeFunction::Fixed,
     };
 
-    let SetupEverything {
-        c,
-        supply_user,
-        protocol_yield_user,
-        ..
-    } = setup_everything(|c| {
-        c.supply_withdrawal_fee = fee;
-    })
-    .await;
+    setup_test!(
+        extract(c, protocol_yield_user)
+        accounts(supply_user)
+        config(|c| {
+            c.supply_withdrawal_fee = fee;
+        })
+    );
 
     c.supply(&supply_user, 1000).await;
 

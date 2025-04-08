@@ -1,17 +1,15 @@
 use rstest::rstest;
 
-use templar_common::{fee::Fee, number::Decimal};
+use templar_common::{fee::Fee, market::HarvestYieldMode, number::Decimal};
 use test_utils::*;
 
 #[tokio::test]
 async fn successful_liquidation_totally_underwater() {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|_| { })
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
@@ -69,22 +67,15 @@ async fn successful_liquidation_good_debt_under_mcr(
     #[case] collateral_asset_price_pct: u128,
     #[case] liquidation_amount: u128,
 ) {
-    use templar_common::market::HarvestYieldMode;
-
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        protocol_yield_user,
-        insurance_yield_user,
-        ..
-    } = setup_everything(|config| {
-        config.borrow_origination_fee = Fee::zero();
-        config.borrow_mcr = Decimal::from(mcr) / 100u32;
-        config.borrow_mcr_initial = Decimal::from(mcr) / 100u32;
-    })
-    .await;
+    setup_test!(
+        extract(c, protocol_yield_user, insurance_yield_user)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = Decimal::from(mcr) / 100u32;
+            c.borrow_mcr_initial = Decimal::from(mcr) / 100u32;
+        })
+    );
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, collateral_amount).await;
@@ -163,17 +154,14 @@ async fn successful_liquidation_with_spread(
     let target_spread: Decimal = Decimal::from(spread_pct) / 100u32;
     let mcr: Decimal = Decimal::from(mcr) / 100u32;
 
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|config| {
-        config.borrow_mcr = mcr;
-        config.liquidation_maximum_spread = liquidation_maximum_spread;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|c| {
+            c.borrow_mcr = mcr;
+            c.liquidation_maximum_spread = liquidation_maximum_spread;
+        })
+    );
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, 2000).await; // 2:1 collateralization
@@ -220,13 +208,10 @@ async fn successful_liquidation_with_spread(
 
 #[tokio::test]
 async fn fail_liquidation_too_little_attached() {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
@@ -269,13 +254,10 @@ async fn fail_liquidation_too_little_attached() {
 
 #[tokio::test]
 async fn fail_liquidation_healthy_borrow() {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;

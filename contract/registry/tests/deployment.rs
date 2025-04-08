@@ -1,10 +1,6 @@
 use near_sdk::serde_json::json;
 use templar_common::market::YieldWeights;
-use test_utils::{
-    accounts,
-    controller::{ft::FtController, oracle::OracleController, ContractController},
-    market_configuration, setup_registry,
-};
+use test_utils::*;
 
 #[tokio::test]
 pub async fn deploy_from_registry() {
@@ -25,21 +21,27 @@ pub async fn deploy_from_registry() {
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
+    let expected_configuration = market_configuration(
+        balance_oracle.contract().id().clone(),
+        borrow_asset.contract().id().clone(),
+        collateral_asset.contract().id().clone(),
+        protocol_account.id().clone(),
+        YieldWeights::new_with_supply_weight(1),
+    );
+
     let market_id = r
         .deploy_market(
             r.contract().as_account(),
             "market".to_string(),
             json!({
-                "configuration": market_configuration(
-                    balance_oracle.contract().id().clone(),
-                    borrow_asset.contract().id().clone(),
-                    collateral_asset.contract().id().clone(),
-                    protocol_account.id().clone(),
-                    YieldWeights::new_with_supply_weight(1),
-                )
+                "configuration": expected_configuration,
             }),
         )
         .await;
+
+    let c = UnifiedMarketController::attach(&worker, market_id.clone()).await;
+
+    assert_eq!(c.configuration, expected_configuration);
 
     eprintln!("Successfully deployed market to {market_id}");
 }
