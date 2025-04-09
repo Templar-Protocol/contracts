@@ -15,7 +15,7 @@ async fn main() {
 
     c.supply(&supply_user, 20_000).await;
     c.collateralize(&borrow_user, 13_000).await;
-    c.borrow(&borrow_user, 10_000.into()).await;
+    c.borrow(&borrow_user, 10_000).await;
 
     c.set_collateral_asset_price(0.85).await;
 

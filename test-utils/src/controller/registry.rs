@@ -42,7 +42,7 @@ impl RegistryController {
         Self { contract }
     }
 
-    pub async fn add_version(&self, version_key: String, code: Vec<u8>) {
+    pub async fn add_version(&self, version_key: &str, code: &[u8]) {
         self.contract
             .call("add_version")
             .args_borsh((version_key, code))

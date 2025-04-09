@@ -84,7 +84,7 @@ async fn test_happy() {
     let balance_before = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
-    c.borrow(&borrow_user, 1000.into()).await;
+    c.borrow(&borrow_user, 1000).await;
 
     let balance_after = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
 
@@ -139,8 +139,7 @@ async fn test_happy() {
 
                 let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
                 // Withdraw all
-                c.create_supply_withdrawal_request(&supply_user, 80.into())
-                    .await;
+                c.create_supply_withdrawal_request(&supply_user, 80).await;
                 c.execute_next_supply_withdrawal_request(&supply_user).await;
                 let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
 
@@ -171,8 +170,7 @@ async fn test_happy() {
                 assert_eq!(queue_status.length, 0);
 
                 let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
-                c.create_supply_withdrawal_request(&supply_user, 1100.into())
-                    .await;
+                c.create_supply_withdrawal_request(&supply_user, 1100).await;
 
                 // Queue should have 1 request now.
                 let request_status = c
@@ -262,7 +260,7 @@ async fn test_happy() {
         // Borrower withdraws collateral.
         async {
             let balance_before = c.collateral_asset.ft_balance_of(borrow_user.id()).await.0;
-            c.withdraw_collateral(&borrow_user, 2000.into()).await;
+            c.withdraw_collateral(&borrow_user, 2000).await;
             let balance_after = c.collateral_asset.ft_balance_of(borrow_user.id()).await.0;
             assert_eq!(balance_after - balance_before, 2000);
             let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();

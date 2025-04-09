@@ -21,7 +21,7 @@ async fn borrow_within_bounds(#[case] minimum: u128, #[case] amount: u128, #[cas
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, amount.into()).await;
+    c.borrow(&borrow_user, amount).await;
 }
 
 #[rstest]
@@ -43,7 +43,7 @@ async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[cas
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, amount.into()).await;
+    c.borrow(&borrow_user, amount).await;
 }
 
 #[rstest]
@@ -65,5 +65,5 @@ async fn borrow_above_maximum(#[case] minimum: u128, #[case] amount: u128, #[cas
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, amount.into()).await;
+    c.borrow(&borrow_user, amount).await;
 }

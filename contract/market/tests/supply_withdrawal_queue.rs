@@ -11,7 +11,7 @@ async fn successful_withdrawal() {
     c.supply(&supply_user, 10_000).await;
 
     let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
-    c.create_supply_withdrawal_request(&supply_user, 10_000.into())
+    c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
     assert_eq!(
@@ -40,10 +40,10 @@ async fn unsuccessful_withdrawal() {
 
     c.supply(&supply_user, 10_000).await;
     c.collateralize(&borrow_user, 20_000).await;
-    c.borrow(&borrow_user, 5_000.into()).await;
+    c.borrow(&borrow_user, 5_000).await;
 
     let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
-    c.create_supply_withdrawal_request(&supply_user, 10_000.into())
+    c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
     assert_eq!(
@@ -78,6 +78,6 @@ async fn attempt_to_withdraw_more_than_deposit() {
     setup_test!(extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
-    c.create_supply_withdrawal_request(&supply_user, 12_000.into())
+    c.create_supply_withdrawal_request(&supply_user, 12_000)
         .await;
 }

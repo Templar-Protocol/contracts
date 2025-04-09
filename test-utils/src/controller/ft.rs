@@ -49,7 +49,7 @@ impl FtController {
         pub fn ft_transfer(receiver_id: &AccountId, amount: U128);
 
         #[call(yocto(1), tgas(300))]
-        pub fn ft_transfer_call(receiver_id: &AccountId, amount: U128, msg: &str);
+        pub fn ft_transfer_call(receiver_id: &AccountId, amount: U128, msg: String);
 
         #[call]
         pub fn mint(amount: U128);

@@ -39,7 +39,7 @@ impl OracleController {
 
     define! {
         #[view]
-        pub fn list_ema_prices_no_older_than(price_ids: &[PriceIdentifier], age: u32) -> OracleResponse;
+        pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
 
         #[call]
         pub fn set_price(price_identifier: PriceIdentifier, price: pyth::Price);

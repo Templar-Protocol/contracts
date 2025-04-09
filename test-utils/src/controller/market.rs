@@ -255,7 +255,7 @@ impl UnifiedMarketController {
     pub async fn get_prices(&self) -> OracleResponse {
         self.balance_oracle
             .list_ema_prices_no_older_than(
-                &[
+                [
                     self.configuration.balance_oracle.borrow_asset_price_id,
                     self.configuration.balance_oracle.collateral_asset_price_id,
                 ],
@@ -273,8 +273,8 @@ impl UnifiedMarketController {
             .ft_transfer_call(
                 supply_user,
                 self.market.contract().id(),
-                amount.into(),
-                &serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
+                amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
             )
             .await
     }
@@ -288,8 +288,8 @@ impl UnifiedMarketController {
             .ft_transfer_call(
                 borrow_user,
                 self.market.contract().id(),
-                amount.into(),
-                &serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
+                amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
             )
             .await;
     }
@@ -300,8 +300,8 @@ impl UnifiedMarketController {
             .ft_transfer_call(
                 borrow_user,
                 self.market.contract().id(),
-                amount.into(),
-                &serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
+                amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
             )
             .await
     }
@@ -322,8 +322,8 @@ impl UnifiedMarketController {
             .ft_transfer_call(
                 liquidator_user,
                 self.market.contract().id(),
-                borrow_asset_amount.into(),
-                &serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
+                borrow_asset_amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
                     account_id: account_id.clone(),
                 }))
                 .unwrap(),

@@ -103,14 +103,14 @@ macro_rules! define {
         $v async fn $fn_name(
             &self,
             executor: &::near_workspaces::Account,
-            $($arg : $arg_t),*
+            $($arg : impl Into<$arg_t>),*
         ) -> $ret_t {
             $crate::controller::ContractController::call::<$ret_t>(
                 self,
                 executor,
                 stringify!($fn_name),
                 ::near_sdk::serde_json::json!({
-                    $(stringify!($arg) : $arg),*
+                    $(stringify!($arg) : Into::<$arg_t>::into($arg)),*
                 }),
                 $d,
                 $g,
@@ -122,7 +122,7 @@ macro_rules! define {
         $v async fn $fn_name(
             &self,
             executor: &::near_workspaces::Account,
-            $($arg : $arg_t),*
+            $($arg : impl Into<$arg_t>),*
         ) -> ::near_workspaces::result::ExecutionSuccess {
             $crate::controller::ContractController::call_exec(
                 self,
@@ -130,7 +130,7 @@ macro_rules! define {
                 stringify!($fn_name),
                 ::near_sdk::serde_json::to_vec(
                     &::near_sdk::serde_json::json!({
-                        $(stringify!($arg) : $arg),*
+                        $(stringify!($arg) : Into::<$arg_t>::into($arg)),*
                     }),
                 ).unwrap(),
                 $d,
@@ -159,13 +159,13 @@ macro_rules! define {
     (@view $v:vis fn $fn_name:ident ( $($arg:ident : $arg_t:ty),* ) -> $ret_t:ty) => {
         $v async fn $fn_name(
             &self,
-            $($arg : $arg_t),*
+            $($arg : impl Into<$arg_t>),*
         ) -> $ret_t {
             $crate::controller::ContractController::view::<$ret_t>(
                 self,
                 stringify!($fn_name),
                 ::near_sdk::serde_json::json!({
-                    $(stringify!($arg) : $arg),*
+                    $(stringify!($arg) : Into::<$arg_t>::into($arg)),*
                 }),
             )
             .await

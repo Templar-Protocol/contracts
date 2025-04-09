@@ -29,7 +29,7 @@ async fn success_above_minimum_initial_collateral_ratio(
         (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
     )
     .await;
-    c.borrow(&borrow_user, 1000.into()).await;
+    c.borrow(&borrow_user, 1000).await;
 }
 
 #[rstest]
@@ -60,7 +60,7 @@ async fn fail_below_minimum_initial_collateral_ratio(
         (1000u32 * initial).to_u128_floor().unwrap() - 1,
     )
     .await;
-    c.borrow(&borrow_user, 1000.into()).await;
+    c.borrow(&borrow_user, 1000).await;
 }
 
 #[rstest]
@@ -89,7 +89,7 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
         (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
     )
     .await;
-    c.borrow(&borrow_user, 1000.into()).await;
+    c.borrow(&borrow_user, 1000).await;
 
     c.set_collateral_asset_price(0.99).await;
 

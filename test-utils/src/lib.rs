@@ -207,11 +207,8 @@ pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
 
     let r = RegistryController::deploy(registry).await;
 
-    r.add_version(
-        "market".to_string(),
-        controller::market::load_wasm().await.to_vec(),
-    )
-    .await;
+    r.add_version("market", controller::market::load_wasm().await)
+        .await;
 
     r
 }
