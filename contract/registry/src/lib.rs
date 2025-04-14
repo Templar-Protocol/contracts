@@ -1,18 +1,25 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::{collections::HashMap, fmt::Write};
+use std::fmt::Write;
 
 use near_sdk::{
     assert_one_yocto, borsh, env, near, require, serde_json, store::IterableMap, AccountId,
-    NearToken, PanicOnDefault, Promise, PromiseResult,
+    NearToken, PanicOnDefault, Promise, PromiseOrValue, PromiseResult,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh])]
+pub enum RegistryEntry {
+    Reserved,
+    Deployed { version_key: String },
+}
 
 #[derive(PanicOnDefault, Owner)]
 #[near(contract_state)]
 pub struct Contract {
     versions: IterableMap<String, Vec<u8>>,
-    registry: IterableMap<AccountId, String>,
+    registry: IterableMap<AccountId, RegistryEntry>,
 }
 
 #[near]
@@ -29,12 +36,22 @@ impl Contract {
         self_
     }
 
-    pub fn list_versions(&self) -> Vec<&String> {
-        self.versions.keys().collect()
+    pub fn list_versions(&self, count: Option<u32>, offset: Option<u32>) -> Vec<&String> {
+        self.versions
+            .keys()
+            .skip(offset.unwrap_or(0) as usize)
+            .take(count.unwrap_or(u32::MAX) as usize)
+            .collect()
     }
 
-    pub fn get_deployments(&self) -> HashMap<&AccountId, &String> {
-        self.registry.iter().collect()
+    pub fn list_deployments(&self, count: Option<u32>, offset: Option<u32>) -> Vec<&AccountId> {
+        self.registry
+            .iter()
+            .filter(|(_, e)| matches!(e, RegistryEntry::Deployed { .. }))
+            .map(|(a, _)| a)
+            .skip(offset.unwrap_or(0) as usize)
+            .take(count.unwrap_or(u32::MAX) as usize)
+            .collect()
     }
 
     #[payable]
@@ -54,7 +71,12 @@ impl Contract {
     }
 
     #[payable]
-    pub fn deploy_market(&mut self, version_key: String, init_args: serde_json::Value) -> Promise {
+    pub fn deploy_market(
+        &mut self,
+        prefix: Option<String>,
+        version_key: String,
+        init_args: serde_json::Value,
+    ) -> Promise {
         const HASH_LEN: usize = 3;
         self.assert_owner();
 
@@ -80,7 +102,15 @@ impl Contract {
         )[0..HASH_LEN];
 
         let current_account_id = env::current_account_id();
-        let mut market_id = String::with_capacity(HASH_LEN + 1 + current_account_id.len());
+        let tail_len = HASH_LEN + 1 /* "." */ + current_account_id.len();
+        let mut market_id = if let Some(mut prefix) = prefix {
+            require!(!prefix.is_empty(), "Prefix must not be empty");
+            prefix.push('-');
+            prefix.reserve_exact(tail_len);
+            prefix
+        } else {
+            String::with_capacity(tail_len)
+        };
 
         for b in hash {
             write!(&mut market_id, "{b:x}").unwrap();
@@ -97,6 +127,9 @@ impl Contract {
             !self.registry.contains_key(&market_id),
             "Market id collision",
         );
+
+        self.registry
+            .insert(market_id.clone(), RegistryEntry::Reserved);
 
         near_sdk::log!("Deploying market to {market_id}");
 
@@ -125,15 +158,26 @@ impl Contract {
         &mut self,
         market_id: AccountId,
         version_key: String,
-    ) -> AccountId {
-        require!(
-            matches!(env::promise_result(0), PromiseResult::Successful(_)),
-            "Market deployment failed",
-        );
+    ) -> PromiseOrValue<AccountId> {
+        let successful = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        self.registry.insert(market_id.clone(), version_key);
+        if successful {
+            self.registry
+                .insert(market_id.clone(), RegistryEntry::Deployed { version_key });
 
-        market_id
+            PromiseOrValue::Value(market_id)
+        } else {
+            self.registry.remove(&market_id);
+
+            PromiseOrValue::Promise(
+                Self::ext(env::current_account_id()).fail("Market deployment failed".to_string()),
+            )
+        }
+    }
+
+    #[private]
+    pub fn fail(&self, message: String) {
+        env::panic_str(&message);
     }
 }
 

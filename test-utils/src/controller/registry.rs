@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use near_sdk::{
+    borsh,
     serde_json::{self, json},
     AccountId, Gas, NearToken,
 };
@@ -11,6 +12,7 @@ use crate::{define, get_contract};
 
 use super::ContractController;
 
+#[derive(Clone, Debug)]
 pub struct RegistryController {
     pub contract: Contract,
 }
@@ -42,16 +44,20 @@ impl RegistryController {
         Self { contract }
     }
 
-    pub async fn add_version(&self, version_key: &str, code: &[u8]) {
-        self.contract
-            .call("add_version")
-            .args_borsh((version_key, code))
-            .deposit(NearToken::from_yoctonear(1))
-            .max_gas()
-            .transact()
-            .await
-            .unwrap()
-            .unwrap();
+    pub async fn add_version(
+        &self,
+        executor: &Account,
+        version_key: &str,
+        code: &[u8],
+    ) -> ExecutionSuccess {
+        self.call_exec(
+            executor,
+            "add_version",
+            borsh::to_vec(&(version_key, code)).unwrap(),
+            NearToken::from_yoctonear(1),
+            Gas::from_tgas(300),
+        )
+        .await
     }
 
     pub async fn deploy_market_exec(
@@ -79,6 +85,6 @@ impl RegistryController {
         #[view] pub fn get_deployments() -> HashMap<AccountId, String>;
 
         #[call(near(10), tgas(300))]
-        pub fn deploy_market(version_key: String, init_args: serde_json::Value) -> AccountId;
+        pub fn deploy_market(prefix: Option<String>, version_key: String, init_args: serde_json::Value) -> AccountId;
     }
 }
