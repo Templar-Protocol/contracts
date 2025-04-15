@@ -3,8 +3,8 @@
 use std::fmt::Write;
 
 use near_sdk::{
-    assert_one_yocto, borsh, env, near, require, serde_json, store::IterableMap, AccountId,
-    NearToken, PanicOnDefault, Promise, PromiseOrValue, PromiseResult,
+    assert_one_yocto, borsh, env, json_types::Base64VecU8, near, require, store::IterableMap,
+    AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue, PromiseResult,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 
@@ -75,7 +75,8 @@ impl Contract {
         &mut self,
         prefix: Option<String>,
         version_key: String,
-        init_args: serde_json::Value,
+        init_args: Base64VecU8,
+        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
     ) -> Promise {
         const HASH_LEN: usize = 3;
         self.assert_owner();
@@ -133,22 +134,31 @@ impl Contract {
 
         near_sdk::log!("Deploying market to {market_id}");
 
-        Promise::new(market_id.clone())
+        let mut promise = Promise::new(market_id.clone())
             .create_account()
             .transfer(env::attached_deposit())
-            .deploy_contract(version_code.clone())
-            .function_call(
+            .deploy_contract(version_code.clone());
+
+        for key in full_access_keys.unwrap_or_default() {
+            near_sdk::log!(
+                "WARNING: Deploying market with full-access key {}",
+                String::from(&key),
+            );
+            promise = promise.add_full_access_key(key);
+        }
+
+        promise
+            .function_call_weight(
                 "new".to_string(),
-                serde_json::to_vec(&init_args).unwrap_or_else(|_| {
-                    env::panic_str("Failed to serialize initialization arguments")
-                }),
+                init_args.0,
                 NearToken::from_near(0),
-                env::prepaid_gas()
-                    .saturating_sub(env::used_gas())
-                    .saturating_div(2),
+                Gas::from_tgas(2),
+                near_sdk::GasWeight(20),
             )
             .then(
                 Self::ext(env::current_account_id())
+                    .with_unused_gas_weight(1)
+                    .with_static_gas(Gas::from_tgas(2))
                     .deploy_market_01_finalize(market_id, version_key),
             )
     }
