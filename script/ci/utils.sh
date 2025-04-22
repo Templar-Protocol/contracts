@@ -14,7 +14,7 @@ parse_args() {
 
         for ((i=0; i<${#args[@]}; i+=2)); do
             if [[ "${args[i]}" == "$arg_name" ]]; then
-                eval "$var_name=\"${args[i+1]}\""
+                eval "$var_name=\"\${args[i+1]}\""
                 break
             fi
         done

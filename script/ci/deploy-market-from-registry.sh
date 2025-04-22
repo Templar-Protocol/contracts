@@ -25,7 +25,7 @@ fi
 ARGS=$(jq --null-input \
     --argjson name "${NAME}" \
     --arg version_key "${VERSION_KEY}" \
-    --arg init_args "$(echo $INIT_ARGS | base64)" \
+    --arg init_args "$(echo "${INIT_ARGS}" | base64)" \
     --argjson full_access_keys "${FULL_ACCESS_KEYS}" \
     '$ARGS.named')
 
