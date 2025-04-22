@@ -44,8 +44,8 @@ pub async fn deploy_from_registry() {
         async move {
             r.deploy_market(
                 r.contract().as_account(),
-                Some("p".to_string()),
-                "market@0.0.0".to_string(),
+                "one",
+                "market@0.0.0",
                 init_args,
                 None,
             )
@@ -59,8 +59,8 @@ pub async fn deploy_from_registry() {
         async move {
             r.deploy_market(
                 r.contract().as_account(),
-                Some("p".to_string()),
-                "market@0.0.0".to_string(),
+                "two",
+                "market@0.0.0",
                 init_args,
                 None,
             )
@@ -74,23 +74,8 @@ pub async fn deploy_from_registry() {
         async move {
             r.deploy_market(
                 r.contract().as_account(),
-                None,
-                "market@0.0.0".to_string(),
-                init_args,
-                None,
-            )
-            .await
-        }
-    });
-
-    deployments.spawn({
-        let r = r.clone();
-        let init_args = init_args.clone();
-        async move {
-            r.deploy_market(
-                r.contract().as_account(),
-                None,
-                "market@0.0.0".to_string(),
+                "three",
+                "market@0.0.0",
                 init_args,
                 None,
             )
@@ -139,7 +124,7 @@ async fn deploy_with_access_key() {
     let market_id = r
         .deploy_market(
             r.contract().as_account(),
-            None,
+            "market",
             "market@0.0.0".to_string(),
             serde_json::to_vec(&json!({
                 "configuration": market_configuration(
@@ -168,4 +153,56 @@ async fn deploy_with_access_key() {
         view_access_keys[0].access_key.permission,
         AccessKeyPermission::FullAccess,
     ));
+}
+
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Market ID collision"]
+pub async fn market_id_collision() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let r = setup_registry(&worker).await;
+
+    accounts!(
+        worker,
+        balance_oracle,
+        borrow_asset,
+        collateral_asset,
+        protocol_account
+    );
+
+    let (balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
+        OracleController::deploy(balance_oracle),
+        FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
+        FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
+    );
+
+    let expected_configuration = market_configuration(
+        balance_oracle.contract().id().clone(),
+        borrow_asset.contract().id().clone(),
+        collateral_asset.contract().id().clone(),
+        protocol_account.id().clone(),
+        YieldWeights::new_with_supply_weight(1),
+    );
+
+    let init_args = serde_json::to_vec(&json!({
+        "configuration": expected_configuration,
+    }))
+    .unwrap();
+
+    r.deploy_market(
+        r.contract().as_account(),
+        "market",
+        "market@0.0.0",
+        init_args.clone(),
+        None,
+    )
+    .await;
+
+    r.deploy_market(
+        r.contract().as_account(),
+        "market",
+        "market@0.0.0",
+        init_args,
+        None,
+    )
+    .await;
 }

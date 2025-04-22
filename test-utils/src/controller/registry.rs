@@ -64,6 +64,7 @@ impl RegistryController {
     pub async fn deploy_market_exec(
         &self,
         deposit: NearToken,
+        name: &str,
         version_key: &str,
         init_args: Vec<u8>,
         full_access_keys: Option<Vec<near_sdk::PublicKey>>,
@@ -72,6 +73,7 @@ impl RegistryController {
             self.contract.as_account(),
             "deploy_market",
             serde_json::to_vec(&json!({
+                "name": name,
                 "version_key": version_key,
                 "init_args": Base64VecU8(init_args),
                 "full_access_keys": full_access_keys,
@@ -88,6 +90,6 @@ impl RegistryController {
         #[view] pub fn get_deployments() -> HashMap<AccountId, String>;
 
         #[call(near(10), tgas(300))]
-        pub fn deploy_market(prefix: Option<String>, version_key: String, init_args: Base64VecU8, full_access_keys: Option<Vec<near_sdk::PublicKey>>) -> AccountId;
+        pub fn deploy_market(name: String, version_key: String, init_args: Base64VecU8, full_access_keys: Option<Vec<near_sdk::PublicKey>>) -> AccountId;
     }
 }
