@@ -1,5 +1,5 @@
 view_json() {
-    sed 's/| //' | awk '/^[[:space:]]*-+$/ { exit } /^[[:print:]]*$/ { print }' | jq .
+    sed 's/| //' | awk 'NR == 1 { next } /^[[:space:]]*-+$/ { exit } { print }' | jq .
 }
 
 parse_args() {
