@@ -73,7 +73,7 @@ jobs:
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
             --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
             --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-            --init        "${{ steps.existence.outcome == 'success' }}"
+            --init        "${{ steps.existence.outcome != 'success' }}"
 
       - name: Add market version to registry
         run: |
