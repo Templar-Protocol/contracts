@@ -44,7 +44,8 @@ cd "${SCRIPT_DIR}/../../contract/market"
 
 echo "Building market"
 
-cargo near build reproducible-wasm
+cargo near build non-reproducible-wasm
+# cargo near build reproducible-wasm
 
 
 echo "Generating Borsh arguments"
@@ -61,7 +62,7 @@ near contract call-function as-transaction "${REGISTRY_ID}" \
     add_version \
         file-args "${ARGS_FILE}" \
         prepaid-gas '300.0 Tgas' \
-        attached-deposit '0 NEAR' \
+        attached-deposit '1 yoctoNEAR' \
     sign-as "${ACCOUNT_ID}" \
     network-config "${NETWORK}" \
     sign-with-plaintext-private-key \

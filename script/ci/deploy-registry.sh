@@ -11,6 +11,10 @@ while [[ $# -gt 0 ]]; do
             NETWORK="$2"
             shift 2
             ;;
+        --init)
+            INIT="$2"
+            shift 2
+            ;;
         -s|--private-key)
             PRIVATE_KEY="$2"
             shift 2
@@ -30,21 +34,37 @@ if [ -z "$NETWORK" ]; then
   NETWORK="testnet"
 fi
 
+if [ -z "$INIT" ]; then
+  INIT=true
+fi
+
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 
 cd "${SCRIPT_DIR}/../../contract/registry"
 
-echo "Deploying registry contract to ${ACCOUNT_ID} on ${NETWORK}"
-
-cargo near deploy build-reproducible-wasm --skip-git-remote-check "${ACCOUNT_ID}" \
-  with-init-call new \
-    json-args '{}' \
-    prepaid-gas '100.0 Tgas' \
-    attached-deposit '0 NEAR' \
-  network-config "${NETWORK}" \
-  sign-with-plaintext-private-key \
-    --signer-public-key "${PUBLIC_KEY}" \
-    --signer-private-key "${PRIVATE_KEY}" \
-  send
+if $INIT; then
+    echo "Deploying registry contract to ${ACCOUNT_ID} on ${NETWORK} with initialization call"
+    # cargo near deploy build-reproducible-wasm --skip-git-remote-check "${ACCOUNT_ID}" \
+    cargo near deploy build-non-reproducible-wasm "${ACCOUNT_ID}" \
+        with-init-call new \
+            json-args '{}' \
+            prepaid-gas '100.0 Tgas' \
+            attached-deposit '0 NEAR' \
+        network-config "${NETWORK}" \
+        sign-with-plaintext-private-key \
+            --signer-public-key "${PUBLIC_KEY}" \
+            --signer-private-key "${PRIVATE_KEY}" \
+        send
+else
+    echo "Deploying registry contract to ${ACCOUNT_ID} on ${NETWORK} without initialization call"
+    # cargo near deploy build-reproducible-wasm --skip-git-remote-check "${ACCOUNT_ID}" \
+    cargo near deploy build-non-reproducible-wasm "${ACCOUNT_ID}" \
+        without-init-call \
+        network-config "${NETWORK}" \
+        sign-with-plaintext-private-key \
+            --signer-public-key "${PUBLIC_KEY}" \
+            --signer-private-key "${PRIVATE_KEY}" \
+        send
+fi
 
 echo "Done"

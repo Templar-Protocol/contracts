@@ -19,8 +19,8 @@ while [[ $# -gt 0 ]]; do
             INIT_ARGS="$2"
             shift 2
             ;;
-        --prefix)
-            PREFIX="$2"
+        --name)
+            NAME="$2"
             shift 2
             ;;
         --with-full-access-key)
@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Invalid option: $1"
+            >&2 echo "Invalid option: $1"
             exit 1
             ;;
     esac
@@ -50,10 +50,10 @@ if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
 fi
 
-if [ -z "$PREFIX" ]; then
-    PREFIX="null"
+if [ -z "$NAME" ]; then
+    NAME="null"
 else
-    PREFIX='"'$PREFIX'"'
+    NAME='"'$NAME'"'
 fi
 
 if [ -z "$WITH_FULL_ACCESS_KEY" ]; then
@@ -65,20 +65,20 @@ fi
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 
 ARGS=$(jq --null-input \
-    --argjson prefix "${PREFIX}" \
+    --argjson name "${NAME}" \
     --arg version_key "${VERSION_KEY}" \
-    --arg init_args "${INIT_ARGS}" \
+    --arg init_args "$(echo $INIT_ARGS | base64)" \
     --argjson full_access_keys "${FULL_ACCESS_KEYS}" \
     '$ARGS.named')
 
-echo "Generated deployment args"
-echo "${ARGS}"
+>&2 echo "Generated deployment args"
+>&2 echo "${ARGS}"
 
 near contract call-function as-transaction "${REGISTRY_ID}" \
     deploy_market \
         json-args "${ARGS}" \
         prepaid-gas '300.0 Tgas' \
-        attached-deposit '10 NEAR' \
+        attached-deposit '5 NEAR' \
     sign-as "${ACCOUNT_ID}" \
     network-config "${NETWORK}" \
     sign-with-plaintext-private-key \
@@ -87,4 +87,4 @@ near contract call-function as-transaction "${REGISTRY_ID}" \
     send
 
 
-echo "Done"
+>&2 echo "Done"
