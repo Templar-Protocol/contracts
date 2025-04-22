@@ -1,38 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -a|--account)
-      ACCOUNT_ID="$2"
-      shift 2
-      ;;
-    -t|--token)
-      TOKEN_ID="$2"
-      shift 2
-      ;;
-    -n|--network)
-      NETWORK="$2"
-      shift 2
-      ;;
-    -b|--beneficiary)
-      BENEFICIARY_ID="$2"
-      shift 2
-      ;;
-    -s|--private-key)
-      PRIVATE_KEY="$2"
-      shift 2
-      ;;
-    -v|--public-key)
-      PUBLIC_KEY="$2"
-      shift 2
-      ;;
-    *)
-      echo "Invalid option: $1"
-      exit 1
-      ;;
-  esac
-done
+SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
+source "$SCRIPT_DIR/utils.sh"
+
+parse_args "--account:ACCOUNT_ID,--token:TOKEN_ID,--beneficiary:BENEFICIARY_ID,--network:NETWORK,--private-key:PRIVATE_KEY,--public-key:PUBLIC_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
   NETWORK="testnet"
