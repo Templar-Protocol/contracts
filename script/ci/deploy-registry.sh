@@ -19,7 +19,6 @@ cd "${SCRIPT_DIR}/../../contract/registry"
 if $INIT; then
     echo "Deploying registry contract to ${ACCOUNT_ID} on ${NETWORK} with initialization call"
     cargo near deploy build-reproducible-wasm --skip-git-remote-check "${ACCOUNT_ID}" \
-    # cargo near deploy build-non-reproducible-wasm "${ACCOUNT_ID}" \
         with-init-call new \
             json-args '{}' \
             prepaid-gas '100.0 Tgas' \
@@ -32,7 +31,6 @@ if $INIT; then
 else
     echo "Deploying registry contract to ${ACCOUNT_ID} on ${NETWORK} without initialization call"
     cargo near deploy build-reproducible-wasm --skip-git-remote-check "${ACCOUNT_ID}" \
-    # cargo near deploy build-non-reproducible-wasm "${ACCOUNT_ID}" \
         without-init-call \
         network-config "${NETWORK}" \
         sign-with-plaintext-private-key \
