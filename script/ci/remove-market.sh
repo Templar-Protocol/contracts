@@ -10,6 +10,15 @@ if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
 fi
 
+$SCRIPT_DIR/account-exists.sh \
+    --account "$ACCOUNT_ID" \
+    --network "$NETWORK"
+
+if [ $? -ne 0 ]; then
+    echo "Account does not exist, nothing to do"
+    exit 0
+fi
+
 CONFIG=$(near --quiet contract call-function as-read-only "${ACCOUNT_ID}" get_configuration \
     json-args {} \
     network-config "${NETWORK}" \

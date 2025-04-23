@@ -46,10 +46,9 @@ jobs:
         id: existence
         continue-on-error: true
         run: |
-          near account \
-            view-account-summary "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-            network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            now
+          ./script/ci/account-exists.sh \
+            --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+            --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
 
       - name: Create staging account
         if: steps.existence.outcome != 'success'
