@@ -108,7 +108,6 @@ jobs:
           echo "MARKET_ACCOUNT_ID=${{ env.MARKET_NAME }}.${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" >> $GITHUB_ENV
 
       - name: Perform storage deposits
-        if: steps.existence.outcome != 'success'
         run: |
           BORROW_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.borrow_asset.Nep141')
           if [ -n "$BORROW_ID" ]; then
