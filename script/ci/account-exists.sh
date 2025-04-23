@@ -10,7 +10,7 @@ if [ -z "$NETWORK" ]; then
   NETWORK="testnet"
 fi
 
-echo "Checking whether ${ACCOUNT_ID} exists on ${NETWORK}"
+1>&2 echo "Checking whether ${ACCOUNT_ID} exists on ${NETWORK}"
 
 OUTPUT=$(curl --silent --request POST \
   --url "https://archival-rpc.$NETWORK.near.org/" \
@@ -29,9 +29,5 @@ OUTPUT=$(curl --silent --request POST \
 RESULT=$(<<<"$OUTPUT" jq '.result.block_height')
 
 if [[ -n "$RESULT" && "$RESULT" -gt 0 ]]; then
-    echo "${ACCOUNT_ID} exists"
-    exit 0
-else
-    echo "${ACCOUNT_ID} does not exist"
-    exit 1
+    echo 1
 fi

@@ -42,28 +42,46 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Check if staging account exists
-        id: existence
-        continue-on-error: true
-        run: |
-          ./script/ci/account-exists.sh \
-            --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-            --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
-
-      - name: Create staging account
-        if: steps.existence.outcome != 'success'
-        run: |
-          near account create-account fund-myself "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '25 NEAR' \
-            use-manually-provided-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-            sign-as "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
-            network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            sign-with-plaintext-private-key \
-              --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-              --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            send
-
       - name: Install cargo-near CLI
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.13.3/cargo-near-installer.sh | sh
+
+      - name: Initialize staging account
+        run: |
+          EXISTS=$(./script/ci/account-exists.sh \
+            --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+            --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}")
+
+          if [[ -z "$EXISTS" ]]; then
+            echo "Account does not already exist, creating"
+
+            near account create-account fund-myself "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '10 NEAR' \
+              use-manually-provided-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+              sign-as "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
+              network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+              sign-with-plaintext-private-key \
+                --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+                --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+              send
+
+            echo "NEWLY_CREATED=1" >> $GITHUB_ENV
+          else
+            echo "Account already exists, adding tokens and removing old market versions"
+
+            near tokens "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
+              send-near "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '5 NEAR' \
+              network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+              sign-with-plaintext-private-key \
+                --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
+                --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+              send
+
+            ./script/ci/remove-all-versions-from-registry.sh \
+              --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+              --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+              --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+              --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+          fi
 
       - name: Deploy registry to staging account
         run: |
@@ -72,7 +90,7 @@ jobs:
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
             --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
             --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-            --init        "${{ steps.existence.outcome != 'success' }}"
+            --init        $([[ -n "$NEWLY_CREATED" ]] && echo true || echo false)
 
       - name: Add market version to registry
         run: |

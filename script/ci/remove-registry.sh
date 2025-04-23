@@ -10,44 +10,28 @@ if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
 fi
 
-$SCRIPT_DIR/account-exists.sh \
+EXISTS=$($SCRIPT_DIR/account-exists.sh \
     --account "$ACCOUNT_ID" \
-    --network "$NETWORK"
+    --network "$NETWORK")
 
-if [ $? -ne 0 ]; then
+if [[ -z "$EXISTS" ]]; then
     echo "Account does not exist, nothing to do"
     exit 0
 fi
 
-VERSIONS=$(near --quiet contract call-function as-read-only "${ACCOUNT_ID}" list_versions \
-    json-args "{}" \
-    network-config "${NETWORK}" \
-    now)
-
-echo "Versions"
-echo "$VERSIONS" | jq .
-
-echo "${VERSIONS}" | jq -r '.[]' | while read VERSION_KEY; do
-    echo "Removing ${VERSION_KEY}..."
-
-    near contract call-function as-transaction "${ACCOUNT_ID}" remove_version \
-        json-args "{\"version_key\":\"${VERSION_KEY}\"}" \
-        prepaid-gas '200.0 Tgas' \
-        attached-deposit '1 yoctoNEAR' \
-        sign-as "${ACCOUNT_ID}" \
-        network-config testnet \
-        sign-with-plaintext-private-key \
-          --signer-public-key "${PUBLIC_KEY}" \
-          --signer-private-key "${PRIVATE_KEY}" \
-        send
-done
+$SCRIPT_DIR/remove-all-versions-from-registry.sh \
+    --account       "${ACCOUNT_ID}" \
+    --registry      "${ACCOUNT_ID}" \
+    --network       "${NETWORK}" \
+    --public-key    "${PUBLIC_KEY}" \
+    --private-key   "${PRIVATE_KEY}"
 
 near account delete-account "${ACCOUNT_ID}" \
-  beneficiary "${BENEFICIARY_ID}" \
-  network-config "${NETWORK}" \
-  sign-with-plaintext-private-key \
-    --signer-public-key "${PUBLIC_KEY}" \
-    --signer-private-key "${PRIVATE_KEY}" \
-  send
+    beneficiary "${BENEFICIARY_ID}" \
+    network-config "${NETWORK}" \
+    sign-with-plaintext-private-key \
+        --signer-public-key "${PUBLIC_KEY}" \
+        --signer-private-key "${PRIVATE_KEY}" \
+    send
 
 echo "Done"
