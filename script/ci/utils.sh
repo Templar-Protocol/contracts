@@ -1,7 +1,3 @@
-view_json() {
-    sed 's/| //' | awk 'NR == 1 { next } /^[[:space:]]*-+$/ { exit } { print }' | jq .
-}
-
 parse_args() {
     local descriptor="$1"
     shift

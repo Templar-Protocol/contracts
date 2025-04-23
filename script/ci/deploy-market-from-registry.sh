@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -ex
+set -e
 
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
@@ -30,7 +30,7 @@ ARGS=$(jq --null-input \
     '$ARGS.named')
 
 echo "Generated deployment args"
-echo "${ARGS}"
+echo "${ARGS}" | jq .
 
 near contract call-function as-transaction "${REGISTRY_ID}" \
     deploy_market \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -ex
+set -e
 
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
@@ -10,11 +10,15 @@ if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
 fi
 
-near contract call-function as-read-only "${ACCOUNT_ID}" list_versions \
+VERSIONS=$(near --quiet contract call-function as-read-only "${ACCOUNT_ID}" list_versions \
     json-args "{}" \
     network-config "${NETWORK}" \
-    now 2>&1 | view_json | jq -r '.[]' | \
-while read VERSION_KEY; do
+    now)
+
+echo "Versions"
+echo "$VERSIONS" | jq .
+
+echo "${VERSIONS}" | jq -r '.[]' | while read VERSION_KEY; do
     echo "Removing ${VERSION_KEY}..."
 
     near contract call-function as-transaction "${ACCOUNT_ID}" remove_version \
