@@ -121,13 +121,23 @@ impl<'a, T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32> Iterator
 {
     type Item = &'a T;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
         if self.until_index <= self.next_index {
             return None;
         }
-        let value = self.list.get(self.next_index)?;
-        self.next_index += 1;
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Assume collection size is never > u32::MAX"
+        )]
+        let n = u32::try_from(n).unwrap();
+        let index = self.next_index + n;
+        let value = self.list.get(index)?;
+        self.next_index = index + 1;
         Some(value)
+    }
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.nth(0)
     }
 }
 
