@@ -158,3 +158,19 @@ impl PricePair {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maximum_positive_exponent() {
+        let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT);
+    }
+
+    #[test]
+    #[should_panic = "arithmetic operation overflow"]
+    fn maximum_positive_exponent_overflow() {
+        let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT + 1);
+    }
+}
