@@ -88,8 +88,8 @@ mod error {
 }
 
 // Maximum number of fully-representable whole digits in 384 bits: floor(log_10(2^384)) = 115
-// Maximum number of digits in a 64-bit integer: floor(log_10(2^64)) + 1 = 20
-const MAXIMUM_POSITIVE_EXPONENT: i32 = 115 - 20;
+// Decimal digits: floor(128 / log_2(10)) = 38
+const MAXIMUM_POSITIVE_EXPONENT: i32 = 115 - 38;
 
 fn from_pyth_price<T: AssetClass>(
     pyth_price: &pyth::Price,
