@@ -63,11 +63,15 @@ pub mod error {
     #[derive(Debug, Clone)]
     pub enum InvalidFieldReason {
         OutOfBounds,
+        MustNotEqual(&'static str),
     }
 
     impl Display for InvalidFieldReason {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "out of bounds")
+            match self {
+                Self::OutOfBounds => write!(f, "out of bounds"),
+                Self::MustNotEqual(other) => write!(f, "must not equal `{other}`"),
+            }
         }
     }
 
@@ -75,6 +79,16 @@ pub mod error {
         ConfigurationValidationError {
             field,
             reason: InvalidFieldReason::OutOfBounds,
+        }
+    }
+
+    pub(super) fn must_not_equal(
+        field: &'static str,
+        other: &'static str,
+    ) -> ConfigurationValidationError {
+        ConfigurationValidationError {
+            field,
+            reason: InvalidFieldReason::MustNotEqual(other),
         }
     }
 }
@@ -104,6 +118,10 @@ impl MarketConfiguration {
 
         if self.liquidation_maximum_spread >= 1u32 {
             return Err(error::out_of_bounds("liquidation_maximum_spread"));
+        }
+
+        if self.borrow_asset == self.collateral_asset.clone().coerce() {
+            return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
         }
 
         Ok(())
