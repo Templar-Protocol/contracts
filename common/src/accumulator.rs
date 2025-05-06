@@ -29,11 +29,6 @@ impl<T: AssetClass> Accumulator<T> {
 
     pub fn get_total(&self) -> FungibleAssetAmount<T> {
         self.total
-        // let mut total = self.total;
-        // match total.split(self.amortized) {
-        //     Some(_) => total,
-        //     None => FungibleAssetAmount::zero(),
-        // }
     }
 
     pub fn clear(&mut self, next_snapshot_index: u32) {
