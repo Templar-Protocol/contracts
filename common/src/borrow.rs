@@ -272,7 +272,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         }
     }
 
-    pub fn can_be_liquidated(&self, price_pair: &PricePair, block_timestamp_ms: u64) -> bool {
+    pub fn is_liquidation_allowed(&self, price_pair: &PricePair, block_timestamp_ms: u64) -> bool {
         self.market
             .configuration
             .borrow_status(&self.position, price_pair, block_timestamp_ms)

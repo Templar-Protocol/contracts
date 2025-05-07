@@ -35,8 +35,8 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     c.supply(&supply_user, principal * 5).await;
     c.supply(&supply_user_2, principal * 5).await;
-    c.collateralize(&borrow_user, principal * 2).await;
-    c.collateralize(&borrow_user_2, principal * 2).await;
+    c.collateralize(&borrow_user, principal * 5).await;
+    c.collateralize(&borrow_user_2, principal * 5).await;
 
     let time_outer = std::time::Instant::now();
     tokio::join!(
