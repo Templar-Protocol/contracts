@@ -66,12 +66,10 @@ impl FungibleTokenReceiver for Contract {
                         .balance_oracle
                         .retrieve_price_pair()
                         .then(
-                            self_ext!(
-                                Self::GAS_LIQUIDATE_FT_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE
-                            )
-                            .liquidate_ft_transfer_call_01_consume_oracle_response(
-                                sender_id, account_id, amount,
-                            ),
+                            self_ext!(Self::GAS_FT_TRANSFER_CALL_LIQUIDATE_01_CONSUME_PRICE)
+                                .liquidate_ft_transfer_call_01_consume_price(
+                                    sender_id, account_id, amount,
+                                ),
                         ),
                 )
             }
