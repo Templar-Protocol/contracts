@@ -1,3 +1,6 @@
+// This test is particularly long-running. Since tests are run in lexographical
+// order, this test is named 0_... to start it running sooner.
+
 use templar_common::time_chunk::TimeChunkConfiguration;
 use test_utils::*;
 
