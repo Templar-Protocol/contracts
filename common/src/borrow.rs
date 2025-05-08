@@ -286,16 +286,16 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
             .is_liquidation()
     }
 
-    pub fn is_within_minimum_initial_collateral_ratio(&self, price_pair: &PricePair) -> bool {
+    pub fn satisfies_minimum_initial_collateral_ratio(&self, price_pair: &PricePair) -> bool {
         self.market
             .configuration
-            .is_within_minimum_initial_collateral_ratio(&self.position, price_pair)
+            .satisfies_minimum_initial_collateral_ratio(&self.position, price_pair)
     }
 
-    pub fn is_within_minimum_collateral_ratio(&self, price_pair: &PricePair) -> bool {
+    pub fn satisfies_minimum_collateral_ratio(&self, price_pair: &PricePair) -> bool {
         self.market
             .configuration
-            .is_within_minimum_collateral_ratio(&self.position, price_pair)
+            .satisfies_minimum_collateral_ratio(&self.position, price_pair)
     }
 
     pub fn minimum_acceptable_liquidation_amount(

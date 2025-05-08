@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     fmt::{Debug, Display},
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
     str::FromStr,
@@ -200,6 +201,15 @@ impl Decimal {
         let frac = self - whole;
 
         Some(Self::pow2_int(whole)? * Self::pow2_frac(frac))
+    }
+
+    #[must_use]
+    pub fn times_10_to_the(self, pow: i32) -> Self {
+        match pow.cmp(&0) {
+            Ordering::Less => self / Decimal::TEN.pow(-pow),
+            Ordering::Equal => self,
+            Ordering::Greater => self * Decimal::TEN.pow(pow),
+        }
     }
 
     #[must_use]

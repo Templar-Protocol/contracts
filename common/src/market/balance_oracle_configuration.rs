@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{cmp::Ordering, marker::PhantomData};
 
 use near_sdk::{near, AccountId, Gas, Promise};
 
@@ -60,7 +60,7 @@ pub struct Price<T: AssetClass> {
     _asset: PhantomData<T>,
     price: u128,
     confidence: u128,
-    power_of_10: Decimal,
+    power_of_10: i32,
 }
 
 mod error {
@@ -82,14 +82,10 @@ mod error {
         NegativePrice,
         #[error("Confidence interval too large")]
         ConfidenceIntervalTooLarge,
-        #[error("Exponent too large")]
-        ExponentTooLarge,
+        // #[error("Exponent too large")]
+        // ExponentTooLarge,
     }
 }
-
-// Maximum number of fully-representable whole digits in 384 bits: floor(log_10(2^384)) = 115
-// Decimal digits: floor(128 / log_2(10)) = 38
-const MAXIMUM_POSITIVE_EXPONENT: i32 = 115 - 38;
 
 fn from_pyth_price<T: AssetClass>(
     pyth_price: &pyth::Price,
@@ -103,37 +99,119 @@ fn from_pyth_price<T: AssetClass>(
         return Err(error::PriceDataError::ConfidenceIntervalTooLarge);
     }
 
-    if pyth_price.expo > MAXIMUM_POSITIVE_EXPONENT {
-        return Err(error::PriceDataError::ExponentTooLarge);
-    }
-
-    // TODO: If price falls below minimum representation, it will get truncated to zero.
-    // Is this okay?
-
     Ok(Price {
         _asset: PhantomData,
         price: u128::from(price),
         confidence: u128::from(pyth_price.conf.0),
-        power_of_10: Decimal::TEN.pow(pyth_price.expo - decimals),
+        // TODO: checked_sub
+        power_of_10: pyth_price.expo - decimals,
     })
 }
 
 impl<T: AssetClass> Price<T> {
     pub fn upper_bound(&self) -> Decimal {
-        (self.price + self.confidence) * self.power_of_10
+        Decimal::from(self.price + self.confidence).times_10_to_the(self.power_of_10)
     }
 
     pub fn lower_bound(&self) -> Decimal {
-        (self.price - self.confidence) * self.power_of_10
+        Decimal::from(self.price - self.confidence).times_10_to_the(self.power_of_10)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Valuation {
+    coefficient: u128,
+    power_of_10: i32,
+}
+
+impl Valuation {
+    fn reduce(&mut self) {
+        let add_pow_10 = decimal_trailing_zeroes(self.coefficient);
+        self.coefficient /= 10u128.pow(u32::from(add_pow_10));
+        self.power_of_10 += i32::from(add_pow_10);
     }
 
-    pub fn value_optimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        Decimal::from(amount) * self.upper_bound()
+    pub fn optimistic<T: AssetClass>(
+        amount: FungibleAssetAmount<T>,
+        price: &Price<T>,
+    ) -> Option<Self> {
+        let mut self_ = Self {
+            coefficient: u128::from(amount).checked_mul(
+                price.price + price.confidence, // guaranteed not to overflow
+            )?,
+            power_of_10: price.power_of_10,
+        };
+        self_.reduce();
+        Some(self_)
     }
 
-    pub fn value_pessimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        Decimal::from(amount) * self.lower_bound()
+    pub fn pessimistic<T: AssetClass>(
+        amount: FungibleAssetAmount<T>,
+        price: &Price<T>,
+    ) -> Option<Self> {
+        let mut self_ = Self {
+            coefficient: u128::from(amount).checked_mul(
+                price.price - price.confidence, // guaranteed not to overflow
+            )?,
+            power_of_10: price.power_of_10,
+        };
+        self_.reduce();
+        Some(self_)
     }
+
+    pub fn ratio(self, rhs: Self) -> Option<Decimal> {
+        if rhs.coefficient == 0 {
+            return None;
+        }
+
+        let d = Decimal::from(self.coefficient) / Decimal::from(rhs.coefficient);
+
+        if let Some(power_of_10) = self.power_of_10.checked_sub(rhs.power_of_10) {
+            Some(d.times_10_to_the(power_of_10))
+        } else {
+            // Difference of two i32's can be greater than i32::MAX
+            Some(
+                d.times_10_to_the(self.power_of_10)
+                    .times_10_to_the(-rhs.power_of_10),
+            )
+        }
+    }
+}
+
+impl PartialOrd for Valuation {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let mut value_self = self.coefficient;
+        let mut value_other = other.coefficient;
+
+        match self.power_of_10.cmp(&other.power_of_10) {
+            Ordering::Less => {
+                value_other *= 10u128.pow(self.power_of_10.abs_diff(other.power_of_10));
+            }
+            Ordering::Equal => {}
+            Ordering::Greater => {
+                value_self *= 10u128.pow(self.power_of_10.abs_diff(other.power_of_10));
+            }
+        }
+
+        value_self.partial_cmp(&value_other)
+    }
+}
+
+impl From<Valuation> for Decimal {
+    fn from(value: Valuation) -> Self {
+        Decimal::from(value.coefficient).times_10_to_the(value.power_of_10)
+    }
+}
+
+fn decimal_trailing_zeroes(mut x: u128) -> u8 {
+    let mut zeroes = 0;
+
+    while x > 0 && x % 10 == 0 {
+        x /= 10;
+        zeroes += 1;
+    }
+
+    zeroes
 }
 
 #[derive(Clone, Debug)]
@@ -161,16 +239,45 @@ impl PricePair {
 
 #[cfg(test)]
 mod tests {
+    use rand::Rng;
+
     use super::*;
 
-    #[test]
-    fn maximum_positive_exponent() {
-        let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT);
-    }
+    // #[test]
+    // fn maximum_positive_exponent() {
+    //     let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT);
+    // }
+
+    // #[test]
+    // #[should_panic = "arithmetic operation overflow"]
+    // fn maximum_positive_exponent_overflow() {
+    //     let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT + 1);
+    // }
 
     #[test]
-    #[should_panic = "arithmetic operation overflow"]
-    fn maximum_positive_exponent_overflow() {
-        let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT + 1);
+    fn trailing_zeroes() {
+        assert_eq!(decimal_trailing_zeroes(0), 0);
+        assert_eq!(decimal_trailing_zeroes(1), 0);
+        assert_eq!(decimal_trailing_zeroes(10), 1);
+        assert_eq!(decimal_trailing_zeroes(100), 2);
+        assert_eq!(decimal_trailing_zeroes(34_873_400_000), 5);
+        assert_eq!(decimal_trailing_zeroes(348_734_000_001), 0);
+        assert_eq!(decimal_trailing_zeroes(7_568_265_868), 0);
+        assert_eq!(decimal_trailing_zeroes(3_487_340_000_010_000), 4);
+        assert_eq!(decimal_trailing_zeroes(u128::MAX), 0);
+
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            let x: u128 = rng.gen();
+            let s_original = x.to_string();
+            let s_trimmed = s_original.trim_end_matches('0');
+            let zeroes = s_original.len() - s_trimmed.len();
+            assert_eq!(
+                decimal_trailing_zeroes(x),
+                u8::try_from(zeroes).unwrap(),
+                "Failed for {x}",
+            );
+        }
     }
 }
