@@ -3,6 +3,15 @@ use test_utils::*;
 use templar_common::{dec, interest_rate_strategy::InterestRateStrategy};
 
 #[tokio::test]
+#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_asset`: must not equal `collateral_asset`"]
+async fn borrow_asset_is_collateral_asset() {
+    setup_everything(|c| {
+        c.borrow_asset = c.collateral_asset.clone().coerce();
+    })
+    .await;
+}
+
+#[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_interest_rate_strategy`: out of bounds"]
 async fn borrow_interest_rate_strategy_exceed_apy_limit() {
     setup_everything(|c| {
