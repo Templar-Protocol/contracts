@@ -7,8 +7,16 @@ use templar_common::{
 use test_utils::*;
 
 #[rstest]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), HarvestYieldMode::Compounding)]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap(), HarvestYieldMode::Default)]
+#[case(
+    10_000_000,
+    InterestRateStrategy::linear(dec!("100000"), dec!("100000")).unwrap(),
+    HarvestYieldMode::Compounding,
+)]
+#[case(
+    10_000_000,
+    InterestRateStrategy::linear(dec!("100000"), dec!("100000")).unwrap(),
+    HarvestYieldMode::Default,
+)]
 #[tokio::test]
 async fn compounding_yield(
     #[case] principal: u128,
@@ -55,7 +63,7 @@ async fn compounding_yield(
             }
         },
         async {
-            tokio::time::sleep(Duration::from_secs(20)).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
             done.store(true, Ordering::Relaxed);
         }
     );

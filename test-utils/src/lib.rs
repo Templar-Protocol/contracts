@@ -188,7 +188,7 @@ impl TestController {
             .unwrap()
     }
 
-    pub async fn collateralize(&self, borrow_user: &Account, amount: u128) {
+    pub async fn collateralize(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         eprintln!(
             "{} transferring {amount} tokens for collateral...",
             borrow_user.id(),
@@ -199,7 +199,7 @@ impl TestController {
             amount,
             &serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
         )
-        .await;
+        .await
     }
 
     pub async fn get_borrow_position(&self, account_id: &AccountId) -> Option<BorrowPosition> {
