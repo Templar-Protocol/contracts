@@ -18,7 +18,7 @@ async fn fast_borrow_is_not_free() {
             InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
         c.borrow_origination_fee = Fee::zero();
         c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-            divisor: (60 * 1000).into(), // 60 seconds
+            divisor: (2 * 60 * 1000).into(), // 120 seconds
         };
     })
     .await;
