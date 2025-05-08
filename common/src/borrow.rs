@@ -56,7 +56,7 @@ pub struct BorrowPosition {
     borrow_asset_principal: BorrowAssetAmount,
     pub borrow_asset_fees: Accumulator<BorrowAsset>,
     pub temporary_lock: BorrowAssetAmount,
-    pub liquidation_lock: bool,
+    pub is_liquidation_locked: bool,
 }
 
 impl BorrowPosition {
@@ -71,12 +71,12 @@ impl BorrowPosition {
             // borrowing if they create the borrow 1 hour into the epoch.
             borrow_asset_fees: Accumulator::new(current_snapshot_index),
             temporary_lock: 0.into(),
-            liquidation_lock: false,
+            is_liquidation_locked: false,
         }
     }
 
     pub(crate) fn full_liquidation(&mut self, current_snapshot_index: u32) {
-        self.liquidation_lock = false;
+        self.is_liquidation_locked = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
@@ -135,7 +135,7 @@ impl BorrowPosition {
         _proof: InterestAccumulationProof,
         mut amount: BorrowAssetAmount,
     ) -> Result<LiabilityReduction, error::LiquidationLockError> {
-        if self.liquidation_lock {
+        if self.is_liquidation_locked {
             return Err(error::LiquidationLockError);
         }
 
@@ -272,7 +272,11 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         }
     }
 
-    pub fn is_liquidation_allowed(&self, price_pair: &PricePair, block_timestamp_ms: u64) -> bool {
+    pub fn is_eligible_for_liquidation(
+        &self,
+        price_pair: &PricePair,
+        block_timestamp_ms: u64,
+    ) -> bool {
         self.market
             .configuration
             .borrow_status(&self.position, price_pair, block_timestamp_ms)
@@ -486,11 +490,17 @@ impl<'a> BorrowPositionGuard<'a> {
     }
 
     pub fn liquidation_lock(&mut self) {
-        self.position.liquidation_lock = true;
+        if self.position.is_liquidation_locked {
+            env::panic_str("Position is already liquidation locked");
+        }
+        self.position.is_liquidation_locked = true;
     }
 
     pub fn liquidation_unlock(&mut self) {
-        self.position.liquidation_lock = false;
+        if !self.position.is_liquidation_locked {
+            env::panic_str("Position is not liquidation locked");
+        }
+        self.position.is_liquidation_locked = false;
     }
 
     pub fn record_full_liquidation(
