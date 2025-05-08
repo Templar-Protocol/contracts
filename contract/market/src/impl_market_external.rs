@@ -77,12 +77,24 @@ impl MarketExternalInterface for Contract {
             amount >= self.configuration.borrow_minimum_amount,
             "Borrow amount is smaller than minimum allowed",
         );
-        require!(
-            amount <= self.configuration.borrow_maximum_amount,
-            "Borrow amount is greater than maximum allowed",
-        );
 
         let account_id = env::predecessor_account_id();
+
+        let proposed_amount = if let Some(borrow_position) =
+            self.borrow_position_ref(account_id.clone())
+        {
+            let mut a = borrow_position.inner().get_borrow_asset_principal();
+            a.join(amount)
+                .unwrap_or_else(|| env::panic_str("Requested borrow amount would cause overflow"));
+            a
+        } else {
+            amount
+        };
+
+        require!(
+            proposed_amount <= self.configuration.borrow_maximum_amount,
+            "Borrow amount is greater than maximum allowed",
+        );
 
         self.configuration
             .balance_oracle

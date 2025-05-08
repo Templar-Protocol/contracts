@@ -13,6 +13,10 @@ use crate::{
 
 use super::{BalanceOracleConfiguration, PricePair, YieldWeights};
 
+/// Reject >10,000,000% APY interest rates as misconfigurations.
+/// This also guarantees a reasonable upper-limit to interest rates to help avoid overflows.
+pub const APY_LIMIT: u128 = 100_000;
+
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
@@ -98,6 +102,10 @@ impl MarketConfiguration {
     ///
     /// If the configuration is invalid.
     pub fn validate(&self) -> Result<(), error::ConfigurationValidationError> {
+        if self.borrow_asset == self.collateral_asset.clone().coerce() {
+            return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
+        }
+
         if self.borrow_mcr_initial < 1u32 {
             return Err(error::out_of_bounds("borrow_mcr_initial"));
         }
@@ -112,16 +120,18 @@ impl MarketConfiguration {
             return Err(error::out_of_bounds("borrow_asset_maximum_usage_ratio"));
         }
 
-        if self.borrow_maximum_amount < self.borrow_minimum_amount {
+        if self.borrow_interest_rate_strategy.at(Decimal::ONE) > APY_LIMIT {
+            return Err(error::out_of_bounds("borrow_interest_rate_strategy"));
+        }
+
+        if self.borrow_maximum_amount < self.borrow_minimum_amount
+            || self.borrow_maximum_amount.is_zero()
+        {
             return Err(error::out_of_bounds("borrow_maximum_amount"));
         }
 
         if self.liquidation_maximum_spread >= 1u32 {
             return Err(error::out_of_bounds("liquidation_maximum_spread"));
-        }
-
-        if self.borrow_asset == self.collateral_asset.clone().coerce() {
-            return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
         }
 
         Ok(())

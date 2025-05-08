@@ -50,6 +50,9 @@ impl Contract {
         }
 
         let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
+        if borrow_position.inner().is_liquidation_locked {
+            env::panic_str("Cannot add collateral while liquidation locked");
+        }
         let proof = borrow_position.accumulate_interest();
         borrow_position.record_collateral_asset_deposit(proof, amount);
     }
@@ -78,8 +81,8 @@ impl Contract {
         let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
 
         require!(
-            borrow_position.can_be_liquidated(price_pair, env::block_timestamp_ms()),
-            "Borrow position cannot be liquidated",
+            borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            "Borrow position is not eligible for liquidation",
         );
 
         let minimum_acceptable_amount = borrow_position
@@ -176,7 +179,7 @@ impl Contract {
         );
 
         require!(
-            !borrow_position.can_be_liquidated(&price_pair, env::block_timestamp_ms()),
+            !borrow_position.is_eligible_for_liquidation(&price_pair, env::block_timestamp_ms()),
             "New position would be in liquidation",
         );
 
