@@ -558,6 +558,7 @@ impl_int!(u16);
 impl_int!(u32);
 impl_int!(u64);
 impl_int!(u128);
+impl_int!(::primitive_types::U256);
 
 #[cfg(test)]
 mod tests {

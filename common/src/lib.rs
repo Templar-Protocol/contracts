@@ -8,6 +8,7 @@ pub mod interest_rate_strategy;
 pub mod market;
 pub mod number;
 pub mod oracle;
+pub mod price;
 pub mod snapshot;
 pub mod static_yield;
 pub mod supply;

@@ -6,8 +6,9 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     event::MarketEvent,
-    market::{PricePair, WithdrawalResolution},
+    market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
+    price::PricePair,
 };
 
 use crate::{Contract, ContractExt};

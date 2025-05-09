@@ -1,4 +1,4 @@
-use near_sdk::{env, json_types::U64, near, AccountId};
+use near_sdk::{json_types::U64, near, AccountId};
 
 use crate::{
     asset::{
@@ -8,10 +8,11 @@ use crate::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
+    price::{PricePair, Valuation},
     time_chunk::TimeChunkConfiguration,
 };
 
-use super::{BalanceOracleConfiguration, PricePair, Valuation, YieldWeights};
+use super::{BalanceOracleConfiguration, YieldWeights};
 
 /// Reject >10,000,000% APY interest rates as misconfigurations.
 /// This also guarantees a reasonable upper-limit to interest rates to help avoid overflows.
@@ -176,11 +177,8 @@ impl MarketConfiguration {
         price_pair: &PricePair,
     ) -> Option<BorrowAssetAmount> {
         ((1u32 - self.liquidation_maximum_spread)
-            * Decimal::from(Valuation::pessimistic(
-                amount,
-                &price_pair.collateral_asset_price,
-            )?)
-            / price_pair.borrow_asset_price.upper_bound())
+            * Decimal::from(Valuation::pessimistic(amount, &price_pair.collateral))
+            / price_pair.borrow.upper_bound())
         .to_u128_ceil()
         .map(BorrowAssetAmount::new)
     }
@@ -191,28 +189,18 @@ fn satisfies_minimum_collateral_ratio(
     borrow_position: &BorrowPosition,
     price_pair: &PricePair,
 ) -> bool {
-    let Some(collateral_valuation) = Valuation::pessimistic(
+    let collateral_valuation = Valuation::pessimistic(
         borrow_position.collateral_asset_deposit,
-        &price_pair.collateral_asset_price,
-    ) else {
-        env::panic_str("Collateral valuation overflow");
-    };
-    let Some(borrow_valuation) = Valuation::optimistic(
+        &price_pair.collateral,
+    );
+    let borrow_valuation = Valuation::optimistic(
         borrow_position.get_total_borrow_asset_liability(),
-        &price_pair.borrow_asset_price,
-    ) else {
-        env::panic_str("Borrow valuation overflow");
-    };
+        &price_pair.borrow,
+    );
 
-    if borrow_valuation > collateral_valuation {
-        // Short circuit for efficiency (avoid Decimal division in Valuation::ratio call).
-        false
-    } else if let Some(ratio) = collateral_valuation.ratio(borrow_valuation) {
-        ratio >= mcr
-    } else {
-        // div0: borrow_valuation == 0
-        true
-    }
+    collateral_valuation
+        .ratio(borrow_valuation)
+        .is_none_or(|ratio| ratio >= mcr) // None case is div0
 }
 
 #[cfg(test)]

@@ -6,8 +6,9 @@ use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     event::MarketEvent,
-    market::{Market, PricePair},
+    market::Market,
     number::Decimal,
+    price::PricePair,
     MS_IN_A_YEAR,
 };
 
