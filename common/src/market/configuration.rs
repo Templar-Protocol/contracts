@@ -177,8 +177,9 @@ impl MarketConfiguration {
         price_pair: &PricePair,
     ) -> Option<BorrowAssetAmount> {
         ((1u32 - self.liquidation_maximum_spread)
-            * Decimal::from(Valuation::pessimistic(amount, &price_pair.collateral))
-            / price_pair.borrow.upper_bound())
+            * Valuation::pessimistic(amount, &price_pair.collateral).ratio(
+                Valuation::optimistic(BorrowAssetAmount::new(1), &price_pair.borrow),
+            )?)
         .to_u128_ceil()
         .map(BorrowAssetAmount::new)
     }
@@ -189,18 +190,20 @@ fn satisfies_minimum_collateral_ratio(
     borrow_position: &BorrowPosition,
     price_pair: &PricePair,
 ) -> bool {
+    let borrow_liability = borrow_position.get_total_borrow_asset_liability();
+    if borrow_liability.is_zero() {
+        return true;
+    }
+
     let collateral_valuation = Valuation::pessimistic(
         borrow_position.collateral_asset_deposit,
         &price_pair.collateral,
     );
-    let borrow_valuation = Valuation::optimistic(
-        borrow_position.get_total_borrow_asset_liability(),
-        &price_pair.borrow,
-    );
+    let borrow_valuation = Valuation::optimistic(borrow_liability, &price_pair.borrow);
 
     collateral_valuation
         .ratio(borrow_valuation)
-        .is_none_or(|ratio| ratio >= mcr) // None case is div0
+        .is_some_and(|ratio| ratio >= mcr)
 }
 
 #[cfg(test)]

@@ -55,16 +55,6 @@ fn from_pyth_price<T: AssetClass>(
     })
 }
 
-impl<T: AssetClass> Price<T> {
-    pub fn upper_bound(&self) -> Decimal {
-        Decimal::from(self.price + self.confidence).times_10_to_the(self.power_of_10)
-    }
-
-    pub fn lower_bound(&self) -> Decimal {
-        Decimal::from(self.price - self.confidence).times_10_to_the(self.power_of_10)
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct PricePair {
     pub collateral: Price<CollateralAsset>,
@@ -128,21 +118,13 @@ impl Valuation {
 
         let d = Decimal::from(self.coefficient) / Decimal::from(rhs.coefficient);
 
-        if let Some(power_of_10) = self.power_of_10.checked_sub(rhs.power_of_10) {
-            Some(d.times_10_to_the(power_of_10))
-        } else {
-            // Difference of two i32's can be greater than i32::MAX
-            Some(
-                d.times_10_to_the(self.power_of_10)
-                    .times_10_to_the(-rhs.power_of_10),
-            )
-        }
-    }
-}
-
-impl From<Valuation> for Decimal {
-    fn from(value: Valuation) -> Self {
-        Decimal::from(value.coefficient).times_10_to_the(value.power_of_10)
+        self.power_of_10
+            .checked_sub(rhs.power_of_10)
+            .and_then(|pow| d.mul_pow10(pow))
+            .or_else(|| {
+                // Difference of two i32's can be greater than i32::MAX
+                d.mul_pow10(self.power_of_10)?.mul_pow10(-rhs.power_of_10)
+            })
     }
 }
 
