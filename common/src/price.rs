@@ -78,37 +78,27 @@ impl PricePair {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Valuation {
     coefficient: primitive_types::U256,
     exponent: i32,
 }
 
 impl Valuation {
-    fn normalize(&mut self) {
-        let add_pow_10 = decimal_trailing_zeros(self.coefficient);
-        self.coefficient /= 10u128.pow(u32::from(add_pow_10));
-        self.exponent += i32::from(add_pow_10);
-    }
-
     pub fn optimistic<T: AssetClass>(amount: FungibleAssetAmount<T>, price: &Price<T>) -> Self {
-        let mut self_ = Self {
+        Self {
             coefficient: U256::from(u128::from(amount))
                 * U256::from(price.price + price.confidence), // guaranteed not to overflow
             exponent: price.exponent,
-        };
-        self_.normalize();
-        self_
+        }
     }
 
     pub fn pessimistic<T: AssetClass>(amount: FungibleAssetAmount<T>, price: &Price<T>) -> Self {
-        let mut self_ = Self {
+        Self {
             coefficient: U256::from(u128::from(amount))
                 * U256::from(price.price - price.confidence), // guaranteed not to overflow
             exponent: price.exponent,
-        };
-        self_.normalize();
-        self_
+        }
     }
 
     /// Returns the ratio between this and another `Valuation`.
@@ -162,20 +152,8 @@ impl Valuation {
     }
 }
 
-fn decimal_trailing_zeros(mut x: U256) -> u8 {
-    let mut total = 0;
-
-    while !x.is_zero() && x % 10 == U256::zero() {
-        x /= 10;
-        total += 1;
-    }
-
-    total
-}
-
 #[cfg(test)]
 mod tests {
-    use rand::Rng;
     use rstest::rstest;
 
     use crate::dec;
@@ -183,35 +161,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trailing_zeroes() {
-        assert_eq!(decimal_trailing_zeros(0.into()), 0);
-        assert_eq!(decimal_trailing_zeros(1.into()), 0);
-        assert_eq!(decimal_trailing_zeros(10.into()), 1);
-        assert_eq!(decimal_trailing_zeros(100.into()), 2);
-        assert_eq!(decimal_trailing_zeros(34_873_400_000u128.into()), 5);
-        assert_eq!(decimal_trailing_zeros(348_734_000_001u128.into()), 0);
-        assert_eq!(decimal_trailing_zeros(7_568_265_868u128.into()), 0);
-        assert_eq!(decimal_trailing_zeros(3_487_340_000_010_000u128.into()), 4);
-        assert_eq!(decimal_trailing_zeros(u128::MAX.into()), 0);
-
-        let mut rng = rand::thread_rng();
-
-        for _ in 0..100 {
-            let x: u128 = rng.gen();
-            let s_original = x.to_string();
-            let s_trimmed = s_original.trim_end_matches('0');
-            let zeroes = s_original.len() - s_trimmed.len();
-            assert_eq!(
-                decimal_trailing_zeros(x.into()),
-                u8::try_from(zeroes).unwrap(),
-                "Failed for {x}",
-            );
-        }
-    }
-
-    #[test]
     fn valuation_eq() {
-        let first = Valuation::optimistic(
+        let o = Valuation::optimistic(
             1000u128.into(),
             &Price::<BorrowAsset> {
                 _asset: PhantomData,
@@ -221,66 +172,21 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            first,
-            Valuation::pessimistic(
-                1u128.into(),
-                &Price::<BorrowAsset> {
-                    _asset: PhantomData,
-                    price: 265,
-                    confidence: 3,
-                    exponent: -2,
-                },
-            ),
+        assert_eq!(o.coefficient, U256::from(1000 * (250 + 12)));
+        assert_eq!(o.exponent, -5);
+
+        let p = Valuation::pessimistic(
+            1000u128.into(),
+            &Price::<BorrowAsset> {
+                _asset: PhantomData,
+                price: 250,
+                confidence: 12,
+                exponent: -5,
+            },
         );
-        assert_ne!(
-            first,
-            Valuation::optimistic(
-                10u128.into(),
-                &Price::<BorrowAsset> {
-                    _asset: PhantomData,
-                    price: 262,
-                    confidence: 0,
-                    exponent: -2,
-                },
-            ),
-        );
-        assert_ne!(
-            first,
-            Valuation::optimistic(
-                1u128.into(),
-                &Price::<BorrowAsset> {
-                    _asset: PhantomData,
-                    price: 263,
-                    confidence: 0,
-                    exponent: -2,
-                },
-            ),
-        );
-        assert_ne!(
-            first,
-            Valuation::optimistic(
-                1u128.into(),
-                &Price::<BorrowAsset> {
-                    _asset: PhantomData,
-                    price: 262,
-                    confidence: 1,
-                    exponent: -2,
-                },
-            ),
-        );
-        assert_ne!(
-            first,
-            Valuation::optimistic(
-                1u128.into(),
-                &Price::<BorrowAsset> {
-                    _asset: PhantomData,
-                    price: 262,
-                    confidence: 0,
-                    exponent: -3,
-                },
-            ),
-        );
+
+        assert_eq!(p.coefficient, U256::from(1000 * (250 - 12)));
+        assert_eq!(p.exponent, -5);
     }
 
     #[test]
