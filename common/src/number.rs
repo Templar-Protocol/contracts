@@ -501,13 +501,13 @@ macro_rules! impl_self_assign {
 
         impl DivAssign<$t> for $s {
             fn div_assign(&mut self, rhs: $t) {
-                self.repr = ((self.repr << FRACTIONAL_BITS) / rhs.repr);
+                self.repr = (*self / rhs).repr;
             }
         }
 
         impl MulAssign<$t> for $s {
             fn mul_assign(&mut self, rhs: $t) {
-                self.repr = ((self.repr * rhs.repr) >> FRACTIONAL_BITS);
+                self.repr = (*self * rhs).repr;
             }
         }
     };
