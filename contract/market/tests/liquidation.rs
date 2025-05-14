@@ -1,7 +1,12 @@
+use std::time::Duration;
+
 use rstest::rstest;
 
-use templar_common::{fee::Fee, number::Decimal};
+use templar_common::{
+    dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal,
+};
 use test_utils::*;
+use tokio::time::Instant;
 
 #[tokio::test]
 async fn successful_liquidation_totally_underwater() {
@@ -313,4 +318,53 @@ async fn liquidators_race() {
     for o in r2.outcomes() {
         o.clone().into_result().unwrap();
     }
+}
+
+#[rstest]
+#[tokio::test]
+async fn successful_liquidation_only_from_interest() {
+    let SetupEverything {
+        c,
+        liquidator_user,
+        supply_user,
+        borrow_user,
+        ..
+    } = setup_everything(|config| {
+        config.borrow_mcr = dec!("2");
+        config.borrow_mcr_initial = dec!("2");
+        config.borrow_origination_fee = Fee::zero();
+        config.borrow_interest_rate_strategy =
+            InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+    })
+    .await;
+
+    c.supply(&supply_user, 10_000_000).await;
+    c.collateralize(&borrow_user, 2_000_000).await;
+    c.borrow(&borrow_user, 1_000_000 - 1).await;
+
+    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
+    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+
+    let timer = Instant::now();
+    while timer.elapsed() < Duration::from_secs(5) {
+        c.harvest_yield(&supply_user, None).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    c.liquidate(&liquidator_user, borrow_user.id(), 2_000_000 * 95 / 100)
+        .await;
+
+    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
+    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+
+    assert_eq!(
+        collateral_balance_after - collateral_balance_before,
+        2_000_000,
+        "Liquidator should obtain all collateral after a successful liquidation",
+    );
+    assert_eq!(
+        borrow_balance_before - borrow_balance_after,
+        2_000_000 * 95 / 100,
+        "Liquidation should transfer correct amount of tokens",
+    );
 }
