@@ -538,7 +538,7 @@ macro_rules! impl_int {
             type Output = Decimal;
 
             fn mul(self, rhs: $t) -> Self::Output {
-                self * Decimal::from(rhs)
+                Decimal { repr: self.repr * U512::from(rhs) }
             }
         }
 
@@ -546,7 +546,7 @@ macro_rules! impl_int {
             type Output = Decimal;
 
             fn mul(self, rhs: $s) -> Self::Output {
-                Decimal::from(self) * rhs
+                Decimal { repr: U512::from(self) * rhs.repr }
             }
         }
 
@@ -554,7 +554,7 @@ macro_rules! impl_int {
             type Output = Decimal;
 
             fn div(self, rhs: $t) -> Self::Output {
-                self / Decimal::from(rhs)
+                Decimal { repr: self.repr / U512::from(rhs) }
             }
         }
 
