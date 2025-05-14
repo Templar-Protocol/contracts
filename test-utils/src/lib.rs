@@ -121,6 +121,20 @@ impl TestController {
             .unwrap()
     }
 
+    pub async fn set_collateral_asset_price_exact(&self, price: pyth::Price) -> ExecutionSuccess {
+        eprintln!("Setting collateral asset price...",);
+        self.balance_oracle
+            .call("set_price")
+            .args_json(json!({
+                "price_identifier": self.config.balance_oracle.collateral_asset_price_id,
+                "price": price,
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     pub async fn set_collateral_asset_price(&self, price: f64) -> ExecutionSuccess {
         eprintln!("Setting collateral asset price...",);
         self.balance_oracle
@@ -128,6 +142,20 @@ impl TestController {
             .args_json(json!({
                 "price_identifier": self.config.balance_oracle.collateral_asset_price_id,
                 "price": to_price(price),
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    pub async fn set_borrow_asset_price_exact(&self, price: pyth::Price) -> ExecutionSuccess {
+        eprintln!("Setting borrow asset price...",);
+        self.balance_oracle
+            .call("set_price")
+            .args_json(json!({
+                "price_identifier": self.config.balance_oracle.borrow_asset_price_id,
+                "price": price,
             }))
             .transact()
             .await
