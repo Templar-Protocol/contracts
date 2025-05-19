@@ -296,3 +296,48 @@ async fn fail_liquidation_healthy_borrow() {
     );
     assert_eq!(u128::from(borrow_position.collateral_asset_deposit), 500);
 }
+
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Position is already liquidation locked"]
+async fn liquidators_race() {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
+
+    c.supply(&supply_user, 1000).await;
+    c.collateralize(&borrow_user, 500).await;
+    c.borrow(&borrow_user, 300).await;
+    c.set_collateral_asset_price(0.5).await;
+
+    let balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+
+    let (r1, r2) = tokio::join!(
+        c.liquidate(&liquidator_user, borrow_user.id(), 300),
+        c.liquidate(&liquidator_user, borrow_user.id(), 300),
+    );
+
+    let balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+
+    assert_eq!(
+        balance_before + 500,
+        balance_after,
+        "Liquidation should only occur once",
+    );
+
+    for o in r1.outcomes() {
+        o.clone().into_result().unwrap();
+    }
+
+    for o in r2.outcomes() {
+        o.clone().into_result().unwrap();
+    }
+}

@@ -13,6 +13,10 @@ use crate::{
 
 use super::{BalanceOracleConfiguration, PricePair, YieldWeights};
 
+/// Reject >10,000,000% APY interest rates as misconfigurations.
+/// This also guarantees a reasonable upper-limit to interest rates to help avoid overflows.
+pub const APY_LIMIT: u128 = 100_000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
@@ -63,11 +67,15 @@ pub mod error {
     #[derive(Debug, Clone)]
     pub enum InvalidFieldReason {
         OutOfBounds,
+        MustNotEqual(&'static str),
     }
 
     impl Display for InvalidFieldReason {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "out of bounds")
+            match self {
+                Self::OutOfBounds => write!(f, "out of bounds"),
+                Self::MustNotEqual(other) => write!(f, "must not equal `{other}`"),
+            }
         }
     }
 
@@ -77,6 +85,16 @@ pub mod error {
             reason: InvalidFieldReason::OutOfBounds,
         }
     }
+
+    pub(super) fn must_not_equal(
+        field: &'static str,
+        other: &'static str,
+    ) -> ConfigurationValidationError {
+        ConfigurationValidationError {
+            field,
+            reason: InvalidFieldReason::MustNotEqual(other),
+        }
+    }
 }
 
 impl MarketConfiguration {
@@ -84,6 +102,10 @@ impl MarketConfiguration {
     ///
     /// If the configuration is invalid.
     pub fn validate(&self) -> Result<(), error::ConfigurationValidationError> {
+        if self.borrow_asset == self.collateral_asset.clone().coerce() {
+            return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
+        }
+
         if self.borrow_mcr_initial < 1u32 {
             return Err(error::out_of_bounds("borrow_mcr_initial"));
         }
@@ -98,7 +120,13 @@ impl MarketConfiguration {
             return Err(error::out_of_bounds("borrow_asset_maximum_usage_ratio"));
         }
 
-        if self.borrow_maximum_amount < self.borrow_minimum_amount {
+        if self.borrow_interest_rate_strategy.at(Decimal::ONE) > APY_LIMIT {
+            return Err(error::out_of_bounds("borrow_interest_rate_strategy"));
+        }
+
+        if self.borrow_maximum_amount < self.borrow_minimum_amount
+            || self.borrow_maximum_amount.is_zero()
+        {
             return Err(error::out_of_bounds("borrow_maximum_amount"));
         }
 

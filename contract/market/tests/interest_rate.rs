@@ -8,10 +8,10 @@ use templar_common::{
 use test_utils::*;
 
 #[rstest]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap())]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("100000"), dec!("5000000")).unwrap())]
+#[case(10_000_000, InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap())]
+#[case(10_000_000, InterestRateStrategy::linear(dec!("10"), dec!("500")).unwrap())]
 #[case(5_000_000,
-    InterestRateStrategy::piecewise(Decimal::ZERO, dec!("0.9"), dec!("350"), dec!("6000")).unwrap()
+    InterestRateStrategy::piecewise(Decimal::ZERO, dec!("0.09"), dec!("35"), dec!("600")).unwrap()
 )]
 #[case(5_000_000,
     InterestRateStrategy::exponential2(dec!("5"), dec!("800"), dec!("6")).unwrap()

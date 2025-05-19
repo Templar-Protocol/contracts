@@ -77,12 +77,24 @@ impl MarketExternalInterface for Contract {
             amount >= self.configuration.borrow_minimum_amount,
             "Borrow amount is smaller than minimum allowed",
         );
-        require!(
-            amount <= self.configuration.borrow_maximum_amount,
-            "Borrow amount is greater than maximum allowed",
-        );
 
         let account_id = env::predecessor_account_id();
+
+        let proposed_amount = if let Some(borrow_position) =
+            self.borrow_position_ref(account_id.clone())
+        {
+            let mut a = borrow_position.inner().get_borrow_asset_principal();
+            a.join(amount)
+                .unwrap_or_else(|| env::panic_str("Requested borrow amount would cause overflow"));
+            a
+        } else {
+            amount
+        };
+
+        require!(
+            proposed_amount <= self.configuration.borrow_maximum_amount,
+            "Borrow amount is greater than maximum allowed",
+        );
 
         self.configuration
             .balance_oracle
@@ -185,6 +197,19 @@ impl MarketExternalInterface for Contract {
             return PromiseOrValue::Value(());
         };
 
+        // There may be loose/untracked funds that the contract controls but
+        // does not account for in internal accounting.
+        let expect_success = u128::from(self.borrow_asset_deposited)
+            .checked_sub(
+                u128::from(self.borrow_asset_borrowed)
+                    .saturating_add(self.borrow_asset_in_flight.into()),
+            )
+            .is_some();
+
+        self.borrow_asset_in_flight
+            .join(withdrawal_resolution.amount_to_account)
+            .unwrap_or_else(|| env::panic_str("Borrow asset in flight overflow"));
+
         PromiseOrValue::Promise(
             self.configuration
                 .borrow_asset
@@ -194,7 +219,10 @@ impl MarketExternalInterface for Contract {
                 )
                 .then(
                     self_ext!(Self::GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL)
-                        .execute_next_supply_withdrawal_request_01_finalize(withdrawal_resolution),
+                        .execute_next_supply_withdrawal_request_01_finalize(
+                            withdrawal_resolution,
+                            expect_success,
+                        ),
                 ),
         )
     }

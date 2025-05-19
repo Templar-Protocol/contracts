@@ -56,7 +56,7 @@ pub struct BorrowPosition {
     borrow_asset_principal: BorrowAssetAmount,
     pub borrow_asset_fees: Accumulator<BorrowAsset>,
     pub temporary_lock: BorrowAssetAmount,
-    pub liquidation_lock: bool,
+    pub is_liquidation_locked: bool,
 }
 
 impl BorrowPosition {
@@ -71,12 +71,12 @@ impl BorrowPosition {
             // borrowing if they create the borrow 1 hour into the epoch.
             borrow_asset_fees: Accumulator::new(current_snapshot_index),
             temporary_lock: 0.into(),
-            liquidation_lock: false,
+            is_liquidation_locked: false,
         }
     }
 
     pub(crate) fn full_liquidation(&mut self, current_snapshot_index: u32) {
-        self.liquidation_lock = false;
+        self.is_liquidation_locked = false;
         self.started_at_block_timestamp_ms = None;
         self.collateral_asset_deposit = 0.into();
         self.borrow_asset_principal = 0.into();
@@ -135,7 +135,7 @@ impl BorrowPosition {
         _proof: InterestAccumulationProof,
         mut amount: BorrowAssetAmount,
     ) -> Result<LiabilityReduction, error::LiquidationLockError> {
-        if self.liquidation_lock {
+        if self.is_liquidation_locked {
             return Err(error::LiquidationLockError);
         }
 
@@ -201,16 +201,19 @@ impl<M> BorrowPositionRef<M> {
 }
 
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
-    pub fn with_pending_interest(&mut self) {
-        let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
+    pub fn estimate_current_snapshot_interest(&self) -> BorrowAssetAmount {
         let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
-        let current_snapshot = &self.market.current_snapshot;
-        let interest_in_current_snapshot = current_snapshot.interest_rate
+        let interest_in_current_snapshot = self.market.current_snapshot.interest_rate
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())
             / *MS_IN_A_YEAR;
-        #[allow(clippy::unwrap_used, reason = "This is a view method")]
-        pending_estimate.join(interest_in_current_snapshot.to_u128_ceil().unwrap().into());
+        #[allow(clippy::unwrap_used, reason = "Interest rate guaranteed <= APY_LIMIT")]
+        interest_in_current_snapshot.to_u128_ceil().unwrap().into()
+    }
+
+    pub fn with_pending_interest(&mut self) {
+        let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
+        pending_estimate.join(self.estimate_current_snapshot_interest());
 
         self.position.borrow_asset_fees.pending_estimate = pending_estimate;
     }
@@ -272,7 +275,11 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         }
     }
 
-    pub fn can_be_liquidated(&self, price_pair: &PricePair, block_timestamp_ms: u64) -> bool {
+    pub fn is_eligible_for_liquidation(
+        &self,
+        price_pair: &PricePair,
+        block_timestamp_ms: u64,
+    ) -> bool {
         self.market
             .configuration
             .borrow_status(&self.position, price_pair, block_timestamp_ms)
@@ -434,6 +441,13 @@ impl<'a> BorrowPositionGuard<'a> {
         proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
+        let current_snapshot_interest = self.estimate_current_snapshot_interest();
+        // Amortize current snapshot fees so that when the current snapshot is
+        // finalized, the fees are not doubled.
+        self.position
+            .borrow_asset_fees
+            .amortize(current_snapshot_interest);
+
         let liability_reduction = self
             .position
             .reduce_borrow_asset_liability(proof, amount)
@@ -486,11 +500,17 @@ impl<'a> BorrowPositionGuard<'a> {
     }
 
     pub fn liquidation_lock(&mut self) {
-        self.position.liquidation_lock = true;
+        if self.position.is_liquidation_locked {
+            env::panic_str("Position is already liquidation locked");
+        }
+        self.position.is_liquidation_locked = true;
     }
 
     pub fn liquidation_unlock(&mut self) {
-        self.position.liquidation_lock = false;
+        if !self.position.is_liquidation_locked {
+            env::panic_str("Position is not liquidation locked");
+        }
+        self.position.is_liquidation_locked = false;
     }
 
     pub fn record_full_liquidation(

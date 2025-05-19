@@ -23,4 +23,9 @@ impl Contract {
         )
         .unwrap();
     }
+
+    #[payable]
+    pub fn patch_storage_unregister(&mut self, force: Option<bool>) -> bool {
+        self.storage_unregister(force)
+    }
 }

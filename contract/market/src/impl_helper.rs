@@ -5,6 +5,7 @@ use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
+    event::MarketEvent,
     market::{PricePair, WithdrawalResolution},
     oracle::pyth::OracleResponse,
 };
@@ -49,6 +50,9 @@ impl Contract {
         }
 
         let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
+        if borrow_position.inner().is_liquidation_locked {
+            env::panic_str("Cannot add collateral while liquidation locked");
+        }
         let proof = borrow_position.accumulate_interest();
         borrow_position.record_collateral_asset_deposit(proof, amount);
     }
@@ -77,8 +81,8 @@ impl Contract {
         let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
 
         require!(
-            borrow_position.can_be_liquidated(price_pair, env::block_timestamp_ms()),
-            "Borrow position cannot be liquidated",
+            borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            "Borrow position is not eligible for liquidation",
         );
 
         let minimum_acceptable_amount = borrow_position
@@ -175,7 +179,7 @@ impl Contract {
         );
 
         require!(
-            !borrow_position.can_be_liquidated(&price_pair, env::block_timestamp_ms()),
+            !borrow_position.is_eligible_for_liquidation(&price_pair, env::block_timestamp_ms()),
             "New position would be in liquidation",
         );
 
@@ -247,48 +251,66 @@ impl Contract {
     pub fn execute_next_supply_withdrawal_request_01_finalize(
         &mut self,
         withdrawal_resolution: WithdrawalResolution,
+        expected_success: bool,
     ) {
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                // Withdrawal succeeded: remove the withdrawal request from the queue.
+        self.borrow_asset_in_flight
+            .split(withdrawal_resolution.amount_to_account)
+            .unwrap_or_else(|| env::panic_str("Borrow asset in flight overflow"));
 
-                // TODO: If this panics, this is BIG BAD, as it means there is
-                // some way to unlock the queue while a withdrawal is in-flight.
-                // So, maybe we should not *actually* panic here, but do some sort of recovery?
-                let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
-                    env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
-                });
+        // Withdrawal succeeded: remove the withdrawal request from the queue.
+        // Withdrawal failed but should have succeeded: remove request but still refund.
+        // Withdrawal failed: unlock the queue so they can try again.
 
-                // This is another consistency check: that the account at the
-                // head of the queue cannot change while transfers are
-                // in-flight. This should be maintained by the queue itself.
-                require!(
-                    popped_account == withdrawal_resolution.account_id,
-                    "Invariant violation: Queue shifted while locked/in-flight.",
-                );
+        let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-                self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
-            }
-            PromiseResult::Failed => {
-                // Withdrawal failed: unlock the queue so they can try again.
+        MarketEvent::SupplyWithdrawalResolution {
+            account_id: withdrawal_resolution.account_id.clone(),
+            success: withdrawal_succeeded,
+            expected_success,
+        }
+        .emit();
 
-                // This occurs when the contract does not control enough of
-                // the borrow asset to fulfill the withdrawal request. That is
-                // to say, it has distributed all of the funds to current
-                // borrows.
+        if withdrawal_succeeded || expected_success {
+            // TODO: If this panics, this is BIG BAD, as it means there is
+            // some way to unlock the queue while a withdrawal is in-flight.
+            // So, maybe we should not *actually* panic here, but do some sort of recovery?
+            let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
+                env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
+            });
 
-                env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
-                self.withdrawal_queue.unlock();
-                if let Some(mut supply_position) =
-                    self.supply_position_guard(withdrawal_resolution.account_id.clone())
-                {
-                    // This should not do very much since we also accumulate
-                    // yield in the initial function call of execute_next_supply_withdrawal_request()
-                    let proof = supply_position.accumulate_yield();
-                    let mut amount = withdrawal_resolution.amount_to_account;
-                    amount.join(withdrawal_resolution.amount_to_fees);
-                    supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
-                }
+            // This is another consistency check: that the account at the
+            // head of the queue cannot change while transfers are
+            // in-flight. This should be maintained by the queue itself.
+            require!(
+                popped_account == withdrawal_resolution.account_id,
+                "Invariant violation: Queue shifted while locked/in-flight.",
+            );
+        }
+
+        if withdrawal_succeeded {
+            self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
+        } else {
+            // Possible reasons for failure:
+            // - MPC signer failure (multichain; TODO).
+            // - The contract does not control enough of the borrow asset to
+            //   fulfill the withdrawal request. That is to say, it has
+            //   distributed all of the funds to current borrows.
+            // - If we expected success but it still failed, this means the
+            //   receiving account cannot receive tokens for some reason. For
+            //   NEP-141 tokens, this usually means that the user opted out of
+            //   storage management on that contract and deleted their record.
+
+            env::log_str("The withdrawal request cannot be fulfilled at this time.");
+            self.withdrawal_queue.unlock();
+            if let Some(mut supply_position) =
+                self.supply_position_guard(withdrawal_resolution.account_id.clone())
+            {
+                // This should not do very much since we also accumulate
+                // yield in the initial function call of execute_next_supply_withdrawal_request()
+                let proof = supply_position.accumulate_yield();
+                let mut amount = withdrawal_resolution.amount_to_account;
+                amount.join(withdrawal_resolution.amount_to_fees);
+                supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
             }
         }
     }
