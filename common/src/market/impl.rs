@@ -30,6 +30,7 @@ pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
     pub borrow_asset_deposited: BorrowAssetAmount,
+    pub borrow_asset_deposited_next_snapshot: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
@@ -75,6 +76,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited: 0.into(),
+            borrow_asset_deposited_next_snapshot: 0.into(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
             supply_positions: LookupMap::new(key!(SupplyPositions)),
@@ -118,6 +120,9 @@ impl Market {
                 .at(self.current_snapshot.usage_ratio());
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
+            self.borrow_asset_deposited
+                .join(self.borrow_asset_deposited_next_snapshot);
+            self.borrow_asset_deposited_next_snapshot = BorrowAssetAmount::zero();
             let mut snapshot = Snapshot {
                 time_chunk,
                 yield_distribution,

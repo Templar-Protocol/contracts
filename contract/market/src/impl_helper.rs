@@ -153,6 +153,9 @@ impl Contract {
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
+        // TODO: accumulate_interest() also creates a snapshot; reorder code to not call this twice.
+        self.market.snapshot();
+
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.get_borrow_asset_available_to_borrow();
         require!(
@@ -170,7 +173,10 @@ impl Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
+        // accumulate_interest() creates a snapshot, which activates funds to
+        // ensure that we have the maximum amount available to borrow.
         let proof = borrow_position.accumulate_interest();
+
         borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
