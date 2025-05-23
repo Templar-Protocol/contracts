@@ -1,6 +1,4 @@
-use near_sdk::{
-    env, json_types::U128, near, require, AccountId, Gas, Promise, PromiseError, PromiseResult,
-};
+use near_sdk::{env, json_types::U128, near, require, AccountId, Gas, Promise, PromiseResult};
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
@@ -14,6 +12,13 @@ use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {
+    pub fn price_pair(&self, oracle_response: OracleResponse) -> PricePair {
+        self.configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+    }
+
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
         if self.supply_position_ref(account_id.clone()).is_none() {
             self.charge_for_storage(
@@ -34,7 +39,12 @@ impl Contract {
         }
     }
 
-    pub fn execute_collateralize(&mut self, account_id: AccountId, amount: CollateralAssetAmount) {
+    pub fn execute_collateralize(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+        price_pair: &PricePair,
+    ) {
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
         // checks before this function call.
@@ -54,6 +64,10 @@ impl Contract {
             env::panic_str("Cannot add collateral while liquidation locked");
         }
         let proof = borrow_position.accumulate_interest();
+        require!(
+            !borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            "Cannot add collateral when eligible for liquidation",
+        );
         borrow_position.record_collateral_asset_deposit(proof, amount);
     }
 
@@ -62,12 +76,17 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
+        price_pair: &PricePair,
     ) -> BorrowAssetAmount {
         let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
             // No borrow exists: just return the whole amount.
             return amount;
         };
         let proof = borrow_position.accumulate_interest();
+        require!(
+            !borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            "Cannot repay when eligible for liquidation",
+        );
         // Returns the amount that should be returned to the borrower.
         borrow_position.record_repay(proof, amount)
     }
@@ -143,15 +162,9 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        #[callback_result] oracle_response_result: Result<OracleResponse, PromiseError>,
+        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let oracle_response = oracle_response_result
-            .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
-        let price_pair = self
-            .configuration
-            .balance_oracle
-            .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let price_pair = self.price_pair(oracle_response);
 
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.get_borrow_asset_available_to_borrow();
@@ -315,13 +328,45 @@ impl Contract {
         }
     }
 
-    // ~3.3 Tgas
-    pub const GAS_LIQUIDATE_FT_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE: Gas = Gas::from_tgas(4)
-        .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
-        .saturating_add(Self::GAS_LIQUIDATE_FT_TRANSFER_CALL_02_FINALIZE);
+    // ~3.1 TGas
+    pub const GAS_FT_ON_TRANSFER_COLLATERALIZE_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
 
     #[private]
-    pub fn liquidate_ft_transfer_call_01_consume_oracle_response(
+    pub fn ft_on_transfer_collateralize_01_consume_price(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> CollateralAssetAmount {
+        let price_pair = self.price_pair(oracle_response);
+
+        self.execute_collateralize(account_id, amount, &price_pair);
+
+        CollateralAssetAmount::zero()
+    }
+
+    // ~3.3 TGas
+    pub const GAS_FT_ON_TRANSFER_REPAY_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
+
+    #[private]
+    pub fn ft_on_transfer_repay_01_consume_price(
+        &mut self,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> BorrowAssetAmount {
+        let price_pair = self.price_pair(oracle_response);
+
+        self.execute_repay(account_id, amount, &price_pair)
+    }
+
+    // ~3.3 Tgas
+    pub const GAS_FT_ON_TRANSFER_LIQUIDATE_01_CONSUME_PRICE: Gas = Gas::from_tgas(4)
+        .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
+        .saturating_add(Self::GAS_FT_ON_TRANSFER_LIQUIDATE_02_FINALIZE);
+
+    #[private]
+    pub fn ft_on_transfer_liquidate_01_consume_price(
         &mut self,
         liquidator_id: AccountId,
         account_id: AccountId,
@@ -341,18 +386,18 @@ impl Contract {
             .collateral_asset
             .transfer(liquidator_id.clone(), liquidated_collateral)
             .then(
-                self_ext!(Self::GAS_LIQUIDATE_FT_TRANSFER_CALL_02_FINALIZE)
-                    .liquidate_ft_transfer_call_02_finalize(liquidator_id, account_id, amount),
+                self_ext!(Self::GAS_FT_ON_TRANSFER_LIQUIDATE_02_FINALIZE)
+                    .ft_on_transfer_liquidate_02_finalize(liquidator_id, account_id, amount),
             )
     }
 
     // ~3.2 Tgas
-    pub const GAS_LIQUIDATE_FT_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(4);
+    pub const GAS_FT_ON_TRANSFER_LIQUIDATE_02_FINALIZE: Gas = Gas::from_tgas(4);
 
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
     #[private]
-    pub fn liquidate_ft_transfer_call_02_finalize(
+    pub fn ft_on_transfer_liquidate_02_finalize(
         &mut self,
         liquidator_id: AccountId,
         account_id: AccountId,
@@ -378,11 +423,7 @@ impl Contract {
         amount: CollateralAssetAmount,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let price_pair = self
-            .configuration
-            .balance_oracle
-            .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let price_pair = self.price_pair(oracle_response);
 
         let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
             env::panic_str("No borrower record. Please deposit collateral first.");
