@@ -116,7 +116,7 @@ impl MarketController {
         for (i, snapshot) in snapshots.iter().enumerate() {
             eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
             eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
-            eprintln!("\t\tDeposited:\t{}", snapshot.deposited);
+            eprintln!("\t\tDeposited (active):\t{}", snapshot.deposited_active);
             eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed);
             eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
         }
@@ -299,6 +299,25 @@ impl UnifiedMarketController {
                 serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
             )
             .await
+    }
+
+    pub async fn supply_and_harvest_until_activation(
+        &self,
+        supply_user: &Account,
+        amount: u128,
+    ) -> ExecutionSuccess {
+        let e = self.supply(supply_user, amount).await;
+        while !self
+            .get_supply_position(supply_user.id())
+            .await
+            .unwrap()
+            .get_inactive_deposit()
+            .amount
+            .is_zero()
+        {
+            self.harvest_yield(supply_user, None).await;
+        }
+        e
     }
 
     pub async fn collateralize(&self, borrow_user: &Account, amount: u128) {

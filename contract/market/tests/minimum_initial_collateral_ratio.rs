@@ -23,13 +23,28 @@ async fn success_above_minimum_initial_collateral_ratio(
         })
     );
 
-    c.supply(&supply_user, 10_000).await;
-    c.collateralize(
-        &borrow_user,
-        (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
-    )
-    .await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(
+            &borrow_user,
+            (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+        ),
+    );
+
+    let balance_before = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
     c.borrow(&borrow_user, 1000).await;
+    let balance_after = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
+
+    assert_eq!(balance_before + 1000, balance_after);
+    assert_eq!(
+        u128::from(
+            c.get_borrow_position(borrow_user.id())
+                .await
+                .unwrap()
+                .get_borrow_asset_principal()
+        ),
+        1000
+    );
 }
 
 #[rstest]
@@ -54,12 +69,14 @@ async fn fail_below_minimum_initial_collateral_ratio(
         })
     );
 
-    c.supply(&supply_user, 10_000).await;
-    c.collateralize(
-        &borrow_user,
-        (1000u32 * initial).to_u128_floor().unwrap() - 1,
-    )
-    .await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(
+            &borrow_user,
+            (1000u32 * initial).to_u128_floor().unwrap() - 1,
+        ),
+    );
+
     c.borrow(&borrow_user, 1000).await;
 }
 
@@ -83,12 +100,14 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
         })
     );
 
-    c.supply(&supply_user, 10_000).await;
-    c.collateralize(
-        &borrow_user,
-        (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
-    )
-    .await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(
+            &borrow_user,
+            (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+        ),
+    );
+
     c.borrow(&borrow_user, 1000).await;
 
     c.set_collateral_asset_price(0.99).await;

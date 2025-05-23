@@ -23,7 +23,8 @@ pub mod error {
 #[near(serializers = [borsh, json])]
 pub struct BorrowAssetMetrics {
     pub available: BorrowAssetAmount,
-    pub deposited: BorrowAssetAmount,
+    pub deposited_active: BorrowAssetAmount,
+    pub deposited_inactive: BorrowAssetAmount,
     pub borrowed: BorrowAssetAmount,
 }
 

@@ -18,9 +18,26 @@ async fn borrow_within_maximum_usage_ratio(#[case] percent: u16) {
         })
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, u128::from(percent) * 10 - 1).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
+
+    let balance_before = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
+    let amount = u128::from(percent) * 10 - 1;
+    c.borrow(&borrow_user, amount).await;
+    let balance_after = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
+
+    assert_eq!(balance_before + amount, balance_after);
+    assert_eq!(
+        u128::from(
+            c.get_borrow_position(borrow_user.id())
+                .await
+                .unwrap()
+                .get_borrow_asset_principal()
+        ),
+        amount,
+    );
 }
 
 #[rstest]
@@ -39,7 +56,10 @@ async fn borrow_exceeds_maximum_usage_ratio(#[case] percent: u16) {
         })
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
+
     c.borrow(&borrow_user, u128::from(percent) * 10 + 1).await;
 }

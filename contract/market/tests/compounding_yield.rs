@@ -32,9 +32,11 @@ async fn compounding_yield(
         })
     );
 
-    c.supply(&supply_user, principal * 5).await;
-    c.supply(&supply_user_2, principal * 5).await;
-    c.collateralize(&borrow_user, principal * 2).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, principal * 5),
+        c.supply_and_harvest_until_activation(&supply_user_2, principal * 5),
+        c.collateralize(&borrow_user, principal * 2),
+    );
 
     c.borrow(&borrow_user, principal).await;
 
@@ -74,11 +76,11 @@ async fn compounding_yield(
         async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
     );
 
-    let supply_yield_1 = u128::from(supply_position_1_after.get_borrow_asset_deposit())
+    let supply_yield_1 = u128::from(supply_position_1_after.get_borrow_asset_deposit_total())
         + u128::from(supply_position_1_after.borrow_asset_yield.get_total())
         + u128::from(supply_position_1_after.borrow_asset_yield.pending_estimate)
         - principal * 5;
-    let supply_yield_2 = u128::from(supply_position_2_after.get_borrow_asset_deposit())
+    let supply_yield_2 = u128::from(supply_position_2_after.get_borrow_asset_deposit_total())
         + u128::from(supply_position_2_after.borrow_asset_yield.get_total())
         + u128::from(supply_position_2_after.borrow_asset_yield.pending_estimate)
         - principal * 5;
