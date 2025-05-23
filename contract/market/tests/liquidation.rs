@@ -4,7 +4,7 @@ use rstest::rstest;
 
 use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
-    number::Decimal,
+    number::Decimal, oracle::pyth,
 };
 use test_utils::*;
 use tokio::time::Instant;
@@ -14,7 +14,6 @@ async fn successful_liquidation_totally_underwater() {
     setup_test!(
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
-        config(|_| { })
     );
 
     c.supply(&supply_user, 1000).await;
@@ -400,4 +399,111 @@ async fn successful_liquidation_only_from_interest() {
         2_000_000 * 95 / 100,
         "Liquidation should transfer correct amount of tokens",
     );
+}
+
+#[rstest]
+#[case((10, 1000), (10, 1000), (9, 1000), (10, 1000), 1710, true)]
+#[case((10, 1000), (10, 1000), (9, 1000), (10, 1000), 1700, false)]
+#[case((10, -1000), (10, -1000), (9, -1000), (10, -1000), 1710, true)]
+#[case((10, -1000), (10, -1000), (9, -1000), (10, -1000), 1700, false)]
+#[case((10, 1000), (10, 1000), (10, -1000), (10, 1000), 1, true)]
+#[case((10, 1000), (10, 1000), (10, -1000), (10, -1000), 20_0000, false)]
+#[case((10, 1000), (10, 1000), (90, 999), (10, 1000), 1710, true)]
+#[case((10, 1000), (10, 1000), (90, 999), (10, 1000), 1709, false)]
+#[case((10, 1000), (10, 1000), (10, 1000), (11, 1000), 1728, true)]
+#[case((10, 1000), (10, 1000), (10, 1000), (11, 1000), 1727, false)]
+#[tokio::test]
+async fn extreme_prices(
+    #[case] (collateral_price, collateral_exponent): (i64, i32),
+    #[case] (borrow_price, borrow_exponent): (i64, i32),
+    #[case] (new_collateral_price, new_collateral_exponent): (i64, i32),
+    #[case] (new_borrow_price, new_borrow_exponent): (i64, i32),
+    #[case] liquidate_for: u128,
+    #[case] expect_success: bool,
+) {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|c| {
+            c.borrow_mcr = dec!("2");
+            c.borrow_mcr_initial = dec!("2");
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
+
+    c.set_collateral_asset_price_exact(pyth::Price {
+        price: collateral_price.into(),
+        conf: 0.into(),
+        expo: collateral_exponent,
+        publish_time: 0,
+    })
+    .await;
+    c.set_borrow_asset_price_exact(pyth::Price {
+        price: borrow_price.into(),
+        conf: 0.into(),
+        expo: borrow_exponent,
+        publish_time: 0,
+    })
+    .await;
+
+    c.supply(&supply_user, 1_000_000).await;
+    c.collateralize(&borrow_user, 2000).await;
+    c.borrow(&borrow_user, 1000).await;
+
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
+
+    c.set_collateral_asset_price_exact(pyth::Price {
+        price: new_collateral_price.into(),
+        conf: 0.into(),
+        expo: new_collateral_exponent,
+        publish_time: 0,
+    })
+    .await;
+    c.set_borrow_asset_price_exact(pyth::Price {
+        price: new_borrow_price.into(),
+        conf: 0.into(),
+        expo: new_borrow_exponent,
+        publish_time: 0,
+    })
+    .await;
+    c.liquidate(&liquidator_user, borrow_user.id(), liquidate_for)
+        .await;
+
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
+
+    if expect_success {
+        assert_eq!(
+            collateral_balance_after - collateral_balance_before,
+            2000,
+            "Liquidator should obtain all collateral after a successful liquidation",
+        );
+        assert_eq!(
+            borrow_balance_before - borrow_balance_after,
+            liquidate_for,
+            "Liquidation should transfer correct amount of tokens",
+        );
+    } else {
+        assert_eq!(
+            collateral_balance_after - collateral_balance_before,
+            0,
+            "Liquidator should not obtain collateral",
+        );
+        assert_eq!(
+            borrow_balance_before - borrow_balance_after,
+            0,
+            "Liquidation should not transfer borrow asset tokens",
+        );
+    }
 }

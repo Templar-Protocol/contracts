@@ -47,16 +47,28 @@ impl FungibleTokenReceiver for Contract {
             Nep141MarketDepositMessage::Collateralize => {
                 let amount = use_collateral_asset();
 
-                self.execute_collateralize(sender_id, amount);
-
-                PromiseOrValue::Value(U128(0))
+                PromiseOrValue::Promise(
+                    self.configuration
+                        .balance_oracle
+                        .retrieve_price_pair()
+                        .then(
+                            self_ext!(Self::GAS_FT_ON_TRANSFER_COLLATERALIZE_01_CONSUME_PRICE)
+                                .ft_on_transfer_collateralize_01_consume_price(sender_id, amount),
+                        ),
+                )
             }
             Nep141MarketDepositMessage::Repay => {
                 let amount = use_borrow_asset();
 
-                let refund = self.execute_repay(sender_id, amount);
-
-                PromiseOrValue::Value(refund.into())
+                PromiseOrValue::Promise(
+                    self.configuration
+                        .balance_oracle
+                        .retrieve_price_pair()
+                        .then(
+                            self_ext!(Self::GAS_FT_ON_TRANSFER_REPAY_01_CONSUME_PRICE)
+                                .ft_on_transfer_repay_01_consume_price(sender_id, amount),
+                        ),
+                )
             }
             Nep141MarketDepositMessage::Liquidate(LiquidateMsg { account_id }) => {
                 let amount = use_borrow_asset();
@@ -66,12 +78,10 @@ impl FungibleTokenReceiver for Contract {
                         .balance_oracle
                         .retrieve_price_pair()
                         .then(
-                            self_ext!(
-                                Self::GAS_LIQUIDATE_FT_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE
-                            )
-                            .liquidate_ft_transfer_call_01_consume_oracle_response(
-                                sender_id, account_id, amount,
-                            ),
+                            self_ext!(Self::GAS_FT_ON_TRANSFER_LIQUIDATE_01_CONSUME_PRICE)
+                                .ft_on_transfer_liquidate_01_consume_price(
+                                    sender_id, account_id, amount,
+                                ),
                         ),
                 )
             }
