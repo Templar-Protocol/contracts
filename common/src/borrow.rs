@@ -201,16 +201,19 @@ impl<M> BorrowPositionRef<M> {
 }
 
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
-    pub fn with_pending_interest(&mut self) {
-        let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
+    pub fn estimate_current_snapshot_interest(&self) -> BorrowAssetAmount {
         let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
-        let current_snapshot = &self.market.current_snapshot;
-        let interest_in_current_snapshot = current_snapshot.interest_rate
+        let interest_in_current_snapshot = self.market.current_snapshot.interest_rate
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())
             / *MS_IN_A_YEAR;
-        #[allow(clippy::unwrap_used, reason = "This is a view method")]
-        pending_estimate.join(interest_in_current_snapshot.to_u128_ceil().unwrap().into());
+        #[allow(clippy::unwrap_used, reason = "Interest rate guaranteed <= APY_LIMIT")]
+        interest_in_current_snapshot.to_u128_ceil().unwrap().into()
+    }
+
+    pub fn with_pending_interest(&mut self) {
+        let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
+        pending_estimate.join(self.estimate_current_snapshot_interest());
 
         self.position.borrow_asset_fees.pending_estimate = pending_estimate;
     }
@@ -438,6 +441,13 @@ impl<'a> BorrowPositionGuard<'a> {
         proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
+        let current_snapshot_interest = self.estimate_current_snapshot_interest();
+        // Amortize current snapshot fees so that when the current snapshot is
+        // finalized, the fees are not doubled.
+        self.position
+            .borrow_asset_fees
+            .amortize(current_snapshot_interest);
+
         let liability_reduction = self
             .position
             .reduce_borrow_asset_liability(proof, amount)

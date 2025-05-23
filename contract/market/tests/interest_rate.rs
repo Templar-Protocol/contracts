@@ -3,35 +3,34 @@ use std::{sync::atomic::Ordering, time::Duration};
 use rstest::rstest;
 use templar_common::{
     asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
-    number::Decimal, MS_IN_A_YEAR,
+    market::HarvestYieldMode, number::Decimal, MS_IN_A_YEAR,
 };
 use test_utils::*;
 
 #[rstest]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("1000000"), dec!("1000000")).unwrap())]
-#[case(1_000_000, InterestRateStrategy::linear(dec!("100000"), dec!("5000000")).unwrap())]
+#[case(10_000_000, InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap())]
+#[case(10_000_000, InterestRateStrategy::linear(dec!("10"), dec!("500")).unwrap())]
 #[case(5_000_000,
-    InterestRateStrategy::piecewise(Decimal::ZERO, dec!("0.9"), dec!("350"), dec!("6000")).unwrap()
+    InterestRateStrategy::piecewise(Decimal::ZERO, dec!("0.09"), dec!("35"), dec!("600")).unwrap()
 )]
 #[case(5_000_000,
     InterestRateStrategy::exponential2(dec!("5"), dec!("800"), dec!("6")).unwrap()
 )]
 #[tokio::test]
 async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateStrategy) {
-    use templar_common::market::HarvestYieldMode;
-
-    let SetupEverything {
-        c,
-        supply_user,
-        supply_user_2,
-        borrow_user,
-        borrow_user_2,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_interest_rate_strategy = strategy.clone();
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(
+            borrow_user,
+            borrow_user_2,
+            supply_user,
+            supply_user_2
+        )
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy = strategy.clone();
+        })
+    );
 
     c.supply(&supply_user, principal * 5).await;
     c.supply(&supply_user_2, principal * 5).await;

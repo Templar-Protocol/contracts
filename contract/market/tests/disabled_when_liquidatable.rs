@@ -2,12 +2,7 @@ use test_utils::*;
 
 #[tokio::test]
 async fn collateralization() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(borrow_user, supply_user));
 
     c.supply(&supply_user, 2_000_000).await;
     c.collateralize(&borrow_user, 2_000_000).await;
@@ -33,12 +28,7 @@ async fn collateralization() {
 
 #[tokio::test]
 async fn repayment() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(borrow_user, supply_user));
 
     c.supply(&supply_user, 2_000_000).await;
     c.collateralize(&borrow_user, 2_000_000).await;
