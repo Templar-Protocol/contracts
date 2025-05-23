@@ -328,6 +328,7 @@ impl Contract {
         }
     }
 
+    // ~3.1 TGas
     pub const GAS_FT_ON_TRANSFER_COLLATERALIZE_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
 
     #[private]
@@ -337,7 +338,6 @@ impl Contract {
         amount: CollateralAssetAmount,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> CollateralAssetAmount {
-        near_sdk::log!("ft_on_transfer_collateralize_01_consume_price");
         let price_pair = self.price_pair(oracle_response);
 
         self.execute_collateralize(account_id, amount, &price_pair);
@@ -345,6 +345,7 @@ impl Contract {
         CollateralAssetAmount::zero()
     }
 
+    // ~3.3 TGas
     pub const GAS_FT_ON_TRANSFER_REPAY_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
 
     #[private]
@@ -354,7 +355,6 @@ impl Contract {
         amount: BorrowAssetAmount,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> BorrowAssetAmount {
-        near_sdk::log!("ft_on_transfer_repay_01_consume_price");
         let price_pair = self.price_pair(oracle_response);
 
         self.execute_repay(account_id, amount, &price_pair)
