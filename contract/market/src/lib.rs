@@ -103,9 +103,9 @@ impl DerefMut for Contract {
     }
 }
 
-mod impl_ft_receiver;
 mod impl_helper;
 mod impl_market_external;
+mod impl_token_receiver;
 
 #[cfg(target_arch = "wasm32")]
 mod custom_getrandom {

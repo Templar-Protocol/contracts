@@ -11,7 +11,7 @@ use near_workspaces::{
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    market::{HarvestYieldMode, LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage},
+    market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration},
     number::Decimal,
     oracle::pyth::{self, OracleResponse},
     snapshot::Snapshot,
@@ -25,7 +25,7 @@ use crate::{
     controller::storage_management::StorageManagementController, define, get_contract, to_price,
 };
 
-use super::{ft::FtController, oracle::OracleController, ContractController};
+use super::{oracle::OracleController, token::TokenController, ContractController};
 
 pub struct MarketController {
     contract: Contract,
@@ -134,8 +134,8 @@ pub struct UnifiedMarketController {
     pub market: MarketController,
     pub configuration: MarketConfiguration,
     pub balance_oracle: OracleController,
-    pub borrow_asset: FtController,
-    pub collateral_asset: FtController,
+    pub borrow_asset: TokenController,
+    pub collateral_asset: TokenController,
 }
 
 impl Deref for UnifiedMarketController {
@@ -167,23 +167,27 @@ impl UnifiedMarketController {
             ),
         };
 
-        let borrow_asset = FtController {
-            contract: contract_with_dummy_sk(
-                worker,
-                configuration.borrow_asset.clone().into_nep141().unwrap(),
-            ),
-        };
+        let borrow_asset =
+            if let Some(account_id) = configuration.borrow_asset.clone().into_nep141() {
+                TokenController::ft(contract_with_dummy_sk(worker, account_id))
+            } else if let Some((account_id, token_id)) =
+                configuration.borrow_asset.clone().into_nep245()
+            {
+                TokenController::mt(contract_with_dummy_sk(worker, account_id), token_id)
+            } else {
+                unreachable!()
+            };
 
-        let collateral_asset = FtController {
-            contract: contract_with_dummy_sk(
-                worker,
-                configuration
-                    .collateral_asset
-                    .clone()
-                    .into_nep141()
-                    .unwrap(),
-            ),
-        };
+        let collateral_asset =
+            if let Some(account_id) = configuration.collateral_asset.clone().into_nep141() {
+                TokenController::ft(contract_with_dummy_sk(worker, account_id))
+            } else if let Some((account_id, token_id)) =
+                configuration.collateral_asset.clone().into_nep245()
+            {
+                TokenController::mt(contract_with_dummy_sk(worker, account_id), token_id)
+            } else {
+                unreachable!()
+            };
 
         Self {
             market,
@@ -198,8 +202,8 @@ impl UnifiedMarketController {
         market: MarketController,
         configuration: MarketConfiguration,
         balance_oracle: OracleController,
-        borrow_asset: FtController,
-        collateral_asset: FtController,
+        borrow_asset: TokenController,
+        collateral_asset: TokenController,
     ) -> Self {
         Self {
             market,
@@ -222,12 +226,16 @@ impl UnifiedMarketController {
         eprintln!("Performing storage deposits for {}...", account.id());
         let bounds = self.market.storage_balance_bounds().await;
         self.market.storage_deposit(account, bounds.min).await;
-        self.borrow_asset
-            .storage_deposit(account, NearToken::from_near(1))
-            .await;
-        self.collateral_asset
-            .storage_deposit(account, NearToken::from_near(1))
-            .await;
+        if let TokenController::Ft { ref controller } = self.borrow_asset {
+            controller
+                .storage_deposit(account, NearToken::from_near(1))
+                .await;
+        }
+        if let TokenController::Ft { ref controller } = self.collateral_asset {
+            controller
+                .storage_deposit(account, NearToken::from_near(1))
+                .await;
+        }
     }
 
     pub async fn set_collateral_asset_price(&self, price: f64) -> ExecutionSuccess {
@@ -292,11 +300,11 @@ impl UnifiedMarketController {
             supply_user.id()
         );
         self.borrow_asset
-            .ft_transfer_call(
+            .transfer_call(
                 supply_user,
                 self.market.contract().id(),
                 amount,
-                serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
+                serde_json::to_string(&DepositMsg::Supply).unwrap(),
             )
             .await
     }
@@ -320,29 +328,29 @@ impl UnifiedMarketController {
         e
     }
 
-    pub async fn collateralize(&self, borrow_user: &Account, amount: u128) {
+    pub async fn collateralize(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         eprintln!(
             "{} transferring {amount} tokens for collateral...",
             borrow_user.id(),
         );
         self.collateral_asset
-            .ft_transfer_call(
+            .transfer_call(
                 borrow_user,
                 self.market.contract().id(),
                 amount,
-                serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
+                serde_json::to_string(&DepositMsg::Collateralize).unwrap(),
             )
-            .await;
+            .await
     }
 
     pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
         eprintln!("{} repaying {amount} tokens...", borrow_user.id());
         self.borrow_asset
-            .ft_transfer_call(
+            .transfer_call(
                 borrow_user,
                 self.market.contract().id(),
                 amount,
-                serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
+                serde_json::to_string(&DepositMsg::Repay).unwrap(),
             )
             .await
     }
@@ -360,11 +368,11 @@ impl UnifiedMarketController {
             borrow_asset_amount,
         );
         self.borrow_asset
-            .ft_transfer_call(
+            .transfer_call(
                 liquidator_user,
                 self.market.contract().id(),
                 borrow_asset_amount,
-                serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
+                serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
                     account_id: account_id.clone(),
                 }))
                 .unwrap(),

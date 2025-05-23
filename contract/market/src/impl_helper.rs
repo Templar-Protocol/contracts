@@ -1,4 +1,10 @@
-use near_sdk::{env, json_types::U128, near, require, AccountId, Gas, Promise, PromiseResult};
+use near_sdk::{
+    env,
+    json_types::U128,
+    near, require,
+    serde_json::{self, json},
+    AccountId, Gas, Promise, PromiseResult,
+};
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
@@ -338,48 +344,61 @@ impl Contract {
     }
 
     // ~3.1 TGas
-    pub const GAS_FT_ON_TRANSFER_COLLATERALIZE_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
+    pub const GAS_ON_TRANSFER_COLLATERALIZE_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
 
     #[private]
-    pub fn ft_on_transfer_collateralize_01_consume_price(
+    pub fn on_transfer_collateralize_01_consume_price(
         &mut self,
         account_id: AccountId,
         amount: CollateralAssetAmount,
+        is_mt_transfer_call: bool,
         #[callback_unwrap] oracle_response: OracleResponse,
-    ) -> CollateralAssetAmount {
+    ) -> serde_json::Value {
         let price_pair = self.price_pair(oracle_response);
 
         self.execute_collateralize(account_id, amount, &price_pair);
 
-        CollateralAssetAmount::zero()
+        if is_mt_transfer_call {
+            json!(["0"])
+        } else {
+            json!("0")
+        }
     }
 
     // ~3.3 TGas
-    pub const GAS_FT_ON_TRANSFER_REPAY_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
+    pub const GAS_ON_TRANSFER_REPAY_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
 
     #[private]
-    pub fn ft_on_transfer_repay_01_consume_price(
+    pub fn on_transfer_repay_01_consume_price(
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
+        is_mt_transfer_call: bool,
         #[callback_unwrap] oracle_response: OracleResponse,
-    ) -> BorrowAssetAmount {
+    ) -> serde_json::Value {
         let price_pair = self.price_pair(oracle_response);
 
-        self.execute_repay(account_id, amount, &price_pair)
+        let return_amount = self.execute_repay(account_id, amount, &price_pair);
+
+        if is_mt_transfer_call {
+            json!([return_amount])
+        } else {
+            json!(return_amount)
+        }
     }
 
     // ~3.3 Tgas
-    pub const GAS_FT_ON_TRANSFER_LIQUIDATE_01_CONSUME_PRICE: Gas = Gas::from_tgas(4)
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE: Gas = Gas::from_tgas(4)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
-        .saturating_add(Self::GAS_FT_ON_TRANSFER_LIQUIDATE_02_FINALIZE);
+        .saturating_add(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE);
 
     #[private]
-    pub fn ft_on_transfer_liquidate_01_consume_price(
+    pub fn liquidate_transfer_call_01_consume_oracle_response(
         &mut self,
         liquidator_id: AccountId,
         account_id: AccountId,
         amount: BorrowAssetAmount,
+        is_mt_transfer_call: bool,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
         let price_pair = self
@@ -395,29 +414,43 @@ impl Contract {
             .collateral_asset
             .transfer(liquidator_id.clone(), liquidated_collateral)
             .then(
-                self_ext!(Self::GAS_FT_ON_TRANSFER_LIQUIDATE_02_FINALIZE)
-                    .ft_on_transfer_liquidate_02_finalize(liquidator_id, account_id, amount),
+                self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE)
+                    .liquidate_transfer_call_02_finalize(
+                        liquidator_id,
+                        account_id,
+                        amount,
+                        is_mt_transfer_call,
+                    ),
             )
     }
 
     // ~3.2 Tgas
-    pub const GAS_FT_ON_TRANSFER_LIQUIDATE_02_FINALIZE: Gas = Gas::from_tgas(4);
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(4);
 
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
     #[private]
-    pub fn ft_on_transfer_liquidate_02_finalize(
+    pub fn liquidate_transfer_call_02_finalize(
         &mut self,
         liquidator_id: AccountId,
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
-    ) -> U128 {
+        is_mt_transfer_call: bool,
+    ) -> serde_json::Value {
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        let refund_to_liquidator =
-            self.execute_liquidate_final(liquidator_id, account_id, borrow_asset_amount, success);
+        let refund_to_liquidator = U128::from(self.execute_liquidate_final(
+            liquidator_id,
+            account_id,
+            borrow_asset_amount,
+            success,
+        ));
 
-        refund_to_liquidator.into()
+        if is_mt_transfer_call {
+            json!([refund_to_liquidator])
+        } else {
+            json!(refund_to_liquidator)
+        }
     }
 
     // ~7.25 Tgas

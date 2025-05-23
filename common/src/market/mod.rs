@@ -69,7 +69,7 @@ impl YieldWeights {
 }
 
 #[near(serializers = [json])]
-pub enum Nep141MarketDepositMessage {
+pub enum DepositMsg {
     Supply,
     Collateralize,
     Repay,

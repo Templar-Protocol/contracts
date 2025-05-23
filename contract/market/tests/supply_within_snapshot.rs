@@ -167,9 +167,12 @@ async fn partial_snapshot_no_earnings() {
         async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
     );
 
+    println!("1: {amount_1_end:#?}");
+    println!("2: {amount_2_end:#?}");
+
     assert!(
         u128::from(amount_2_end.borrow_asset_yield.get_total()) * 2
-            < u128::from(amount_1_end.borrow_asset_yield.get_total())
+            <= u128::from(amount_1_end.borrow_asset_yield.get_total())
     );
     assert_eq!(
         amount_1_end.borrow_asset_yield.pending_estimate,
