@@ -18,16 +18,16 @@ async fn fast_borrow_is_not_free() {
             InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
         c.borrow_origination_fee = Fee::zero();
         c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-            divisor: (2 * 60 * 1000).into(), // 120 seconds
+            divisor: (60 * 1000).into(), // 60 seconds
         };
     })
     .await;
 
+    c.supply_and_harvest_until_activation(&supply_user, 2_000_000)
+        .await;
+
     let snapshot_len_before = c.get_finalized_snapshots_len().await;
-
-    c.supply(&supply_user, 2_000_000).await;
     c.collateralize(&borrow_user, 2_000_000).await;
-
     c.borrow(&borrow_user, 1_000_000).await;
 
     // Accrue a little bit of interest, but should still be within 60s snapshot window.

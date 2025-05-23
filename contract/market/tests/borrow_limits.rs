@@ -29,6 +29,12 @@ async fn borrow_within_bounds(
     for amount in amounts {
         c.borrow(&borrow_user, *amount).await;
     }
+
+    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    assert_eq!(
+        u128::from(borrow_position.get_borrow_asset_principal()),
+        amounts.iter().sum(),
+    );
 }
 
 #[rstest]

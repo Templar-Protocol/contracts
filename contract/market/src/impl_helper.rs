@@ -28,7 +28,7 @@ impl Contract {
         supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         if let Some(ref supply_maximum_amount) = supply_maximum_amount {
             require!(
-                supply_position.inner().get_borrow_asset_deposit() <= *supply_maximum_amount,
+                supply_position.inner().get_borrow_asset_deposit_total() <= *supply_maximum_amount,
                 "New supply position cannot exceed configured supply maximum",
             );
         }

@@ -9,7 +9,8 @@ use test_utils::*;
 async fn successful_withdrawal() {
     let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
 
-    c.supply(&supply_user, 10_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 10_000)
+        .await;
 
     let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
@@ -41,8 +42,10 @@ async fn unsuccessful_withdrawal() {
         ..
     } = setup_everything(|_| {}).await;
 
-    c.supply(&supply_user, 10_000).await;
-    c.collateralize(&borrow_user, 20_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(&borrow_user, 20_000),
+    );
     c.borrow(&borrow_user, 5_000).await;
 
     let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
@@ -77,10 +80,22 @@ async fn unsuccessful_withdrawal() {
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
-async fn attempt_to_withdraw_more_than_deposit() {
+async fn attempt_to_withdraw_more_than_deposit_inactive() {
     let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
 
     c.supply(&supply_user, 10_000).await;
+    c.create_supply_withdrawal_request(&supply_user, 12_000)
+        .await;
+}
+
+#[rstest]
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
+async fn attempt_to_withdraw_more_than_deposit() {
+    let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
+
+    c.supply_and_harvest_until_activation(&supply_user, 10_000)
+        .await;
     c.create_supply_withdrawal_request(&supply_user, 12_000)
         .await;
 }
@@ -94,8 +109,10 @@ async fn supply_withdrawal_after_storage_unregister() {
         ..
     } = setup_everything(|_| {}).await;
 
-    c.supply(&supply_user, 10_000).await;
-    c.supply(&supply_user_2, 10_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.supply_and_harvest_until_activation(&supply_user_2, 10_000),
+    );
 
     c.create_supply_withdrawal_request(&supply_user_2, 10_000)
         .await;

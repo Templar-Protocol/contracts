@@ -29,8 +29,8 @@ enum StorageKey {
 pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
-    pub borrow_asset_deposited: BorrowAssetAmount,
-    pub borrow_asset_deposited_next_snapshot: BorrowAssetAmount,
+    pub borrow_asset_deposited_active: BorrowAssetAmount,
+    pub borrow_asset_deposited_inactive: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
@@ -61,7 +61,7 @@ impl Market {
         let first_snapshot = Snapshot {
             time_chunk: configuration.time_chunk_configuration.previous(),
             end_timestamp_ms: env::block_timestamp_ms().into(),
-            deposited: 0.into(),
+            deposited_active: 0.into(),
             borrowed: 0.into(),
             yield_distribution: BorrowAssetAmount::zero(),
             interest_rate: configuration
@@ -75,8 +75,8 @@ impl Market {
         let mut self_ = Self {
             prefix: prefix.clone(),
             configuration,
-            borrow_asset_deposited: 0.into(),
-            borrow_asset_deposited_next_snapshot: 0.into(),
+            borrow_asset_deposited_active: 0.into(),
+            borrow_asset_deposited_inactive: 0.into(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
             supply_positions: LookupMap::new(key!(SupplyPositions)),
@@ -109,7 +109,7 @@ impl Market {
         // If still in current time chunk, just update the current snapshot.
         if self.current_snapshot.time_chunk == time_chunk {
             self.current_snapshot.end_timestamp_ms = env::block_timestamp_ms().into();
-            self.current_snapshot.deposited = self.borrow_asset_deposited;
+            self.current_snapshot.deposited_active = self.borrow_asset_deposited_active;
             self.current_snapshot.borrowed = self.borrow_asset_borrowed;
             self.current_snapshot
                 .yield_distribution
@@ -120,13 +120,13 @@ impl Market {
                 .at(self.current_snapshot.usage_ratio());
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
-            self.borrow_asset_deposited
-                .join(self.borrow_asset_deposited_next_snapshot);
-            self.borrow_asset_deposited_next_snapshot = BorrowAssetAmount::zero();
+            self.borrow_asset_deposited_active
+                .join(self.borrow_asset_deposited_inactive);
+            self.borrow_asset_deposited_inactive = BorrowAssetAmount::zero();
             let mut snapshot = Snapshot {
                 time_chunk,
                 yield_distribution,
-                deposited: self.borrow_asset_deposited,
+                deposited_active: self.borrow_asset_deposited_active,
                 borrowed: self.borrow_asset_borrowed,
                 end_timestamp_ms: env::block_timestamp_ms().into(),
                 interest_rate: Decimal::ZERO,
@@ -153,11 +153,11 @@ impl Market {
             reason = "Factor is guaranteed to be <=1, so value must still fit in u128"
         )]
         let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
-            * Decimal::from(self.borrow_asset_deposited))
+            * Decimal::from(self.borrow_asset_deposited_active))
         .to_u128_ceil()
         .unwrap();
 
-        u128::from(self.borrow_asset_deposited)
+        u128::from(self.borrow_asset_deposited_active)
             .saturating_sub(u128::from(self.borrow_asset_borrowed))
             .saturating_sub(u128::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
@@ -226,7 +226,7 @@ impl Market {
                     // Cap withdrawal amount to deposit amount at most.
                     let amount = supply_position
                         .inner()
-                        .get_borrow_asset_deposit()
+                        .get_borrow_asset_deposit_total()
                         .min(requested_amount);
 
                     (!amount.is_zero()).then_some((amount, supply_position))

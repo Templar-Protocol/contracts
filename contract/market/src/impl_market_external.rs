@@ -40,8 +40,8 @@ impl MarketExternalInterface for Contract {
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(),
-            deposited: self.borrow_asset_deposited,
-            deposited_next_snapshot: self.borrow_asset_deposited_next_snapshot,
+            deposited_active: self.borrow_asset_deposited_active,
+            deposited_inactive: self.borrow_asset_deposited_inactive,
             borrowed: self.borrow_asset_borrowed,
         }
     }
@@ -167,7 +167,10 @@ impl MarketExternalInterface for Contract {
         let Some(supply_position) =
             self.supply_position_ref(predecessor.clone())
                 .filter(|supply_position| {
-                    !supply_position.inner().get_borrow_asset_deposit().is_zero()
+                    !supply_position
+                        .inner()
+                        .get_borrow_asset_deposit_total()
+                        .is_zero()
                 })
         else {
             env::panic_str("Supply position does not exist");
@@ -177,7 +180,7 @@ impl MarketExternalInterface for Contract {
         // This check really only ensures that the `depth` reported by
         // get_supply_withdrawal_queue_status() is realistically accurate.
         require!(
-            supply_position.inner().get_borrow_asset_deposit() >= amount,
+            supply_position.inner().get_borrow_asset_deposit_total() >= amount,
             "Attempt to withdraw more than current deposit",
         );
 
@@ -200,8 +203,8 @@ impl MarketExternalInterface for Contract {
 
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
-        let expect_success = u128::from(self.borrow_asset_deposited)
-            .saturating_add(u128::from(self.borrow_asset_deposited_next_snapshot))
+        let expect_success = u128::from(self.borrow_asset_deposited_active)
+            .saturating_add(u128::from(self.borrow_asset_deposited_inactive))
             .checked_sub(
                 u128::from(self.borrow_asset_borrowed)
                     .saturating_add(self.borrow_asset_in_flight.into()),
@@ -267,7 +270,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.current_snapshot.deposited.into();
+        let deposited: Decimal = self.current_snapshot.deposited_active.into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }

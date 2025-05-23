@@ -176,6 +176,25 @@ impl TestController {
         .await
     }
 
+    pub async fn supply_and_harvest_until_activation(
+        &self,
+        supply_user: &Account,
+        amount: u128,
+    ) -> ExecutionSuccess {
+        let e = self.supply(supply_user, amount).await;
+        while !self
+            .get_supply_position(supply_user.id())
+            .await
+            .unwrap()
+            .get_inactive_deposit()
+            .amount
+            .is_zero()
+        {
+            self.harvest_yield(supply_user, None).await;
+        }
+        e
+    }
+
     pub async fn get_supply_position(&self, account_id: &AccountId) -> Option<SupplyPosition> {
         self.contract
             .view("get_supply_position")
@@ -601,7 +620,7 @@ impl TestController {
         for (i, snapshot) in snapshots.iter().enumerate() {
             eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
             eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
-            eprintln!("\t\tDeposited:\t{}", snapshot.deposited);
+            eprintln!("\t\tDeposited (active):\t{}", snapshot.deposited_active);
             eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed);
             eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
         }

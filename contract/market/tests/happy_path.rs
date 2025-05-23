@@ -56,7 +56,7 @@ async fn test_happy() {
     let snapshots = c.list_finalized_snapshots(None, None).await;
     assert_eq!(snapshots.len(), 1);
     assert!(snapshots[0].yield_distribution.is_zero());
-    assert!(snapshots[0].deposited.is_zero());
+    assert!(snapshots[0].deposited_active.is_zero());
     assert!(snapshots[0].borrowed.is_zero());
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
@@ -65,7 +65,27 @@ async fn test_happy() {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_borrow_asset_deposit()),
+        u128::from(supply_position.get_inactive_deposit().amount),
+        1100,
+        "Supply position should match amount of tokens supplied to contract",
+    );
+
+    // Wait for activation.
+    while !c
+        .get_supply_position(supply_user.id())
+        .await
+        .unwrap()
+        .get_inactive_deposit()
+        .amount
+        .is_zero()
+    {
+        c.harvest_yield(&supply_user, None).await;
+    }
+
+    let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
+
+    assert_eq!(
+        u128::from(supply_position.get_borrow_asset_deposit_active()),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -219,7 +239,7 @@ async fn test_happy() {
             // Check that supply position is closed.
             {
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert!(supply_position.get_borrow_asset_deposit().is_zero());
+                assert!(supply_position.get_borrow_asset_deposit_active().is_zero());
             }
         },
         // Protocol yield.

@@ -1,4 +1,4 @@
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 
 use rstest::rstest;
 use templar_common::{
@@ -6,6 +6,7 @@ use templar_common::{
     number::Decimal, MS_IN_A_YEAR,
 };
 use test_utils::*;
+use tokio::time::Instant;
 
 #[rstest]
 #[case(10_000_000, InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap())]
@@ -33,10 +34,12 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
     })
     .await;
 
-    c.supply(&supply_user, principal * 5).await;
-    c.supply(&supply_user_2, principal * 5).await;
-    c.collateralize(&borrow_user, principal * 2).await;
-    c.collateralize(&borrow_user_2, principal * 2).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, principal * 5),
+        c.supply_and_harvest_until_activation(&supply_user_2, principal * 5),
+        c.collateralize(&borrow_user, principal * 2),
+        c.collateralize(&borrow_user_2, principal * 2),
+    );
 
     let time_outer = std::time::Instant::now();
     tokio::join!(
@@ -51,29 +54,21 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     for _ in 0..3 {
         eprintln!("Sleeping...");
-        let done = std::sync::atomic::AtomicBool::new(false);
-        tokio::join!(
-            async {
-                // borrow_user_2 will be continually applying interest while borrow_user_1 does not.
-                // They should accumulate (very nearly) the same amount of interest regardless.
-                while !done.load(Ordering::Relaxed) {
-                    tokio::join!(
-                        c.apply_interest(&borrow_user_2, None),
-                        // No compounding so we get apples-to-apples comparison.
-                        // Technically it should be optimal to harvest (and
-                        // compound) occasionally throughout the duration of
-                        // the supply.
-                        c.harvest_yield(&supply_user_2, Some(HarvestYieldMode::Default)),
-                    );
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    iters += 1;
-                }
-            },
-            async {
-                tokio::time::sleep(Duration::from_secs(12)).await;
-                done.store(true, Ordering::Relaxed);
-            }
-        );
+        let timer = Instant::now();
+        // borrow_user_2 will be continually applying interest while borrow_user_1 does not.
+        // They should accumulate (very nearly) the same amount of interest regardless.
+        while timer.elapsed() < Duration::from_secs(12) {
+            tokio::join!(
+                c.apply_interest(&borrow_user_2, None),
+                // No compounding so we get apples-to-apples comparison.
+                // Technically it should be optimal to harvest (and
+                // compound) occasionally throughout the duration of
+                // the supply.
+                c.harvest_yield(&supply_user_2, Some(HarvestYieldMode::Default)),
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            iters += 1;
+        }
         eprintln!("Done sleeping!");
 
         let duration_inner = time_inner.elapsed();

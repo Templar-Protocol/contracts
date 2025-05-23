@@ -18,8 +18,8 @@ pub use r#impl::*;
 #[near(serializers = [borsh, json])]
 pub struct BorrowAssetMetrics {
     pub available: BorrowAssetAmount,
-    pub deposited: BorrowAssetAmount,
-    pub deposited_next_snapshot: BorrowAssetAmount,
+    pub deposited_active: BorrowAssetAmount,
+    pub deposited_inactive: BorrowAssetAmount,
     pub borrowed: BorrowAssetAmount,
 }
 
