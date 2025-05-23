@@ -31,6 +31,16 @@ async fn borrow_mcr_initial_less_than_1() {
 }
 
 #[tokio::test]
+#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_initial`: out of bounds"]
+async fn borrow_mcr_initial_less_than_borrow_mcr() {
+    setup_everything(|c| {
+        c.borrow_mcr_initial = dec!("1.2");
+        c.borrow_mcr = dec!("1.200000001");
+    })
+    .await;
+}
+
+#[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr`: out of bounds"]
 async fn borrow_mcr_less_than_1() {
     setup_everything(|c| {

@@ -161,6 +161,7 @@ async fn successful_liquidation_with_spread(
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
             c.borrow_mcr = mcr;
+            c.borrow_mcr_initial = mcr;
             c.liquidation_maximum_spread = liquidation_maximum_spread;
         })
     );
