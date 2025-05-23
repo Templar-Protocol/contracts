@@ -7,12 +7,12 @@ use test_utils::*;
 #[rstest]
 #[tokio::test]
 async fn successful_withdrawal() {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(supply_user));
 
     c.supply_and_harvest_until_activation(&supply_user, 10_000)
         .await;
 
-    let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+    let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
@@ -24,7 +24,7 @@ async fn successful_withdrawal() {
         },
     );
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+    let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
     assert_eq!(
         balance_before + 10_000,
         balance_after,
@@ -35,12 +35,7 @@ async fn successful_withdrawal() {
 #[rstest]
 #[tokio::test]
 async fn unsuccessful_withdrawal() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
@@ -48,7 +43,7 @@ async fn unsuccessful_withdrawal() {
     );
     c.borrow(&borrow_user, 5_000).await;
 
-    let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+    let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
@@ -60,7 +55,7 @@ async fn unsuccessful_withdrawal() {
         },
     );
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+    let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
     assert_eq!(
         balance_before, balance_after,
         "Supply user does not receive anything"
@@ -81,7 +76,7 @@ async fn unsuccessful_withdrawal() {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
 async fn attempt_to_withdraw_more_than_deposit_inactive() {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
     c.create_supply_withdrawal_request(&supply_user, 12_000)
@@ -92,7 +87,7 @@ async fn attempt_to_withdraw_more_than_deposit_inactive() {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
 async fn attempt_to_withdraw_more_than_deposit() {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(supply_user));
 
     c.supply_and_harvest_until_activation(&supply_user, 10_000)
         .await;
@@ -102,12 +97,7 @@ async fn attempt_to_withdraw_more_than_deposit() {
 
 #[tokio::test]
 async fn supply_withdrawal_after_storage_unregister() {
-    let SetupEverything {
-        c,
-        supply_user,
-        supply_user_2,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(extract(c) accounts(supply_user, supply_user_2));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
@@ -126,7 +116,7 @@ async fn supply_withdrawal_after_storage_unregister() {
 
     // supply_user_2 deletes his token account
     supply_user_2
-        .call(c.borrow_asset.id(), "patch_storage_unregister")
+        .call(c.borrow_asset.contract.id(), "patch_storage_unregister")
         .args_json(json!({"force": true}))
         .deposit(NearToken::from_yoctonear(1))
         .transact()
@@ -136,11 +126,11 @@ async fn supply_withdrawal_after_storage_unregister() {
         .unwrap();
 
     // First one should fail
-    let balance_before = c.borrow_asset_balance_of(supply_user_2.id()).await;
+    let balance_before = c.borrow_asset.ft_balance_of(supply_user_2.id()).await.0;
     assert_eq!(balance_before, 0);
     let result = c.execute_next_supply_withdrawal_request(&supply_user).await;
     eprintln!("{result:#?}");
-    let balance_after = c.borrow_asset_balance_of(supply_user_2.id()).await;
+    let balance_after = c.borrow_asset.ft_balance_of(supply_user_2.id()).await.0;
 
     assert_eq!(balance_after, 0, "Should fail to transfer after unregister");
 
@@ -153,9 +143,9 @@ async fn supply_withdrawal_after_storage_unregister() {
     );
     assert_eq!(status.length, 1);
 
-    let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+    let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+    let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
     assert_eq!(balance_before + 10_000, balance_after);
     let status = c.get_supply_withdrawal_queue_status().await;
     assert!(status.depth.is_zero());

@@ -1,5 +1,3 @@
-use near_sdk::serde_json::json;
-use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use rstest::rstest;
 use tokio::join;
 
@@ -13,40 +11,29 @@ use test_utils::*;
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_happy() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        protocol_yield_user,
-        insurance_yield_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_interest_rate_strategy =
-            InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-    })
-    .await;
+    setup_test!(
+        extract(c, protocol_yield_user, insurance_yield_user)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
 
     let configuration = c.get_configuration().await;
 
     assert_eq!(
         &configuration.collateral_asset.into_nep141().unwrap(),
-        c.collateral_asset.id(),
+        c.collateral_asset.contract().id(),
     );
     assert_eq!(
         &configuration.borrow_asset.into_nep141().unwrap(),
-        c.borrow_asset.id(),
+        c.borrow_asset.contract().id(),
     );
 
     assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
 
-    let bounds = c
-        .contract
-        .view("storage_balance_bounds")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<StorageBalanceBounds>()
-        .unwrap();
+    let bounds = c.storage_balance_bounds().await;
 
     assert!(!bounds.min.is_zero());
 
@@ -114,12 +101,12 @@ async fn test_happy() {
     );
 
     // Step 3: Withdraw some of the borrow asset
-    let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
+    let balance_before = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
     c.borrow(&borrow_user, 1000).await;
 
-    let balance_after = c.borrow_asset_balance_of(borrow_user.id()).await;
+    let balance_after = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
 
     assert_eq!(
         balance_before + 1000,
@@ -170,11 +157,11 @@ async fn test_happy() {
                     supply_position.borrow_asset_yield.get_total(),
                 );
 
-                let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+                let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
                 // Withdraw all
                 c.create_supply_withdrawal_request(&supply_user, 80).await;
                 c.execute_next_supply_withdrawal_request(&supply_user).await;
-                let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+                let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
 
                 assert_eq!(
                     balance_after - balance_before,
@@ -202,7 +189,7 @@ async fn test_happy() {
                 assert!(queue_status.depth.is_zero());
                 assert_eq!(queue_status.length, 0);
 
-                let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+                let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
                 c.create_supply_withdrawal_request(&supply_user, 1100).await;
 
                 // Queue should have 1 request now.
@@ -231,7 +218,7 @@ async fn test_happy() {
                 assert!(queue_status.depth.is_zero());
                 assert_eq!(queue_status.length, 0);
 
-                let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+                let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
 
                 assert_eq!(balance_after - balance_before, 1100);
             }
@@ -247,15 +234,23 @@ async fn test_happy() {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
             assert!(protocol_yield.collateral_asset.is_zero());
             assert_eq!(u128::from(protocol_yield.borrow_asset), 10);
-            let balance_before = c.borrow_asset_balance_of(protocol_yield_user.id()).await;
+            let balance_before = c
+                .borrow_asset
+                .ft_balance_of(protocol_yield_user.id())
+                .await
+                .0;
             let result = c
                 .withdraw_static_yield(&protocol_yield_user, None, None)
                 .await;
             for receipt in result.receipt_outcomes() {
-                assert!(&receipt.executor_id != c.collateral_asset.id());
+                assert!(&receipt.executor_id != c.collateral_asset.contract().id());
             }
             assert!(result.failures().is_empty());
-            let balance_after = c.borrow_asset_balance_of(protocol_yield_user.id()).await;
+            let balance_after = c
+                .borrow_asset
+                .ft_balance_of(protocol_yield_user.id())
+                .await
+                .0;
             assert_eq!(balance_after - balance_before, 10);
         },
         // Insurance yield.
@@ -263,22 +258,30 @@ async fn test_happy() {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
             assert!(insurance_yield.collateral_asset.is_zero());
             assert_eq!(u128::from(insurance_yield.borrow_asset), 10);
-            let balance_before = c.borrow_asset_balance_of(insurance_yield_user.id()).await;
+            let balance_before = c
+                .borrow_asset
+                .ft_balance_of(insurance_yield_user.id())
+                .await
+                .0;
             let result = c
                 .withdraw_static_yield(&insurance_yield_user, None, None)
                 .await;
             for receipt in result.receipt_outcomes() {
-                assert!(&receipt.executor_id != c.collateral_asset.id());
+                assert!(&receipt.executor_id != c.collateral_asset.contract().id());
             }
             assert!(result.failures().is_empty());
-            let balance_after = c.borrow_asset_balance_of(insurance_yield_user.id()).await;
+            let balance_after = c
+                .borrow_asset
+                .ft_balance_of(insurance_yield_user.id())
+                .await
+                .0;
             assert_eq!(balance_after - balance_before, 10);
         },
         // Borrower withdraws collateral.
         async {
-            let balance_before = c.collateral_asset_balance_of(borrow_user.id()).await;
+            let balance_before = c.collateral_asset.ft_balance_of(borrow_user.id()).await.0;
             c.withdraw_collateral(&borrow_user, 2000).await;
-            let balance_after = c.collateral_asset_balance_of(borrow_user.id()).await;
+            let balance_after = c.collateral_asset.ft_balance_of(borrow_user.id()).await.0;
             assert_eq!(balance_after - balance_before, 2000);
             let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
             assert!(!borrow_position.exists());

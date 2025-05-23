@@ -3,7 +3,7 @@ use std::time::Duration;
 use rstest::rstest;
 use templar_common::{
     asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
-    number::Decimal, MS_IN_A_YEAR,
+    market::HarvestYieldMode, number::Decimal, MS_IN_A_YEAR,
 };
 use test_utils::*;
 use tokio::time::Instant;
@@ -19,20 +19,19 @@ use tokio::time::Instant;
 )]
 #[tokio::test]
 async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateStrategy) {
-    use templar_common::market::HarvestYieldMode;
-
-    let SetupEverything {
-        c,
-        supply_user,
-        supply_user_2,
-        borrow_user,
-        borrow_user_2,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_interest_rate_strategy = strategy.clone();
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(
+            borrow_user,
+            borrow_user_2,
+            supply_user,
+            supply_user_2
+        )
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy = strategy.clone();
+        })
+    );
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, principal * 5),

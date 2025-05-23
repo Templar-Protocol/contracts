@@ -10,25 +10,23 @@ use templar_common::number::Decimal;
 #[case(100)]
 #[tokio::test]
 async fn borrow_within_maximum_usage_ratio(#[case] percent: u16) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_asset_maximum_usage_ratio = Decimal::from(percent) / 100u32;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_asset_maximum_usage_ratio = Decimal::from(percent) / 100u32;
+        })
+    );
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 1000),
         c.collateralize(&borrow_user, 2000),
     );
 
-    let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
+    let balance_before = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
     let amount = u128::from(percent) * 10 - 1;
     c.borrow(&borrow_user, amount).await;
-    let balance_after = c.borrow_asset_balance_of(borrow_user.id()).await;
+    let balance_after = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
 
     assert_eq!(balance_before + amount, balance_after);
     assert_eq!(
@@ -50,15 +48,13 @@ async fn borrow_within_maximum_usage_ratio(#[case] percent: u16) {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Insufficient borrow asset available"]
 async fn borrow_exceeds_maximum_usage_ratio(#[case] percent: u16) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_asset_maximum_usage_ratio = Decimal::from(percent) / 100u32;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_asset_maximum_usage_ratio = Decimal::from(percent) / 100u32;
+        })
+    );
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 1000),

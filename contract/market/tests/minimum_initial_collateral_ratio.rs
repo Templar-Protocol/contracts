@@ -13,17 +13,15 @@ async fn success_above_minimum_initial_collateral_ratio(
     #[case] minimum: Decimal,
     #[case] initial: Decimal,
 ) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_mcr = minimum;
-        c.borrow_mcr_initial = initial;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = minimum;
+            c.borrow_mcr_initial = initial;
+        })
+    );
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
@@ -33,9 +31,9 @@ async fn success_above_minimum_initial_collateral_ratio(
         ),
     );
 
-    let balance_before = c.borrow_asset_balance_of(borrow_user.id()).await;
+    let balance_before = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
     c.borrow(&borrow_user, 1000).await;
-    let balance_after = c.borrow_asset_balance_of(borrow_user.id()).await;
+    let balance_after = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
 
     assert_eq!(balance_before + 1000, balance_after);
     assert_eq!(
@@ -61,17 +59,15 @@ async fn fail_below_minimum_initial_collateral_ratio(
     #[case] minimum: Decimal,
     #[case] initial: Decimal,
 ) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_mcr = minimum;
-        c.borrow_mcr_initial = initial;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = minimum;
+            c.borrow_mcr_initial = initial;
+        })
+    );
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
@@ -94,17 +90,15 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
     #[case] minimum: Decimal,
     #[case] initial: Decimal,
 ) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_mcr = minimum;
-        c.borrow_mcr_initial = initial;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = minimum;
+            c.borrow_mcr_initial = initial;
+        })
+    );
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),

@@ -9,16 +9,19 @@ use test_utils::*;
 
 #[tokio::test]
 async fn funds_activation() {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_interest_rate_strategy =
-            InterestRateStrategy::linear(dec!("10000"), dec!("10000")).unwrap();
-        c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-            divisor: (8 * 1000).into(),
-        };
-        c.yield_weights = YieldWeights::new_with_supply_weight(1);
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("10000"), dec!("10000")).unwrap();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (8 * 1000).into(),
+            };
+            c.yield_weights = YieldWeights::new_with_supply_weight(1);
+        })
+    );
 
     println!("First deposit");
     c.supply(&supply_user, 1_000_000).await;
@@ -100,22 +103,19 @@ async fn funds_activation() {
 
 #[tokio::test]
 async fn partial_snapshot_no_earnings() {
-    let SetupEverything {
-        c,
-        borrow_user,
-        supply_user,
-        supply_user_2,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_interest_rate_strategy =
-            InterestRateStrategy::linear(dec!("10000"), dec!("10000")).unwrap();
-        c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-            divisor: (12 * 1000).into(),
-        };
-        c.yield_weights = YieldWeights::new_with_supply_weight(1);
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, supply_user_2)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("10000"), dec!("10000")).unwrap();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (12 * 1000).into(),
+            };
+            c.yield_weights = YieldWeights::new_with_supply_weight(1);
+        })
+    );
 
     println!("Creating first supply position");
     c.supply(&supply_user, 100_000_000).await;
