@@ -12,7 +12,26 @@ use primitive_types::U512;
 use schemars::JsonSchema;
 
 pub const FRACTIONAL_BITS: usize = 128;
-const MAX_DECIMAL_PRECISION: usize = 38; // = floor(FRACTIONAL_BITS / log2(10))
+/// `floor(FRACTIONAL_BITS / log2(10))`
+pub const FRACTIONAL_DECIMAL_DIGITS: usize = 38;
+/// `floor((512 - FRACTIONAL_BITS) / log2(10))`
+pub const WHOLE_DECIMAL_DIGITS: usize = 115;
+
+/// Because `U512::exp10` is recursive, linear-time, and prone to stack overflows.
+fn u512_pow10(mut exponent: u32) -> U512 {
+    let mut y = U512::one();
+    let mut x = U512::from(10);
+
+    while exponent > 1 {
+        if exponent % 2 == 1 {
+            y *= x;
+        }
+        x *= x;
+        exponent >>= 1;
+    }
+
+    x * y
+}
 
 #[macro_export]
 macro_rules! dec {
@@ -79,7 +98,7 @@ impl Serialize for Decimal {
     where
         S: near_sdk::serde::Serializer,
     {
-        serializer.serialize_str(&self.to_fixed(MAX_DECIMAL_PRECISION))
+        serializer.serialize_str(&self.to_fixed(FRACTIONAL_DECIMAL_DIGITS))
     }
 }
 
@@ -98,6 +117,9 @@ impl Decimal {
     /// representation of bits lower than this.
     const REPR_EPSILON: U512 = U512([0b1000, 0, 0, 0, 0, 0, 0, 0]);
 
+    pub const MAX: Self = Self { repr: U512::MAX };
+    pub const MIN: Self = Self { repr: U512::zero() };
+
     pub const ZERO: Self = Self { repr: U512::zero() };
     pub const ONE_HALF: Self = Self {
         repr: U512([0, 0x8000_0000_0000_0000, 0, 0, 0, 0, 0, 0]),
@@ -115,9 +137,6 @@ impl Decimal {
     #[rustfmt::skip]
     pub const E: Self = Self {
         repr: U512([0xBF71_5880_9CF4_F3C9, 0xB7E1_5162_8AED_2A6A, 2, 0, 0, 0, 0, 0]),
-    };
-    pub const TEN: Self = Self {
-        repr: U512([0, 0, 10, 0, 0, 0, 0, 0]),
     };
 
     pub fn as_repr(self) -> [u64; 8] {
@@ -165,6 +184,7 @@ impl Decimal {
         }
     }
 
+    /// Calculates `2^exponent`.
     pub fn pow2_int(exponent: u32) -> Option<Self> {
         #[allow(clippy::cast_possible_truncation)]
         if exponent > 512 - FRACTIONAL_BITS as u32 {
@@ -200,6 +220,39 @@ impl Decimal {
         let frac = self - whole;
 
         Some(Self::pow2_int(whole)? * Self::pow2_frac(frac))
+    }
+
+    #[must_use]
+    pub fn mul_pow10(self, exponent: i32) -> Option<Self> {
+        if exponent == 0 || self.is_zero() {
+            return Some(self);
+        }
+
+        let abs_exponent = exponent.abs_diff(0);
+        if (abs_exponent as usize) > WHOLE_DECIMAL_DIGITS + FRACTIONAL_DECIMAL_DIGITS {
+            return None;
+        }
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        if exponent >= 0 {
+            let operand = u512_pow10(abs_exponent);
+            let shift_bits = u32::try_from(operand.bits()).ok()?;
+            // Avoid overflow.
+            if self.repr.leading_zeros() >= shift_bits {
+                let repr = self.repr * operand;
+                return Some(Self { repr });
+            }
+        } else {
+            let operand = u512_pow10(exponent.abs_diff(0));
+            let shift_bits = u32::try_from(operand.bits()).ok()?.checked_add(1)?;
+            // Do allow precision loss, but don't allow going all the way to zero.
+            if self.repr.leading_zeros().checked_add(shift_bits)? < 512 {
+                let repr = self.repr / operand;
+                return Some(Self { repr });
+            }
+        }
+
+        None
     }
 
     #[must_use]
@@ -248,7 +301,7 @@ impl Decimal {
     }
 
     pub fn to_fixed(&self, precision: usize) -> String {
-        let precision = precision.min(MAX_DECIMAL_PRECISION);
+        let precision = precision.min(FRACTIONAL_DECIMAL_DIGITS);
         let (fractional_part, overflow) = self.fractional_part_to_dec_string(precision, false);
         let fractional_part_trimmed = fractional_part.trim_end_matches('0');
         let repr = if overflow {
@@ -330,7 +383,7 @@ impl FromStr for Decimal {
             let mut f = U512::zero();
             let mut div = 10u128;
 
-            for c in frac.chars().take(MAX_DECIMAL_PRECISION) {
+            for c in frac.chars().take(FRACTIONAL_DECIMAL_DIGITS) {
                 if let Some(d) = c.to_digit(10) {
                     if d != 0 {
                         let d = (U512::from(d) << (FRACTIONAL_BITS * 2)) / div;
@@ -363,7 +416,7 @@ impl Display for Decimal {
 
 impl Debug for Decimal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_fixed(MAX_DECIMAL_PRECISION))
+        write!(f, "{}", self.to_fixed(FRACTIONAL_DECIMAL_DIGITS))
     }
 }
 
@@ -393,8 +446,16 @@ macro_rules! impl_self {
             type Output = Decimal;
 
             fn mul(self, rhs: $t) -> Self::Output {
+                #[allow(clippy::cast_possible_truncation)]
+                let mut shr = FRACTIONAL_BITS as u32;
+                let shr_self = self.repr.trailing_zeros().min(shr);
+                let self_repr = self.repr >> shr_self;
+                shr -= shr_self;
+                let shr_rhs = rhs.repr.trailing_zeros().min(shr);
+                let rhs_repr = rhs.repr >> shr_rhs;
+                shr -= shr_rhs;
                 Decimal {
-                    repr: ((self.repr * rhs.repr) >> FRACTIONAL_BITS),
+                    repr: (self_repr * rhs_repr) >> shr,
                 }
             }
         }
@@ -403,8 +464,16 @@ macro_rules! impl_self {
             type Output = Decimal;
 
             fn div(self, rhs: $t) -> Self::Output {
+                #[allow(clippy::cast_possible_truncation)]
+                let mut sh = FRACTIONAL_BITS as u32;
+                let sh_self = self.repr.leading_zeros().min(sh);
+                let self_repr = self.repr << sh_self;
+                sh -= sh_self;
+                let sh_rhs = rhs.repr.trailing_zeros().min(sh);
+                let rhs_repr = rhs.repr >> sh_rhs;
+                sh -= sh_rhs;
                 Decimal {
-                    repr: ((self.repr << FRACTIONAL_BITS) / rhs.repr),
+                    repr: (self_repr / rhs_repr) << sh,
                 }
             }
         }
@@ -432,13 +501,13 @@ macro_rules! impl_self_assign {
 
         impl DivAssign<$t> for $s {
             fn div_assign(&mut self, rhs: $t) {
-                self.repr = ((self.repr << FRACTIONAL_BITS) / rhs.repr);
+                self.repr = (*self / rhs).repr;
             }
         }
 
         impl MulAssign<$t> for $s {
             fn mul_assign(&mut self, rhs: $t) {
-                self.repr = ((self.repr * rhs.repr) >> FRACTIONAL_BITS);
+                self.repr = (*self * rhs).repr;
             }
         }
     };
@@ -469,7 +538,7 @@ macro_rules! impl_int {
             type Output = Decimal;
 
             fn mul(self, rhs: $t) -> Self::Output {
-                self * Decimal::from(rhs)
+                Decimal { repr: self.repr * U512::from(rhs) }
             }
         }
 
@@ -477,7 +546,7 @@ macro_rules! impl_int {
             type Output = Decimal;
 
             fn mul(self, rhs: $s) -> Self::Output {
-                Decimal::from(self) * rhs
+                Decimal { repr: U512::from(self) * rhs.repr }
             }
         }
 
@@ -485,7 +554,7 @@ macro_rules! impl_int {
             type Output = Decimal;
 
             fn div(self, rhs: $t) -> Self::Output {
-                self / Decimal::from(rhs)
+                Decimal { repr: self.repr / U512::from(rhs) }
             }
         }
 
@@ -548,10 +617,12 @@ impl_int!(u16);
 impl_int!(u32);
 impl_int!(u64);
 impl_int!(u128);
+impl_int!(::primitive_types::U256);
 
 #[cfg(test)]
 mod tests {
     use near_sdk::serde_json;
+    use primitive_types::U256;
     use rand::Rng;
     use rstest::rstest;
 
@@ -666,6 +737,53 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    fn pow10_valid_range() {
+        assert_eq!(
+            Decimal::ONE.mul_pow10(-(FRACTIONAL_DECIMAL_DIGITS as i32) - 1),
+            None,
+        );
+        for i in -(FRACTIONAL_DECIMAL_DIGITS as i32)..=(WHOLE_DECIMAL_DIGITS as i32) {
+            eprintln!("10^{i} = {:?}", Decimal::ONE.mul_pow10(i).unwrap());
+        }
+        assert_eq!(
+            Decimal::ONE.mul_pow10((WHOLE_DECIMAL_DIGITS as i32) + 1),
+            None,
+        );
+    }
+
+    #[rstest]
+    #[case(0, 0)]
+    #[case(0, 1)]
+    #[case(0, -1)]
+    #[case(1, 0)]
+    #[case(1, 1)]
+    #[case(1, -1)]
+    #[case(1, i32::try_from(WHOLE_DECIMAL_DIGITS).unwrap())]
+    #[case(1, i32::try_from(FRACTIONAL_DECIMAL_DIGITS).unwrap())]
+    #[case(1, -i32::try_from(FRACTIONAL_DECIMAL_DIGITS).unwrap())]
+    #[case(12, 20)]
+    #[case(12, 0)]
+    #[case(12, -20)]
+    #[case(u128::MAX, 0)]
+    #[case(u128::MAX, -20)]
+    #[test]
+    fn mul_pow10(#[case] x: u128, #[case] n: i32) {
+        #[allow(clippy::cast_sign_loss)]
+        if n >= 0 {
+            assert_eq!(
+                Decimal::from(x).mul_pow10(n).unwrap(),
+                Decimal::from(x) * Decimal::from(10u32).pow(n),
+            );
+        } else {
+            assert!(Decimal::from(x)
+                .mul_pow10(n)
+                .unwrap()
+                .near_equal(Decimal::from(x) / U256::exp10(-n as usize)));
+        }
+    }
+
+    #[test]
     fn constants_are_accurate() {
         assert_eq!(Decimal::ZERO.to_u128_floor().unwrap(), 0);
         assert!((Decimal::ONE_HALF.to_f64_lossy() - 0.5_f64).abs() < 1e-200);
@@ -705,11 +823,11 @@ mod tests {
                 repr: U512(rng.gen()),
             };
 
-            let mut s = actual.to_fixed(MAX_DECIMAL_PRECISION);
+            let mut s = actual.to_fixed(FRACTIONAL_DECIMAL_DIGITS);
             for _ in 0..(TRANSFORMATIONS - 1) {
                 s = Decimal::from_str(&s)
                     .unwrap()
-                    .to_fixed(MAX_DECIMAL_PRECISION);
+                    .to_fixed(FRACTIONAL_DECIMAL_DIGITS);
             }
             let parsed = Decimal::from_str(&s).unwrap();
 
@@ -784,7 +902,7 @@ mod tests {
         ];
 
         for case in cases {
-            let p: Decimal = case.to_fixed(MAX_DECIMAL_PRECISION).parse().unwrap();
+            let p: Decimal = case.to_fixed(FRACTIONAL_DECIMAL_DIGITS).parse().unwrap();
 
             eprintln!("{:x?}", case.repr.0);
             eprintln!("{:x?}", p.repr.0);
@@ -810,7 +928,7 @@ mod tests {
         for case in cases {
             println!("Testing {case}...");
             let n = Decimal::from_str(case).unwrap();
-            let s = n.to_fixed(MAX_DECIMAL_PRECISION);
+            let s = n.to_fixed(FRACTIONAL_DECIMAL_DIGITS);
             let parsed = Decimal::from_str(&s).unwrap();
             assert_eq!(n, parsed);
             println!("{n:?}");

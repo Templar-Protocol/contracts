@@ -4,8 +4,9 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     event::MarketEvent,
-    market::{PricePair, WithdrawalResolution},
+    market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
+    price::PricePair,
 };
 
 use crate::{Contract, ContractExt};
@@ -187,7 +188,7 @@ impl Contract {
         borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
-            borrow_position.is_within_minimum_initial_collateral_ratio(&price_pair),
+            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
             "New position must exceed initial minimum collateral ratio",
         );
 
@@ -433,7 +434,7 @@ impl Contract {
         borrow_position.record_collateral_asset_withdrawal(proof, amount);
 
         require!(
-            borrow_position.is_within_minimum_collateral_ratio(&price_pair),
+            borrow_position.satisfies_minimum_collateral_ratio(&price_pair),
             "Borrow must still be above MCR after collateral withdrawal.",
         );
 
