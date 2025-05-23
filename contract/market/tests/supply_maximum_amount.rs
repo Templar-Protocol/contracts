@@ -10,10 +10,13 @@ async fn supply_within_maximum(
     #[case] deposits: impl IntoIterator<Item = u128>,
     #[case] supply_maximum: u128,
 ) {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|c| {
-        c.supply_maximum_amount = Some(FungibleAssetAmount::new(supply_maximum));
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(supply_user)
+        config(|c| {
+            c.supply_maximum_amount = Some(FungibleAssetAmount::new(supply_maximum));
+        })
+    );
 
     let mut sum = 0;
     for deposit in deposits {
@@ -36,10 +39,13 @@ async fn supply_beyond_maximum(
     #[case] deposits: impl IntoIterator<Item = u128>,
     #[case] supply_maximum: u128,
 ) {
-    let SetupEverything { c, supply_user, .. } = setup_everything(|c| {
-        c.supply_maximum_amount = Some(FungibleAssetAmount::new(supply_maximum));
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(supply_user)
+        config(|c| {
+            c.supply_maximum_amount = Some(FungibleAssetAmount::new(supply_maximum));
+        })
+    );
 
     for deposit in deposits {
         let r = c.supply(&supply_user, deposit).await;

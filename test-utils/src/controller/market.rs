@@ -1,0 +1,333 @@
+use std::ops::Deref;
+
+use near_sdk::{
+    json_types::U128,
+    serde_json::{self, json},
+    AccountId, Gas, NearToken,
+};
+use near_workspaces::{
+    network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
+};
+use templar_common::{
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    borrow::{BorrowPosition, BorrowStatus},
+    market::{HarvestYieldMode, LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage},
+    number::Decimal,
+    oracle::pyth::OracleResponse,
+    snapshot::Snapshot,
+    static_yield::StaticYieldRecord,
+    supply::SupplyPosition,
+    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
+};
+use tokio::sync::OnceCell;
+
+use crate::{
+    controller::storage_management::StorageManagementController, define, get_contract, to_price,
+};
+
+use super::{ft::FtController, oracle::OracleController, ContractController};
+
+pub struct MarketController {
+    contract: Contract,
+}
+
+impl ContractController for MarketController {
+    fn contract(&self) -> &Contract {
+        &self.contract
+    }
+}
+
+impl StorageManagementController for MarketController {}
+
+impl MarketController {
+    pub async fn deploy(account: Account, configuration: &MarketConfiguration) -> Self {
+        let wasm = load_wasm().await;
+        let contract = account.deploy(wasm).await.unwrap().unwrap();
+
+        let init_call = contract
+            .call("new")
+            .args_json(json!({
+                "configuration": configuration,
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+
+        eprintln!("Init call logs");
+        eprintln!("--------------");
+        for log in init_call.logs() {
+            eprintln!("\t{log}");
+        }
+        eprintln!("--------------");
+
+        Self { contract }
+    }
+
+    define! {
+        #[view] pub fn get_configuration() -> MarketConfiguration;
+        #[view] pub fn get_finalized_snapshots_len() -> u32;
+        #[view] pub fn list_finalized_snapshots(offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot>;
+        #[view] pub fn get_supply_position(account_id: &AccountId) -> Option<SupplyPosition>;
+        #[view] pub fn get_borrow_position(account_id: &AccountId) -> Option<BorrowPosition>;
+        #[view] pub fn get_borrow_status(account_id: &AccountId, oracle_response: OracleResponse) -> Option<BorrowStatus>;
+        #[view] pub fn get_static_yield(account_id: &AccountId) -> Option<StaticYieldRecord>;
+        #[view] pub fn get_supply_withdrawal_request_status(account_id: &AccountId) -> Option<WithdrawalRequestStatus>;
+        #[view] pub fn get_supply_withdrawal_queue_status() -> WithdrawalQueueStatus;
+        #[view] pub fn get_last_yield_rate() -> Decimal;
+
+        #[call(tgas(300))]
+        pub fn borrow(amount: U128);
+        #[call(tgas(300))]
+        pub fn apply_interest(snapshot_limit: Option<u32>);
+        #[call(tgas(300))]
+        pub fn harvest_yield(mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
+        #[call(tgas(20))]
+        pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
+        #[call(tgas(20))]
+        pub fn withdraw_collateral(amount: CollateralAssetAmount);
+        #[call]
+        pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
+        #[call(tgas(20))]
+        pub fn execute_next_supply_withdrawal_request();
+    }
+
+    pub async fn harvest_yield_execution(
+        &self,
+        supply_user: &Account,
+        mode: Option<HarvestYieldMode>,
+    ) -> ExecutionSuccess {
+        eprintln!("{} harvesting yield...", supply_user.id());
+        self.call_exec(
+            supply_user,
+            "harvest_yield",
+            serde_json::to_vec(&json!({ "mode": mode })).unwrap(),
+            NearToken::from_near(0),
+            Gas::from_tgas(300),
+        )
+        .await
+    }
+
+    #[allow(unused)] // This is useful for debugging tests
+    pub async fn print_snapshots(&self) {
+        let snapshots = self.list_finalized_snapshots(None, None).await;
+
+        eprintln!("Market snapshots:");
+        for (i, snapshot) in snapshots.iter().enumerate() {
+            eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
+            eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
+            eprintln!("\t\tDeposited:\t{}", snapshot.deposited);
+            eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed);
+            eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
+        }
+    }
+}
+
+static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+
+pub async fn load_wasm() -> &'static [u8] {
+    WASM.get_or_init(|| get_contract("templar_market_contract", "contract/market"))
+        .await
+}
+
+pub struct UnifiedMarketController {
+    pub market: MarketController,
+    pub configuration: MarketConfiguration,
+    pub balance_oracle: OracleController,
+    pub borrow_asset: FtController,
+    pub collateral_asset: FtController,
+}
+
+impl Deref for UnifiedMarketController {
+    type Target = MarketController;
+
+    fn deref(&self) -> &Self::Target {
+        &self.market
+    }
+}
+
+fn contract_with_dummy_sk(worker: &Worker<Sandbox>, account_id: AccountId) -> Contract {
+    let dummy_key = SecretKey::from_seed(near_workspaces::types::KeyType::ED25519, "");
+
+    Contract::from_secret_key(account_id, dummy_key.clone(), worker)
+}
+
+impl UnifiedMarketController {
+    pub async fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {
+        let market = MarketController {
+            contract: contract_with_dummy_sk(worker, market_id),
+        };
+
+        let configuration = market.get_configuration().await;
+
+        let balance_oracle = OracleController {
+            contract: contract_with_dummy_sk(
+                worker,
+                configuration.balance_oracle.account_id.clone(),
+            ),
+        };
+
+        let borrow_asset = FtController {
+            contract: contract_with_dummy_sk(
+                worker,
+                configuration.borrow_asset.clone().into_nep141().unwrap(),
+            ),
+        };
+
+        let collateral_asset = FtController {
+            contract: contract_with_dummy_sk(
+                worker,
+                configuration
+                    .collateral_asset
+                    .clone()
+                    .into_nep141()
+                    .unwrap(),
+            ),
+        };
+
+        Self {
+            market,
+            configuration,
+            balance_oracle,
+            borrow_asset,
+            collateral_asset,
+        }
+    }
+
+    pub fn new(
+        market: MarketController,
+        configuration: MarketConfiguration,
+        balance_oracle: OracleController,
+        borrow_asset: FtController,
+        collateral_asset: FtController,
+    ) -> Self {
+        Self {
+            market,
+            configuration,
+            balance_oracle,
+            borrow_asset,
+            collateral_asset,
+        }
+    }
+
+    pub async fn init_account(&self, account: &Account) {
+        const AMOUNT: U128 = U128(100_000_000);
+
+        self.storage_deposits(account).await;
+        self.collateral_asset.mint(account, AMOUNT).await;
+        self.borrow_asset.mint(account, AMOUNT).await;
+    }
+
+    pub async fn storage_deposits(&self, account: &Account) {
+        eprintln!("Performing storage deposits for {}...", account.id());
+        let bounds = self.market.storage_balance_bounds().await;
+        self.market.storage_deposit(account, bounds.min).await;
+        self.borrow_asset
+            .storage_deposit(account, NearToken::from_near(1))
+            .await;
+        self.collateral_asset
+            .storage_deposit(account, NearToken::from_near(1))
+            .await;
+    }
+
+    pub async fn set_collateral_asset_price(&self, price: f64) -> ExecutionSuccess {
+        eprintln!("Setting collateral asset price...",);
+        self.balance_oracle
+            .set_price(
+                self.balance_oracle.contract().as_account(),
+                self.configuration.balance_oracle.collateral_asset_price_id,
+                to_price(price),
+            )
+            .await
+    }
+
+    pub async fn set_borrow_asset_price(&self, price: f64) -> ExecutionSuccess {
+        eprintln!("Setting borrow asset price...",);
+        self.balance_oracle
+            .set_price(
+                self.balance_oracle.contract().as_account(),
+                self.configuration.balance_oracle.borrow_asset_price_id,
+                to_price(price),
+            )
+            .await
+    }
+
+    pub async fn get_prices(&self) -> OracleResponse {
+        self.balance_oracle
+            .list_ema_prices_no_older_than(
+                [
+                    self.configuration.balance_oracle.borrow_asset_price_id,
+                    self.configuration.balance_oracle.collateral_asset_price_id,
+                ],
+                self.configuration.balance_oracle.price_maximum_age_s,
+            )
+            .await
+    }
+
+    pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
+        eprintln!(
+            "{} transferring {amount} tokens for supply...",
+            supply_user.id()
+        );
+        self.borrow_asset
+            .ft_transfer_call(
+                supply_user,
+                self.market.contract().id(),
+                amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
+            )
+            .await
+    }
+
+    pub async fn collateralize(&self, borrow_user: &Account, amount: u128) {
+        eprintln!(
+            "{} transferring {amount} tokens for collateral...",
+            borrow_user.id(),
+        );
+        self.collateral_asset
+            .ft_transfer_call(
+                borrow_user,
+                self.market.contract().id(),
+                amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
+            )
+            .await;
+    }
+
+    pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
+        eprintln!("{} repaying {amount} tokens...", borrow_user.id());
+        self.borrow_asset
+            .ft_transfer_call(
+                borrow_user,
+                self.market.contract().id(),
+                amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
+            )
+            .await
+    }
+
+    pub async fn liquidate(
+        &self,
+        liquidator_user: &Account,
+        account_id: &AccountId,
+        borrow_asset_amount: u128,
+    ) -> ExecutionSuccess {
+        eprintln!(
+            "{} executing liquidation against {} for {}...",
+            liquidator_user.id(),
+            account_id,
+            borrow_asset_amount,
+        );
+        self.borrow_asset
+            .ft_transfer_call(
+                liquidator_user,
+                self.market.contract().id(),
+                borrow_asset_amount,
+                serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
+                    account_id: account_id.clone(),
+                }))
+                .unwrap(),
+            )
+            .await
+    }
+}
