@@ -155,6 +155,7 @@ async fn successful_liquidation_with_spread(
         ..
     } = setup_everything(|config| {
         config.borrow_mcr = mcr;
+        config.borrow_mcr_initial = mcr;
         config.liquidation_maximum_spread = liquidation_maximum_spread;
     })
     .await;
