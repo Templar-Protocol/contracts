@@ -23,17 +23,14 @@ async fn compounding_yield(
     #[case] strategy: InterestRateStrategy,
     #[case] compounding: HarvestYieldMode,
 ) {
-    let SetupEverything {
-        c,
-        supply_user,
-        supply_user_2,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_interest_rate_strategy = strategy.clone();
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, supply_user_2)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy = strategy.clone();
+        })
+    );
 
     c.supply(&supply_user, principal * 5).await;
     c.supply(&supply_user_2, principal * 5).await;

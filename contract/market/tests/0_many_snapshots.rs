@@ -24,15 +24,13 @@ fn linear_regression_slope(data: &[(f64, f64)]) -> f64 {
 
 #[tokio::test]
 async fn many_snapshots() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: 1.into() };
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: 1.into() };
+        })
+    );
 
     c.supply(&supply_user, 100_000).await;
     c.collateralize(&borrow_user, 200_000).await;

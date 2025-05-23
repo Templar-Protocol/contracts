@@ -1,19 +1,17 @@
 use rstest::rstest;
 
 use templar_common::{
-    dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal, oracle::pyth,
+    dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
+    number::Decimal, oracle::pyth,
 };
 use test_utils::*;
 
 #[tokio::test]
 async fn successful_liquidation_totally_underwater() {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
@@ -23,8 +21,12 @@ async fn successful_liquidation_totally_underwater() {
     // collateralization: 250/300 ~= 83%
     // which is bad debt (<100%).
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.set_collateral_asset_price(0.5).await;
     c.liquidate(
@@ -34,8 +36,12 @@ async fn successful_liquidation_totally_underwater() {
     )
     .await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
@@ -63,29 +69,26 @@ async fn successful_liquidation_good_debt_under_mcr(
     #[case] collateral_asset_price_pct: u128,
     #[case] liquidation_amount: u128,
 ) {
-    use templar_common::market::HarvestYieldMode;
-
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        protocol_yield_user,
-        insurance_yield_user,
-        ..
-    } = setup_everything(|config| {
-        config.borrow_origination_fee = Fee::zero();
-        config.borrow_mcr = Decimal::from(mcr) / 100u32;
-        config.borrow_mcr_initial = Decimal::from(mcr) / 100u32;
-    })
-    .await;
+    setup_test!(
+        extract(c, protocol_yield_user, insurance_yield_user)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = Decimal::from(mcr) / 100u32;
+            c.borrow_mcr_initial = Decimal::from(mcr) / 100u32;
+        })
+    );
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, collateral_amount).await;
     c.borrow(&borrow_user, borrow_amount).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.set_collateral_asset_price(
         (Decimal::from(collateral_asset_price_pct) / 100u32).to_f64_lossy(),
@@ -94,8 +97,12 @@ async fn successful_liquidation_good_debt_under_mcr(
     c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
         .await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
@@ -149,24 +156,25 @@ async fn successful_liquidation_with_spread(
     let target_spread: Decimal = Decimal::from(spread_pct) / 100u32;
     let mcr: Decimal = Decimal::from(mcr) / 100u32;
 
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|config| {
-        config.borrow_mcr = mcr;
-        config.liquidation_maximum_spread = liquidation_maximum_spread;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|c| {
+            c.borrow_mcr = mcr;
+            c.liquidation_maximum_spread = liquidation_maximum_spread;
+        })
+    );
 
     c.supply(&supply_user, 10000).await;
     c.collateralize(&borrow_user, 2000).await; // 2:1 collateralization
     c.borrow(&borrow_user, 1000).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     let collateral_asset_price: Decimal = mcr /
         201u32 * 100u32 // 2:1 collateralization + a bit to ensure we're under MCR
@@ -181,8 +189,12 @@ async fn successful_liquidation_with_spread(
     c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
         .await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
@@ -198,26 +210,31 @@ async fn successful_liquidation_with_spread(
 
 #[tokio::test]
 async fn fail_liquidation_too_little_attached() {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
     c.borrow(&borrow_user, 300).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.set_collateral_asset_price(0.5).await;
     c.liquidate(&liquidator_user, borrow_user.id(), 150).await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_before, collateral_balance_after,
@@ -239,25 +256,30 @@ async fn fail_liquidation_too_little_attached() {
 
 #[tokio::test]
 async fn fail_liquidation_healthy_borrow() {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
     c.borrow(&borrow_user, 300).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.liquidate(&liquidator_user, borrow_user.id(), 300).await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     assert_eq!(
         collateral_balance_before, collateral_balance_after,
@@ -280,27 +302,32 @@ async fn fail_liquidation_healthy_borrow() {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Position is already liquidation locked"]
 async fn liquidators_race() {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|_| {}).await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 500).await;
     c.borrow(&borrow_user, 300).await;
     c.set_collateral_asset_price(0.5).await;
 
-    let balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
+    let balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
 
     let (r1, r2) = tokio::join!(
         c.liquidate(&liquidator_user, borrow_user.id(), 300),
         c.liquidate(&liquidator_user, borrow_user.id(), 300),
     );
 
-    let balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
+    let balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
 
     assert_eq!(
         balance_before + 500,
@@ -337,20 +364,17 @@ async fn extreme_prices(
     #[case] liquidate_for: u128,
     #[case] expect_success: bool,
 ) {
-    let SetupEverything {
-        c,
-        liquidator_user,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_mcr = dec!("2");
-        c.borrow_mcr_initial = dec!("2");
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_interest_rate_strategy =
-            InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|c| {
+            c.borrow_mcr = dec!("2");
+            c.borrow_mcr_initial = dec!("2");
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
 
     c.set_collateral_asset_price_exact(pyth::Price {
         price: collateral_price.into(),
@@ -371,8 +395,12 @@ async fn extreme_prices(
     c.collateralize(&borrow_user, 2000).await;
     c.borrow(&borrow_user, 1000).await;
 
-    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_before = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_before = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     c.set_collateral_asset_price_exact(pyth::Price {
         price: new_collateral_price.into(),
@@ -391,8 +419,12 @@ async fn extreme_prices(
     c.liquidate(&liquidator_user, borrow_user.id(), liquidate_for)
         .await;
 
-    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
-    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+    let collateral_balance_after = c
+        .collateral_asset
+        .ft_balance_of(liquidator_user.id())
+        .await
+        .0;
+    let borrow_balance_after = c.borrow_asset.ft_balance_of(liquidator_user.id()).await.0;
 
     if expect_success {
         assert_eq!(

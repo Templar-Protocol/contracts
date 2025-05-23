@@ -56,6 +56,13 @@ impl<T: AssetClass> FungibleAsset<T> {
         let FungibleAssetKind::Nep141(ref account_id) = self.kind;
         ext_ft_core::ext(account_id.clone()).ft_balance_of(current_account_id.clone())
     }
+
+    pub fn coerce<U: AssetClass>(self) -> FungibleAsset<U> {
+        FungibleAsset {
+            discriminant: PhantomData,
+            kind: self.kind,
+        }
+    }
 }
 
 impl<T: AssetClass> Display for FungibleAsset<T> {
