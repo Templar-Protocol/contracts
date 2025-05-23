@@ -8,8 +8,10 @@ use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 
 pub mod ft;
 pub mod market;
+pub mod mt;
 pub mod oracle;
 pub mod storage_management;
+pub mod token;
 
 pub trait ContractController {
     fn contract(&self) -> &Contract;

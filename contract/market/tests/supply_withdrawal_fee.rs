@@ -25,7 +25,7 @@ async fn supply_withdrawal_fee_flat() {
     eprintln!("Sleeping 10s...");
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let supply_user_balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let supply_user_balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     let yield_before = c
         .get_static_yield(protocol_yield_user.id())
         .await
@@ -34,7 +34,7 @@ async fn supply_withdrawal_fee_flat() {
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
 
-    let supply_user_balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let supply_user_balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     let yield_after = u128::from(
         c.get_static_yield(protocol_yield_user.id())
             .await
@@ -76,7 +76,7 @@ async fn supply_withdrawal_fee_expired() {
     eprintln!("Sleeping 10s...");
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let supply_user_balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let supply_user_balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     let yield_before = c
         .get_static_yield(protocol_yield_user.id())
         .await
@@ -85,7 +85,7 @@ async fn supply_withdrawal_fee_expired() {
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
 
-    let supply_user_balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let supply_user_balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     let yield_after = u128::from(
         c.get_static_yield(protocol_yield_user.id())
             .await

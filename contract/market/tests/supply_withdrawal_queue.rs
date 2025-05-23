@@ -11,7 +11,7 @@ async fn successful_withdrawal() {
 
     c.supply(&supply_user, 10_000).await;
 
-    let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
@@ -23,7 +23,7 @@ async fn successful_withdrawal() {
         },
     );
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     assert_eq!(
         balance_before + 10_000,
         balance_after,
@@ -43,7 +43,7 @@ async fn unsuccessful_withdrawal() {
     c.collateralize(&borrow_user, 20_000).await;
     c.borrow(&borrow_user, 5_000).await;
 
-    let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
@@ -55,7 +55,7 @@ async fn unsuccessful_withdrawal() {
         },
     );
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     assert_eq!(
         balance_before, balance_after,
         "Supply user does not receive anything"
@@ -102,7 +102,7 @@ async fn supply_withdrawal_after_storage_unregister() {
 
     // supply_user_2 deletes his token account
     supply_user_2
-        .call(c.borrow_asset.contract.id(), "patch_storage_unregister")
+        .call(c.borrow_asset.contract().id(), "patch_storage_unregister")
         .args_json(json!({"force": true}))
         .deposit(NearToken::from_yoctonear(1))
         .transact()
@@ -112,11 +112,11 @@ async fn supply_withdrawal_after_storage_unregister() {
         .unwrap();
 
     // First one should fail
-    let balance_before = c.borrow_asset.ft_balance_of(supply_user_2.id()).await.0;
+    let balance_before = c.borrow_asset.balance_of(supply_user_2.id()).await;
     assert_eq!(balance_before, 0);
     let result = c.execute_next_supply_withdrawal_request(&supply_user).await;
     eprintln!("{result:#?}");
-    let balance_after = c.borrow_asset.ft_balance_of(supply_user_2.id()).await.0;
+    let balance_after = c.borrow_asset.balance_of(supply_user_2.id()).await;
 
     assert_eq!(balance_after, 0, "Should fail to transfer after unregister");
 
@@ -129,9 +129,9 @@ async fn supply_withdrawal_after_storage_unregister() {
     );
     assert_eq!(status.length, 1);
 
-    let balance_before = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset.ft_balance_of(supply_user.id()).await.0;
+    let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     assert_eq!(balance_before + 10_000, balance_after);
     let status = c.get_supply_withdrawal_queue_status().await;
     assert!(status.depth.is_zero());
