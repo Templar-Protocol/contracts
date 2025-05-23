@@ -8,20 +8,18 @@ use templar_common::{
 
 #[tokio::test]
 async fn fast_borrow_is_not_free() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_interest_rate_strategy =
-            InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
-        c.borrow_origination_fee = Fee::zero();
-        c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-            divisor: (2 * 60 * 1000).into(), // 120 seconds
-        };
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (2 * 60 * 1000).into(), // 120 seconds
+            };
+        })
+    );
 
     let snapshot_len_before = c.get_finalized_snapshots_len().await;
 

@@ -13,17 +13,15 @@ async fn success_above_minimum_initial_collateral_ratio(
     #[case] minimum: Decimal,
     #[case] initial: Decimal,
 ) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_mcr = minimum;
-        c.borrow_mcr_initial = initial;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = minimum;
+            c.borrow_mcr_initial = initial;
+        })
+    );
 
     c.supply(&supply_user, 10_000).await;
     c.collateralize(
@@ -46,17 +44,15 @@ async fn fail_below_minimum_initial_collateral_ratio(
     #[case] minimum: Decimal,
     #[case] initial: Decimal,
 ) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_mcr = minimum;
-        c.borrow_mcr_initial = initial;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = minimum;
+            c.borrow_mcr_initial = initial;
+        })
+    );
 
     c.supply(&supply_user, 10_000).await;
     c.collateralize(
@@ -77,17 +73,15 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
     #[case] minimum: Decimal,
     #[case] initial: Decimal,
 ) {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_origination_fee = Fee::zero();
-        c.borrow_mcr = minimum;
-        c.borrow_mcr_initial = initial;
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = minimum;
+            c.borrow_mcr_initial = initial;
+        })
+    );
 
     c.supply(&supply_user, 10_000).await;
     c.collateralize(

@@ -1,30 +1,27 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::wildcard_imports)]
 
 use near_sdk::{json_types::U64, Gas};
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
     number::Decimal, time_chunk::TimeChunkConfiguration,
 };
-use test_utils::{setup_everything, SetupEverything};
+use test_utils::*;
 
 #[allow(clippy::unwrap_used)]
 #[tokio::main]
 async fn main() {
     const ITERATIONS: usize = 128;
 
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        borrow_user_2,
-        ..
-    } = setup_everything(|c| {
-        c.borrow_interest_rate_strategy =
-            InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        c.borrow_origination_fee = Fee::zero();
-        c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: U64(1) };
-    })
-    .await;
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, borrow_user_2, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: U64(1) };
+        })
+    );
 
     c.supply(&supply_user, 120_000).await;
     let harvest_yield_0 = c
