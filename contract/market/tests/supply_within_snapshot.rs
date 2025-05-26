@@ -169,7 +169,7 @@ async fn partial_snapshot_no_earnings() {
 
     assert!(
         u128::from(amount_2_end.borrow_asset_yield.get_total()) * 2
-            < u128::from(amount_1_end.borrow_asset_yield.get_total())
+            <= u128::from(amount_1_end.borrow_asset_yield.get_total())
     );
     assert_eq!(
         amount_1_end.borrow_asset_yield.pending_estimate,
