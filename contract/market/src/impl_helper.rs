@@ -1,20 +1,31 @@
 use near_sdk::{
-    env, json_types::U128, near, require, serde_json, AccountId, Gas, Promise, PromiseError,
-    PromiseResult,
+    env,
+    json_types::U128,
+    near, require,
+    serde_json::{self, json},
+    AccountId, Gas, Promise, PromiseResult,
 };
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     event::MarketEvent,
-    market::{PricePair, WithdrawalResolution},
+    market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
+    price::PricePair,
 };
 
 use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {
+    pub fn price_pair(&self, oracle_response: OracleResponse) -> PricePair {
+        self.configuration
+            .balance_oracle
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+    }
+
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
         if self.supply_position_ref(account_id.clone()).is_none() {
             self.charge_for_storage(
@@ -29,13 +40,18 @@ impl Contract {
         supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         if let Some(ref supply_maximum_amount) = supply_maximum_amount {
             require!(
-                supply_position.inner().get_borrow_asset_deposit() <= *supply_maximum_amount,
+                supply_position.inner().get_borrow_asset_deposit_total() <= *supply_maximum_amount,
                 "New supply position cannot exceed configured supply maximum",
             );
         }
     }
 
-    pub fn execute_collateralize(&mut self, account_id: AccountId, amount: CollateralAssetAmount) {
+    pub fn execute_collateralize(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+        price_pair: &PricePair,
+    ) {
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
         // checks before this function call.
@@ -55,6 +71,10 @@ impl Contract {
             env::panic_str("Cannot add collateral while liquidation locked");
         }
         let proof = borrow_position.accumulate_interest();
+        require!(
+            !borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            "Cannot add collateral when eligible for liquidation",
+        );
         borrow_position.record_collateral_asset_deposit(proof, amount);
     }
 
@@ -63,12 +83,17 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
+        price_pair: &PricePair,
     ) -> BorrowAssetAmount {
         let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
             // No borrow exists: just return the whole amount.
             return amount;
         };
         let proof = borrow_position.accumulate_interest();
+        require!(
+            !borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            "Cannot repay when eligible for liquidation",
+        );
         // Returns the amount that should be returned to the borrower.
         borrow_position.record_repay(proof, amount)
     }
@@ -80,6 +105,8 @@ impl Contract {
         price_pair: &PricePair,
     ) -> CollateralAssetAmount {
         let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
+
+        borrow_position.accumulate_interest();
 
         require!(
             borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
@@ -144,15 +171,12 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        #[callback_result] oracle_response_result: Result<OracleResponse, PromiseError>,
+        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let oracle_response = oracle_response_result
-            .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
-        let price_pair = self
-            .configuration
-            .balance_oracle
-            .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let price_pair = self.price_pair(oracle_response);
+
+        // TODO: accumulate_interest() also creates a snapshot; reorder code to not call this twice.
+        self.market.snapshot();
 
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.get_borrow_asset_available_to_borrow();
@@ -171,11 +195,14 @@ impl Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
+        // accumulate_interest() creates a snapshot, which activates funds to
+        // ensure that we have the maximum amount available to borrow.
         let proof = borrow_position.accumulate_interest();
+
         borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
-            borrow_position.is_within_minimum_initial_collateral_ratio(&price_pair),
+            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
             "New position must exceed initial minimum collateral ratio",
         );
 
@@ -316,6 +343,50 @@ impl Contract {
         }
     }
 
+    // ~3.1 TGas
+    pub const GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
+
+    #[private]
+    pub fn collateralize_transfer_call_01_consume_price(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+        is_mt_transfer_call: bool,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> serde_json::Value {
+        let price_pair = self.price_pair(oracle_response);
+
+        self.execute_collateralize(account_id, amount, &price_pair);
+
+        if is_mt_transfer_call {
+            json!(["0"])
+        } else {
+            json!("0")
+        }
+    }
+
+    // ~3.3 TGas
+    pub const GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
+
+    #[private]
+    pub fn repay_transfer_call_01_consume_price(
+        &mut self,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        is_mt_transfer_call: bool,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> serde_json::Value {
+        let price_pair = self.price_pair(oracle_response);
+
+        let amount = self.execute_repay(account_id, amount, &price_pair);
+
+        if is_mt_transfer_call {
+            json!([amount])
+        } else {
+            json!(amount)
+        }
+    }
+
     // ~3.3 Tgas
     pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE: Gas = Gas::from_tgas(4)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
@@ -376,13 +447,10 @@ impl Contract {
         ));
 
         if is_mt_transfer_call {
-            serde_json::to_value(vec![refund_to_liquidator])
+            json!([refund_to_liquidator])
         } else {
-            serde_json::to_value(refund_to_liquidator)
+            json!(refund_to_liquidator)
         }
-        .unwrap_or_else(|e| {
-            env::panic_str(&format!("Invariant violation: Serialization failure: {e}"))
-        })
     }
 
     // ~7.25 Tgas
@@ -397,11 +465,7 @@ impl Contract {
         amount: CollateralAssetAmount,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let price_pair = self
-            .configuration
-            .balance_oracle
-            .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let price_pair = self.price_pair(oracle_response);
 
         let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
             env::panic_str("No borrower record. Please deposit collateral first.");
@@ -411,7 +475,7 @@ impl Contract {
         borrow_position.record_collateral_asset_withdrawal(proof, amount);
 
         require!(
-            borrow_position.is_within_minimum_collateral_ratio(&price_pair),
+            borrow_position.satisfies_minimum_collateral_ratio(&price_pair),
             "Borrow must still be above MCR after collateral withdrawal.",
         );
 

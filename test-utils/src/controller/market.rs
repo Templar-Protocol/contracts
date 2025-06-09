@@ -13,7 +13,7 @@ use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration},
     number::Decimal,
-    oracle::pyth::OracleResponse,
+    oracle::pyth::{self, OracleResponse},
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -116,7 +116,7 @@ impl MarketController {
         for (i, snapshot) in snapshots.iter().enumerate() {
             eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
             eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
-            eprintln!("\t\tDeposited:\t{}", snapshot.deposited);
+            eprintln!("\t\tDeposited (active):\t{}", snapshot.deposited_active);
             eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed);
             eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
         }
@@ -249,6 +249,17 @@ impl UnifiedMarketController {
             .await
     }
 
+    pub async fn set_collateral_asset_price_exact(&self, price: pyth::Price) -> ExecutionSuccess {
+        eprintln!("Setting collateral asset price...",);
+        self.balance_oracle
+            .set_price(
+                self.balance_oracle.contract().as_account(),
+                self.configuration.balance_oracle.collateral_asset_price_id,
+                price,
+            )
+            .await
+    }
+
     pub async fn set_borrow_asset_price(&self, price: f64) -> ExecutionSuccess {
         eprintln!("Setting borrow asset price...",);
         self.balance_oracle
@@ -256,6 +267,17 @@ impl UnifiedMarketController {
                 self.balance_oracle.contract().as_account(),
                 self.configuration.balance_oracle.borrow_asset_price_id,
                 to_price(price),
+            )
+            .await
+    }
+
+    pub async fn set_borrow_asset_price_exact(&self, price: pyth::Price) -> ExecutionSuccess {
+        eprintln!("Setting borrow asset price...",);
+        self.balance_oracle
+            .set_price(
+                self.balance_oracle.contract().as_account(),
+                self.configuration.balance_oracle.borrow_asset_price_id,
+                price,
             )
             .await
     }
@@ -285,6 +307,25 @@ impl UnifiedMarketController {
                 serde_json::to_string(&DepositMsg::Supply).unwrap(),
             )
             .await
+    }
+
+    pub async fn supply_and_harvest_until_activation(
+        &self,
+        supply_user: &Account,
+        amount: u128,
+    ) -> ExecutionSuccess {
+        let e = self.supply(supply_user, amount).await;
+        while !self
+            .get_supply_position(supply_user.id())
+            .await
+            .unwrap()
+            .get_inactive_deposit()
+            .amount
+            .is_zero()
+        {
+            self.harvest_yield(supply_user, None).await;
+        }
+        e
     }
 
     pub async fn collateralize(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {

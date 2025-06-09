@@ -9,7 +9,8 @@ use test_utils::*;
 async fn successful_withdrawal() {
     setup_test!(extract(c) accounts(supply_user));
 
-    c.supply(&supply_user, 10_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 10_000)
+        .await;
 
     let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
@@ -34,13 +35,12 @@ async fn successful_withdrawal() {
 #[rstest]
 #[tokio::test]
 async fn unsuccessful_withdrawal() {
-    setup_test!(
-        extract(c)
-        accounts(borrow_user, supply_user)
-    );
+    setup_test!(extract(c) accounts(borrow_user, supply_user));
 
-    c.supply(&supply_user, 10_000).await;
-    c.collateralize(&borrow_user, 20_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(&borrow_user, 20_000),
+    );
     c.borrow(&borrow_user, 5_000).await;
 
     let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
@@ -75,10 +75,22 @@ async fn unsuccessful_withdrawal() {
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
-async fn attempt_to_withdraw_more_than_deposit() {
+async fn attempt_to_withdraw_more_than_deposit_inactive() {
     setup_test!(extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
+    c.create_supply_withdrawal_request(&supply_user, 12_000)
+        .await;
+}
+
+#[rstest]
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
+async fn attempt_to_withdraw_more_than_deposit() {
+    setup_test!(extract(c) accounts(supply_user));
+
+    c.supply_and_harvest_until_activation(&supply_user, 10_000)
+        .await;
     c.create_supply_withdrawal_request(&supply_user, 12_000)
         .await;
 }
@@ -87,8 +99,10 @@ async fn attempt_to_withdraw_more_than_deposit() {
 async fn supply_withdrawal_after_storage_unregister() {
     setup_test!(extract(c) accounts(supply_user, supply_user_2));
 
-    c.supply(&supply_user, 10_000).await;
-    c.supply(&supply_user_2, 10_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.supply_and_harvest_until_activation(&supply_user_2, 10_000),
+    );
 
     c.create_supply_withdrawal_request(&supply_user_2, 10_000)
         .await;

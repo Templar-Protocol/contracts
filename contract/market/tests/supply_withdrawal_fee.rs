@@ -20,7 +20,8 @@ async fn supply_withdrawal_fee_flat() {
         })
     );
 
-    c.supply(&supply_user, 1000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 1000)
+        .await;
 
     eprintln!("Sleeping 10s...");
     tokio::time::sleep(Duration::from_secs(10)).await;
@@ -71,7 +72,8 @@ async fn supply_withdrawal_fee_expired() {
         })
     );
 
-    c.supply(&supply_user, 1000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 1000)
+        .await;
 
     eprintln!("Sleeping 10s...");
     tokio::time::sleep(Duration::from_secs(10)).await;

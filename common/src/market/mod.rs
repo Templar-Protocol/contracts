@@ -6,19 +6,25 @@ use near_sdk::{env, near, AccountId};
 use crate::{asset::BorrowAssetAmount, number::Decimal};
 
 mod balance_oracle_configuration;
-pub use balance_oracle_configuration::*;
+pub use balance_oracle_configuration::BalanceOracleConfiguration;
 mod configuration;
-pub use configuration::*;
+pub use configuration::{MarketConfiguration, APY_LIMIT};
 mod external;
 pub use external::*;
 mod r#impl;
 pub use r#impl::*;
 
+pub mod error {
+    pub use super::balance_oracle_configuration::error::*;
+    pub use super::configuration::error::*;
+}
+
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowAssetMetrics {
     pub available: BorrowAssetAmount,
-    pub deposited: BorrowAssetAmount,
+    pub deposited_active: BorrowAssetAmount,
+    pub deposited_inactive: BorrowAssetAmount,
     pub borrowed: BorrowAssetAmount,
 }
 

@@ -49,16 +49,30 @@ impl FungibleTokenReceiver for Contract {
             DepositMsg::Collateralize => {
                 let amount = use_collateral_asset();
 
-                self.execute_collateralize(sender_id, amount);
-
-                PromiseOrValue::Value(U128(0))
+                PromiseOrValue::Promise(
+                    self.configuration
+                        .balance_oracle
+                        .retrieve_price_pair()
+                        .then(
+                            self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .collateralize_transfer_call_01_consume_price(
+                                    sender_id, amount, false,
+                                ),
+                        ),
+                )
             }
             DepositMsg::Repay => {
                 let amount = use_borrow_asset();
 
-                let refund = self.execute_repay(sender_id, amount);
-
-                PromiseOrValue::Value(refund.into())
+                PromiseOrValue::Promise(
+                    self.configuration
+                        .balance_oracle
+                        .retrieve_price_pair()
+                        .then(
+                            self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .repay_transfer_call_01_consume_price(sender_id, amount, false),
+                        ),
+                )
             }
             DepositMsg::Liquidate(LiquidateMsg { account_id }) => {
                 let amount = use_borrow_asset();
@@ -89,6 +103,8 @@ impl Nep245Receiver for Contract {
         amounts: Vec<U128>,
         msg: String,
     ) -> PromiseOrValue<Vec<U128>> {
+        // NEP-245: This could be an authorized account ID. We only care about
+        // the actual previous owner.
         let _ = sender_id;
 
         let msg = near_sdk::serde_json::from_str::<DepositMsg>(&msg)
@@ -106,7 +122,7 @@ impl Nep245Receiver for Contract {
         );
 
         let token_id = &token_ids[0];
-        let sender_id = &previous_owner_ids[0];
+        let sender_id = previous_owner_ids[0].clone();
         let amount = amounts[0];
 
         let use_borrow_asset = || {
@@ -137,23 +153,37 @@ impl Nep245Receiver for Contract {
             DepositMsg::Supply => {
                 let amount = use_borrow_asset();
 
-                self.execute_supply(sender_id.clone(), amount);
+                self.execute_supply(sender_id, amount);
 
                 PromiseOrValue::Value(vec![U128(0)])
             }
             DepositMsg::Collateralize => {
                 let amount = use_collateral_asset();
 
-                self.execute_collateralize(sender_id.clone(), amount);
-
-                PromiseOrValue::Value(vec![U128(0)])
+                PromiseOrValue::Promise(
+                    self.configuration
+                        .balance_oracle
+                        .retrieve_price_pair()
+                        .then(
+                            self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .collateralize_transfer_call_01_consume_price(
+                                    sender_id, amount, true,
+                                ),
+                        ),
+                )
             }
             DepositMsg::Repay => {
                 let amount = use_borrow_asset();
 
-                let refund = self.execute_repay(sender_id.clone(), amount);
-
-                PromiseOrValue::Value(vec![refund.into()])
+                PromiseOrValue::Promise(
+                    self.configuration
+                        .balance_oracle
+                        .retrieve_price_pair()
+                        .then(
+                            self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .repay_transfer_call_01_consume_price(sender_id, amount, true),
+                        ),
+                )
             }
             DepositMsg::Liquidate(LiquidateMsg { account_id }) => {
                 let amount = use_borrow_asset();
@@ -165,10 +195,7 @@ impl Nep245Receiver for Contract {
                         .then(
                             self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
                                 .liquidate_transfer_call_01_consume_oracle_response(
-                                    sender_id.clone(),
-                                    account_id,
-                                    amount,
-                                    true,
+                                    sender_id, account_id, amount, true,
                                 ),
                         ),
                 )

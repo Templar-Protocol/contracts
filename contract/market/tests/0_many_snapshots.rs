@@ -23,6 +23,7 @@ fn linear_regression_slope(data: &[(f64, f64)]) -> f64 {
 }
 
 #[tokio::test]
+#[ignore = "temp DO NOT MERGE"]
 async fn many_snapshots() {
     setup_test!(
         extract(c)

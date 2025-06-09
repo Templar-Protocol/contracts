@@ -1,11 +1,8 @@
-use std::marker::PhantomData;
-
 use near_sdk::{near, AccountId, Gas, Promise};
 
 use crate::{
-    asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAssetAmount},
-    number::Decimal,
-    oracle::pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
+    oracle::pyth::{ext_pyth, OracleResponse, PriceIdentifier},
+    price::PricePair,
 };
 
 #[derive(Clone, Debug)]
@@ -55,15 +52,7 @@ impl BalanceOracleConfiguration {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Price<T: AssetClass> {
-    _asset: PhantomData<T>,
-    price: u128,
-    confidence: u128,
-    power_of_10: Decimal,
-}
-
-mod error {
+pub mod error {
     use thiserror::Error;
 
     #[derive(Clone, Debug, Error)]
@@ -72,105 +61,6 @@ mod error {
         #[error("Missing price")]
         MissingPrice,
         #[error(transparent)]
-        PriceData(#[from] PriceDataError),
-    }
-
-    #[derive(Clone, Debug, Error)]
-    #[error("Bad price data: {0}")]
-    pub enum PriceDataError {
-        #[error("Reported negative price")]
-        NegativePrice,
-        #[error("Confidence interval too large")]
-        ConfidenceIntervalTooLarge,
-        #[error("Exponent too large")]
-        ExponentTooLarge,
-    }
-}
-
-// Maximum number of fully-representable whole digits in 384 bits: floor(log_10(2^384)) = 115
-// Decimal digits: floor(128 / log_2(10)) = 38
-const MAXIMUM_POSITIVE_EXPONENT: i32 = 115 - 38;
-
-fn from_pyth_price<T: AssetClass>(
-    pyth_price: &pyth::Price,
-    decimals: i32,
-) -> Result<Price<T>, error::PriceDataError> {
-    let Ok(price) = u64::try_from(pyth_price.price.0) else {
-        return Err(error::PriceDataError::NegativePrice);
-    };
-
-    if pyth_price.conf.0 >= price {
-        return Err(error::PriceDataError::ConfidenceIntervalTooLarge);
-    }
-
-    if pyth_price.expo > MAXIMUM_POSITIVE_EXPONENT {
-        return Err(error::PriceDataError::ExponentTooLarge);
-    }
-
-    // TODO: If price falls below minimum representation, it will get truncated to zero.
-    // Is this okay?
-
-    Ok(Price {
-        _asset: PhantomData,
-        price: u128::from(price),
-        confidence: u128::from(pyth_price.conf.0),
-        power_of_10: Decimal::TEN.pow(pyth_price.expo - decimals),
-    })
-}
-
-impl<T: AssetClass> Price<T> {
-    pub fn upper_bound(&self) -> Decimal {
-        (self.price + self.confidence) * self.power_of_10
-    }
-
-    pub fn lower_bound(&self) -> Decimal {
-        (self.price - self.confidence) * self.power_of_10
-    }
-
-    pub fn value_optimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        Decimal::from(amount) * self.upper_bound()
-    }
-
-    pub fn value_pessimistic(&self, amount: FungibleAssetAmount<T>) -> Decimal {
-        Decimal::from(amount) * self.lower_bound()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct PricePair {
-    pub collateral_asset_price: Price<CollateralAsset>,
-    pub borrow_asset_price: Price<BorrowAsset>,
-}
-
-impl PricePair {
-    /// # Errors
-    ///
-    /// - If the price data are invalid.
-    pub fn new(
-        collateral_price: &pyth::Price,
-        collateral_decimals: i32,
-        borrow_price: &pyth::Price,
-        borrow_decimals: i32,
-    ) -> Result<Self, error::PriceDataError> {
-        Ok(Self {
-            collateral_asset_price: from_pyth_price(collateral_price, collateral_decimals)?,
-            borrow_asset_price: from_pyth_price(borrow_price, borrow_decimals)?,
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn maximum_positive_exponent() {
-        let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT);
-    }
-
-    #[test]
-    #[should_panic = "arithmetic operation overflow"]
-    fn maximum_positive_exponent_overflow() {
-        let _ = Decimal::TEN.pow(MAXIMUM_POSITIVE_EXPONENT + 1);
+        PriceData(#[from] crate::price::error::PriceDataError),
     }
 }

@@ -5,11 +5,17 @@ use test_utils::*;
 async fn cannot_borrow_untracked_funds() {
     setup_test!(extract(c) accounts(borrow_user, supply_user));
 
-    c.supply(&supply_user, 10_000).await;
-    c.borrow_asset
-        .transfer(&supply_user, c.market.contract().id(), 10_000)
-        .await;
-    c.collateralize(&borrow_user, 20_000).await;
+    tokio::join!(
+        async {
+            c.supply_and_harvest_until_activation(&supply_user, 10_000)
+                .await;
+            c.borrow_asset
+                .transfer(&supply_user, c.contract().id(), 10_000)
+                .await;
+        },
+        c.collateralize(&borrow_user, 20_000),
+    );
+
     c.borrow(&borrow_user, 12_000).await;
 }
 
@@ -17,11 +23,16 @@ async fn cannot_borrow_untracked_funds() {
 async fn can_withdraw_untracked_funds() {
     setup_test!(extract(c) accounts(borrow_user, supply_user));
 
-    c.supply(&supply_user, 10_000).await;
-    c.borrow_asset
-        .transfer(&supply_user, c.market.contract().id(), 8_000)
-        .await;
-    c.collateralize(&borrow_user, 20_000).await;
+    tokio::join!(
+        async {
+            c.supply_and_harvest_until_activation(&supply_user, 10_000)
+                .await;
+            c.borrow_asset
+                .transfer(&supply_user, c.contract().id(), 8_000)
+                .await;
+        },
+        c.collateralize(&borrow_user, 20_000),
+    );
     c.borrow(&borrow_user, 8_000).await;
 
     let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;

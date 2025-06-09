@@ -8,10 +8,11 @@ use crate::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
+    price::{PricePair, Valuation},
     time_chunk::TimeChunkConfiguration,
 };
 
-use super::{BalanceOracleConfiguration, PricePair, YieldWeights};
+use super::{BalanceOracleConfiguration, YieldWeights};
 
 /// Reject >10,000,000% APY interest rates as misconfigurations.
 /// This also guarantees a reasonable upper-limit to interest rates to help avoid overflows.
@@ -106,7 +107,7 @@ impl MarketConfiguration {
             return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
         }
 
-        if self.borrow_mcr_initial < 1u32 {
+        if self.borrow_mcr_initial < 1u32 || self.borrow_mcr_initial < self.borrow_mcr {
             return Err(error::out_of_bounds("borrow_mcr_initial"));
         }
 
@@ -143,7 +144,7 @@ impl MarketConfiguration {
         price_pair: &PricePair,
         block_timestamp_ms: u64,
     ) -> BorrowStatus {
-        if !self.is_within_minimum_collateral_ratio(borrow_position, price_pair) {
+        if !self.satisfies_minimum_collateral_ratio(borrow_position, price_pair) {
             return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
         }
 
@@ -168,24 +169,24 @@ impl MarketConfiguration {
             .is_none_or(|duration_ms| duration_ms <= maximum_duration_ms)
     }
 
-    pub fn is_within_minimum_initial_collateral_ratio(
+    pub fn satisfies_minimum_initial_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
         oracle_price_proof: &PricePair,
     ) -> bool {
-        is_within_mcr(
-            &self.borrow_mcr_initial,
+        satisfies_minimum_collateral_ratio(
+            self.borrow_mcr_initial,
             borrow_position,
             oracle_price_proof,
         )
     }
 
-    pub fn is_within_minimum_collateral_ratio(
+    pub fn satisfies_minimum_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
         oracle_price_proof: &PricePair,
     ) -> bool {
-        is_within_mcr(&self.borrow_mcr, borrow_position, oracle_price_proof)
+        satisfies_minimum_collateral_ratio(self.borrow_mcr, borrow_position, oracle_price_proof)
     }
 
     pub fn minimum_acceptable_liquidation_amount(
@@ -194,22 +195,33 @@ impl MarketConfiguration {
         price_pair: &PricePair,
     ) -> Option<BorrowAssetAmount> {
         ((1u32 - self.liquidation_maximum_spread)
-            * price_pair.collateral_asset_price.value_pessimistic(amount)
-            / price_pair.borrow_asset_price.upper_bound())
+            * Valuation::pessimistic(amount, &price_pair.collateral).ratio(
+                Valuation::optimistic(BorrowAssetAmount::new(1), &price_pair.borrow),
+            )?)
         .to_u128_ceil()
         .map(BorrowAssetAmount::new)
     }
 }
 
-fn is_within_mcr(mcr: &Decimal, borrow_position: &BorrowPosition, price_pair: &PricePair) -> bool {
-    let scaled_collateral_value = price_pair
-        .collateral_asset_price
-        .value_pessimistic(borrow_position.collateral_asset_deposit);
-    let scaled_borrow_value = price_pair
-        .borrow_asset_price
-        .value_optimistic(borrow_position.get_total_borrow_asset_liability());
+fn satisfies_minimum_collateral_ratio(
+    mcr: Decimal,
+    borrow_position: &BorrowPosition,
+    price_pair: &PricePair,
+) -> bool {
+    let borrow_liability = borrow_position.get_total_borrow_asset_liability();
+    if borrow_liability.is_zero() {
+        return true;
+    }
 
-    scaled_collateral_value >= scaled_borrow_value * mcr
+    let collateral_valuation = Valuation::pessimistic(
+        borrow_position.collateral_asset_deposit,
+        &price_pair.collateral,
+    );
+    let borrow_valuation = Valuation::optimistic(borrow_liability, &price_pair.borrow);
+
+    collateral_valuation
+        .ratio(borrow_valuation)
+        .is_some_and(|ratio| ratio >= mcr)
 }
 
 #[cfg(test)]
@@ -219,12 +231,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_within_mcr() {
+    fn test_satisfies_minimum_collateral_ratio() {
         let mut b = BorrowPosition::new(0);
         b.increase_collateral_asset_deposit(121u128.into());
         b.increase_borrow_asset_principal(InterestAccumulationProof::test(), 100u128.into(), 0);
-        assert!(is_within_mcr(
-            &dec!("1.2"),
+        assert!(satisfies_minimum_collateral_ratio(
+            dec!("1.2"),
             &b,
             &PricePair::new(
                 &pyth::Price {
