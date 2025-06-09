@@ -13,8 +13,11 @@ async fn successful_liquidation_totally_underwater() {
         accounts(borrow_user, supply_user, liquidator_user)
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 500).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 500),
+    );
+
     c.borrow(&borrow_user, 300).await;
 
     // value of collateral will go 500->250

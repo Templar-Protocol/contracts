@@ -94,13 +94,6 @@ pub struct AccumulationRecord<T: AssetClass> {
 }
 
 impl<T: AssetClass> AccumulationRecord<T> {
-    pub fn empty(next_snapshot_index: u32) -> Self {
-        Self {
-            amount: FungibleAssetAmount::zero(),
-            next_snapshot_index,
-        }
-    }
-
     pub fn get_amount(&self) -> FungibleAssetAmount<T> {
         self.amount
     }

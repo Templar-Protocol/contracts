@@ -12,8 +12,10 @@ async fn liquidation_after_expiration() {
         })
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
     c.borrow(&borrow_user, 100).await;
 
     let prices = c.get_prices().await;

@@ -34,7 +34,7 @@ impl Contract {
         supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         if let Some(ref supply_maximum_amount) = supply_maximum_amount {
             require!(
-                supply_position.inner().get_borrow_asset_deposit() <= *supply_maximum_amount,
+                supply_position.inner().get_borrow_asset_deposit_total() <= *supply_maximum_amount,
                 "New supply position cannot exceed configured supply maximum",
             );
         }
@@ -167,6 +167,9 @@ impl Contract {
     ) -> Promise {
         let price_pair = self.price_pair(oracle_response);
 
+        // TODO: accumulate_interest() also creates a snapshot; reorder code to not call this twice.
+        self.market.snapshot();
+
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.get_borrow_asset_available_to_borrow();
         require!(
@@ -184,7 +187,10 @@ impl Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
+        // accumulate_interest() creates a snapshot, which activates funds to
+        // ensure that we have the maximum amount available to borrow.
         let proof = borrow_position.accumulate_interest();
+
         borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
