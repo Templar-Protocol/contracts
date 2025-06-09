@@ -100,6 +100,8 @@ impl Contract {
     ) -> CollateralAssetAmount {
         let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
 
+        borrow_position.accumulate_interest();
+
         require!(
             borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
             "Borrow position is not eligible for liquidation",

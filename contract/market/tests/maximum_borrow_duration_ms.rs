@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use near_sdk::json_types::U64;
 use templar_common::borrow::{BorrowStatus, LiquidationReason};
 use test_utils::*;
@@ -5,7 +7,7 @@ use test_utils::*;
 #[tokio::test]
 async fn liquidation_after_expiration() {
     setup_test!(
-        extract(c, worker)
+        extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
             c.borrow_maximum_duration_ms = Some(U64(1000));
@@ -27,7 +29,7 @@ async fn liquidation_after_expiration() {
 
     assert!(status.is_healthy());
 
-    worker.fast_forward(10).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
 
