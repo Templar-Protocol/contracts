@@ -84,7 +84,7 @@ impl MarketController {
         pub fn harvest_yield(mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
-        #[call(tgas(20))]
+        #[call(tgas(25))]
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
         #[call]
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);

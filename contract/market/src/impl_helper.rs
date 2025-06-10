@@ -443,7 +443,12 @@ impl Contract {
 
         require!(
             borrow_position.satisfies_minimum_collateral_ratio(&price_pair),
-            "Borrow must still be above MCR after collateral withdrawal.",
+            "Borrow position must satisfy MCR after collateral withdrawal.",
+        );
+
+        require!(
+            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
+            "Borrow position must satisfy initial MCR after collateral withdrawal.",
         );
 
         drop(borrow_position);
