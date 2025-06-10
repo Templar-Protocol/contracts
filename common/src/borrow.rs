@@ -147,7 +147,6 @@ impl BorrowPosition {
         amount.split(amount_to_fees);
         self.borrow_asset_fees.remove(amount_to_fees);
 
-        // let amount_to_principal = self.borrow_asset_principal.min(amount);
         let amount_to_principal = {
             let minimum_amount = u128::from(minimum_amount);
             let amount_remaining =
