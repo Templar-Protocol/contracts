@@ -70,8 +70,8 @@ impl<A: AssetClass + PartialOrd, T: Into<FungibleAssetAmount<A>>> TryFrom<(T, Op
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
 pub struct AmountRange<A: AssetClass> {
-    minimum: FungibleAssetAmount<A>,
-    maximum: Option<FungibleAssetAmount<A>>,
+    pub minimum: FungibleAssetAmount<A>,
+    pub maximum: Option<FungibleAssetAmount<A>>,
 }
 
 impl<A: AssetClass + PartialOrd> AmountRange<A> {

@@ -461,7 +461,7 @@ impl<'a> BorrowPositionGuard<'a> {
             .borrow_asset_fees
             .amortize(current_snapshot_interest);
 
-        let borrow_minimum_amount = self.market.configuration.borrow_minimum_amount;
+        let borrow_minimum_amount = self.market.configuration.borrow_range.minimum;
         let liability_reduction = self
             .position
             .reduce_borrow_asset_liability(proof, amount, borrow_minimum_amount)
