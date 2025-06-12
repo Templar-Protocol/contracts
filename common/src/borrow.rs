@@ -283,7 +283,8 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                 clippy::unwrap_used,
                 reason = "Assume accumulated interest will never exceed u128::MAX"
             )]
-            amount: accumulated.to_u128_ceil().unwrap().into(),
+            amount: accumulated.to_u128_floor().unwrap().into(),
+            fraction_as_u128_dividend: accumulated.fractional_part_as_u128_dividend(),
             next_snapshot_index,
         }
     }
