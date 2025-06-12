@@ -1,5 +1,4 @@
 use rstest::rstest;
-use templar_common::asset::FungibleAssetAmount;
 use test_utils::*;
 
 #[rstest]
@@ -14,7 +13,7 @@ async fn supply_within_maximum(
         extract(c)
         accounts(supply_user)
         config(|c| {
-            c.supply_maximum_amount = Some(FungibleAssetAmount::new(supply_maximum));
+            c.supply_range = (1, Some(supply_maximum)).try_into().unwrap();
         })
     );
 
@@ -35,9 +34,9 @@ async fn supply_within_maximum(
 #[case([10_001], 10_000)]
 #[case([1, 100_000], 10_000)]
 #[case([9_001, 500, 500], 10_000)]
-#[case([1], 0)]
+#[case([2], 1)]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: New supply position cannot exceed configured supply maximum"]
+#[should_panic = "Smart contract panicked: New supply position is outside of allowable range"]
 async fn supply_beyond_maximum(
     #[case] deposits: impl IntoIterator<Item = u128>,
     #[case] supply_maximum: u128,
@@ -46,7 +45,7 @@ async fn supply_beyond_maximum(
         extract(c)
         accounts(supply_user)
         config(|c| {
-            c.supply_maximum_amount = Some(FungibleAssetAmount::new(supply_maximum));
+            c.supply_range = (1, Some(supply_maximum)).try_into().unwrap();
         })
     );
 

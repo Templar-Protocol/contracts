@@ -95,6 +95,24 @@ async fn attempt_to_withdraw_more_than_deposit() {
         .await;
 }
 
+#[rstest]
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Withdrawal amount is outside of allowable range"]
+async fn attempt_to_withdraw_outside_configured_range() {
+    setup_test!(
+        extract(c)
+        accounts(supply_user)
+        config(|c| {
+            c.supply_range = (2000, None).try_into().unwrap();
+            c.supply_withdrawal_range = (2000, None).try_into().unwrap();
+        })
+    );
+
+    c.supply_and_harvest_until_activation(&supply_user, 10_000)
+        .await;
+    c.create_supply_withdrawal_request(&supply_user, 1000).await;
+}
+
 #[tokio::test]
 async fn supply_withdrawal_after_storage_unregister() {
     setup_test!(extract(c) accounts(supply_user, supply_user_2));

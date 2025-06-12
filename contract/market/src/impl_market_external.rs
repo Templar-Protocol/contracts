@@ -74,10 +74,6 @@ impl MarketExternalInterface for Contract {
 
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
-        require!(
-            amount >= self.configuration.borrow_minimum_amount,
-            "Borrow amount is smaller than minimum allowed",
-        );
 
         let account_id = env::predecessor_account_id();
 
@@ -93,8 +89,8 @@ impl MarketExternalInterface for Contract {
         };
 
         require!(
-            proposed_amount <= self.configuration.borrow_maximum_amount,
-            "Borrow amount is greater than maximum allowed",
+            self.configuration.borrow_range.contains(proposed_amount),
+            "New borrow position is outside of allowable range",
         );
 
         self.configuration
@@ -182,6 +178,10 @@ impl MarketExternalInterface for Contract {
         require!(
             supply_position.inner().get_borrow_asset_deposit_total() >= amount,
             "Attempt to withdraw more than current deposit",
+        );
+        require!(
+            self.configuration.supply_withdrawal_range.contains(amount),
+            "Withdrawal amount is outside of allowable range",
         );
 
         self.withdrawal_queue.remove(&predecessor);

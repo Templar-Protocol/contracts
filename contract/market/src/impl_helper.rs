@@ -28,16 +28,18 @@ impl Contract {
             );
         }
 
-        let supply_maximum_amount = self.configuration.supply_maximum_amount;
-        let mut supply_position = self.get_or_create_supply_position_guard(account_id);
-        let proof = supply_position.accumulate_yield();
-        supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
-        if let Some(ref supply_maximum_amount) = supply_maximum_amount {
-            require!(
-                supply_position.inner().get_borrow_asset_deposit_total() <= *supply_maximum_amount,
-                "New supply position cannot exceed configured supply maximum",
-            );
-        }
+        let borrow_asset_deposit_total = {
+            let mut supply_position = self.get_or_create_supply_position_guard(account_id);
+            let proof = supply_position.accumulate_yield();
+            supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
+            supply_position.inner().get_borrow_asset_deposit_total()
+        };
+        require!(
+            self.configuration
+                .supply_range
+                .contains(borrow_asset_deposit_total),
+            "New supply position is outside of allowable range",
+        );
     }
 
     pub fn execute_collateralize(
