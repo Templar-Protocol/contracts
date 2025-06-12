@@ -58,7 +58,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         // They should accumulate (very nearly) the same amount of interest regardless.
         while timer.elapsed() < Duration::from_secs(12) {
             tokio::join!(
-                c.apply_interest(&borrow_user_2, None),
+                c.apply_interest(&borrow_user_2, None, None),
                 // No compounding so we get apples-to-apples comparison.
                 // Technically it should be optimal to harvest (and
                 // compound) occasionally throughout the duration of

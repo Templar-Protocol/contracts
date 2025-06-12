@@ -79,7 +79,7 @@ impl MarketController {
         #[call(tgas(300))]
         pub fn borrow(amount: U128);
         #[call(tgas(300))]
-        pub fn apply_interest(snapshot_limit: Option<u32>);
+        pub fn apply_interest(account_id: Option<&AccountId>, snapshot_limit: Option<u32>);
         #[call(tgas(300))]
         pub fn harvest_yield(mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(tgas(20))]
