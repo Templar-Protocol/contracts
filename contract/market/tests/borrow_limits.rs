@@ -95,7 +95,7 @@ async fn withdraw_below_minimum() {
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
-            c.borrow_minimum_amount = 10.into();
+            c.borrow_range = (10, None).try_into().unwrap();
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy = InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
         })
@@ -111,8 +111,7 @@ async fn withdraw_below_minimum() {
         borrow_position_before.get_total_borrow_asset_liability(),
         100.into()
     );
-    let r = c.repay(&borrow_user, 91).await;
-    eprintln!("{r:#?}");
+    c.repay(&borrow_user, 91).await;
     let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(
