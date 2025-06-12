@@ -135,6 +135,7 @@ impl BorrowPosition {
         &mut self,
         _proof: InterestAccumulationProof,
         mut amount: BorrowAssetAmount,
+        minimum_amount: BorrowAssetAmount,
     ) -> Result<LiabilityReduction, error::LiquidationLockError> {
         if self.is_liquidation_locked {
             return Err(error::LiquidationLockError);
@@ -146,7 +147,18 @@ impl BorrowPosition {
         amount.split(amount_to_fees);
         self.borrow_asset_fees.remove(amount_to_fees);
 
-        let amount_to_principal = self.borrow_asset_principal.min(amount);
+        let amount_to_principal = {
+            let minimum_amount = u128::from(minimum_amount);
+            let amount_remaining =
+                u128::from(self.borrow_asset_principal).saturating_sub(u128::from(amount));
+            if amount_remaining > 0 && amount_remaining < minimum_amount {
+                u128::from(self.borrow_asset_principal)
+                    .saturating_sub(minimum_amount)
+                    .into()
+            } else {
+                self.borrow_asset_principal.min(amount)
+            }
+        };
         amount.split(amount_to_principal);
         self.borrow_asset_principal.split(amount_to_principal);
 
@@ -158,7 +170,7 @@ impl BorrowPosition {
         Ok(LiabilityReduction {
             amount_to_fees,
             amount_to_principal,
-            amount_remaining: amount,
+            amount_refund: amount,
         })
     }
 }
@@ -166,7 +178,7 @@ impl BorrowPosition {
 pub struct LiabilityReduction {
     pub amount_to_fees: BorrowAssetAmount,
     pub amount_to_principal: BorrowAssetAmount,
-    pub amount_remaining: BorrowAssetAmount,
+    pub amount_refund: BorrowAssetAmount,
 }
 
 pub mod error {
@@ -449,9 +461,10 @@ impl<'a> BorrowPositionGuard<'a> {
             .borrow_asset_fees
             .amortize(current_snapshot_interest);
 
+        let borrow_minimum_amount = self.market.configuration.borrow_minimum_amount;
         let liability_reduction = self
             .position
-            .reduce_borrow_asset_liability(proof, amount)
+            .reduce_borrow_asset_liability(proof, amount, borrow_minimum_amount)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         self.market
@@ -474,7 +487,7 @@ impl<'a> BorrowPositionGuard<'a> {
         }
         .emit();
 
-        liability_reduction.amount_remaining
+        liability_reduction.amount_refund
     }
 
     pub fn accumulate_interest_partial(&mut self, snapshot_limit: u32) {

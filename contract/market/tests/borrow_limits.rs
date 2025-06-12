@@ -1,4 +1,5 @@
 use rstest::rstest;
+use templar_common::{fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal};
 use test_utils::*;
 
 #[rstest]
@@ -88,4 +89,37 @@ async fn borrow_above_maximum(
     for amount in amounts {
         c.borrow(&borrow_user, *amount).await;
     }
+}
+
+#[rstest]
+#[tokio::test]
+async fn withdraw_below_minimum() {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_minimum_amount = 10.into();
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_interest_rate_strategy = InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
+    c.borrow(&borrow_user, 100).await;
+    let borrow_position_before = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    assert_eq!(
+        borrow_position_before.get_total_borrow_asset_liability(),
+        100.into()
+    );
+    let r = c.repay(&borrow_user, 91).await;
+    eprintln!("{r:#?}");
+    let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
+
+    assert_eq!(
+        borrow_position_after.get_total_borrow_asset_liability(),
+        10.into(),
+    );
 }
