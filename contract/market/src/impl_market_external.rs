@@ -254,7 +254,7 @@ impl MarketExternalInterface for Contract {
 
         require!(
             account_id == predecessor || !matches!(mode, HarvestYieldMode::Compounding),
-            "Only the account owner can compound yield",
+            "Only the position holder can compound yield",
         );
 
         let Some(mut supply_position) = self.supply_position_guard(account_id) else {
