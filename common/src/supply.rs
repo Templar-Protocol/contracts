@@ -1,4 +1,7 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    fmt::Display,
+    ops::{Deref, DerefMut},
+};
 
 use near_sdk::{env, json_types::U64, near, require, AccountId};
 
@@ -17,45 +20,90 @@ pub struct YieldAccumulationProof(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub struct InactiveDeposit {
-    pub amount: BorrowAssetAmount,
+pub struct Deposit {
+    pub active: BorrowAssetAmount,
+    pub inactive: BorrowAssetAmount,
     pub activate_at_snapshot_index: u32,
+}
+
+impl Deposit {
+    pub fn total(&self) -> BorrowAssetAmount {
+        let mut total = self.active;
+        total.join(self.inactive);
+        total
+    }
+
+    pub fn activate_until(&mut self, until_snapshot_index: u32) {
+        if until_snapshot_index > self.activate_at_snapshot_index {
+            self.active.join(self.inactive);
+            self.inactive = BorrowAssetAmount::zero();
+            self.activate_at_snapshot_index = until_snapshot_index;
+        }
+    }
+}
+
+impl Deposit {
+    pub fn new(snapshot_index: u32) -> Self {
+        Self {
+            active: 0.into(),
+            inactive: 0.into(),
+            activate_at_snapshot_index: snapshot_index,
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum SupplyPositionStatus {
+    #[default]
+    Ready,
+    Withdrawing,
+}
+
+impl Display for SupplyPositionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                SupplyPositionStatus::Ready => "Ready",
+                SupplyPositionStatus::Withdrawing => "Withdrawing",
+            }
+        )
+    }
+}
+
+pub mod error {
+    use thiserror::Error;
+
+    use super::SupplyPositionStatus;
+
+    #[derive(Debug, Error)]
+    #[error("This operation cannot be performed during `{0}` status")]
+    pub struct InvalidOperationDuringStatusError(pub SupplyPositionStatus);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
+    status: SupplyPositionStatus,
     started_at_block_timestamp_ms: Option<U64>,
-    borrow_asset_deposit_active: BorrowAssetAmount,
-    inactive_deposit: InactiveDeposit,
+    borrow_asset_deposit: Deposit,
     pub borrow_asset_yield: Accumulator<BorrowAsset>,
 }
 
 impl SupplyPosition {
     pub fn new(current_snapshot_index: u32) -> Self {
         Self {
+            status: SupplyPositionStatus::Ready,
             started_at_block_timestamp_ms: None,
-            borrow_asset_deposit_active: 0.into(),
-            inactive_deposit: InactiveDeposit {
-                amount: 0.into(),
-                activate_at_snapshot_index: current_snapshot_index,
-            },
+            borrow_asset_deposit: Deposit::new(current_snapshot_index),
             borrow_asset_yield: Accumulator::new(current_snapshot_index),
         }
     }
 
-    pub fn get_borrow_asset_deposit_active(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposit_active
-    }
-
-    pub fn get_inactive_deposit(&self) -> InactiveDeposit {
-        self.inactive_deposit
-    }
-
-    pub fn get_borrow_asset_deposit_total(&self) -> BorrowAssetAmount {
-        let mut a = self.borrow_asset_deposit_active;
-        a.join(self.inactive_deposit.amount);
-        a
+    pub fn get_deposit(&self) -> &Deposit {
+        &self.borrow_asset_deposit
     }
 
     pub fn get_started_at_block_timestamp_ms(&self) -> Option<u64> {
@@ -63,8 +111,7 @@ impl SupplyPosition {
     }
 
     pub fn exists(&self) -> bool {
-        !self.borrow_asset_deposit_active.is_zero()
-            || !self.inactive_deposit.amount.is_zero()
+        !self.borrow_asset_deposit.total().is_zero()
             || !self.borrow_asset_yield.get_total().is_zero()
     }
 }
@@ -88,18 +135,33 @@ impl<M> SupplyPositionRef<M> {
         &self.account_id
     }
 
+    pub fn total_deposit(&self) -> BorrowAssetAmount {
+        self.position.borrow_asset_deposit.total()
+    }
+
+    pub fn total_yield(&self) -> BorrowAssetAmount {
+        self.position.borrow_asset_yield.get_total()
+    }
+
     pub fn inner(&self) -> &SupplyPosition {
         &self.position
     }
 }
 
 impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
+    pub fn is_within_allowable_range(&self) -> bool {
+        self.market
+            .configuration
+            .supply_range
+            .contains(self.position.borrow_asset_deposit.total())
+    }
+
     pub fn with_pending_yield_estimate(&mut self) {
         let mut pending_estimate = self.calculate_yield(u32::MAX).get_amount();
         if !self.market.current_snapshot.deposited_active.is_zero() {
             let yield_in_current_snapshot =
                 u128::from(self.market.current_snapshot.yield_distribution)
-                    * u128::from(self.position.get_borrow_asset_deposit_active())
+                    * u128::from(self.position.borrow_asset_deposit.active)
                     / u128::from(self.market.current_snapshot.deposited_active);
             pending_estimate.join(yield_in_current_snapshot.into());
         }
@@ -109,8 +171,7 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
     pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
         let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
 
-        let mut amount = u128::from(self.position.get_borrow_asset_deposit_active());
-        let amount_inactive = self.position.get_inactive_deposit();
+        let mut amount = u128::from(self.position.borrow_asset_deposit.active);
         let mut accumulated = Decimal::ZERO;
 
         #[allow(
@@ -125,8 +186,12 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             .skip(next_snapshot_index as usize)
             .take(snapshot_limit as usize)
         {
-            if i == amount_inactive.activate_at_snapshot_index as usize {
-                amount += u128::from(amount_inactive.amount);
+            if i == self
+                .position
+                .borrow_asset_deposit
+                .activate_at_snapshot_index as usize
+            {
+                amount += u128::from(self.position.borrow_asset_deposit.inactive);
             }
 
             if !snapshot.deposited_active.is_zero() {
@@ -182,18 +247,9 @@ impl<'a> SupplyPositionGuard<'a> {
         self.market.snapshot();
 
         let accumulation_record = self.calculate_yield(snapshot_limit);
-        if accumulation_record.next_snapshot_index
-            > self.position.inactive_deposit.activate_at_snapshot_index
-        {
-            // Moved to the next snapshot.
-            let amount_inactive = self.position.inactive_deposit.amount;
-            self.position.inactive_deposit.amount = 0.into();
-            self.position
-                .borrow_asset_deposit_active
-                .join(amount_inactive);
-            self.position.inactive_deposit.activate_at_snapshot_index =
-                accumulation_record.next_snapshot_index;
-        }
+        self.position
+            .borrow_asset_deposit
+            .activate_until(accumulation_record.next_snapshot_index);
 
         if !accumulation_record.amount.is_zero() {
             MarketEvent::YieldAccumulated {
@@ -213,30 +269,54 @@ impl<'a> SupplyPositionGuard<'a> {
         YieldAccumulationProof(())
     }
 
-    pub fn record_withdrawal(
+    /// # Errors
+    ///
+    /// - If the position is not marked as withdrawing.
+    pub fn try_end_withdrawal(&mut self) -> Result<(), error::InvalidOperationDuringStatusError> {
+        if self.position.status != SupplyPositionStatus::Withdrawing {
+            return Err(error::InvalidOperationDuringStatusError(
+                self.position.status,
+            ));
+        }
+
+        self.position.status = SupplyPositionStatus::Ready;
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    ///  - If the position is already marked as withdrawing.
+    pub fn try_start_withdrawal(
         &mut self,
         _proof: YieldAccumulationProof,
         mut amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
-    ) -> WithdrawalResolution {
-        if self.position.inactive_deposit.amount > amount {
-            self.position.inactive_deposit.amount.split(amount);
+    ) -> Result<WithdrawalResolution, error::InvalidOperationDuringStatusError> {
+        if self.position.status != SupplyPositionStatus::Ready {
+            return Err(error::InvalidOperationDuringStatusError(
+                self.position.status,
+            ));
+        }
+
+        self.position.status = SupplyPositionStatus::Withdrawing;
+
+        if self.position.borrow_asset_deposit.inactive > amount {
+            self.position.borrow_asset_deposit.inactive.split(amount);
             self.market.borrow_asset_deposited_inactive.split(amount);
         } else {
-            let amount_inactive = self.position.inactive_deposit.amount;
+            let amount_inactive = self.position.borrow_asset_deposit.inactive;
             let mut amount_remaining = amount;
             amount_remaining.split(amount_inactive);
             self.market
                 .borrow_asset_deposited_inactive
                 .split(amount_inactive);
-            self.position.inactive_deposit.amount = 0.into();
+            self.position.borrow_asset_deposit.inactive = 0.into();
 
             self.position
-                .borrow_asset_deposit_active
+                .borrow_asset_deposit
+                .active
                 .split(amount_remaining)
-                .unwrap_or_else(|| {
-                    env::panic_str("Supply position `borrow_asset_deposit_active` underflow")
-                });
+                .unwrap_or_else(|| env::panic_str("Supply position `deposit.active` underflow"));
             self.market
                 .borrow_asset_deposited_active
                 .split(amount_remaining)
@@ -272,35 +352,62 @@ impl<'a> SupplyPositionGuard<'a> {
         }
         .emit();
 
-        WithdrawalResolution {
+        Ok(WithdrawalResolution {
             account_id: self.account_id.clone(),
             amount_to_account: amount,
             amount_to_fees,
-        }
+        })
     }
 
-    pub fn record_deposit(
+    /// # Errors
+    ///
+    /// - If the position is currently withdrawing.
+    pub fn try_record_deposit(
+        &mut self,
+        proof: YieldAccumulationProof,
+        amount: BorrowAssetAmount,
+        block_timestamp_ms: u64,
+    ) -> Result<(), error::InvalidOperationDuringStatusError> {
+        if self.position.status != SupplyPositionStatus::Ready {
+            return Err(error::InvalidOperationDuringStatusError(
+                self.position.status,
+            ));
+        }
+
+        self.record_deposit_inner(proof, amount, block_timestamp_ms);
+        Ok(())
+    }
+
+    // pub fn record_withdrawal_refund(
+    //     &mut self,
+    //     proof: YieldAccumulationProof,
+    //     amount: BorrowAssetAmount,
+    //     block_timestamp_ms: u64,
+    // ) {
+    //     self.record_deposit_inner(proof, amount, block_timestamp_ms);
+    // }
+
+    fn record_deposit_inner(
         &mut self,
         _proof: YieldAccumulationProof,
         amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
     ) {
         if self.position.started_at_block_timestamp_ms.is_none()
-            || self.position.borrow_asset_deposit_active.is_zero()
+            || self.position.borrow_asset_deposit.active.is_zero()
         {
             self.position.started_at_block_timestamp_ms = Some(block_timestamp_ms.into());
         }
 
         self.position
-            .inactive_deposit
-            .amount
+            .borrow_asset_deposit
+            .inactive
             .join(amount)
-            .unwrap_or_else(|| {
-                env::panic_str("Supply position `borrow_asset_deposit_inactive` overflow")
-            });
+            .unwrap_or_else(|| env::panic_str("Supply position `deposit.inactive` overflow"));
 
-        self.position.inactive_deposit.activate_at_snapshot_index =
-            self.market.finalized_snapshots.len() + 1;
+        self.position
+            .borrow_asset_deposit
+            .activate_at_snapshot_index = self.market.finalized_snapshots.len() + 1;
 
         self.market
             .borrow_asset_deposited_inactive

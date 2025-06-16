@@ -160,14 +160,9 @@ impl MarketExternalInterface for Contract {
             "Amount to withdraw must be greater than zero",
         );
         let predecessor = env::predecessor_account_id();
-        let Some(supply_position) =
-            self.supply_position_ref(predecessor.clone())
-                .filter(|supply_position| {
-                    !supply_position
-                        .inner()
-                        .get_borrow_asset_deposit_total()
-                        .is_zero()
-                })
+        let Some(supply_position) = self
+            .supply_position_ref(predecessor.clone())
+            .filter(|supply_position| !supply_position.total_deposit().is_zero())
         else {
             env::panic_str("Supply position does not exist");
         };
@@ -176,7 +171,7 @@ impl MarketExternalInterface for Contract {
         // This check really only ensures that the `depth` reported by
         // get_supply_withdrawal_queue_status() is realistically accurate.
         require!(
-            supply_position.inner().get_borrow_asset_deposit_total() >= amount,
+            supply_position.total_deposit() >= amount,
             "Attempt to withdraw more than current deposit",
         );
         require!(
@@ -253,9 +248,15 @@ impl MarketExternalInterface for Contract {
             HarvestYieldMode::Compounding => {
                 let proof = supply_position.accumulate_yield();
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
-                let total_yield = supply_position.inner().borrow_asset_yield.get_total();
+                let total_yield = supply_position.total_yield();
                 supply_position.record_yield_withdrawal(total_yield);
-                supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
+                supply_position
+                    .try_record_deposit(proof, total_yield, env::block_timestamp_ms())
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+                require!(
+                    supply_position.is_within_allowable_range(),
+                    "New supply position is outside of allowable range",
+                );
                 return total_yield;
             }
             HarvestYieldMode::SnapshotLimit(limit) => {

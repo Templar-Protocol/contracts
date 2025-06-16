@@ -1,4 +1,5 @@
 use rstest::rstest;
+use templar_common::market::HarvestYieldMode;
 use test_utils::*;
 
 #[rstest]
@@ -24,10 +25,7 @@ async fn supply_within_maximum(
     }
 
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-    assert_eq!(
-        u128::from(supply_position.get_borrow_asset_deposit_total()),
-        sum,
-    );
+    assert_eq!(u128::from(supply_position.get_deposit().total()), sum);
 }
 
 #[rstest]
@@ -55,4 +53,28 @@ async fn supply_beyond_maximum(
             o.clone().into_result().unwrap();
         }
     }
+}
+
+#[tokio::test]
+#[should_panic = "Smart contract panicked: New supply position is outside of allowable range"]
+async fn harvest_yield_beyond_maximum() {
+    const LIMIT: u128 = 1_000_000;
+    setup_test!(
+        extract(c)
+        accounts(supply_user, borrow_user)
+        config(|c| {
+            c.supply_range = (LIMIT, Some(LIMIT)).try_into().unwrap();
+        })
+    );
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, LIMIT),
+        c.collateralize(&borrow_user, LIMIT * 2),
+    );
+
+    c.borrow(&borrow_user, LIMIT * 4 / 5).await;
+    c.repay(&borrow_user, LIMIT).await;
+
+    c.harvest_yield(&supply_user, Some(HarvestYieldMode::Compounding))
+        .await;
 }

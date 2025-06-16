@@ -311,8 +311,8 @@ impl UnifiedMarketController {
             .get_supply_position(supply_user.id())
             .await
             .unwrap()
-            .get_inactive_deposit()
-            .amount
+            .get_deposit()
+            .inactive
             .is_zero()
         {
             self.harvest_yield(supply_user, None).await;

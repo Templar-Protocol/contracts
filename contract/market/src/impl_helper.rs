@@ -28,16 +28,13 @@ impl Contract {
             );
         }
 
-        let borrow_asset_deposit_total = {
-            let mut supply_position = self.get_or_create_supply_position_guard(account_id);
-            let proof = supply_position.accumulate_yield();
-            supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
-            supply_position.inner().get_borrow_asset_deposit_total()
-        };
+        let mut supply_position = self.get_or_create_supply_position_guard(account_id);
+        let proof = supply_position.accumulate_yield();
+        supply_position
+            .try_record_deposit(proof, amount, env::block_timestamp_ms())
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
         require!(
-            self.configuration
-                .supply_range
-                .contains(borrow_asset_deposit_total),
+            supply_position.is_within_allowable_range(),
             "New supply position is outside of allowable range",
         );
     }
@@ -294,6 +291,14 @@ impl Contract {
         }
         .emit();
 
+        if let Some(mut supply_position) =
+            self.supply_position_guard(withdrawal_resolution.account_id.clone())
+        {
+            supply_position
+                .try_end_withdrawal()
+                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        }
+
         if withdrawal_succeeded || expected_success {
             // TODO: If this panics, this is BIG BAD, as it means there is
             // some way to unlock the queue while a withdrawal is in-flight.
@@ -334,7 +339,9 @@ impl Contract {
                 let proof = supply_position.accumulate_yield();
                 let mut amount = withdrawal_resolution.amount_to_account;
                 amount.join(withdrawal_resolution.amount_to_fees);
-                supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
+                supply_position
+                    .try_record_deposit(proof, amount, env::block_timestamp_ms())
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             }
         }
     }

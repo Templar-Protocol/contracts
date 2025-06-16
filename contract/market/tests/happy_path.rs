@@ -52,7 +52,7 @@ async fn test_happy() {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_inactive_deposit().amount),
+        u128::from(supply_position.get_deposit().inactive),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -62,8 +62,8 @@ async fn test_happy() {
         .get_supply_position(supply_user.id())
         .await
         .unwrap()
-        .get_inactive_deposit()
-        .amount
+        .get_deposit()
+        .inactive
         .is_zero()
     {
         c.harvest_yield(&supply_user, None).await;
@@ -72,7 +72,7 @@ async fn test_happy() {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_borrow_asset_deposit_active()),
+        u128::from(supply_position.get_deposit().active),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -226,7 +226,7 @@ async fn test_happy() {
             // Check that supply position is closed.
             {
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert!(supply_position.get_borrow_asset_deposit_active().is_zero());
+                assert!(supply_position.get_deposit().active.is_zero());
             }
         },
         // Protocol yield.

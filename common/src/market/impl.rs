@@ -224,10 +224,7 @@ impl Market {
             self.supply_position_guard(account_id)
                 .and_then(|supply_position| {
                     // Cap withdrawal amount to deposit amount at most.
-                    let amount = supply_position
-                        .inner()
-                        .get_borrow_asset_deposit_total()
-                        .min(requested_amount);
+                    let amount = supply_position.total_deposit().min(requested_amount);
 
                     (!amount.is_zero()).then_some((amount, supply_position))
                 })
@@ -240,8 +237,13 @@ impl Market {
         };
 
         let proof = supply_position.accumulate_yield();
-        let resolution =
-            supply_position.record_withdrawal(proof, amount, env::block_timestamp_ms());
+        let resolution = supply_position
+            .try_start_withdrawal(proof, amount, env::block_timestamp_ms())
+            .unwrap_or_else(|e| {
+                env::panic_str(&format!(
+                    "Invariant violation: Position cannot withdraw: {e}"
+                ))
+            });
 
         Ok(Some(resolution))
     }
