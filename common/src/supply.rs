@@ -378,15 +378,6 @@ impl<'a> SupplyPositionGuard<'a> {
         Ok(())
     }
 
-    // pub fn record_withdrawal_refund(
-    //     &mut self,
-    //     proof: YieldAccumulationProof,
-    //     amount: BorrowAssetAmount,
-    //     block_timestamp_ms: u64,
-    // ) {
-    //     self.record_deposit_inner(proof, amount, block_timestamp_ms);
-    // }
-
     fn record_deposit_inner(
         &mut self,
         _proof: YieldAccumulationProof,
