@@ -67,6 +67,10 @@ impl SupplyPosition {
             || !self.inactive_deposit.amount.is_zero()
             || !self.borrow_asset_yield.get_total().is_zero()
     }
+
+    pub fn can_be_removed(&self) -> bool {
+        !self.exists()
+    }
 }
 
 pub struct SupplyPositionRef<M> {
