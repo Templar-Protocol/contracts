@@ -142,6 +142,7 @@ async fn partial_snapshot_no_earnings() {
     c.supply(&supply_user_2, 100_000_000).await;
 
     let snapshot_supply_start = c.get_finalized_snapshots_len().await;
+    let mut earned_in_first_snapshot = 0u128;
     while !c
         .get_supply_position(supply_user_2.id())
         .await
@@ -157,22 +158,50 @@ async fn partial_snapshot_no_earnings() {
                 c.repay(&borrow_user, 10_000).await;
                 c.borrow(&borrow_user, 10_000).await;
             },
+            async {
+                let position = c.get_supply_position(supply_user.id()).await.unwrap();
+                let total = position.borrow_asset_yield.get_total();
+                let pending = position.borrow_asset_yield.pending_estimate;
+                eprintln!("Older position total: {total}");
+                eprintln!("Older position pending: {pending}");
+
+                if !total.is_zero() && earned_in_first_snapshot == 0 {
+                    earned_in_first_snapshot = total.into();
+                }
+            },
+            async {
+                let position = c.get_supply_position(supply_user_2.id()).await.unwrap();
+                let total = position.borrow_asset_yield.get_total();
+                let pending = position.borrow_asset_yield.pending_estimate;
+                eprintln!("Newer position total: {total}");
+                eprintln!("Newer position pending: {pending}");
+            },
         );
     }
     let snapshot_supply_end = c.get_finalized_snapshots_len().await;
     println!("Activation: {snapshot_supply_start} -> {snapshot_supply_end}");
 
-    let (amount_1_end, amount_2_end) = tokio::join!(
+    let (position_1_end, position_2_end) = tokio::join!(
         async { c.get_supply_position(supply_user.id()).await.unwrap() },
         async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
     );
 
-    assert!(
-        u128::from(amount_2_end.borrow_asset_yield.get_total()) * 2
-            <= u128::from(amount_1_end.borrow_asset_yield.get_total())
+    eprintln!("Position 1 end: {position_1_end:#?}");
+    eprintln!("Position 2 end: {position_2_end:#?}");
+
+    let amount_1_end = position_1_end.borrow_asset_yield.get_total();
+    let amount_2_end = position_2_end.borrow_asset_yield.get_total();
+
+    eprintln!("Amount earned in first snapshot: {earned_in_first_snapshot}");
+    eprintln!("Amount 1 end: {amount_1_end}");
+    eprintln!("Amount 2 end: {amount_2_end}");
+    // assert!(u128::from(amount_2_end) * 2 <= u128::from(amount_1_end));
+    assert_eq!(
+        u128::from(amount_1_end),
+        u128::from(amount_2_end) + earned_in_first_snapshot,
     );
     assert_eq!(
-        amount_1_end.borrow_asset_yield.pending_estimate,
-        amount_2_end.borrow_asset_yield.pending_estimate,
+        position_1_end.borrow_asset_yield.pending_estimate,
+        position_2_end.borrow_asset_yield.pending_estimate,
     );
 }
