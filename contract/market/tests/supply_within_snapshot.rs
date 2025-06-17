@@ -195,7 +195,6 @@ async fn partial_snapshot_no_earnings() {
     eprintln!("Amount earned in first snapshot: {earned_in_first_snapshot}");
     eprintln!("Amount 1 end: {amount_1_end}");
     eprintln!("Amount 2 end: {amount_2_end}");
-    // assert!(u128::from(amount_2_end) * 2 <= u128::from(amount_1_end));
     assert_eq!(
         u128::from(amount_1_end),
         u128::from(amount_2_end) + earned_in_first_snapshot,
