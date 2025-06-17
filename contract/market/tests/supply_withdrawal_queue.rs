@@ -1,4 +1,4 @@
-use std::{error::Error, time::Duration};
+use std::time::Duration;
 
 use near_sdk::{serde_json::json, NearToken};
 use rstest::rstest;
@@ -191,22 +191,11 @@ async fn deposit_during_withdrawal() {
         async {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let r = c.supply(&supply_user, 1_000).await;
-            let failures = r
-                .failures()
-                .into_iter()
-                .filter_map(|a| a.clone().into_result().err())
-                .filter_map(|e| e.source().map(|s| s.to_string()))
-                .collect::<Vec<_>>();
-            assert_eq!(failures, [
-                "Action #0: ExecutionError(\"Smart contract panicked: This operation cannot be performed during `Withdrawing` status\")",
-            ]);
+            assert!(r.failures().is_empty());
         },
     );
 
     let position = c.get_supply_position(supply_user.id()).await.unwrap();
 
-    assert!(
-        position.get_deposit().total().is_zero(),
-        "Only withdrawal should succeed",
-    );
+    assert_eq!(position.get_deposit().total(), 1_000.into());
 }
