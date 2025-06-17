@@ -24,7 +24,7 @@ pub mod error {
 pub struct BorrowAssetMetrics {
     pub available: BorrowAssetAmount,
     pub deposited_active: BorrowAssetAmount,
-    pub deposited_inactive: BorrowAssetAmount,
+    pub deposited_incoming: BorrowAssetAmount,
     pub borrowed: BorrowAssetAmount,
 }
 

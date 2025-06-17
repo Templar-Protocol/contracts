@@ -23,7 +23,8 @@ async fn main() {
         })
     );
 
-    c.supply(&supply_user, 120_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 120_000)
+        .await;
     let harvest_yield_0 = c
         .harvest_yield_execution(&supply_user, Some(HarvestYieldMode::Compounding))
         .await;

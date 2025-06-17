@@ -85,8 +85,10 @@ async fn successful_liquidation_good_debt_under_mcr(
         })
     );
 
-    c.supply(&supply_user, 10000).await;
-    c.collateralize(&borrow_user, collateral_amount).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(&borrow_user, collateral_amount),
+    );
     c.borrow(&borrow_user, borrow_amount).await;
 
     let collateral_balance_before = c
@@ -172,8 +174,10 @@ async fn successful_liquidation_with_spread(
         })
     );
 
-    c.supply(&supply_user, 10000).await;
-    c.collateralize(&borrow_user, 2000).await; // 2:1 collateralization
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(&borrow_user, 2000), // 2:1 collateralization
+    );
     c.borrow(&borrow_user, 1000).await;
 
     let collateral_balance_before = c
@@ -222,8 +226,10 @@ async fn fail_liquidation_too_little_attached() {
         accounts(borrow_user, supply_user, liquidator_user)
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 500).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 500),
+    );
     c.borrow(&borrow_user, 300).await;
 
     let collateral_balance_before = c
@@ -268,8 +274,10 @@ async fn fail_liquidation_healthy_borrow() {
         accounts(borrow_user, supply_user, liquidator_user)
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 500).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 500),
+    );
     c.borrow(&borrow_user, 300).await;
 
     let collateral_balance_before = c
@@ -314,8 +322,10 @@ async fn liquidators_race() {
         accounts(borrow_user, supply_user, liquidator_user)
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 500).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 500),
+    );
     c.borrow(&borrow_user, 300).await;
     c.set_collateral_asset_price(0.5).await;
 
@@ -366,8 +376,10 @@ async fn successful_liquidation_only_from_interest() {
         })
     );
 
-    c.supply(&supply_user, 10_000_000).await;
-    c.collateralize(&borrow_user, 2_000_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000_000),
+        c.collateralize(&borrow_user, 2_000_000),
+    );
     c.borrow(&borrow_user, 1_000_000 - 1).await;
 
     let collateral_balance_before = c
@@ -452,8 +464,10 @@ async fn extreme_prices(
     })
     .await;
 
-    c.supply(&supply_user, 1_000_000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1_000_000),
+        c.collateralize(&borrow_user, 2000),
+    );
     c.borrow(&borrow_user, 1000).await;
 
     let collateral_balance_before = c

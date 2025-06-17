@@ -312,7 +312,7 @@ impl UnifiedMarketController {
             .await
             .unwrap()
             .get_deposit()
-            .inactive
+            .incoming
             .is_zero()
         {
             self.harvest_yield(supply_user, None).await;

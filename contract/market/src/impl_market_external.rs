@@ -41,7 +41,7 @@ impl MarketExternalInterface for Contract {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(),
             deposited_active: self.borrow_asset_deposited_active,
-            deposited_inactive: self.borrow_asset_deposited_inactive,
+            deposited_incoming: self.borrow_asset_deposited_incoming,
             borrowed: self.borrow_asset_borrowed,
         }
     }
@@ -199,7 +199,7 @@ impl MarketExternalInterface for Contract {
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
         let expect_success = u128::from(self.borrow_asset_deposited_active)
-            .saturating_add(u128::from(self.borrow_asset_deposited_inactive))
+            .saturating_add(u128::from(self.borrow_asset_deposited_incoming))
             .checked_sub(
                 u128::from(self.borrow_asset_borrowed)
                     .saturating_add(self.borrow_asset_in_flight.into()),
@@ -250,9 +250,7 @@ impl MarketExternalInterface for Contract {
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.total_yield();
                 supply_position.record_yield_withdrawal(total_yield);
-                supply_position
-                    .try_record_deposit(proof, total_yield, env::block_timestamp_ms())
-                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+                supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
                 require!(
                     supply_position.is_within_allowable_range(),
                     "New supply position is outside of allowable range",

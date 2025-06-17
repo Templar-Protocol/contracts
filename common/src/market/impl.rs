@@ -30,7 +30,7 @@ pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
     pub borrow_asset_deposited_active: BorrowAssetAmount,
-    pub borrow_asset_deposited_inactive: BorrowAssetAmount,
+    pub borrow_asset_deposited_incoming: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
@@ -62,6 +62,7 @@ impl Market {
             time_chunk: configuration.time_chunk_configuration.previous(),
             end_timestamp_ms: env::block_timestamp_ms().into(),
             deposited_active: 0.into(),
+            deposited_incoming: 0.into(),
             borrowed: 0.into(),
             yield_distribution: BorrowAssetAmount::zero(),
             interest_rate: configuration
@@ -76,7 +77,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited_active: 0.into(),
-            borrow_asset_deposited_inactive: 0.into(),
+            borrow_asset_deposited_incoming: 0.into(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
             supply_positions: LookupMap::new(key!(SupplyPositions)),
@@ -110,6 +111,7 @@ impl Market {
         if self.current_snapshot.time_chunk == time_chunk {
             self.current_snapshot.end_timestamp_ms = env::block_timestamp_ms().into();
             self.current_snapshot.deposited_active = self.borrow_asset_deposited_active;
+            self.current_snapshot.deposited_incoming = self.borrow_asset_deposited_incoming;
             self.current_snapshot.borrowed = self.borrow_asset_borrowed;
             self.current_snapshot
                 .yield_distribution
@@ -121,12 +123,13 @@ impl Market {
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
             self.borrow_asset_deposited_active
-                .join(self.borrow_asset_deposited_inactive);
-            self.borrow_asset_deposited_inactive = BorrowAssetAmount::zero();
+                .join(self.borrow_asset_deposited_incoming);
+            self.borrow_asset_deposited_incoming = BorrowAssetAmount::zero();
             let mut snapshot = Snapshot {
                 time_chunk,
                 yield_distribution,
                 deposited_active: self.borrow_asset_deposited_active,
+                deposited_incoming: self.borrow_asset_deposited_incoming,
                 borrowed: self.borrow_asset_borrowed,
                 end_timestamp_ms: env::block_timestamp_ms().into(),
                 interest_rate: Decimal::ZERO,
@@ -237,13 +240,8 @@ impl Market {
         };
 
         let proof = supply_position.accumulate_yield();
-        let resolution = supply_position
-            .try_start_withdrawal(proof, amount, env::block_timestamp_ms())
-            .unwrap_or_else(|e| {
-                env::panic_str(&format!(
-                    "Invariant violation: Position cannot withdraw: {e}"
-                ))
-            });
+        let resolution =
+            supply_position.record_withdrawal_initial(proof, amount, env::block_timestamp_ms());
 
         Ok(Some(resolution))
     }

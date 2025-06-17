@@ -31,7 +31,7 @@ async fn funds_activation() {
             .await
             .unwrap()
             .get_deposit()
-            .activate_at_snapshot_index
+            .activate_incoming_at_snapshot_index
     );
     let snapshot_supply_start = c.get_finalized_snapshots_len().await;
 
@@ -41,7 +41,7 @@ async fn funds_activation() {
         .await
         .unwrap()
         .get_deposit()
-        .inactive
+        .incoming
         .is_zero()
     {
         tokio::join!(
@@ -70,7 +70,7 @@ async fn funds_activation() {
             .await
             .unwrap()
             .get_deposit()
-            .activate_at_snapshot_index
+            .activate_incoming_at_snapshot_index
     );
     let snapshot_supply_start = c.get_finalized_snapshots_len().await;
 
@@ -80,7 +80,7 @@ async fn funds_activation() {
         .await
         .unwrap()
         .get_deposit()
-        .inactive
+        .incoming
         .is_zero()
     {
         tokio::join!(
@@ -127,7 +127,7 @@ async fn partial_snapshot_no_earnings() {
         .await
         .unwrap()
         .get_deposit()
-        .inactive
+        .incoming
         .is_zero()
     {
         c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
@@ -147,7 +147,7 @@ async fn partial_snapshot_no_earnings() {
         .await
         .unwrap()
         .get_deposit()
-        .inactive
+        .incoming
         .is_zero()
     {
         tokio::join!(

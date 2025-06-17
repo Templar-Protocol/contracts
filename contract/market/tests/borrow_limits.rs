@@ -21,8 +21,10 @@ async fn borrow_within_bounds(
         })
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
 
     for amount in amounts {
         c.borrow(&borrow_user, *amount).await;
@@ -51,8 +53,11 @@ async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[cas
         })
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
+
     c.borrow(&borrow_user, amount).await;
 }
 
@@ -80,8 +85,10 @@ async fn borrow_above_maximum(
         })
     );
 
-    c.supply(&supply_user, 10000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(&borrow_user, 2000),
+    );
 
     for amount in amounts {
         c.borrow(&borrow_user, *amount).await;

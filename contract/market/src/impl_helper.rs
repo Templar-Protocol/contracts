@@ -3,7 +3,6 @@ use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
-    event::MarketEvent,
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     price::PricePair,
@@ -30,9 +29,7 @@ impl Contract {
 
         let mut supply_position = self.get_or_create_supply_position_guard(account_id);
         let proof = supply_position.accumulate_yield();
-        supply_position
-            .try_record_deposit(proof, amount, env::block_timestamp_ms())
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         require!(
             supply_position.is_within_allowable_range(),
             "New supply position is outside of allowable range",
@@ -284,19 +281,10 @@ impl Contract {
 
         let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        MarketEvent::SupplyWithdrawalResolution {
-            account_id: withdrawal_resolution.account_id.clone(),
-            success: withdrawal_succeeded,
-            expected_success,
-        }
-        .emit();
-
         if let Some(mut supply_position) =
             self.supply_position_guard(withdrawal_resolution.account_id.clone())
         {
-            supply_position
-                .try_end_withdrawal()
-                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
         }
 
         if withdrawal_succeeded || expected_success {
@@ -331,18 +319,6 @@ impl Contract {
 
             env::log_str("The withdrawal request cannot be fulfilled at this time.");
             self.withdrawal_queue.unlock();
-            if let Some(mut supply_position) =
-                self.supply_position_guard(withdrawal_resolution.account_id.clone())
-            {
-                // This should not do very much since we also accumulate
-                // yield in the initial function call of execute_next_supply_withdrawal_request()
-                let proof = supply_position.accumulate_yield();
-                let mut amount = withdrawal_resolution.amount_to_account;
-                amount.join(withdrawal_resolution.amount_to_fees);
-                supply_position
-                    .try_record_deposit(proof, amount, env::block_timestamp_ms())
-                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-            }
         }
     }
 

@@ -77,7 +77,7 @@ async fn unsuccessful_withdrawal() {
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
-async fn attempt_to_withdraw_more_than_deposit_inactive() {
+async fn attempt_to_withdraw_more_than_deposit_incoming() {
     setup_test!(extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
