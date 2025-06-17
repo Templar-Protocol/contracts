@@ -75,6 +75,6 @@ async fn harvest_yield_beyond_maximum() {
     c.borrow(&borrow_user, LIMIT * 4 / 5).await;
     c.repay(&borrow_user, LIMIT).await;
 
-    c.harvest_yield(&supply_user, Some(HarvestYieldMode::Compounding))
+    c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Compounding))
         .await;
 }
