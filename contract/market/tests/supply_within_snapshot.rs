@@ -52,7 +52,7 @@ async fn funds_activation() {
                 );
             },
             async {
-                c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+                c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
                     .await;
             },
         );
@@ -91,7 +91,7 @@ async fn funds_activation() {
                 );
             },
             async {
-                c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+                c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
                     .await;
             },
         );
@@ -130,7 +130,7 @@ async fn partial_snapshot_no_earnings() {
         .amount
         .is_zero()
     {
-        c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+        c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
             .await;
     }
     let snapshot_supply_end = c.get_finalized_snapshots_len().await;
@@ -151,8 +151,8 @@ async fn partial_snapshot_no_earnings() {
         .is_zero()
     {
         tokio::join!(
-            c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default)),
-            c.harvest_yield(&supply_user_2, Some(HarvestYieldMode::Default)),
+            c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default)),
+            c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default)),
             async {
                 c.repay(&borrow_user, 10_000).await;
                 c.borrow(&borrow_user, 10_000).await;

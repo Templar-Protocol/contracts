@@ -142,6 +142,7 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             // never overflow underlying data type.
             #[allow(clippy::unwrap_used, reason = "Derived from real balances")]
             amount: accumulated.to_u128_floor().unwrap().into(),
+            fraction_as_u128_dividend: accumulated.fractional_part_as_u128_dividend(),
             next_snapshot_index,
         }
     }

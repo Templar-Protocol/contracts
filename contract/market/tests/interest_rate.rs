@@ -58,12 +58,12 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         // They should accumulate (very nearly) the same amount of interest regardless.
         while timer.elapsed() < Duration::from_secs(12) {
             tokio::join!(
-                c.apply_interest(&borrow_user_2, None),
+                c.apply_interest(&borrow_user_2, None, None),
                 // No compounding so we get apples-to-apples comparison.
                 // Technically it should be optimal to harvest (and
                 // compound) occasionally throughout the duration of
                 // the supply.
-                c.harvest_yield(&supply_user_2, Some(HarvestYieldMode::Default)),
+                c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default)),
             );
             tokio::time::sleep(Duration::from_secs(1)).await;
             iters += 1;
@@ -167,12 +167,12 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
 
     let (supply_position_1, supply_position_2) = tokio::join!(
         async {
-            c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+            c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
                 .await;
             c.get_supply_position(supply_user.id()).await.unwrap()
         },
         async {
-            c.harvest_yield(&supply_user_2, Some(HarvestYieldMode::Default))
+            c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default))
                 .await;
             c.get_supply_position(supply_user_2.id()).await.unwrap()
         },

@@ -79,9 +79,9 @@ impl MarketController {
         #[call(tgas(300))]
         pub fn borrow(amount: U128);
         #[call(tgas(300))]
-        pub fn apply_interest(snapshot_limit: Option<u32>);
+        pub fn apply_interest(account_id: Option<&AccountId>, snapshot_limit: Option<u32>);
         #[call(tgas(300))]
-        pub fn harvest_yield(mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
+        pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
         #[call(tgas(25))]
@@ -315,7 +315,7 @@ impl UnifiedMarketController {
             .amount
             .is_zero()
         {
-            self.harvest_yield(supply_user, None).await;
+            self.harvest_yield(supply_user, None, None).await;
         }
         e
     }
