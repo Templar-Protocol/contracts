@@ -139,9 +139,9 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    fn apply_interest(&mut self, snapshot_limit: Option<u32>) {
-        let predecessor = env::predecessor_account_id();
-        if let Some(mut borrow_position) = self.borrow_position_guard(predecessor) {
+    fn apply_interest(&mut self, account_id: Option<AccountId>, snapshot_limit: Option<u32>) {
+        let account_id = account_id.unwrap_or_else(env::predecessor_account_id);
+        if let Some(mut borrow_position) = self.borrow_position_guard(account_id) {
             borrow_position.accumulate_interest_partial(snapshot_limit.unwrap_or(u32::MAX));
         }
     }
@@ -238,13 +238,25 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.get_status()
     }
 
-    fn harvest_yield(&mut self, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount {
+    fn harvest_yield(
+        &mut self,
+        account_id: Option<AccountId>,
+        mode: Option<HarvestYieldMode>,
+    ) -> BorrowAssetAmount {
+        let mode = mode.unwrap_or_default();
         let predecessor = env::predecessor_account_id();
-        let Some(mut supply_position) = self.supply_position_guard(predecessor) else {
+        let account_id = account_id.unwrap_or_else(|| predecessor.clone());
+
+        require!(
+            account_id == predecessor || !matches!(mode, HarvestYieldMode::Compounding),
+            "Only the position holder can compound yield",
+        );
+
+        let Some(mut supply_position) = self.supply_position_guard(account_id) else {
             return BorrowAssetAmount::zero();
         };
 
-        match mode.unwrap_or_default() {
+        match mode {
             HarvestYieldMode::Compounding => {
                 let proof = supply_position.accumulate_yield();
                 // Compound yield by withdrawing it and recording it as an immediate deposit.

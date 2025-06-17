@@ -127,7 +127,7 @@ async fn successful_liquidation_good_debt_under_mcr(
 
     tokio::join!(
         async {
-            c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+            c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
                 .await;
             let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
             assert_eq!(
@@ -391,7 +391,7 @@ async fn successful_liquidation_only_from_interest() {
 
     let timer = Instant::now();
     while timer.elapsed() < Duration::from_secs(5) {
-        c.harvest_yield(&supply_user, None).await;
+        c.harvest_yield(&supply_user, None, None).await;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 

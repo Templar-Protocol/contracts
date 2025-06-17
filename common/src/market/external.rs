@@ -59,7 +59,7 @@ pub trait MarketExternalInterface {
     /// Applies interest to the predecessor's borrow record.
     /// Not likely to be used in real life, since there it does not affect the
     /// final interest calculation, and rounds fractional interest UP.
-    fn apply_interest(&mut self, snapshot_limit: Option<u32>);
+    fn apply_interest(&mut self, account_id: Option<AccountId>, snapshot_limit: Option<u32>);
 
     // ================
     // SUPPLY FUNCTIONS
@@ -85,7 +85,11 @@ pub trait MarketExternalInterface {
     /// harvested in previous, non-compounding `harvest_yield` calls) is
     /// deposited to the supply record, so it will contribute to future yield
     /// calculations.
-    fn harvest_yield(&mut self, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
+    fn harvest_yield(
+        &mut self,
+        account_id: Option<AccountId>,
+        mode: Option<HarvestYieldMode>,
+    ) -> BorrowAssetAmount;
 
     /// This value is an *expected average over time*.
     /// Supply positions actually earn all of their yield the instant it is
