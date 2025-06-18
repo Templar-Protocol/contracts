@@ -96,6 +96,7 @@ impl<T: AssetClass> Accumulator<T> {
 }
 
 #[must_use]
+#[derive(Debug, Clone)]
 pub struct AccumulationRecord<T: AssetClass> {
     pub(crate) amount: FungibleAssetAmount<T>,
     pub(crate) fraction_as_u128_dividend: u128,

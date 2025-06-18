@@ -95,13 +95,18 @@ impl MarketController {
     pub async fn harvest_yield_execution(
         &self,
         supply_user: &Account,
+        account_id: Option<&AccountId>,
         mode: Option<HarvestYieldMode>,
     ) -> ExecutionSuccess {
         eprintln!("{} harvesting yield...", supply_user.id());
         self.call_exec(
             supply_user,
             "harvest_yield",
-            serde_json::to_vec(&json!({ "mode": mode })).unwrap(),
+            serde_json::to_vec(&json!({
+                "account_id": account_id,
+                "mode": mode,
+            }))
+            .unwrap(),
             NearToken::from_near(0),
             Gas::from_tgas(300),
         )

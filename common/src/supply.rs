@@ -210,7 +210,17 @@ impl<'a> SupplyPositionGuard<'a> {
         Self(SupplyPositionRef::new(market, account_id, position))
     }
 
-    fn add_active(&mut self, amount: BorrowAssetAmount) {
+    fn activate_incoming(&mut self, amount: BorrowAssetAmount, activate_at_snapshot_index: u32) {
+        self.position
+            .borrow_asset_deposit
+            .incoming
+            .split(amount)
+            .unwrap_or_else(|| {
+                env::panic_str("Supply position `borrow_asset_deposit.incoming` underflow")
+            });
+        self.position
+            .borrow_asset_deposit
+            .activate_incoming_at_snapshot_index = activate_at_snapshot_index;
         self.position
             .borrow_asset_deposit
             .active
@@ -218,10 +228,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .unwrap_or_else(|| {
                 env::panic_str("Supply position `borrow_asset_deposit.active` overflow")
             });
-        self.market
-            .borrow_asset_deposited_active
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Market `borrow_asset_deposited_active` overflow"));
+        // Calling market.snapshot() performs the market accounting
     }
 
     fn remove_active(&mut self, amount: BorrowAssetAmount) {
@@ -249,6 +256,10 @@ impl<'a> SupplyPositionGuard<'a> {
         self.position
             .borrow_asset_deposit
             .activate_incoming_at_snapshot_index = activate_at_snapshot_index;
+        self.market
+            .borrow_asset_deposited_incoming
+            .join(amount)
+            .unwrap_or_else(|| env::panic_str("Market `borrow_asset_deposited_incoming` overflow"));
     }
 
     fn remove_incoming(&mut self, amount: BorrowAssetAmount, activate_at_snapshot_index: u32) {
@@ -262,6 +273,12 @@ impl<'a> SupplyPositionGuard<'a> {
         self.position
             .borrow_asset_deposit
             .activate_incoming_at_snapshot_index = activate_at_snapshot_index;
+        self.market
+            .borrow_asset_deposited_incoming
+            .split(amount)
+            .unwrap_or_else(|| {
+                env::panic_str("Market `borrow_asset_deposited_incoming` underflow")
+            });
     }
 
     pub fn accumulate_yield_partial(&mut self, snapshot_limit: u32) {
@@ -269,16 +286,31 @@ impl<'a> SupplyPositionGuard<'a> {
         self.market.snapshot();
 
         let accumulation_record = self.calculate_yield(snapshot_limit);
+        near_sdk::log!("accumulation_record = {accumulation_record:#?}");
         let until_snapshot_index = accumulation_record.next_snapshot_index;
+        near_sdk::log!(
+            "{until_snapshot_index} > {}?",
+            self.position
+                .borrow_asset_deposit
+                .activate_incoming_at_snapshot_index
+        );
         if until_snapshot_index
             > self
                 .position
                 .borrow_asset_deposit
                 .activate_incoming_at_snapshot_index
         {
+            near_sdk::log!(
+                "borrow_asset_deposit: {:?}",
+                self.position.borrow_asset_deposit,
+            );
             let amount = self.position.borrow_asset_deposit.incoming;
-            self.remove_incoming(amount, until_snapshot_index);
-            self.add_active(amount);
+            near_sdk::log!("activate_incoming({amount}, {until_snapshot_index})");
+            self.activate_incoming(amount, until_snapshot_index);
+            near_sdk::log!(
+                "borrow_asset_deposit: {:?}",
+                self.position.borrow_asset_deposit,
+            );
         }
 
         if !accumulation_record.amount.is_zero() {
@@ -310,7 +342,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .outgoing
             .join(amount)
             .unwrap_or_else(|| {
-                env::panic_str("Supply position `borrow_asset_deposit.withdrawing` overflow")
+                env::panic_str("Supply position `borrow_asset_deposit.outgoing` overflow")
             });
 
         if self.position.borrow_asset_deposit.incoming > amount {
@@ -363,7 +395,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .outgoing
             .split(amount)
             .unwrap_or_else(|| {
-                env::panic_str("Supply position `borrow_asset_deposit.withdrawing` underflow")
+                env::panic_str("Supply position `borrow_asset_deposit.outgoing` underflow")
             });
 
         if success {
