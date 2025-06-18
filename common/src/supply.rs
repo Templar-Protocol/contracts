@@ -325,7 +325,6 @@ impl<'a> SupplyPositionGuard<'a> {
         self.market.snapshot();
 
         let accumulation_record = self.calculate_yield(snapshot_limit);
-        near_sdk::log!("accumulation_record = {accumulation_record:#?}");
         self.activate_incoming(accumulation_record.next_snapshot_index);
 
         if !accumulation_record.amount.is_zero() {
