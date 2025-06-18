@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
 use crate::{
@@ -30,7 +32,7 @@ pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
     pub borrow_asset_deposited_active: BorrowAssetAmount,
-    pub borrow_asset_deposited_incoming: BorrowAssetAmount,
+    pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
@@ -77,7 +79,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited_active: 0.into(),
-            borrow_asset_deposited_incoming: 0.into(),
+            borrow_asset_deposited_incoming: HashMap::new(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
             supply_positions: LookupMap::new(key!(SupplyPositions)),
@@ -91,6 +93,15 @@ impl Market {
         self_.finalized_snapshots.push(first_snapshot);
 
         self_
+    }
+
+    pub fn total_incoming(&self) -> BorrowAssetAmount {
+        self.borrow_asset_deposited_incoming
+            .values()
+            .fold(BorrowAssetAmount::zero(), |mut a, b| {
+                a.join(*b);
+                a
+            })
     }
 
     pub fn get_last_finalized_snapshot(&self) -> &Snapshot {
@@ -111,7 +122,10 @@ impl Market {
         if self.current_snapshot.time_chunk == time_chunk {
             self.current_snapshot.end_timestamp_ms = env::block_timestamp_ms().into();
             self.current_snapshot.deposited_active = self.borrow_asset_deposited_active;
-            self.current_snapshot.deposited_incoming = self.borrow_asset_deposited_incoming;
+            self.current_snapshot.deposited_incoming = *self
+                .borrow_asset_deposited_incoming
+                .get(&self.finalized_snapshots.len())
+                .unwrap_or(&0.into());
             self.current_snapshot.borrowed = self.borrow_asset_borrowed;
             self.current_snapshot
                 .yield_distribution
@@ -122,14 +136,16 @@ impl Market {
                 .at(self.current_snapshot.usage_ratio());
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
-            self.borrow_asset_deposited_active
-                .join(self.borrow_asset_deposited_incoming);
-            self.borrow_asset_deposited_incoming = BorrowAssetAmount::zero();
+            let deposited_incoming = self
+                .borrow_asset_deposited_incoming
+                .remove(&self.finalized_snapshots.len())
+                .unwrap_or(0.into());
+            self.borrow_asset_deposited_active.join(deposited_incoming);
             let mut snapshot = Snapshot {
                 time_chunk,
                 yield_distribution,
                 deposited_active: self.borrow_asset_deposited_active,
-                deposited_incoming: self.borrow_asset_deposited_incoming,
+                deposited_incoming,
                 borrowed: self.borrow_asset_borrowed,
                 end_timestamp_ms: env::block_timestamp_ms().into(),
                 interest_rate: Decimal::ZERO,

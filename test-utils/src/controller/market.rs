@@ -318,7 +318,7 @@ impl UnifiedMarketController {
             .unwrap()
             .get_deposit()
             .incoming
-            .is_zero()
+            .is_empty()
         {
             self.harvest_yield(supply_user, None, None).await;
         }

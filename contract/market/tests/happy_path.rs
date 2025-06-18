@@ -52,7 +52,7 @@ async fn test_happy() {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_deposit().incoming),
+        u128::from(supply_position.total_incoming()),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -64,7 +64,7 @@ async fn test_happy() {
         .unwrap()
         .get_deposit()
         .incoming
-        .is_zero()
+        .is_empty()
     {
         c.harvest_yield(&supply_user, None, None).await;
     }

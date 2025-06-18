@@ -41,7 +41,7 @@ impl MarketExternalInterface for Contract {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(),
             deposited_active: self.borrow_asset_deposited_active,
-            deposited_incoming: self.borrow_asset_deposited_incoming,
+            deposited_incoming: self.total_incoming(),
             borrowed: self.borrow_asset_borrowed,
         }
     }
@@ -199,7 +199,7 @@ impl MarketExternalInterface for Contract {
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
         let expect_success = u128::from(self.borrow_asset_deposited_active)
-            .saturating_add(u128::from(self.borrow_asset_deposited_incoming))
+            .saturating_add(u128::from(self.total_incoming()))
             .checked_sub(
                 u128::from(self.borrow_asset_borrowed)
                     .saturating_add(self.borrow_asset_in_flight.into()),

@@ -1,10 +1,12 @@
+use near_sdk::json_types::U64;
 use rstest::rstest;
-use templar_common::market::HarvestYieldMode;
+use templar_common::{market::HarvestYieldMode, time_chunk::TimeChunkConfiguration};
 use test_utils::*;
 
 #[rstest]
 #[case([10_000], 10_000)]
 #[case([1_000, 9_000], 10_000)]
+#[case([1; 25], 10_000)]
 #[tokio::test]
 async fn supply_within_maximum(
     #[case] deposits: impl IntoIterator<Item = u128>,
@@ -15,6 +17,9 @@ async fn supply_within_maximum(
         accounts(supply_user)
         config(|c| {
             c.supply_range = (1, Some(supply_maximum)).try_into().unwrap();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: U64(1000 * 20),
+            };
         })
     );
 
