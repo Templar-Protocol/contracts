@@ -23,9 +23,10 @@ async fn main() {
         })
     );
 
-    c.supply(&supply_user, 120_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 120_000)
+        .await;
     let harvest_yield_0 = c
-        .harvest_yield_execution(&supply_user, Some(HarvestYieldMode::Compounding))
+        .harvest_yield_execution(&supply_user, None, Some(HarvestYieldMode::Compounding))
         .await;
     let snapshot_count_before = c.list_finalized_snapshots(None, None).await.len();
     c.collateralize(&borrow_user, 2000).await;
@@ -41,7 +42,7 @@ async fn main() {
 
     let apply_interest_max = c.apply_interest(&borrow_user_2, None, None).await;
     let harvest_yield_max = c
-        .harvest_yield_execution(&supply_user, Some(HarvestYieldMode::Compounding))
+        .harvest_yield_execution(&supply_user, None, Some(HarvestYieldMode::Compounding))
         .await;
 
     let snapshot_count_after = c.list_finalized_snapshots(None, None).await.len();

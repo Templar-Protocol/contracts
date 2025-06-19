@@ -41,7 +41,7 @@ impl MarketExternalInterface for Contract {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(),
             deposited_active: self.borrow_asset_deposited_active,
-            deposited_inactive: self.borrow_asset_deposited_inactive,
+            deposited_incoming: self.borrow_asset_deposited_incoming.clone(),
             borrowed: self.borrow_asset_borrowed,
         }
     }
@@ -74,10 +74,6 @@ impl MarketExternalInterface for Contract {
 
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
-        require!(
-            amount >= self.configuration.borrow_minimum_amount,
-            "Borrow amount is smaller than minimum allowed",
-        );
 
         let account_id = env::predecessor_account_id();
 
@@ -93,8 +89,8 @@ impl MarketExternalInterface for Contract {
         };
 
         require!(
-            proposed_amount <= self.configuration.borrow_maximum_amount,
-            "Borrow amount is greater than maximum allowed",
+            self.configuration.borrow_range.contains(proposed_amount),
+            "New borrow position is outside of allowable range",
         );
 
         self.configuration
@@ -164,14 +160,9 @@ impl MarketExternalInterface for Contract {
             "Amount to withdraw must be greater than zero",
         );
         let predecessor = env::predecessor_account_id();
-        let Some(supply_position) =
-            self.supply_position_ref(predecessor.clone())
-                .filter(|supply_position| {
-                    !supply_position
-                        .inner()
-                        .get_borrow_asset_deposit_total()
-                        .is_zero()
-                })
+        let Some(supply_position) = self
+            .supply_position_ref(predecessor.clone())
+            .filter(|supply_position| !supply_position.total_deposit().is_zero())
         else {
             env::panic_str("Supply position does not exist");
         };
@@ -180,8 +171,12 @@ impl MarketExternalInterface for Contract {
         // This check really only ensures that the `depth` reported by
         // get_supply_withdrawal_queue_status() is realistically accurate.
         require!(
-            supply_position.inner().get_borrow_asset_deposit_total() >= amount,
+            supply_position.total_deposit() >= amount,
             "Attempt to withdraw more than current deposit",
+        );
+        require!(
+            self.configuration.supply_withdrawal_range.contains(amount),
+            "Withdrawal amount is outside of allowable range",
         );
 
         self.withdrawal_queue.remove(&predecessor);
@@ -204,7 +199,7 @@ impl MarketExternalInterface for Contract {
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
         let expect_success = u128::from(self.borrow_asset_deposited_active)
-            .saturating_add(u128::from(self.borrow_asset_deposited_inactive))
+            .saturating_add(u128::from(self.total_incoming()))
             .checked_sub(
                 u128::from(self.borrow_asset_borrowed)
                     .saturating_add(self.borrow_asset_in_flight.into()),
@@ -265,9 +260,13 @@ impl MarketExternalInterface for Contract {
             HarvestYieldMode::Compounding => {
                 let proof = supply_position.accumulate_yield();
                 // Compound yield by withdrawing it and recording it as an immediate deposit.
-                let total_yield = supply_position.inner().borrow_asset_yield.get_total();
+                let total_yield = supply_position.total_yield();
                 supply_position.record_yield_withdrawal(total_yield);
                 supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
+                require!(
+                    supply_position.is_within_allowable_range(),
+                    "New supply position is outside of allowable range",
+                );
                 return total_yield;
             }
             HarvestYieldMode::SnapshotLimit(limit) => {

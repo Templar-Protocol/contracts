@@ -39,12 +39,6 @@ pub enum MarketEvent {
         borrow_asset_amount_to_fees: BorrowAssetAmount,
     },
     #[event_version("1.0.0")]
-    SupplyWithdrawalResolution {
-        account_id: AccountId,
-        success: bool,
-        expected_success: bool,
-    },
-    #[event_version("1.0.0")]
     CollateralDeposited {
         account_id: AccountId,
         collateral_asset_amount: CollateralAssetAmount,

@@ -1,8 +1,11 @@
-use near_sdk::{json_types::U64, near, AccountId};
+use std::{io::ErrorKind, ops::Deref};
+
+use near_sdk::{borsh, json_types::U64, near, AccountId};
 
 use crate::{
     asset::{
-        BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+        AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount,
+        FungibleAsset, FungibleAssetAmount,
     },
     borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
@@ -17,6 +20,88 @@ use super::{BalanceOracleConfiguration, YieldWeights};
 /// Reject >10,000,000% APY interest rates as misconfigurations.
 /// This also guarantees a reasonable upper-limit to interest rates to help avoid overflows.
 pub const APY_LIMIT: u128 = 100_000;
+
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+#[serde(try_from = "AmountRange::<A>")]
+pub struct ValidAmountRange<A: AssetClass + PartialOrd>(
+    #[borsh(deserialize_with = "deserialize_valid_amount_range")] AmountRange<A>,
+);
+
+fn deserialize_valid_amount_range<
+    R: borsh::io::Read,
+    A: AssetClass + PartialOrd + borsh::BorshDeserialize,
+>(
+    reader: &mut R,
+) -> ::core::result::Result<AmountRange<A>, borsh::io::Error> {
+    <AmountRange<A> as borsh::BorshDeserialize>::deserialize_reader(reader)?.validate()
+}
+
+impl<A: AssetClass + PartialOrd> Deref for ValidAmountRange<A> {
+    type Target = AmountRange<A>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<A: AssetClass + PartialOrd> TryFrom<AmountRange<A>> for ValidAmountRange<A> {
+    type Error = std::io::Error;
+
+    fn try_from(value: AmountRange<A>) -> Result<Self, Self::Error> {
+        Ok(Self(value.validate()?))
+    }
+}
+
+impl<A: AssetClass + PartialOrd, T: Into<FungibleAssetAmount<A>>> TryFrom<(T, Option<T>)>
+    for ValidAmountRange<A>
+{
+    type Error = std::io::Error;
+
+    fn try_from((minimum, maximum): (T, Option<T>)) -> Result<Self, Self::Error> {
+        AmountRange {
+            minimum: minimum.into(),
+            maximum: maximum.map(Into::into),
+        }
+        .try_into()
+    }
+}
+
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+pub struct AmountRange<A: AssetClass> {
+    pub minimum: FungibleAssetAmount<A>,
+    pub maximum: Option<FungibleAssetAmount<A>>,
+}
+
+impl<A: AssetClass + PartialOrd> AmountRange<A> {
+    pub fn contains(&self, amount: FungibleAssetAmount<A>) -> bool {
+        amount >= self.minimum && self.maximum.is_none_or(|max| amount <= max)
+    }
+
+    pub fn validate(self) -> std::io::Result<Self> {
+        if self.is_valid() {
+            Ok(self)
+        } else {
+            Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "Invalid range specified",
+            ))
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.maximum
+            .is_none_or(|max| !max.is_zero() && max >= self.minimum)
+    }
+
+    pub fn new(
+        minimum: FungibleAssetAmount<A>,
+        maximum: Option<FungibleAssetAmount<A>>,
+    ) -> std::io::Result<Self> {
+        Self { minimum, maximum }.validate()
+    }
+}
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
@@ -38,10 +123,10 @@ pub struct MarketConfiguration {
     pub borrow_origination_fee: Fee<BorrowAsset>,
     pub borrow_interest_rate_strategy: InterestRateStrategy,
     pub borrow_maximum_duration_ms: Option<U64>,
-    pub borrow_minimum_amount: BorrowAssetAmount,
-    pub borrow_maximum_amount: BorrowAssetAmount,
+    pub borrow_range: ValidAmountRange<BorrowAsset>,
+    pub supply_range: ValidAmountRange<BorrowAsset>,
+    pub supply_withdrawal_range: ValidAmountRange<BorrowAsset>,
     pub supply_withdrawal_fee: TimeBasedFee<BorrowAsset>,
-    pub supply_maximum_amount: Option<BorrowAssetAmount>,
     pub yield_weights: YieldWeights,
     pub protocol_account_id: AccountId,
     /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
@@ -125,10 +210,8 @@ impl MarketConfiguration {
             return Err(error::out_of_bounds("borrow_interest_rate_strategy"));
         }
 
-        if self.borrow_maximum_amount < self.borrow_minimum_amount
-            || self.borrow_maximum_amount.is_zero()
-        {
-            return Err(error::out_of_bounds("borrow_maximum_amount"));
+        if self.supply_withdrawal_range.minimum > self.supply_range.minimum {
+            return Err(error::out_of_bounds("supply_withdrawal_range.minimum"));
         }
 
         if self.liquidation_maximum_spread >= 1u32 {
@@ -226,6 +309,12 @@ fn satisfies_minimum_collateral_ratio(
 
 #[cfg(test)]
 mod tests {
+    use near_sdk::{
+        json_types::U128,
+        serde_json::{self, json},
+    };
+    use rstest::rstest;
+
     use crate::{borrow::InterestAccumulationProof, dec, oracle::pyth};
 
     use super::*;
@@ -256,5 +345,57 @@ mod tests {
             )
             .unwrap()
         ));
+    }
+
+    #[rstest]
+    #[case(1, 0)]
+    #[case(0, 0)]
+    #[case(u128::MAX, 0)]
+    #[case(u128::MAX, u128::MAX - 1)]
+    #[case(500, 10)]
+    #[should_panic = "Invalid range specified"]
+    fn invalid_amount_range(#[case] min: u128, #[case] max: u128) {
+        ValidAmountRange::<BorrowAsset>::try_from((min, Some(max))).unwrap();
+    }
+
+    #[rstest]
+    #[case(1, 0)]
+    #[case(0, 0)]
+    #[case(u128::MAX, 0)]
+    #[case(u128::MAX, u128::MAX - 1)]
+    #[case(500, 10)]
+    #[should_panic = "Invalid range specified"]
+    fn invalid_amount_range_json(#[case] min: u128, #[case] max: u128) {
+        serde_json::from_value::<ValidAmountRange<BorrowAsset>>(json!({
+            "minimum": U128(min),
+            "maximum": U128(max),
+        }))
+        .unwrap();
+    }
+
+    #[rstest]
+    #[case(1, 1)]
+    #[case(0, u128::MAX)]
+    #[case(1, u128::MAX)]
+    #[case(u128::MAX, u128::MAX)]
+    #[case(u128::MAX - 1, u128::MAX)]
+    #[case(10, 500)]
+    fn valid_amount_range(#[case] min: u128, #[case] max: u128) {
+        ValidAmountRange::<BorrowAsset>::try_from((min, Some(max))).unwrap();
+    }
+
+    #[rstest]
+    #[case(1, 1)]
+    #[case(0, u128::MAX)]
+    #[case(1, u128::MAX)]
+    #[case(u128::MAX, u128::MAX)]
+    #[case(u128::MAX - 1, u128::MAX)]
+    #[case(10, 500)]
+    fn valid_amount_range_json(#[case] min: u128, #[case] max: u128) {
+        serde_json::from_value::<ValidAmountRange<BorrowAsset>>(json!({
+            "minimum": U128(min),
+            "maximum": U128(max),
+        }))
+        .unwrap();
     }
 }

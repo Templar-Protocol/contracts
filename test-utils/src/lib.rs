@@ -103,11 +103,11 @@ pub fn market_configuration(
         )
         .unwrap(),
         borrow_maximum_duration_ms: None,
-        borrow_minimum_amount: 1.into(),
-        borrow_maximum_amount: u128::MAX.into(),
-        liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
+        borrow_range: (1, None).try_into().unwrap(),
+        supply_range: (1, None).try_into().unwrap(),
+        supply_withdrawal_range: (1, None).try_into().unwrap(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
-        supply_maximum_amount: None,
+        liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
         yield_weights,
         protocol_account_id,
     }
