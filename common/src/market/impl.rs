@@ -189,16 +189,11 @@ impl Market {
     }
 
     pub fn cleanup_supply_position(&mut self, account_id: &AccountId) -> bool {
-        if self
-            .supply_positions
+        self.supply_positions
             .get(account_id)
-            .is_some_and(|p| p.can_be_removed())
-        {
-            self.supply_positions.remove(account_id);
-            true
-        } else {
-            false
-        }
+            .filter(SupplyPosition::can_be_removed)
+            .and_then(|_| self.supply_positions.remove(account_id))
+            .is_some()
     }
 
     pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {
@@ -226,16 +221,11 @@ impl Market {
     }
 
     pub fn cleanup_borrow_position(&mut self, account_id: &AccountId) -> bool {
-        if self
-            .borrow_positions
+        self.borrow_positions
             .get(account_id)
-            .is_some_and(|p| p.can_be_removed())
-        {
-            self.borrow_positions.remove(account_id);
-            true
-        } else {
-            false
-        }
+            .filter(BorrowPosition::can_be_removed)
+            .and_then(|_| self.borrow_positions.remove(account_id))
+            .is_some()
     }
 
     /// # Errors
