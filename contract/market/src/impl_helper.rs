@@ -306,6 +306,13 @@ impl Contract {
 
         if withdrawal_succeeded {
             self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
+
+            if self.cleanup_supply_position(&withdrawal_resolution.account_id) {
+                self.refund_for_storage(
+                    &withdrawal_resolution.account_id,
+                    self.storage_usage_supply_position,
+                );
+            }
         } else {
             // Possible reasons for failure:
             // - MPC signer failure (multichain; TODO).
@@ -460,10 +467,14 @@ impl Contract {
             matches!(env::promise_result(0), PromiseResult::Successful(_));
 
         if transfer_was_successful {
-            // Do nothing
+            if self.cleanup_borrow_position(&account_id) {
+                self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
+            }
         } else {
             let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
-                env::panic_str("Invariant violation: Borrow position must exist after collateral withdrawal failure.");
+                env::panic_str(
+                    "Invariant violation: Borrow position must exist after collateral withdrawal.",
+                );
             };
 
             let proof = borrow_position.accumulate_interest();

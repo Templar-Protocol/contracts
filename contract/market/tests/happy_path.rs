@@ -225,8 +225,8 @@ async fn test_happy() {
 
             // Check that supply position is closed.
             {
-                let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert!(supply_position.get_deposit().active.is_zero());
+                let supply_position = c.get_supply_position(supply_user.id()).await;
+                assert!(supply_position.is_none());
             }
         },
         // Protocol yield.
@@ -283,8 +283,8 @@ async fn test_happy() {
             c.withdraw_collateral(&borrow_user, 2000).await;
             let balance_after = c.collateral_asset.ft_balance_of(borrow_user.id()).await.0;
             assert_eq!(balance_after - balance_before, 2000);
-            let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-            assert!(!borrow_position.exists());
+            let borrow_position = c.get_borrow_position(borrow_user.id()).await;
+            assert!(borrow_position.is_none());
         },
     );
 }

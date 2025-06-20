@@ -96,6 +96,10 @@ impl BorrowPosition {
         total
     }
 
+    pub fn can_be_removed(&self) -> bool {
+        !self.is_liquidation_locked && !self.exists()
+    }
+
     pub fn exists(&self) -> bool {
         !self.collateral_asset_deposit.is_zero()
             || !self.get_total_borrow_asset_liability().is_zero()
