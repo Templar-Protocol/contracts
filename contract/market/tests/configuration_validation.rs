@@ -68,21 +68,11 @@ async fn borrow_asset_maximum_usage_ratio_greater_than_1() {
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_maximum_amount`: out of bounds"]
-async fn borrow_maximum_amount_zero() {
+#[should_panic = "Smart contract panicked: Invalid configuration field `supply_withdrawal_range.minimum`: out of bounds"]
+async fn withdrawal_minimum_greater_than_supply_minimum() {
     setup_everything(|c| {
-        c.borrow_maximum_amount = 0.into();
-        c.borrow_minimum_amount = 0.into();
-    })
-    .await;
-}
-
-#[tokio::test]
-#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_maximum_amount`: out of bounds"]
-async fn borrow_maximum_amount_less_than_minimum() {
-    setup_everything(|c| {
-        c.borrow_maximum_amount = 10000.into();
-        c.borrow_minimum_amount = 99999.into();
+        c.supply_range = (1, None).try_into().unwrap();
+        c.supply_withdrawal_range = (2, None).try_into().unwrap();
     })
     .await;
 }

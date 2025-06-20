@@ -13,8 +13,11 @@ async fn main() {
         })
     );
 
-    c.supply(&supply_user, 20_000).await;
-    c.collateralize(&borrow_user, 13_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 20_000),
+        c.collateralize(&borrow_user, 13_000),
+    );
+
     c.borrow(&borrow_user, 10_000).await;
 
     c.set_collateral_asset_price(0.85).await;

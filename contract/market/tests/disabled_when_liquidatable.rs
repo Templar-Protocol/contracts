@@ -4,8 +4,11 @@ use test_utils::*;
 async fn collateralization() {
     setup_test!(extract(c) accounts(borrow_user, supply_user));
 
-    c.supply(&supply_user, 2_000_000).await;
-    c.collateralize(&borrow_user, 2_000_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 2_000_000),
+        c.collateralize(&borrow_user, 2_000_000),
+    );
+
     c.borrow(&borrow_user, 1_000_000).await;
     c.set_collateral_asset_price(0.5).await;
     let collateral_before = c
@@ -30,8 +33,11 @@ async fn collateralization() {
 async fn repayment() {
     setup_test!(extract(c) accounts(borrow_user, supply_user));
 
-    c.supply(&supply_user, 2_000_000).await;
-    c.collateralize(&borrow_user, 2_000_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 2_000_000),
+        c.collateralize(&borrow_user, 2_000_000),
+    );
+
     c.borrow(&borrow_user, 1_000_000).await;
     c.set_collateral_asset_price(0.5).await;
 

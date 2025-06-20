@@ -79,9 +79,9 @@ impl MarketController {
         #[call(tgas(300))]
         pub fn borrow(amount: U128);
         #[call(tgas(300))]
-        pub fn apply_interest(snapshot_limit: Option<u32>);
+        pub fn apply_interest(account_id: Option<&AccountId>, snapshot_limit: Option<u32>);
         #[call(tgas(300))]
-        pub fn harvest_yield(mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
+        pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
         #[call(tgas(25))]
@@ -95,13 +95,18 @@ impl MarketController {
     pub async fn harvest_yield_execution(
         &self,
         supply_user: &Account,
+        account_id: Option<&AccountId>,
         mode: Option<HarvestYieldMode>,
     ) -> ExecutionSuccess {
         eprintln!("{} harvesting yield...", supply_user.id());
         self.call_exec(
             supply_user,
             "harvest_yield",
-            serde_json::to_vec(&json!({ "mode": mode })).unwrap(),
+            serde_json::to_vec(&json!({
+                "account_id": account_id,
+                "mode": mode,
+            }))
+            .unwrap(),
             NearToken::from_near(0),
             Gas::from_tgas(300),
         )
@@ -311,11 +316,11 @@ impl UnifiedMarketController {
             .get_supply_position(supply_user.id())
             .await
             .unwrap()
-            .get_inactive_deposit()
-            .amount
-            .is_zero()
+            .get_deposit()
+            .incoming
+            .is_empty()
         {
-            self.harvest_yield(supply_user, None).await;
+            self.harvest_yield(supply_user, None, None).await;
         }
         e
     }

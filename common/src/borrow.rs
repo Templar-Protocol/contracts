@@ -287,7 +287,8 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                 clippy::unwrap_used,
                 reason = "Assume accumulated interest will never exceed u128::MAX"
             )]
-            amount: accumulated.to_u128_ceil().unwrap().into(),
+            amount: accumulated.to_u128_floor().unwrap().into(),
+            fraction_as_u128_dividend: accumulated.fractional_part_as_u128_dividend(),
             next_snapshot_index,
         }
     }
@@ -465,7 +466,7 @@ impl<'a> BorrowPositionGuard<'a> {
             .borrow_asset_fees
             .amortize(current_snapshot_interest);
 
-        let borrow_minimum_amount = self.market.configuration.borrow_minimum_amount;
+        let borrow_minimum_amount = self.market.configuration.borrow_range.minimum;
         let liability_reduction = self
             .position
             .reduce_borrow_asset_liability(proof, amount, borrow_minimum_amount)

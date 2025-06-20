@@ -17,13 +17,14 @@ async fn borrow_within_bounds(
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
-            c.borrow_maximum_amount = maximum.into();
-            c.borrow_minimum_amount = minimum.into();
+            c.borrow_range = (minimum, Some(maximum)).try_into().unwrap();
         })
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
 
     for amount in amounts {
         c.borrow(&borrow_user, *amount).await;
@@ -42,19 +43,21 @@ async fn borrow_within_bounds(
 #[case(u128::MAX, 1, u128::MAX)]
 #[case(1000, 738, u128::MAX)]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Borrow amount is smaller than minimum allowed"]
+#[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
 async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[case] maximum: u128) {
     setup_test!(
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
-            c.borrow_maximum_amount = maximum.into();
-            c.borrow_minimum_amount = minimum.into();
+            c.borrow_range = (minimum, Some(maximum)).try_into().unwrap();
         })
     );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
+
     c.borrow(&borrow_user, amount).await;
 }
 
@@ -68,7 +71,7 @@ async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[cas
 #[case(100, &[1001], 500)]
 #[case(100, &[100, 100, 100, 100, 100, 100, 100], 500)]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Borrow amount is greater than maximum allowed"]
+#[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
 async fn borrow_above_maximum(
     #[case] minimum: u128,
     #[case] amounts: &[u128],
@@ -78,13 +81,14 @@ async fn borrow_above_maximum(
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
-            c.borrow_maximum_amount = maximum.into();
-            c.borrow_minimum_amount = minimum.into();
+            c.borrow_range = (minimum, Some(maximum)).try_into().unwrap();
         })
     );
 
-    c.supply(&supply_user, 10000).await;
-    c.collateralize(&borrow_user, 2000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(&borrow_user, 2000),
+    );
 
     for amount in amounts {
         c.borrow(&borrow_user, *amount).await;
@@ -98,7 +102,7 @@ async fn withdraw_below_minimum() {
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
-            c.borrow_minimum_amount = 10.into();
+            c.borrow_range = (10, None).try_into().unwrap();
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy = InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
         })
@@ -114,8 +118,7 @@ async fn withdraw_below_minimum() {
         borrow_position_before.get_total_borrow_asset_liability(),
         100.into()
     );
-    let r = c.repay(&borrow_user, 91).await;
-    eprintln!("{r:#?}");
+    c.repay(&borrow_user, 91).await;
     let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(

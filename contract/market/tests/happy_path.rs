@@ -52,7 +52,7 @@ async fn test_happy() {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_inactive_deposit().amount),
+        u128::from(supply_position.total_incoming()),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -62,17 +62,17 @@ async fn test_happy() {
         .get_supply_position(supply_user.id())
         .await
         .unwrap()
-        .get_inactive_deposit()
-        .amount
-        .is_zero()
+        .get_deposit()
+        .incoming
+        .is_empty()
     {
-        c.harvest_yield(&supply_user, None).await;
+        c.harvest_yield(&supply_user, None, None).await;
     }
 
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_borrow_asset_deposit_active()),
+        u128::from(supply_position.get_deposit().active),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -140,7 +140,7 @@ async fn test_happy() {
         async {
             // Withdraw yield.
             {
-                c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+                c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
                     .await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert_eq!(
@@ -149,7 +149,7 @@ async fn test_happy() {
                 );
                 // Move the yield to the principal so that it can be withdrawn
                 let amount_moved_to_principal = c
-                    .harvest_yield(&supply_user, Some(HarvestYieldMode::Compounding))
+                    .harvest_yield(&supply_user, None, Some(HarvestYieldMode::Compounding))
                     .await;
 
                 assert_eq!(

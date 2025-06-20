@@ -1,4 +1,4 @@
-use near_sdk::{near, require};
+use near_sdk::{json_types::U128, near, require};
 
 use crate::asset::{AssetClass, FungibleAssetAmount};
 
@@ -6,6 +6,7 @@ use crate::asset::{AssetClass, FungibleAssetAmount};
 #[near(serializers = [borsh, json])]
 pub struct Accumulator<T: AssetClass> {
     total: FungibleAssetAmount<T>,
+    fraction_as_u128_dividend: U128,
     next_snapshot_index: u32,
     #[borsh(skip)]
     #[serde(default, skip_serializing_if = "FungibleAssetAmount::is_zero")]
@@ -17,6 +18,7 @@ impl<T: AssetClass> Accumulator<T> {
     pub fn new(next_snapshot_index: u32) -> Self {
         Self {
             total: 0.into(),
+            fraction_as_u128_dividend: U128(0),
             next_snapshot_index,
             pending_estimate: 0.into(),
             amortized: 0.into(),
@@ -70,7 +72,8 @@ impl<T: AssetClass> Accumulator<T> {
     pub fn accumulate(
         &mut self,
         AccumulationRecord {
-            amount,
+            mut amount,
+            fraction_as_u128_dividend: fraction,
             next_snapshot_index,
         }: AccumulationRecord<T>,
     ) -> Option<()>
@@ -81,15 +84,22 @@ impl<T: AssetClass> Accumulator<T> {
             next_snapshot_index >= self.next_snapshot_index,
             "Invariant violation: Asset accumulations cannot occur retroactively.",
         );
+        let (fraction, carry) = self.fraction_as_u128_dividend.0.overflowing_add(fraction);
+        if carry {
+            amount.join(1.into())?;
+        }
         self.add_once(amount)?;
+        self.fraction_as_u128_dividend.0 = fraction;
         self.next_snapshot_index = next_snapshot_index;
         Some(())
     }
 }
 
 #[must_use]
+#[derive(Debug, Clone)]
 pub struct AccumulationRecord<T: AssetClass> {
     pub(crate) amount: FungibleAssetAmount<T>,
+    pub(crate) fraction_as_u128_dividend: u128,
     pub(crate) next_snapshot_index: u32,
 }
 
@@ -109,6 +119,7 @@ mod tests {
 
         a.accumulate(AccumulationRecord {
             amount: 100.into(),
+            fraction_as_u128_dividend: 0,
             next_snapshot_index: 2,
         });
 
@@ -120,9 +131,31 @@ mod tests {
 
         a.accumulate(AccumulationRecord {
             amount: 100.into(),
+            fraction_as_u128_dividend: 0,
             next_snapshot_index: 3,
         });
 
         assert_eq!(a.get_total(), 200.into());
+    }
+
+    #[test]
+    fn fraction() {
+        let mut a = Accumulator::<crate::asset::BorrowAsset>::new(1);
+
+        a.accumulate(AccumulationRecord {
+            amount: 100.into(),
+            fraction_as_u128_dividend: 1 << 127,
+            next_snapshot_index: 2,
+        });
+
+        assert_eq!(a.get_total(), 100.into());
+
+        a.accumulate(AccumulationRecord {
+            amount: 100.into(),
+            fraction_as_u128_dividend: 1 << 127,
+            next_snapshot_index: 3,
+        });
+
+        assert_eq!(a.get_total(), 201.into());
     }
 }

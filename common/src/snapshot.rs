@@ -8,6 +8,7 @@ pub struct Snapshot {
     pub time_chunk: TimeChunk,
     pub end_timestamp_ms: U64,
     pub deposited_active: BorrowAssetAmount,
+    pub deposited_incoming: BorrowAssetAmount,
     pub borrowed: BorrowAssetAmount,
     pub yield_distribution: BorrowAssetAmount,
     pub interest_rate: Decimal,

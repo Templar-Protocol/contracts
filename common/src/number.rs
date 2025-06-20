@@ -320,6 +320,10 @@ impl Decimal {
         U512([self.repr.0[0], self.repr.0[1], 0, 0, 0, 0, 0, 0])
     }
 
+    pub fn fractional_part_as_u128_dividend(&self) -> u128 {
+        u128::from(self.repr.0[0]) | (u128::from(self.repr.0[1]) << 64)
+    }
+
     fn epsilon_round(repr: U512) -> U512 {
         (repr + (Self::REPR_EPSILON >> 1)) & !(Self::REPR_EPSILON - 1)
     }
@@ -789,6 +793,14 @@ mod tests {
         assert!((Decimal::ONE_HALF.to_f64_lossy() - 0.5_f64).abs() < 1e-200);
         assert_eq!(Decimal::ONE.to_u128_floor().unwrap(), 1);
         assert_eq!(Decimal::TWO.to_u128_floor().unwrap(), 2);
+    }
+
+    #[rstest]
+    #[case(Decimal::ONE, 0)]
+    #[case(Decimal::ONE_HALF, 1u128 << 127)]
+    #[test]
+    fn get_fractional_dividend(#[case] value: Decimal, #[case] expected: u128) {
+        assert_eq!(value.fractional_part_as_u128_dividend(), expected);
     }
 
     #[rstest]
