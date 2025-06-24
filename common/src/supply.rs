@@ -15,13 +15,6 @@ use crate::{
 /// is safe to perform certain other operations.
 pub struct YieldAccumulationProof(());
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct InactiveDeposit {
-    pub amount: BorrowAssetAmount,
-    pub activate_at_snapshot_index: u32,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct IncomingDeposit {
