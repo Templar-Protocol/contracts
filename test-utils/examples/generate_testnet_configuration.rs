@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use near_sdk::serde_json;
 use templar_common::{
-    asset::{FungibleAsset, FungibleAssetAmount},
+    asset::FungibleAsset,
     dec,
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
@@ -48,10 +48,10 @@ pub fn main() {
             )
             .unwrap(),
             borrow_maximum_duration_ms: None,
-            borrow_minimum_amount: FungibleAssetAmount::new(1),
-            borrow_maximum_amount: FungibleAssetAmount::new(u128::MAX),
+            borrow_range: (1, None).try_into().unwrap(),
+            supply_range: (1, Some(500 * 10u128.pow(6))).try_into().unwrap(),
+            supply_withdrawal_range: (1, None).try_into().unwrap(),
             supply_withdrawal_fee: TimeBasedFee::zero(),
-            supply_maximum_amount: Some(FungibleAssetAmount::new(500 * 10u128.pow(6))),
             yield_weights: YieldWeights::new_with_supply_weight(1),
             liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
             protocol_account_id: "templar-in-training.testnet".parse().unwrap(),

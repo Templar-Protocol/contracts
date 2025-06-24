@@ -33,8 +33,10 @@ async fn many_snapshots() {
         })
     );
 
-    c.supply(&supply_user, 100_000).await;
-    c.collateralize(&borrow_user, 200_000).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 100_000),
+        c.collateralize(&borrow_user, 200_000),
+    );
     let r = c.borrow(&borrow_user, 100).await;
     let base_gas = r.total_gas_burnt.as_gas();
     eprintln!("Base gas: {base_gas}");

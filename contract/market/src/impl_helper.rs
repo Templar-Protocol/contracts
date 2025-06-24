@@ -3,7 +3,6 @@ use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
-    event::MarketEvent,
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     price::PricePair,
@@ -28,16 +27,13 @@ impl Contract {
             );
         }
 
-        let supply_maximum_amount = self.configuration.supply_maximum_amount;
         let mut supply_position = self.get_or_create_supply_position_guard(account_id);
         let proof = supply_position.accumulate_yield();
         supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
-        if let Some(ref supply_maximum_amount) = supply_maximum_amount {
-            require!(
-                supply_position.inner().get_borrow_asset_deposit_total() <= *supply_maximum_amount,
-                "New supply position cannot exceed configured supply maximum",
-            );
-        }
+        require!(
+            supply_position.is_within_allowable_range(),
+            "New supply position is outside of allowable range",
+        );
     }
 
     pub fn execute_collateralize(
@@ -285,12 +281,11 @@ impl Contract {
 
         let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        MarketEvent::SupplyWithdrawalResolution {
-            account_id: withdrawal_resolution.account_id.clone(),
-            success: withdrawal_succeeded,
-            expected_success,
+        if let Some(mut supply_position) =
+            self.supply_position_guard(withdrawal_resolution.account_id.clone())
+        {
+            supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
         }
-        .emit();
 
         if withdrawal_succeeded || expected_success {
             // TODO: If this panics, this is BIG BAD, as it means there is
@@ -311,6 +306,13 @@ impl Contract {
 
         if withdrawal_succeeded {
             self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
+
+            if self.cleanup_supply_position(&withdrawal_resolution.account_id) {
+                self.refund_for_storage(
+                    &withdrawal_resolution.account_id,
+                    self.storage_usage_supply_position,
+                );
+            }
         } else {
             // Possible reasons for failure:
             // - MPC signer failure (multichain; TODO).
@@ -324,16 +326,6 @@ impl Contract {
 
             env::log_str("The withdrawal request cannot be fulfilled at this time.");
             self.withdrawal_queue.unlock();
-            if let Some(mut supply_position) =
-                self.supply_position_guard(withdrawal_resolution.account_id.clone())
-            {
-                // This should not do very much since we also accumulate
-                // yield in the initial function call of execute_next_supply_withdrawal_request()
-                let proof = supply_position.accumulate_yield();
-                let mut amount = withdrawal_resolution.amount_to_account;
-                amount.join(withdrawal_resolution.amount_to_fees);
-                supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
-            }
         }
     }
 
@@ -443,7 +435,12 @@ impl Contract {
 
         require!(
             borrow_position.satisfies_minimum_collateral_ratio(&price_pair),
-            "Borrow must still be above MCR after collateral withdrawal.",
+            "Borrow position must satisfy MCR after collateral withdrawal.",
+        );
+
+        require!(
+            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
+            "Borrow position must satisfy initial MCR after collateral withdrawal.",
         );
 
         drop(borrow_position);
@@ -470,10 +467,14 @@ impl Contract {
             matches!(env::promise_result(0), PromiseResult::Successful(_));
 
         if transfer_was_successful {
-            // Do nothing
+            if self.cleanup_borrow_position(&account_id) {
+                self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
+            }
         } else {
             let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
-                env::panic_str("Invariant violation: Borrow position must exist after collateral withdrawal failure.");
+                env::panic_str(
+                    "Invariant violation: Borrow position must exist after collateral withdrawal.",
+                );
             };
 
             let proof = borrow_position.accumulate_interest();

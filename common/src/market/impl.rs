@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
 use crate::{
@@ -30,7 +32,7 @@ pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
     pub borrow_asset_deposited_active: BorrowAssetAmount,
-    pub borrow_asset_deposited_inactive: BorrowAssetAmount,
+    pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
     pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
@@ -62,6 +64,7 @@ impl Market {
             time_chunk: configuration.time_chunk_configuration.previous(),
             end_timestamp_ms: env::block_timestamp_ms().into(),
             deposited_active: 0.into(),
+            deposited_incoming: 0.into(),
             borrowed: 0.into(),
             yield_distribution: BorrowAssetAmount::zero(),
             interest_rate: configuration
@@ -76,7 +79,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited_active: 0.into(),
-            borrow_asset_deposited_inactive: 0.into(),
+            borrow_asset_deposited_incoming: HashMap::new(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
             supply_positions: LookupMap::new(key!(SupplyPositions)),
@@ -90,6 +93,15 @@ impl Market {
         self_.finalized_snapshots.push(first_snapshot);
 
         self_
+    }
+
+    pub fn total_incoming(&self) -> BorrowAssetAmount {
+        self.borrow_asset_deposited_incoming
+            .values()
+            .fold(BorrowAssetAmount::zero(), |mut a, b| {
+                a.join(*b);
+                a
+            })
     }
 
     pub fn get_last_finalized_snapshot(&self) -> &Snapshot {
@@ -110,6 +122,10 @@ impl Market {
         if self.current_snapshot.time_chunk == time_chunk {
             self.current_snapshot.end_timestamp_ms = env::block_timestamp_ms().into();
             self.current_snapshot.deposited_active = self.borrow_asset_deposited_active;
+            self.current_snapshot.deposited_incoming = *self
+                .borrow_asset_deposited_incoming
+                .get(&self.finalized_snapshots.len())
+                .unwrap_or(&0.into());
             self.current_snapshot.borrowed = self.borrow_asset_borrowed;
             self.current_snapshot
                 .yield_distribution
@@ -120,13 +136,16 @@ impl Market {
                 .at(self.current_snapshot.usage_ratio());
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
-            self.borrow_asset_deposited_active
-                .join(self.borrow_asset_deposited_inactive);
-            self.borrow_asset_deposited_inactive = BorrowAssetAmount::zero();
+            let deposited_incoming = self
+                .borrow_asset_deposited_incoming
+                .remove(&self.finalized_snapshots.len())
+                .unwrap_or(0.into());
+            self.borrow_asset_deposited_active.join(deposited_incoming);
             let mut snapshot = Snapshot {
                 time_chunk,
                 yield_distribution,
                 deposited_active: self.borrow_asset_deposited_active,
+                deposited_incoming,
                 borrowed: self.borrow_asset_borrowed,
                 end_timestamp_ms: env::block_timestamp_ms().into(),
                 interest_rate: Decimal::ZERO,
@@ -188,6 +207,14 @@ impl Market {
         SupplyPositionGuard::new(self, account_id, position)
     }
 
+    pub fn cleanup_supply_position(&mut self, account_id: &AccountId) -> bool {
+        self.supply_positions
+            .get(account_id)
+            .filter(SupplyPosition::can_be_removed)
+            .and_then(|_| self.supply_positions.remove(account_id))
+            .is_some()
+    }
+
     pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {
         self.borrow_positions
             .get(&account_id)
@@ -212,6 +239,14 @@ impl Market {
         BorrowPositionGuard::new(self, account_id, position)
     }
 
+    pub fn cleanup_borrow_position(&mut self, account_id: &AccountId) -> bool {
+        self.borrow_positions
+            .get(account_id)
+            .filter(BorrowPosition::can_be_removed)
+            .and_then(|_| self.borrow_positions.remove(account_id))
+            .is_some()
+    }
+
     /// # Errors
     /// - If the withdrawal queue is already locked.
     /// - If the withdrawal queue is empty.
@@ -224,10 +259,7 @@ impl Market {
             self.supply_position_guard(account_id)
                 .and_then(|supply_position| {
                     // Cap withdrawal amount to deposit amount at most.
-                    let amount = supply_position
-                        .inner()
-                        .get_borrow_asset_deposit_total()
-                        .min(requested_amount);
+                    let amount = supply_position.total_deposit().min(requested_amount);
 
                     (!amount.is_zero()).then_some((amount, supply_position))
                 })
@@ -241,7 +273,7 @@ impl Market {
 
         let proof = supply_position.accumulate_yield();
         let resolution =
-            supply_position.record_withdrawal(proof, amount, env::block_timestamp_ms());
+            supply_position.record_withdrawal_initial(proof, amount, env::block_timestamp_ms());
 
         Ok(Some(resolution))
     }
@@ -273,41 +305,40 @@ impl Market {
 
         let total_weight =
             Decimal::from(u16::from(self.configuration.yield_weights.total_weight()));
-        let total_amount = Decimal::from(u128::from(amount));
+        let total_amount = Decimal::from(amount);
         let amount_per_weight = total_amount / total_weight;
-        if !total_weight.is_zero() {
-            for (account_id, share_weight) in &self.configuration.yield_weights.r#static {
-                #[allow(clippy::unwrap_used, reason = "share_weight / total_weight <= 1")]
-                let share = amount
-                    .split((*share_weight * amount_per_weight).to_u128_floor().unwrap())
-                    // Safety:
-                    // Guaranteed share_weight <= total_weight
-                    // Guaranteed sum(share_weights) == total_weight
-                    // Guaranteed sum(floor(total_amount * share_weight / total_weight) for each share_weight in share_weights) <= total_amount
-                    // Therefore this should never panic.
-                    .unwrap();
 
-                let mut yield_record = self.static_yield.get(account_id).unwrap_or_default();
-                // Assuming borrow_asset is implemented correctly:
-                // this only panics if the circulating supply is somehow >u128::MAX
-                // and we have somehow obtained >u128::MAX amount.
-                //
-                // NOTE: This is not necessary when working with NEP-141
-                // tokens, which are required by standard to use 128-bit balances.
-                //
-                // Otherwise, borrow_asset is implemented incorrectly.
-                // TODO: If that is the case, how to deal?
-                //
-                // Probably, it is okay to ignore this case. We can assume
-                // that the configuration will only specify
-                // correctly-implemented token contracts.
-                #[allow(
-                    clippy::unwrap_used,
-                    reason = "Assume borrow asset is implemented correctly"
-                )]
-                yield_record.borrow_asset.join(share).unwrap();
-                self.static_yield.insert(account_id, &yield_record);
-            }
+        for (account_id, share_weight) in &self.configuration.yield_weights.r#static {
+            #[allow(clippy::unwrap_used, reason = "share_weight / total_weight <= 1")]
+            let share = amount
+                .split((*share_weight * amount_per_weight).to_u128_floor().unwrap())
+                // Safety:
+                // Guaranteed share_weight <= total_weight
+                // Guaranteed sum(share_weights) == total_weight
+                // Guaranteed sum(floor(total_amount * share_weight / total_weight) for each share_weight in share_weights) <= total_amount
+                // Therefore this should never panic.
+                .unwrap();
+
+            let mut yield_record = self.static_yield.get(account_id).unwrap_or_default();
+            // Assuming borrow_asset is implemented correctly:
+            // this only panics if the circulating supply is somehow >u128::MAX
+            // and we have somehow obtained >u128::MAX amount.
+            //
+            // NOTE: This is not necessary when working with NEP-141
+            // tokens, which are required by standard to use 128-bit balances.
+            //
+            // Otherwise, borrow_asset is implemented incorrectly.
+            // TODO: If that is the case, how to deal?
+            //
+            // Probably, it is okay to ignore this case. We can assume
+            // that the configuration will only specify
+            // correctly-implemented token contracts.
+            #[allow(
+                clippy::unwrap_used,
+                reason = "Assume borrow asset is implemented correctly"
+            )]
+            yield_record.borrow_asset.join(share).unwrap();
+            self.static_yield.insert(account_id, &yield_record);
         }
 
         // Next, dynamic (supply-based) yield.
