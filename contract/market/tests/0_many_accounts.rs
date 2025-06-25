@@ -128,11 +128,6 @@ async fn many_accounts() {
     let suppliers_actual = c.list_supply_positions(None, None).await;
     let borrowers_actual = c.list_borrow_positions(None, None).await;
 
-    // eprintln!("Suppliers Actual");
-    // eprintln!("{suppliers_actual:#?}");
-    // eprintln!("Borrowers Actual");
-    // eprintln!("{borrowers_actual:#?}");
-
     assert_eq!(suppliers_actual.len(), suppliers_expected.len());
     assert_eq!(borrowers_actual.len(), borrowers_expected.len());
 
