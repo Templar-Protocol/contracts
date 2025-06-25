@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
+use near_sdk::{
+    collections::{LookupMap, UnorderedMap},
+    env, near, AccountId, BorshStorageKey, IntoStorageKey,
+};
 
 use crate::{
     asset::BorrowAssetAmount,
@@ -35,8 +38,8 @@ pub struct Market {
     pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
-    pub(crate) supply_positions: LookupMap<AccountId, SupplyPosition>,
-    pub(crate) borrow_positions: LookupMap<AccountId, BorrowPosition>,
+    pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
+    pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub current_snapshot: Snapshot,
     pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
@@ -82,8 +85,8 @@ impl Market {
             borrow_asset_deposited_incoming: HashMap::new(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
-            supply_positions: LookupMap::new(key!(SupplyPositions)),
-            borrow_positions: LookupMap::new(key!(BorrowPositions)),
+            supply_positions: UnorderedMap::new(key!(SupplyPositions)),
+            borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             current_snapshot,
             finalized_snapshots: ChunkedAppendOnlyList::new(key!(FinalizedSnapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
@@ -183,6 +186,10 @@ impl Market {
             .into()
     }
 
+    pub fn iter_supply_positions(&self) -> impl Iterator<Item = (AccountId, SupplyPosition)> + '_ {
+        self.supply_positions.iter()
+    }
+
     pub fn supply_position_ref(&self, account_id: AccountId) -> Option<SupplyPositionRef<&Self>> {
         self.supply_positions
             .get(&account_id)
@@ -213,6 +220,10 @@ impl Market {
             .filter(SupplyPosition::can_be_removed)
             .and_then(|_| self.supply_positions.remove(account_id))
             .is_some()
+    }
+
+    pub fn iter_borrow_positions(&self) -> impl Iterator<Item = (AccountId, BorrowPosition)> + '_ {
+        self.borrow_positions.iter()
     }
 
     pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {

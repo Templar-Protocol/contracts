@@ -92,6 +92,24 @@ impl WithdrawalQueue {
         r
     }
 
+    fn set_existing_node_next(&mut self, node_id: NonZeroU32, next: Option<NonZeroU32>) {
+        let mut node = self
+            .queue
+            .get(&node_id)
+            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+        node.next = next;
+        self.queue.insert(&node_id, &node);
+    }
+
+    fn set_existing_node_prev(&mut self, node_id: NonZeroU32, prev: Option<NonZeroU32>) {
+        let mut node = self
+            .queue
+            .get(&node_id)
+            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+        node.prev = prev;
+        self.queue.insert(&node_id, &node);
+    }
+
     pub fn peek(&self) -> Option<(AccountId, BorrowAssetAmount)> {
         if let Some(node_id) = self.queue_head {
             let QueueNode {
@@ -152,7 +170,7 @@ impl WithdrawalQueue {
                 .unwrap_or_else(|| env::panic_str("Inconsistent state"));
             self.queue_head = next;
             if let Some(next_id) = next {
-                self.mut_existing_node(next_id, |next| next.prev = None);
+                self.set_existing_node_prev(next_id, None);
             } else {
                 self.queue_tail = None;
             }
@@ -178,13 +196,13 @@ impl WithdrawalQueue {
                 .unwrap_or_else(|| env::panic_str("Inconsistent state"));
 
             if let Some(next_id) = node.next {
-                self.mut_existing_node(next_id, |next| next.prev = node.prev);
+                self.set_existing_node_prev(next_id, node.prev);
             } else {
                 self.queue_tail = node.prev;
             }
 
             if let Some(prev_id) = node.prev {
-                self.mut_existing_node(prev_id, |prev| prev.next = node.next);
+                self.set_existing_node_next(prev_id, node.next);
             } else {
                 self.queue_head = node.next;
             }
@@ -211,7 +229,7 @@ impl WithdrawalQueue {
             }
 
             if let Some(tail_id) = self.queue_tail {
-                self.mut_existing_node(tail_id, |tail| tail.next = Some(node_id));
+                self.set_existing_node_next(tail_id, Some(node_id));
             }
             let node = QueueNode {
                 account_id: account_id.clone(),
