@@ -201,9 +201,7 @@ impl MarketExternalInterface for Contract {
             "Withdrawal amount is outside of allowable range",
         );
 
-        if self.withdrawal_queue.contains(&predecessor) {
-            self.withdrawal_queue.remove(&predecessor);
-        }
+        self.withdrawal_queue.remove(&predecessor);
         self.withdrawal_queue.insert_or_update(&predecessor, amount);
     }
 
