@@ -1,10 +1,4 @@
-use near_sdk::{
-    env,
-    json_types::U128,
-    near, require,
-    serde_json::{self, json},
-    AccountId, Gas, Promise, PromiseResult,
-};
+use near_sdk::{env, near, require, serde_json, AccountId, Gas, Promise, PromiseResult};
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
@@ -14,7 +8,7 @@ use templar_common::{
     price::PricePair,
 };
 
-use crate::{Contract, ContractExt};
+use crate::{Contract, ContractExt, ReturnStyle};
 
 /// Internal helpers.
 impl Contract {
@@ -343,18 +337,14 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: CollateralAssetAmount,
-        is_mt_transfer_call: bool,
+        return_style: ReturnStyle,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> serde_json::Value {
         let price_pair = self.price_pair(oracle_response);
 
         self.execute_collateralize(account_id, amount, &price_pair);
 
-        if is_mt_transfer_call {
-            json!(["0"])
-        } else {
-            json!("0")
-        }
+        return_style.serialize(CollateralAssetAmount::zero())
     }
 
     // ~3.3 TGas
@@ -365,18 +355,14 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        is_mt_transfer_call: bool,
+        return_style: ReturnStyle,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> serde_json::Value {
         let price_pair = self.price_pair(oracle_response);
 
         let amount = self.execute_repay(account_id, amount, &price_pair);
 
-        if is_mt_transfer_call {
-            json!([amount])
-        } else {
-            json!(amount)
-        }
+        return_style.serialize(amount)
     }
 
     // ~3.3 Tgas
@@ -390,7 +376,7 @@ impl Contract {
         liquidator_id: AccountId,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        is_mt_transfer_call: bool,
+        return_style: ReturnStyle,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
         let price_pair = self
@@ -411,7 +397,7 @@ impl Contract {
                         liquidator_id,
                         account_id,
                         amount,
-                        is_mt_transfer_call,
+                        return_style,
                     ),
             )
     }
@@ -427,22 +413,14 @@ impl Contract {
         liquidator_id: AccountId,
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
-        is_mt_transfer_call: bool,
+        return_style: ReturnStyle,
     ) -> serde_json::Value {
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        let refund_to_liquidator = U128::from(self.execute_liquidate_final(
-            liquidator_id,
-            account_id,
-            borrow_asset_amount,
-            success,
-        ));
+        let refund_to_liquidator =
+            self.execute_liquidate_final(liquidator_id, account_id, borrow_asset_amount, success);
 
-        if is_mt_transfer_call {
-            json!([refund_to_liquidator])
-        } else {
-            json!(refund_to_liquidator)
-        }
+        return_style.serialize(refund_to_liquidator)
     }
 
     // ~7.25 Tgas

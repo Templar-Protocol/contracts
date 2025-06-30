@@ -7,7 +7,7 @@ use templar_common::{
     market::{DepositMsg, LiquidateMsg},
 };
 
-use crate::{Contract, ContractExt};
+use crate::{Contract, ContractExt, ReturnStyle};
 
 #[near]
 impl FungibleTokenReceiver for Contract {
@@ -17,6 +17,8 @@ impl FungibleTokenReceiver for Contract {
         amount: U128,
         msg: String,
     ) -> PromiseOrValue<U128> {
+        const RETURN_STYLE: ReturnStyle = ReturnStyle::Nep141FtTransferCall;
+
         let msg = near_sdk::serde_json::from_str::<DepositMsg>(&msg)
             .unwrap_or_else(|_| env::panic_str("Invalid deposit msg"));
 
@@ -56,7 +58,9 @@ impl FungibleTokenReceiver for Contract {
                         .then(
                             self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
                                 .collateralize_transfer_call_01_consume_price(
-                                    sender_id, amount, false,
+                                    sender_id,
+                                    amount,
+                                    RETURN_STYLE,
                                 ),
                         ),
                 )
@@ -70,7 +74,11 @@ impl FungibleTokenReceiver for Contract {
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .repay_transfer_call_01_consume_price(sender_id, amount, false),
+                                .repay_transfer_call_01_consume_price(
+                                    sender_id,
+                                    amount,
+                                    RETURN_STYLE,
+                                ),
                         ),
                 )
             }
@@ -84,7 +92,10 @@ impl FungibleTokenReceiver for Contract {
                         .then(
                             self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
                                 .liquidate_transfer_call_01_consume_oracle_response(
-                                    sender_id, account_id, amount, false,
+                                    sender_id,
+                                    account_id,
+                                    amount,
+                                    RETURN_STYLE,
                                 ),
                         ),
                 )
@@ -103,6 +114,8 @@ impl Nep245Receiver for Contract {
         amounts: Vec<U128>,
         msg: String,
     ) -> PromiseOrValue<Vec<U128>> {
+        const RETURN_STYLE: ReturnStyle = ReturnStyle::Nep245MtTransferCall;
+
         // NEP-245: This could be an authorized account ID. We only care about
         // the actual previous owner.
         let _ = sender_id;
@@ -167,7 +180,9 @@ impl Nep245Receiver for Contract {
                         .then(
                             self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
                                 .collateralize_transfer_call_01_consume_price(
-                                    sender_id, amount, true,
+                                    sender_id,
+                                    amount,
+                                    RETURN_STYLE,
                                 ),
                         ),
                 )
@@ -181,7 +196,11 @@ impl Nep245Receiver for Contract {
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .repay_transfer_call_01_consume_price(sender_id, amount, true),
+                                .repay_transfer_call_01_consume_price(
+                                    sender_id,
+                                    amount,
+                                    RETURN_STYLE,
+                                ),
                         ),
                 )
             }
@@ -195,7 +214,10 @@ impl Nep245Receiver for Contract {
                         .then(
                             self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
                                 .liquidate_transfer_call_01_consume_oracle_response(
-                                    sender_id, account_id, amount, true,
+                                    sender_id,
+                                    account_id,
+                                    amount,
+                                    RETURN_STYLE,
                                 ),
                         ),
                 )
