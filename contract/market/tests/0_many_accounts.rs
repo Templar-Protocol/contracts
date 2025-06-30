@@ -91,13 +91,13 @@ async fn many_accounts() {
                     );
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     c.create_supply_withdrawal_request(&account, 100_000).await;
-                    let balance_before = c.borrow_asset.ft_balance_of(account.id()).await.0;
+                    let balance_before = c.borrow_asset.balance_of(account.id()).await;
 
                     let (s, wq_empty) = oneshot::channel::<()>();
                     wq_send.send(s).await.unwrap();
                     wq_empty.await.unwrap();
 
-                    let balance_after = c.borrow_asset.ft_balance_of(account.id()).await.0;
+                    let balance_after = c.borrow_asset.balance_of(account.id()).await;
                     assert_eq!(balance_before + 100_000, balance_after);
                     suppliers.lock().await.insert(account.id().clone());
                 } else {
