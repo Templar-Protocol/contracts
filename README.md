@@ -32,7 +32,3 @@ Templar Protocol is a chain-agnostic overcollateralized lending DeFi protocol.
 - [X (Twitter)](https://x.com/TemplarProtocol)
 - [Discord](https://discord.gg/KAvMtYpbep)
 - [Telegram](https://t.me/templarprotocol)
-
-## Security Reporting
-
-Send security reports to [security@templarprotocol.com](mailto:security@templarprotocol.com) or contact [@peer2f00l on Telegram](https://t.me/peer2f00l).
