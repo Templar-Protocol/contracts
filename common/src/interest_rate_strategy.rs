@@ -8,7 +8,7 @@ pub trait UsageCurve {
     fn at(&self, usage_ratio: Decimal) -> Decimal;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum InterestRateStrategy {
     Linear(Linear),
@@ -59,7 +59,7 @@ impl Deref for InterestRateStrategy {
 /// ```text,no_run
 /// r(u) = u * (t - b) + b
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct Linear {
     base: Decimal,

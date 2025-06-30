@@ -4,6 +4,7 @@ pub use controller::{
     ft::FtController,
     market::{MarketController, UnifiedMarketController},
     oracle::OracleController,
+    registry::RegistryController,
     storage_management::StorageManagementController,
     ContractController,
 };
@@ -104,11 +105,11 @@ pub fn market_configuration(
         )
         .unwrap(),
         borrow_maximum_duration_ms: None,
-        borrow_minimum_amount: 1.into(),
-        borrow_maximum_amount: u128::MAX.into(),
-        liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
+        borrow_range: (1, None).try_into().unwrap(),
+        supply_range: (1, None).try_into().unwrap(),
+        supply_withdrawal_range: (1, None).try_into().unwrap(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
-        supply_maximum_amount: None,
+        liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
         yield_weights,
         protocol_account_id,
     }
@@ -227,4 +228,19 @@ pub async fn setup_everything(
         protocol_yield_user,
         insurance_yield_user,
     }
+}
+
+pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
+    accounts!(worker, registry);
+
+    let r = RegistryController::deploy(registry).await;
+
+    r.add_version(
+        r.contract.as_account(),
+        "market@0.0.0",
+        controller::market::load_wasm().await,
+    )
+    .await;
+
+    r
 }

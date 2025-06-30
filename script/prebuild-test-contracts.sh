@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -ex
 
 export ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 
@@ -10,6 +10,9 @@ cd "$ROOT_DIR/mock/ft"
 cargo near build non-reproducible-wasm 1>&2
 
 cd "$ROOT_DIR/mock/mt"
+cargo near build non-reproducible-wasm 1>&2
+
+cd "$ROOT_DIR/contract/registry"
 cargo near build non-reproducible-wasm 1>&2
 
 cd "$ROOT_DIR/contract/market"

@@ -5,7 +5,7 @@ use crate::{
     number::Decimal,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum Fee<T: AssetClass> {
     Flat(FungibleAssetAmount<T>),
@@ -27,7 +27,7 @@ impl<T: AssetClass> Fee<T> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct TimeBasedFee<T: AssetClass> {
     pub fee: Fee<T>,
@@ -45,7 +45,7 @@ impl<T: AssetClass> TimeBasedFee<T> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 pub enum TimeBasedFeeFunction {
     Fixed,

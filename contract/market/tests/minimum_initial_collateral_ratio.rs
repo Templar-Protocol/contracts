@@ -119,3 +119,26 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
 
     assert!(!borrow_status.is_liquidation(), "Borrow should not be in liquidation when collateralization ratio is below minimum INITIAL if it is still above the minimum for liquidation.");
 }
+
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Borrow position must satisfy initial MCR after collateral withdrawal."]
+async fn withdraw_collateral_below_initial_mcr() {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.borrow_mcr = dec!("1.2");
+            c.borrow_mcr_initial = dec!("1.5");
+        })
+    );
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 10_000),
+        c.collateralize(&borrow_user, 1500),
+    );
+
+    c.borrow(&borrow_user, 1000).await;
+
+    c.withdraw_collateral(&borrow_user, 1).await;
+}

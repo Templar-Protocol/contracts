@@ -91,7 +91,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_inactive_deposit().amount),
+        u128::from(supply_position.total_incoming()),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -101,17 +101,17 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         .get_supply_position(supply_user.id())
         .await
         .unwrap()
-        .get_inactive_deposit()
-        .amount
-        .is_zero()
+        .get_deposit()
+        .incoming
+        .is_empty()
     {
-        c.harvest_yield(&supply_user, None).await;
+        c.harvest_yield(&supply_user, None, None).await;
     }
 
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_borrow_asset_deposit_active()),
+        u128::from(supply_position.get_deposit().active),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -179,7 +179,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         async {
             // Withdraw yield.
             {
-                c.harvest_yield(&supply_user, Some(HarvestYieldMode::Default))
+                c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
                     .await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
                 assert_eq!(
@@ -188,7 +188,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
                 );
                 // Move the yield to the principal so that it can be withdrawn
                 let amount_moved_to_principal = c
-                    .harvest_yield(&supply_user, Some(HarvestYieldMode::Compounding))
+                    .harvest_yield(&supply_user, None, Some(HarvestYieldMode::Compounding))
                     .await;
 
                 assert_eq!(
@@ -264,8 +264,8 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
 
             // Check that supply position is closed.
             {
-                let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert!(supply_position.get_borrow_asset_deposit_active().is_zero());
+                let supply_position = c.get_supply_position(supply_user.id()).await;
+                assert!(supply_position.is_none());
             }
         },
         // Protocol yield.
@@ -306,8 +306,8 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
             c.withdraw_collateral(&borrow_user, 2000).await;
             let balance_after = c.collateral_asset.balance_of(borrow_user.id()).await;
             assert_eq!(balance_after - balance_before, 2000);
-            let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-            assert!(!borrow_position.exists());
+            let borrow_position = c.get_borrow_position(borrow_user.id()).await;
+            assert!(borrow_position.is_none());
         },
     );
 }

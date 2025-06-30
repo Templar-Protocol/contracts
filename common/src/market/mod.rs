@@ -24,11 +24,11 @@ pub mod error {
 pub struct BorrowAssetMetrics {
     pub available: BorrowAssetAmount,
     pub deposited_active: BorrowAssetAmount,
-    pub deposited_inactive: BorrowAssetAmount,
+    pub deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     pub borrowed: BorrowAssetAmount,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct YieldWeights {
     pub supply: NonZeroU16,

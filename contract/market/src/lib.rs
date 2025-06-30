@@ -81,6 +81,14 @@ impl Contract {
         )
         .unwrap_or_else(|e| env::panic_str(&format!("Storage error: {e}")));
     }
+
+    fn refund_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
+        self.unlock_storage(
+            account_id,
+            env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
+        )
+        .unwrap_or_else(|e| env::panic_str(&format!("Storage error: {e}")));
+    }
 }
 
 impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {

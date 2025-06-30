@@ -10,6 +10,7 @@ pub mod ft;
 pub mod market;
 pub mod mt;
 pub mod oracle;
+pub mod registry;
 pub mod storage_management;
 pub mod token;
 
