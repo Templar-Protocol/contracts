@@ -7,7 +7,7 @@ async fn registration_is_required() {
 
     let unregistered_account = worker.dev_create_account().await.unwrap();
     c.borrow_asset
-        .ft_transfer(&supply_user, unregistered_account.id(), 10_000)
+        .transfer(&supply_user, unregistered_account.id(), 10_000)
         .await;
 
     c.supply(&unregistered_account, 1000).await;

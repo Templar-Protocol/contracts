@@ -1,0 +1,14 @@
+[package]
+name = "mock-mt"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk.workspace = true
+near-contract-standards.workspace = true
+near-sdk-contract-tools.workspace = true
