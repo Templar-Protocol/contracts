@@ -45,16 +45,20 @@ impl Contract {
         // 161 (fixed cost) +
         // borsh serialization length of position record +
         // 128 (max account length in bytes)
+        let zero_account: AccountId = "0".repeat(64).parse().unwrap();
 
-        drop(market.get_or_create_supply_position_guard("0".repeat(64).parse().unwrap()));
+        drop(market.get_or_create_supply_position_guard(zero_account.clone()));
         let storage_usage_3 = env::storage_usage();
         let storage_usage_supply_position = storage_usage_3.saturating_sub(storage_usage_2);
 
-        drop(market.get_or_create_borrow_position_guard("0".repeat(64).parse().unwrap()));
+        drop(market.get_or_create_borrow_position_guard(zero_account.clone()));
         let storage_usage_4 = env::storage_usage();
         let storage_usage_borrow_position = storage_usage_4.saturating_sub(storage_usage_3);
 
         env::log_str(&format!("Storage usage: {{ \"snapshot\": {storage_usage_snapshot}, \"supply_position\":{storage_usage_supply_position}, \"borrow_position\": {storage_usage_borrow_position} }}"));
+
+        market.cleanup_supply_position(&zero_account);
+        market.cleanup_borrow_position(&zero_account);
 
         let mut self_ = Self {
             market,

@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{collections::HashMap, ops::Deref};
 
 use near_sdk::{
     json_types::U128,
@@ -68,7 +68,9 @@ impl MarketController {
         #[view] pub fn get_configuration() -> MarketConfiguration;
         #[view] pub fn get_finalized_snapshots_len() -> u32;
         #[view] pub fn list_finalized_snapshots(offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot>;
+        #[view] pub fn list_supply_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, SupplyPosition>;
         #[view] pub fn get_supply_position(account_id: &AccountId) -> Option<SupplyPosition>;
+        #[view] pub fn list_borrow_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, BorrowPosition>;
         #[view] pub fn get_borrow_position(account_id: &AccountId) -> Option<BorrowPosition>;
         #[view] pub fn get_borrow_status(account_id: &AccountId, oracle_response: OracleResponse) -> Option<BorrowStatus>;
         #[view] pub fn get_static_yield(account_id: &AccountId) -> Option<StaticYieldRecord>;
@@ -84,7 +86,7 @@ impl MarketController {
         pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
-        #[call(tgas(25))]
+        #[call(tgas(30))]
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
         #[call]
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
@@ -233,12 +235,12 @@ impl UnifiedMarketController {
         self.market.storage_deposit(account, bounds.min).await;
         if let TokenController::Ft { ref controller } = self.borrow_asset {
             controller
-                .storage_deposit(account, NearToken::from_near(1))
+                .storage_deposit(account, NearToken::from_near(1).saturating_div(100))
                 .await;
         }
         if let TokenController::Ft { ref controller } = self.collateral_asset {
             controller
-                .storage_deposit(account, NearToken::from_near(1))
+                .storage_deposit(account, NearToken::from_near(1).saturating_div(100))
                 .await;
         }
     }

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use near_sdk::{near, AccountId, Promise, PromiseOrValue};
 
 use crate::{
@@ -41,6 +43,11 @@ pub trait MarketExternalInterface {
     // ft_on_receive :: where msg = Collateralize
     // ft_on_receive :: where msg = Repay
 
+    fn list_borrow_positions(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<AccountId, BorrowPosition>;
     /// This function may report fees slightly inaccurately. This is because
     /// the function has to estimate what fees will be applied between the last
     /// market snapshot and the (present) time when the function was called.
@@ -69,6 +76,11 @@ pub trait MarketExternalInterface {
 
     // ft_on_receive :: where msg = Supply
 
+    fn list_supply_positions(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<AccountId, SupplyPosition>;
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
     fn create_supply_withdrawal_request(&mut self, amount: BorrowAssetAmount);

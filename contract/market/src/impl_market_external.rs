@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
@@ -12,6 +14,16 @@ use templar_common::{
 };
 
 use crate::{Contract, ContractExt};
+
+fn list<T, U: FromIterator<T>>(
+    i: impl IntoIterator<Item = T>,
+    offset: Option<u32>,
+    count: Option<u32>,
+) -> U {
+    let offset = offset.map_or(0, |o| o as usize);
+    let count = count.map_or(usize::MAX, |c| c as usize);
+    i.into_iter().skip(offset).take(count).collect()
+}
 
 #[near]
 impl MarketExternalInterface for Contract {
@@ -28,13 +40,7 @@ impl MarketExternalInterface for Contract {
     }
 
     fn list_finalized_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.finalized_snapshots
-            .iter()
-            .skip(offset)
-            .take(count)
-            .collect::<Vec<_>>()
+        list(&self.finalized_snapshots, offset, count)
     }
 
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics {
@@ -44,6 +50,14 @@ impl MarketExternalInterface for Contract {
             deposited_incoming: self.borrow_asset_deposited_incoming.clone(),
             borrowed: self.borrow_asset_borrowed,
         }
+    }
+
+    fn list_borrow_positions(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<AccountId, BorrowPosition> {
+        list(self.iter_borrow_positions(), offset, count)
     }
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
@@ -144,6 +158,14 @@ impl MarketExternalInterface for Contract {
         if let Some(mut borrow_position) = self.borrow_position_guard(account_id) {
             borrow_position.accumulate_interest_partial(snapshot_limit.unwrap_or(u32::MAX));
         }
+    }
+
+    fn list_supply_positions(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<AccountId, SupplyPosition> {
+        list(self.iter_supply_positions(), offset, count)
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
