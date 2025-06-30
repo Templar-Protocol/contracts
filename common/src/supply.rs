@@ -127,25 +127,8 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
     }
 
     pub fn with_pending_yield_estimate(&mut self) {
-        let mut pending_estimate = self.calculate_yield(u32::MAX).get_amount();
-        if !self.market.current_snapshot.deposited_active.is_zero() {
-            let mut amount = u128::from(self.position.borrow_asset_deposit.active);
-            let current_snapshot_index = self.market.finalized_snapshots.len();
-            for incoming in self
-                .position
-                .borrow_asset_deposit
-                .incoming
-                .iter()
-                .take_while(|i| i.activate_at_snapshot_index <= current_snapshot_index)
-            {
-                amount += u128::from(incoming.amount);
-            }
-            let yield_in_current_snapshot =
-                u128::from(self.market.current_snapshot.yield_distribution) * amount
-                    / u128::from(self.market.current_snapshot.deposited_active);
-            pending_estimate.join(yield_in_current_snapshot.into());
-        }
-        self.position.borrow_asset_yield.pending_estimate = pending_estimate;
+        self.position.borrow_asset_yield.pending_estimate =
+            self.calculate_yield(u32::MAX).get_amount();
     }
 
     pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
