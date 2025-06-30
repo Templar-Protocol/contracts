@@ -4,6 +4,7 @@ pub use controller::{
     ft::FtController,
     market::{MarketController, UnifiedMarketController},
     oracle::OracleController,
+    registry::RegistryController,
     storage_management::StorageManagementController,
     ContractController,
 };
@@ -199,4 +200,19 @@ pub async fn setup_everything(
         protocol_yield_user,
         insurance_yield_user,
     }
+}
+
+pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
+    accounts!(worker, registry);
+
+    let r = RegistryController::deploy(registry).await;
+
+    r.add_version(
+        r.contract.as_account(),
+        "market@0.0.0",
+        controller::market::load_wasm().await,
+    )
+    .await;
+
+    r
 }

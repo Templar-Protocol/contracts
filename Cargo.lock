@@ -3636,6 +3636,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-registry-contract"
+version = "0.1.0"
+dependencies = [
+ "getrandom",
+ "near-sdk",
+ "near-sdk-contract-tools",
+ "near-workspaces",
+ "rstest",
+ "templar-common",
+ "test-utils",
+ "tokio",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -9,6 +9,7 @@ use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 pub mod ft;
 pub mod market;
 pub mod oracle;
+pub mod registry;
 pub mod storage_management;
 
 pub trait ContractController {

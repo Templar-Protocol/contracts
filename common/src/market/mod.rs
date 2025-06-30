@@ -28,7 +28,7 @@ pub struct BorrowAssetMetrics {
     pub borrowed: BorrowAssetAmount,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct YieldWeights {
     pub supply: NonZeroU16,
