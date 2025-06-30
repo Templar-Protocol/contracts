@@ -15,3 +15,6 @@ tokio.workspace = true
 
 [[example]]
 name = "generate_testnet_configuration"
+
+[[example]]
+name = "registry_add_version_args"

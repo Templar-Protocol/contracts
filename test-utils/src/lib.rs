@@ -4,9 +4,11 @@ pub use controller::{
     ft::FtController,
     market::{MarketController, UnifiedMarketController},
     oracle::OracleController,
+    registry::RegistryController,
     storage_management::StorageManagementController,
     ContractController,
 };
+use controller::{mt::MtController, token::TokenController};
 use near_sdk::{
     json_types::{I64, U64},
     AccountId,
@@ -171,8 +173,35 @@ pub async fn setup_everything(
     let (market, balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
         MarketController::deploy(market, &config),
         OracleController::deploy(balance_oracle),
-        FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
-        FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
+        async {
+            if config.borrow_asset.is_nep141(borrow_asset.id()) {
+                TokenController::Ft {
+                    controller: FtController::deploy(borrow_asset, "Borrow Asset", "BORROW").await,
+                }
+            } else {
+                TokenController::Mt {
+                    controller: MtController::deploy(borrow_asset).await,
+                    token_id: "mt_borrow".into(),
+                }
+            }
+        },
+        async {
+            if config.collateral_asset.is_nep141(collateral_asset.id()) {
+                TokenController::Ft {
+                    controller: FtController::deploy(
+                        collateral_asset,
+                        "Collateral Asset",
+                        "COLLATERAL",
+                    )
+                    .await,
+                }
+            } else {
+                TokenController::Mt {
+                    controller: MtController::deploy(collateral_asset).await,
+                    token_id: "mt_collateral".into(),
+                }
+            }
+        },
     );
 
     let c = UnifiedMarketController::new(
@@ -199,4 +228,19 @@ pub async fn setup_everything(
         protocol_yield_user,
         insurance_yield_user,
     }
+}
+
+pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
+    accounts!(worker, registry);
+
+    let r = RegistryController::deploy(registry).await;
+
+    r.add_version(
+        r.contract.as_account(),
+        "market@0.0.0",
+        controller::market::load_wasm().await,
+    )
+    .await;
+
+    r
 }

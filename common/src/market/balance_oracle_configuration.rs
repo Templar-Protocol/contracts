@@ -5,7 +5,7 @@ use crate::{
     price::PricePair,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct BalanceOracleConfiguration {
     pub account_id: AccountId,

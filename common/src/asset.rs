@@ -1,7 +1,13 @@
 use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{env, json_types::U128, near, AccountId, Gas, NearToken, Promise};
+use near_sdk::{
+    env,
+    json_types::U128,
+    near,
+    serde_json::{self, json},
+    AccountId, Gas, NearToken, Promise,
+};
 
 use crate::number::Decimal;
 
@@ -19,19 +25,40 @@ pub struct FungibleAsset<T: AssetClass> {
 #[near(serializers = [json, borsh])]
 enum FungibleAssetKind {
     Nep141(AccountId),
+    Nep245 {
+        contract_id: AccountId,
+        token_id: String,
+    },
 }
 
 impl<T: AssetClass> FungibleAsset<T> {
     /// Really depends on the implementation, but this should suffice, since
     /// normal implementations use < 3TGas.
     pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
+    /// NEAR Intents implementation uses < 4TGas.
+    pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(7);
 
+    #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
         match self.kind {
             FungibleAssetKind::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
                 .with_static_gas(Self::GAS_FT_TRANSFER)
                 .with_attached_deposit(NearToken::from_yoctonear(1))
                 .ft_transfer(receiver_id, u128::from(amount).into(), None),
+            FungibleAssetKind::Nep245 {
+                ref contract_id,
+                ref token_id,
+            } => Promise::new(contract_id.clone()).function_call(
+                "mt_transfer".into(),
+                serde_json::to_vec(&json!({
+                   "receiver_id": receiver_id,
+                   "token_id": token_id,
+                   "amount": amount,
+                }))
+                .unwrap(),
+                NearToken::from_yoctonear(1),
+                Self::GAS_MT_TRANSFER,
+            ),
         }
     }
 
@@ -42,19 +69,63 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    pub fn nep245(contract_id: AccountId, token_id: String) -> Self {
+        Self {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep245 {
+                contract_id,
+                token_id,
+            },
+        }
+    }
+
     pub fn is_nep141(&self, account_id: &AccountId) -> bool {
         matches!(self.kind, FungibleAssetKind::Nep141(ref contract_id) if contract_id == account_id)
     }
 
     pub fn into_nep141(self) -> Option<AccountId> {
-        let FungibleAssetKind::Nep141(contract_id) = self.kind;
-        Some(contract_id)
+        match self.kind {
+            FungibleAssetKind::Nep141(contract_id) => Some(contract_id),
+            FungibleAssetKind::Nep245 { .. } => None,
+        }
     }
 
+    pub fn is_nep245(&self, account_id: &AccountId, token_id: &str) -> bool {
+        let t = token_id;
+        matches!(self.kind, FungibleAssetKind::Nep245 { ref contract_id, ref token_id } if contract_id == account_id && token_id == t)
+    }
+
+    pub fn into_nep245(self) -> Option<(AccountId, String)> {
+        match self.kind {
+            FungibleAssetKind::Nep245 {
+                contract_id,
+                token_id,
+            } => Some((contract_id, token_id)),
+            FungibleAssetKind::Nep141(_) => None,
+        }
+    }
+
+    #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn current_account_balance(&self) -> Promise {
         let current_account_id = env::current_account_id();
-        let FungibleAssetKind::Nep141(ref account_id) = self.kind;
-        ext_ft_core::ext(account_id.clone()).ft_balance_of(current_account_id.clone())
+        match self.kind {
+            FungibleAssetKind::Nep141(ref account_id) => {
+                ext_ft_core::ext(account_id.clone()).ft_balance_of(current_account_id.clone())
+            }
+            FungibleAssetKind::Nep245 {
+                ref contract_id,
+                ref token_id,
+            } => Promise::new(contract_id.clone()).function_call(
+                "mt_balance_of".into(),
+                serde_json::to_vec(&json!({
+                    "account_id": current_account_id,
+                    "token_id": token_id,
+                }))
+                .unwrap(),
+                NearToken::from_millinear(0),
+                Gas::from_tgas(4),
+            ),
+        }
     }
 
     pub fn coerce<U: AssetClass>(self) -> FungibleAsset<U> {
@@ -67,13 +138,15 @@ impl<T: AssetClass> FungibleAsset<T> {
 
 impl<T: AssetClass> Display for FungibleAsset<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self.kind {
-                FungibleAssetKind::Nep141(ref contract_id) => contract_id.as_str(),
+        match self.kind {
+            FungibleAssetKind::Nep141(ref contract_id) => {
+                write!(f, "nep141:{contract_id}")
             }
-        )
+            FungibleAssetKind::Nep245 {
+                ref contract_id,
+                ref token_id,
+            } => write!(f, "nep245:{contract_id}:{token_id}"),
+        }
     }
 }
 

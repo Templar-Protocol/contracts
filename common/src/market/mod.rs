@@ -28,7 +28,7 @@ pub struct BorrowAssetMetrics {
     pub borrowed: BorrowAssetAmount,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct YieldWeights {
     pub supply: NonZeroU16,
@@ -69,7 +69,7 @@ impl YieldWeights {
 }
 
 #[near(serializers = [json])]
-pub enum Nep141MarketDepositMessage {
+pub enum DepositMsg {
     Supply,
     Collateralize,
     Repay,

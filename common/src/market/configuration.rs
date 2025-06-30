@@ -21,7 +21,7 @@ use super::{BalanceOracleConfiguration, YieldWeights};
 /// This also guarantees a reasonable upper-limit to interest rates to help avoid overflows.
 pub const APY_LIMIT: u128 = 100_000;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 #[serde(try_from = "AmountRange::<A>")]
 pub struct ValidAmountRange<A: AssetClass + PartialOrd>(
@@ -67,7 +67,7 @@ impl<A: AssetClass + PartialOrd, T: Into<FungibleAssetAmount<A>>> TryFrom<(T, Op
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct AmountRange<A: AssetClass> {
     pub minimum: FungibleAssetAmount<A>,
@@ -103,7 +103,7 @@ impl<A: AssetClass + PartialOrd> AmountRange<A> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
     pub time_chunk_configuration: TimeChunkConfiguration,

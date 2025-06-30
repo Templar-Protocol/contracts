@@ -31,9 +31,9 @@ async fn success_above_minimum_initial_collateral_ratio(
         ),
     );
 
-    let balance_before = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
+    let balance_before = c.borrow_asset.balance_of(borrow_user.id()).await;
     c.borrow(&borrow_user, 1000).await;
-    let balance_after = c.borrow_asset.ft_balance_of(borrow_user.id()).await.0;
+    let balance_after = c.borrow_asset.balance_of(borrow_user.id()).await;
 
     assert_eq!(balance_before + 1000, balance_after);
     assert_eq!(
