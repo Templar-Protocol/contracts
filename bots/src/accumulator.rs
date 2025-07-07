@@ -1,17 +1,16 @@
+use std::collections::HashMap;
+
 use clap::Parser;
 use futures::StreamExt;
 use near_crypto::{InMemorySigner, SecretKey};
+use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     action::{Action, FunctionCallAction},
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{AccountId, serde_json::json};
-use std::{collections::HashMap, sync::Arc};
-
 use tracing::{error, info, instrument};
-
-use near_jsonrpc_client::JsonRpcClient;
 
 use crate::{
     BorrowPositions, DEFAULT_GAS, Network,
@@ -157,7 +156,7 @@ impl Accumulator {
     }
 
     #[instrument(level = "debug")]
-    pub fn setup_accumulators(args: &Args) -> anyhow::Result<Vec<Arc<Self>>> {
+    pub fn setup_accumulators(args: &Args) -> anyhow::Result<Vec<Self>> {
         let client = JsonRpcClient::connect(args.network.get_rpc_url());
         let signer =
             InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
@@ -165,14 +164,7 @@ impl Accumulator {
         Ok(args
             .markets
             .iter()
-            .map(|market| {
-                Arc::new(Self::new(
-                    client.clone(),
-                    signer.clone(),
-                    market.clone(),
-                    args.timeout,
-                ))
-            })
-            .collect::<Vec<_>>())
+            .map(|market| Self::new(client.clone(), signer.clone(), market.clone(), args.timeout))
+            .collect())
     }
 }

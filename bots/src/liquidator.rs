@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use clap::Parser;
 use futures::StreamExt;
@@ -303,7 +303,7 @@ impl Liquidator {
     }
 
     #[instrument(level = "debug")]
-    pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Arc<Self>>> {
+    pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Self>> {
         let client = JsonRpcClient::connect(args.network.get_rpc_url());
         let signer =
             InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
@@ -313,13 +313,13 @@ impl Liquidator {
             .markets
             .iter()
             .map(|market| {
-                Arc::new(Self::new(
+                Self::new(
                     client.clone(),
                     signer.clone(),
                     asset.clone(),
                     market.clone(),
                     args.timeout,
-                ))
+                )
             })
             .collect::<Vec<_>>())
     }
