@@ -56,7 +56,7 @@ impl Network {
         clippy::unwrap_used,
         reason = "We know the contract IDs are valid NEAR account IDs."
     )]
-    pub fn get_contract(self) -> AccountId {
+    pub fn get_oracle_account_id(self) -> AccountId {
         match self {
             Network::Mainnet => "pyth-oracle.near".parse().unwrap(),
             Network::Testnet => "pyth-oracle.testnet".parse().unwrap(),

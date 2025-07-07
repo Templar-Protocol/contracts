@@ -25,8 +25,7 @@ use near_sdk::{
 };
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
-    market::MarketConfiguration,
-    oracle::pyth::{OracleResponse, PriceIdentifier},
+    oracle::pyth::OracleResponse,
 };
 use tokio::time::Instant;
 use tracing::instrument;
@@ -159,32 +158,6 @@ pub async fn get_borrows(
     }
 
     Ok(all_positions)
-}
-
-#[instrument(skip(client), level = "debug")]
-pub async fn get_configuration(
-    client: &JsonRpcClient,
-    market: AccountId,
-) -> anyhow::Result<MarketConfiguration> {
-    let status_res = view(client, market, "get_configuration", json!({})).await?;
-    Ok(status_res)
-}
-
-#[instrument(skip(client), level = "debug")]
-pub async fn get_oracle_prices(
-    client: &JsonRpcClient,
-    oracle: AccountId,
-    price_ids: &[PriceIdentifier],
-    age: u32,
-) -> anyhow::Result<OracleResponse> {
-    let status_res = view(
-        client,
-        oracle,
-        "list_ema_prices_no_older_than",
-        json!({ "price_ids": price_ids, "age": age }),
-    )
-    .await?;
-    Ok(status_res)
 }
 
 #[instrument(skip(client, signer), level = "debug")]

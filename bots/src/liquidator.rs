@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
+use futures::StreamExt;
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::{
@@ -11,15 +12,17 @@ use near_sdk::{
 };
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
-    market::{DepositMsg, LiquidateMsg},
-    oracle::pyth::OracleResponse,
+    market::{DepositMsg, LiquidateMsg, MarketConfiguration},
+    oracle::pyth::{OracleResponse, PriceIdentifier},
 };
 use tracing::{error, info, instrument};
 
 use crate::{
     Network,
-    near::{ft_transfer_call, get_borrow_status},
+    near::{ft_transfer_call, get_borrow_status, view},
 };
+
+type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -178,18 +181,107 @@ impl Liquidator {
         // perform full or partial liquidation
         Ok(position.get_total_borrow_asset_liability().into())
     }
-}
 
-#[instrument(level = "debug")]
-pub fn setup_liquidator(args: &Args) -> anyhow::Result<(JsonRpcClient, Vec<Arc<Liquidator>>)> {
-    let client = JsonRpcClient::connect(args.network.get_rpc_url());
-    let signer =
-        InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
-    let asset = args.asset.clone();
+    #[instrument(skip(self), level = "debug")]
+    async fn get_configuration(&self) -> anyhow::Result<MarketConfiguration> {
+        view(
+            &self.client,
+            self.market.clone(),
+            "get_configuration",
+            json!({}),
+        )
+        .await
+    }
 
-    Ok((
-        client.clone(),
-        args.markets
+    #[instrument(skip(self), level = "debug")]
+    async fn get_oracle_prices(
+        &self,
+        oracle: AccountId,
+        price_ids: &[PriceIdentifier],
+        age: u32,
+    ) -> anyhow::Result<OracleResponse> {
+        view(
+            &self.client,
+            oracle,
+            "list_ema_prices_no_older_than",
+            json!({ "price_ids": price_ids, "age": age }),
+        )
+        .await
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    async fn get_borrows(&self) -> anyhow::Result<BorrowPositions> {
+        let mut all_positions: BorrowPositions = HashMap::new();
+
+        let page_size = 100;
+        let mut current_offset = 0;
+        let mut params = json!({
+            "offset": current_offset,
+            "count": page_size,
+        });
+
+        while let Ok(page) = view::<BorrowPositions>(
+            &self.client,
+            self.market.clone(),
+            "list_borrow_positions",
+            params.clone(),
+        )
+        .await
+        {
+            let fetched = page.len();
+            all_positions.extend(page);
+            current_offset += page_size;
+            params["offset"] = current_offset.into();
+
+            if fetched < page_size {
+                break;
+            }
+        }
+
+        Ok(all_positions)
+    }
+
+    #[instrument(skip(self), level = "info")]
+    pub async fn run_liquidations(
+        &self,
+        oracle: AccountId,
+        concurrency: usize,
+    ) -> anyhow::Result<()> {
+        let configuration = self.get_configuration().await?;
+        let oracle_response = self
+            .get_oracle_prices(
+                oracle,
+                &[
+                    configuration.balance_oracle.borrow_asset_price_id,
+                    configuration.balance_oracle.collateral_asset_price_id,
+                ],
+                configuration.balance_oracle.price_maximum_age_s,
+            )
+            .await?;
+
+        futures::stream::iter(self.get_borrows().await?)
+            .map(|(borrow, position)| {
+                let oracle_response = oracle_response.clone();
+                async move { self.try_liquidate(borrow, position, oracle_response).await }
+            })
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(())
+    }
+
+    #[instrument(level = "debug")]
+    pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Arc<Liquidator>>> {
+        let client = JsonRpcClient::connect(args.network.get_rpc_url());
+        let signer =
+            InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
+        let asset = args.asset.clone();
+
+        Ok(args
+            .markets
             .iter()
             .map(|market| {
                 Arc::new(Liquidator::new(
@@ -200,6 +292,6 @@ pub fn setup_liquidator(args: &Args) -> anyhow::Result<(JsonRpcClient, Vec<Arc<L
                     args.timeout,
                 ))
             })
-            .collect::<Vec<_>>(),
-    ))
+            .collect::<Vec<_>>())
+    }
 }
