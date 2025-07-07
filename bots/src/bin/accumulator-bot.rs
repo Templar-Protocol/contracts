@@ -1,11 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use futures::StreamExt;
-use templar_bots::{
-    accumulator::{Args, setup_accumulator},
-    near::get_borrows,
-};
+use templar_bots::accumulator::{Accumulator, Args};
 use tokio::time::sleep;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -19,23 +15,11 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let (client, accumulators) = setup_accumulator(&args)?;
+    let accumulators = Accumulator::setup_accumulators(&args)?;
 
     loop {
         for accumulator in &accumulators {
-            info!("Accumulator job started for market: {}", accumulator.market);
-            let borrows = get_borrows(&client, &accumulator.market, None, None).await?;
-
-            futures::stream::iter(borrows)
-                .map(|(account_id, _)| {
-                    let accumulator = accumulator.clone();
-                    async move { accumulator.accumulate(account_id).await }
-                })
-                .buffer_unordered(10)
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .collect::<anyhow::Result<Vec<_>>>()?;
+            accumulator.run_accumulations(args.concurrency).await?;
         }
 
         info!(

@@ -4,6 +4,11 @@ use clap::Parser;
 use futures::StreamExt;
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
+use near_primitives::{
+    action::{Action, FunctionCallAction},
+    hash::CryptoHash,
+    transaction::{Transaction, TransactionV0},
+};
 use near_sdk::{
     AccountId, BorshStorageKey,
     json_types::U128,
@@ -18,11 +23,9 @@ use templar_common::{
 use tracing::{error, info, instrument};
 
 use crate::{
-    Network,
-    near::{ft_transfer_call, get_borrow_status, view},
+    BorrowPositions, DEFAULT_GAS, Network, ONE_NEAR,
+    near::{get_access_key_data, send_tx, serialize_and_encode, view},
 };
-
-type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -45,34 +48,27 @@ pub struct Args {
     /// Market to run liquidations for
     #[arg(short, long, env = "MARKET_ACCOUNT_ID")]
     pub markets: Vec<AccountId>,
-
     /// Signer key to use for signing transactions.
     #[arg(short, long, env = "SIGNER_KEY")]
     pub signer_key: SecretKey,
-
     /// Signer `AccountId`.
     #[arg(short, long, env = "SIGNER_ACCOUNT_ID")]
     pub signer_account: AccountId,
-
     /// Asset to liquidate
     #[arg(short, long, env = "ASSET_ACCOUNT_ID")]
     pub asset: AccountId,
-
     /// Network to run liquidations on
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
-
     /// Timeout for transactions
     #[arg(short, long, env = "TIMEOUT", default_value_t = 60)]
     pub timeout: u64,
-
-    /// Concurency for liquidations
-    #[arg(short, long, env = "CONCURRENCY", default_value_t = 10)]
-    pub concurrency: usize,
-
     /// Interval between liquidation attempts
     #[arg(short, long, env = "INTERVAL", default_value_t = 600)]
     pub interval: u64,
+    /// Concurency for liquidations
+    #[arg(short, long, env = "CONCURRENCY", default_value_t = 10)]
+    pub concurrency: usize,
 }
 
 pub struct Liquidator {
@@ -102,19 +98,65 @@ impl Liquidator {
     }
 
     #[instrument(skip(self), level = "debug")]
+    async fn get_borrow_status(
+        &self,
+        borrow: AccountId,
+        oracle_response: &OracleResponse,
+    ) -> anyhow::Result<Option<BorrowStatus>> {
+        view(
+            &self.client,
+            self.market.clone(),
+            "get_borrow_status",
+            &json!({
+                "account_id": borrow,
+                "oracle_response": oracle_response,
+            }),
+        )
+        .await
+    }
+
+    fn create_transfer_tx(
+        &self,
+        borrow: &AccountId,
+        liquidation_amount: U128,
+        nonce: u64,
+        block_hash: CryptoHash,
+    ) -> Transaction {
+        #[allow(clippy::unwrap_used, reason = "We know the serialization will succeed")]
+        let msg = serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
+            account_id: borrow.clone(),
+        }))
+        .unwrap();
+
+        Transaction::V0(TransactionV0 {
+            nonce,
+            receiver_id: self.asset.clone(),
+            block_hash,
+            signer_id: self.signer.account_id.clone(),
+            public_key: self.signer.public_key().clone(),
+            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: "ft_transfer_call".to_string(),
+                args: serialize_and_encode(json!({
+                    "receiver_id": self.market,
+                    "amount": liquidation_amount,
+                    "msg": msg,
+                })),
+                gas: DEFAULT_GAS,
+                deposit: ONE_NEAR,
+            }))],
+        })
+    }
+
+    #[instrument(skip(self), level = "debug")]
     pub async fn try_liquidate(
         &self,
         borrow: AccountId,
         position: BorrowPosition,
         oracle_response: OracleResponse,
     ) -> anyhow::Result<()> {
-        let Some(status) = get_borrow_status(
-            &self.client,
-            self.market.clone(),
-            borrow.clone(),
-            &oracle_response,
-        )
-        .await?
+        let Some(status) = self
+            .get_borrow_status(borrow.clone(), &oracle_response)
+            .await?
         else {
             info!("Borrow status not found");
             return Ok(());
@@ -129,25 +171,12 @@ impl Liquidator {
 
         let liquidation_amount = self.liquidation_amount(&position, &oracle_response)?;
 
-        #[allow(clippy::unwrap_used, reason = "We know the serialization will succeed")]
-        let msg = serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
-            account_id: borrow.clone(),
-        }))
-        .unwrap();
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-        match ft_transfer_call(
-            &self.client,
-            &self.signer,
-            self.asset.clone(),
-            json!({
-                "receiver_id": self.market,
-                "amount": liquidation_amount,
-                "msg": msg,
-            }),
-            self.timeout,
-        )
-        .await
-        {
+        let transfer_call_tx =
+            self.create_transfer_tx(&borrow, liquidation_amount, nonce, block_hash);
+
+        match send_tx(&self.client, &self.signer, self.timeout, transfer_call_tx).await {
             Ok(_) => {
                 info!("Liquidation successful");
             }
@@ -274,7 +303,7 @@ impl Liquidator {
     }
 
     #[instrument(level = "debug")]
-    pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Arc<Liquidator>>> {
+    pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Arc<Self>>> {
         let client = JsonRpcClient::connect(args.network.get_rpc_url());
         let signer =
             InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
@@ -284,7 +313,7 @@ impl Liquidator {
             .markets
             .iter()
             .map(|market| {
-                Arc::new(Liquidator::new(
+                Arc::new(Self::new(
                     client.clone(),
                     signer.clone(),
                     asset.clone(),

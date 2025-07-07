@@ -1,10 +1,15 @@
+use std::collections::HashMap;
+
 use clap::ValueEnum;
 use near_jsonrpc_client::{NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL};
 use near_sdk::{AccountId, near};
+use templar_common::borrow::BorrowPosition;
 
 pub mod accumulator;
 pub mod liquidator;
 pub mod near;
+
+type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 
 /// Helper constant for `TeraGas`.
 pub const TERA_GAS: u64 = 10u64.pow(12);

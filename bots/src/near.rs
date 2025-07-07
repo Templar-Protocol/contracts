@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::bail;
 use base64::Engine;
 use near_crypto::InMemorySigner;
@@ -13,27 +11,20 @@ use near_jsonrpc_client::{
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
-    action::{Action, FunctionCallAction},
     hash::CryptoHash,
-    transaction::{SignedTransaction, Transaction, TransactionV0},
+    transaction::{SignedTransaction, Transaction},
     types::{AccountId, BlockReference},
     views::{FinalExecutionStatus, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
     serde::{Serialize, de::DeserializeOwned},
-    serde_json::{self, json},
-};
-use templar_common::{
-    borrow::{BorrowPosition, BorrowStatus},
-    oracle::pyth::OracleResponse,
+    serde_json,
 };
 use tokio::time::Instant;
 use tracing::instrument;
 
-use crate::{DEFAULT_GAS, ONE_NEAR};
-
 #[instrument(skip(client), level = "debug")]
-async fn get_access_key_data(
+pub async fn get_access_key_data(
     client: &JsonRpcClient,
     signer: &InMemorySigner,
 ) -> anyhow::Result<(u64, CryptoHash)> {
@@ -56,8 +47,11 @@ async fn get_access_key_data(
     Ok((nonce, block_hash))
 }
 
-fn encode(data: &str) -> String {
-    base64::engine::general_purpose::STANDARD.encode(data.as_bytes())
+#[allow(clippy::expect_used, reason = "We know the serialization will succeed")]
+pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
+    base64::engine::general_purpose::STANDARD
+        .encode(serde_json::to_string(&data).expect("Failed to serialize data"))
+        .into_bytes()
 }
 
 #[instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]
@@ -73,91 +67,16 @@ pub async fn view<T: DeserializeOwned>(
             request: QueryRequest::CallFunction {
                 account_id,
                 method_name: function_name.to_owned(),
-                args: encode(&serde_json::to_string(&args)?).into_bytes().into(),
+                args: serialize_and_encode(&args).into(),
             },
         })
         .await?;
 
-    match access_key_query_response.kind {
-        QueryResponseKind::CallResult(result) => Ok(serde_json::from_slice(&result.result)?),
-        _ => bail!("failed to extract current nonce"),
-    }
-}
+    let QueryResponseKind::CallResult(result) = access_key_query_response.kind else {
+        bail!("failed to extract current nonce");
+    };
 
-#[instrument(skip(client), level = "debug")]
-pub async fn get_borrow_status(
-    client: &JsonRpcClient,
-    market: AccountId,
-    borrow: AccountId,
-    oracle_response: &OracleResponse,
-) -> anyhow::Result<Option<BorrowStatus>> {
-    let status_res = view(
-        client,
-        market,
-        "get_borrow_status",
-        &json!({
-            "account_id": borrow,
-            "oracle_response": oracle_response,
-        }),
-    )
-    .await?;
-    Ok(status_res)
-}
-
-#[instrument(skip(client), level = "debug")]
-pub async fn get_borrow_position(
-    client: &JsonRpcClient,
-    market: AccountId,
-    borrow: AccountId,
-) -> anyhow::Result<BorrowPosition> {
-    let status_res = view(
-        client,
-        market,
-        "get_borrow_position",
-        &json!({
-            "account_id": borrow,
-        }),
-    )
-    .await?;
-    Ok(status_res)
-}
-
-#[instrument(skip(client), level = "debug")]
-pub async fn get_borrows(
-    client: &JsonRpcClient,
-    market: &AccountId,
-    offset: Option<u32>,
-    count: Option<u32>,
-) -> anyhow::Result<HashMap<AccountId, BorrowPosition>> {
-    type BorrowPositions = HashMap<AccountId, BorrowPosition>;
-    let mut all_positions: BorrowPositions = HashMap::new();
-
-    let page_size = 100;
-    let mut current_offset = 0;
-    let mut params = json!({
-        "offset": current_offset,
-        "count": page_size,
-    });
-
-    while let Ok(page) = view::<BorrowPositions>(
-        client,
-        market.clone(),
-        "list_borrow_positions",
-        params.clone(),
-    )
-    .await
-    {
-        let fetched = page.len();
-        all_positions.extend(page);
-        current_offset += page_size;
-        params["offset"] = current_offset.into();
-
-        if fetched < page_size {
-            break;
-        }
-    }
-
-    Ok(all_positions)
+    Ok(serde_json::from_slice(&result.result)?)
 }
 
 #[instrument(skip(client, signer), level = "debug")]
@@ -217,66 +136,4 @@ pub async fn send_tx(
     };
 
     Ok(outcome.into_outcome().status)
-}
-
-#[instrument(skip_all, level = "debug", fields(
-    account_id = %signer.account_id,
-    ft_contract = %ft_contract,
-    args = ?serde_json::to_string(&args)
-))]
-pub async fn ft_transfer_call(
-    client: &JsonRpcClient,
-    signer: &InMemorySigner,
-    ft_contract: AccountId,
-    args: impl Serialize,
-    timeout: u64,
-) -> anyhow::Result<FinalExecutionStatus> {
-    let (nonce, block_hash) = get_access_key_data(client, signer).await?;
-
-    let tx = Transaction::V0(TransactionV0 {
-        nonce,
-        receiver_id: ft_contract,
-        block_hash,
-        signer_id: signer.account_id.clone(),
-        public_key: signer.public_key().clone(),
-        actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name: "ft_transfer_call".to_string(),
-            args: encode(&serde_json::to_string(&args)?).into_bytes(),
-            gas: DEFAULT_GAS,
-            deposit: ONE_NEAR,
-        }))],
-    });
-
-    send_tx(client, signer, timeout, tx).await
-}
-
-#[instrument(skip_all, level = "debug", fields(
-    account_id = %signer.account_id,
-    ft_contract = %ft_contract,
-    args = ?serde_json::to_string(&args)
-))]
-pub async fn call_apply_interest(
-    client: &JsonRpcClient,
-    signer: &InMemorySigner,
-    ft_contract: AccountId,
-    args: impl Serialize,
-    timeout: u64,
-) -> anyhow::Result<FinalExecutionStatus> {
-    let (nonce, block_hash) = get_access_key_data(client, signer).await?;
-
-    let tx = Transaction::V0(TransactionV0 {
-        nonce,
-        receiver_id: ft_contract,
-        block_hash,
-        signer_id: signer.account_id.clone(),
-        public_key: signer.public_key().clone(),
-        actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name: "apply_interest".to_string(),
-            args: encode(&serde_json::to_string(&args)?).into_bytes(),
-            gas: DEFAULT_GAS,
-            deposit: 0,
-        }))],
-    });
-
-    send_tx(client, signer, timeout, tx).await
 }

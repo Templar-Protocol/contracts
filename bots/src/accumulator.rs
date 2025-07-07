@@ -1,13 +1,22 @@
 use clap::Parser;
+use futures::StreamExt;
 use near_crypto::{InMemorySigner, SecretKey};
+use near_primitives::{
+    action::{Action, FunctionCallAction},
+    hash::CryptoHash,
+    transaction::{Transaction, TransactionV0},
+};
 use near_sdk::{AccountId, serde_json::json};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use tracing::{error, info, instrument};
 
 use near_jsonrpc_client::JsonRpcClient;
 
-use crate::{Network, near::call_apply_interest};
+use crate::{
+    BorrowPositions, DEFAULT_GAS, Network,
+    near::{get_access_key_data, send_tx, serialize_and_encode, view},
+};
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
@@ -29,6 +38,9 @@ pub struct Args {
     /// Interval between accumulations in seconds
     #[arg(short, long, default_value = "60", env = "INTERVAL")]
     pub interval: u64,
+    /// Concurrency for accumulation tasks
+    #[arg(short, long, default_value = "10", env = "CONCURRENCY")]
+    pub concurrency: usize,
 }
 
 pub struct Accumulator {
@@ -54,21 +66,38 @@ impl Accumulator {
         }
     }
 
+    fn create_accumulate_tx(
+        &self,
+        borrow: &AccountId,
+        nonce: u64,
+        block_hash: CryptoHash,
+    ) -> Transaction {
+        Transaction::V0(TransactionV0 {
+            nonce,
+            receiver_id: self.market.clone(),
+            block_hash,
+            signer_id: self.signer.account_id.clone(),
+            public_key: self.signer.public_key().clone(),
+            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: "apply_interest".to_string(),
+                args: serialize_and_encode(json!({
+                    "account_id": borrow,
+                })),
+                gas: DEFAULT_GAS,
+                deposit: 0,
+            }))],
+        })
+    }
+
     #[instrument(skip(self), level = "debug")]
     pub async fn accumulate(&self, borrow: AccountId) -> anyhow::Result<()> {
         info!("Starting accumulation for market: {}", self.market);
 
-        match call_apply_interest(
-            &self.client,
-            &self.signer,
-            self.market.clone(),
-            json!({
-                "account_id": borrow,
-            }),
-            self.timeout,
-        )
-        .await
-        {
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+
+        let apply_interest_tx = self.create_accumulate_tx(&borrow, nonce, block_hash);
+
+        match send_tx(&self.client, &self.signer, self.timeout, apply_interest_tx).await {
             Ok(_) => {
                 info!("Accumulation successful");
             }
@@ -79,26 +108,71 @@ impl Accumulator {
 
         Ok(())
     }
-}
 
-#[instrument(level = "debug")]
-pub fn setup_accumulator(args: &Args) -> anyhow::Result<(JsonRpcClient, Vec<Arc<Accumulator>>)> {
-    let client = JsonRpcClient::connect(args.network.get_rpc_url());
-    let signer =
-        InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
+    #[instrument(skip(self), level = "debug")]
+    async fn get_borrows(&self) -> anyhow::Result<BorrowPositions> {
+        let mut all_positions: BorrowPositions = HashMap::new();
 
-    Ok((
-        client.clone(),
-        args.markets
+        let page_size = 100;
+        let mut current_offset = 0;
+        let mut params = json!({
+            "offset": current_offset,
+            "count": page_size,
+        });
+
+        while let Ok(page) = view::<BorrowPositions>(
+            &self.client,
+            self.market.clone(),
+            "list_borrow_positions",
+            params.clone(),
+        )
+        .await
+        {
+            let fetched = page.len();
+            all_positions.extend(page);
+            current_offset += page_size;
+            params["offset"] = current_offset.into();
+
+            if fetched < page_size {
+                break;
+            }
+        }
+
+        Ok(all_positions)
+    }
+
+    #[instrument(skip(self), level = "info")]
+    pub async fn run_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
+        let borrows = self.get_borrows().await?;
+
+        futures::stream::iter(borrows)
+            .map(|(account_id, _)| async move { self.accumulate(account_id).await })
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(())
+    }
+
+    #[instrument(level = "debug")]
+    pub fn setup_accumulators(args: &Args) -> anyhow::Result<Vec<Arc<Self>>> {
+        let client = JsonRpcClient::connect(args.network.get_rpc_url());
+        let signer =
+            InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
+
+        Ok(args
+            .markets
             .iter()
             .map(|market| {
-                Arc::new(Accumulator::new(
+                Arc::new(Self::new(
                     client.clone(),
                     signer.clone(),
                     market.clone(),
                     args.timeout,
                 ))
             })
-            .collect::<Vec<_>>(),
-    ))
+            .collect::<Vec<_>>())
+    }
 }
