@@ -10,6 +10,7 @@ use crate::{
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
+    harvested::Harvested,
     market::MarketConfiguration,
     number::Decimal,
     snapshot::Snapshot,
@@ -42,6 +43,7 @@ pub struct Market {
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub current_snapshot: Snapshot,
     pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
+    pub harvested: Harvested,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -89,6 +91,7 @@ impl Market {
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             current_snapshot,
             finalized_snapshots: ChunkedAppendOnlyList::new(key!(FinalizedSnapshots)),
+            harvested: Harvested::new(),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         };

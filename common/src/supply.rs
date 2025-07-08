@@ -41,6 +41,12 @@ impl Deposit {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DepositRange {
+    pub amount: BorrowAssetAmount,
+    pub from_snapshot_index: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
@@ -83,6 +89,26 @@ impl SupplyPosition {
 
     pub fn can_be_removed(&self) -> bool {
         !self.exists()
+    }
+
+    pub fn deposit_ranges(&self) -> Vec<DepositRange> {
+        let mut ranges = Vec::with_capacity(1 + self.borrow_asset_deposit.incoming.len());
+
+        let mut amount = self.borrow_asset_deposit.active;
+        ranges.push(DepositRange {
+            amount,
+            from_snapshot_index: self.borrow_asset_yield.get_next_snapshot_index(),
+        });
+
+        for incoming in &self.borrow_asset_deposit.incoming {
+            amount.join(incoming.amount);
+            ranges.push(DepositRange {
+                amount,
+                from_snapshot_index: incoming.activate_at_snapshot_index,
+            });
+        }
+
+        ranges
     }
 }
 
@@ -127,46 +153,47 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
     }
 
     pub fn with_pending_yield_estimate(&mut self) {
-        self.position.borrow_asset_yield.pending_estimate =
-            self.calculate_yield(u32::MAX).get_amount();
+        self.position.borrow_asset_yield.pending_estimate = self
+            .calculate_yield(&self.position.deposit_ranges(), u32::MAX)
+            .get_amount();
     }
 
-    pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
+    pub fn calculate_yield(
+        &self,
+        ranges: &[DepositRange],
+        snapshot_limit: u32,
+    ) -> AccumulationRecord<BorrowAsset> {
         let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
-
-        let mut amount = u128::from(self.position.borrow_asset_deposit.active);
-        let mut accumulated = Decimal::ZERO;
-        let mut next_incoming = 0;
-
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "Assume # of snapshots is never >u32::MAX"
-        )]
-        for (i, snapshot) in self
+        let mut snapshot_iter = self
             .market
             .finalized_snapshots
             .iter()
             .enumerate()
+            .map(|(i, s)| (i as u32, s))
             .skip(next_snapshot_index as usize)
-            .take(snapshot_limit as usize)
-        {
-            while let Some(incoming) = self
-                .position
-                .borrow_asset_deposit
-                .incoming
-                .get(next_incoming)
-                .filter(|incoming| incoming.activate_at_snapshot_index as usize == i)
-            {
-                next_incoming += 1;
-                amount += u128::from(incoming.amount);
-            }
+            .take(snapshot_limit as usize);
 
-            if !snapshot.deposited_active.is_zero() {
-                accumulated += amount * Decimal::from(snapshot.yield_distribution)
-                    / Decimal::from(snapshot.deposited_active);
-            }
+        let mut accumulated = Decimal::ZERO;
 
-            next_snapshot_index = i as u32 + 1;
+        for r in 0..ranges.len() {
+            let range = &ranges[r];
+            let until_snapshot_index = ranges
+                .get(r + 1)
+                .map_or(u32::MAX, |next_range| next_range.from_snapshot_index);
+
+            for (i, snapshot) in &mut snapshot_iter {
+                if !snapshot.deposited_active.is_zero() {
+                    accumulated += u128::from(range.amount)
+                        * Decimal::from(snapshot.yield_distribution)
+                        / Decimal::from(snapshot.deposited_active);
+                }
+
+                next_snapshot_index = i + 1;
+
+                if next_snapshot_index == until_snapshot_index {
+                    break;
+                }
+            }
         }
 
         AccumulationRecord {
@@ -311,8 +338,20 @@ impl<'a> SupplyPositionGuard<'a> {
         require!(snapshot_limit > 0, "snapshot_limit must be nonzero");
         self.market.snapshot();
 
-        let accumulation_record = self.calculate_yield(snapshot_limit);
+        let ranges = self.position.deposit_ranges();
+        let accumulation_record = self.calculate_yield(&ranges, snapshot_limit);
         self.activate_incoming(accumulation_record.next_snapshot_index);
+
+        let mut until = accumulation_record.next_snapshot_index;
+        for range in ranges.iter().rev() {
+            let from = range.from_snapshot_index;
+
+            self.market
+                .harvested
+                .record_deposit_amount_harvest(from, until, range.amount);
+
+            until = from;
+        }
 
         if !accumulation_record.amount.is_zero() {
             MarketEvent::YieldAccumulated {

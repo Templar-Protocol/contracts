@@ -4,6 +4,7 @@ pub mod borrow;
 pub mod chunked_append_only_list;
 pub mod event;
 pub mod fee;
+pub mod harvested;
 pub mod interest_rate_strategy;
 pub mod market;
 pub mod number;
