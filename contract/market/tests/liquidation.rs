@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use primitive_types::U256;
 use rstest::rstest;
 
 use templar_common::{
@@ -115,17 +116,17 @@ async fn successful_liquidation_good_debt_under_mcr(
                 .await;
             let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
             assert_eq!(
-                u128::from(supply_position.borrow_asset_yield.get_total()),
-                yield_amount * 8 / 10,
+                supply_position.borrow_asset_yield.get_total(),
+                (yield_amount * 8 / 10).into(),
             );
         },
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert_eq!(u128::from(protocol_yield.borrow_asset), yield_amount / 10);
+            assert_eq!(protocol_yield.borrow_asset, (yield_amount / 10).into());
         },
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(u128::from(insurance_yield.borrow_asset), yield_amount / 10);
+            assert_eq!(insurance_yield.borrow_asset, (yield_amount / 10).into());
         },
     );
 }
@@ -172,7 +173,7 @@ async fn successful_liquidation_with_spread(
         ;
 
     let liquidation_amount = (collateral_asset_price * (1u32 - target_spread) * 2000u32)
-        .to_u128_ceil()
+        .to_u256_ceil()
         .unwrap();
 
     c.set_collateral_asset_price(collateral_asset_price.to_f64_lossy())
@@ -189,7 +190,7 @@ async fn successful_liquidation_with_spread(
         "Liquidator should obtain all collateral after a successful liquidation",
     );
     assert_eq!(
-        borrow_balance_before - borrow_balance_after,
+        U256::from(borrow_balance_before - borrow_balance_after),
         liquidation_amount,
         "Liquidation should transfer correct amount of tokens",
     );
@@ -228,11 +229,8 @@ async fn fail_liquidation_too_little_attached() {
 
     // ensure borrow position remains unchanged
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(
-        u128::from(borrow_position.get_borrow_asset_principal()),
-        300,
-    );
-    assert_eq!(u128::from(borrow_position.collateral_asset_deposit), 500);
+    assert_eq!(borrow_position.get_borrow_asset_principal(), 300.into());
+    assert_eq!(borrow_position.collateral_asset_deposit, 500.into());
 }
 
 #[tokio::test]
@@ -267,11 +265,8 @@ async fn fail_liquidation_healthy_borrow() {
 
     // ensure borrow position remains unchanged
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(
-        u128::from(borrow_position.get_borrow_asset_principal()),
-        300,
-    );
-    assert_eq!(u128::from(borrow_position.collateral_asset_deposit), 500);
+    assert_eq!(borrow_position.get_borrow_asset_principal(), 300.into());
+    assert_eq!(borrow_position.collateral_asset_deposit, 500.into());
 }
 
 #[tokio::test]

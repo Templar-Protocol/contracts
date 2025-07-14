@@ -8,6 +8,7 @@ use near_sdk::{
 use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
+use primitive_types::U256;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
@@ -79,7 +80,7 @@ impl MarketController {
         #[view] pub fn get_last_yield_rate() -> Decimal;
 
         #[call(tgas(300))]
-        pub fn borrow(amount: U128);
+        pub fn borrow(amount: BorrowAssetAmount);
         #[call(tgas(300))]
         pub fn apply_interest(account_id: Option<&AccountId>, snapshot_limit: Option<u32>);
         #[call(tgas(300))]
@@ -301,7 +302,12 @@ impl UnifiedMarketController {
             .await
     }
 
-    pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn supply(
+        &self,
+        supply_user: &Account,
+        amount: impl Into<BorrowAssetAmount>,
+    ) -> ExecutionSuccess {
+        let amount = amount.into();
         eprintln!(
             "{} transferring {amount} tokens for supply...",
             supply_user.id()
@@ -310,7 +316,7 @@ impl UnifiedMarketController {
             .transfer_call(
                 supply_user,
                 self.market.contract().id(),
-                amount,
+                U256::from(amount).as_u128(),
                 serde_json::to_string(&DepositMsg::Supply).unwrap(),
             )
             .await
@@ -319,7 +325,7 @@ impl UnifiedMarketController {
     pub async fn supply_and_harvest_until_activation(
         &self,
         supply_user: &Account,
-        amount: u128,
+        amount: impl Into<BorrowAssetAmount>,
     ) -> ExecutionSuccess {
         let e = self.supply(supply_user, amount).await;
         while !self
@@ -335,7 +341,12 @@ impl UnifiedMarketController {
         e
     }
 
-    pub async fn collateralize(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn collateralize(
+        &self,
+        borrow_user: &Account,
+        amount: impl Into<CollateralAssetAmount>,
+    ) -> ExecutionSuccess {
+        let amount = amount.into();
         eprintln!(
             "{} transferring {amount} tokens for collateral...",
             borrow_user.id(),
@@ -344,19 +355,24 @@ impl UnifiedMarketController {
             .transfer_call(
                 borrow_user,
                 self.market.contract().id(),
-                amount,
+                U256::from(amount).as_u128(),
                 serde_json::to_string(&DepositMsg::Collateralize).unwrap(),
             )
             .await
     }
 
-    pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn repay(
+        &self,
+        borrow_user: &Account,
+        amount: impl Into<BorrowAssetAmount>,
+    ) -> ExecutionSuccess {
+        let amount = amount.into();
         eprintln!("{} repaying {amount} tokens...", borrow_user.id());
         self.borrow_asset
             .transfer_call(
                 borrow_user,
                 self.market.contract().id(),
-                amount,
+                U256::from(amount).as_u128(),
                 serde_json::to_string(&DepositMsg::Repay).unwrap(),
             )
             .await
@@ -366,8 +382,9 @@ impl UnifiedMarketController {
         &self,
         liquidator_user: &Account,
         account_id: &AccountId,
-        borrow_asset_amount: u128,
+        borrow_asset_amount: impl Into<BorrowAssetAmount>,
     ) -> ExecutionSuccess {
+        let borrow_asset_amount = borrow_asset_amount.into();
         eprintln!(
             "{} executing liquidation against {} for {}...",
             liquidator_user.id(),
@@ -378,7 +395,7 @@ impl UnifiedMarketController {
             .transfer_call(
                 liquidator_user,
                 self.market.contract().id(),
-                borrow_asset_amount,
+                U256::from(borrow_asset_amount).as_u128(),
                 serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
                     account_id: account_id.clone(),
                 }))

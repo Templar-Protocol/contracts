@@ -6,10 +6,88 @@ use std::{
 
 use near_sdk::{
     borsh::{BorshDeserialize, BorshSchema, BorshSerialize},
+    near,
     serde::{self, Deserialize, Serialize},
 };
-use primitive_types::U512;
+use primitive_types::{U256, U512};
 use schemars::JsonSchema;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[near(serializers = [])]
+pub struct U256SerializationWrapper(pub U256);
+
+impl From<U256> for U256SerializationWrapper {
+    fn from(value: U256) -> Self {
+        Self(value)
+    }
+}
+
+impl From<U256SerializationWrapper> for U256 {
+    fn from(value: U256SerializationWrapper) -> Self {
+        value.0
+    }
+}
+
+impl JsonSchema for U256SerializationWrapper {
+    fn schema_name() -> String {
+        String::from("U256")
+    }
+
+    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = gen.subschema_for::<String>().into_object();
+        schema.metadata().description = Some("256-bit unsigned integer".to_string());
+        schema.string().pattern = Some("^(0|[1-9][0-9]{0,77})$".to_string());
+        schema.into()
+    }
+}
+
+impl BorshSchema for U256SerializationWrapper {
+    fn add_definitions_recursively(
+        definitions: &mut std::collections::BTreeMap<
+            near_sdk::borsh::schema::Declaration,
+            near_sdk::borsh::schema::Definition,
+        >,
+    ) {
+        <[u64; 4] as BorshSchema>::add_definitions_recursively(definitions);
+    }
+
+    fn declaration() -> near_sdk::borsh::schema::Declaration {
+        String::from("U256")
+    }
+}
+
+impl BorshSerialize for U256SerializationWrapper {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        BorshSerialize::serialize(&self.0 .0, writer)
+    }
+}
+
+impl BorshDeserialize for U256SerializationWrapper {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        Ok(Self(U256(BorshDeserialize::deserialize_reader(reader)?)))
+    }
+}
+
+impl Serialize for U256SerializationWrapper {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: near_sdk::serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for U256SerializationWrapper {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self(
+            U256::from_dec_str(&s).map_err(serde::de::Error::custom)?,
+        ))
+    }
+}
 
 pub const FRACTIONAL_BITS: usize = 128;
 /// `floor(FRACTIONAL_BITS / log2(10))`
@@ -264,7 +342,7 @@ impl Decimal {
         }
     }
 
-    pub fn to_u128_floor(self) -> Option<u128> {
+    fn to_u128_floor(self) -> Option<u128> {
         let truncated = self.repr >> FRACTIONAL_BITS;
         if truncated.bits() <= 128 {
             Some(truncated.as_u128())
@@ -273,16 +351,26 @@ impl Decimal {
         }
     }
 
-    pub fn to_u128_ceil(self) -> Option<u128> {
+    pub fn to_u256_floor(self) -> Option<U256> {
         let truncated = self.repr >> FRACTIONAL_BITS;
-        if truncated.bits() <= 128 {
-            if self.fractional_part().is_zero() {
-                Some(truncated.as_u128())
-            } else {
-                truncated.as_u128().checked_add(1)
-            }
+        if truncated.bits() <= 256 {
+            Some(U256([
+                truncated.0[0],
+                truncated.0[1],
+                truncated.0[2],
+                truncated.0[3],
+            ]))
         } else {
             None
+        }
+    }
+
+    pub fn to_u256_ceil(self) -> Option<U256> {
+        let a = self.to_u256_floor()?;
+        if self.fractional_part().is_zero() {
+            Some(a)
+        } else {
+            a.checked_add(U256::one())
         }
     }
 

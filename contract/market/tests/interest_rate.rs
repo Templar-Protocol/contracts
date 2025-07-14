@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use primitive_types::U256;
 use rstest::rstest;
 use templar_common::{
     asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
@@ -79,32 +80,32 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         );
         let duration_outer = time_outer.elapsed();
 
-        let supply_yield_1 = u128::from(supply_position_1.borrow_asset_yield.get_total())
-            + u128::from(supply_position_1.borrow_asset_yield.pending_estimate);
-        let supply_yield_2 = u128::from(supply_position_2.borrow_asset_yield.get_total())
-            + u128::from(supply_position_2.borrow_asset_yield.pending_estimate);
+        let supply_yield_1 = U256::from(supply_position_1.borrow_asset_yield.get_total())
+            + U256::from(supply_position_1.borrow_asset_yield.pending_estimate);
+        let supply_yield_2 = U256::from(supply_position_2.borrow_asset_yield.get_total())
+            + U256::from(supply_position_2.borrow_asset_yield.pending_estimate);
 
         // No yield yet.
-        assert_eq!(supply_yield_1, 0);
-        assert_eq!(supply_yield_2, 0);
+        assert!(supply_yield_1.is_zero());
+        assert!(supply_yield_2.is_zero());
 
         eprintln!("Borrow position 1: {borrow_position_1:#?}");
         eprintln!("Borrow position 2: {borrow_position_2:#?}");
 
         let f = principal * strategy.at(dec!("0.2")) / *MS_IN_A_YEAR;
 
-        let approximation_below = (f * duration_inner.as_millis()).to_u128_ceil().unwrap();
-        let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
+        let approximation_below = (f * duration_inner.as_millis()).to_u256_ceil().unwrap();
+        let approximation_above = (f * duration_outer.as_millis()).to_u256_ceil().unwrap();
 
-        let actual_1 = u128::from(borrow_position_1.borrow_asset_fees.get_total())
-            + u128::from(borrow_position_1.borrow_asset_fees.pending_estimate);
+        let actual_1 = U256::from(borrow_position_1.borrow_asset_fees.get_total())
+            + U256::from(borrow_position_1.borrow_asset_fees.pending_estimate);
         eprintln!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
         assert!(approximation_below <= actual_1);
         assert!(actual_1 <= approximation_above);
 
-        let actual_2 = u128::from(borrow_position_2.borrow_asset_fees.get_total())
-            + u128::from(borrow_position_2.borrow_asset_fees.pending_estimate);
+        let actual_2 = U256::from(borrow_position_2.borrow_asset_fees.get_total())
+            + U256::from(borrow_position_2.borrow_asset_fees.pending_estimate);
         eprintln!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
         assert!(approximation_below <= actual_2);
@@ -126,8 +127,8 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
             let r = c
                 .repay(
                     &borrow_user,
-                    (u128::from(borrow_position_before.get_total_borrow_asset_liability())
-                        + u128::from(borrow_position_before.borrow_asset_fees.pending_estimate))
+                    (U256::from(borrow_position_before.get_total_borrow_asset_liability())
+                        + U256::from(borrow_position_before.borrow_asset_fees.pending_estimate))
                         * 110
                         / 100, /* overpayment */
                 )
@@ -149,9 +150,9 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
             let borrow_position_before = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
             c.repay(
                 &borrow_user_2,
-                (u128::from(borrow_position_before.get_total_borrow_asset_liability())
-                    + u128::from(borrow_position_before.borrow_asset_fees.pending_estimate))
-                    * 110
+                (U256::from(borrow_position_before.get_total_borrow_asset_liability())
+                    + U256::from(borrow_position_before.borrow_asset_fees.pending_estimate))
+                    * 110u64
                     / 100, /* overpayment */
             )
             .await;

@@ -281,7 +281,7 @@ impl MarketConfiguration {
             * Valuation::pessimistic(amount, &price_pair.collateral).ratio(
                 Valuation::optimistic(BorrowAssetAmount::new(1), &price_pair.borrow),
             )?)
-        .to_u128_ceil()
+        .to_u256_ceil()
         .map(BorrowAssetAmount::new)
     }
 }

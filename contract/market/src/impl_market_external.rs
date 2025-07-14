@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
+use primitive_types::U256;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
@@ -220,10 +221,10 @@ impl MarketExternalInterface for Contract {
 
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
-        let expect_success = u128::from(self.borrow_asset_deposited_active)
-            .saturating_add(u128::from(self.total_incoming()))
+        let expect_success = U256::from(self.borrow_asset_deposited_active)
+            .saturating_add(U256::from(self.total_incoming()))
             .checked_sub(
-                u128::from(self.borrow_asset_borrowed)
+                U256::from(self.borrow_asset_borrowed)
                     .saturating_add(self.borrow_asset_in_flight.into()),
             )
             .is_some();

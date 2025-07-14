@@ -1,3 +1,4 @@
+use primitive_types::U256;
 use rstest::rstest;
 use tokio::join;
 
@@ -91,8 +92,8 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.total_incoming()),
-        1100,
+        supply_position.total_incoming(),
+        1100.into(),
         "Supply position should match amount of tokens supplied to contract",
     );
 
@@ -111,8 +112,8 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_deposit().active),
-        1100,
+        supply_position.get_deposit().active,
+        1100.into(),
         "Supply position should match amount of tokens supplied to contract",
     );
 
@@ -123,8 +124,8 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(borrow_position.collateral_asset_deposit),
-        2000,
+        borrow_position.collateral_asset_deposit,
+        2000.into(),
         "Collateral asset deposit should be equal to the number of collateral tokens sent",
     );
 
@@ -155,10 +156,10 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(u128::from(borrow_position.collateral_asset_deposit), 2000);
+    assert_eq!(borrow_position.collateral_asset_deposit, 2000.into());
     assert_eq!(
-        u128::from(borrow_position.get_total_borrow_asset_liability()),
-        1000 + 100, // origination fee
+        borrow_position.get_total_borrow_asset_liability(),
+        (1000 + 100).into(), // origination fee
     );
 
     // Step 4: Repay borrow
@@ -168,11 +169,11 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
     // Ensure borrow is paid off.
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(u128::from(borrow_position.collateral_asset_deposit), 2000);
     assert_eq!(
-        u128::from(borrow_position.get_total_borrow_asset_liability()),
-        0,
+        U256::from(borrow_position.collateral_asset_deposit),
+        2000.into(),
     );
+    assert!(borrow_position.get_total_borrow_asset_liability().is_zero());
 
     join!(
         // Supply withdrawals.
@@ -182,10 +183,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
                 c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
                     .await;
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-                assert_eq!(
-                    u128::from(supply_position.borrow_asset_yield.get_total()),
-                    80,
-                );
+                assert_eq!(supply_position.borrow_asset_yield.get_total(), 80.into());
                 // Move the yield to the principal so that it can be withdrawn
                 let amount_moved_to_principal = c
                     .harvest_yield(&supply_user, None, Some(HarvestYieldMode::Compounding))
@@ -203,8 +201,8 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
                 let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
 
                 assert_eq!(
-                    balance_after - balance_before,
-                    u128::from(supply_position.borrow_asset_yield.get_total()),
+                    supply_position.borrow_asset_yield.get_total(),
+                    (balance_after - balance_before).into(),
                 );
 
                 let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
@@ -236,11 +234,11 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
                     .get_supply_withdrawal_request_status(supply_user.id())
                     .await
                     .expect("Should be enqueued now");
-                assert_eq!(u128::from(request_status.amount), 1100);
-                assert_eq!(u128::from(request_status.depth), 0);
+                assert_eq!(request_status.amount, 1100.into());
+                assert_eq!(request_status.depth, 0.into());
                 assert_eq!(request_status.index, 0);
                 let queue_status = c.get_supply_withdrawal_queue_status().await;
-                assert_eq!(u128::from(queue_status.depth), 1100);
+                assert_eq!(queue_status.depth, 1100.into());
                 assert_eq!(queue_status.length, 1);
 
                 c.execute_next_supply_withdrawal_request(&supply_user).await;
@@ -272,7 +270,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
             assert!(protocol_yield.collateral_asset.is_zero());
-            assert_eq!(u128::from(protocol_yield.borrow_asset), 10);
+            assert_eq!(protocol_yield.borrow_asset, 10.into());
             let balance_before = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
             let result = c
                 .withdraw_static_yield(&protocol_yield_user, None, None)
@@ -288,7 +286,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
             assert!(insurance_yield.collateral_asset.is_zero());
-            assert_eq!(u128::from(insurance_yield.borrow_asset), 10);
+            assert_eq!(insurance_yield.borrow_asset, 10.into());
             let balance_before = c.borrow_asset.balance_of(insurance_yield_user.id()).await;
             let result = c
                 .withdraw_static_yield(&insurance_yield_user, None, None)

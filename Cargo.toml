@@ -11,7 +11,7 @@ near-sdk = { version = "5.7", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
 near-contract-standards = "5.7"
 near-workspaces = { version = "0.16", features = ["unstable"] }
-primitive-types = { version = "0.10.1" }
+primitive-types = { version = "0.13.1", features = ["serde", "json-schema"] }
 rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 templar-common = { path = "./common" }

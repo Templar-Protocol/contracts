@@ -1,4 +1,5 @@
 use near_sdk::{json_types::U64, near};
+use primitive_types::U256;
 
 use crate::{
     asset::{AssetClass, FungibleAssetAmount},
@@ -20,8 +21,8 @@ impl<T: AssetClass> Fee<T> {
     pub fn of(&self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
         match self {
             Fee::Flat(f) => Some(*f),
-            Fee::Proportional(factor) => (factor * u128::from(amount))
-                .to_u128_ceil()
+            Fee::Proportional(factor) => (factor * U256::from(amount))
+                .to_u256_ceil()
                 .map(FungibleAssetAmount::new),
         }
     }
@@ -75,8 +76,8 @@ impl<T: AssetClass> TimeBasedFee<T> {
             TimeBasedFeeFunction::Linear => {
                 (Decimal::from(self.duration.0.saturating_sub(duration))
                     / Decimal::from(self.duration.0)
-                    * u128::from(base_fee))
-                .to_u128_ceil()
+                    * U256::from(base_fee))
+                .to_u256_ceil()
                 .map(FungibleAssetAmount::new)
             }
         }

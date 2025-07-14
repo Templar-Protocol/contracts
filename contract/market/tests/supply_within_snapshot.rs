@@ -1,3 +1,4 @@
+use primitive_types::U256;
 use templar_common::{
     dec,
     fee::Fee,
@@ -144,7 +145,7 @@ async fn partial_snapshot_no_earnings() {
     c.supply(&supply_user_2, 100_000_000).await;
 
     let snapshot_supply_start = c.get_finalized_snapshots_len().await;
-    let mut earned_in_first_snapshot = 0u128;
+    let mut earned_in_first_snapshot = U256::zero();
     while !c
         .get_supply_position(supply_user_2.id())
         .await
@@ -167,7 +168,7 @@ async fn partial_snapshot_no_earnings() {
                 eprintln!("Older position total: {total}");
                 eprintln!("Older position pending: {pending}");
 
-                if !total.is_zero() && earned_in_first_snapshot == 0 {
+                if !total.is_zero() && earned_in_first_snapshot.is_zero() {
                     earned_in_first_snapshot = total.into();
                 }
             },
@@ -198,8 +199,8 @@ async fn partial_snapshot_no_earnings() {
     eprintln!("Amount 1 end: {amount_1_end}");
     eprintln!("Amount 2 end: {amount_2_end}");
     assert_eq!(
-        u128::from(amount_1_end),
-        u128::from(amount_2_end) + earned_in_first_snapshot,
+        U256::from(amount_1_end),
+        U256::from(amount_2_end) + earned_in_first_snapshot,
     );
     assert_eq!(
         position_1_end.borrow_asset_yield.pending_estimate,

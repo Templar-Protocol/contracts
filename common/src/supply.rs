@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use near_sdk::{env, json_types::U64, near, require, AccountId};
+use primitive_types::U256;
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -134,7 +135,7 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
     pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
         let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
 
-        let mut amount = u128::from(self.position.borrow_asset_deposit.active);
+        let mut amount = U256::from(self.position.borrow_asset_deposit.active);
         let mut accumulated = Decimal::ZERO;
         let mut next_incoming = 0;
 
@@ -158,7 +159,7 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
                 .filter(|incoming| incoming.activate_at_snapshot_index as usize == i)
             {
                 next_incoming += 1;
-                amount += u128::from(incoming.amount);
+                amount += U256::from(incoming.amount);
             }
 
             if !snapshot.deposited_active.is_zero() {
@@ -173,7 +174,7 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             // Accumulated amount is derived from real balances, so it should
             // never overflow underlying data type.
             #[allow(clippy::unwrap_used, reason = "Derived from real balances")]
-            amount: accumulated.to_u128_floor().unwrap().into(),
+            amount: accumulated.to_u256_floor().unwrap().into(),
             fraction_as_u128_dividend: accumulated.fractional_part_as_u128_dividend(),
             next_snapshot_index,
         }

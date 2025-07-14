@@ -1,6 +1,7 @@
 use std::num::NonZeroU32;
 
 use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
+use primitive_types::U256;
 
 use crate::asset::BorrowAssetAmount;
 
@@ -258,8 +259,8 @@ impl WithdrawalQueue {
         WithdrawalQueueStatus {
             depth: self
                 .iter()
-                .map(|(_, amount)| u128::from(amount))
-                .sum::<u128>()
+                .map(|(_, amount)| U256::from(amount))
+                .fold(U256::zero(), |a, b| a + b)
                 .into(),
             length: self.len(),
         }

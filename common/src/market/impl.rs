@@ -4,6 +4,7 @@ use near_sdk::{
     collections::{LookupMap, UnorderedMap},
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
+use primitive_types::U256;
 
 use crate::{
     asset::BorrowAssetAmount,
@@ -176,12 +177,12 @@ impl Market {
         )]
         let must_retain = ((1u32 - self.configuration.borrow_asset_maximum_usage_ratio)
             * Decimal::from(self.borrow_asset_deposited_active))
-        .to_u128_ceil()
+        .to_u256_ceil()
         .unwrap();
 
-        u128::from(self.borrow_asset_deposited_active)
-            .saturating_sub(u128::from(self.borrow_asset_borrowed))
-            .saturating_sub(u128::from(self.borrow_asset_in_flight))
+        U256::from(self.borrow_asset_deposited_active)
+            .saturating_sub(U256::from(self.borrow_asset_borrowed))
+            .saturating_sub(U256::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
             .into()
     }
@@ -322,7 +323,7 @@ impl Market {
         for (account_id, share_weight) in &self.configuration.yield_weights.r#static {
             #[allow(clippy::unwrap_used, reason = "share_weight / total_weight <= 1")]
             let share = amount
-                .split((*share_weight * amount_per_weight).to_u128_floor().unwrap())
+                .split((*share_weight * amount_per_weight).to_u256_floor().unwrap())
                 // Safety:
                 // Guaranteed share_weight <= total_weight
                 // Guaranteed sum(share_weights) == total_weight

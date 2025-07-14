@@ -1,5 +1,6 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
+use primitive_types::U256;
 use rstest::rstest;
 use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
@@ -56,7 +57,8 @@ async fn compounding_yield(
                 let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
                 c.repay(
                     &borrow_user,
-                    u128::from(position.get_total_borrow_asset_liability()) * 120 / 100,
+                    (U256::from(position.get_total_borrow_asset_liability()) * 120u64 / 100u64)
+                        .as_u128(),
                 )
                 .await;
                 c.borrow(&borrow_user, principal).await;
@@ -77,13 +79,13 @@ async fn compounding_yield(
         async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
     );
 
-    let supply_yield_1 = u128::from(supply_position_1_after.get_deposit().total())
-        + u128::from(supply_position_1_after.borrow_asset_yield.get_total())
-        + u128::from(supply_position_1_after.borrow_asset_yield.pending_estimate)
+    let supply_yield_1 = U256::from(supply_position_1_after.get_deposit().total())
+        + U256::from(supply_position_1_after.borrow_asset_yield.get_total())
+        + U256::from(supply_position_1_after.borrow_asset_yield.pending_estimate)
         - principal * 5;
-    let supply_yield_2 = u128::from(supply_position_2_after.get_deposit().total())
-        + u128::from(supply_position_2_after.borrow_asset_yield.get_total())
-        + u128::from(supply_position_2_after.borrow_asset_yield.pending_estimate)
+    let supply_yield_2 = U256::from(supply_position_2_after.get_deposit().total())
+        + U256::from(supply_position_2_after.borrow_asset_yield.get_total())
+        + U256::from(supply_position_2_after.borrow_asset_yield.pending_estimate)
         - principal * 5;
 
     eprintln!("supply 1 yield: {supply_yield_1:#?}");

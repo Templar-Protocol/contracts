@@ -87,16 +87,14 @@ pub struct Valuation {
 impl Valuation {
     pub fn optimistic<T: AssetClass>(amount: FungibleAssetAmount<T>, price: &Price<T>) -> Self {
         Self {
-            coefficient: U256::from(u128::from(amount))
-                * U256::from(price.price + price.confidence), // guaranteed not to overflow
+            coefficient: U256::from(amount) * U256::from(price.price + price.confidence), // guaranteed not to overflow
             exponent: price.exponent,
         }
     }
 
     pub fn pessimistic<T: AssetClass>(amount: FungibleAssetAmount<T>, price: &Price<T>) -> Self {
         Self {
-            coefficient: U256::from(u128::from(amount))
-                * U256::from(price.price - price.confidence), // guaranteed not to overflow
+            coefficient: U256::from(amount) * U256::from(price.price - price.confidence), // guaranteed not to overflow
             exponent: price.exponent,
         }
     }

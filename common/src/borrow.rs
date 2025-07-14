@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use near_sdk::{env, json_types::U64, near, AccountId};
+use primitive_types::U256;
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -152,11 +153,11 @@ impl BorrowPosition {
         self.borrow_asset_fees.remove(amount_to_fees);
 
         let amount_to_principal = {
-            let minimum_amount = u128::from(minimum_amount);
+            let minimum_amount = U256::from(minimum_amount);
             let amount_remaining =
-                u128::from(self.borrow_asset_principal).saturating_sub(u128::from(amount));
-            if amount_remaining > 0 && amount_remaining < minimum_amount {
-                u128::from(self.borrow_asset_principal)
+                U256::from(self.borrow_asset_principal).saturating_sub(U256::from(amount));
+            if !amount_remaining.is_zero() && amount_remaining < minimum_amount {
+                U256::from(self.borrow_asset_principal)
                     .saturating_sub(minimum_amount)
                     .into()
             } else {
@@ -225,7 +226,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
             * Decimal::from(self.position.get_borrow_asset_principal())
             / *MS_IN_A_YEAR;
         #[allow(clippy::unwrap_used, reason = "Interest rate guaranteed <= APY_LIMIT")]
-        interest_in_current_snapshot.to_u128_ceil().unwrap().into()
+        interest_in_current_snapshot.to_u256_ceil().unwrap().into()
     }
 
     pub fn with_pending_interest(&mut self) {
@@ -285,9 +286,9 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         AccumulationRecord {
             #[allow(
                 clippy::unwrap_used,
-                reason = "Assume accumulated interest will never exceed u128::MAX"
+                reason = "Assume accumulated interest will never exceed U256::MAX"
             )]
-            amount: accumulated.to_u128_floor().unwrap().into(),
+            amount: accumulated.to_u256_floor().unwrap().into(),
             fraction_as_u128_dividend: accumulated.fractional_part_as_u128_dividend(),
             next_snapshot_index,
         }

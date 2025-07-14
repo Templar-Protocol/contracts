@@ -10,6 +10,7 @@ hex-literal = "0.4"
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true
+primitive-types.workspace = true
 templar-common.workspace = true
 tokio.workspace = true
 

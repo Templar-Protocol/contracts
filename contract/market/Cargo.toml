@@ -33,6 +33,7 @@ getrandom.workspace = true
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-contract-standards.workspace = true
+primitive-types.workspace = true
 templar-common.workspace = true
 
 [dev-dependencies]

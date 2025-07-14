@@ -27,7 +27,7 @@ async fn success_above_minimum_initial_collateral_ratio(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
         c.collateralize(
             &borrow_user,
-            (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+            (1000u32 * initial + Decimal::ONE).to_u256_ceil().unwrap(),
         ),
     );
 
@@ -37,13 +37,11 @@ async fn success_above_minimum_initial_collateral_ratio(
 
     assert_eq!(balance_before + 1000, balance_after);
     assert_eq!(
-        u128::from(
-            c.get_borrow_position(borrow_user.id())
-                .await
-                .unwrap()
-                .get_borrow_asset_principal()
-        ),
-        1000
+        c.get_borrow_position(borrow_user.id())
+            .await
+            .unwrap()
+            .get_borrow_asset_principal(),
+        1000.into(),
     );
 }
 
@@ -73,7 +71,7 @@ async fn fail_below_minimum_initial_collateral_ratio(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
         c.collateralize(
             &borrow_user,
-            (1000u32 * initial).to_u128_floor().unwrap() - 1,
+            (1000u32 * initial).to_u256_floor().unwrap() - 1,
         ),
     );
 
@@ -104,7 +102,7 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
         c.collateralize(
             &borrow_user,
-            (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+            (1000u32 * initial + Decimal::ONE).to_u256_ceil().unwrap(),
         ),
     );
 

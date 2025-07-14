@@ -2,14 +2,13 @@ use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
-    env,
-    json_types::U128,
-    near,
+    env, near,
     serde_json::{self, json},
     AccountId, Gas, NearToken, Promise,
 };
+use primitive_types::U256;
 
-use crate::number::Decimal;
+use crate::number::{Decimal, U256SerializationWrapper};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
@@ -44,7 +43,15 @@ impl<T: AssetClass> FungibleAsset<T> {
             FungibleAssetKind::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
                 .with_static_gas(Self::GAS_FT_TRANSFER)
                 .with_attached_deposit(NearToken::from_yoctonear(1))
-                .ft_transfer(receiver_id, u128::from(amount).into(), None),
+                .ft_transfer(
+                    receiver_id,
+                    u128::try_from(amount)
+                        .unwrap_or_else(|_| {
+                            env::panic_str("NEP-141 transfer amount exceeds u128::MAX")
+                        })
+                        .into(),
+                    None,
+                ),
             FungibleAssetKind::Nep245 {
                 ref contract_id,
                 ref token_id,
@@ -169,9 +176,9 @@ impl AssetClass for BorrowAsset {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
-#[serde(from = "U128", into = "U128")]
+#[serde(from = "U256SerializationWrapper", into = "U256SerializationWrapper")]
 pub struct FungibleAssetAmount<T: AssetClass> {
-    amount: U128,
+    amount: U256SerializationWrapper,
     #[borsh(skip)]
     discriminant: PhantomData<T>,
 }
@@ -182,8 +189,14 @@ impl<T: AssetClass> Default for FungibleAssetAmount<T> {
     }
 }
 
-impl<T: AssetClass> From<U128> for FungibleAssetAmount<T> {
-    fn from(amount: U128) -> Self {
+impl<T: AssetClass> From<FungibleAssetAmount<T>> for U256SerializationWrapper {
+    fn from(value: FungibleAssetAmount<T>) -> Self {
+        value.amount
+    }
+}
+
+impl<T: AssetClass> From<U256SerializationWrapper> for FungibleAssetAmount<T> {
+    fn from(amount: U256SerializationWrapper) -> Self {
         Self {
             amount,
             discriminant: PhantomData,
@@ -191,9 +204,18 @@ impl<T: AssetClass> From<U128> for FungibleAssetAmount<T> {
     }
 }
 
-impl<T: AssetClass> From<FungibleAssetAmount<T>> for U128 {
+impl<T: AssetClass> From<U256> for FungibleAssetAmount<T> {
+    fn from(amount: U256) -> Self {
+        Self {
+            amount: amount.into(),
+            discriminant: PhantomData,
+        }
+    }
+}
+
+impl<T: AssetClass> From<FungibleAssetAmount<T>> for U256 {
     fn from(value: FungibleAssetAmount<T>) -> Self {
-        value.amount
+        value.amount.0
     }
 }
 
@@ -204,22 +226,22 @@ impl<T: AssetClass> From<u128> for FungibleAssetAmount<T> {
 }
 
 impl<T: AssetClass> FungibleAssetAmount<T> {
-    pub fn new(amount: u128) -> Self {
+    pub fn new(amount: impl Into<U256>) -> Self {
         Self {
-            amount: amount.into(),
+            amount: amount.into().into(),
             discriminant: PhantomData,
         }
     }
 
     pub fn zero() -> Self {
         Self {
-            amount: 0.into(),
+            amount: U256::zero().into(),
             discriminant: PhantomData,
         }
     }
 
     pub fn is_zero(&self) -> bool {
-        self.amount.0 == 0
+        self.amount.0.is_zero()
     }
 
     pub fn split(&mut self, amount: impl Into<Self>) -> Option<Self> {
@@ -240,9 +262,11 @@ impl<T: AssetClass> From<FungibleAssetAmount<T>> for Decimal {
     }
 }
 
-impl<T: AssetClass> From<FungibleAssetAmount<T>> for u128 {
-    fn from(value: FungibleAssetAmount<T>) -> Self {
-        value.amount.0
+impl<T: AssetClass> TryFrom<FungibleAssetAmount<T>> for u128 {
+    type Error = primitive_types::Error;
+
+    fn try_from(value: FungibleAssetAmount<T>) -> Result<Self, Self::Error> {
+        primitive_types::U128::try_from(value.amount.0).map(|a| a.as_u128())
     }
 }
 
