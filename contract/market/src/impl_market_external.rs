@@ -303,15 +303,8 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.current_snapshot.deposited_active.into();
-        if deposited.is_zero() {
-            return Decimal::ZERO;
-        }
-        let borrowed: Decimal = self.current_snapshot.borrowed.into();
-        let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
-        let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
-
-        self.current_snapshot.interest_rate * borrowed * supply_weight / deposited / total_weight
+        self.configuration
+            .yield_rate_of_snapshot(&self.current_snapshot)
     }
 
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {

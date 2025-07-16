@@ -12,6 +12,7 @@ use crate::{
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
     price::{PricePair, Valuation},
+    snapshot::Snapshot,
     time_chunk::TimeChunkConfiguration,
 };
 
@@ -283,6 +284,18 @@ impl MarketConfiguration {
             )?)
         .to_u128_ceil()
         .map(BorrowAssetAmount::new)
+    }
+
+    pub fn yield_rate_of_snapshot(&self, snapshot: &Snapshot) -> Decimal {
+        let deposited: Decimal = snapshot.deposited_active.into();
+        if deposited.is_zero() {
+            return Decimal::ZERO;
+        }
+        let borrowed: Decimal = snapshot.borrowed.into();
+        let supply_weight: Decimal = self.yield_weights.supply.get().into();
+        let total_weight: Decimal = self.yield_weights.total_weight().get().into();
+
+        snapshot.interest_rate * borrowed * supply_weight / deposited / total_weight
     }
 }
 

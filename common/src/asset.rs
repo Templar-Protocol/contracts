@@ -155,18 +155,6 @@ mod sealed {
 }
 pub trait AssetClass: sealed::Sealed + Copy + Clone {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub struct CollateralAsset;
-impl sealed::Sealed for CollateralAsset {}
-impl AssetClass for CollateralAsset {}
-
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub struct BorrowAsset;
-impl sealed::Sealed for BorrowAsset {}
-impl AssetClass for BorrowAsset {}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 #[serde(from = "U128", into = "U128")]
@@ -252,8 +240,21 @@ impl<T: AssetClass> std::fmt::Display for FungibleAssetAmount<T> {
     }
 }
 
-pub type BorrowAssetAmount = FungibleAssetAmount<BorrowAsset>;
-pub type CollateralAssetAmount = FungibleAssetAmount<CollateralAsset>;
+macro_rules! asset_class {
+    ($asset:ident, $amount:ident) => {
+        #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[near(serializers = [borsh, json])]
+        pub struct $asset;
+        impl sealed::Sealed for $asset {}
+        impl AssetClass for $asset {}
+
+        pub type $amount = FungibleAssetAmount<$asset>;
+    };
+}
+
+asset_class!(CollateralAsset, CollateralAssetAmount);
+asset_class!(BorrowAsset, BorrowAssetAmount);
+asset_class!(IncentiveAsset, IncentiveAssetAmount);
 
 #[cfg(test)]
 mod tests {

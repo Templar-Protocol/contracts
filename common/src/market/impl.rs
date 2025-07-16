@@ -6,10 +6,11 @@ use near_sdk::{
 };
 
 use crate::{
-    asset::BorrowAssetAmount,
+    asset::{BorrowAssetAmount, FungibleAsset, IncentiveAsset},
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
+    incentive::Incentive,
     market::MarketConfiguration,
     number::Decimal,
     snapshot::Snapshot,
@@ -28,6 +29,7 @@ enum StorageKey {
     FinalizedSnapshots,
     WithdrawalQueue,
     StaticYield,
+    Incentives,
 }
 
 #[near]
@@ -44,6 +46,7 @@ pub struct Market {
     pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
+    pub incentives: UnorderedMap<FungibleAsset<IncentiveAsset>, Incentive>,
 }
 
 impl Market {
@@ -91,6 +94,7 @@ impl Market {
             finalized_snapshots: ChunkedAppendOnlyList::new(key!(FinalizedSnapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
+            incentives: UnorderedMap::new(key!(Incentives)),
         };
 
         self_.finalized_snapshots.push(first_snapshot);

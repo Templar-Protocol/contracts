@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use near_sdk::{near, AccountId, Promise, PromiseOrValue};
 
 use crate::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset::{BorrowAssetAmount, CollateralAssetAmount, FungibleAsset, IncentiveAsset},
     borrow::{BorrowPosition, BorrowStatus},
+    incentive::Incentive,
     number::Decimal,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
@@ -36,9 +37,9 @@ pub trait MarketExternalInterface {
     fn list_finalized_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot>;
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
 
-    // ==================
+    // ================
     // BORROW FUNCTIONS
-    // ==================
+    // ================
 
     // ft_on_receive :: where msg = Collateralize
     // ft_on_receive :: where msg = Repay
@@ -114,13 +115,24 @@ pub trait MarketExternalInterface {
 
     // ft_on_receive :: where msg = Liquidate { account_id }
 
-    // =================
+    // ===============
     // YIELD FUNCTIONS
-    // =================
+    // ===============
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord>;
     fn withdraw_static_yield(
         &mut self,
         borrow_asset_amount: Option<BorrowAssetAmount>,
         collateral_asset_amount: Option<CollateralAssetAmount>,
     ) -> Promise;
+
+    // ==========
+    // INCENTIVES
+    // ==========
+
+    // on receive token where msg = CreateIncentive
+    fn list_incentives(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<FungibleAsset<IncentiveAsset>, Incentive>;
 }

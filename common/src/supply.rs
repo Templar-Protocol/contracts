@@ -1,10 +1,16 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
 
 use near_sdk::{env, json_types::U64, near, require, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
-    asset::{BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
+    asset::{
+        BorrowAsset, BorrowAssetAmount, FungibleAsset, FungibleAssetAmount, IncentiveAsset,
+        IncentiveAssetAmount,
+    },
     event::MarketEvent,
     market::{Market, WithdrawalResolution},
     number::Decimal,
@@ -47,6 +53,7 @@ pub struct SupplyPosition {
     started_at_block_timestamp_ms: Option<U64>,
     borrow_asset_deposit: Deposit,
     pub borrow_asset_yield: Accumulator<BorrowAsset>,
+    pub redeemed_incentives: HashMap<FungibleAsset<IncentiveAsset>, IncentiveAssetAmount>,
 }
 
 impl SupplyPosition {
@@ -55,6 +62,7 @@ impl SupplyPosition {
             started_at_block_timestamp_ms: None,
             borrow_asset_deposit: Deposit::default(),
             borrow_asset_yield: Accumulator::new(current_snapshot_index),
+            redeemed_incentives: HashMap::new(),
         }
     }
 
