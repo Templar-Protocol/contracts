@@ -75,7 +75,7 @@ impl MarketExternalInterface for Contract {
 
         let price_pair = self
             .configuration
-            .balance_oracle
+            .price_oracle_configuration
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
@@ -108,7 +108,7 @@ impl MarketExternalInterface for Contract {
         );
 
         self.configuration
-            .balance_oracle
+            .price_oracle_configuration
             .retrieve_price_pair()
             .then(
                 self_ext!(Self::GAS_BORROW_01_CONSUME_PRICE)
@@ -144,7 +144,7 @@ impl MarketExternalInterface for Contract {
             drop(borrow_position);
             // They still have liability, so we need to check prices.
             self.configuration
-                .balance_oracle
+                .price_oracle_configuration
                 .retrieve_price_pair()
                 .then(
                     self_ext!(Self::GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE)

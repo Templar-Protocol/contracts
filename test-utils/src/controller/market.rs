@@ -170,7 +170,7 @@ impl UnifiedMarketController {
         let balance_oracle = OracleController {
             contract: contract_with_dummy_sk(
                 worker,
-                configuration.balance_oracle.account_id.clone(),
+                configuration.price_oracle_configuration.account_id.clone(),
             ),
         };
 
@@ -250,7 +250,9 @@ impl UnifiedMarketController {
         self.balance_oracle
             .set_price(
                 self.balance_oracle.contract().as_account(),
-                self.configuration.balance_oracle.collateral_asset_price_id,
+                self.configuration
+                    .price_oracle_configuration
+                    .collateral_asset_price_id,
                 to_price(price),
             )
             .await
@@ -261,7 +263,9 @@ impl UnifiedMarketController {
         self.balance_oracle
             .set_price(
                 self.balance_oracle.contract().as_account(),
-                self.configuration.balance_oracle.collateral_asset_price_id,
+                self.configuration
+                    .price_oracle_configuration
+                    .collateral_asset_price_id,
                 price,
             )
             .await
@@ -272,7 +276,9 @@ impl UnifiedMarketController {
         self.balance_oracle
             .set_price(
                 self.balance_oracle.contract().as_account(),
-                self.configuration.balance_oracle.borrow_asset_price_id,
+                self.configuration
+                    .price_oracle_configuration
+                    .borrow_asset_price_id,
                 to_price(price),
             )
             .await
@@ -283,7 +289,9 @@ impl UnifiedMarketController {
         self.balance_oracle
             .set_price(
                 self.balance_oracle.contract().as_account(),
-                self.configuration.balance_oracle.borrow_asset_price_id,
+                self.configuration
+                    .price_oracle_configuration
+                    .borrow_asset_price_id,
                 price,
             )
             .await
@@ -293,10 +301,16 @@ impl UnifiedMarketController {
         self.balance_oracle
             .list_ema_prices_no_older_than(
                 [
-                    self.configuration.balance_oracle.borrow_asset_price_id,
-                    self.configuration.balance_oracle.collateral_asset_price_id,
+                    self.configuration
+                        .price_oracle_configuration
+                        .borrow_asset_price_id,
+                    self.configuration
+                        .price_oracle_configuration
+                        .collateral_asset_price_id,
                 ],
-                self.configuration.balance_oracle.price_maximum_age_s,
+                self.configuration
+                    .price_oracle_configuration
+                    .price_maximum_age_s,
             )
             .await
     }

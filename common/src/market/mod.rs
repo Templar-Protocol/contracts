@@ -4,19 +4,18 @@ use std::num::NonZeroU16;
 use near_sdk::{env, near, AccountId};
 
 use crate::{asset::BorrowAssetAmount, number::Decimal};
-
-mod balance_oracle_configuration;
-pub use balance_oracle_configuration::BalanceOracleConfiguration;
 mod configuration;
 pub use configuration::{MarketConfiguration, APY_LIMIT};
 mod external;
 pub use external::*;
 mod r#impl;
 pub use r#impl::*;
+mod price_oracle_configuration;
+pub use price_oracle_configuration::PriceOracleConfiguration;
 
 pub mod error {
-    pub use super::balance_oracle_configuration::error::*;
     pub use super::configuration::error::*;
+    pub use super::price_oracle_configuration::error::*;
 }
 
 #[derive(Clone, Debug)]

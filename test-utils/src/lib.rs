@@ -19,7 +19,7 @@ use templar_common::{
     dec,
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
-    market::{BalanceOracleConfiguration, MarketConfiguration, YieldWeights},
+    market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
 };
@@ -81,7 +81,7 @@ pub fn market_configuration(
         },
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
-        balance_oracle: BalanceOracleConfiguration {
+        price_oracle_configuration: PriceOracleConfiguration {
             account_id: balance_oracle_id,
             collateral_asset_price_id: PriceIdentifier(hex_literal::hex!(
                 "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
