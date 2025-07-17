@@ -143,7 +143,9 @@ impl Market {
                 .borrow_asset_deposited_incoming
                 .remove(&self.finalized_snapshots.len())
                 .unwrap_or(0.into());
-            self.borrow_asset_deposited_active.join(deposited_incoming);
+            self.borrow_asset_deposited_active
+                .join(deposited_incoming)
+                .unwrap_or_else(|| env::panic_str("Market borrow asset deposited active overflow"));
             let mut snapshot = Snapshot {
                 time_chunk,
                 yield_distribution,
