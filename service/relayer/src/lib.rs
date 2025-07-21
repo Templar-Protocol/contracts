@@ -1,0 +1,74 @@
+use std::collections::HashMap;
+
+use near_primitives::types::{AccountId, Gas};
+use near_sdk::{
+    AccountIdRef,
+    json_types::U128,
+    serde::{Deserialize, Serialize},
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct GasDescriptors {
+    pub market: HashMap<String, Gas>,
+    pub borrow_asset: BorrowAssetGasDescriptors,
+    pub collateral_asset: CollateralAssetGasDescriptors,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct BorrowAssetGasDescriptors {
+    supply: Gas,
+    repay: Gas,
+    liquidate: Gas,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct CollateralAssetGasDescriptors {
+    collateralize: Gas,
+}
+
+pub trait TransferCallArgs {
+    fn receiver_id(&self) -> &AccountIdRef;
+    fn msg(&self) -> &str;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct FtTransferCallArgs {
+    pub receiver_id: AccountId,
+    pub amount: U128,
+    pub memo: Option<String>,
+    pub msg: String,
+}
+
+impl TransferCallArgs for FtTransferCallArgs {
+    fn receiver_id(&self) -> &AccountIdRef {
+        &self.receiver_id
+    }
+
+    fn msg(&self) -> &str {
+        &self.msg
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct MtTransferCallArgs {
+    pub receiver_id: AccountId,
+    pub token_id: String,
+    pub amount: U128,
+    pub memo: Option<String>,
+    pub msg: String,
+}
+
+impl TransferCallArgs for MtTransferCallArgs {
+    fn receiver_id(&self) -> &AccountIdRef {
+        &self.receiver_id
+    }
+
+    fn msg(&self) -> &str {
+        &self.msg
+    }
+}
