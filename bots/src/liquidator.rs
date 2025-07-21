@@ -25,6 +25,7 @@ use tracing::{error, info, instrument};
 use crate::{
     BorrowPositions, DEFAULT_GAS, Network, ONE_NEAR,
     near::{get_access_key_data, send_tx, serialize_and_encode, view},
+    swap::{RheaSwap, Swap, SwapType},
 };
 
 #[derive(BorshStorageKey)]
@@ -48,6 +49,9 @@ pub struct Args {
     /// Market to run liquidations for
     #[arg(short, long, env = "MARKET_ACCOUNT_ID")]
     pub markets: Vec<AccountId>,
+    /// Swap to use for liquidations
+    #[arg(short, long, env = "SWAP_TYPE")]
+    pub swap: SwapType,
     /// Signer key to use for signing transactions.
     #[arg(short, long, env = "SIGNER_KEY")]
     pub signer_key: SecretKey,
@@ -71,21 +75,23 @@ pub struct Args {
     pub concurrency: usize,
 }
 
-pub struct Liquidator {
+pub struct Liquidator<S: Swap> {
     client: JsonRpcClient,
     signer: InMemorySigner,
     asset: AccountId,
     pub market: AccountId,
     timeout: u64,
+    swap: S,
 }
 
-impl Liquidator {
+impl<S: Swap> Liquidator<S> {
     #[must_use]
     pub fn new(
         client: JsonRpcClient,
         signer: InMemorySigner,
         asset: AccountId,
         market: AccountId,
+        swap: S,
         timeout: u64,
     ) -> Self {
         Self {
@@ -94,6 +100,7 @@ impl Liquidator {
             asset,
             market,
             timeout,
+            swap,
         }
     }
 
@@ -153,6 +160,7 @@ impl Liquidator {
         borrow: AccountId,
         position: BorrowPosition,
         oracle_response: OracleResponse,
+        configuration: MarketConfiguration,
     ) -> anyhow::Result<()> {
         let Some(status) = self
             .get_borrow_status(borrow.clone(), &oracle_response)
@@ -169,7 +177,14 @@ impl Liquidator {
 
         info!("Liquidation reason: {reason:?}");
 
-        let liquidation_amount = self.liquidation_amount(&position, &oracle_response)?;
+        let borrow_asset = configuration
+            .borrow_asset
+            .into_nep141()
+            .ok_or_else(|| anyhow::anyhow!("Borrow asset is not a NEP-141 token"))?;
+
+        let liquidation_amount = self
+            .liquidation_amount(&position, &oracle_response, borrow_asset.clone())
+            .await?;
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
@@ -185,6 +200,19 @@ impl Liquidator {
             }
         }
 
+        match self
+            .swap
+            .swap(&borrow_asset, &self.asset, liquidation_amount)
+            .await
+        {
+            Ok(_) => {
+                info!("Swap successful");
+            }
+            Err(e) => {
+                error!("Swap failed: {e}");
+            }
+        }
+
         Ok(())
     }
 
@@ -193,10 +221,11 @@ impl Liquidator {
         clippy::used_underscore_binding,
         reason = "Still need to implement this"
     )]
-    fn liquidation_amount(
+    async fn liquidation_amount(
         &self,
         position: &BorrowPosition,
         _oracle_response: &OracleResponse,
+        borrow_asset: AccountId,
     ) -> anyhow::Result<U128> {
         // TODO: Calculate optimal liquidation amount
         // For purposes of this example implementation we will just use the total borrow amount
@@ -208,6 +237,14 @@ impl Liquidator {
         //  - Possible flash loan fees
         // All of this would be used in calculating both the optimal liquidation amount and wether to
         // perform full or partial liquidation
+        let _quote = self
+            .swap
+            .quote(
+                &borrow_asset,
+                &self.asset,
+                position.get_total_borrow_asset_liability().into(),
+            )
+            .await?;
         Ok(position.get_total_borrow_asset_liability().into())
     }
 
@@ -291,7 +328,11 @@ impl Liquidator {
         futures::stream::iter(self.get_borrows().await?)
             .map(|(borrow, position)| {
                 let oracle_response = oracle_response.clone();
-                async move { self.try_liquidate(borrow, position, oracle_response).await }
+                let configuration = configuration.clone();
+                async move {
+                    self.try_liquidate(borrow, position, oracle_response, configuration)
+                        .await
+                }
             })
             .buffer_unordered(concurrency)
             .collect::<Vec<_>>()
@@ -301,26 +342,34 @@ impl Liquidator {
 
         Ok(())
     }
+}
 
-    #[instrument(level = "debug")]
-    pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Self>> {
-        let client = JsonRpcClient::connect(args.network.get_rpc_url());
-        let signer =
-            InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
-        let asset = args.asset.clone();
+#[instrument(level = "debug")]
+pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Liquidator<impl Swap>>> {
+    let client = JsonRpcClient::connect(args.network.get_rpc_url());
+    let signer =
+        InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
+    let asset = args.asset.clone();
+    let swap = match args.swap {
+        SwapType::RheaSwap => RheaSwap::new(
+            args.swap.get_account_id(args.network),
+            client.clone(),
+            signer.clone(),
+        ),
+    };
 
-        Ok(args
-            .markets
-            .iter()
-            .map(|market| {
-                Self::new(
-                    client.clone(),
-                    signer.clone(),
-                    asset.clone(),
-                    market.clone(),
-                    args.timeout,
-                )
-            })
-            .collect::<Vec<_>>())
-    }
+    Ok(args
+        .markets
+        .iter()
+        .map(|market| {
+            Liquidator::new(
+                client.clone(),
+                signer.clone(),
+                asset.clone(),
+                market.clone(),
+                swap.clone(),
+                args.timeout,
+            )
+        })
+        .collect::<Vec<_>>())
 }

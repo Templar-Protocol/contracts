@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use templar_bots::liquidator::{Args, Liquidator};
+use templar_bots::liquidator::{Args, setup_liquidators};
 use tokio::time::sleep;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let liquidators = Liquidator::setup_liquidators(&args)?;
+    let liquidators = setup_liquidators(&args)?;
 
     loop {
         for liquidator in &liquidators {
