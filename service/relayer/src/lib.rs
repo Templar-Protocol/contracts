@@ -6,8 +6,18 @@ use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
 };
+use templar_common::asset::{BorrowAsset, CollateralAsset, FungibleAsset};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+pub mod client;
+
+#[derive(Debug, Clone)]
+pub struct MarketAccounts {
+    pub account_id: AccountId,
+    pub collateral_asset: FungibleAsset<CollateralAsset>,
+    pub borrow_asset: FungibleAsset<BorrowAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(crate = "near_sdk::serde")]
 pub struct GasDescriptors {
     pub market: HashMap<String, Gas>,
@@ -15,7 +25,7 @@ pub struct GasDescriptors {
     pub collateral_asset: CollateralAssetGasDescriptors,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(crate = "near_sdk::serde")]
 pub struct BorrowAssetGasDescriptors {
     supply: Gas,
@@ -23,7 +33,7 @@ pub struct BorrowAssetGasDescriptors {
     liquidate: Gas,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(crate = "near_sdk::serde")]
 pub struct CollateralAssetGasDescriptors {
     collateralize: Gas,

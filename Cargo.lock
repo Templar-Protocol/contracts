@@ -4696,6 +4696,7 @@ dependencies = [
  "near-crypto 0.30.3",
  "near-fetch",
  "near-jsonrpc-client 0.17.0",
+ "near-jsonrpc-primitives 0.30.3",
  "near-primitives 0.30.3",
  "near-sdk",
  "sqlx",

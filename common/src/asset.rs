@@ -6,7 +6,7 @@ use near_sdk::{
     json_types::U128,
     near,
     serde_json::{self, json},
-    AccountId, Gas, NearToken, Promise,
+    AccountId, AccountIdRef, Gas, NearToken, Promise,
 };
 
 use crate::number::Decimal;
@@ -132,6 +132,15 @@ impl<T: AssetClass> FungibleAsset<T> {
         FungibleAsset {
             discriminant: PhantomData,
             kind: self.kind,
+        }
+    }
+
+    pub fn contract_id(&self) -> &AccountIdRef {
+        match self.kind {
+            FungibleAssetKind::Nep141(ref account_id) => account_id,
+            FungibleAssetKind::Nep245 {
+                ref contract_id, ..
+            } => contract_id,
         }
     }
 }

@@ -12,6 +12,7 @@ envy = "0.4.2"
 near-crypto = "0.30.3"
 near-fetch = "0.8.0"
 near-jsonrpc-client = "0.17.0"
+near-jsonrpc-primitives = "0.30.3"
 near-primitives = "0.30.3"
 near-sdk.workspace = true
 sqlx = { version = "0.8", features = [

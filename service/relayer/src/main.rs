@@ -1,39 +1,63 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
+    net::SocketAddr,
     path::PathBuf,
 };
 
+use axum::{Json, Router, extract::State, http::StatusCode, routing};
+use near_crypto::SecretKey;
+use near_fetch::signer::KeyRotatingSigner;
 use near_primitives::{
     action::{Action, delegate::SignedDelegateAction},
+    hash::CryptoHash,
     types::{AccountId, Gas},
+    views::FinalExecutionOutcomeView,
 };
-use near_sdk::serde::Deserialize;
+use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::serde_json;
+use tokio::task::JoinSet;
+
 use templar_common::{
-    asset::{BorrowAsset, CollateralAsset, FungibleAsset},
+    asset::{BorrowAsset, FungibleAsset},
     market::DepositMsg,
 };
-use templar_relayer::{FtTransferCallArgs, GasDescriptors, MtTransferCallArgs, TransferCallArgs};
+use templar_relayer::{
+    FtTransferCallArgs, GasDescriptors, MarketAccounts, MtTransferCallArgs, TransferCallArgs,
+    client::NearClient,
+};
+use tracing::info;
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 struct Configuration {
+    #[serde(default = "default_port")]
+    pub port: u16,
     pub database_url: String,
+    #[serde(default = "default_rpc_url")]
     pub rpc_url: String,
-    pub gas_descriptors_path: PathBuf,
-}
-
-struct MarketAccounts {
+    // pub gas_descriptors_path: PathBuf,
+    pub registries: Vec<AccountId>,
+    pub markets: Vec<AccountId>,
     pub account_id: AccountId,
-    pub collateral_asset: FungibleAsset<CollateralAsset>,
-    pub borrow_asset: FungibleAsset<BorrowAsset>,
+    pub secret_keys: Vec<SecretKey>,
 }
 
+fn default_port() -> u16 {
+    3000
+}
+
+fn default_rpc_url() -> String {
+    "https://rpc.testnet.near.org/".to_string()
+}
+
+#[derive(Debug, Clone)]
 struct App {
     pub configuration: Configuration,
     pub gas_descriptors: GasDescriptors,
     pub market_account_ids: HashMap<AccountId, MarketAccounts>,
     pub allowed_receiver_account_ids: HashSet<AccountId>,
+    pub near_client: NearClient,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,7 +82,7 @@ pub enum PreconditionError {
 }
 
 impl App {
-    pub fn calculate_gas(
+    pub fn check_and_calculate_gas(
         &self,
         signed_delegate_action: &SignedDelegateAction,
     ) -> Result<Gas, PreconditionError> {
@@ -181,7 +205,139 @@ impl App {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
     dotenvy::dotenv().ok();
     let configuration: Configuration = envy::from_env().unwrap();
+    tracing_subscriber::fmt::init();
+
+    // let file = File::open(&configuration.gas_descriptors_path).unwrap();
+    // let gas_descriptors: GasDescriptors = serde_json::from_reader(file).unwrap();
+    let gas_descriptors: GasDescriptors = Default::default();
+
+    let near_client = NearClient::new(
+        near_jsonrpc_client::JsonRpcClient::connect(&configuration.rpc_url),
+        KeyRotatingSigner::try_from_iter(
+            configuration
+                .secret_keys
+                .iter()
+                .map(|sk| (configuration.account_id.clone(), sk.clone())),
+        )
+        .unwrap(),
+    );
+
+    let mut markets = configuration.markets.clone();
+
+    let mut set = JoinSet::new();
+    for registry_id in &configuration.registries {
+        set.spawn({
+            let near_client = near_client.clone();
+            let registry_id = registry_id.clone();
+            async move {
+                near_client
+                    .load_deployments_from_registry(&registry_id)
+                    .await
+            }
+        });
+    }
+    markets.extend(set.join_all().await.into_iter().flatten());
+
+    let mut set = JoinSet::new();
+    for market in markets {
+        set.spawn({
+            let near_client = near_client.clone();
+            async move { near_client.load_market_accounts(&market).await }
+        });
+    }
+    let market_accounts_vec = set.join_all().await;
+
+    let mut market_account_ids = HashMap::new();
+    let mut allowed_receiver_account_ids = HashSet::new();
+
+    for market_accounts in market_accounts_vec {
+        let market_id = market_accounts.account_id.clone();
+
+        info!(
+            "Loaded market {market_id} with borrow asset {} and collateral asset {}",
+            market_accounts.borrow_asset, market_accounts.collateral_asset,
+        );
+
+        allowed_receiver_account_ids.insert(market_id);
+        allowed_receiver_account_ids.insert(market_accounts.borrow_asset.contract_id().to_owned());
+        allowed_receiver_account_ids
+            .insert(market_accounts.collateral_asset.contract_id().to_owned());
+
+        market_account_ids.insert(market_accounts.account_id.clone(), market_accounts);
+    }
+
+    let app = App {
+        configuration,
+        gas_descriptors,
+        market_account_ids,
+        allowed_receiver_account_ids,
+        near_client,
+    };
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], app.configuration.port));
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+
+    let router = Router::new()
+        .route("/", routing::get(root))
+        .route("/relay", routing::post(relay))
+        .with_state(app);
+
+    tracing::info!("Listening on {}", listener.local_addr().unwrap());
+
+    axum::serve(listener, router).await.unwrap();
+}
+
+async fn root() -> &'static str {
+    "Hello, World!"
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub struct RelayRequest {
+    signed_delegate_action: SignedDelegateAction,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub enum RelayResponse {
+    Success {
+        execution: FinalExecutionOutcomeView,
+    },
+    Failure {
+        error: String,
+    },
+    Rejected {
+        reason: String,
+    },
+}
+
+async fn relay(
+    State(app): State<App>,
+    Json(relay_request): Json<RelayRequest>,
+) -> (StatusCode, Json<RelayResponse>) {
+    match app.check_and_calculate_gas(&relay_request.signed_delegate_action) {
+        Ok(gas) => {
+            let tx_result = app
+                .near_client
+                .sign_and_send(relay_request.signed_delegate_action)
+                .await;
+            match tx_result {
+                Ok(execution) => (StatusCode::OK, Json(RelayResponse::Success { execution })),
+                Err(e) => (
+                    StatusCode::OK,
+                    Json(RelayResponse::Failure {
+                        error: e.to_string(),
+                    }),
+                ),
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(RelayResponse::Rejected {
+                reason: e.to_string(),
+            }),
+        ),
+    }
 }
