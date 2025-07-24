@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:latest
+    restart: always
+    environment:
+      POSTGRES_USER: relayeruser
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: relayer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+
+  relayer:
+    image: rust:latest
+    volumes:
+      - .:/usr/src/relayer
+      - rustup_home:/usr/local/rustup
+      - cargo_home:/usr/local/cargo
+    working_dir: /usr/src/relayer
+    command: cargo run --package templar-relayer --profile dev
+    depends_on:
+      - postgres
+    env_file:
+      - service/relayer/.env
+    environment:
+      DATABASE_URL: postgres://relayeruser:password@postgres:5432/relayer
+    ports:
+      - 3000:3000
+
+volumes:
+  postgres_data:
+  rustup_home:
+  cargo_home:
