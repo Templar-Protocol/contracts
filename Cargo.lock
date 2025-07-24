@@ -4699,6 +4699,7 @@ dependencies = [
  "near-jsonrpc-primitives 0.30.3",
  "near-primitives 0.30.3",
  "near-sdk",
+ "serde_yaml",
  "sqlx",
  "templar-common",
  "thiserror 2.0.11",

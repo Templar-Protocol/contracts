@@ -10,7 +10,6 @@ use near_crypto::SecretKey;
 use near_fetch::signer::KeyRotatingSigner;
 use near_primitives::{
     action::{Action, delegate::SignedDelegateAction},
-    hash::CryptoHash,
     types::{AccountId, Gas},
     views::FinalExecutionOutcomeView,
 };
@@ -23,20 +22,21 @@ use templar_common::{
     market::DepositMsg,
 };
 use templar_relayer::{
-    FtTransferCallArgs, GasDescriptors, MarketAccounts, MtTransferCallArgs, TransferCallArgs,
+    Configuration, FtTransferCallArgs, MarketAccounts, MtTransferCallArgs, TransferCallArgs,
     client::NearClient,
 };
 use tracing::info;
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
-struct Configuration {
+struct Environment {
     #[serde(default = "default_port")]
     pub port: u16,
     pub database_url: String,
     #[serde(default = "default_rpc_url")]
     pub rpc_url: String,
-    // pub gas_descriptors_path: PathBuf,
+    #[serde(default = "default_config")]
+    pub config: PathBuf,
     pub registries: Vec<AccountId>,
     pub markets: Vec<AccountId>,
     pub account_id: AccountId,
@@ -51,10 +51,14 @@ fn default_rpc_url() -> String {
     "https://rpc.testnet.near.org/".to_string()
 }
 
+fn default_config() -> PathBuf {
+    "./config.yaml".parse().unwrap()
+}
+
 #[derive(Debug, Clone)]
 struct App {
+    pub environment: Environment,
     pub configuration: Configuration,
-    pub gas_descriptors: GasDescriptors,
     pub market_account_ids: HashMap<AccountId, MarketAccounts>,
     pub allowed_receiver_account_ids: HashSet<AccountId>,
     pub near_client: NearClient,
@@ -114,17 +118,12 @@ impl App {
 
         if self.market_account_ids.contains_key(receiver_id) {
             // Calling a market contract directly.
-            let method_names = HashSet::from([
-                "borrow",
-                "apply_interest",
-                "harvest_yield",
-                "withdraw_static_yield",
-                "withdraw_collateral",
-                "create_supply_withdrawal_request",
-                "execute_next_supply_withdrawal_request",
-            ]);
             for (index, call) in calls.iter().enumerate() {
-                if !method_names.contains(call.method_name.as_str()) {
+                if !self
+                    .configuration
+                    .allowed_methods
+                    .contains(&call.method_name)
+                {
                     return Err(PreconditionError::UnknownFunctionName {
                         name: call.method_name.to_owned(),
                         index,
@@ -206,28 +205,28 @@ impl App {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    let configuration: Configuration = envy::from_env().unwrap();
+    let environment: Environment = envy::from_env().unwrap();
     tracing_subscriber::fmt::init();
 
-    // let file = File::open(&configuration.gas_descriptors_path).unwrap();
-    // let gas_descriptors: GasDescriptors = serde_json::from_reader(file).unwrap();
-    let gas_descriptors: GasDescriptors = Default::default();
+    let configuration: Configuration =
+        serde_yaml::from_reader(File::open(&environment.config).unwrap()).unwrap();
 
     let near_client = NearClient::new(
-        near_jsonrpc_client::JsonRpcClient::connect(&configuration.rpc_url),
+        near_jsonrpc_client::JsonRpcClient::connect(&environment.rpc_url),
         KeyRotatingSigner::try_from_iter(
-            configuration
+            environment
                 .secret_keys
                 .iter()
-                .map(|sk| (configuration.account_id.clone(), sk.clone())),
+                .map(|sk| (environment.account_id.clone(), sk.clone())),
         )
         .unwrap(),
     );
 
-    let mut markets = configuration.markets.clone();
+    let mut markets = environment.markets.clone();
 
+    // Load markets from registry...
     let mut set = JoinSet::new();
-    for registry_id in &configuration.registries {
+    for registry_id in &environment.registries {
         set.spawn({
             let near_client = near_client.clone();
             let registry_id = registry_id.clone();
@@ -240,6 +239,7 @@ async fn main() {
     }
     markets.extend(set.join_all().await.into_iter().flatten());
 
+    // ...and add any individual markets.
     let mut set = JoinSet::new();
     for market in markets {
         set.spawn({
@@ -270,13 +270,13 @@ async fn main() {
 
     let app = App {
         configuration,
-        gas_descriptors,
+        environment,
         market_account_ids,
         allowed_receiver_account_ids,
         near_client,
     };
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], app.configuration.port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], app.environment.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
     let router = Router::new()

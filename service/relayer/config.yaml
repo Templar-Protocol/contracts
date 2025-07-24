@@ -1,0 +1,8 @@
+allowed_methods:
+  - borrow
+  - apply_interest
+  - harvest_yield
+  - withdraw_static_yield
+  - withdraw_collateral
+  - create_supply_withdrawal_request
+  - execute_next_supply_withdrawal_request

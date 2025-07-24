@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-
-use near_primitives::types::{AccountId, Gas};
+use near_primitives::types::AccountId;
 use near_sdk::{
     AccountIdRef,
     json_types::U128,
@@ -17,26 +15,10 @@ pub struct MarketAccounts {
     pub borrow_asset: FungibleAsset<BorrowAsset>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
-pub struct GasDescriptors {
-    pub market: HashMap<String, Gas>,
-    pub borrow_asset: BorrowAssetGasDescriptors,
-    pub collateral_asset: CollateralAssetGasDescriptors,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(crate = "near_sdk::serde")]
-pub struct BorrowAssetGasDescriptors {
-    supply: Gas,
-    repay: Gas,
-    liquidate: Gas,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(crate = "near_sdk::serde")]
-pub struct CollateralAssetGasDescriptors {
-    collateralize: Gas,
+pub struct Configuration {
+    pub allowed_methods: Vec<String>,
 }
 
 pub trait TransferCallArgs {
