@@ -220,7 +220,7 @@ impl<M> BorrowPositionRef<M> {
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn estimate_current_snapshot_interest(&self) -> BorrowAssetAmount {
         let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
-        let interest_in_current_snapshot = self.market.current_snapshot.get_interest_rate()
+        let interest_in_current_snapshot = self.market.current_snapshot.interest_rate()
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())
             / *MS_IN_A_YEAR;
@@ -276,7 +276,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                         ))
                     }),
             );
-            accumulated += principal * snapshot.get_interest_rate() * duration_ms / *MS_IN_A_YEAR;
+            accumulated += principal * snapshot.interest_rate() * duration_ms / *MS_IN_A_YEAR;
 
             prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
             next_snapshot_index = i as u32 + 1;

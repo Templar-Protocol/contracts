@@ -58,15 +58,15 @@ impl Snapshot {
         }
     }
 
-    pub const fn get_interest_rate(&self) -> Decimal {
+    pub fn interest_rate(&self) -> Decimal {
         self.interest_rate
     }
 
-    pub const fn get_deposited_active(&self) -> BorrowAssetAmount {
+    pub fn deposited_active(&self) -> BorrowAssetAmount {
         self.deposited_active
     }
 
-    pub const fn get_borrowed(&self) -> BorrowAssetAmount {
+    pub fn borrowed(&self) -> BorrowAssetAmount {
         self.borrowed
     }
 }

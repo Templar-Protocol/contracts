@@ -82,8 +82,8 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
     let snapshots = c.list_finalized_snapshots(None, None).await;
     assert_eq!(snapshots.len(), 1);
     assert!(snapshots[0].yield_distribution.is_zero());
-    assert!(snapshots[0].get_deposited_active().is_zero());
-    assert!(snapshots[0].get_borrowed().is_zero());
+    assert!(snapshots[0].deposited_active().is_zero());
+    assert!(snapshots[0].borrowed().is_zero());
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;
