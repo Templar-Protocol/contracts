@@ -15,7 +15,7 @@ use crate::{
     time_chunk::TimeChunkConfiguration,
 };
 
-use super::{BalanceOracleConfiguration, YieldWeights};
+use super::{PriceOracleConfiguration, YieldWeights};
 
 /// Reject >10,000,000% APY interest rates as misconfigurations.
 /// This also guarantees a reasonable upper-limit to interest rates to help avoid overflows.
@@ -109,7 +109,7 @@ pub struct MarketConfiguration {
     pub time_chunk_configuration: TimeChunkConfiguration,
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
-    pub balance_oracle: BalanceOracleConfiguration,
+    pub price_oracle_configuration: PriceOracleConfiguration,
     pub borrow_mcr_initial: Decimal,
     pub borrow_mcr: Decimal,
     /// How much of the deposited principal may be lent out (up to 100%)?

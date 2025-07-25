@@ -14,7 +14,7 @@ use crate::{Contract, ContractExt, ReturnStyle};
 impl Contract {
     pub fn price_pair(&self, oracle_response: OracleResponse) -> PricePair {
         self.configuration
-            .balance_oracle
+            .price_oracle_configuration
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
     }
@@ -381,7 +381,7 @@ impl Contract {
     ) -> Promise {
         let price_pair = self
             .configuration
-            .balance_oracle
+            .price_oracle_configuration
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
