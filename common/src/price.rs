@@ -9,11 +9,39 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+pub struct AmountMultiplier<T: AssetClass> {
+    _asset: PhantomData<T>,
+    pub factor: Decimal,
+    pub mul_pow10: i32,
+}
+
+impl<T: AssetClass> AmountMultiplier<T> {
+    pub fn new(factor: Decimal, mul_pow10: i32) -> Self {
+        Self {
+            _asset: PhantomData,
+            factor,
+            mul_pow10,
+        }
+    }
+}
+
+impl<T: AssetClass> Default for AmountMultiplier<T> {
+    fn default() -> Self {
+        Self {
+            _asset: PhantomData,
+            factor: Decimal::ONE,
+            mul_pow10: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Price<T: AssetClass> {
     _asset: PhantomData<T>,
     price: u128,
     confidence: u128,
     exponent: i32,
+    amount_multiplier: Option<AmountMultiplier<T>>,
 }
 
 pub mod error {
@@ -34,6 +62,7 @@ pub mod error {
 fn from_pyth_price<T: AssetClass>(
     pyth_price: &pyth::Price,
     decimals: i32,
+    amount_multiplier: Option<AmountMultiplier<T>>,
 ) -> Result<Price<T>, error::PriceDataError> {
     let Ok(price) = u64::try_from(pyth_price.price.0) else {
         return Err(error::PriceDataError::NegativePrice);
@@ -52,6 +81,7 @@ fn from_pyth_price<T: AssetClass>(
         price: u128::from(price),
         confidence: u128::from(pyth_price.conf.0),
         exponent,
+        amount_multiplier,
     })
 }
 
@@ -68,12 +98,18 @@ impl PricePair {
     pub fn new(
         collateral_price: &pyth::Price,
         collateral_decimals: i32,
+        collateral_multiplier: Option<AmountMultiplier<CollateralAsset>>,
         borrow_price: &pyth::Price,
         borrow_decimals: i32,
+        borrow_multiplier: Option<AmountMultiplier<BorrowAsset>>,
     ) -> Result<Self, error::PriceDataError> {
         Ok(Self {
-            collateral: from_pyth_price(collateral_price, collateral_decimals)?,
-            borrow: from_pyth_price(borrow_price, borrow_decimals)?,
+            collateral: from_pyth_price(
+                collateral_price,
+                collateral_decimals,
+                collateral_multiplier,
+            )?,
+            borrow: from_pyth_price(borrow_price, borrow_decimals, borrow_multiplier)?,
         })
     }
 }
@@ -85,20 +121,38 @@ pub struct Valuation {
 }
 
 impl Valuation {
-    pub fn optimistic<T: AssetClass>(amount: FungibleAssetAmount<T>, price: &Price<T>) -> Self {
-        Self {
-            coefficient: U256::from(u128::from(amount))
-                * U256::from(price.price + price.confidence), // guaranteed not to overflow
-            exponent: price.exponent,
+    pub fn optimistic<T: AssetClass>(
+        amount: FungibleAssetAmount<T>,
+        price: &Price<T>,
+    ) -> Option<Self> {
+        let mut amount = u128::from(amount);
+        if let Some(ref multiplier) = price.amount_multiplier {
+            amount = (amount * multiplier.factor)
+                .mul_pow10(multiplier.mul_pow10)?
+                .to_u128_ceil()?;
         }
+        Some(Self {
+            coefficient: U256::from(amount)
+                .checked_mul(U256::from(price.price + price.confidence))?,
+            exponent: price.exponent,
+        })
     }
 
-    pub fn pessimistic<T: AssetClass>(amount: FungibleAssetAmount<T>, price: &Price<T>) -> Self {
-        Self {
-            coefficient: U256::from(u128::from(amount))
-                * U256::from(price.price - price.confidence), // guaranteed not to overflow
-            exponent: price.exponent,
+    pub fn pessimistic<T: AssetClass>(
+        amount: FungibleAssetAmount<T>,
+        price: &Price<T>,
+    ) -> Option<Self> {
+        let mut amount = u128::from(amount);
+        if let Some(ref multiplier) = price.amount_multiplier {
+            amount = (amount * multiplier.factor)
+                .mul_pow10(multiplier.mul_pow10)?
+                .to_u128_floor()?;
         }
+        Some(Self {
+            coefficient: U256::from(amount)
+                .checked_mul(U256::from(price.price - price.confidence))?,
+            exponent: price.exponent,
+        })
     }
 
     /// Returns the ratio between this and another `Valuation`.
@@ -169,8 +223,10 @@ mod tests {
                 price: 250,
                 confidence: 12,
                 exponent: -5,
+                amount_multiplier: Default::default(),
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(o.coefficient, U256::from(1000 * (250 + 12)));
         assert_eq!(o.exponent, -5);
@@ -182,8 +238,10 @@ mod tests {
                 price: 250,
                 confidence: 12,
                 exponent: -5,
+                amount_multiplier: Default::default(),
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(p.coefficient, U256::from(1000 * (250 - 12)));
         assert_eq!(p.exponent, -5);
@@ -198,8 +256,10 @@ mod tests {
                 price: 100,
                 confidence: 0,
                 exponent: 4,
+                amount_multiplier: Default::default(),
             },
-        );
+        )
+        .unwrap();
         let second = Valuation::pessimistic(
             60u128.into(),
             &Price::<BorrowAsset> {
@@ -207,8 +267,10 @@ mod tests {
                 price: 1000,
                 confidence: 0,
                 exponent: 4,
+                amount_multiplier: Default::default(),
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(first.ratio(second).unwrap(), Decimal::ONE);
     }
@@ -240,8 +302,10 @@ mod tests {
                 price: 1,
                 confidence: 0,
                 exponent: 0,
+                amount_multiplier: Default::default(),
             },
-        );
+        )
+        .unwrap();
 
         let divisor = Valuation::optimistic(
             divisor_value.into(),
@@ -250,8 +314,10 @@ mod tests {
                 price: divisor_price,
                 confidence: 0,
                 exponent: divisor_exponent,
+                amount_multiplier: Default::default(),
             },
-        );
+        )
+        .unwrap();
 
         println!("{dividend:?}");
         println!("{divisor:?}");

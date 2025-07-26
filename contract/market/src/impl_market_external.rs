@@ -7,6 +7,7 @@ use templar_common::{
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
+    price::AmountMultiplier,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -70,13 +71,40 @@ impl MarketExternalInterface for Contract {
         &self,
         account_id: AccountId,
         oracle_response: OracleResponse,
+        borrow_conversion: Option<Decimal>,
+        collateral_conversion: Option<Decimal>,
     ) -> Option<BorrowStatus> {
         let borrow_position = self.get_borrow_position(account_id)?;
-
         let price_pair = self
             .configuration
             .price_oracle_configuration
-            .create_price_pair(&oracle_response)
+            .create_price_pair(
+                &oracle_response,
+                borrow_conversion.map(|factor| {
+                    AmountMultiplier::new(
+                        factor,
+                        self.configuration
+                            .price_oracle_configuration
+                            .borrow_asset
+                            .dynamic_conversion_rate
+                            .as_ref()
+                            .unwrap()
+                            .mul_pow10,
+                    )
+                }),
+                collateral_conversion.map(|factor| {
+                    AmountMultiplier::new(
+                        factor,
+                        self.configuration
+                            .price_oracle_configuration
+                            .collateral_asset
+                            .dynamic_conversion_rate
+                            .as_ref()
+                            .unwrap()
+                            .mul_pow10,
+                    )
+                }),
+            )
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         Some(self.configuration.borrow_status(

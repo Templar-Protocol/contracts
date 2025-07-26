@@ -252,7 +252,8 @@ impl UnifiedMarketController {
                 self.balance_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
-                    .collateral_asset_price_id,
+                    .collateral_asset
+                    .price_id,
                 to_price(price),
             )
             .await
@@ -265,7 +266,8 @@ impl UnifiedMarketController {
                 self.balance_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
-                    .collateral_asset_price_id,
+                    .collateral_asset
+                    .price_id,
                 price,
             )
             .await
@@ -278,7 +280,8 @@ impl UnifiedMarketController {
                 self.balance_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
-                    .borrow_asset_price_id,
+                    .borrow_asset
+                    .price_id,
                 to_price(price),
             )
             .await
@@ -291,7 +294,8 @@ impl UnifiedMarketController {
                 self.balance_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
-                    .borrow_asset_price_id,
+                    .borrow_asset
+                    .price_id,
                 price,
             )
             .await
@@ -303,10 +307,12 @@ impl UnifiedMarketController {
                 [
                     self.configuration
                         .price_oracle_configuration
-                        .borrow_asset_price_id,
+                        .borrow_asset
+                        .price_id,
                     self.configuration
                         .price_oracle_configuration
-                        .collateral_asset_price_id,
+                        .collateral_asset
+                        .price_id,
                 ],
                 self.configuration
                     .price_oracle_configuration

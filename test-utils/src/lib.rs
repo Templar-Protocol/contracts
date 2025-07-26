@@ -19,7 +19,9 @@ use templar_common::{
     dec,
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
-    market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
+    market::{
+        MarketConfiguration, PriceOracleAssetDescriptor, PriceOracleConfiguration, YieldWeights,
+    },
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
 };
@@ -83,14 +85,26 @@ pub fn market_configuration(
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         price_oracle_configuration: PriceOracleConfiguration {
             account_id: balance_oracle_id,
-            collateral_asset_price_id: PriceIdentifier(hex_literal::hex!(
-                "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
-            )),
-            collateral_asset_decimals: 24,
-            borrow_asset_price_id: PriceIdentifier(hex_literal::hex!(
-                "27e867f0f4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
-            )),
-            borrow_asset_decimals: 24,
+            collateral_asset: PriceOracleAssetDescriptor::new(
+                PriceIdentifier(hex_literal::hex!(
+                    "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
+                )),
+                24,
+            ),
+            borrow_asset: PriceOracleAssetDescriptor::new(
+                PriceIdentifier(hex_literal::hex!(
+                    "27e867f0f4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
+                )),
+                24,
+            ),
+            // collateral_asset_price_id: PriceIdentifier(hex_literal::hex!(
+            //     "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
+            // )),
+            // collateral_asset_decimals: 24,
+            // borrow_asset_price_id: PriceIdentifier(hex_literal::hex!(
+            //     "27e867f0f4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
+            // )),
+            // borrow_asset_decimals: 24,
             price_maximum_age_s: 60,
         },
         borrow_mcr_initial: Decimal::from_str("1.25").unwrap(),

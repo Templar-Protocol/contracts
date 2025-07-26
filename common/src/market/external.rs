@@ -58,6 +58,8 @@ pub trait MarketExternalInterface {
         &self,
         account_id: AccountId,
         oracle_response: OracleResponse,
+        borrow_conversion: Option<Decimal>,
+        collateral_conversion: Option<Decimal>,
     ) -> Option<BorrowStatus>;
 
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise;

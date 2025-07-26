@@ -4,7 +4,6 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     market::WithdrawalResolution,
-    oracle::pyth::OracleResponse,
     price::PricePair,
 };
 
@@ -12,10 +11,21 @@ use crate::{Contract, ContractExt, ReturnStyle};
 
 /// Internal helpers.
 impl Contract {
-    pub fn price_pair(&self, oracle_response: OracleResponse) -> PricePair {
+    pub fn price_pair_from_env(&self) -> PricePair {
+        let results_count = env::promise_results_count();
+        let mut results = Vec::with_capacity(results_count as usize);
+        for i in 0..results_count {
+            results.push(match env::promise_result(i) {
+                PromiseResult::Successful(vec) => vec,
+                PromiseResult::Failed => {
+                    env::panic_str(&format!("Invariant violation: Promise index {i} failed."))
+                }
+            });
+        }
+
         self.configuration
             .price_oracle_configuration
-            .create_price_pair(&oracle_response)
+            .create_price_pair_from_raw(&results)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
     }
 
@@ -161,9 +171,8 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let price_pair = self.price_pair(oracle_response);
+        let price_pair = self.price_pair_from_env();
 
         // TODO: accumulate_interest() also creates a snapshot; reorder code to not call this twice.
         self.market.snapshot();
@@ -338,9 +347,8 @@ impl Contract {
         account_id: AccountId,
         amount: CollateralAssetAmount,
         return_style: ReturnStyle,
-        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> serde_json::Value {
-        let price_pair = self.price_pair(oracle_response);
+        let price_pair = self.price_pair_from_env();
 
         self.execute_collateralize(account_id, amount, &price_pair);
 
@@ -356,9 +364,8 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
         return_style: ReturnStyle,
-        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> serde_json::Value {
-        let price_pair = self.price_pair(oracle_response);
+        let price_pair = self.price_pair_from_env();
 
         let amount = self.execute_repay(account_id, amount, &price_pair);
 
@@ -377,13 +384,8 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
         return_style: ReturnStyle,
-        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let price_pair = self
-            .configuration
-            .price_oracle_configuration
-            .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let price_pair = self.price_pair_from_env();
 
         let liquidated_collateral =
             self.execute_liquidate_initial(account_id.clone(), amount, &price_pair);
@@ -433,9 +435,8 @@ impl Contract {
         &mut self,
         account_id: AccountId,
         amount: CollateralAssetAmount,
-        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let price_pair = self.price_pair(oracle_response);
+        let price_pair = self.price_pair_from_env();
 
         let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
             env::panic_str("No borrower record. Please deposit collateral first.");

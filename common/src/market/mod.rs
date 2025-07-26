@@ -11,7 +11,7 @@ pub use external::*;
 mod r#impl;
 pub use r#impl::*;
 mod price_oracle_configuration;
-pub use price_oracle_configuration::PriceOracleConfiguration;
+pub use price_oracle_configuration::*;
 
 pub mod error {
     pub use super::configuration::error::*;

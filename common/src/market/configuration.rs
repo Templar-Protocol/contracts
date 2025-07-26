@@ -278,8 +278,8 @@ impl MarketConfiguration {
         price_pair: &PricePair,
     ) -> Option<BorrowAssetAmount> {
         ((1u32 - self.liquidation_maximum_spread)
-            * Valuation::pessimistic(amount, &price_pair.collateral).ratio(
-                Valuation::optimistic(BorrowAssetAmount::new(1), &price_pair.borrow),
+            * Valuation::pessimistic(amount, &price_pair.collateral)?.ratio(
+                Valuation::optimistic(BorrowAssetAmount::new(1), &price_pair.borrow)?,
             )?)
         .to_u128_ceil()
         .map(BorrowAssetAmount::new)
@@ -296,11 +296,17 @@ fn satisfies_minimum_collateral_ratio(
         return true;
     }
 
-    let collateral_valuation = Valuation::pessimistic(
+    let Some(collateral_valuation) = Valuation::pessimistic(
         borrow_position.collateral_asset_deposit,
         &price_pair.collateral,
-    );
-    let borrow_valuation = Valuation::optimistic(borrow_liability, &price_pair.borrow);
+    ) else {
+        // TODO: is this the correct behavior?
+        return false;
+    };
+    let Some(borrow_valuation) = Valuation::optimistic(borrow_liability, &price_pair.borrow) else {
+        // TODO: is this the correct behavior?
+        return false;
+    };
 
     collateral_valuation
         .ratio(borrow_valuation)
@@ -335,6 +341,7 @@ mod tests {
                     publish_time: 0,
                 },
                 18,
+                Default::default(),
                 &pyth::Price {
                     price: near_sdk::json_types::I64(10000),
                     conf: U64(1),
@@ -342,6 +349,7 @@ mod tests {
                     publish_time: 0,
                 },
                 18,
+                Default::default(),
             )
             .unwrap()
         ));
