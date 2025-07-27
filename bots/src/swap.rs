@@ -42,7 +42,7 @@ impl SwapType {
         match self {
             SwapType::RheaSwap => match network {
                 Network::Mainnet => "dclv2.ref-labs.near".parse().unwrap(),
-                Network::Testnet => "templar-ref.testnet".parse().unwrap(),
+                Network::Testnet => "dclv2.ref-dev.testnet".parse().unwrap(),
             },
         }
     }
