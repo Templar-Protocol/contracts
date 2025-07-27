@@ -19,9 +19,7 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         for liquidator in &liquidators {
-            liquidator
-                .run_liquidations(args.network.get_oracle_account_id(), args.concurrency)
-                .await?;
+            liquidator.run_liquidations(args.concurrency).await?;
         }
 
         info!(

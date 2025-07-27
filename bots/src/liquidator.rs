@@ -338,15 +338,11 @@ impl<S: Swap> Liquidator<S> {
     }
 
     #[instrument(skip(self), level = "info")]
-    pub async fn run_liquidations(
-        &self,
-        oracle: AccountId,
-        concurrency: usize,
-    ) -> anyhow::Result<()> {
+    pub async fn run_liquidations(&self, concurrency: usize) -> anyhow::Result<()> {
         let configuration = self.get_configuration().await?;
         let oracle_response = self
             .get_oracle_prices(
-                oracle,
+                configuration.price_oracle_configuration.account_id.clone(),
                 &[
                     configuration
                         .price_oracle_configuration

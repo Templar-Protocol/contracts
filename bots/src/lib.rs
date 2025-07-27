@@ -50,24 +50,4 @@ impl Network {
             Network::Testnet => NEAR_TESTNET_RPC_URL,
         }
     }
-
-    #[must_use]
-    pub fn get_url(self) -> &'static str {
-        match self {
-            Network::Mainnet => "https://hermes.pyth.network",
-            Network::Testnet => "https://hermes-beta.pyth.network",
-        }
-    }
-
-    #[must_use]
-    #[allow(
-        clippy::unwrap_used,
-        reason = "We know the contract IDs are valid NEAR account IDs."
-    )]
-    pub fn get_oracle_account_id(self) -> AccountId {
-        match self {
-            Network::Mainnet => "pyth-oracle.near".parse().unwrap(),
-            Network::Testnet => "pyth-oracle.testnet".parse().unwrap(),
-        }
-    }
 }
