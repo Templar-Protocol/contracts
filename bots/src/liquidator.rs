@@ -23,7 +23,7 @@ use templar_common::{
 use tracing::{error, info, instrument};
 
 use crate::{
-    BorrowPositions, DEFAULT_GAS, Network, ONE_NEAR,
+    BorrowPositions, DEFAULT_GAS, Network, ONE_YOCTO_NEAR,
     near::{get_access_key_data, send_tx, serialize_and_encode, view},
     swap::{RheaSwap, Swap, SwapType},
 };
@@ -149,7 +149,7 @@ impl<S: Swap> Liquidator<S> {
                     "msg": msg,
                 })),
                 gas: DEFAULT_GAS,
-                deposit: ONE_NEAR,
+                deposit: ONE_YOCTO_NEAR,
             }))],
         })
     }

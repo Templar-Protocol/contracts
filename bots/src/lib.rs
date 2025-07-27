@@ -18,6 +18,8 @@ pub const TERA_GAS: u64 = 10u64.pow(12);
 pub const DEFAULT_GAS: u64 = TERA_GAS * 300;
 /// One NEAR in yoctoNEAR.
 pub const ONE_NEAR: u128 = 10u128.pow(24);
+/// One yoctoNEAR in yoctoNEAR.
+pub const ONE_YOCTO_NEAR: u128 = 1u128;
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 #[near(serializers = [json])]

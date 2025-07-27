@@ -9,7 +9,7 @@ use near_primitives::{
 use near_sdk::{AccountId, json_types::U128, near, serde_json::json};
 
 use crate::{
-    DEFAULT_GAS, Network, ONE_NEAR,
+    DEFAULT_GAS, Network, ONE_YOCTO_NEAR,
     near::{get_access_key_data, send_tx, serialize_and_encode, view},
 };
 
@@ -163,7 +163,7 @@ impl Swap for RheaSwap {
                     "msg": msg,
                 })),
                 gas: DEFAULT_GAS,
-                deposit: ONE_NEAR,
+                deposit: ONE_YOCTO_NEAR,
             }))],
         });
 
