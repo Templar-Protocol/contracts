@@ -323,10 +323,14 @@ impl<S: Swap> Liquidator<S> {
             .get_oracle_prices(
                 oracle,
                 &[
-                    configuration.balance_oracle.borrow_asset_price_id,
-                    configuration.balance_oracle.collateral_asset_price_id,
+                    configuration
+                        .price_oracle_configuration
+                        .borrow_asset_price_id,
+                    configuration
+                        .price_oracle_configuration
+                        .collateral_asset_price_id,
                 ],
-                configuration.balance_oracle.price_maximum_age_s,
+                configuration.price_oracle_configuration.price_maximum_age_s,
             )
             .await?;
 
