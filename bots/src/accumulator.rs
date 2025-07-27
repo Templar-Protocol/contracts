@@ -23,7 +23,7 @@ pub struct Args {
     #[arg(short, long, env = "MARKET_ACCOUNT_ID")]
     pub markets: Vec<AccountId>,
     /// Signer key to use for signing transactions
-    #[arg(short, long, env = "SIGNER_KEY")]
+    #[arg(short = 'k', long, env = "SIGNER_KEY")]
     pub signer_key: SecretKey,
     /// Signer 'Account'
     #[arg(short, long, env = "SIGNER_ACCOUNT_ID")]
