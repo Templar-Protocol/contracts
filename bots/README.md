@@ -70,26 +70,58 @@ The liquidation logic is encapsulated within the `Liquidator` object, which is r
 
 ```rust
 #[instrument(skip(self), level = "debug")]
-fn liquidation_amount(
+async fn liquidation_amount(
     &self,
     position: &BorrowPosition,
-    _oracle_response: &OracleResponse,
-) -> Result<U128, Error> {
+    oracle_response: &OracleResponse,
+    configuration: MarketConfiguration,
+) -> anyhow::Result<U128> {
     // TODO: Calculate optimal liquidation amount
-    // For purposes of this example implementation we will just use the total borrow amount
+    // For purposes of this example implementation we will just use the minimum acceptable
+    // liquidation amount.
     // Costs to take into account here are:
-    //  - Liquidation spread
     //  - Gas fees
     //  - Price impact
     //  - Slippage
-    //  - Possible flash loan fees
     // All of this would be used in calculating both the optimal liquidation amount and wether to
     // perform full or partial liquidation
-    Ok(position.get_total_borrow_asset_liability().into())
+    let borrow_asset = &configuration.borrow_asset;
+    let collateral_asset = &configuration.collateral_asset;
+    let price_pair = configuration
+        .price_oracle_configuration
+        .create_price_pair(oracle_response)
+        .map_err(|e| anyhow::anyhow!("Failed to create price pair: {e}"))?;
+    let min_liquidation_amount = configuration
+        .minimum_acceptable_liquidation_amount(position.collateral_asset_deposit, &price_pair)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Failed to calculate minimum acceptable liquidation amount")
+        })?;
+    // Here we would check a quote for the swap to ensure desired profit margin is met
+    let _quote_to_liquidate = self
+        .swap
+        .quote(
+            &self.asset,
+            &borrow_asset
+                .clone()
+                .into_nep141()
+                .ok_or_else(|| anyhow::anyhow!("Only NEP-141 borrow assets supported"))?,
+            min_liquidation_amount.into(),
+        )
+        .await?;
+    let _quote_after_liquidate = self
+        .swap
+        .quote(
+            // TODO: Enable multitoken swaps
+            &collateral_asset.contract_id(),
+            &self.asset,
+            position.collateral_asset_deposit.into(),
+        )
+        .await?;
+    Ok(min_liquidation_amount.into())
 }
 ```
 
-- Sending the `ft_transfer_call` RPC call to the smart contract to trigger the liquidation process.
+- Sending the `ft_transfer_call` RPC call to the borrow asset contract to trigger liquidation.
 - Handling errors and retries for failed liquidation attempts.
 - Logging the results of each liquidation attempt for monitoring and debugging purposes.
 
