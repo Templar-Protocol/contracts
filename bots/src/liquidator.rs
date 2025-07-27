@@ -177,21 +177,31 @@ impl<S: Swap> Liquidator<S> {
 
         info!("Liquidation reason: {reason:?}");
 
-        let borrow_asset = if let Some(account_id) =
-            configuration.borrow_asset.clone().into_nep141()
-        {
-            account_id
-        } else {
-            let Some((account_id, _token_id)) = configuration.borrow_asset.clone().into_nep245()
-            else {
-                unreachable!("Only NEP-141 and NEP-245 assets are supported");
-            };
-            account_id
+        let Some(borrow_asset) = configuration.borrow_asset.clone().into_nep141() else {
+            unreachable!("Only NEP-141 and NEP-245 assets are supported");
         };
 
-        let liquidation_amount = self
+        let collateral_asset = configuration.collateral_asset.contract_id();
+
+        let (swap_amount, liquidation_amount) = self
             .liquidation_amount(&position, &oracle_response, configuration)
             .await?;
+
+        if self.asset != borrow_asset {
+            match self
+                .swap
+                .swap(&self.asset, &borrow_asset, swap_amount)
+                .await
+            {
+                Ok(_) => {
+                    info!("Swap successful");
+                }
+                Err(e) => {
+                    error!("Swap failed: {e}");
+                    return Err(e);
+                }
+            };
+        }
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
@@ -204,19 +214,26 @@ impl<S: Swap> Liquidator<S> {
             }
             Err(e) => {
                 error!("Liquidation failed: {e}");
+                return Err(e);
             }
         }
 
-        match self
-            .swap
-            .swap(&borrow_asset, &self.asset, liquidation_amount)
-            .await
-        {
-            Ok(_) => {
-                info!("Swap successful");
-            }
-            Err(e) => {
-                error!("Swap failed: {e}");
+        if self.asset == collateral_asset {
+            match self
+                .swap
+                .swap(
+                    &collateral_asset,
+                    &self.asset,
+                    position.collateral_asset_deposit.into(),
+                )
+                .await
+            {
+                Ok(_) => {
+                    info!("Swap successful");
+                }
+                Err(e) => {
+                    error!("Swap failed: {e}");
+                }
             }
         }
 
@@ -224,16 +241,12 @@ impl<S: Swap> Liquidator<S> {
     }
 
     #[instrument(skip(self), level = "debug")]
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "Still need to implement this"
-    )]
     async fn liquidation_amount(
         &self,
         position: &BorrowPosition,
         oracle_response: &OracleResponse,
         configuration: MarketConfiguration,
-    ) -> anyhow::Result<U128> {
+    ) -> anyhow::Result<(U128, U128)> {
         // TODO: Calculate optimal liquidation amount
         // For purposes of this example implementation we will just use the minimum acceptable
         // liquidation amount.
@@ -255,7 +268,7 @@ impl<S: Swap> Liquidator<S> {
                 anyhow::anyhow!("Failed to calculate minimum acceptable liquidation amount")
             })?;
         // Here we would check a quote for the swap to ensure desired profit margin is met
-        let _quote_to_liquidate = self
+        let quote_to_liquidate = self
             .swap
             .quote(
                 &self.asset,
@@ -275,7 +288,7 @@ impl<S: Swap> Liquidator<S> {
                 position.collateral_asset_deposit.into(),
             )
             .await?;
-        Ok(min_liquidation_amount.into())
+        Ok((quote_to_liquidate, min_liquidation_amount.into()))
     }
 
     #[instrument(skip(self), level = "debug")]
