@@ -18,5 +18,8 @@ cargo near build non-reproducible-wasm 1>&2
 cd "$ROOT_DIR/contract/market"
 cargo near build non-reproducible-wasm 1>&2
 
+cd "$ROOT_DIR/contract/lst-oracle"
+cargo near build non-reproducible-wasm 1>&2
+
 cd "$ROOT_DIR"
 export TEST_CONTRACTS_PREBUILT=1

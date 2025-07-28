@@ -16,6 +16,11 @@ impl Contract {
         contract
     }
 
+    pub fn redemption_rate(&self) -> U128 {
+        // e.g. meta-pool.near->get_st_near_price()
+        U128(1423335691325783939823993)
+    }
+
     pub fn mint(&mut self, amount: U128) {
         Nep141Controller::mint(
             self,

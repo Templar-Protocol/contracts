@@ -54,10 +54,26 @@ macro_rules! accounts {
 }
 
 #[macro_export]
+macro_rules! setup_test_w {
+    ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
+        $crate::accounts!($w, $($n),*);
+        let s = $crate::setup_everything(&$w, $f).await;
+        ::tokio::join!(
+            $(s.c.init_account(&$n)),*
+        );
+        let $crate::SetupEverything { $($e,)* .. } = s;
+    };
+    ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
+        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}))
+    };
+}
+
+#[macro_export]
 macro_rules! setup_test {
     (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
-        let s = $crate::setup_everything($f).await;
-        $crate::accounts!(s.worker, $($n),*);
+        let worker = near_workspaces::sandbox().await.unwrap();
+        $crate::accounts!(worker, $($n),*);
+        let s = $crate::setup_everything(&worker, $f).await;
         ::tokio::join!(
             $(s.c.init_account(&$n)),*
         );
@@ -140,16 +156,16 @@ async fn get_contract(name: &str, path: &str) -> Vec<u8> {
 }
 
 pub struct SetupEverything {
-    pub worker: Worker<Sandbox>,
+    // pub worker: Worker<Sandbox>,
     pub c: UnifiedMarketController,
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
 }
 
 pub async fn setup_everything(
+    worker: &Worker<Sandbox>,
     customize_market_configuration: impl FnOnce(&mut MarketConfiguration),
 ) -> SetupEverything {
-    let worker = near_workspaces::sandbox().await.unwrap();
     accounts!(
         worker,
         market,
@@ -223,7 +239,7 @@ pub async fn setup_everything(
     );
 
     SetupEverything {
-        worker,
+        // worker,
         c,
         protocol_yield_user,
         insurance_yield_user,

@@ -138,6 +138,9 @@ impl Decimal {
     pub const E: Self = Self {
         repr: U512([0xBF71_5880_9CF4_F3C9, 0xB7E1_5162_8AED_2A6A, 2, 0, 0, 0, 0, 0]),
     };
+    pub const TEN_POW_24: Self = Self {
+        repr: U512([0, 0, 2003764205206896640, 54210, 0, 0, 0, 0]),
+    };
 
     pub fn as_repr(self) -> [u64; 8] {
         self.repr.0
@@ -793,6 +796,7 @@ mod tests {
         assert!((Decimal::ONE_HALF.to_f64_lossy() - 0.5_f64).abs() < 1e-200);
         assert_eq!(Decimal::ONE.to_u128_floor().unwrap(), 1);
         assert_eq!(Decimal::TWO.to_u128_floor().unwrap(), 2);
+        assert_eq!(Decimal::TEN_POW_24.to_u128_floor().unwrap(), 10u128.pow(24));
     }
 
     #[rstest]
@@ -946,5 +950,10 @@ mod tests {
             println!("{n:?}");
             println!();
         }
+    }
+
+    #[test]
+    pub fn calc_10_24() {
+        println!("{:?}", Decimal::ONE.mul_pow10(24).unwrap().as_repr());
     }
 }
