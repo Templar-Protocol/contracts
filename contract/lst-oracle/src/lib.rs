@@ -1,5 +1,6 @@
 use near_sdk::{
-    AccountId, BorshStorageKey, IntoStorageKey, Promise, PromiseResult, assert_one_yocto,
+    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseResult,
+    assert_one_yocto,
     borsh::{self, BorshSerialize},
     collections::UnorderedMap,
     env, near,
@@ -8,6 +9,7 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::{Owner, owner::Owner};
 use templar_common::{
+    define_list,
     number::Decimal,
     oracle::{
         price_transformer::PriceTransformer,
@@ -21,7 +23,7 @@ enum StorageKey {
     Transformers,
 }
 
-#[derive(Debug, Owner)]
+#[derive(Debug, Owner, PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
     pub oracle_id: AccountId,
@@ -46,16 +48,10 @@ impl Contract {
         self.oracle_id.clone()
     }
 
-    pub fn list_transformers(
-        &self,
-        offset: Option<u32>,
-        count: Option<u32>,
-    ) -> Vec<PriceIdentifier> {
-        self.transformers
-            .keys()
-            .skip(offset.map_or(0, |o| o as usize))
-            .take(count.map_or(usize::MAX, |c| c as usize))
-            .collect()
+    define_list! {
+        pub fn list_transformers(&self) -> Vec<PriceIdentifier> {
+            self.transformers.keys()
+        }
     }
 
     pub fn get_transformer(&self, price_identifier: PriceIdentifier) -> Option<PriceTransformer> {
@@ -141,14 +137,12 @@ impl Contract {
             } else {
                 let Some(entry) = self.transformers.get(&price_id) else {
                     env::panic_str(&format!(
-                        "No transformer associated with price ID: {}",
-                        serde_json::to_string(&price_id).unwrap(),
+                        "No transformer associated with price ID: {price_id}",
                     ));
                 };
                 let Some(price) = oracle_result.get(&entry.price_id) else {
                     env::panic_str(&format!(
-                        "Mapped price ID is not in oracle result: {}",
-                        serde_json::to_string(&price_id).unwrap(),
+                        "Mapped price ID is not in oracle result: {price_id}",
                     ));
                 };
                 let input = callback_result::<Decimal>(i);
@@ -159,10 +153,7 @@ impl Contract {
                     price.clone().and_then(|price| {
                         let transformed_price = entry.action.apply(price, input);
                         if transformed_price.is_none() {
-                            near_sdk::log!(
-                                "Transformation failed on price {}",
-                                serde_json::to_string(&price_id).unwrap(),
-                            );
+                            near_sdk::log!("Transformation failed on price {price_id}");
                         }
                         transformed_price
                     }),
