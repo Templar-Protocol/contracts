@@ -140,7 +140,7 @@ pub async fn load_wasm() -> &'static [u8] {
 pub struct UnifiedMarketController {
     pub market: MarketController,
     pub configuration: MarketConfiguration,
-    pub balance_oracle: OracleController,
+    pub price_oracle: OracleController,
     pub borrow_asset: TokenController,
     pub collateral_asset: TokenController,
 }
@@ -167,7 +167,7 @@ impl UnifiedMarketController {
 
         let configuration = market.get_configuration().await;
 
-        let balance_oracle = OracleController {
+        let price_oracle = OracleController {
             contract: contract_with_dummy_sk(
                 worker,
                 configuration.price_oracle_configuration.account_id.clone(),
@@ -199,7 +199,7 @@ impl UnifiedMarketController {
         Self {
             market,
             configuration,
-            balance_oracle,
+            price_oracle,
             borrow_asset,
             collateral_asset,
         }
@@ -208,14 +208,14 @@ impl UnifiedMarketController {
     pub fn new(
         market: MarketController,
         configuration: MarketConfiguration,
-        balance_oracle: OracleController,
+        price_oracle: OracleController,
         borrow_asset: TokenController,
         collateral_asset: TokenController,
     ) -> Self {
         Self {
             market,
             configuration,
-            balance_oracle,
+            price_oracle,
             borrow_asset,
             collateral_asset,
         }
@@ -247,9 +247,9 @@ impl UnifiedMarketController {
 
     pub async fn set_collateral_asset_price(&self, price: f64) -> ExecutionSuccess {
         eprintln!("Setting collateral asset price...",);
-        self.balance_oracle
+        self.price_oracle
             .set_price(
-                self.balance_oracle.contract().as_account(),
+                self.price_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
                     .collateral_asset_price_id,
@@ -260,9 +260,9 @@ impl UnifiedMarketController {
 
     pub async fn set_collateral_asset_price_exact(&self, price: pyth::Price) -> ExecutionSuccess {
         eprintln!("Setting collateral asset price...",);
-        self.balance_oracle
+        self.price_oracle
             .set_price(
-                self.balance_oracle.contract().as_account(),
+                self.price_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
                     .collateral_asset_price_id,
@@ -273,9 +273,9 @@ impl UnifiedMarketController {
 
     pub async fn set_borrow_asset_price(&self, price: f64) -> ExecutionSuccess {
         eprintln!("Setting borrow asset price...",);
-        self.balance_oracle
+        self.price_oracle
             .set_price(
-                self.balance_oracle.contract().as_account(),
+                self.price_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
                     .borrow_asset_price_id,
@@ -286,9 +286,9 @@ impl UnifiedMarketController {
 
     pub async fn set_borrow_asset_price_exact(&self, price: pyth::Price) -> ExecutionSuccess {
         eprintln!("Setting borrow asset price...",);
-        self.balance_oracle
+        self.price_oracle
             .set_price(
-                self.balance_oracle.contract().as_account(),
+                self.price_oracle.contract().as_account(),
                 self.configuration
                     .price_oracle_configuration
                     .borrow_asset_price_id,
@@ -298,7 +298,7 @@ impl UnifiedMarketController {
     }
 
     pub async fn get_prices(&self) -> OracleResponse {
-        self.balance_oracle
+        self.price_oracle
             .list_ema_prices_no_older_than(
                 [
                     self.configuration
