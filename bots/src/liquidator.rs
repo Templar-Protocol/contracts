@@ -321,26 +321,30 @@ impl<S: Swap> Liquidator<S> {
     #[instrument(skip(self), level = "debug")]
     async fn get_borrows(&self) -> anyhow::Result<BorrowPositions> {
         let mut all_positions: BorrowPositions = HashMap::new();
-
         let page_size = 100;
         let mut current_offset = 0;
-        let mut params = json!({
-            "offset": current_offset,
-            "count": page_size,
-        });
 
-        while let Ok(page) = view::<BorrowPositions>(
-            &self.client,
-            self.market.clone(),
-            "list_borrow_positions",
-            params.clone(),
-        )
-        .await
-        {
+        loop {
+            let params = json!({
+                "offset": current_offset,
+                "count": page_size,
+            });
+
+            let page = view::<BorrowPositions>(
+                &self.client,
+                self.market.clone(),
+                "list_borrow_positions",
+                params,
+            ).await?;
+
             let fetched = page.len();
+
+            if fetched == 0 {
+                break;
+            }
+        
             all_positions.extend(page);
-            current_offset += page_size;
-            params["offset"] = current_offset.into();
+            current_offset += fetched;
 
             if fetched < page_size {
                 break;
@@ -378,10 +382,8 @@ impl<S: Swap> Liquidator<S> {
                 }
             })
             .buffer_unordered(concurrency)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .try_for_each(|_result| async { Ok(()) })
+            .await?;
 
         Ok(())
     }

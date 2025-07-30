@@ -89,7 +89,7 @@ pub async fn send_tx(
     let (tx_hash, _size) = tx.get_hash_and_size();
 
     let called_at = Instant::now();
-    let signature = signer.sign(tx.get_hash_and_size().0.as_ref());
+    let signature = signer.sign(tx_hash.as_ref());
     let result = match client
         .call(RpcSendTransactionRequest {
             signed_transaction: SignedTransaction::new(signature, tx),
@@ -104,30 +104,43 @@ pub async fn send_tx(
                 _ => Err(e)?,
             }
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                let status = client
-                    .call(RpcTransactionStatusRequest {
-                        transaction_info: TransactionInfo::TransactionId {
-                            sender_account_id: signer.account_id.clone(),
-                            tx_hash,
-                        },
-                        wait_until: TxExecutionStatus::Final,
-                    })
-                    .await;
-                let elapsed = called_at.elapsed().as_secs();
+              if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                  return Err(e.into());
+              }
 
-                if elapsed > timeout {
-                    bail!("Transaction timeout");
-                }
+              // Poll with exponential backoff
+              let mut poll_interval = Duration::from_millis(500);
+              const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-                match status {
-                    Ok(status) => break status,
-                    Err(e) => match e.handler_error() {
-                        Some(RpcTransactionError::TimeoutError) => {}
-                        _ => Err(e)?,
-                    },
-                }
-            }
+              loop {
+                  if Instant::now() >= deadline {
+                      bail!("Transaction timeout after {}s", timeout);
+                  }
+
+                  tokio::time::sleep(poll_interval).await;
+
+                  // Exponential backoff
+                  poll_interval = std::cmp::min(poll_interval * 2, MAX_POLL_INTERVAL);
+
+                  let status = client
+                      .call(RpcTransactionStatusRequest {
+                          transaction_info: TransactionInfo::TransactionId {
+                              sender_account_id: signer.account_id.clone(),
+                              tx_hash,
+                          },
+                          wait_until: TxExecutionStatus::Final,
+                      })
+                      .await;
+
+                  match status {
+                      Ok(status) => break status,
+                      Err(e) => {
+                          if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                              return Err(e.into());
+                          }
+                      }
+                  }
+              }
         }
     };
 
