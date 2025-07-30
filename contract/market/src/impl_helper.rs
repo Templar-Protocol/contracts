@@ -239,7 +239,7 @@ impl Contract {
             PromiseResult::Failed => {
                 // Likely reasons for failure:
                 //
-                // 1. Balance oracle is out-of-date. This is kind of bad, but
+                // 1. Price oracle is out-of-date. This is kind of bad, but
                 //  not necessarily catastrophic nor unrecoverable. Probably,
                 //  the oracle is just lagging and will be fine if the user
                 //  tries again later.
