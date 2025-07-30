@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use clap::ValueEnum;
 use near_jsonrpc_client::{NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL};
-use near_sdk::{AccountId, near};
+use near_sdk::{AccountId, Gas, near};
 use templar_common::borrow::BorrowPosition;
 
 pub mod accumulator;
@@ -12,14 +12,8 @@ pub mod swap;
 
 type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 
-/// Helper constant for `TeraGas`.
-pub const TERA_GAS: u64 = 10u64.pow(12);
 /// Default gas for updating price data. 300 `TeraGas`.
-pub const DEFAULT_GAS: u64 = TERA_GAS * 300;
-/// One NEAR in yoctoNEAR.
-pub const ONE_NEAR: u128 = 10u128.pow(24);
-/// One yoctoNEAR in yoctoNEAR.
-pub const ONE_YOCTO_NEAR: u128 = 1u128;
+pub const DEFAULT_GAS: u64 = Gas::from_tgas(300).as_gas();
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 #[near(serializers = [json])]

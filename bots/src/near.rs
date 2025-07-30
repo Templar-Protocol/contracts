@@ -1,10 +1,12 @@
-use anyhow::bail;
+use std::time::Duration;
+
 use base64::Engine;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{
     JsonRpcClient,
+    errors::JsonRpcError,
     methods::{
-        query::RpcQueryRequest,
+        query::{RpcQueryError, RpcQueryRequest},
         send_tx::RpcSendTransactionRequest,
         tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
     },
@@ -23,11 +25,39 @@ use near_sdk::{
 use tokio::time::Instant;
 use tracing::instrument;
 
+/// Error types for RPC operations
+#[derive(Debug, thiserror::Error)]
+pub enum RpcError {
+    /// Failed to query view method
+    #[error("Failed to query view method: {0}")]
+    ViewMethodError(#[from] JsonRpcError<RpcQueryError>),
+    /// Failed to get access key data
+    #[error("Failed to get access key data: {0}")]
+    AccessKeyDataError(JsonRpcError<RpcQueryError>),
+    /// Got wrong response kind from RPC
+    #[error("Got wrong response kind from RPC: {0}")]
+    WrongResponseKind(String),
+    /// Failed to send transaction
+    #[error("Failed to send transaction: {0}")]
+    SendTransactionError(#[from] JsonRpcError<RpcTransactionError>),
+    /// Failed to deserialize response
+    #[error("Failed to deserialize response: {0}")]
+    DeserializeError(#[from] serde_json::Error),
+    /// Timeout exceeded
+    #[error("Timeout exceeded: {0}")]
+    TimeoutError(u64, u64),
+    /// No outcome for transaction
+    #[error("No outcome for transaction: {0}")]
+    NoOutcome(String),
+}
+
+pub type RpcResult<T = ()> = Result<T, RpcError>;
+
 #[instrument(skip(client), level = "debug")]
 pub async fn get_access_key_data(
     client: &JsonRpcClient,
     signer: &InMemorySigner,
-) -> anyhow::Result<(u64, CryptoHash)> {
+) -> RpcResult<(u64, CryptoHash)> {
     let access_key_query_response = client
         .call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
@@ -36,11 +66,17 @@ pub async fn get_access_key_data(
                 public_key: signer.public_key().clone(),
             },
         })
-        .await?;
+        .await
+        .map_err(RpcError::AccessKeyDataError)?;
 
     let nonce = match access_key_query_response.kind {
         QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
-        _ => bail!("failed to extract current nonce"),
+        _ => {
+            return Err(RpcError::WrongResponseKind(format!(
+                "Expected AccessKey got {:?}",
+                access_key_query_response.kind
+            )));
+        }
     };
     let block_hash = access_key_query_response.block_hash;
 
@@ -60,7 +96,7 @@ pub async fn view<T: DeserializeOwned>(
     account_id: AccountId,
     function_name: &str,
     args: impl Serialize,
-) -> anyhow::Result<T> {
+) -> RpcResult<T> {
     let access_key_query_response = client
         .call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
@@ -73,11 +109,16 @@ pub async fn view<T: DeserializeOwned>(
         .await?;
 
     let QueryResponseKind::CallResult(result) = access_key_query_response.kind else {
-        bail!("failed to extract current nonce");
+        return Err(RpcError::WrongResponseKind(format!(
+            "Expected CallResult got {:?}",
+            access_key_query_response.kind
+        )));
     };
 
     Ok(serde_json::from_slice(&result.result)?)
 }
+
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[instrument(skip(client, signer), level = "debug")]
 pub async fn send_tx(
@@ -85,11 +126,12 @@ pub async fn send_tx(
     signer: &InMemorySigner,
     timeout: u64,
     tx: Transaction,
-) -> anyhow::Result<FinalExecutionStatus> {
+) -> RpcResult<FinalExecutionStatus> {
     let (tx_hash, _size) = tx.get_hash_and_size();
 
     let called_at = Instant::now();
     let signature = signer.sign(tx_hash.as_ref());
+    let deadline = called_at + Duration::from_secs(timeout);
     let result = match client
         .call(RpcSendTransactionRequest {
             signed_transaction: SignedTransaction::new(signature, tx),
@@ -99,53 +141,51 @@ pub async fn send_tx(
     {
         Ok(res) => res,
         Err(e) => {
-            match e.handler_error() {
-                Some(RpcTransactionError::TimeoutError) => {}
-                _ => Err(e)?,
-            }
             loop {
-              if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                  return Err(e.into());
-              }
+                if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                    return Err(e.into());
+                }
 
-              // Poll with exponential backoff
-              let mut poll_interval = Duration::from_millis(500);
-              const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
+                // Poll with exponential backoff
+                let mut poll_interval = Duration::from_millis(500);
 
-              loop {
-                  if Instant::now() >= deadline {
-                      bail!("Transaction timeout after {}s", timeout);
-                  }
+                loop {
+                    if Instant::now() >= deadline {
+                        return Err(RpcError::TimeoutError(
+                            timeout,
+                            called_at.elapsed().as_secs(),
+                        ));
+                    }
 
-                  tokio::time::sleep(poll_interval).await;
+                    tokio::time::sleep(poll_interval).await;
 
-                  // Exponential backoff
-                  poll_interval = std::cmp::min(poll_interval * 2, MAX_POLL_INTERVAL);
+                    // Exponential backoff
+                    poll_interval = std::cmp::min(poll_interval * 2, MAX_POLL_INTERVAL);
 
-                  let status = client
-                      .call(RpcTransactionStatusRequest {
-                          transaction_info: TransactionInfo::TransactionId {
-                              sender_account_id: signer.account_id.clone(),
-                              tx_hash,
-                          },
-                          wait_until: TxExecutionStatus::Final,
-                      })
-                      .await;
+                    let status = client
+                        .call(RpcTransactionStatusRequest {
+                            transaction_info: TransactionInfo::TransactionId {
+                                sender_account_id: signer.account_id.clone(),
+                                tx_hash,
+                            },
+                            wait_until: TxExecutionStatus::Final,
+                        })
+                        .await;
 
-                  match status {
-                      Ok(status) => break status,
-                      Err(e) => {
-                          if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                              return Err(e.into());
-                          }
-                      }
-                  }
-              }
+                    let Err(e) = status else {
+                        break;
+                    };
+
+                    if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                        return Err(e.into());
+                    }
+                }
+            }
         }
     };
 
     let Some(outcome) = result.final_execution_outcome else {
-        bail!("Transaction did not return a final execution outcome");
+        return Err(RpcError::NoOutcome(tx_hash.to_string()));
     };
 
     Ok(outcome.into_outcome().status)

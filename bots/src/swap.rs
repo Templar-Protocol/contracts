@@ -6,17 +6,17 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{AccountId, json_types::U128, near, serde_json::json};
+use near_sdk::{AccountId, NearToken, json_types::U128, near, serde_json::json};
 
 use crate::{
-    DEFAULT_GAS, Network, ONE_YOCTO_NEAR,
-    near::{get_access_key_data, send_tx, serialize_and_encode, view},
+    DEFAULT_GAS, Network,
+    near::{RpcResult, get_access_key_data, send_tx, serialize_and_encode, view},
 };
 
 #[async_trait::async_trait]
 pub trait Swap {
     /// Quotes the amount of `from` token to `to` token.
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> anyhow::Result<U128>;
+    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128>;
 
     /// Swaps `from` token to `to` token.
     async fn swap(
@@ -24,7 +24,7 @@ pub trait Swap {
         from: &AccountId,
         to: &AccountId,
         amount: U128,
-    ) -> anyhow::Result<FinalExecutionStatus>;
+    ) -> RpcResult<FinalExecutionStatus>;
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -38,7 +38,7 @@ impl SwapType {
         clippy::unwrap_used,
         reason = "We know the contract IDs are valid NEAR account IDs."
     )]
-    pub fn get_account_id(self, network: Network) -> AccountId {
+    pub fn account_id(self, network: Network) -> AccountId {
         match self {
             SwapType::RheaSwap => match network {
                 Network::Mainnet => "dclv2.ref-labs.near".parse().unwrap(),
@@ -123,7 +123,7 @@ impl SwapRequestMsg {
 
 #[async_trait::async_trait]
 impl Swap for RheaSwap {
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> anyhow::Result<U128> {
+    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128> {
         let response: QuoteResponse = view(
             &self.client,
             self.contract.clone(),
@@ -139,7 +139,7 @@ impl Swap for RheaSwap {
         from: &AccountId,
         to: &AccountId,
         amount: U128,
-    ) -> anyhow::Result<FinalExecutionStatus> {
+    ) -> RpcResult<FinalExecutionStatus> {
         let msg = SwapRequestMsg::new(
             vec![format!("{}|{}|100", from, to)],
             to.clone(),
@@ -163,7 +163,7 @@ impl Swap for RheaSwap {
                     "msg": msg,
                 })),
                 gas: DEFAULT_GAS,
-                deposit: ONE_YOCTO_NEAR,
+                deposit: NearToken::from_yoctonear(1).as_yoctonear(),
             }))],
         });
 

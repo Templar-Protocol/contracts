@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use clap::Parser;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
@@ -10,21 +10,21 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{
-    AccountId, BorshStorageKey,
+    AccountId, BorshStorageKey, NearToken,
     json_types::U128,
     near,
     serde_json::{self, json},
 };
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
-    market::{DepositMsg, LiquidateMsg, MarketConfiguration},
+    market::{DepositMsg, LiquidateMsg, MarketConfiguration, error::RetrievalError},
     oracle::pyth::{OracleResponse, PriceIdentifier},
 };
 use tracing::{error, info, instrument};
 
 use crate::{
-    BorrowPositions, DEFAULT_GAS, Network, ONE_YOCTO_NEAR,
-    near::{get_access_key_data, send_tx, serialize_and_encode, view},
+    BorrowPositions, DEFAULT_GAS, Network,
+    near::{RpcError, get_access_key_data, send_tx, serialize_and_encode, view},
     swap::{RheaSwap, Swap, SwapType},
 };
 
@@ -43,6 +43,49 @@ pub enum InnerStorageKey {
     WithdrawalQueue,
     StaticYield,
 }
+
+/// Errors that can occur during liquidation operations.
+#[derive(Debug, thiserror::Error)]
+pub enum LiquidatorError {
+    /// Error while fetching borrow status.
+    #[error("Failed to fetch borrow status: {0}")]
+    FetchBorrowStatus(RpcError),
+    /// Error serializing data.
+    #[error("Failed to serialize data: {0}")]
+    SerializeError(#[from] serde_json::Error),
+    /// Price pair retrieval error.
+    #[error("Failed to get price pair: {0}")]
+    PricePairError(#[from] RetrievalError),
+    /// Error calculating minimum acceptable liquidation amount.
+    #[error("Failed to calculate minimum acceptable liquidation amount: {0}")]
+    MinimumLiquidationAmountError(String),
+    /// Standart support error.
+    #[error("Standard support error: {0}")]
+    StandardSupportError(String),
+    /// Quote error.
+    #[error("Failed to get quote: {0}")]
+    QuoteError(RpcError),
+    /// Error fetching market configuration.
+    #[error("Failed to get market configuration: {0}")]
+    GetConfigurationError(RpcError),
+    /// Error fetching oracle prices.
+    #[error("Failed to fetch oracle prices: {0}")]
+    PriceFetchError(RpcError),
+    /// Access key data retrieval error.
+    #[error("Failed to get access key data: {0}")]
+    AccessKeyDataError(RpcError),
+    /// Swap transaction error.
+    #[error("Swap transaction error: {0}")]
+    SwapTransactionError(RpcError),
+    /// Liquidation transaction error.
+    #[error("Liquidation transaction error: {0}")]
+    LiquidationTransactionError(RpcError),
+    /// Error while fetching borrow positions.
+    #[error("Failed to list borrow positions: {0}")]
+    ListBorrowPositionsError(RpcError),
+}
+
+pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
@@ -109,7 +152,7 @@ impl<S: Swap> Liquidator<S> {
         &self,
         borrow: AccountId,
         oracle_response: &OracleResponse,
-    ) -> anyhow::Result<Option<BorrowStatus>> {
+    ) -> LiquidatorResult<Option<BorrowStatus>> {
         view(
             &self.client,
             self.market.clone(),
@@ -120,6 +163,7 @@ impl<S: Swap> Liquidator<S> {
             }),
         )
         .await
+        .map_err(LiquidatorError::FetchBorrowStatus)
     }
 
     fn create_transfer_tx(
@@ -128,14 +172,12 @@ impl<S: Swap> Liquidator<S> {
         liquidation_amount: U128,
         nonce: u64,
         block_hash: CryptoHash,
-    ) -> Transaction {
-        #[allow(clippy::unwrap_used, reason = "We know the serialization will succeed")]
+    ) -> LiquidatorResult<Transaction> {
         let msg = serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
             account_id: borrow.clone(),
-        }))
-        .unwrap();
+        }))?;
 
-        Transaction::V0(TransactionV0 {
+        Ok(Transaction::V0(TransactionV0 {
             nonce,
             receiver_id: self.asset.clone(),
             block_hash,
@@ -149,19 +191,19 @@ impl<S: Swap> Liquidator<S> {
                     "msg": msg,
                 })),
                 gas: DEFAULT_GAS,
-                deposit: ONE_YOCTO_NEAR,
+                deposit: NearToken::from_yoctonear(1).as_yoctonear(),
             }))],
-        })
+        }))
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn try_liquidate(
+    pub async fn liquidate(
         &self,
         borrow: AccountId,
         position: BorrowPosition,
         oracle_response: OracleResponse,
         configuration: MarketConfiguration,
-    ) -> anyhow::Result<()> {
+    ) -> LiquidatorResult {
         let Some(status) = self
             .get_borrow_status(borrow.clone(), &oracle_response)
             .await?
@@ -198,15 +240,17 @@ impl<S: Swap> Liquidator<S> {
                 }
                 Err(e) => {
                     error!("Swap failed: {e}");
-                    return Err(e);
+                    return Err(LiquidatorError::SwapTransactionError(e));
                 }
             };
         }
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer)
+            .await
+            .map_err(LiquidatorError::AccessKeyDataError)?;
 
         let transfer_call_tx =
-            self.create_transfer_tx(&borrow, liquidation_amount, nonce, block_hash);
+            self.create_transfer_tx(&borrow, liquidation_amount, nonce, block_hash)?;
 
         match send_tx(&self.client, &self.signer, self.timeout, transfer_call_tx).await {
             Ok(_) => {
@@ -214,7 +258,7 @@ impl<S: Swap> Liquidator<S> {
             }
             Err(e) => {
                 error!("Liquidation failed: {e}");
-                return Err(e);
+                return Err(LiquidatorError::LiquidationTransactionError(e));
             }
         }
 
@@ -246,7 +290,7 @@ impl<S: Swap> Liquidator<S> {
         position: &BorrowPosition,
         oracle_response: &OracleResponse,
         configuration: MarketConfiguration,
-    ) -> anyhow::Result<(U128, U128)> {
+    ) -> LiquidatorResult<(U128, U128)> {
         // TODO: Calculate optimal liquidation amount
         // For purposes of this example implementation we will just use the minimum acceptable
         // liquidation amount.
@@ -260,25 +304,28 @@ impl<S: Swap> Liquidator<S> {
         let collateral_asset = &configuration.collateral_asset;
         let price_pair = configuration
             .price_oracle_configuration
-            .create_price_pair(oracle_response)
-            .map_err(|e| anyhow::anyhow!("Failed to create price pair: {e}"))?;
+            .create_price_pair(oracle_response)?;
         let min_liquidation_amount = configuration
             .minimum_acceptable_liquidation_amount(position.collateral_asset_deposit, &price_pair)
             .ok_or_else(|| {
-                anyhow::anyhow!("Failed to calculate minimum acceptable liquidation amount")
+                LiquidatorError::MinimumLiquidationAmountError(
+                    "Failed to calculate minimum acceptable liquidation amount".to_owned(),
+                )
             })?;
         // Here we would check a quote for the swap to ensure desired profit margin is met
         let quote_to_liquidate = self
             .swap
             .quote(
                 &self.asset,
-                &borrow_asset
-                    .clone()
-                    .into_nep141()
-                    .ok_or_else(|| anyhow::anyhow!("Only NEP-141 borrow assets supported"))?,
+                &borrow_asset.clone().into_nep141().ok_or_else(|| {
+                    LiquidatorError::StandardSupportError(
+                        "Only NEP-141 borrow assets supported".to_owned(),
+                    )
+                })?,
                 min_liquidation_amount.into(),
             )
-            .await?;
+            .await
+            .map_err(LiquidatorError::QuoteError)?;
         let _quote_after_liquidate = self
             .swap
             .quote(
@@ -287,12 +334,13 @@ impl<S: Swap> Liquidator<S> {
                 &self.asset,
                 position.collateral_asset_deposit.into(),
             )
-            .await?;
+            .await
+            .map_err(LiquidatorError::QuoteError)?;
         Ok((quote_to_liquidate, min_liquidation_amount.into()))
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_configuration(&self) -> anyhow::Result<MarketConfiguration> {
+    async fn get_configuration(&self) -> LiquidatorResult<MarketConfiguration> {
         view(
             &self.client,
             self.market.clone(),
@@ -300,6 +348,7 @@ impl<S: Swap> Liquidator<S> {
             json!({}),
         )
         .await
+        .map_err(LiquidatorError::GetConfigurationError)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -308,7 +357,7 @@ impl<S: Swap> Liquidator<S> {
         oracle: AccountId,
         price_ids: &[PriceIdentifier],
         age: u32,
-    ) -> anyhow::Result<OracleResponse> {
+    ) -> LiquidatorResult<OracleResponse> {
         view(
             &self.client,
             oracle,
@@ -316,10 +365,11 @@ impl<S: Swap> Liquidator<S> {
             json!({ "price_ids": price_ids, "age": age }),
         )
         .await
+        .map_err(LiquidatorError::PriceFetchError)
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_borrows(&self) -> anyhow::Result<BorrowPositions> {
+    async fn get_borrows(&self) -> LiquidatorResult<BorrowPositions> {
         let mut all_positions: BorrowPositions = HashMap::new();
         let page_size = 100;
         let mut current_offset = 0;
@@ -335,14 +385,16 @@ impl<S: Swap> Liquidator<S> {
                 self.market.clone(),
                 "list_borrow_positions",
                 params,
-            ).await?;
+            )
+            .await
+            .map_err(LiquidatorError::ListBorrowPositionsError)?;
 
             let fetched = page.len();
 
             if fetched == 0 {
                 break;
             }
-        
+
             all_positions.extend(page);
             current_offset += fetched;
 
@@ -355,7 +407,7 @@ impl<S: Swap> Liquidator<S> {
     }
 
     #[instrument(skip(self), level = "info")]
-    pub async fn run_liquidations(&self, concurrency: usize) -> anyhow::Result<()> {
+    pub async fn run_liquidations(&self, concurrency: usize) -> LiquidatorResult {
         let configuration = self.get_configuration().await?;
         let oracle_response = self
             .get_oracle_prices(
@@ -372,12 +424,19 @@ impl<S: Swap> Liquidator<S> {
             )
             .await?;
 
-        futures::stream::iter(self.get_borrows().await?)
+        let borrows = self.get_borrows().await?;
+
+        if borrows.is_empty() {
+            info!("No borrow positions found");
+            return Ok(());
+        }
+
+        futures::stream::iter(borrows)
             .map(|(borrow, position)| {
                 let oracle_response = oracle_response.clone();
                 let configuration = configuration.clone();
                 async move {
-                    self.try_liquidate(borrow, position, oracle_response, configuration)
+                    self.liquidate(borrow, position, oracle_response, configuration)
                         .await
                 }
             })
@@ -390,14 +449,14 @@ impl<S: Swap> Liquidator<S> {
 }
 
 #[instrument(level = "debug")]
-pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Liquidator<impl Swap>>> {
+pub fn setup_liquidators(args: &Args) -> LiquidatorResult<Vec<Liquidator<impl Swap>>> {
     let client = JsonRpcClient::connect(args.network.get_rpc_url());
     let signer =
         InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
     let asset = args.asset.clone();
     let swap = match args.swap {
         SwapType::RheaSwap => RheaSwap::new(
-            args.swap.get_account_id(args.network),
+            args.swap.account_id(args.network),
             client.clone(),
             signer.clone(),
         ),
@@ -416,5 +475,5 @@ pub fn setup_liquidators(args: &Args) -> anyhow::Result<Vec<Liquidator<impl Swap
                 args.timeout,
             )
         })
-        .collect::<Vec<_>>())
+        .collect())
 }

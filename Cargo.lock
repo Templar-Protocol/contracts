@@ -3808,6 +3808,7 @@ dependencies = [
  "near-primitives",
  "near-sdk",
  "templar-common",
+ "thiserror 2.0.11",
  "tokio",
  "tracing",
  "tracing-subscriber",
