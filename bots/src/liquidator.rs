@@ -371,7 +371,7 @@ impl<S: Swap> Liquidator<S> {
     #[instrument(skip(self), level = "debug")]
     async fn get_borrows(&self) -> LiquidatorResult<BorrowPositions> {
         let mut all_positions: BorrowPositions = HashMap::new();
-        let page_size = 100;
+        let page_size = 500;
         let mut current_offset = 0;
 
         loop {
