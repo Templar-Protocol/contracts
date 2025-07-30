@@ -102,4 +102,36 @@ impl TokenController {
             }
         }
     }
+
+    pub async fn redemption_rate(&self) -> u128 {
+        match self {
+            Self::Ft { controller } => controller.redemption_rate().await.0,
+            Self::Mt {
+                controller,
+                token_id,
+            } => controller.redemption_rate(token_id).await.0,
+        }
+    }
+
+    pub async fn set_redemption_rate(&self, redemption_rate: impl Into<U128>) {
+        match self {
+            Self::Ft { controller } => {
+                controller
+                    .set_redemption_rate(controller.contract.as_account(), redemption_rate)
+                    .await;
+            }
+            Self::Mt {
+                controller,
+                token_id,
+            } => {
+                controller
+                    .set_redemption_rate(
+                        controller.contract.as_account(),
+                        token_id,
+                        redemption_rate,
+                    )
+                    .await;
+            }
+        }
+    }
 }

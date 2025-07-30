@@ -7,6 +7,7 @@ package.license = "MIT"
 getrandom = { version = "0.2", features = ["custom"] }
 borsh = { version = "1.5", features = ["unstable__schema"] }
 hex = { version = "0.4.3", features = ["serde"] }
+hex-literal = "0.4"
 near-sdk = { version = "5.7", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
 near-contract-standards = "5.7"
@@ -30,6 +31,9 @@ expect_used = "warn"
 large_digit_groups = "warn"
 missing_panics_doc = "allow"
 wildcard_imports = "warn"
+
+[profile.dev]
+incremental = true
 
 [profile.release]
 codegen-units = 1

@@ -139,7 +139,7 @@ impl Decimal {
         repr: U512([0xBF71_5880_9CF4_F3C9, 0xB7E1_5162_8AED_2A6A, 2, 0, 0, 0, 0, 0]),
     };
     pub const TEN_POW_24: Self = Self {
-        repr: U512([0, 0, 2003764205206896640, 54210, 0, 0, 0, 0]),
+        repr: U512([0, 0, 0x1BCE_CCED_A100_0000, 0xD3C2, 0, 0, 0, 0]),
     };
 
     pub fn as_repr(self) -> [u64; 8] {

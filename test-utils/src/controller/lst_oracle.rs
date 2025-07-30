@@ -1,8 +1,11 @@
-use near_sdk::{serde_json::json, AccountId};
-use near_workspaces::{Account, Contract};
+use near_sdk::{
+    serde_json::{self, json},
+    AccountId, Gas, NearToken,
+};
+use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 use templar_common::oracle::{
     price_transformer::PriceTransformer,
-    pyth::{self, OracleResponse, PriceIdentifier},
+    pyth::{OracleResponse, PriceIdentifier},
 };
 use tokio::sync::OnceCell;
 
@@ -22,9 +25,9 @@ impl ContractController for LstOracleController {
 
 impl LstOracleController {
     pub async fn deploy(account: Account, oracle_id: &AccountId) -> Self {
-        static WASM_MOCK_ORACLE: OnceCell<Vec<u8>> = OnceCell::const_new();
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM_MOCK_ORACLE
+        let wasm = WASM
             .get_or_init(|| get_contract("templar_lst_oracle_contract", "contract/lst-oracle"))
             .await;
 
@@ -49,9 +52,27 @@ impl LstOracleController {
 
         #[call]
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
-        #[call]
-        pub fn set_price(price_identifier: PriceIdentifier, price: pyth::Price);
-        #[call]
-        pub fn create_transformer(entry: PriceTransformer) -> PriceIdentifier;
+        #[call(yocto(1))]
+        pub fn create_transformer(price_id: PriceIdentifier, entry: PriceTransformer);
+    }
+
+    pub async fn list_ema_prices_no_older_than_exec(
+        &self,
+        executor: &Account,
+        price_ids: impl Into<Vec<PriceIdentifier>>,
+        age: impl Into<u32>,
+    ) -> ExecutionSuccess {
+        self.call_exec(
+            executor,
+            "list_ema_prices_no_older_than",
+            serde_json::to_vec(&json!({
+                "price_ids": price_ids.into(),
+                "age": age.into(),
+            }))
+            .unwrap(),
+            NearToken::from_near(0),
+            Gas::from_tgas(20),
+        )
+        .await
     }
 }

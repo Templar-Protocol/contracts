@@ -5,6 +5,7 @@ use near_sdk_contract_tools::mt::*;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     market::{DepositMsg, LiquidateMsg},
+    self_ext,
 };
 
 use crate::{Contract, ContractExt, ReturnStyle};

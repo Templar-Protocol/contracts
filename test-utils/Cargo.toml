@@ -6,7 +6,7 @@ publish = false
 license.workspace = true
 
 [dependencies]
-hex-literal = "0.4"
+hex-literal.workspace = true
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true

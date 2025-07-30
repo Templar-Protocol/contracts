@@ -1,20 +1,19 @@
+#![allow(clippy::needless_pass_by_value)]
+
 use near_sdk::{
-    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseResult,
-    assert_one_yocto,
-    borsh::{self, BorshSerialize},
-    collections::UnorderedMap,
-    env, near,
-    serde::de::DeserializeOwned,
-    serde_json,
+    assert_one_yocto, borsh::BorshSerialize, collections::UnorderedMap, env, near,
+    serde::de::DeserializeOwned, serde_json, AccountId, BorshStorageKey, Gas, IntoStorageKey,
+    PanicOnDefault, Promise, PromiseResult,
 };
-use near_sdk_contract_tools::{Owner, owner::Owner};
+use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     define_list,
     number::Decimal,
     oracle::{
         price_transformer::PriceTransformer,
-        pyth::{OracleResponse, PriceIdentifier, ext_pyth},
+        pyth::{ext_pyth, OracleResponse, PriceIdentifier},
     },
+    self_ext,
 };
 
 #[derive(BorshSerialize, BorshStorageKey)]
@@ -58,28 +57,14 @@ impl Contract {
         self.transformers.get(&price_identifier)
     }
 
-    pub fn create_transformer(&mut self, entry: PriceTransformer) -> PriceIdentifier {
+    #[payable]
+    pub fn create_transformer(&mut self, price_id: PriceIdentifier, entry: PriceTransformer) {
         assert_one_yocto();
         self.assert_owner();
 
-        let id_tuple = (
-            env::current_account_id(),
-            entry.clone(),
-            self.transformers.len(),
-        );
-
-        let price_identifier =
-            PriceIdentifier(env::sha256_array(&borsh::to_vec(&id_tuple).unwrap()));
-
-        if self
-            .transformers
-            .insert(&price_identifier, &entry)
-            .is_some()
-        {
+        if self.transformers.insert(&price_id, &entry).is_some() {
             env::panic_str("Price identifier collision");
         }
-
-        price_identifier
     }
 
     // impl Pyth:
@@ -95,7 +80,7 @@ impl Contract {
     ) -> Promise {
         let (dispatched_price_ids, promises): (Vec<_>, Vec<_>) = price_ids
             .iter()
-            .cloned()
+            .copied()
             .map(|price_id| {
                 if let Some(entry) = self.transformers.get(&price_id) {
                     (entry.price_id, Some(entry.call.promise()))
@@ -112,7 +97,10 @@ impl Contract {
             promise = promise.and(p);
         }
 
-        promise
+        promise.then(
+            self_ext!(Gas::from_tgas(4))
+                .list_ema_prices_no_older_than_01_consume_results(price_ids),
+        )
     }
 
     #[private]
@@ -128,13 +116,19 @@ impl Contract {
         }
 
         let oracle_result = callback_result::<OracleResponse>(0);
+        near_sdk::log!(
+            "Original oracle result: {}",
+            serde_json::to_string(&oracle_result).unwrap(),
+        );
         let mut result = OracleResponse::with_capacity(oracle_result.len());
 
         let mut i = 1;
         for price_id in original_price_ids {
             if let Some(price) = oracle_result.get(&price_id) {
+                near_sdk::log!("Original price passthrough: {price_id}");
                 result.insert(price_id, price.clone());
             } else {
+                near_sdk::log!("Transforming price: {price_id}");
                 let Some(entry) = self.transformers.get(&price_id) else {
                     env::panic_str(&format!(
                         "No transformer associated with price ID: {price_id}",
@@ -151,6 +145,7 @@ impl Contract {
                 result.insert(
                     price_id,
                     price.clone().and_then(|price| {
+                        near_sdk::log!("Applying transformation: {price_id}, {input}, {price:?}");
                         let transformed_price = entry.action.apply(price, input);
                         if transformed_price.is_none() {
                             near_sdk::log!("Transformation failed on price {price_id}");
@@ -169,7 +164,7 @@ impl Contract {
 mod custom_getrandom {
     #![allow(clippy::no_mangle_with_rust_abi)]
 
-    use getrandom::{Error, register_custom_getrandom};
+    use getrandom::{register_custom_getrandom, Error};
     use near_sdk::env;
 
     register_custom_getrandom!(custom_getrandom);

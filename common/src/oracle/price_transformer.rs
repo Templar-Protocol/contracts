@@ -1,8 +1,8 @@
-use std::i64;
-
 use near_sdk::{
     json_types::{Base64VecU8, U64},
-    near, AccountId, Gas, NearToken, Promise,
+    near,
+    serde::Serialize,
+    serde_json, AccountId, AccountIdRef, Gas, NearToken, Promise,
 };
 
 use crate::number::Decimal;
@@ -42,6 +42,29 @@ pub struct Call {
 }
 
 impl Call {
+    pub fn new(
+        account_id: &AccountIdRef,
+        method_name: impl Into<String>,
+        args: impl Serialize,
+        gas: Gas,
+    ) -> Self {
+        Self {
+            account_id: account_id.into(),
+            method_name: method_name.into(),
+            args: serde_json::to_vec(&args).unwrap().into(),
+            gas: gas.as_gas().into(),
+        }
+    }
+
+    pub fn new_simple(account_id: &AccountIdRef, method_name: impl Into<String>) -> Self {
+        Self::new(
+            account_id,
+            method_name,
+            serde_json::Value::Null,
+            Gas::from_tgas(3),
+        )
+    }
+
     pub fn promise(&self) -> Promise {
         Promise::new(self.account_id.clone()).function_call(
             self.method_name.clone(),
@@ -60,6 +83,20 @@ pub struct PriceTransformer {
     pub action: Action,
 }
 
+impl PriceTransformer {
+    pub fn lst(price_id: PriceIdentifier, call: Call) -> Self {
+        Self {
+            price_id,
+            call,
+            action: Action::NormalizeNativeLstPrice,
+        }
+    }
+
+    pub fn id(&self) -> PriceIdentifier {
+        PriceIdentifier(near_sdk::env::sha256_array(&borsh::to_vec(self).unwrap()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::dec;
@@ -72,7 +109,7 @@ mod tests {
         let price_before = pyth::Price {
             price: 1234.into(),
             conf: 4.into(),
-            expo: 5.into(),
+            expo: 5,
             publish_time: 0.into(),
         };
 
@@ -85,7 +122,7 @@ mod tests {
             pyth::Price {
                 price: 1480.into(),
                 conf: 5.into(),
-                expo: 5.into(),
+                expo: 5,
                 publish_time: 0.into(),
             },
         );

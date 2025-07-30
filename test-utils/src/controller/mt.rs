@@ -40,6 +40,9 @@ impl MtController {
         #[view]
         pub fn mt_balance_of(token_id: String, account_id: &AccountId) -> U128;
 
+        #[view]
+        pub fn redemption_rate(token_id: String) -> U128;
+
         #[call(yocto(1))]
         pub fn mt_transfer(token_id: String, receiver_id: &AccountId, amount: U128);
 
@@ -48,5 +51,8 @@ impl MtController {
 
         #[call]
         pub fn mint(token_id: String, amount: U128);
+
+        #[call]
+        pub fn set_redemption_rate(token_id: String, redemption_rate: U128);
     }
 }

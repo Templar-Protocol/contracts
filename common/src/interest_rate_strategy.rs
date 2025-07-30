@@ -17,6 +17,13 @@ pub enum InterestRateStrategy {
 }
 
 impl InterestRateStrategy {
+    pub const fn zero() -> Self {
+        Self::Linear(Linear {
+            base: Decimal::ZERO,
+            top: Decimal::ZERO,
+        })
+    }
+
     #[must_use]
     pub fn linear(base: Decimal, top: Decimal) -> Option<Self> {
         Some(Self::Linear(Linear::new(base, top)?))

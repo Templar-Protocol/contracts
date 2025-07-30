@@ -6,6 +6,7 @@ use templar_common::{
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     price::PricePair,
+    self_ext,
 };
 
 use crate::{Contract, ContractExt, ReturnStyle};

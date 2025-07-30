@@ -18,6 +18,7 @@ pub struct PriceOracleConfiguration {
 
 impl PriceOracleConfiguration {
     // Usually seems to take 1.64 TGas.
+    // TODO: Update to accomodate increased gas usage of LST adapter oracle contracts.
     pub const GAS_RETRIEVE_PRICE_PAIR: Gas = Gas::from_tgas(3);
 
     pub fn retrieve_price_pair(&self) -> Promise {

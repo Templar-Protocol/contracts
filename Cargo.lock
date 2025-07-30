@@ -3632,6 +3632,7 @@ name = "templar-lst-oracle-contract"
 version = "0.1.0"
 dependencies = [
  "getrandom",
+ "hex-literal",
  "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",
