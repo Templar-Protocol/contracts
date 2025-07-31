@@ -49,7 +49,7 @@ async fn lst_oracle() {
         async { MarketController::deploy(lst_market, &configuration).await },
         async {
             let lst_oracle =
-                LstOracleController::deploy(lst_oracle, c.balance_oracle.contract().id()).await;
+                LstOracleController::deploy(lst_oracle, c.price_oracle.contract().id()).await;
 
             lst_oracle
                 .create_transformer(

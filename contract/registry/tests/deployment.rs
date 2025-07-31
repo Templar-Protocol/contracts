@@ -11,20 +11,20 @@ pub async fn deploy_from_registry() {
 
     accounts!(
         worker,
-        balance_oracle,
+        price_oracle,
         borrow_asset,
         collateral_asset,
         protocol_account
     );
 
-    let (balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
-        OracleController::deploy(balance_oracle),
+    let (price_oracle, borrow_asset, collateral_asset) = tokio::join!(
+        OracleController::deploy(price_oracle),
         FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
     let expected_configuration = market_configuration(
-        balance_oracle.contract().id().clone(),
+        price_oracle.contract().id().clone(),
         borrow_asset.contract().id().clone(),
         collateral_asset.contract().id().clone(),
         protocol_account.id().clone(),
@@ -103,14 +103,14 @@ async fn deploy_with_access_key() {
 
     accounts!(
         worker,
-        balance_oracle,
+        price_oracle,
         borrow_asset,
         collateral_asset,
         protocol_account
     );
 
-    let (balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
-        OracleController::deploy(balance_oracle),
+    let (price_oracle, borrow_asset, collateral_asset) = tokio::join!(
+        OracleController::deploy(price_oracle),
         FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
@@ -128,7 +128,7 @@ async fn deploy_with_access_key() {
             "market@0.0.0".to_string(),
             serde_json::to_vec(&json!({
                 "configuration": market_configuration(
-                        balance_oracle.contract().id().clone(),
+                        price_oracle.contract().id().clone(),
                         borrow_asset.contract().id().clone(),
                         collateral_asset.contract().id().clone(),
                         protocol_account.id().clone(),
@@ -163,20 +163,20 @@ pub async fn market_id_collision() {
 
     accounts!(
         worker,
-        balance_oracle,
+        price_oracle,
         borrow_asset,
         collateral_asset,
         protocol_account
     );
 
-    let (balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
-        OracleController::deploy(balance_oracle),
+    let (price_oracle, borrow_asset, collateral_asset) = tokio::join!(
+        OracleController::deploy(price_oracle),
         FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
 
     let expected_configuration = market_configuration(
-        balance_oracle.contract().id().clone(),
+        price_oracle.contract().id().clone(),
         borrow_asset.contract().id().clone(),
         collateral_asset.contract().id().clone(),
         protocol_account.id().clone(),
