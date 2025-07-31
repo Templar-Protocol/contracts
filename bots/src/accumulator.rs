@@ -143,14 +143,16 @@ impl Accumulator {
     #[instrument(skip(self), level = "info")]
     pub async fn run_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
         let borrows = self.get_borrows().await?;
+        
+        if borrows.is_empty() {
+            return Ok(());
+        }
 
         futures::stream::iter(borrows)
             .map(|(account_id, _)| async move { self.accumulate(account_id).await })
             .buffer_unordered(concurrency)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .try_for_each(|_result| async { Ok(()) })
+            .await?;
 
         Ok(())
     }
