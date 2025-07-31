@@ -51,6 +51,8 @@ impl LstOracleController {
         #[view] pub fn get_transformer(price_identifier: PriceIdentifier) -> Option<PriceTransformer>;
 
         #[call]
+        pub fn price_feed_exists(price_id: PriceIdentifier) -> bool;
+        #[call]
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
         #[call(yocto(1))]
         pub fn create_transformer(price_id: PriceIdentifier, entry: PriceTransformer);

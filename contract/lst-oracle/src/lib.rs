@@ -3,7 +3,7 @@
 use near_sdk::{
     assert_one_yocto, borsh::BorshSerialize, collections::UnorderedMap, env, near,
     serde::de::DeserializeOwned, serde_json, AccountId, BorshStorageKey, Gas, IntoStorageKey,
-    PanicOnDefault, Promise, PromiseResult,
+    PanicOnDefault, Promise, PromiseError, PromiseOrValue, PromiseResult,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -43,8 +43,8 @@ impl Contract {
         self_
     }
 
-    pub fn get_oracle_id(&self) -> AccountId {
-        self.oracle_id.clone()
+    pub fn oracle_id(&self) -> &AccountId {
+        &self.oracle_id
     }
 
     define_list! {
@@ -69,8 +69,23 @@ impl Contract {
 
     // impl Pyth:
 
-    pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> bool {
-        self.transformers.get(&price_identifier).is_some()
+    pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> PromiseOrValue<bool> {
+        if self.transformers.get(&price_identifier).is_some() {
+            PromiseOrValue::Value(true)
+        } else {
+            PromiseOrValue::Promise(
+                ext_pyth::ext(self.oracle_id.clone())
+                    .price_feed_exists(price_identifier)
+                    .then(self_ext!(Gas::from_tgas(1)).price_feed_exists_01_consume_result()),
+            )
+        }
+    }
+
+    pub fn price_feed_exists_01_consume_result(
+        &self,
+        #[callback_result] result: Result<bool, PromiseError>,
+    ) -> bool {
+        result.unwrap_or(false)
     }
 
     pub fn list_ema_prices_no_older_than(
