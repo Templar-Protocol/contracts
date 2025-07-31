@@ -3,7 +3,7 @@
 use near_sdk::{
     assert_one_yocto, borsh::BorshSerialize, collections::UnorderedMap, env, near,
     serde::de::DeserializeOwned, serde_json, AccountId, BorshStorageKey, Gas, IntoStorageKey,
-    PanicOnDefault, Promise, PromiseError, PromiseOrValue, PromiseResult,
+    PanicOnDefault, PromiseError, PromiseOrValue, PromiseResult,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -92,7 +92,11 @@ impl Contract {
         &self,
         price_ids: Vec<PriceIdentifier>,
         age: u64,
-    ) -> Promise {
+    ) -> PromiseOrValue<OracleResponse> {
+        if price_ids.is_empty() {
+            return PromiseOrValue::Value(OracleResponse::new());
+        }
+
         let (dispatched_price_ids, promises): (Vec<_>, Vec<_>) = price_ids
             .iter()
             .copied()
@@ -112,9 +116,11 @@ impl Contract {
             promise = promise.and(p);
         }
 
-        promise.then(
-            self_ext!(Gas::from_tgas(4))
-                .list_ema_prices_no_older_than_01_consume_results(price_ids),
+        PromiseOrValue::Promise(
+            promise.then(
+                self_ext!(Gas::from_tgas(4))
+                    .list_ema_prices_no_older_than_01_consume_results(price_ids),
+            ),
         )
     }
 
