@@ -110,7 +110,9 @@ impl Contract {
     ) -> OracleResponse {
         fn callback_result<T: DeserializeOwned>(index: u64) -> T {
             match env::promise_result(index) {
-                PromiseResult::Successful(vec) => serde_json::from_slice(&vec).unwrap(),
+                PromiseResult::Successful(vec) => {
+                    serde_json::from_slice(&vec).unwrap_or_else(|e| env::panic_str(&e.to_string()))
+                }
                 PromiseResult::Failed => env::panic_str(&format!("Promise index {index} failed")),
             }
         }

@@ -42,6 +42,8 @@ pub struct Call {
 }
 
 impl Call {
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::unwrap_used)]
     pub fn new(
         account_id: &AccountIdRef,
         method_name: impl Into<String>,
@@ -56,6 +58,7 @@ impl Call {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_simple(account_id: &AccountIdRef, method_name: impl Into<String>) -> Self {
         Self::new(
             account_id,
@@ -90,10 +93,6 @@ impl PriceTransformer {
             call,
             action: Action::NormalizeNativeLstPrice,
         }
-    }
-
-    pub fn id(&self) -> PriceIdentifier {
-        PriceIdentifier(near_sdk::env::sha256_array(&borsh::to_vec(self).unwrap()))
     }
 }
 
