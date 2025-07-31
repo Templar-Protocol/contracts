@@ -111,8 +111,7 @@ jobs:
             --name                  "${{ env.MARKET_NAME }}" \
             --with-full-access-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
             --network               "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --private-key           "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key            "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+            --private-key           "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
 
       - name: Generate market ID
         run: |
@@ -126,8 +125,7 @@ jobs:
               --account     "${MARKET_ACCOUNT_ID}" \
               --contract    "${BORROW_ID}" \
               --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-              --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
           fi
 
           COLLATERAL_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.collateral_asset.Nep141')
@@ -136,8 +134,7 @@ jobs:
               --account     "${MARKET_ACCOUNT_ID}" \
               --contract    "${COLLATERAL_ID}" \
               --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-              --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
           fi
 
       - name: Comment on pull request

@@ -32,8 +32,7 @@ jobs:
             --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
 
       - name: Remove registry account
         run: |
@@ -41,5 +40,4 @@ jobs:
             --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --beneficiary "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
