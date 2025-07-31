@@ -4,12 +4,12 @@ members = ["common", "contract/*", "mock/*", "test-utils"]
 package.license = "MIT"
 
 [workspace.dependencies]
-getrandom = { version = "0.2", features = ["custom"] }
 borsh = { version = "1.5", features = ["unstable__schema"] }
+getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
+near-contract-standards = "5.7"
 near-sdk = { version = "5.7", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
-near-contract-standards = "5.7"
 near-workspaces = { version = "0.16", features = ["unstable"] }
 primitive-types = { version = "0.10.1" }
 rstest = { version = "0.24" }
