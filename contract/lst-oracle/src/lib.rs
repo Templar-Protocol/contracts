@@ -116,19 +116,13 @@ impl Contract {
         }
 
         let oracle_result = callback_result::<OracleResponse>(0);
-        near_sdk::log!(
-            "Original oracle result: {}",
-            serde_json::to_string(&oracle_result).unwrap(),
-        );
         let mut result = OracleResponse::with_capacity(oracle_result.len());
 
         let mut i = 1;
         for price_id in original_price_ids {
             if let Some(price) = oracle_result.get(&price_id) {
-                near_sdk::log!("Original price passthrough: {price_id}");
                 result.insert(price_id, price.clone());
             } else {
-                near_sdk::log!("Transforming price: {price_id}");
                 let Some(entry) = self.transformers.get(&price_id) else {
                     env::panic_str(&format!(
                         "No transformer associated with price ID: {price_id}",
@@ -144,14 +138,9 @@ impl Contract {
 
                 result.insert(
                     price_id,
-                    price.clone().and_then(|price| {
-                        near_sdk::log!("Applying transformation: {price_id}, {input}, {price:?}");
-                        let transformed_price = entry.action.apply(price, input);
-                        if transformed_price.is_none() {
-                            near_sdk::log!("Transformation failed on price {price_id}");
-                        }
-                        transformed_price
-                    }),
+                    price
+                        .clone()
+                        .and_then(|price| entry.action.apply(price, input)),
                 );
             }
         }
