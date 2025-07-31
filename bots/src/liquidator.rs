@@ -450,7 +450,7 @@ impl<S: Swap> Liquidator<S> {
 
 #[instrument(level = "debug")]
 pub fn setup_liquidators(args: &Args) -> LiquidatorResult<Vec<Liquidator<impl Swap>>> {
-    let client = JsonRpcClient::connect(args.network.get_rpc_url());
+    let client = JsonRpcClient::connect(args.network.rpc_url());
     let signer =
         InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
     let asset = args.asset.clone();

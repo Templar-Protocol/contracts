@@ -38,7 +38,7 @@ impl std::fmt::Display for Network {
 
 impl Network {
     #[must_use]
-    pub fn get_rpc_url(self) -> &'static str {
+    pub fn rpc_url(&self) -> &str {
         match self {
             Network::Mainnet => NEAR_MAINNET_RPC_URL,
             Network::Testnet => NEAR_TESTNET_RPC_URL,

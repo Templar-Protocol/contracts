@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use clap::Parser;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
@@ -143,7 +143,7 @@ impl Accumulator {
     #[instrument(skip(self), level = "info")]
     pub async fn run_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
         let borrows = self.get_borrows().await?;
-        
+
         if borrows.is_empty() {
             return Ok(());
         }
@@ -159,7 +159,7 @@ impl Accumulator {
 
     #[instrument(level = "debug")]
     pub fn setup_accumulators(args: &Args) -> anyhow::Result<Vec<Self>> {
-        let client = JsonRpcClient::connect(args.network.get_rpc_url());
+        let client = JsonRpcClient::connect(args.network.rpc_url());
         let signer =
             InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
 
