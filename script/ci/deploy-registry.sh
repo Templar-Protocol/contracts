@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
 
-parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--init:INIT,--network:NETWORK,--private-key:PRIVATE_KEY,--public-key:PUBLIC_KEY" "$@"
+parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--init:INIT,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
   NETWORK="testnet"
@@ -24,18 +24,14 @@ if $INIT; then
             prepaid-gas '100.0 Tgas' \
             attached-deposit '0 NEAR' \
         network-config "${NETWORK}" \
-        sign-with-plaintext-private-key \
-            --signer-public-key "${PUBLIC_KEY}" \
-            --signer-private-key "${PRIVATE_KEY}" \
+        sign-with-plaintext-private-key "${PRIVATE_KEY}" \
         send
 else
     echo "Deploying registry contract to ${ACCOUNT_ID} on ${NETWORK} without initialization call"
     cargo near deploy build-reproducible-wasm --skip-git-remote-check "${ACCOUNT_ID}" \
         without-init-call \
         network-config "${NETWORK}" \
-        sign-with-plaintext-private-key \
-            --signer-public-key "${PUBLIC_KEY}" \
-            --signer-private-key "${PRIVATE_KEY}" \
+        sign-with-plaintext-private-key "${PRIVATE_KEY}" \
         send
 fi
 

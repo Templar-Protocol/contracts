@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.19.0/near-cli-rs-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.85.0
       - uses: actions/cache@v4
