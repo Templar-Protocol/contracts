@@ -159,7 +159,6 @@ async fn get_contract(name: &str, path: &str) -> Vec<u8> {
 }
 
 pub struct SetupEverything {
-    // pub worker: Worker<Sandbox>,
     pub c: UnifiedMarketController,
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
@@ -237,7 +236,6 @@ pub async fn setup_everything(
     );
 
     SetupEverything {
-        // worker,
         c,
         protocol_yield_user,
         insurance_yield_user,
