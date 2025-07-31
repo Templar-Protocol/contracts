@@ -1,8 +1,6 @@
 use near_sdk::{
     json_types::{Base64VecU8, U64},
-    near,
-    serde::Serialize,
-    serde_json, AccountId, AccountIdRef, Gas, NearToken, Promise,
+    near, AccountId, Gas, NearToken, Promise,
 };
 
 use crate::number::Decimal;
@@ -45,25 +43,25 @@ impl Call {
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::unwrap_used)]
     pub fn new(
-        account_id: &AccountIdRef,
+        account_id: &near_sdk::AccountIdRef,
         method_name: impl Into<String>,
-        args: impl Serialize,
+        args: impl near_sdk::serde::Serialize,
         gas: Gas,
     ) -> Self {
         Self {
             account_id: account_id.into(),
             method_name: method_name.into(),
-            args: serde_json::to_vec(&args).unwrap().into(),
+            args: near_sdk::serde_json::to_vec(&args).unwrap().into(),
             gas: gas.as_gas().into(),
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_simple(account_id: &AccountIdRef, method_name: impl Into<String>) -> Self {
+    pub fn new_simple(account_id: &near_sdk::AccountIdRef, method_name: impl Into<String>) -> Self {
         Self::new(
             account_id,
             method_name,
-            serde_json::Value::Null,
+            near_sdk::serde_json::Value::Null,
             Gas::from_tgas(3),
         )
     }
