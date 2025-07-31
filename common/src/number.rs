@@ -951,9 +951,4 @@ mod tests {
             println!();
         }
     }
-
-    #[test]
-    pub fn calc_10_24() {
-        println!("{:?}", Decimal::ONE.mul_pow10(24).unwrap().as_repr());
-    }
 }
