@@ -10,9 +10,8 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{
-    AccountId, BorshStorageKey, NearToken,
+    AccountId, NearToken,
     json_types::U128,
-    near,
     serde_json::{self, json},
 };
 use templar_common::{
@@ -27,22 +26,6 @@ use crate::{
     near::{RpcError, get_access_key_data, send_tx, serialize_and_encode, view},
     swap::{RheaSwap, Swap, SwapType},
 };
-
-#[derive(BorshStorageKey)]
-#[near(serializers = [borsh])]
-pub enum MarketStorageKey {
-    Market,
-}
-
-#[derive(BorshStorageKey)]
-#[near(serializers = [borsh])]
-pub enum InnerStorageKey {
-    SupplyPositions,
-    BorrowPositions,
-    FinalizedSnapshots,
-    WithdrawalQueue,
-    StaticYield,
-}
 
 /// Errors that can occur during liquidation operations.
 #[derive(Debug, thiserror::Error)]
