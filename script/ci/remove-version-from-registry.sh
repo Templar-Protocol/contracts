@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
 
-parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--version-key:VERSION_KEY,--network:NETWORK,--private-key:PRIVATE_KEY,--public-key:PUBLIC_KEY" "$@"
+parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--version-key:VERSION_KEY,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
@@ -16,9 +16,7 @@ near contract call-function as-transaction "${REGISTRY_ID}" remove_version \
     attached-deposit '1 yoctoNEAR' \
     sign-as "${ACCOUNT_ID}" \
     network-config testnet \
-    sign-with-plaintext-private-key \
-        --signer-public-key "${PUBLIC_KEY}" \
-        --signer-private-key "${PRIVATE_KEY}" \
+    sign-with-plaintext-private-key "${PRIVATE_KEY}" \
     send
 
 echo "Done"

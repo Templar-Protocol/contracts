@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
 
-parse_args "--account:ACCOUNT_ID,--token:TOKEN_ID,--beneficiary:BENEFICIARY_ID,--network:NETWORK,--private-key:PRIVATE_KEY,--public-key:PUBLIC_KEY" "$@"
+parse_args "--account:ACCOUNT_ID,--token:TOKEN_ID,--beneficiary:BENEFICIARY_ID,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
   NETWORK="testnet"
@@ -17,9 +17,7 @@ echo "Transferring balance to $BENEFICIARY_ID"
 set +e # send all errors if balance is zero
 near tokens "$ACCOUNT_ID" send-ft "$TOKEN_ID" "$BENEFICIARY_ID" all memo "" \
   network-config "$NETWORK" \
-  sign-with-plaintext-private-key \
-    --signer-public-key "$PUBLIC_KEY" \
-    --signer-private-key "$PRIVATE_KEY" \
+  sign-with-plaintext-private-key "$PRIVATE_KEY" \
   send
 set -e
 
@@ -31,9 +29,7 @@ near contract call-function as-transaction "$TOKEN_ID" storage_unregister \
   attached-deposit '1 yoctoNEAR' \
   sign-as "$ACCOUNT_ID" \
   network-config "$NETWORK" \
-  sign-with-plaintext-private-key \
-    --signer-public-key "$PUBLIC_KEY" \
-    --signer-private-key "$PRIVATE_KEY" \
+  sign-with-plaintext-private-key "$PRIVATE_KEY" \
   send
 
 echo "Done"
