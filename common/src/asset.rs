@@ -105,6 +105,15 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    pub fn contract_id(&self) -> AccountId {
+        match self.kind {
+            FungibleAssetKind::Nep245 {
+                ref contract_id, ..
+            }
+            | FungibleAssetKind::Nep141(ref contract_id) => contract_id.clone(),
+        }
+    }
+
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn current_account_balance(&self) -> Promise {
         let current_account_id = env::current_account_id();
