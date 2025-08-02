@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -109,9 +111,9 @@ impl App {
             .try_fold(Vec::with_capacity(len), |mut v, action| {
                 if let Action::FunctionCall(fc) = action {
                     v.push(fc);
-                    return Ok(v);
+                    Ok(v)
                 } else {
-                    return Err(v.len());
+                    Err(v.len())
                 }
             })
             .map_err(|index| PreconditionError::UnsupportedAction { index })?;
@@ -125,7 +127,7 @@ impl App {
                     .contains(&call.method_name)
                 {
                     return Err(PreconditionError::UnknownFunctionName {
-                        name: call.method_name.to_owned(),
+                        name: call.method_name.clone(),
                         index,
                     });
                 }
@@ -269,8 +271,8 @@ async fn main() {
     }
 
     let app = App {
-        configuration,
         environment,
+        configuration,
         market_account_ids,
         allowed_receiver_account_ids,
         near_client,
@@ -303,7 +305,7 @@ pub struct RelayRequest {
 #[serde(crate = "near_sdk::serde")]
 pub enum RelayResponse {
     Success {
-        execution: FinalExecutionOutcomeView,
+        execution: Box<FinalExecutionOutcomeView>,
     },
     Failure {
         error: String,
@@ -324,7 +326,12 @@ async fn relay(
                 .sign_and_send(relay_request.signed_delegate_action)
                 .await;
             match tx_result {
-                Ok(execution) => (StatusCode::OK, Json(RelayResponse::Success { execution })),
+                Ok(execution) => (
+                    StatusCode::OK,
+                    Json(RelayResponse::Success {
+                        execution: Box::new(execution),
+                    }),
+                ),
                 Err(e) => (
                     StatusCode::OK,
                     Json(RelayResponse::Failure {

@@ -24,6 +24,7 @@ impl std::fmt::Debug for NearClient {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 impl NearClient {
     pub fn new(client: JsonRpcClient, signer: KeyRotatingSigner) -> Self {
         let client = near_fetch::Client::from_client(client);
