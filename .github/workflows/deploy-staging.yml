@@ -30,7 +30,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.19.0/near-cli-rs-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
 
       - uses: actions/cache@v4
         with:
@@ -43,7 +43,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.13.3/cargo-near-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.16.1/cargo-near-installer.sh | sh
 
       - name: Initialize staging account
         run: |
@@ -58,9 +58,7 @@ jobs:
               use-manually-provided-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
               sign-as "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
               network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              sign-with-plaintext-private-key \
-                --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-                --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+              sign-with-plaintext-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
               send
 
             echo "NEWLY_CREATED=1" >> $GITHUB_ENV
@@ -70,17 +68,14 @@ jobs:
             near tokens "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
               send-near "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '5 NEAR' \
               network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              sign-with-plaintext-private-key \
-                --signer-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
-                --signer-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
+              sign-with-plaintext-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
               send
 
             ./script/ci/remove-all-versions-from-registry.sh \
               --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
               --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
               --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-              --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
           fi
 
       - name: Deploy registry to staging account
@@ -89,7 +84,6 @@ jobs:
             --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
             --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
             --init        $([[ -n "$NEWLY_CREATED" ]] && echo true || echo false)
 
       - name: Add market version to registry
@@ -99,8 +93,7 @@ jobs:
             --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --version-key "${{ env.MARKET_VERSION_ID }}" \
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
 
       - name: Generate init args
         run: |
@@ -118,8 +111,7 @@ jobs:
             --name                  "${{ env.MARKET_NAME }}" \
             --with-full-access-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
             --network               "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --private-key           "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key            "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+            --private-key           "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
 
       - name: Generate market ID
         run: |
@@ -133,8 +125,7 @@ jobs:
               --account     "${MARKET_ACCOUNT_ID}" \
               --contract    "${BORROW_ID}" \
               --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-              --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
           fi
 
           COLLATERAL_ID=$(echo "$INIT_ARGS" | jq -r '.configuration.collateral_asset.Nep141')
@@ -143,8 +134,7 @@ jobs:
               --account     "${MARKET_ACCOUNT_ID}" \
               --contract    "${COLLATERAL_ID}" \
               --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-              --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
           fi
 
       - name: Comment on pull request

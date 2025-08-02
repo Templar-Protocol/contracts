@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.19.0/near-cli-rs-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.85.0
       - uses: actions/cache@v4
@@ -32,8 +32,7 @@ jobs:
             --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
 
       - name: Remove registry account
         run: |
@@ -41,5 +40,4 @@ jobs:
             --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --beneficiary "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
             --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
-            --public-key  "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}"
+            --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
