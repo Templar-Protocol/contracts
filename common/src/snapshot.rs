@@ -1,5 +1,6 @@
 use near_sdk::{env, json_types::U64, near};
 
+use crate::asset::CollateralAssetAmount;
 use crate::{
     asset::BorrowAssetAmount, interest_rate_strategy::InterestRateStrategy, number::Decimal,
     time_chunk::TimeChunk,
@@ -13,6 +14,7 @@ pub struct Snapshot {
     deposited_active: BorrowAssetAmount,
     pub deposited_incoming: BorrowAssetAmount,
     borrowed: BorrowAssetAmount,
+    collateral_deposited: CollateralAssetAmount,
     pub yield_distribution: BorrowAssetAmount,
     interest_rate: Decimal,
 }
@@ -25,6 +27,7 @@ impl Snapshot {
             deposited_active: 0.into(),
             deposited_incoming: 0.into(),
             borrowed: 0.into(),
+            collateral_deposited: 0.into(),
             yield_distribution: BorrowAssetAmount::zero(),
             interest_rate: Decimal::ZERO,
         }
@@ -40,11 +43,13 @@ impl Snapshot {
         &mut self,
         deposited_active: BorrowAssetAmount,
         borrowed: BorrowAssetAmount,
+        collateral_deposited: CollateralAssetAmount,
         interest_rate_strategy: &InterestRateStrategy,
     ) {
         self.end_timestamp_ms = env::block_timestamp_ms().into();
         self.deposited_active = deposited_active;
         self.borrowed = borrowed;
+        self.collateral_deposited = collateral_deposited;
         self.interest_rate = interest_rate_strategy.at(self.usage_ratio());
     }
 

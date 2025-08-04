@@ -11,6 +11,7 @@ pub use external::*;
 mod r#impl;
 pub use r#impl::*;
 mod price_oracle_configuration;
+use crate::asset::CollateralAssetAmount;
 pub use price_oracle_configuration::PriceOracleConfiguration;
 
 pub mod error {
@@ -25,6 +26,13 @@ pub struct BorrowAssetMetrics {
     pub deposited_active: BorrowAssetAmount,
     pub deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     pub borrowed: BorrowAssetAmount,
+}
+
+pub struct CollateralAssetMetrics {
+    pub available: CollateralAssetAmount,
+    pub deposited_active: CollateralAssetAmount,
+    pub deposited_incoming: HashMap<u32, CollateralAssetAmount>,
+    pub locked: CollateralAssetAmount,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

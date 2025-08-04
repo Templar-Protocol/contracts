@@ -5,6 +5,8 @@ use near_sdk::{
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
+use super::WithdrawalResolution;
+use crate::asset::CollateralAssetAmount;
 use crate::{
     asset::BorrowAssetAmount,
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
@@ -18,7 +20,7 @@ use crate::{
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
-use super::WithdrawalResolution;
+// The "heart of everything", all makes calls to the market struct.
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -38,6 +40,10 @@ pub struct Market {
     pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub borrow_asset_borrowed: BorrowAssetAmount,
+    pub collateral_asset_deposited_active: CollateralAssetAmount,
+    pub collateral_asset_deposited_incoming: HashMap<u32, CollateralAssetAmount>,
+    pub collateral_asset_in_flight: CollateralAssetAmount,
+    pub collateral_asset_locked: CollateralAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub current_snapshot: Snapshot,
@@ -74,6 +80,10 @@ impl Market {
             borrow_asset_deposited_incoming: HashMap::new(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
+            collateral_asset_deposited_active: 0.into(),
+            collateral_asset_deposited_incoming: HashMap::new(),
+            collateral_asset_in_flight: 0.into(),
+            collateral_asset_locked: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             current_snapshot,
@@ -91,6 +101,15 @@ impl Market {
         self.borrow_asset_deposited_incoming
             .values()
             .fold(BorrowAssetAmount::zero(), |mut a, b| {
+                a.join(*b);
+                a
+            })
+    }
+
+    pub fn total_collateral_incoming(&self) -> CollateralAssetAmount {
+        self.collateral_asset_deposited_incoming
+            .values()
+            .fold(CollateralAssetAmount::zero(), |mut a, b| {
                 a.join(*b);
                 a
             })
@@ -115,6 +134,7 @@ impl Market {
             self.current_snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
+                self.collateral_asset_deposited_active,
                 &self.configuration.borrow_interest_rate_strategy,
             );
             self.current_snapshot.add_yield(yield_distribution);
@@ -135,6 +155,7 @@ impl Market {
             snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
+                self.collateral_asset_deposited_active,
                 &self.configuration.borrow_interest_rate_strategy,
             );
             std::mem::swap(&mut snapshot, &mut self.current_snapshot);
@@ -164,6 +185,34 @@ impl Market {
             .saturating_sub(u128::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
             .into()
+    }
+    
+    pub fn get_collateral_asset_available_to_withdraw(&self) -> CollateralAssetAmount {
+        let total_deposited = u128::from(self.collateral_asset_deposited_active)
+            .saturating_add(u128::from(self.total_collateral_incoming()));
+        let locked_backing_loans = u128::from(self.get_collateral_asset_locked());
+        let collateral_asset_in_flight = u128::from(self.collateral_asset_in_flight);
+        
+        total_deposited
+            .saturating_sub(locked_backing_loans)
+            .saturating_sub(collateral_asset_in_flight)
+            .into()
+    }
+    
+    pub fn get_collateral_asset_locked(&self) -> CollateralAssetAmount {
+        #[allow(
+            clippy::expect_used,
+            reason = "Collateral assets are not expected to overflow"
+        )]
+        // This collateral cannot be withdrawn because it secures outstanding debt.
+        self.borrow_positions
+            .values()
+            .filter(|position| !position.get_total_borrow_asset_liability().is_zero())
+            .map(|position| position.collateral_asset_deposit)
+            .fold(CollateralAssetAmount::zero(), |mut sum, amount| {
+                sum.join(amount).expect("Collateral assets are not expected to overflow");
+                sum
+            })
     }
 
     pub fn iter_supply_positions(&self) -> impl Iterator<Item = (AccountId, SupplyPosition)> + '_ {

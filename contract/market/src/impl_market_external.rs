@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use crate::{Contract, ContractExt};
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
+use templar_common::market::CollateralAssetMetrics;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
@@ -23,6 +25,7 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
+    // Could hook into here.
     fn get_current_snapshot(&self) -> &Snapshot {
         &self.current_snapshot
     }
@@ -37,6 +40,15 @@ impl MarketExternalInterface for Contract {
             deposited_active: self.borrow_asset_deposited_active,
             deposited_incoming: self.borrow_asset_deposited_incoming.clone(),
             borrowed: self.borrow_asset_borrowed,
+        }
+    }
+
+    fn get_collateral_asset_metrics(&self) -> CollateralAssetMetrics {
+        CollateralAssetMetrics {
+            available: self.get_collateral_asset_available_to_withdraw(),
+            deposited_active: self.collateral_asset_deposited_active,
+            deposited_incoming: self.collateral_asset_deposited_incoming.clone(),
+            locked: self.collateral_asset_locked,
         }
     }
 
