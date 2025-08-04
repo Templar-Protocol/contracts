@@ -7,7 +7,7 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
-    define_list,
+    contract::list,
     number::Decimal,
     oracle::{
         price_transformer::PriceTransformer,
@@ -47,10 +47,12 @@ impl Contract {
         &self.oracle_id
     }
 
-    define_list! {
-        pub fn list_transformers(&self) -> Vec<PriceIdentifier> {
-            self.transformers.keys()
-        }
+    pub fn list_transformers(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> Vec<PriceIdentifier> {
+        list(self.transformers.keys(), offset, count)
     }
 
     pub fn get_transformer(&self, price_identifier: PriceIdentifier) -> Option<PriceTransformer> {

@@ -4,7 +4,7 @@ use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    define_list,
+    contract::list,
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
@@ -40,18 +40,24 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    define_list! {
-        fn list_finalized_snapshots(&self) -> Vec<&Snapshot> {
-            self.finalized_snapshots
-        }
+    fn list_borrow_positions(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<AccountId, BorrowPosition> {
+        list(self.iter_borrow_positions(), offset, count)
+    }
 
-        fn list_borrow_positions(&self) -> HashMap<AccountId, BorrowPosition> {
-            self.iter_borrow_positions()
-        }
+    fn list_finalized_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
+        list(&self.finalized_snapshots, offset, count)
+    }
 
-        fn list_supply_positions(&self) -> HashMap<AccountId, SupplyPosition> {
-            self.iter_supply_positions()
-        }
+    fn list_supply_positions(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<AccountId, SupplyPosition> {
+        list(self.iter_supply_positions(), offset, count)
     }
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
