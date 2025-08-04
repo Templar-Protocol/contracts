@@ -50,6 +50,7 @@ async fn setup_lst_oracle(
                     COLLATERAL_LST_ID,
                     PriceTransformer::lst(
                         DEFAULT_COLLATERAL_PRICE_ID,
+                        24,
                         price_transformer::Call::new_simple(
                             c.collateral_asset.contract().id(),
                             "redemption_rate",
@@ -125,6 +126,7 @@ async fn lst_oracle() {
         transformer,
         PriceTransformer::lst(
             DEFAULT_COLLATERAL_PRICE_ID,
+            24,
             Call::new_simple(c.collateral_asset.contract().id(), "redemption_rate"),
         ),
     );

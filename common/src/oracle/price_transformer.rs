@@ -10,14 +10,14 @@ use super::pyth::{self, PriceIdentifier};
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum Action {
-    NormalizeNativeLstPrice,
+    NormalizeNativeLstPrice { decimals: u32 },
 }
 
 impl Action {
     pub fn apply(&self, mut price: pyth::Price, input: Decimal) -> Option<pyth::Price> {
         match self {
-            Self::NormalizeNativeLstPrice => {
-                let scale_factor = input / Decimal::TEN_POW_24;
+            Self::NormalizeNativeLstPrice { decimals } => {
+                let scale_factor = input / 10u128.pow(*decimals);
 
                 let price_is_negative = if price.price.0.is_negative() { -1 } else { 1 };
                 let abs_price_u128 = i128::from(price.price.0).unsigned_abs();
@@ -85,11 +85,11 @@ pub struct PriceTransformer {
 }
 
 impl PriceTransformer {
-    pub fn lst(price_id: PriceIdentifier, call: Call) -> Self {
+    pub fn lst(price_id: PriceIdentifier, decimals: u32, call: Call) -> Self {
         Self {
             price_id,
             call,
-            action: Action::NormalizeNativeLstPrice,
+            action: Action::NormalizeNativeLstPrice { decimals },
         }
     }
 }
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn price_transformation() {
-        let transformation = Action::NormalizeNativeLstPrice;
+        let transformation = Action::NormalizeNativeLstPrice { decimals: 24 };
         let price_before = pyth::Price {
             price: 1234.into(),
             conf: 4.into(),
