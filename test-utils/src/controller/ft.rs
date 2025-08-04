@@ -6,6 +6,7 @@ use crate::{define, get_contract};
 
 use super::{storage_management::StorageManagementController, ContractController};
 
+#[derive(Clone)]
 pub struct FtController {
     pub contract: Contract,
 }

@@ -60,11 +60,19 @@ impl Contract {
     }
 
     #[payable]
-    pub fn create_transformer(&mut self, price_id: PriceIdentifier, entry: PriceTransformer) {
+    pub fn create_transformer(
+        &mut self,
+        price_identifier: PriceIdentifier,
+        entry: PriceTransformer,
+    ) {
         assert_one_yocto();
         self.assert_owner();
 
-        if self.transformers.insert(&price_id, &entry).is_some() {
+        if self
+            .transformers
+            .insert(&price_identifier, &entry)
+            .is_some()
+        {
             env::panic_str("Price identifier collision");
         }
     }
@@ -77,6 +85,7 @@ impl Contract {
         } else {
             PromiseOrValue::Promise(
                 ext_pyth::ext(self.oracle_id.clone())
+                    .with_static_gas(Gas::from_tgas(2))
                     .price_feed_exists(price_identifier)
                     .then(self_ext!(Gas::from_tgas(1)).price_feed_exists_01_consume_result()),
             )
@@ -89,6 +98,10 @@ impl Contract {
     ) -> bool {
         result.unwrap_or(false)
     }
+
+    // GAS:
+    // Base: 3 (underlying oracle) + 2 (entry) + 3 (callback) + n*3 (redemption rate calls)
+    // Max should be 3 + 2 + 3 + 2 * 3 = 14, plus a bit of buffer => 15
 
     pub fn list_ema_prices_no_older_than(
         &self,
@@ -112,6 +125,7 @@ impl Contract {
             .unzip();
 
         let mut promise = ext_pyth::ext(self.oracle_id.clone())
+            .with_static_gas(Gas::from_tgas(3))
             .list_ema_prices_no_older_than(dispatched_price_ids, age);
 
         for p in promises.into_iter().flatten() {
@@ -120,7 +134,7 @@ impl Contract {
 
         PromiseOrValue::Promise(
             promise.then(
-                self_ext!(Gas::from_tgas(4))
+                self_ext!(Gas::from_tgas(3))
                     .list_ema_prices_no_older_than_01_consume_results(price_ids),
             ),
         )

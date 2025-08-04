@@ -1,49 +1,42 @@
 use controller::lst_oracle::LstOracleController;
+use near_workspaces::Account;
 use rstest::rstest;
 use templar_common::{
     dec,
     fee::Fee,
     interest_rate_strategy::InterestRateStrategy,
-    market::YieldWeights,
+    market::{MarketConfiguration, YieldWeights},
     oracle::{
-        price_transformer::{self, PriceTransformer},
+        price_transformer::{self, Call, PriceTransformer},
         pyth::PriceIdentifier,
     },
 };
 use test_utils::*;
 
-#[rstest]
-#[tokio::test]
-async fn lst_oracle() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
+    "cc11000000000000000000000000000000000000000000000000000000000000"
+));
 
-    let collateral_lst_id = PriceIdentifier(hex_literal::hex!(
-        "cc11000000000000000000000000000000000000000000000000000000000000"
-    ));
-
-    setup_test_w!(
-        worker
-        extract(c, protocol_yield_user)
-        accounts(supply_user, borrow_user, lst_oracle, lst_market)
-    );
-
+async fn setup_lst_oracle(
+    c: &UnifiedMarketController,
+    lst_oracle: Account,
+    lst_market: Account,
+    storage_deposits: impl IntoIterator<Item = &Account>,
+    config_fn: impl FnOnce(&mut MarketConfiguration),
+) -> (UnifiedMarketController, LstOracleController) {
     let mut configuration = market_configuration(
         lst_oracle.id().clone(),
         c.borrow_asset.contract().id().clone(),
         c.collateral_asset.contract().id().clone(),
-        protocol_yield_user.id().clone(),
+        c.configuration.protocol_account_id.clone(),
         YieldWeights::new_with_supply_weight(1),
     );
 
     configuration
         .price_oracle_configuration
-        .collateral_asset_price_id = collateral_lst_id;
+        .collateral_asset_price_id = COLLATERAL_LST_ID;
 
-    configuration.borrow_mcr = dec!("2");
-    configuration.borrow_mcr_initial = dec!("2");
-
-    configuration.borrow_origination_fee = Fee::zero();
-    configuration.borrow_interest_rate_strategy = InterestRateStrategy::zero();
+    config_fn(&mut configuration);
 
     let (lst_market, lst_oracle) = tokio::join!(
         async { MarketController::deploy(lst_market, &configuration).await },
@@ -54,7 +47,7 @@ async fn lst_oracle() {
             lst_oracle
                 .create_transformer(
                     lst_oracle.contract().as_account(),
-                    collateral_lst_id,
+                    COLLATERAL_LST_ID,
                     PriceTransformer::lst(
                         DEFAULT_COLLATERAL_PRICE_ID,
                         price_transformer::Call::new_simple(
@@ -72,16 +65,48 @@ async fn lst_oracle() {
     let c = UnifiedMarketController {
         market: lst_market,
         configuration,
-        ..c
+        ..c.clone()
     };
 
     let storage_bounds = c.market.storage_balance_bounds().await;
-    c.market
-        .storage_deposit(&supply_user, storage_bounds.min)
-        .await;
-    c.market
-        .storage_deposit(&borrow_user, storage_bounds.min)
-        .await;
+    for account in storage_deposits {
+        c.market.storage_deposit(account, storage_bounds.min).await;
+    }
+
+    (c, lst_oracle)
+}
+
+#[rstest]
+#[tokio::test]
+async fn lst_oracle() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+
+    setup_test_w!(
+        worker
+        extract(c, protocol_yield_user)
+        accounts(supply_user, borrow_user, lst_oracle, lst_market)
+    );
+
+    let original_oracle_id = c
+        .configuration
+        .price_oracle_configuration
+        .account_id
+        .clone();
+
+    let (c, lst_oracle) = setup_lst_oracle(
+        &c,
+        lst_oracle,
+        lst_market,
+        [&supply_user, &borrow_user],
+        |configuration| {
+            configuration.borrow_mcr = dec!("2");
+            configuration.borrow_mcr_initial = dec!("2");
+
+            configuration.borrow_origination_fee = Fee::zero();
+            configuration.borrow_interest_rate_strategy = InterestRateStrategy::zero();
+        },
+    )
+    .await;
 
     tokio::join!(
         // 2:1
@@ -90,10 +115,46 @@ async fn lst_oracle() {
         c.collateralize(&borrow_user, 1_000_000),
     );
 
+    let underlying_oracle_actual = lst_oracle.oracle_id().await;
+    assert_eq!(underlying_oracle_actual, original_oracle_id);
+
+    let transformers = lst_oracle.list_transformers(None, None).await;
+    assert_eq!(transformers, vec![COLLATERAL_LST_ID]);
+    let transformer = lst_oracle.get_transformer(COLLATERAL_LST_ID).await.unwrap();
+    assert_eq!(
+        transformer,
+        PriceTransformer::lst(
+            DEFAULT_COLLATERAL_PRICE_ID,
+            Call::new_simple(c.collateral_asset.contract().id(), "redemption_rate"),
+        ),
+    );
+
+    for should_exist in [
+        COLLATERAL_LST_ID,
+        DEFAULT_COLLATERAL_PRICE_ID,
+        DEFAULT_BORROW_PRICE_ID,
+    ] {
+        assert!(
+            lst_oracle
+                .price_feed_exists(lst_oracle.contract.as_account(), should_exist)
+                .await,
+            "Price ID {should_exist} should exist",
+        );
+    }
+
+    assert!(
+        !lst_oracle
+            .price_feed_exists(
+                lst_oracle.contract.as_account(),
+                PriceIdentifier([0x88; 32]),
+            )
+            .await,
+    );
+
     let oracle_response = lst_oracle
         .list_ema_prices_no_older_than(
             lst_oracle.contract().as_account(),
-            vec![DEFAULT_BORROW_PRICE_ID, collateral_lst_id],
+            vec![DEFAULT_BORROW_PRICE_ID, COLLATERAL_LST_ID],
             60u32,
         )
         .await;

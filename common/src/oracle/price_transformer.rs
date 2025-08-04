@@ -7,7 +7,7 @@ use crate::number::Decimal;
 
 use super::pyth::{self, PriceIdentifier};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum Action {
     NormalizeNativeLstPrice,
@@ -30,7 +30,7 @@ impl Action {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct Call {
     pub account_id: AccountId,
@@ -76,7 +76,7 @@ impl Call {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct PriceTransformer {
     pub price_id: PriceIdentifier,

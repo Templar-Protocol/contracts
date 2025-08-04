@@ -27,6 +27,7 @@ use crate::{
 
 use super::{oracle::OracleController, token::TokenController, ContractController};
 
+#[derive(Clone)]
 pub struct MarketController {
     contract: Contract,
 }
@@ -137,6 +138,7 @@ pub async fn load_wasm() -> &'static [u8] {
         .await
 }
 
+#[derive(Clone)]
 pub struct UnifiedMarketController {
     pub market: MarketController,
     pub configuration: MarketConfiguration,

@@ -11,9 +11,13 @@ pub use controller::{
 use controller::{mt::MtController, token::TokenController};
 use near_sdk::{
     json_types::{I64, U64},
-    AccountId,
+    serde_json, AccountId,
 };
-use near_workspaces::{network::Sandbox, Account, DevNetwork, Worker};
+use near_workspaces::{
+    network::Sandbox,
+    result::{ExecutionSuccess, ValueOrReceiptId},
+    Account, DevNetwork, Worker,
+};
 use templar_common::{
     asset::FungibleAsset,
     dec,
@@ -255,4 +259,32 @@ pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
     .await;
 
     r
+}
+
+pub fn print_execution(e: &ExecutionSuccess) {
+    eprintln!("Execution:");
+    eprintln!("Total gas burnt: {}", e.total_gas_burnt);
+    eprintln!("Executor: {}", e.outcome().executor_id);
+    eprintln!("Receipts:");
+    for (i, receipt) in e.receipt_outcomes().iter().enumerate() {
+        eprintln!("\tReceipt #{i}:");
+        eprintln!("\tExecutor: {}", receipt.executor_id);
+        eprintln!("\tGas burnt: {}", receipt.gas_burnt);
+        if !receipt.logs.is_empty() {
+            eprintln!("\tLogs:");
+            for log in &receipt.logs {
+                eprintln!("\t\t{log}");
+            }
+        }
+        if let Ok(ValueOrReceiptId::Value(value)) = receipt.clone().into_result() {
+            if let Some(s) = value
+                .json::<serde_json::Value>()
+                .ok()
+                .and_then(|v| serde_json::to_string(&v).ok())
+            {
+                eprintln!("\tReturn value: {s}");
+            }
+        }
+        eprintln!();
+    }
 }

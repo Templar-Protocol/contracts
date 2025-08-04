@@ -6,6 +6,7 @@ use crate::{define, get_contract};
 
 use super::ContractController;
 
+#[derive(Clone)]
 pub struct MtController {
     pub contract: Contract,
 }

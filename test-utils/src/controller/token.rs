@@ -5,6 +5,7 @@ use crate::FtController;
 
 use super::{mt::MtController, ContractController};
 
+#[derive(Clone)]
 pub enum TokenController {
     Ft {
         controller: FtController,

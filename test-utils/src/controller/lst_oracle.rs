@@ -46,16 +46,34 @@ impl LstOracleController {
     }
 
     define! {
-        #[view] pub fn get_oracle_id() -> AccountId;
+        #[view] pub fn oracle_id() -> AccountId;
         #[view] pub fn list_transformers(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
         #[view] pub fn get_transformer(price_identifier: PriceIdentifier) -> Option<PriceTransformer>;
 
         #[call]
-        pub fn price_feed_exists(price_id: PriceIdentifier) -> bool;
-        #[call]
+        pub fn price_feed_exists(price_identifier: PriceIdentifier) -> bool;
+        #[call(tgas(15))]
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
         #[call(yocto(1))]
-        pub fn create_transformer(price_id: PriceIdentifier, entry: PriceTransformer);
+        pub fn create_transformer(price_identifier: PriceIdentifier, entry: PriceTransformer);
+    }
+
+    pub async fn price_feed_exists_exec(
+        &self,
+        executor: &Account,
+        price_identifier: PriceIdentifier,
+    ) -> ExecutionSuccess {
+        self.call_exec(
+            executor,
+            "price_feed_exists",
+            serde_json::to_vec(&json!({
+                "price_identifier": price_identifier,
+            }))
+            .unwrap(),
+            NearToken::from_near(0),
+            Gas::from_tgas(10),
+        )
+        .await
     }
 
     pub async fn list_ema_prices_no_older_than_exec(
@@ -73,7 +91,7 @@ impl LstOracleController {
             }))
             .unwrap(),
             NearToken::from_near(0),
-            Gas::from_tgas(20),
+            Gas::from_tgas(15),
         )
         .await
     }
