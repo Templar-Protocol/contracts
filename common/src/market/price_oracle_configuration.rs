@@ -17,9 +17,8 @@ pub struct PriceOracleConfiguration {
 }
 
 impl PriceOracleConfiguration {
-    // Usually seems to take 1.64 TGas.
-    // TODO: Update to accomodate increased gas usage of LST adapter oracle contracts.
-    pub const GAS_RETRIEVE_PRICE_PAIR: Gas = Gas::from_tgas(3);
+    // Usually seems to take 1.64 TGas, but LST adapter contract may require as much as 14.
+    pub const GAS_RETRIEVE_PRICE_PAIR: Gas = Gas::from_tgas(15);
 
     pub fn retrieve_price_pair(&self) -> Promise {
         ext_pyth::ext(self.account_id.clone())
