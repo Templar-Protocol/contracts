@@ -75,7 +75,7 @@ impl MarketExternalInterface for Contract {
 
         let price_pair = self
             .configuration
-            .balance_oracle
+            .price_oracle_configuration
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
@@ -108,7 +108,7 @@ impl MarketExternalInterface for Contract {
         );
 
         self.configuration
-            .balance_oracle
+            .price_oracle_configuration
             .retrieve_price_pair()
             .then(
                 self_ext!(Self::GAS_BORROW_01_CONSUME_PRICE)
@@ -144,7 +144,7 @@ impl MarketExternalInterface for Contract {
             drop(borrow_position);
             // They still have liability, so we need to check prices.
             self.configuration
-                .balance_oracle
+                .price_oracle_configuration
                 .retrieve_price_pair()
                 .then(
                     self_ext!(Self::GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE)
@@ -303,15 +303,15 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.current_snapshot.deposited_active.into();
+        let deposited: Decimal = self.current_snapshot.deposited_active().into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = self.current_snapshot.borrowed.into();
+        let borrowed: Decimal = self.current_snapshot.borrowed().into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
-        self.current_snapshot.interest_rate * borrowed * supply_weight / deposited / total_weight
+        self.current_snapshot.interest_rate() * borrowed * supply_weight / deposited / total_weight
     }
 
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {

@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
 
-parse_args "--account:ACCOUNT_ID,--beneficiary:BENEFICIARY_ID,--network:NETWORK,--private-key:PRIVATE_KEY,--public-key:PUBLIC_KEY" "$@"
+parse_args "--account:ACCOUNT_ID,--beneficiary:BENEFICIARY_ID,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
@@ -36,7 +36,6 @@ if [ -n "$BORROW_ID" ]; then
         --token         "${BORROW_ID}" \
         --beneficiary   "${BENEFICIARY_ID}" \
         --network       "${NETWORK}" \
-        --public-key    "${PUBLIC_KEY}" \
         --private-key   "${PRIVATE_KEY}"
 fi
 
@@ -49,7 +48,6 @@ if [ -n "$COLLATERAL_ID" ]; then
         --token         "${COLLATERAL_ID}" \
         --beneficiary   "${BENEFICIARY_ID}" \
         --network       "${NETWORK}" \
-        --public-key    "${PUBLIC_KEY}" \
         --private-key   "${PRIVATE_KEY}"
 fi
 
@@ -58,9 +56,7 @@ echo "Deleting account ${ACCOUNT_ID}"
 near account delete-account "${ACCOUNT_ID}" \
   beneficiary "${BENEFICIARY_ID}" \
   network-config "${NETWORK}" \
-  sign-with-plaintext-private-key \
-    --signer-public-key "${PUBLIC_KEY}" \
-    --signer-private-key "${PRIVATE_KEY}" \
+  sign-with-plaintext-private-key "${PRIVATE_KEY}" \
   send
 
 echo "Done"

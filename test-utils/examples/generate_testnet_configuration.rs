@@ -9,7 +9,7 @@ use templar_common::{
     dec,
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
-    market::{BalanceOracleConfiguration, MarketConfiguration, YieldWeights},
+    market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
     oracle::pyth::PriceIdentifier,
     time_chunk::TimeChunkConfiguration,
@@ -24,7 +24,7 @@ pub fn main() {
             },
             borrow_asset: FungibleAsset::nep141("usdt.fakes.testnet".parse().unwrap()),
             collateral_asset: FungibleAsset::nep141("wrap.testnet".parse().unwrap()),
-            balance_oracle: BalanceOracleConfiguration {
+            price_oracle_configuration: PriceOracleConfiguration {
                 account_id: "pyth-oracle.testnet".parse().unwrap(),
                 borrow_asset_price_id: PriceIdentifier(hex_literal::hex!(
                     "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"

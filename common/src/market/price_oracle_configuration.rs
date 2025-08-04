@@ -7,7 +7,7 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub struct BalanceOracleConfiguration {
+pub struct PriceOracleConfiguration {
     pub account_id: AccountId,
     pub collateral_asset_price_id: PriceIdentifier,
     pub collateral_asset_decimals: i32,
@@ -16,7 +16,7 @@ pub struct BalanceOracleConfiguration {
     pub price_maximum_age_s: u32,
 }
 
-impl BalanceOracleConfiguration {
+impl PriceOracleConfiguration {
     // Usually seems to take 1.64 TGas.
     pub const GAS_RETRIEVE_PRICE_PAIR: Gas = Gas::from_tgas(3);
 

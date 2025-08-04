@@ -19,7 +19,7 @@ use templar_common::{
     dec,
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
-    market::{BalanceOracleConfiguration, MarketConfiguration, YieldWeights},
+    market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
 };
@@ -69,7 +69,7 @@ macro_rules! setup_test {
 }
 
 pub fn market_configuration(
-    balance_oracle_id: AccountId,
+    price_oracle_id: AccountId,
     borrow_asset_id: AccountId,
     collateral_asset_id: AccountId,
     protocol_account_id: AccountId,
@@ -81,8 +81,8 @@ pub fn market_configuration(
         },
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
-        balance_oracle: BalanceOracleConfiguration {
-            account_id: balance_oracle_id,
+        price_oracle_configuration: PriceOracleConfiguration {
+            account_id: price_oracle_id,
             collateral_asset_price_id: PriceIdentifier(hex_literal::hex!(
                 "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
             )),
@@ -157,10 +157,10 @@ pub async fn setup_everything(
         insurance_yield_user,
         collateral_asset,
         borrow_asset,
-        balance_oracle
+        price_oracle
     );
     let mut config = market_configuration(
-        balance_oracle.id().clone(),
+        price_oracle.id().clone(),
         borrow_asset.id().clone(),
         collateral_asset.id().clone(),
         protocol_yield_user.id().clone(),
@@ -170,9 +170,9 @@ pub async fn setup_everything(
     );
     customize_market_configuration(&mut config);
 
-    let (market, balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
+    let (market, price_oracle, borrow_asset, collateral_asset) = tokio::join!(
         MarketController::deploy(market, &config),
-        OracleController::deploy(balance_oracle),
+        OracleController::deploy(price_oracle),
         async {
             if config.borrow_asset.is_nep141(borrow_asset.id()) {
                 TokenController::Ft {
@@ -204,13 +204,8 @@ pub async fn setup_everything(
         },
     );
 
-    let c = UnifiedMarketController::new(
-        market,
-        config,
-        balance_oracle,
-        borrow_asset,
-        collateral_asset,
-    );
+    let c =
+        UnifiedMarketController::new(market, config, price_oracle, borrow_asset, collateral_asset);
 
     c.set_borrow_asset_price(1.0).await;
     c.set_collateral_asset_price(1.0).await;

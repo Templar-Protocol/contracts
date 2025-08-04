@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
 
-parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--network:NETWORK,--private-key:PRIVATE_KEY,--public-key:PUBLIC_KEY" "$@"
+parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
@@ -26,7 +26,6 @@ echo "${VERSIONS}" | jq -r '.[]' | while read VERSION_KEY; do
         --registry      "${ACCOUNT_ID}" \
         --version-key   "${VERSION_KEY}" \
         --network       "${NETWORK}" \
-        --public-key    "${PUBLIC_KEY}" \
         --private-key   "${PRIVATE_KEY}"
 done
 

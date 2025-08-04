@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 source "$SCRIPT_DIR/utils.sh"
 
-parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--network:NETWORK,--private-key:PRIVATE_KEY,--public-key:PUBLIC_KEY" "$@"
+parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
@@ -25,8 +25,7 @@ echo "${DEPLOYMENTS}" | jq -r '.[]' | while read MARKET_ID; do
         --account "${MARKET_ID}" \
         --beneficiary "${REGISTRY_ID}" \
         --network "${NETWORK}" \
-        --private-key "${PRIVATE_KEY}" \
-        --public-key "${PUBLIC_KEY}"
+        --private-key "${PRIVATE_KEY}"
 done
 
 echo "Done"
