@@ -32,6 +32,11 @@ pub struct Contract {
 
 #[near]
 impl Contract {
+    #[private]
+    pub fn patch_configuration(&mut self, configuration: MarketConfiguration) {
+        self.configuration = configuration;
+    }
+
     #[allow(clippy::unwrap_used, reason = "Infallible")]
     #[init]
     pub fn new(configuration: MarketConfiguration) -> Self {
