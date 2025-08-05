@@ -4,9 +4,11 @@ use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
+    contract::list,
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
     number::Decimal,
     oracle::pyth::OracleResponse,
+    self_ext,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -14,16 +16,6 @@ use templar_common::{
 };
 
 use crate::{Contract, ContractExt};
-
-fn list<T, U: FromIterator<T>>(
-    i: impl IntoIterator<Item = T>,
-    offset: Option<u32>,
-    count: Option<u32>,
-) -> U {
-    let offset = offset.map_or(0, |o| o as usize);
-    let count = count.map_or(usize::MAX, |c| c as usize);
-    i.into_iter().skip(offset).take(count).collect()
-}
 
 #[near]
 impl MarketExternalInterface for Contract {
@@ -37,10 +29,6 @@ impl MarketExternalInterface for Contract {
 
     fn get_finalized_snapshots_len(&self) -> u32 {
         self.finalized_snapshots.len()
-    }
-
-    fn list_finalized_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
-        list(&self.finalized_snapshots, offset, count)
     }
 
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics {
@@ -60,6 +48,18 @@ impl MarketExternalInterface for Contract {
         list(self.iter_borrow_positions(), offset, count)
     }
 
+    fn list_finalized_snapshots(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Snapshot> {
+        list(&self.finalized_snapshots, offset, count)
+    }
+
+    fn list_supply_positions(
+        &self,
+        offset: Option<u32>,
+        count: Option<u32>,
+    ) -> HashMap<AccountId, SupplyPosition> {
+        list(self.iter_supply_positions(), offset, count)
+    }
+
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
         let mut borrow_position = self.borrow_position_ref(account_id)?;
         borrow_position.with_pending_interest();
@@ -75,7 +75,7 @@ impl MarketExternalInterface for Contract {
 
         let price_pair = self
             .configuration
-            .balance_oracle
+            .price_oracle_configuration
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
@@ -108,7 +108,7 @@ impl MarketExternalInterface for Contract {
         );
 
         self.configuration
-            .balance_oracle
+            .price_oracle_configuration
             .retrieve_price_pair()
             .then(
                 self_ext!(Self::GAS_BORROW_01_CONSUME_PRICE)
@@ -144,7 +144,7 @@ impl MarketExternalInterface for Contract {
             drop(borrow_position);
             // They still have liability, so we need to check prices.
             self.configuration
-                .balance_oracle
+                .price_oracle_configuration
                 .retrieve_price_pair()
                 .then(
                     self_ext!(Self::GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE)
@@ -158,14 +158,6 @@ impl MarketExternalInterface for Contract {
         if let Some(mut borrow_position) = self.borrow_position_guard(account_id) {
             borrow_position.accumulate_interest_partial(snapshot_limit.unwrap_or(u32::MAX));
         }
-    }
-
-    fn list_supply_positions(
-        &self,
-        offset: Option<u32>,
-        count: Option<u32>,
-    ) -> HashMap<AccountId, SupplyPosition> {
-        list(self.iter_supply_positions(), offset, count)
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
@@ -303,15 +295,15 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.current_snapshot.deposited_active.into();
+        let deposited: Decimal = self.current_snapshot.deposited_active().into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = self.current_snapshot.borrowed.into();
+        let borrowed: Decimal = self.current_snapshot.borrowed().into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
-        self.current_snapshot.interest_rate * borrowed * supply_weight / deposited / total_weight
+        self.current_snapshot.interest_rate() * borrowed * supply_weight / deposited / total_weight
     }
 
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {

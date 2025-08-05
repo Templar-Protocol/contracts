@@ -7,7 +7,7 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub struct BalanceOracleConfiguration {
+pub struct PriceOracleConfiguration {
     pub account_id: AccountId,
     pub collateral_asset_price_id: PriceIdentifier,
     pub collateral_asset_decimals: i32,
@@ -16,9 +16,9 @@ pub struct BalanceOracleConfiguration {
     pub price_maximum_age_s: u32,
 }
 
-impl BalanceOracleConfiguration {
-    // Usually seems to take 1.64 TGas.
-    pub const GAS_RETRIEVE_PRICE_PAIR: Gas = Gas::from_tgas(3);
+impl PriceOracleConfiguration {
+    // Usually seems to take 1.64 TGas, but LST adapter contract may require as much as 14.
+    pub const GAS_RETRIEVE_PRICE_PAIR: Gas = Gas::from_tgas(15);
 
     pub fn retrieve_price_pair(&self) -> Promise {
         ext_pyth::ext(self.account_id.clone())

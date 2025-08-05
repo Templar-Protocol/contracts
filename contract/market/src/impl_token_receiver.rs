@@ -5,6 +5,7 @@ use near_sdk_contract_tools::mt::*;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     market::{DepositMsg, LiquidateMsg},
+    self_ext,
 };
 
 use crate::{Contract, ContractExt, ReturnStyle};
@@ -53,7 +54,7 @@ impl FungibleTokenReceiver for Contract {
 
                 PromiseOrValue::Promise(
                     self.configuration
-                        .balance_oracle
+                        .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
@@ -70,7 +71,7 @@ impl FungibleTokenReceiver for Contract {
 
                 PromiseOrValue::Promise(
                     self.configuration
-                        .balance_oracle
+                        .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
@@ -87,7 +88,7 @@ impl FungibleTokenReceiver for Contract {
 
                 PromiseOrValue::Promise(
                     self.configuration
-                        .balance_oracle
+                        .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
@@ -175,7 +176,7 @@ impl Nep245Receiver for Contract {
 
                 PromiseOrValue::Promise(
                     self.configuration
-                        .balance_oracle
+                        .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
@@ -192,7 +193,7 @@ impl Nep245Receiver for Contract {
 
                 PromiseOrValue::Promise(
                     self.configuration
-                        .balance_oracle
+                        .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
@@ -209,7 +210,7 @@ impl Nep245Receiver for Contract {
 
                 PromiseOrValue::Promise(
                     self.configuration
-                        .balance_oracle
+                        .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
                             self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)

@@ -11,18 +11,29 @@ pub use controller::{
 use controller::{mt::MtController, token::TokenController};
 use near_sdk::{
     json_types::{I64, U64},
-    AccountId,
+    serde_json, AccountId,
 };
-use near_workspaces::{network::Sandbox, Account, DevNetwork, Worker};
+use near_workspaces::{
+    network::Sandbox,
+    result::{ExecutionSuccess, ValueOrReceiptId},
+    Account, DevNetwork, Worker,
+};
 use templar_common::{
     asset::FungibleAsset,
     dec,
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
-    market::{BalanceOracleConfiguration, MarketConfiguration, YieldWeights},
+    market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
 };
+
+pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
+    "cccccccc232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
+));
+pub const DEFAULT_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
+    "bbbbbbbbf4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
+));
 
 pub mod controller;
 
@@ -54,10 +65,26 @@ macro_rules! accounts {
 }
 
 #[macro_export]
+macro_rules! setup_test_w {
+    ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
+        $crate::accounts!($w, $($n),*);
+        let s = $crate::setup_everything(&$w, $f).await;
+        ::tokio::join!(
+            $(s.c.init_account(&$n)),*
+        );
+        let $crate::SetupEverything { $($e,)* .. } = s;
+    };
+    ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
+        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}))
+    };
+}
+
+#[macro_export]
 macro_rules! setup_test {
     (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
-        let s = $crate::setup_everything($f).await;
-        $crate::accounts!(s.worker, $($n),*);
+        let worker = near_workspaces::sandbox().await.unwrap();
+        $crate::accounts!(worker, $($n),*);
+        let s = $crate::setup_everything(&worker, $f).await;
         ::tokio::join!(
             $(s.c.init_account(&$n)),*
         );
@@ -69,7 +96,7 @@ macro_rules! setup_test {
 }
 
 pub fn market_configuration(
-    balance_oracle_id: AccountId,
+    price_oracle_id: AccountId,
     borrow_asset_id: AccountId,
     collateral_asset_id: AccountId,
     protocol_account_id: AccountId,
@@ -81,15 +108,11 @@ pub fn market_configuration(
         },
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
-        balance_oracle: BalanceOracleConfiguration {
-            account_id: balance_oracle_id,
-            collateral_asset_price_id: PriceIdentifier(hex_literal::hex!(
-                "1fc18861232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
-            )),
+        price_oracle_configuration: PriceOracleConfiguration {
+            account_id: price_oracle_id,
+            collateral_asset_price_id: DEFAULT_COLLATERAL_PRICE_ID,
             collateral_asset_decimals: 24,
-            borrow_asset_price_id: PriceIdentifier(hex_literal::hex!(
-                "27e867f0f4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
-            )),
+            borrow_asset_price_id: DEFAULT_BORROW_PRICE_ID,
             borrow_asset_decimals: 24,
             price_maximum_age_s: 60,
         },
@@ -140,16 +163,15 @@ async fn get_contract(name: &str, path: &str) -> Vec<u8> {
 }
 
 pub struct SetupEverything {
-    pub worker: Worker<Sandbox>,
     pub c: UnifiedMarketController,
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
 }
 
 pub async fn setup_everything(
+    worker: &Worker<Sandbox>,
     customize_market_configuration: impl FnOnce(&mut MarketConfiguration),
 ) -> SetupEverything {
-    let worker = near_workspaces::sandbox().await.unwrap();
     accounts!(
         worker,
         market,
@@ -157,10 +179,10 @@ pub async fn setup_everything(
         insurance_yield_user,
         collateral_asset,
         borrow_asset,
-        balance_oracle
+        price_oracle
     );
     let mut config = market_configuration(
-        balance_oracle.id().clone(),
+        price_oracle.id().clone(),
         borrow_asset.id().clone(),
         collateral_asset.id().clone(),
         protocol_yield_user.id().clone(),
@@ -170,9 +192,9 @@ pub async fn setup_everything(
     );
     customize_market_configuration(&mut config);
 
-    let (market, balance_oracle, borrow_asset, collateral_asset) = tokio::join!(
+    let (market, price_oracle, borrow_asset, collateral_asset) = tokio::join!(
         MarketController::deploy(market, &config),
-        OracleController::deploy(balance_oracle),
+        OracleController::deploy(price_oracle),
         async {
             if config.borrow_asset.is_nep141(borrow_asset.id()) {
                 TokenController::Ft {
@@ -204,13 +226,8 @@ pub async fn setup_everything(
         },
     );
 
-    let c = UnifiedMarketController::new(
-        market,
-        config,
-        balance_oracle,
-        borrow_asset,
-        collateral_asset,
-    );
+    let c =
+        UnifiedMarketController::new(market, config, price_oracle, borrow_asset, collateral_asset);
 
     c.set_borrow_asset_price(1.0).await;
     c.set_collateral_asset_price(1.0).await;
@@ -223,7 +240,6 @@ pub async fn setup_everything(
     );
 
     SetupEverything {
-        worker,
         c,
         protocol_yield_user,
         insurance_yield_user,
@@ -243,4 +259,32 @@ pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
     .await;
 
     r
+}
+
+pub fn print_execution(e: &ExecutionSuccess) {
+    eprintln!("Execution:");
+    eprintln!("Total gas burnt: {}", e.total_gas_burnt);
+    eprintln!("Executor: {}", e.outcome().executor_id);
+    eprintln!("Receipts:");
+    for (i, receipt) in e.receipt_outcomes().iter().enumerate() {
+        eprintln!("\tReceipt #{i}:");
+        eprintln!("\tExecutor: {}", receipt.executor_id);
+        eprintln!("\tGas burnt: {}", receipt.gas_burnt);
+        if !receipt.logs.is_empty() {
+            eprintln!("\tLogs:");
+            for log in &receipt.logs {
+                eprintln!("\t\t{log}");
+            }
+        }
+        if let Ok(ValueOrReceiptId::Value(value)) = receipt.clone().into_result() {
+            if let Some(s) = value
+                .json::<serde_json::Value>()
+                .ok()
+                .and_then(|v| serde_json::to_string(&v).ok())
+            {
+                eprintln!("\tReturn value: {s}");
+            }
+        }
+        eprintln!();
+    }
 }

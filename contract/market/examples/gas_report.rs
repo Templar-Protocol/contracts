@@ -5,7 +5,6 @@ use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
     number::Decimal, time_chunk::TimeChunkConfiguration,
 };
-use templar_relayer::GasDescriptors;
 use test_utils::*;
 
 #[allow(clippy::unwrap_used)]

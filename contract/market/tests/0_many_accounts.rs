@@ -15,7 +15,8 @@ const COUNT: usize = 100;
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn many_accounts() {
-    setup_test!(extract(c, worker) accounts(first_supply));
+    let worker = near_workspaces::sandbox().await.unwrap();
+    setup_test_w!(worker extract(c) accounts(first_supply));
 
     c.supply_and_harvest_until_activation(&first_supply, 100_000)
         .await;

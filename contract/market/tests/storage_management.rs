@@ -3,7 +3,8 @@ use test_utils::*;
 #[tokio::test]
 #[should_panic = "is not registered"]
 async fn registration_is_required() {
-    setup_test!(extract(c, worker) accounts(supply_user));
+    let worker = near_workspaces::sandbox().await.unwrap();
+    setup_test_w!(worker extract(c) accounts(supply_user));
 
     let unregistered_account = worker.dev_create_account().await.unwrap();
     c.borrow_asset

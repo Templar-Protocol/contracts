@@ -6,6 +6,7 @@ use templar_common::{
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     price::PricePair,
+    self_ext,
 };
 
 use crate::{Contract, ContractExt, ReturnStyle};
@@ -14,7 +15,7 @@ use crate::{Contract, ContractExt, ReturnStyle};
 impl Contract {
     pub fn price_pair(&self, oracle_response: OracleResponse) -> PricePair {
         self.configuration
-            .balance_oracle
+            .price_oracle_configuration
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
     }
@@ -239,7 +240,7 @@ impl Contract {
             PromiseResult::Failed => {
                 // Likely reasons for failure:
                 //
-                // 1. Balance oracle is out-of-date. This is kind of bad, but
+                // 1. Price oracle is out-of-date. This is kind of bad, but
                 //  not necessarily catastrophic nor unrecoverable. Probably,
                 //  the oracle is just lagging and will be fine if the user
                 //  tries again later.
@@ -381,7 +382,7 @@ impl Contract {
     ) -> Promise {
         let price_pair = self
             .configuration
-            .balance_oracle
+            .price_oracle_configuration
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 

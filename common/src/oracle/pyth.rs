@@ -16,7 +16,7 @@
 //! WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //! See the License for the specific language governing permissions and
 //! limitations under the License.
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 use near_sdk::{
     ext_contract,
@@ -35,6 +35,12 @@ pub struct PriceIdentifier(
     )]
     pub [u8; 32],
 );
+
+impl Display for PriceIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
 
 /// A price with a degree of uncertainty, represented as a price +- a confidence interval.
 ///
