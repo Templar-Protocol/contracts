@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "a + u128::MAX.into() overflow"]
+    #[should_panic = "a + u128::MAX overflow"]
     fn asset_op_macro_overflow() {
         let mut a = BorrowAssetAmount::new(100);
 
