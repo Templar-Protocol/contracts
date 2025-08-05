@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use crate::{Contract, ContractExt};
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
@@ -24,7 +23,6 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
-    // Could hook into here.
     fn get_current_snapshot(&self) -> &Snapshot {
         &self.current_snapshot
     }

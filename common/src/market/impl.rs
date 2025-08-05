@@ -20,8 +20,6 @@ use crate::{
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
-// The "heart of everything", all makes calls to the market struct.
-
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {
@@ -118,7 +116,6 @@ impl Market {
         self.snapshot_with_yield_distribution(BorrowAssetAmount::zero())
     }
 
-    // Update here
     fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
         let time_chunk = self.configuration.time_chunk_configuration.now();
 
@@ -180,22 +177,6 @@ impl Market {
             .into()
     }
     
-    pub fn get_collateral_asset_locked(&self) -> CollateralAssetAmount {
-        #[allow(
-            clippy::expect_used,
-            reason = "Collateral assets are not expected to overflow"
-        )]
-        // This collateral cannot be withdrawn because it secures outstanding debt.
-        self.borrow_positions
-            .values()
-            .filter(|position| !position.get_total_borrow_asset_liability().is_zero())
-            .map(|position| position.collateral_asset_deposit)
-            .fold(CollateralAssetAmount::zero(), |mut sum, amount| {
-                sum.join(amount).expect("Collateral assets are not expected to overflow");
-                sum
-            })
-    }
-
     pub fn iter_supply_positions(&self) -> impl Iterator<Item = (AccountId, SupplyPosition)> + '_ {
         self.supply_positions.iter()
     }

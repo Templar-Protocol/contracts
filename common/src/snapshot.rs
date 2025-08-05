@@ -39,7 +39,6 @@ impl Snapshot {
             .unwrap_or_else(|| env::panic_str("Snapshot yield distribution amount overflow"));
     }
 
-    // Update here
     pub fn update_active(
         &mut self,
         borrow_deposited_active: BorrowAssetAmount,

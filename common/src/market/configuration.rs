@@ -103,8 +103,6 @@ impl<A: AssetClass + PartialOrd> AmountRange<A> {
     }
 }
 
-// look up what is "PIF" and specification of seconds.
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
