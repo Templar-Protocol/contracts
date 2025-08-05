@@ -176,7 +176,7 @@ impl Market {
             .saturating_sub(must_retain)
             .into()
     }
-    
+
     pub fn iter_supply_positions(&self) -> impl Iterator<Item = (AccountId, SupplyPosition)> + '_ {
         self.supply_positions.iter()
     }

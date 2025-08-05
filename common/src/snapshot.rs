@@ -59,7 +59,8 @@ impl Snapshot {
         } else if self.borrow_asset_borrowed >= self.borrow_asset_deposited_active {
             Decimal::ONE
         } else {
-            Decimal::from(self.borrow_asset_borrowed) / Decimal::from(self.borrow_asset_deposited_active)
+            Decimal::from(self.borrow_asset_borrowed)
+                / Decimal::from(self.borrow_asset_deposited_active)
         }
     }
 
