@@ -5,6 +5,7 @@ use near_sdk::{env, json_types::U64, near, AccountId};
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
+    asset_op,
     event::MarketEvent,
     market::Market,
     number::Decimal,
@@ -90,9 +91,11 @@ impl BorrowPosition {
 
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
-        total.join(self.borrow_asset_principal);
-        total.join(self.borrow_asset_fees.get_total());
-        total.join(self.temporary_lock);
+        asset_op! {
+            total += self.borrow_asset_principal;
+            total += self.borrow_asset_fees.get_total();
+            total += self.temporary_lock;
+        };
         total
     }
 
@@ -148,7 +151,10 @@ impl BorrowPosition {
         // No bounds checks necessary here: the min() call prevents underflow.
 
         let amount_to_fees = self.borrow_asset_fees.get_total().min(amount);
-        amount.split(amount_to_fees);
+        asset_op! {
+            @msg("Invariant violation: min() precludes underflow")
+            amount -= amount_to_fees;
+        };
         self.borrow_asset_fees.remove(amount_to_fees);
 
         let amount_to_principal = {
@@ -163,8 +169,12 @@ impl BorrowPosition {
                 self.borrow_asset_principal.min(amount)
             }
         };
-        amount.split(amount_to_principal);
-        self.borrow_asset_principal.split(amount_to_principal);
+        asset_op! {
+            @msg("Invariant violation: amount_to_principal > amount")
+            amount -= amount_to_principal;
+            @msg("Invariant violation: amount_to_principal > borrow_asset_principal")
+            self.borrow_asset_principal -= amount_to_principal;
+        };
 
         if self.borrow_asset_principal.is_zero() {
             // fully paid off
@@ -230,7 +240,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
 
     pub fn with_pending_interest(&mut self) {
         let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
-        pending_estimate.join(self.estimate_current_snapshot_interest());
+        asset_op!(pending_estimate += self.estimate_current_snapshot_interest());
 
         self.position.borrow_asset_fees.pending_estimate = pending_estimate;
     }
@@ -397,15 +407,11 @@ impl<'a> BorrowPositionGuard<'a> {
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        self.market
-            .borrow_asset_in_flight
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount overflow"));
-        self.position
-            .temporary_lock
-            .join(amount)
-            .and_then(|()| self.position.temporary_lock.join(fees))
-            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount overflow"));
+        asset_op! {
+            self.market.borrow_asset_in_flight += amount;
+            self.position.temporary_lock += amount;
+            self.position.temporary_lock += fees;
+        };
     }
 
     pub fn record_borrow_asset_in_flight_end(
@@ -416,15 +422,11 @@ impl<'a> BorrowPositionGuard<'a> {
     ) {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
-        self.market
-            .borrow_asset_in_flight
-            .split(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount underflow"));
-        self.position
-            .temporary_lock
-            .split(amount)
-            .and_then(|_| self.position.temporary_lock.split(fees))
-            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount underflow"));
+        asset_op! {
+            self.market.borrow_asset_in_flight -= amount;
+            self.position.temporary_lock -= amount;
+            self.position.temporary_lock -= fees;
+        };
     }
 
     pub fn record_borrow_asset_withdrawal(
@@ -438,10 +440,7 @@ impl<'a> BorrowPositionGuard<'a> {
             .increase_borrow_asset_principal(proof, amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
 
-        self.market
-            .borrow_asset_borrowed
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset borrowed overflow"));
+        asset_op!(self.market.borrow_asset_borrowed += amount);
         self.market.snapshot();
 
         MarketEvent::BorrowWithdrawn {
@@ -477,10 +476,7 @@ impl<'a> BorrowPositionGuard<'a> {
 
         // SAFETY: It should be impossible to panic here, since assets that
         // have not yet been borrowed cannot be repaid.
-        self.market
-            .borrow_asset_borrowed
-            .split(liability_reduction.amount_to_principal)
-            .unwrap_or_else(|| env::panic_str("Borrow asset borrowed underflow"));
+        asset_op!(self.market.borrow_asset_borrowed -= liability_reduction.amount_to_principal);
 
         self.market.snapshot();
 
@@ -552,7 +548,10 @@ impl<'a> BorrowPositionGuard<'a> {
         let snapshot_index = self.market.snapshot();
         self.position.full_liquidation(snapshot_index);
 
-        self.market.borrow_asset_borrowed.split(principal);
+        asset_op! {
+            @msg("Invariant violation: market borrow_asset_borrowed > position principal")
+            self.market.borrow_asset_borrowed -= principal;
+        };
 
         if recovered_amount.split(principal).is_some() {
             // Distribute yield.

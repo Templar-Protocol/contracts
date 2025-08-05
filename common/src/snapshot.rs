@@ -1,8 +1,8 @@
 use near_sdk::{env, json_types::U64, near};
 
 use crate::{
-    asset::BorrowAssetAmount, interest_rate_strategy::InterestRateStrategy, number::Decimal,
-    time_chunk::TimeChunk,
+    asset::BorrowAssetAmount, asset_op, interest_rate_strategy::InterestRateStrategy,
+    number::Decimal, time_chunk::TimeChunk,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,9 +31,7 @@ impl Snapshot {
     }
 
     pub fn add_yield(&mut self, additional_yield: BorrowAssetAmount) {
-        self.yield_distribution
-            .join(additional_yield)
-            .unwrap_or_else(|| env::panic_str("Snapshot yield distribution amount overflow"));
+        asset_op!(self.yield_distribution += additional_yield);
     }
 
     pub fn update_active(

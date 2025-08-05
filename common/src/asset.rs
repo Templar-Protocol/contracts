@@ -215,14 +215,14 @@ impl<T: AssetClass> From<u128> for FungibleAssetAmount<T> {
 impl<T: AssetClass> FungibleAssetAmount<T> {
     pub fn new(amount: u128) -> Self {
         Self {
-            amount: amount.into(),
+            amount: U128(amount),
             discriminant: PhantomData,
         }
     }
 
-    pub fn zero() -> Self {
+    pub const fn zero() -> Self {
         Self {
-            amount: 0.into(),
+            amount: U128(0),
             discriminant: PhantomData,
         }
     }
@@ -231,16 +231,66 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
         self.amount.0 == 0
     }
 
+    #[must_use]
     pub fn split(&mut self, amount: impl Into<Self>) -> Option<Self> {
         let a = amount.into();
         self.amount.0 = self.amount.0.checked_sub(a.amount.0)?;
         Some(a)
     }
 
-    pub fn join(&mut self, other: Self) -> Option<()> {
-        self.amount.0 = self.amount.0.checked_add(other.amount.0)?;
+    #[must_use]
+    pub fn join(&mut self, amount: impl Into<Self>) -> Option<()> {
+        let a = amount.into();
+        self.amount.0 = self.amount.0.checked_add(a.amount.0)?;
         Some(())
     }
+}
+
+#[macro_export]
+macro_rules! asset_op {
+    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* += $b:expr $(;)*) => {
+        $crate::asset::FungibleAssetAmount::join(&mut $a_head $(.$a_tail)*, $b).unwrap_or_else(|| {
+            ::near_sdk::env::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " + ", stringify!($b), " overflow"));
+        });
+    };
+    ($a_head:ident $(. $a_tail:ident)* += $b:expr $(;)*) => {
+        $crate::asset_op!(@msg() $a_head $(.$a_tail)* += $b);
+    };
+    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* += $b:expr ; $($tail:tt)*) => {
+        $crate::asset_op!(@msg($($msg)?) $a_head $(.$a_tail)* += $b);
+        $crate::asset_op!($($tail)*);
+    };
+    ($a_head:ident $(. $a_tail:ident)* += $b:expr ; $($tail:tt)*) => {
+        $crate::asset_op!($a_head $(.$a_tail)* += $b);
+        $crate::asset_op!($($tail)*);
+    };
+
+    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* -= $b:expr $(;)*) => {
+        $crate::asset::FungibleAssetAmount::split(&mut $a_head $(.$a_tail)*, $b).unwrap_or_else(|| {
+            ::near_sdk::env::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " - ", stringify!($b), " underflow"));
+        });
+    };
+    ($a_head:ident $(. $a_tail:ident)* -= $b:expr $(;)*) => {
+        $crate::asset_op!(@msg() $a_head $(.$a_tail)* -= $b);
+    };
+    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* -= $b:expr ; $($tail:tt)*) => {
+        $crate::asset_op!(@msg($($msg)?) $a_head $(.$a_tail)* -= $b);
+        $crate::asset_op!($($tail)*);
+    };
+    ($a_head:ident $(. $a_tail:ident)* -= $b:expr ; $($tail:tt)*) => {
+        $crate::asset_op!($a_head $(.$a_tail)* -= $b);
+        $crate::asset_op!($($tail)*);
+    };
+
+    ($s:stmt $(;)*) => {
+        $s;
+    };
+    ($s:stmt ; $($tail:tt)*) => {
+        $s;
+        $crate::asset_op!($($tail)*);
+    };
+
+    () => {};
 }
 
 impl<T: AssetClass> From<FungibleAssetAmount<T>> for Decimal {
@@ -276,5 +326,25 @@ mod tests {
         assert_eq!(serialized, "\"100\"");
         let deserialized: BorrowAssetAmount = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, amount);
+    }
+
+    #[test]
+    #[should_panic = "a + u128::MAX.into() overflow"]
+    fn asset_op_macro_overflow() {
+        let mut a = BorrowAssetAmount::new(100);
+
+        asset_op! {
+            a += u128::MAX;
+        };
+    }
+
+    #[test]
+    #[should_panic = "a - 101u128 underflow"]
+    fn asset_op_macro_underflow() {
+        let mut a = BorrowAssetAmount::new(100);
+
+        asset_op! {
+            a -= 101u128;
+        };
     }
 }

@@ -7,6 +7,7 @@ use near_sdk::{
 
 use crate::{
     asset::BorrowAssetAmount,
+    asset_op,
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
@@ -88,12 +89,13 @@ impl Market {
     }
 
     pub fn total_incoming(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposited_incoming
-            .values()
-            .fold(BorrowAssetAmount::zero(), |mut a, b| {
-                a.join(*b);
-                a
-            })
+        self.borrow_asset_deposited_incoming.values().fold(
+            BorrowAssetAmount::zero(),
+            |mut total_incoming, incoming| {
+                asset_op!(total_incoming += *incoming);
+                total_incoming
+            },
+        )
     }
 
     pub fn get_last_finalized_snapshot(&self) -> &Snapshot {
@@ -128,9 +130,7 @@ impl Market {
                 .borrow_asset_deposited_incoming
                 .remove(&self.finalized_snapshots.len())
                 .unwrap_or(0.into());
-            self.borrow_asset_deposited_active
-                .join(deposited_incoming)
-                .unwrap_or_else(|| env::panic_str("Market borrow asset deposited active overflow"));
+            asset_op!(self.borrow_asset_deposited_active += deposited_incoming);
             let mut snapshot = Snapshot::new(time_chunk);
             snapshot.yield_distribution = yield_distribution;
             snapshot.deposited_incoming = deposited_incoming;
@@ -277,7 +277,7 @@ impl Market {
             .get(&self.configuration.protocol_account_id)
             .unwrap_or_default();
 
-        yield_record.borrow_asset.join(amount);
+        asset_op!(yield_record.borrow_asset += amount);
 
         self.static_yield
             .insert(&self.configuration.protocol_account_id, &yield_record);
@@ -326,11 +326,7 @@ impl Market {
             // Probably, it is okay to ignore this case. We can assume
             // that the configuration will only specify
             // correctly-implemented token contracts.
-            #[allow(
-                clippy::unwrap_used,
-                reason = "Assume borrow asset is implemented correctly"
-            )]
-            yield_record.borrow_asset.join(share).unwrap();
+            asset_op!(yield_record.borrow_asset += share);
             self.static_yield.insert(account_id, &yield_record);
         }
 
