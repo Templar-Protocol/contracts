@@ -6,6 +6,7 @@ use crate::{define, get_contract};
 
 use super::{storage_management::StorageManagementController, ContractController};
 
+#[derive(Clone)]
 pub struct FtController {
     pub contract: Contract,
 }
@@ -45,6 +46,9 @@ impl FtController {
         #[view]
         pub fn ft_balance_of(account_id: &AccountId) -> U128;
 
+        #[view]
+        pub fn redemption_rate() -> U128;
+
         #[call(yocto(1))]
         pub fn ft_transfer(receiver_id: &AccountId, amount: U128);
 
@@ -53,5 +57,8 @@ impl FtController {
 
         #[call]
         pub fn mint(amount: U128);
+
+        #[call]
+        pub fn set_redemption_rate(redemption_rate: U128);
     }
 }

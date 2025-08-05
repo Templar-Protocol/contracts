@@ -12,6 +12,7 @@ clap = { version = "4.5.23", features = ["derive", "env"] }
 futures = "0.3.31"
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
+hex-literal = "0.4"
 near-contract-standards = "5.7"
 near-crypto = "0.28.0"
 near-jsonrpc-client = "0.16.0"
@@ -41,6 +42,9 @@ expect_used = "warn"
 large_digit_groups = "warn"
 missing_panics_doc = "allow"
 wildcard_imports = "warn"
+
+[profile.dev]
+incremental = true
 
 [profile.release]
 codegen-units = 1

@@ -27,6 +27,7 @@ use crate::{
 
 use super::{oracle::OracleController, token::TokenController, ContractController};
 
+#[derive(Clone)]
 pub struct MarketController {
     contract: Contract,
 }
@@ -86,7 +87,7 @@ impl MarketController {
         pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
-        #[call(tgas(30))]
+        #[call(tgas(42))]
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
         #[call]
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
@@ -137,6 +138,7 @@ pub async fn load_wasm() -> &'static [u8] {
         .await
 }
 
+#[derive(Clone)]
 pub struct UnifiedMarketController {
     pub market: MarketController,
     pub configuration: MarketConfiguration,
