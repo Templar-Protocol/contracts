@@ -11,10 +11,10 @@ use crate::{
 pub struct Snapshot {
     pub time_chunk: TimeChunk,
     pub end_timestamp_ms: U64,
-    deposited_active: BorrowAssetAmount,
-    pub deposited_incoming: BorrowAssetAmount,
-    borrowed: BorrowAssetAmount,
-    collateral_deposited: CollateralAssetAmount,
+    borrow_asset_deposited_active: BorrowAssetAmount,
+    pub borrow_asset_deposited_incoming: BorrowAssetAmount,
+    borrow_asset_borrowed: BorrowAssetAmount,
+    pub collateral_asset_deposited: CollateralAssetAmount,
     pub yield_distribution: BorrowAssetAmount,
     interest_rate: Decimal,
 }
@@ -23,11 +23,11 @@ impl Snapshot {
     pub fn new(time_chunk: TimeChunk) -> Self {
         Self {
             time_chunk,
-            end_timestamp_ms: near_sdk::env::block_timestamp_ms().into(),
-            deposited_active: 0.into(),
-            deposited_incoming: 0.into(),
-            borrowed: 0.into(),
-            collateral_deposited: 0.into(),
+            end_timestamp_ms: env::block_timestamp_ms().into(),
+            borrow_asset_deposited_active: 0.into(),
+            borrow_asset_deposited_incoming: 0.into(),
+            borrow_asset_borrowed: 0.into(),
+            collateral_asset_deposited: 0.into(),
             yield_distribution: BorrowAssetAmount::zero(),
             interest_rate: Decimal::ZERO,
         }
@@ -39,27 +39,28 @@ impl Snapshot {
             .unwrap_or_else(|| env::panic_str("Snapshot yield distribution amount overflow"));
     }
 
+    // Update here
     pub fn update_active(
         &mut self,
-        deposited_active: BorrowAssetAmount,
+        borrow_deposited_active: BorrowAssetAmount,
         borrowed: BorrowAssetAmount,
         collateral_deposited: CollateralAssetAmount,
         interest_rate_strategy: &InterestRateStrategy,
     ) {
         self.end_timestamp_ms = env::block_timestamp_ms().into();
-        self.deposited_active = deposited_active;
-        self.borrowed = borrowed;
-        self.collateral_deposited = collateral_deposited;
+        self.borrow_asset_deposited_active = borrow_deposited_active;
+        self.borrow_asset_borrowed = borrowed;
+        self.collateral_asset_deposited = collateral_deposited;
         self.interest_rate = interest_rate_strategy.at(self.usage_ratio());
     }
 
     pub fn usage_ratio(&self) -> Decimal {
-        if self.deposited_active.is_zero() || self.borrowed.is_zero() {
+        if self.borrow_asset_deposited_active.is_zero() || self.borrow_asset_borrowed.is_zero() {
             Decimal::ZERO
-        } else if self.borrowed >= self.deposited_active {
+        } else if self.borrow_asset_borrowed >= self.borrow_asset_deposited_active {
             Decimal::ONE
         } else {
-            Decimal::from(self.borrowed) / Decimal::from(self.deposited_active)
+            Decimal::from(self.borrow_asset_borrowed) / Decimal::from(self.borrow_asset_deposited_active)
         }
     }
 
@@ -68,10 +69,10 @@ impl Snapshot {
     }
 
     pub fn deposited_active(&self) -> BorrowAssetAmount {
-        self.deposited_active
+        self.borrow_asset_deposited_active
     }
 
     pub fn borrowed(&self) -> BorrowAssetAmount {
-        self.borrowed
+        self.borrow_asset_borrowed
     }
 }

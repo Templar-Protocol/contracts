@@ -36,14 +36,18 @@ enum StorageKey {
 pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
+    /// Total amount of borrow asset earning interest in the market.
     pub borrow_asset_deposited_active: BorrowAssetAmount,
+    /// Mapping upcoming snapshot indexes to amounts of borrow asset we are going to add in.
     pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
+    /// Sending borrow asset out, because if somebody sends the contract borrow asset, it's ok for the
+    /// contract to attempt to fulfill withdrawal request, even if the market thinks it doesn't have
+    /// enough to fulfill.
     pub borrow_asset_in_flight: BorrowAssetAmount,
+    // A negative amount deposit active - borrowed = always positive amount or 0 greater.
     pub borrow_asset_borrowed: BorrowAssetAmount,
-    pub collateral_asset_deposited_active: CollateralAssetAmount,
-    pub collateral_asset_deposited_incoming: HashMap<u32, CollateralAssetAmount>,
-    pub collateral_asset_in_flight: CollateralAssetAmount,
-    pub collateral_asset_locked: CollateralAssetAmount,
+    // Borrow asset is yield bearing, careful tracking of what asset is what state
+    pub collateral_asset_deposited: CollateralAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub current_snapshot: Snapshot,
@@ -80,10 +84,7 @@ impl Market {
             borrow_asset_deposited_incoming: HashMap::new(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
-            collateral_asset_deposited_active: 0.into(),
-            collateral_asset_deposited_incoming: HashMap::new(),
-            collateral_asset_in_flight: 0.into(),
-            collateral_asset_locked: 0.into(),
+            collateral_asset_deposited: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             current_snapshot,
@@ -106,15 +107,6 @@ impl Market {
             })
     }
 
-    pub fn total_collateral_incoming(&self) -> CollateralAssetAmount {
-        self.collateral_asset_deposited_incoming
-            .values()
-            .fold(CollateralAssetAmount::zero(), |mut a, b| {
-                a.join(*b);
-                a
-            })
-    }
-
     pub fn get_last_finalized_snapshot(&self) -> &Snapshot {
         #[allow(clippy::unwrap_used, reason = "Snapshots are never empty")]
         self.finalized_snapshots
@@ -126,6 +118,7 @@ impl Market {
         self.snapshot_with_yield_distribution(BorrowAssetAmount::zero())
     }
 
+    // Update here
     fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
         let time_chunk = self.configuration.time_chunk_configuration.now();
 
@@ -134,11 +127,11 @@ impl Market {
             self.current_snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
-                self.collateral_asset_deposited_active,
+                self.collateral_asset_deposited,
                 &self.configuration.borrow_interest_rate_strategy,
             );
             self.current_snapshot.add_yield(yield_distribution);
-            self.current_snapshot.deposited_incoming = *self
+            self.current_snapshot.borrow_asset_deposited_incoming = *self
                 .borrow_asset_deposited_incoming
                 .get(&self.finalized_snapshots.len())
                 .unwrap_or(&0.into());
@@ -151,11 +144,11 @@ impl Market {
             self.borrow_asset_deposited_active.join(deposited_incoming);
             let mut snapshot = Snapshot::new(time_chunk);
             snapshot.yield_distribution = yield_distribution;
-            snapshot.deposited_incoming = deposited_incoming;
+            snapshot.borrow_asset_deposited_incoming = deposited_incoming;
             snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
-                self.collateral_asset_deposited_active,
+                self.collateral_asset_deposited,
                 &self.configuration.borrow_interest_rate_strategy,
             );
             std::mem::swap(&mut snapshot, &mut self.current_snapshot);
@@ -184,18 +177,6 @@ impl Market {
             .saturating_sub(u128::from(self.borrow_asset_borrowed))
             .saturating_sub(u128::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
-            .into()
-    }
-    
-    pub fn get_collateral_asset_available_to_withdraw(&self) -> CollateralAssetAmount {
-        let total_deposited = u128::from(self.collateral_asset_deposited_active)
-            .saturating_add(u128::from(self.total_collateral_incoming()));
-        let locked_backing_loans = u128::from(self.get_collateral_asset_locked());
-        let collateral_asset_in_flight = u128::from(self.collateral_asset_in_flight);
-        
-        total_deposited
-            .saturating_sub(locked_backing_loans)
-            .saturating_sub(collateral_asset_in_flight)
             .into()
     }
     

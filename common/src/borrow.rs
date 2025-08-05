@@ -368,6 +368,10 @@ impl<'a> BorrowPositionGuard<'a> {
             .increase_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset overflow"));
 
+        self.market.collateral_asset_deposited.join(amount).unwrap_or_else(|| {
+            env::panic_str("Collateral asset deposited overflow")
+        });
+
         MarketEvent::CollateralDeposited {
             account_id: self.account_id.clone(),
             collateral_asset_amount: amount,
@@ -384,6 +388,10 @@ impl<'a> BorrowPositionGuard<'a> {
             .decrease_collateral_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
 
+        self.market.collateral_asset_deposited.split(amount).unwrap_or_else(|| {
+            env::panic_str("Collateral asset deposited underflow")
+        });
+        
         MarketEvent::CollateralWithdrawn {
             account_id: self.account_id.clone(),
             collateral_asset_amount: amount,
