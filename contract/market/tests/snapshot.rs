@@ -20,7 +20,8 @@ async fn snapshot_captures_borrow_and_collateral_state() {
     );
 
     // Setup liquidity
-    c.supply_and_harvest_until_activation(&supply_user, 2_000_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 2_000_000)
+        .await;
 
     let initial_snapshots_len = c.get_finalized_snapshots_len().await;
 
@@ -42,7 +43,9 @@ async fn snapshot_captures_borrow_and_collateral_state() {
     );
 
     // Get the latest snapshot
-    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let snapshots = c
+        .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
+        .await;
     let latest_snapshot = &snapshots[0];
 
     eprintln!("Latest snapshot: {latest_snapshot:#?}");
@@ -74,7 +77,8 @@ async fn multiple_snapshots_show_progression() {
         })
     );
 
-    c.supply_and_harvest_until_activation(&supply_user, 3_000_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 3_000_000)
+        .await;
 
     let initial_snapshots_len = c.get_finalized_snapshots_len().await;
 
@@ -102,17 +106,21 @@ async fn multiple_snapshots_show_progression() {
     );
 
     // Get the last 3 snapshots
-    let snapshots = c.list_finalized_snapshots(
-        Some(final_snapshots_len.saturating_sub(new_snapshots_count)),
-        Some(new_snapshots_count)
-    ).await;
+    let snapshots = c
+        .list_finalized_snapshots(
+            Some(final_snapshots_len.saturating_sub(new_snapshots_count)),
+            Some(new_snapshots_count),
+        )
+        .await;
 
     eprintln!("Snapshots progression:");
     for (i, snapshot) in snapshots.iter().enumerate() {
-        eprintln!("Snapshot {}: collateral={:?}, borrowed={:?}",
-                  i,
-                  u128::from(snapshot.collateral_asset_deposited()),
-                  u128::from(snapshot.borrow_asset_borrowed()));
+        eprintln!(
+            "Snapshot {}: collateral={:?}, borrowed={:?}",
+            i,
+            u128::from(snapshot.collateral_asset_deposited()),
+            u128::from(snapshot.borrow_asset_borrowed())
+        );
     }
 
     // Verify progression makes sense
@@ -142,7 +150,8 @@ async fn snapshot_reflects_repayment_changes() {
         })
     );
 
-    c.supply_and_harvest_until_activation(&supply_user, 2_000_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 2_000_000)
+        .await;
     c.collateralize(&borrow_user, 1_000_000).await;
     c.borrow(&borrow_user, 500_000).await;
 
@@ -171,8 +180,14 @@ async fn snapshot_reflects_repayment_changes() {
     let borrow_snapshot = &all_snapshots[snapshots_after_borrow as usize - 1];
     let repay_snapshot = &all_snapshots[snapshots_after_repay as usize - 1];
 
-    eprintln!("After borrow: borrowed={:?}", u128::from(borrow_snapshot.borrow_asset_borrowed()));
-    eprintln!("After repay: borrowed={:?}", u128::from(repay_snapshot.borrow_asset_borrowed()));
+    eprintln!(
+        "After borrow: borrowed={:?}",
+        u128::from(borrow_snapshot.borrow_asset_borrowed())
+    );
+    eprintln!(
+        "After repay: borrowed={:?}",
+        u128::from(repay_snapshot.borrow_asset_borrowed())
+    );
 
     assert_ne!(
         borrow_snapshot.borrow_asset_borrowed(),
@@ -197,7 +212,8 @@ async fn snapshot_handles_zero_operations() {
     );
 
     // Setup initial state
-    c.supply_and_harvest_until_activation(&supply_user, 1_000_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 1_000_000)
+        .await;
 
     let initial_snapshots_len = c.get_finalized_snapshots_len().await;
 
@@ -213,13 +229,17 @@ async fn snapshot_handles_zero_operations() {
 
     // Verify behavior when no meaningful operations occur
     if final_snapshots_len > initial_snapshots_len {
-        let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+        let snapshots = c
+            .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
+            .await;
         let latest_snapshot = &snapshots[0];
         eprintln!("Empty period snapshot: {latest_snapshot:#?}");
 
         // Should still have a valid snapshot even with minimal activity
-        assert!(latest_snapshot.borrow_asset_deposited_active() > 0.into(),
-                "Should maintain previous active deposits");
+        assert!(
+            latest_snapshot.borrow_asset_deposited_active() > 0.into(),
+            "Should maintain previous active deposits"
+        );
     }
 }
 
@@ -238,7 +258,8 @@ async fn snapshot_with_full_repayment() {
         })
     );
 
-    c.supply_and_harvest_until_activation(&supply_user, 2_000_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 2_000_000)
+        .await;
     c.collateralize(&borrow_user, 1_000_000).await;
     c.borrow(&borrow_user, 500_000).await;
 
@@ -259,13 +280,21 @@ async fn snapshot_with_full_repayment() {
     c.collateralize(&borrow_user, 1).await;
 
     let final_snapshots_len = c.get_finalized_snapshots_len().await;
-    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let snapshots = c
+        .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
+        .await;
     let final_snapshot = &snapshots[0];
 
-    eprintln!("After full repayment: borrowed={:?}", final_snapshot.borrow_asset_borrowed());
+    eprintln!(
+        "After full repayment: borrowed={:?}",
+        final_snapshot.borrow_asset_borrowed()
+    );
 
     let final_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    eprintln!("Final position liability: {:?}", final_position.get_total_borrow_asset_liability());
+    eprintln!(
+        "Final position liability: {:?}",
+        final_position.get_total_borrow_asset_liability()
+    );
 
     // Verify snapshot reflects full repayment
     assert!(
@@ -292,7 +321,8 @@ async fn snapshot_field_validation() {
     let initial_snapshots_len = c.get_finalized_snapshots_len().await;
 
     // Step 1: Supply (affects borrow_asset_deposited fields)
-    c.supply_and_harvest_until_activation(&supply_user, 1_500_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 1_500_000)
+        .await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     c.collateralize(&borrow_user, 1).await;
 
@@ -316,19 +346,30 @@ async fn snapshot_field_validation() {
     eprintln!("Created {snapshots_count} snapshots");
 
     if snapshots_count >= 3 {
-        let recent_snapshots = c.list_finalized_snapshots(
-            Some(final_snapshots_len - 3),
-            Some(3)
-        ).await;
+        let recent_snapshots = c
+            .list_finalized_snapshots(Some(final_snapshots_len - 3), Some(3))
+            .await;
 
         for (i, snapshot) in recent_snapshots.iter().enumerate() {
             eprintln!("Snapshot {i}: ");
             eprintln!("  time_chunk: {:?}", snapshot.time_chunk());
             eprintln!("  end_timestamp_ms: {:?}", snapshot.end_timestamp_ms());
-            eprintln!("  borrow_asset_deposited_active: {:?}", snapshot.borrow_asset_deposited_active());
-            eprintln!("  borrow_asset_deposited_incoming: {:?}", snapshot.borrow_asset_deposited_incoming());
-            eprintln!("  borrow_asset_borrowed: {:?}", snapshot.borrow_asset_borrowed());
-            eprintln!("  collateral_asset_deposited: {:?}", snapshot.collateral_asset_deposited());
+            eprintln!(
+                "  borrow_asset_deposited_active: {:?}",
+                snapshot.borrow_asset_deposited_active()
+            );
+            eprintln!(
+                "  borrow_asset_deposited_incoming: {:?}",
+                snapshot.borrow_asset_deposited_incoming()
+            );
+            eprintln!(
+                "  borrow_asset_borrowed: {:?}",
+                snapshot.borrow_asset_borrowed()
+            );
+            eprintln!(
+                "  collateral_asset_deposited: {:?}",
+                snapshot.collateral_asset_deposited()
+            );
             eprintln!("  yield_distribution: {:?}", snapshot.yield_distribution());
             eprintln!("  interest_rate: {:?}", snapshot.interest_rate());
             eprintln!();
@@ -377,7 +418,8 @@ async fn snapshot_at_time_boundaries() {
         })
     );
 
-    c.supply_and_harvest_until_activation(&supply_user, 3_000_000).await;
+    c.supply_and_harvest_until_activation(&supply_user, 3_000_000)
+        .await;
 
     let initial_snapshots_len = c.get_finalized_snapshots_len().await;
 
@@ -405,7 +447,9 @@ async fn snapshot_at_time_boundaries() {
         "Should create snapshot at time boundary"
     );
 
-    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let snapshots = c
+        .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
+        .await;
     let boundary_snapshot = &snapshots[0];
 
     eprintln!("Boundary snapshot: {boundary_snapshot:#?}");
@@ -438,8 +482,10 @@ async fn many_users_same_snapshot() {
     );
 
     // Multiple suppliers
-    c.supply_and_harvest_until_activation(&supply_user1, 2_000_000).await;
-    c.supply_and_harvest_until_activation(&supply_user2, 1_500_000).await;
+    c.supply_and_harvest_until_activation(&supply_user1, 2_000_000)
+        .await;
+    c.supply_and_harvest_until_activation(&supply_user2, 1_500_000)
+        .await;
 
     // Many users doing operations in same time chunk
     let collateral_amounts = [400_000, 350_000, 300_000, 250_000, 200_000];
@@ -464,7 +510,9 @@ async fn many_users_same_snapshot() {
     c.collateralize(&user1, 1).await;
 
     let final_snapshots_len = c.get_finalized_snapshots_len().await;
-    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let snapshots = c
+        .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
+        .await;
     let multi_user_snapshot = &snapshots[0];
 
     let total_expected_collateral: u128 = collateral_amounts.iter().sum();

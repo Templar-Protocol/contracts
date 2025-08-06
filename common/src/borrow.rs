@@ -219,7 +219,11 @@ impl<M> BorrowPositionRef<M> {
 
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn estimate_current_snapshot_interest(&self) -> BorrowAssetAmount {
-        let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms().0;
+        let prev_end_timestamp_ms = self
+            .market
+            .get_last_finalized_snapshot()
+            .end_timestamp_ms()
+            .0;
         let interest_in_current_snapshot = self.market.current_snapshot.interest_rate()
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())

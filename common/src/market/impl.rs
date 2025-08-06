@@ -128,10 +128,12 @@ impl Market {
                 &self.configuration.borrow_interest_rate_strategy,
             );
             self.current_snapshot.add_yield(yield_distribution);
-            self.current_snapshot.set_borrow_asset_deposited_incoming(*self
-                .borrow_asset_deposited_incoming
-                .get(&self.finalized_snapshots.len())
-                .unwrap_or(&0.into()));
+            self.current_snapshot.set_borrow_asset_deposited_incoming(
+                *self
+                    .borrow_asset_deposited_incoming
+                    .get(&self.finalized_snapshots.len())
+                    .unwrap_or(&0.into()),
+            );
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
             let deposited_incoming = self
