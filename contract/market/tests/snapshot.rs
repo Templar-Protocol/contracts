@@ -1,0 +1,493 @@
+use std::time::Duration;
+use templar_common::{
+    dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
+};
+use test_utils::*;
+
+#[tokio::test]
+async fn snapshot_captures_borrow_and_collateral_state() {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: 500.into(), // 0.5 seconds
+            };
+        })
+    );
+
+    // Setup liquidity
+    c.supply_and_harvest_until_activation(&supply_user, 2_000_000).await;
+
+    let initial_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    // Perform operations within the same time chunk
+    c.collateralize(&borrow_user, 1_000_000).await;
+    c.borrow(&borrow_user, 500_000).await;
+
+    // Wait for snapshot to finalize
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Trigger something to ensure snapshot finalization
+    c.collateralize(&borrow_user, 1).await;
+
+    let final_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    assert!(
+        final_snapshots_len > initial_snapshots_len,
+        "Should have created a new finalized snapshot"
+    );
+
+    // Get the latest snapshot
+    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let latest_snapshot = &snapshots[0];
+
+    eprintln!("Latest snapshot: {latest_snapshot:#?}");
+
+    // Verify snapshot captured the state correctly
+    assert!(
+        latest_snapshot.collateral_asset_deposited() > 0.into(),
+        "Snapshot should show collateral was deposited"
+    );
+
+    assert!(
+        latest_snapshot.borrow_asset_borrowed() > 0.into(),
+        "Snapshot should show assets were borrowed"
+    );
+}
+
+#[tokio::test]
+async fn multiple_snapshots_show_progression() {
+    setup_test!(
+        extract(c)
+        accounts(user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: 500.into(),
+            };
+        })
+    );
+
+    c.supply_and_harvest_until_activation(&supply_user, 3_000_000).await;
+
+    let initial_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    // First period: collateralize
+    c.collateralize(&user, 1_000_000).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&user, 1).await; // Trigger snapshot
+
+    // Second period: borrow
+    c.borrow(&user, 400_000).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.borrow(&user, 1).await; // Trigger snapshot
+
+    // Third period: more borrowing
+    c.borrow(&user, 200_000).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&user, 1).await; // Trigger snapshot
+
+    let final_snapshots_len = c.get_finalized_snapshots_len().await;
+    let new_snapshots_count = final_snapshots_len - initial_snapshots_len;
+
+    assert!(
+        new_snapshots_count >= 3,
+        "Should have created at least 3 new snapshots"
+    );
+
+    // Get the last 3 snapshots
+    let snapshots = c.list_finalized_snapshots(
+        Some(final_snapshots_len.saturating_sub(new_snapshots_count)),
+        Some(new_snapshots_count)
+    ).await;
+
+    eprintln!("Snapshots progression:");
+    for (i, snapshot) in snapshots.iter().enumerate() {
+        eprintln!("Snapshot {}: collateral={:?}, borrowed={:?}",
+                  i,
+                  u128::from(snapshot.collateral_asset_deposited()),
+                  u128::from(snapshot.borrow_asset_borrowed()));
+    }
+
+    // Verify progression makes sense
+    if snapshots.len() >= 3 {
+        let first = &snapshots[snapshots.len() - 3];
+        let last = &snapshots[snapshots.len() - 1];
+
+        assert!(
+            last.borrow_asset_borrowed() > first.borrow_asset_borrowed(),
+            "Borrowed amount should increase over time"
+        );
+    }
+}
+
+#[tokio::test]
+async fn snapshot_reflects_repayment_changes() {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: 500.into(),
+            };
+        })
+    );
+
+    c.supply_and_harvest_until_activation(&supply_user, 2_000_000).await;
+    c.collateralize(&borrow_user, 1_000_000).await;
+    c.borrow(&borrow_user, 500_000).await;
+
+    // Wait and trigger first snapshot (with borrowed amount)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    let snapshots_after_borrow = c.get_finalized_snapshots_len().await;
+
+    // Repay half
+    c.repay(&borrow_user, 250_000).await;
+
+    // Wait and trigger second snapshot (after partial repayment)
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    let snapshots_after_repay = c.get_finalized_snapshots_len().await;
+
+    assert!(
+        snapshots_after_repay > snapshots_after_borrow,
+        "Should have created snapshot after repayment"
+    );
+
+    // Compare the two snapshots
+    let all_snapshots = c.list_finalized_snapshots(Some(0), None).await;
+    let borrow_snapshot = &all_snapshots[snapshots_after_borrow as usize - 1];
+    let repay_snapshot = &all_snapshots[snapshots_after_repay as usize - 1];
+
+    eprintln!("After borrow: borrowed={:?}", u128::from(borrow_snapshot.borrow_asset_borrowed()));
+    eprintln!("After repay: borrowed={:?}", u128::from(repay_snapshot.borrow_asset_borrowed()));
+
+    assert_ne!(
+        borrow_snapshot.borrow_asset_borrowed(),
+        repay_snapshot.borrow_asset_borrowed(),
+        "Snapshots should reflect different borrowed states"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_handles_zero_operations() {
+    setup_test!(
+        extract(c)
+        accounts(supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: 500.into(), // 0.5 seconds
+            };
+        })
+    );
+
+    // Setup initial state
+    c.supply_and_harvest_until_activation(&supply_user, 1_000_000).await;
+
+    let initial_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    // Wait for time chunk to expire with no operations
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Trigger snapshot with minimal operation
+    c.supply_and_harvest_until_activation(&supply_user, 1).await;
+
+    let final_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    eprintln!("Snapshots before: {initial_snapshots_len}, after: {final_snapshots_len}");
+
+    // Verify behavior when no meaningful operations occur
+    if final_snapshots_len > initial_snapshots_len {
+        let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+        let latest_snapshot = &snapshots[0];
+        eprintln!("Empty period snapshot: {latest_snapshot:#?}");
+
+        // Should still have a valid snapshot even with minimal activity
+        assert!(latest_snapshot.borrow_asset_deposited_active() > 0.into(),
+                "Should maintain previous active deposits");
+    }
+}
+
+#[tokio::test]
+async fn snapshot_with_full_repayment() {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (500).into(),
+            };
+        })
+    );
+
+    c.supply_and_harvest_until_activation(&supply_user, 2_000_000).await;
+    c.collateralize(&borrow_user, 1_000_000).await;
+    c.borrow(&borrow_user, 500_000).await;
+
+    // Create snapshot with borrowed amount
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    let total_liability = u128::from(borrow_position.get_total_borrow_asset_liability());
+
+    eprintln!("Total liability before repayment: {total_liability:?}");
+
+    // Repay everything (including any accrued interest)
+    c.repay(&borrow_user, total_liability).await;
+
+    // Create snapshot after full repayment
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    let final_snapshots_len = c.get_finalized_snapshots_len().await;
+    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let final_snapshot = &snapshots[0];
+
+    eprintln!("After full repayment: borrowed={:?}", final_snapshot.borrow_asset_borrowed());
+
+    let final_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    eprintln!("Final position liability: {:?}", final_position.get_total_borrow_asset_liability());
+
+    // Verify snapshot reflects full repayment
+    assert!(
+        final_snapshot.borrow_asset_borrowed() <= 1000.into(), // Allow for small rounding
+        "Snapshot should show minimal borrowed amount after full repayment"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_field_validation() {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("2000"), dec!("3000")).unwrap(); // Higher rates for testing
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (500).into(),
+            };
+        })
+    );
+
+    let initial_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    // Step 1: Supply (affects borrow_asset_deposited fields)
+    c.supply_and_harvest_until_activation(&supply_user, 1_500_000).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    // Step 2: Collateralize (affects collateral_asset_deposited)
+    c.collateralize(&borrow_user, 800_000).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    // Step 3: Borrow (affects borrow_asset_borrowed, interest_rate)
+    c.borrow(&borrow_user, 400_000).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    // Step 4: Let interest accrue
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    c.collateralize(&borrow_user, 1).await;
+
+    let final_snapshots_len = c.get_finalized_snapshots_len().await;
+    let snapshots_count = final_snapshots_len - initial_snapshots_len;
+
+    eprintln!("Created {snapshots_count} snapshots");
+
+    if snapshots_count >= 3 {
+        let recent_snapshots = c.list_finalized_snapshots(
+            Some(final_snapshots_len - 3),
+            Some(3)
+        ).await;
+
+        for (i, snapshot) in recent_snapshots.iter().enumerate() {
+            eprintln!("Snapshot {i}: ");
+            eprintln!("  time_chunk: {:?}", snapshot.time_chunk());
+            eprintln!("  end_timestamp_ms: {:?}", snapshot.end_timestamp_ms());
+            eprintln!("  borrow_asset_deposited_active: {:?}", snapshot.borrow_asset_deposited_active());
+            eprintln!("  borrow_asset_deposited_incoming: {:?}", snapshot.borrow_asset_deposited_incoming());
+            eprintln!("  borrow_asset_borrowed: {:?}", snapshot.borrow_asset_borrowed());
+            eprintln!("  collateral_asset_deposited: {:?}", snapshot.collateral_asset_deposited());
+            eprintln!("  yield_distribution: {:?}", snapshot.yield_distribution());
+            eprintln!("  interest_rate: {:?}", snapshot.interest_rate());
+            eprintln!();
+        }
+
+        let first = &recent_snapshots[0];
+        let last = &recent_snapshots[recent_snapshots.len() - 1];
+
+        // Validate field progressions
+        assert!(
+            last.collateral_asset_deposited() >= first.collateral_asset_deposited(),
+            "Collateral should not decrease"
+        );
+
+        assert!(
+            last.borrow_asset_borrowed() >= first.borrow_asset_borrowed(),
+            "Borrowed amount should increase with interest"
+        );
+
+        // Timestamps should be increasing
+        assert!(
+            last.end_timestamp_ms() > first.end_timestamp_ms(),
+            "Timestamps should increase"
+        );
+
+        // Interest rate should reflect utilization
+        assert!(
+            last.interest_rate() > dec!("0"),
+            "Interest rate should be positive with borrowing activity"
+        );
+    }
+}
+
+#[tokio::test]
+async fn snapshot_at_time_boundaries() {
+    setup_test!(
+        extract(c)
+        accounts(user1, user2, supply_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (500).into(), // 0.5 second chunks
+            };
+        })
+    );
+
+    c.supply_and_harvest_until_activation(&supply_user, 3_000_000).await;
+
+    let initial_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    // Operations right at boundary
+    c.collateralize(&user1, 500_000).await;
+
+    // Wait almost to boundary
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Multiple operations in quick succession near boundary
+    c.collateralize(&user2, 300_000).await;
+    c.borrow(&user1, 200_000).await;
+    c.borrow(&user2, 100_000).await;
+
+    // Cross the boundary
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Trigger snapshot
+    c.collateralize(&user1, 1).await;
+
+    let final_snapshots_len = c.get_finalized_snapshots_len().await;
+
+    assert!(
+        final_snapshots_len > initial_snapshots_len,
+        "Should create snapshot at time boundary"
+    );
+
+    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let boundary_snapshot = &snapshots[0];
+
+    eprintln!("Boundary snapshot: {boundary_snapshot:#?}");
+
+    // All operations should be captured in the snapshot
+    assert!(
+        boundary_snapshot.collateral_asset_deposited() >= 800_000.into(), // 500k + 300k + small amounts
+        "Should capture all collateral operations"
+    );
+
+    assert!(
+        boundary_snapshot.borrow_asset_borrowed() >= 300_000.into(), // 200k + 100k
+        "Should capture all borrow operations"
+    );
+}
+
+#[tokio::test]
+async fn many_users_same_snapshot() {
+    setup_test!(
+        extract(c)
+        accounts(user1, user2, user3, user4, user5, supply_user1, supply_user2)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
+                divisor: (500).into(),
+            };
+        })
+    );
+
+    // Multiple suppliers
+    c.supply_and_harvest_until_activation(&supply_user1, 2_000_000).await;
+    c.supply_and_harvest_until_activation(&supply_user2, 1_500_000).await;
+
+    // Many users doing operations in same time chunk
+    let collateral_amounts = [400_000, 350_000, 300_000, 250_000, 200_000];
+    let borrow_amounts = [150_000, 120_000, 100_000, 80_000, 60_000];
+
+    // All collateral operations
+    c.collateralize(&user1, collateral_amounts[0]).await;
+    c.collateralize(&user2, collateral_amounts[1]).await;
+    c.collateralize(&user3, collateral_amounts[2]).await;
+    c.collateralize(&user4, collateral_amounts[3]).await;
+    c.collateralize(&user5, collateral_amounts[4]).await;
+
+    // All borrow operations
+    c.borrow(&user1, borrow_amounts[0]).await;
+    c.borrow(&user2, borrow_amounts[1]).await;
+    c.borrow(&user3, borrow_amounts[2]).await;
+    c.borrow(&user4, borrow_amounts[3]).await;
+    c.borrow(&user5, borrow_amounts[4]).await;
+
+    // Wait and trigger snapshot
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    c.collateralize(&user1, 1).await;
+
+    let final_snapshots_len = c.get_finalized_snapshots_len().await;
+    let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1)).await;
+    let multi_user_snapshot = &snapshots[0];
+
+    let total_expected_collateral: u128 = collateral_amounts.iter().sum();
+    let total_expected_borrow: u128 = borrow_amounts.iter().sum();
+
+    eprintln!("Multi-user snapshot: {multi_user_snapshot:#?}");
+    eprintln!("Expected collateral total: {total_expected_collateral}");
+    eprintln!("Expected borrow total: {total_expected_borrow}");
+
+    // Verify aggregate amounts are correct
+    assert!(
+        multi_user_snapshot.collateral_asset_deposited() >= total_expected_collateral.into(),
+        "Should aggregate all collateral from multiple users"
+    );
+
+    assert!(
+        multi_user_snapshot.borrow_asset_borrowed() >= total_expected_borrow.into(),
+        "Should aggregate all borrows from multiple users"
+    );
+
+    // Verify we have reasonable supply amounts from multiple suppliers
+    assert!(
+        multi_user_snapshot.borrow_asset_deposited_active() >= 3_500_000.into(),
+        "Should show combined supply from multiple suppliers"
+    );
+}

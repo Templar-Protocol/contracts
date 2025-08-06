@@ -161,9 +161,9 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
                 amount += u128::from(incoming.amount);
             }
 
-            if !snapshot.deposited_active().is_zero() {
-                accumulated += amount * Decimal::from(snapshot.yield_distribution)
-                    / Decimal::from(snapshot.deposited_active());
+            if !snapshot.borrow_asset_deposited_active().is_zero() {
+                accumulated += amount * Decimal::from(snapshot.yield_distribution())
+                    / Decimal::from(snapshot.borrow_asset_deposited_active());
             }
 
             next_snapshot_index = i as u32 + 1;

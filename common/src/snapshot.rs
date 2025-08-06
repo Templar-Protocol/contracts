@@ -10,13 +10,13 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub struct Snapshot {
-    pub time_chunk: TimeChunk,
-    pub end_timestamp_ms: U64,
+    time_chunk: TimeChunk,
+    end_timestamp_ms: U64,
     borrow_asset_deposited_active: BorrowAssetAmount,
-    pub borrow_asset_deposited_incoming: BorrowAssetAmount,
+    borrow_asset_deposited_incoming: BorrowAssetAmount,
     borrow_asset_borrowed: BorrowAssetAmount,
-    pub collateral_asset_deposited: CollateralAssetAmount,
-    pub yield_distribution: BorrowAssetAmount,
+    collateral_asset_deposited: CollateralAssetAmount,
+    yield_distribution: BorrowAssetAmount,
     interest_rate: Decimal,
 }
 
@@ -64,16 +64,51 @@ impl Snapshot {
                 / Decimal::from(self.borrow_asset_deposited_active)
         }
     }
+    
+    pub fn set_time_chunk(&mut self, time_chunk: TimeChunk) {
+        self.time_chunk = time_chunk;
+    }
+    
+    pub fn set_borrow_asset_deposited_incoming(
+        &mut self,
+        amount: BorrowAssetAmount,
+    ) {
+        self.borrow_asset_deposited_incoming = amount;
+    }
+    
+    pub fn set_yield_distribution(&mut self, amount: BorrowAssetAmount) {
+        self.yield_distribution = amount;
+    }
+
+    pub fn time_chunk(&self) -> &TimeChunk {
+        &self.time_chunk
+    }
+    
+    pub fn end_timestamp_ms(&self) -> U64 {
+        self.end_timestamp_ms
+    }
+
+    pub fn borrow_asset_deposited_incoming(&self) -> BorrowAssetAmount {
+        self.borrow_asset_deposited_incoming
+    }
+
+    pub fn collateral_asset_deposited(&self) -> CollateralAssetAmount {
+        self.collateral_asset_deposited
+    }
+
+    pub fn yield_distribution(&self) -> BorrowAssetAmount {
+        self.yield_distribution
+    }
 
     pub fn interest_rate(&self) -> Decimal {
         self.interest_rate
     }
 
-    pub fn deposited_active(&self) -> BorrowAssetAmount {
+    pub fn borrow_asset_deposited_active(&self) -> BorrowAssetAmount {
         self.borrow_asset_deposited_active
     }
 
-    pub fn borrowed(&self) -> BorrowAssetAmount {
+    pub fn borrow_asset_borrowed(&self) -> BorrowAssetAmount {
         self.borrow_asset_borrowed
     }
 }

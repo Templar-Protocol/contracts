@@ -73,7 +73,7 @@ impl Market {
 
         let first_snapshot = Snapshot::new(configuration.time_chunk_configuration.previous());
         let mut current_snapshot = first_snapshot.clone();
-        current_snapshot.time_chunk = configuration.time_chunk_configuration.now();
+        current_snapshot.set_time_chunk(configuration.time_chunk_configuration.now());
 
         let mut self_ = Self {
             prefix: prefix.clone(),
@@ -120,7 +120,7 @@ impl Market {
         let time_chunk = self.configuration.time_chunk_configuration.now();
 
         // If still in current time chunk, just update the current snapshot.
-        if self.current_snapshot.time_chunk == time_chunk {
+        if self.current_snapshot.time_chunk() == &time_chunk {
             self.current_snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
@@ -128,10 +128,10 @@ impl Market {
                 &self.configuration.borrow_interest_rate_strategy,
             );
             self.current_snapshot.add_yield(yield_distribution);
-            self.current_snapshot.borrow_asset_deposited_incoming = *self
+            self.current_snapshot.set_borrow_asset_deposited_incoming(*self
                 .borrow_asset_deposited_incoming
                 .get(&self.finalized_snapshots.len())
-                .unwrap_or(&0.into());
+                .unwrap_or(&0.into()));
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
             let deposited_incoming = self
@@ -140,8 +140,8 @@ impl Market {
                 .unwrap_or(0.into());
             self.borrow_asset_deposited_active.join(deposited_incoming);
             let mut snapshot = Snapshot::new(time_chunk);
-            snapshot.yield_distribution = yield_distribution;
-            snapshot.borrow_asset_deposited_incoming = deposited_incoming;
+            snapshot.set_yield_distribution(yield_distribution);
+            snapshot.set_borrow_asset_deposited_incoming(deposited_incoming);
             snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
