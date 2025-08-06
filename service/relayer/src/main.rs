@@ -7,11 +7,12 @@ use std::{
     path::PathBuf,
 };
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing};
+use axum::{extract::State, http::StatusCode, routing, Json, Router};
+use clap::Parser;
 use near_crypto::SecretKey;
 use near_fetch::signer::KeyRotatingSigner;
 use near_primitives::{
-    action::{Action, delegate::SignedDelegateAction},
+    action::{delegate::SignedDelegateAction, Action},
     types::{AccountId, Gas},
     views::FinalExecutionOutcomeView,
 };
@@ -24,42 +25,43 @@ use templar_common::{
     market::DepositMsg,
 };
 use templar_relayer::{
-    Configuration, FtTransferCallArgs, MarketAccounts, MtTransferCallArgs, TransferCallArgs,
-    client::NearClient,
+    client::NearClient, Configuration, FtTransferCallArgs, MarketAccounts, MtTransferCallArgs,
+    TransferCallArgs,
 };
 use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(crate = "near_sdk::serde")]
-struct Environment {
-    #[serde(default = "default_port")]
+#[derive(Parser, Debug, Clone)]
+struct Args {
+    /// Run the relayer on this port.
+    #[arg(short, long, env = "PORT", default_value_t = 3000)]
     pub port: u16,
+    /// Postgres database connection URL.
+    #[arg(long, env = "DATABASE_URL", default_value = "DELETEME")]
     pub database_url: String,
-    #[serde(default = "default_rpc_url")]
+    /// NEAR RPC connection URL.
+    #[arg(long, env = "RPC_URL", default_value = "https://rpc.testnet.near.org")]
     pub rpc_url: String,
-    #[serde(default = "default_config")]
+    /// Path to YAML configuration file.
+    #[arg(short, long, env = "CONFIG", default_value = "./config.yaml")]
     pub config: PathBuf,
-    pub registries: Vec<AccountId>,
-    pub markets: Vec<AccountId>,
+    /// Comma-separated list of registries to query for markets to monitor.
+    #[arg(long, env = "REGISTRY", default_value = "[]")]
+    pub registry: Vec<AccountId>,
+    /// Comma-separated list of markets to monitor.
+    #[arg(long, env = "MARKET")]
+    pub market: Vec<AccountId>,
+    /// Account ID of the NEAR account that the relayer controls.
+    #[arg(short, long, env = "ACCOUNT_ID")]
     pub account_id: AccountId,
-    pub secret_keys: Vec<SecretKey>,
-}
-
-fn default_port() -> u16 {
-    3000
-}
-
-fn default_rpc_url() -> String {
-    "https://rpc.testnet.near.org/".to_string()
-}
-
-fn default_config() -> PathBuf {
-    "./config.yaml".parse().unwrap()
+    /// Comma-separated list of private keys to use to sign transactions for the account that the relayer controls.
+    #[arg(short = 'k', long, env = "SECRET_KEY")]
+    pub secret_key: Vec<SecretKey>,
 }
 
 #[derive(Debug, Clone)]
 struct App {
-    pub environment: Environment,
+    pub args: Args,
     pub configuration: Configuration,
     pub market_account_ids: HashMap<AccountId, MarketAccounts>,
     pub allowed_receiver_account_ids: HashSet<AccountId>,
@@ -207,28 +209,32 @@ impl App {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    let environment: Environment = envy::from_env().unwrap();
-    tracing_subscriber::fmt::init();
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let args = Args::parse();
 
     let configuration: Configuration =
-        serde_yaml::from_reader(File::open(&environment.config).unwrap()).unwrap();
+        serde_yaml::from_reader(File::open(&args.config).unwrap()).unwrap();
 
     let near_client = NearClient::new(
-        near_jsonrpc_client::JsonRpcClient::connect(&environment.rpc_url),
+        near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
         KeyRotatingSigner::try_from_iter(
-            environment
-                .secret_keys
+            args.secret_key
                 .iter()
-                .map(|sk| (environment.account_id.clone(), sk.clone())),
+                .map(|sk| (args.account_id.clone(), sk.clone())),
         )
         .unwrap(),
     );
 
-    let mut markets = environment.markets.clone();
+    let mut markets = args.market.clone();
 
     // Load markets from registry...
     let mut set = JoinSet::new();
-    for registry_id in &environment.registries {
+    for registry_id in &args.registry {
         set.spawn({
             let near_client = near_client.clone();
             let registry_id = registry_id.clone();
@@ -254,7 +260,7 @@ async fn main() {
     let mut market_account_ids = HashMap::new();
     let mut allowed_receiver_account_ids = HashSet::new();
 
-    for market_accounts in market_accounts_vec {
+    for market_accounts in market_accounts_vec.into_iter().flatten() {
         let market_id = market_accounts.account_id.clone();
 
         info!(
@@ -271,14 +277,14 @@ async fn main() {
     }
 
     let app = App {
-        environment,
+        args,
         configuration,
         market_account_ids,
         allowed_receiver_account_ids,
         near_client,
     };
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], app.environment.port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], app.args.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
     let router = Router::new()
@@ -320,7 +326,7 @@ async fn relay(
     Json(relay_request): Json<RelayRequest>,
 ) -> (StatusCode, Json<RelayResponse>) {
     match app.check_and_calculate_gas(&relay_request.signed_delegate_action) {
-        Ok(gas) => {
+        Ok(_gas) => {
             let tx_result = app
                 .near_client
                 .sign_and_send(relay_request.signed_delegate_action)

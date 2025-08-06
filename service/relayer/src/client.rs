@@ -1,10 +1,10 @@
 use near_fetch::signer::KeyRotatingSigner;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
-    action::{Action, delegate::SignedDelegateAction},
+    action::{delegate::SignedDelegateAction, Action},
     types::Finality,
 };
-use near_sdk::{AccountId, serde_json::json};
+use near_sdk::{serde_json::json, AccountId};
 use templar_common::market::MarketConfiguration;
 
 use crate::MarketAccounts;
@@ -31,6 +31,9 @@ impl NearClient {
         Self { client, signer }
     }
 
+    /// # Errors
+    ///
+    /// - When there is an error sending the transaction.
     pub async fn sign_and_send(
         &self,
         signed_delegate_action: SignedDelegateAction,
@@ -53,21 +56,21 @@ impl NearClient {
             .unwrap()
     }
 
-    pub async fn load_market_accounts(&self, market_id: &AccountId) -> MarketAccounts {
+    pub async fn load_market_accounts(&self, market_id: &AccountId) -> Option<MarketAccounts> {
         let market_configuration = self
             .client
             .view(market_id, "get_configuration")
             .args_json(json!({}))
             .finality(Finality::Final)
             .await
-            .unwrap()
+            .ok()?
             .json::<MarketConfiguration>()
-            .unwrap();
+            .ok()?;
 
-        MarketAccounts {
+        Some(MarketAccounts {
             account_id: market_id.clone(),
             borrow_asset: market_configuration.borrow_asset,
             collateral_asset: market_configuration.collateral_asset,
-        }
+        })
     }
 }

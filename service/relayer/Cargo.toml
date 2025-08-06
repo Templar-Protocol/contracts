@@ -1,14 +1,13 @@
 [package]
 name = "templar-relayer"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 license.workspace = true
 
 [dependencies]
 axum = "0.8.4"
 clap.workspace = true
 dotenvy = "0.15.7"
-envy = "0.4.2"
 near-crypto.workspace = true
 near-fetch = "0.7.0"
 near-jsonrpc-client.workspace = true

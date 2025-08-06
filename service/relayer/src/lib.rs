@@ -1,8 +1,8 @@
 use near_primitives::types::AccountId;
 use near_sdk::{
-    AccountIdRef,
     json_types::U128,
     serde::{Deserialize, Serialize},
+    AccountIdRef,
 };
 use templar_common::asset::{BorrowAsset, CollateralAsset, FungibleAsset};
 
