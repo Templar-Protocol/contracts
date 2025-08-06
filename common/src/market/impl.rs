@@ -5,14 +5,12 @@ use near_sdk::{
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
-use super::WithdrawalResolution;
-use crate::asset::CollateralAssetAmount;
 use crate::{
-    asset::BorrowAssetAmount,
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
-    market::MarketConfiguration,
+    market::{MarketConfiguration, WithdrawalResolution},
     number::Decimal,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
@@ -36,15 +34,17 @@ pub struct Market {
     pub configuration: MarketConfiguration,
     /// Total amount of borrow asset earning interest in the market.
     pub borrow_asset_deposited_active: BorrowAssetAmount,
-    /// Mapping upcoming snapshot indexes to amounts of borrow asset we are going to add in.
+    /// Mapping of upcoming snapshot indices to amounts of borrow asset that will be activated.
     pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     /// Sending borrow asset out, because if somebody sends the contract borrow asset, it's ok for the
     /// contract to attempt to fulfill withdrawal request, even if the market thinks it doesn't have
     /// enough to fulfill.
     pub borrow_asset_in_flight: BorrowAssetAmount,
-    // A negative amount deposit active - borrowed = always positive amount or 0 greater.
+    /// Amount of borrow asset that has been withdrawn (is in use by) by borrowers.
+    ///
+    /// `borrow_asset_deposited_active - borrow_asset_borrowed >= 0` should always be true.
     pub borrow_asset_borrowed: BorrowAssetAmount,
-    // Borrow asset is yield bearing, careful tracking of what asset is what state
+    /// Market-wide collateral asset deposit tracking.
     pub collateral_asset_deposited: CollateralAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,

@@ -1,8 +1,9 @@
 use near_sdk::{env, json_types::U64, near};
 
-use crate::asset::CollateralAssetAmount;
 use crate::{
-    asset::BorrowAssetAmount, interest_rate_strategy::InterestRateStrategy, number::Decimal,
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    interest_rate_strategy::InterestRateStrategy,
+    number::Decimal,
     time_chunk::TimeChunk,
 };
 
@@ -41,15 +42,15 @@ impl Snapshot {
 
     pub fn update_active(
         &mut self,
-        borrow_deposited_active: BorrowAssetAmount,
-        borrowed: BorrowAssetAmount,
-        collateral_deposited: CollateralAssetAmount,
+        borrow_asset_deposited_active: BorrowAssetAmount,
+        borrow_asset_borrowed: BorrowAssetAmount,
+        collateral_asset_deposited: CollateralAssetAmount,
         interest_rate_strategy: &InterestRateStrategy,
     ) {
         self.end_timestamp_ms = env::block_timestamp_ms().into();
-        self.borrow_asset_deposited_active = borrow_deposited_active;
-        self.borrow_asset_borrowed = borrowed;
-        self.collateral_asset_deposited = collateral_deposited;
+        self.borrow_asset_deposited_active = borrow_asset_deposited_active;
+        self.borrow_asset_borrowed = borrow_asset_borrowed;
+        self.collateral_asset_deposited = collateral_asset_deposited;
         self.interest_rate = interest_rate_strategy.at(self.usage_ratio());
     }
 
