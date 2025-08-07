@@ -219,11 +219,7 @@ impl<M> BorrowPositionRef<M> {
 
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn estimate_current_snapshot_interest(&self) -> BorrowAssetAmount {
-        let prev_end_timestamp_ms = self
-            .market
-            .get_last_finalized_snapshot()
-            .end_timestamp_ms()
-            .0;
+        let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
         let interest_in_current_snapshot = self.market.current_snapshot.interest_rate()
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())
@@ -253,7 +249,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
             .finalized_snapshots
             .get(next_snapshot_index.checked_sub(1).unwrap())
             .unwrap()
-            .end_timestamp_ms()
+            .end_timestamp_ms
             .0;
 
         #[allow(
@@ -270,19 +266,19 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         {
             let duration_ms = Decimal::from(
                 snapshot
-                    .end_timestamp_ms()
+                    .end_timestamp_ms
                     .0
                     .checked_sub(prev_end_timestamp_ms)
                     .unwrap_or_else(|| {
                         env::panic_str(&format!(
                             "Invariant violation: Snapshot timestamp decrease at time chunk #{}.",
-                            u64::from(snapshot.time_chunk().0),
+                            u64::from(snapshot.time_chunk.0),
                         ))
                     }),
             );
             accumulated += principal * snapshot.interest_rate() * duration_ms / *MS_IN_A_YEAR;
 
-            prev_end_timestamp_ms = snapshot.end_timestamp_ms().0;
+            prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
             next_snapshot_index = i as u32 + 1;
         }
 

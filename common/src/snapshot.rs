@@ -10,9 +10,9 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub struct Snapshot {
-    time_chunk: TimeChunk,
-    end_timestamp_ms: U64,
-    borrow_asset_deposited_active: BorrowAssetAmount,
+    pub(crate) time_chunk: TimeChunk,
+    pub(crate) end_timestamp_ms: U64,
+    pub(crate) borrow_asset_deposited_active: BorrowAssetAmount,
     borrow_asset_deposited_incoming: BorrowAssetAmount,
     borrow_asset_borrowed: BorrowAssetAmount,
     collateral_asset_deposited: CollateralAssetAmount,

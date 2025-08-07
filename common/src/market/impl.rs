@@ -120,7 +120,7 @@ impl Market {
         let time_chunk = self.configuration.time_chunk_configuration.now();
 
         // If still in current time chunk, just update the current snapshot.
-        if self.current_snapshot.time_chunk() == &time_chunk {
+        if self.current_snapshot.time_chunk == time_chunk {
             self.current_snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
