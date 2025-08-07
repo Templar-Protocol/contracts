@@ -69,6 +69,7 @@ impl MarketController {
         #[view] pub fn get_configuration() -> MarketConfiguration;
         #[view] pub fn get_finalized_snapshots_len() -> u32;
         #[view] pub fn list_finalized_snapshots(offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot>;
+        #[view] pub fn get_current_snapshot() -> Snapshot;
         #[view] pub fn list_supply_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, SupplyPosition>;
         #[view] pub fn get_supply_position(account_id: &AccountId) -> Option<SupplyPosition>;
         #[view] pub fn list_borrow_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, BorrowPosition>;
