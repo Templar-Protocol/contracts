@@ -455,7 +455,9 @@ async fn snapshot_at_time_boundaries() {
 
     // Get the last two snapshots to compare across boundaries
     if final_snapshots_len >= 2 {
-        let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 2), Some(2)).await;
+        let snapshots = c
+            .list_finalized_snapshots(Some(final_snapshots_len - 2), Some(2))
+            .await;
 
         if snapshots.len() >= 2 {
             let first_boundary_snapshot = &snapshots[0];
