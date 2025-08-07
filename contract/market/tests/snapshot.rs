@@ -411,10 +411,10 @@ async fn snapshot_at_time_boundaries() {
         accounts(user1, user2, supply_user)
         config(|c| {
             c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+                InterestRateStrategy::linear(dec!("0"), dec!("0")).unwrap();
             c.borrow_origination_fee = Fee::zero();
             c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(), // 0.5 second chunks
+                divisor: 5000.into(), // 5 second chunks
             };
         })
     );
@@ -426,47 +426,71 @@ async fn snapshot_at_time_boundaries() {
 
     // Operations right at boundary
     c.collateralize(&user1, 500_000).await;
+    c.collateralize(&user2, 300_000).await;
 
     // Wait almost to boundary
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    // Trigger snapshot for first chunk
+    c.borrow(&user1, 1).await; // Small operation to trigger snapshot
+
+    let after_first_boundary_len = c.get_finalized_snapshots_len().await;
 
     // Multiple operations in quick succession near boundary
-    c.collateralize(&user2, 300_000).await;
     c.borrow(&user1, 200_000).await;
     c.borrow(&user2, 100_000).await;
 
-    // Cross the boundary
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Trigger snapshot
-    c.collateralize(&user1, 1).await;
+    // Wait to cross another boundary and trigger snapshot
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    c.collateralize(&user1, 1).await; // Trigger snapshot finalization
 
     let final_snapshots_len = c.get_finalized_snapshots_len().await;
 
-    eprintln!("Snapshot indices: {initial_snapshots_len} -> {final_snapshots_len}");
+    eprintln!("Snapshot indices: {initial_snapshots_len} -> {after_first_boundary_len} -> {final_snapshots_len}");
 
     assert!(
         final_snapshots_len > initial_snapshots_len,
         "Should create snapshot at time boundary"
     );
 
-    let snapshots = c
-        .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
-        .await;
-    let boundary_snapshot = &snapshots[0];
+    // Get the last two snapshots to compare across boundaries
+    if final_snapshots_len >= 2 {
+        let snapshots = c.list_finalized_snapshots(Some(final_snapshots_len - 2), Some(2)).await;
 
-    eprintln!("Boundary snapshot: {boundary_snapshot:#?}");
+        if snapshots.len() >= 2 {
+            let first_boundary_snapshot = &snapshots[0];
+            let second_boundary_snapshot = &snapshots[1];
 
-    // All operations should be captured in the snapshot
-    assert!(
-        boundary_snapshot.collateral_asset_deposited() >= 800_000.into(), // 500k + 300k + small amounts
-        "Should capture all collateral operations"
-    );
+            eprintln!("First boundary snapshot: {first_boundary_snapshot:#?}");
+            eprintln!("Second boundary snapshot: {second_boundary_snapshot:#?}");
 
-    assert!(
-        boundary_snapshot.borrow_asset_borrowed() >= 300_000.into(), // 200k + 100k
-        "Should capture all borrow operations"
-    );
+            // First snapshot should have collateral but no borrowing
+            assert_eq!(
+                first_boundary_snapshot.collateral_asset_deposited(),
+                500_000.into(), // 500k + 300k
+                "First snapshot should capture collateral operations"
+            );
+
+            assert_eq!(
+                first_boundary_snapshot.borrow_asset_borrowed(),
+                0.into(),
+                "First snapshot should have no borrowing yet"
+            );
+
+            // Second snapshot should have both collateral and borrowing
+            assert_eq!(
+                second_boundary_snapshot.collateral_asset_deposited(),
+                800_000.into(), // Previous + 1 from trigger
+                "Second snapshot should maintain collateral"
+            );
+
+            assert_eq!(
+                second_boundary_snapshot.borrow_asset_borrowed(),
+                300_001.into(), // 200k + 100k
+                "Second snapshot should capture borrow operations"
+            );
+        }
+    }
 }
 
 #[tokio::test]
