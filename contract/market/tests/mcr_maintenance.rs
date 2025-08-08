@@ -9,17 +9,14 @@ use test_utils::*;
 #[case(dec!("1"), dec!("2"))]
 #[case(dec!("1"), dec!("5"))]
 #[tokio::test]
-async fn success_above_minimum_initial_collateral_ratio(
-    #[case] minimum: Decimal,
-    #[case] initial: Decimal,
-) {
+async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] maintenance: Decimal) {
     setup_test!(
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.borrow_mcr = minimum;
-            c.borrow_mcr_initial = initial;
+            c.borrow_mcr_liquidation = liquidation;
+            c.borrow_mcr_maintenance = maintenance;
         })
     );
 
@@ -27,7 +24,9 @@ async fn success_above_minimum_initial_collateral_ratio(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
         c.collateralize(
             &borrow_user,
-            (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+            (1000u32 * maintenance + Decimal::ONE)
+                .to_u128_ceil()
+                .unwrap(),
         ),
     );
 
@@ -54,18 +53,15 @@ async fn success_above_minimum_initial_collateral_ratio(
 #[case(dec!("1"), dec!("2"))]
 #[case(dec!("1"), dec!("5"))]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: New position must exceed initial minimum collateral ratio"]
-async fn fail_below_minimum_initial_collateral_ratio(
-    #[case] minimum: Decimal,
-    #[case] initial: Decimal,
-) {
+#[should_panic = "Smart contract panicked: Borrow position must satisfy maintenance minimum collateral ratio"]
+async fn fail_below_mcr_maintenance(#[case] liquidation: Decimal, #[case] maintenance: Decimal) {
     setup_test!(
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.borrow_mcr = minimum;
-            c.borrow_mcr_initial = initial;
+            c.borrow_mcr_liquidation = liquidation;
+            c.borrow_mcr_maintenance = maintenance;
         })
     );
 
@@ -73,7 +69,7 @@ async fn fail_below_minimum_initial_collateral_ratio(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
         c.collateralize(
             &borrow_user,
-            (1000u32 * initial).to_u128_floor().unwrap() - 1,
+            (1000u32 * maintenance).to_u128_floor().unwrap() - 1,
         ),
     );
 
@@ -86,17 +82,17 @@ async fn fail_below_minimum_initial_collateral_ratio(
 #[case(dec!("1.5"), dec!("2"))]
 #[case(dec!("1.5"), dec!("5"))]
 #[tokio::test]
-async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
-    #[case] minimum: Decimal,
-    #[case] initial: Decimal,
+async fn not_in_liquidation_if_below_mcr_maintenance(
+    #[case] liquidation: Decimal,
+    #[case] maintenance: Decimal,
 ) {
     setup_test!(
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.borrow_mcr = minimum;
-            c.borrow_mcr_initial = initial;
+            c.borrow_mcr_liquidation = liquidation;
+            c.borrow_mcr_maintenance = maintenance;
         })
     );
 
@@ -104,7 +100,9 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
         c.collateralize(
             &borrow_user,
-            (1000u32 * initial + Decimal::ONE).to_u128_ceil().unwrap(),
+            (1000u32 * maintenance + Decimal::ONE)
+                .to_u128_ceil()
+                .unwrap(),
         ),
     );
 
@@ -121,15 +119,15 @@ async fn not_in_liquidation_if_below_minimum_initial_collateral_ratio(
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Borrow position must satisfy initial MCR after collateral withdrawal."]
-async fn withdraw_collateral_below_initial_mcr() {
+#[should_panic = "Smart contract panicked: Borrow position must satisfy maintenance minimum collateral ratio after collateral withdrawal."]
+async fn withdraw_collateral_below_mcr_maintenance() {
     setup_test!(
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.borrow_mcr = dec!("1.2");
-            c.borrow_mcr_initial = dec!("1.5");
+            c.borrow_mcr_liquidation = dec!("1.2");
+            c.borrow_mcr_maintenance = dec!("1.5");
         })
     );
 

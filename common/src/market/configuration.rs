@@ -110,8 +110,8 @@ pub struct MarketConfiguration {
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub price_oracle_configuration: PriceOracleConfiguration,
-    pub borrow_mcr_initial: Decimal,
-    pub borrow_mcr: Decimal,
+    pub borrow_mcr_maintenance: Decimal,
+    pub borrow_mcr_liquidation: Decimal,
     /// How much of the deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
     /// Set to 99% for starters.
@@ -192,12 +192,14 @@ impl MarketConfiguration {
             return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
         }
 
-        if self.borrow_mcr_initial < 1u32 || self.borrow_mcr_initial < self.borrow_mcr {
-            return Err(error::out_of_bounds("borrow_mcr_initial"));
+        if self.borrow_mcr_maintenance < 1u32
+            || self.borrow_mcr_maintenance < self.borrow_mcr_liquidation
+        {
+            return Err(error::out_of_bounds("borrow_mcr_maintenance"));
         }
 
-        if self.borrow_mcr < 1u32 {
-            return Err(error::out_of_bounds("borrow_mcr"));
+        if self.borrow_mcr_liquidation < 1u32 {
+            return Err(error::out_of_bounds("borrow_mcr_liquidation"));
         }
 
         if self.borrow_asset_maximum_usage_ratio.is_zero()
@@ -227,7 +229,7 @@ impl MarketConfiguration {
         price_pair: &PricePair,
         block_timestamp_ms: u64,
     ) -> BorrowStatus {
-        if !self.satisfies_minimum_collateral_ratio(borrow_position, price_pair) {
+        if !self.satisfies_mcr_liquidation(borrow_position, price_pair) {
             return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
         }
 
@@ -252,24 +254,28 @@ impl MarketConfiguration {
             .is_none_or(|duration_ms| duration_ms <= maximum_duration_ms)
     }
 
-    pub fn satisfies_minimum_initial_collateral_ratio(
+    pub fn satisfies_mcr_maintenance(
         &self,
         borrow_position: &BorrowPosition,
         oracle_price_proof: &PricePair,
     ) -> bool {
         satisfies_minimum_collateral_ratio(
-            self.borrow_mcr_initial,
+            self.borrow_mcr_maintenance,
             borrow_position,
             oracle_price_proof,
         )
     }
 
-    pub fn satisfies_minimum_collateral_ratio(
+    pub fn satisfies_mcr_liquidation(
         &self,
         borrow_position: &BorrowPosition,
         oracle_price_proof: &PricePair,
     ) -> bool {
-        satisfies_minimum_collateral_ratio(self.borrow_mcr, borrow_position, oracle_price_proof)
+        satisfies_minimum_collateral_ratio(
+            self.borrow_mcr_liquidation,
+            borrow_position,
+            oracle_price_proof,
+        )
     }
 
     pub fn minimum_acceptable_liquidation_amount(

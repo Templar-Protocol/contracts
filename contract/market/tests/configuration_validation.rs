@@ -24,32 +24,32 @@ async fn borrow_interest_rate_strategy_exceed_apy_limit() {
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_initial`: out of bounds"]
-async fn borrow_mcr_initial_less_than_1() {
+#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_maintenance`: out of bounds"]
+async fn borrow_mcr_maintenance_less_than_1() {
     let worker = near_workspaces::sandbox().await.unwrap();
     setup_everything(&worker, |c| {
-        c.borrow_mcr_initial = dec!(".99");
+        c.borrow_mcr_maintenance = dec!(".99");
     })
     .await;
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_initial`: out of bounds"]
-async fn borrow_mcr_initial_less_than_borrow_mcr() {
+#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_maintenance`: out of bounds"]
+async fn borrow_mcr_maintenance_less_than_borrow_mcr_liquidation() {
     let worker = near_workspaces::sandbox().await.unwrap();
     setup_everything(&worker, |c| {
-        c.borrow_mcr_initial = dec!("1.2");
-        c.borrow_mcr = dec!("1.200000001");
+        c.borrow_mcr_maintenance = dec!("1.2");
+        c.borrow_mcr_liquidation = dec!("1.200000001");
     })
     .await;
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr`: out of bounds"]
-async fn borrow_mcr_less_than_1() {
+#[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_liquidation`: out of bounds"]
+async fn borrow_mcr_liquidation_less_than_1() {
     let worker = near_workspaces::sandbox().await.unwrap();
     setup_everything(&worker, |c| {
-        c.borrow_mcr = dec!(".99");
+        c.borrow_mcr_liquidation = dec!(".99");
     })
     .await;
 }

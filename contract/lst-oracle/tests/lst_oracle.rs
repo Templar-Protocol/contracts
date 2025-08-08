@@ -100,8 +100,8 @@ async fn lst_oracle() {
         lst_market,
         [&supply_user, &borrow_user],
         |configuration| {
-            configuration.borrow_mcr = dec!("2");
-            configuration.borrow_mcr_initial = dec!("2");
+            configuration.borrow_mcr_liquidation = dec!("2");
+            configuration.borrow_mcr_maintenance = dec!("2");
 
             configuration.borrow_origination_fee = Fee::zero();
             configuration.borrow_interest_rate_strategy = InterestRateStrategy::zero();

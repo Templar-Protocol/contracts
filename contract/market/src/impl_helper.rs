@@ -194,8 +194,8 @@ impl Contract {
         borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
-            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
-            "New position must exceed initial minimum collateral ratio",
+            borrow_position.satisfies_mcr_maintenance(&price_pair),
+            "Borrow position must satisfy maintenance minimum collateral ratio after borrow.",
         );
 
         require!(
@@ -445,13 +445,13 @@ impl Contract {
         borrow_position.record_collateral_asset_withdrawal(proof, amount);
 
         require!(
-            borrow_position.satisfies_minimum_collateral_ratio(&price_pair),
-            "Borrow position must satisfy MCR after collateral withdrawal.",
+            borrow_position.satisfies_mcr_liquidation(&price_pair),
+            "Borrow position must satisfy liquidation minimum collateral ratio after collateral withdrawal.",
         );
 
         require!(
-            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
-            "Borrow position must satisfy initial MCR after collateral withdrawal.",
+            borrow_position.satisfies_mcr_maintenance(&price_pair),
+            "Borrow position must satisfy maintenance minimum collateral ratio after collateral withdrawal.",
         );
 
         drop(borrow_position);
