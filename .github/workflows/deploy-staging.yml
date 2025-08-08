@@ -146,8 +146,8 @@ jobs:
 
           echo "| Name            | Deployment |" >> comment.md
           echo "| ----            | ---------- |" >> comment.md
-          echo "| Registry        | ["'`'"${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}"'`'"](https://explorer.${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}.near.org/accounts/${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}) |" >> comment.md
-          echo "| Default market  | ["'`'"${MARKET_ACCOUNT_ID}"'`'"](https://explorer.${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}.near.org/accounts/${MARKET_ACCOUNT_ID}) |" >> comment.md
+          echo "| Registry        | ["'`'"${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}"'`'"](https://$([[ \"${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}\" == \"testnet\" ]] && echo 'testnet.' || echo '')nearblocks.io/address/${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}) |" >> comment.md
+          echo "| Default market  | ["'`'"${MARKET_ACCOUNT_ID}"'`'"](https://$([[ \"${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}\" == \"testnet\" ]] && echo 'testnet.' || echo '')nearblocks.io/address/${MARKET_ACCOUNT_ID}) |" >> comment.md
           echo '' >> comment.md
           echo "---" >> comment.md
           echo '' >> comment.md
