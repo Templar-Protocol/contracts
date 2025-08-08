@@ -292,11 +292,11 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.current_snapshot.deposited_active().into();
+        let deposited: Decimal = self.current_snapshot.borrow_asset_deposited_active().into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = self.current_snapshot.borrowed().into();
+        let borrowed: Decimal = self.current_snapshot.borrow_asset_borrowed().into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 

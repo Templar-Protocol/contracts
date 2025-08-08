@@ -6,20 +6,18 @@ use near_sdk::{
 };
 
 use crate::{
-    asset::BorrowAssetAmount,
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
     asset_op,
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
-    market::MarketConfiguration,
+    market::{MarketConfiguration, WithdrawalResolution},
     number::Decimal,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
-
-use super::WithdrawalResolution;
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -35,10 +33,20 @@ enum StorageKey {
 pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
+    /// Total amount of borrow asset earning interest in the market.
     pub borrow_asset_deposited_active: BorrowAssetAmount,
+    /// Mapping of upcoming snapshot indices to amounts of borrow asset that will be activated.
     pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
+    /// Sending borrow asset out, because if somebody sends the contract borrow asset, it's ok for the
+    /// contract to attempt to fulfill withdrawal request, even if the market thinks it doesn't have
+    /// enough to fulfill.
     pub borrow_asset_in_flight: BorrowAssetAmount,
+    /// Amount of borrow asset that has been withdrawn (is in use by) by borrowers.
+    ///
+    /// `borrow_asset_deposited_active - borrow_asset_borrowed >= 0` should always be true.
     pub borrow_asset_borrowed: BorrowAssetAmount,
+    /// Market-wide collateral asset deposit tracking.
+    pub collateral_asset_deposited: CollateralAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub current_snapshot: Snapshot,
@@ -66,7 +74,7 @@ impl Market {
 
         let first_snapshot = Snapshot::new(configuration.time_chunk_configuration.previous());
         let mut current_snapshot = first_snapshot.clone();
-        current_snapshot.time_chunk = configuration.time_chunk_configuration.now();
+        current_snapshot.set_time_chunk(configuration.time_chunk_configuration.now());
 
         let mut self_ = Self {
             prefix: prefix.clone(),
@@ -75,6 +83,7 @@ impl Market {
             borrow_asset_deposited_incoming: HashMap::new(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
+            collateral_asset_deposited: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             current_snapshot,
@@ -117,13 +126,16 @@ impl Market {
             self.current_snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
+                self.collateral_asset_deposited,
                 &self.configuration.borrow_interest_rate_strategy,
             );
             self.current_snapshot.add_yield(yield_distribution);
-            self.current_snapshot.deposited_incoming = *self
-                .borrow_asset_deposited_incoming
-                .get(&self.finalized_snapshots.len())
-                .unwrap_or(&0.into());
+            self.current_snapshot.set_borrow_asset_deposited_incoming(
+                *self
+                    .borrow_asset_deposited_incoming
+                    .get(&self.finalized_snapshots.len())
+                    .unwrap_or(&0.into()),
+            );
         } else {
             // Otherwise, finalize the current snapshot and create a new one.
             let deposited_incoming = self
@@ -132,11 +144,12 @@ impl Market {
                 .unwrap_or(0.into());
             asset_op!(self.borrow_asset_deposited_active += deposited_incoming);
             let mut snapshot = Snapshot::new(time_chunk);
-            snapshot.yield_distribution = yield_distribution;
-            snapshot.deposited_incoming = deposited_incoming;
+            snapshot.set_yield_distribution(yield_distribution);
+            snapshot.set_borrow_asset_deposited_incoming(deposited_incoming);
             snapshot.update_active(
                 self.borrow_asset_deposited_active,
                 self.borrow_asset_borrowed,
+                self.collateral_asset_deposited,
                 &self.configuration.borrow_interest_rate_strategy,
             );
             std::mem::swap(&mut snapshot, &mut self.current_snapshot);
