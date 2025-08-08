@@ -116,8 +116,8 @@ pub fn market_configuration(
             borrow_asset_decimals: 24,
             price_maximum_age_s: 60,
         },
-        borrow_mcr_initial: Decimal::from_str("1.25").unwrap(),
-        borrow_mcr: Decimal::from_str("1.2").unwrap(),
+        borrow_mcr_maintenance: Decimal::from_str("1.25").unwrap(),
+        borrow_mcr_liquidation: Decimal::from_str("1.2").unwrap(),
         borrow_asset_maximum_usage_ratio: Decimal::from_str("0.99").unwrap(),
         borrow_origination_fee: Fee::Proportional(Decimal::from_str("0.1").unwrap()),
         borrow_interest_rate_strategy: InterestRateStrategy::piecewise(

@@ -72,8 +72,8 @@ async fn successful_liquidation_good_debt_under_mcr(
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.borrow_mcr = Decimal::from(mcr) / 100u32;
-            c.borrow_mcr_initial = Decimal::from(mcr) / 100u32;
+            c.borrow_mcr_liquidation = Decimal::from(mcr) / 100u32;
+            c.borrow_mcr_maintenance = Decimal::from(mcr) / 100u32;
         })
     );
 
@@ -152,8 +152,8 @@ async fn successful_liquidation_with_spread(
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
-            c.borrow_mcr = mcr;
-            c.borrow_mcr_initial = mcr;
+            c.borrow_mcr_liquidation = mcr;
+            c.borrow_mcr_maintenance = mcr;
             c.liquidation_maximum_spread = liquidation_maximum_spread;
         })
     );
@@ -320,8 +320,8 @@ async fn successful_liquidation_only_from_interest() {
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
-            c.borrow_mcr = dec!("2");
-            c.borrow_mcr_initial = dec!("2");
+            c.borrow_mcr_liquidation = dec!("2");
+            c.borrow_mcr_maintenance = dec!("2");
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
@@ -385,8 +385,8 @@ async fn extreme_prices(
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
-            c.borrow_mcr = dec!("2");
-            c.borrow_mcr_initial = dec!("2");
+            c.borrow_mcr_liquidation = dec!("2");
+            c.borrow_mcr_maintenance = dec!("2");
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();

@@ -70,7 +70,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         );
     }
 
-    assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
+    assert!(configuration.borrow_mcr_liquidation.near_equal(dec!("1.2")));
 
     let bounds = c.storage_balance_bounds().await;
 
