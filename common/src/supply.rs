@@ -5,6 +5,7 @@ use near_sdk::{env, json_types::U64, near, require, AccountId};
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
+    asset_op,
     event::MarketEvent,
     market::{Market, WithdrawalResolution},
     number::Decimal,
@@ -34,9 +35,9 @@ impl Deposit {
     pub fn total(&self) -> BorrowAssetAmount {
         let mut total = self.active;
         for incoming in &self.incoming {
-            total.join(incoming.amount);
+            asset_op!(total += incoming.amount);
         }
-        total.join(self.outgoing);
+        asset_op!(total += self.outgoing);
         total
     }
 }
@@ -63,13 +64,13 @@ impl SupplyPosition {
     }
 
     pub fn total_incoming(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposit
-            .incoming
-            .iter()
-            .fold(BorrowAssetAmount::zero(), |mut a, b| {
-                a.join(b.amount);
-                a
-            })
+        self.borrow_asset_deposit.incoming.iter().fold(
+            BorrowAssetAmount::zero(),
+            |mut total_incoming, incoming| {
+                asset_op!(total_incoming += incoming.amount);
+                total_incoming
+            },
+        )
     }
 
     pub fn get_started_at_block_timestamp_ms(&self) -> Option<u64> {
@@ -221,13 +222,7 @@ impl<'a> SupplyPositionGuard<'a> {
         while let Some(deposit) =
             incoming.next_if(|d| d.activate_at_snapshot_index < until_snapshot_index)
         {
-            self.position
-                .borrow_asset_deposit
-                .active
-                .join(deposit.amount)
-                .unwrap_or_else(|| {
-                    env::panic_str("Supply position `borrow_asset_deposit.active` overflow")
-                });
+            asset_op!(self.position.borrow_asset_deposit.active += deposit.amount);
         }
         self.position.borrow_asset_deposit.incoming = incoming.collect();
 
@@ -235,17 +230,10 @@ impl<'a> SupplyPositionGuard<'a> {
     }
 
     fn remove_active(&mut self, amount: BorrowAssetAmount) {
-        self.position
-            .borrow_asset_deposit
-            .active
-            .split(amount)
-            .unwrap_or_else(|| {
-                env::panic_str("Supply position `borrow_asset_deposit.active` underflow")
-            });
-        self.market
-            .borrow_asset_deposited_active
-            .split(amount)
-            .unwrap_or_else(|| env::panic_str("Market `borrow_asset_deposited_active` underflow"));
+        asset_op! {
+            self.position.borrow_asset_deposit.active -= amount;
+            self.market.borrow_asset_deposited_active -= amount;
+        };
     }
 
     fn add_incoming(&mut self, amount: BorrowAssetAmount, activate_at_snapshot_index: u32) {
@@ -254,10 +242,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .last_mut()
             .filter(|i| i.activate_at_snapshot_index == activate_at_snapshot_index)
         {
-            deposit
-                .amount
-                .join(amount)
-                .unwrap_or_else(|| env::panic_str("Supply position incoming overflow"));
+            asset_op!(deposit.amount += amount);
         } else {
             const MAX_INCOMING: usize = 4;
             require!(
@@ -282,7 +267,7 @@ impl<'a> SupplyPositionGuard<'a> {
     fn remove_incoming(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         while let Some(newest) = self.position.borrow_asset_deposit.incoming.pop() {
-            total.join(newest.amount);
+            asset_op!(total += newest.amount);
 
             self.market
                 .borrow_asset_deposited_incoming
@@ -298,7 +283,8 @@ impl<'a> SupplyPositionGuard<'a> {
                 return amount;
             } else if total > amount {
                 let mut remainder = total;
-                remainder.split(amount);
+                // Infallible
+                let _ = remainder.split(amount);
                 self.add_incoming(remainder, newest.activate_at_snapshot_index);
                 return amount;
             }
@@ -338,16 +324,15 @@ impl<'a> SupplyPositionGuard<'a> {
         mut amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
     ) -> WithdrawalResolution {
-        self.position
-            .borrow_asset_deposit
-            .outgoing
-            .join(amount)
-            .unwrap_or_else(|| {
-                env::panic_str("Supply position `borrow_asset_deposit.outgoing` overflow")
-            });
-
         let mut amount_to_remove = amount;
-        amount_to_remove.split(self.remove_incoming(amount));
+
+        asset_op! {
+            self.position.borrow_asset_deposit.outgoing += amount;
+
+            @msg("Invariant violation: remove_incoming(amount) > amount")
+            amount_to_remove -= self.remove_incoming(amount);
+        };
+
         if !amount_to_remove.is_zero() {
             self.remove_active(amount_to_remove);
         }
@@ -385,15 +370,11 @@ impl<'a> SupplyPositionGuard<'a> {
         success: bool,
     ) {
         let mut amount = withdrawal_resolution.amount_to_account;
-        amount.join(withdrawal_resolution.amount_to_fees);
 
-        self.position
-            .borrow_asset_deposit
-            .outgoing
-            .split(amount)
-            .unwrap_or_else(|| {
-                env::panic_str("Supply position `borrow_asset_deposit.outgoing` underflow")
-            });
+        asset_op! {
+            amount += withdrawal_resolution.amount_to_fees;
+            self.position.borrow_asset_deposit.outgoing -= amount;
+        };
 
         if success {
             MarketEvent::SupplyWithdrawn {
