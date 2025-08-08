@@ -47,13 +47,13 @@ impl<T: AssetClass> Accumulator<T> {
     where
         T: PartialOrd,
     {
-        #[allow(clippy::unwrap_used, reason = "If statement guarantees safety")]
+        // If statement guarantees safety
         if amount > self.amortized {
-            amount.split(self.amortized).unwrap();
+            let _ = amount.split(self.amortized);
             self.amortized = 0.into();
             self.total.join(amount)?;
         } else {
-            self.amortized.split(amount).unwrap();
+            let _ = self.amortized.split(amount);
         }
         Some(())
     }
@@ -61,8 +61,8 @@ impl<T: AssetClass> Accumulator<T> {
     pub fn amortize(&mut self, amount: FungibleAssetAmount<T>) -> Option<()> {
         self.total.join(amount)?;
         if self.amortized.join(amount).is_none() {
-            #[allow(clippy::unwrap_used, reason = "Simply reverses above operation")]
-            self.total.split(amount).unwrap();
+            // Simply reverses above operation
+            let _ = self.total.split(amount);
             None
         } else {
             Some(())
@@ -86,7 +86,7 @@ impl<T: AssetClass> Accumulator<T> {
         );
         let (fraction, carry) = self.fraction_as_u128_dividend.0.overflowing_add(fraction);
         if carry {
-            amount.join(1.into())?;
+            amount.join(1u128)?;
         }
         self.add_once(amount)?;
         self.fraction_as_u128_dividend.0 = fraction;

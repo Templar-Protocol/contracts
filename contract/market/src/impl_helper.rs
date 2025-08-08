@@ -3,6 +3,7 @@ use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
+    asset_op,
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     price::PricePair,
@@ -272,9 +273,7 @@ impl Contract {
         withdrawal_resolution: WithdrawalResolution,
         expected_success: bool,
     ) {
-        self.borrow_asset_in_flight
-            .split(withdrawal_resolution.amount_to_account)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight overflow"));
+        asset_op!(self.borrow_asset_in_flight -= withdrawal_resolution.amount_to_account);
 
         // Withdrawal succeeded: remove the withdrawal request from the queue.
         // Withdrawal failed but should have succeeded: remove request but still refund.
@@ -511,12 +510,7 @@ impl Contract {
 
         if !borrow_asset_amount.is_zero() {
             if matches!(env::promise_result(i), PromiseResult::Failed) {
-                static_yield
-                    .borrow_asset
-                    .join(borrow_asset_amount)
-                    .unwrap_or_else(|| {
-                        env::panic_str("Borrow asset static yield returned overflows")
-                    });
+                asset_op!(static_yield.borrow_asset += borrow_asset_amount);
             }
             i += 1;
         }
@@ -524,12 +518,7 @@ impl Contract {
         if !collateral_asset_amount.is_zero()
             && matches!(env::promise_result(i), PromiseResult::Failed)
         {
-            static_yield
-                .collateral_asset
-                .join(collateral_asset_amount)
-                .unwrap_or_else(|| {
-                    env::panic_str("Collateral asset static yield returned overflows")
-                });
+            asset_op!(static_yield.collateral_asset += collateral_asset_amount);
         }
     }
 }
