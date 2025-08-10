@@ -5,6 +5,7 @@ use std::{
     fs::File,
     net::SocketAddr,
     path::PathBuf,
+    sync::Arc,
 };
 
 use axum::{extract::State, http::StatusCode, routing, Json, Router};
@@ -17,7 +18,7 @@ use near_primitives::{
 };
 use near_sdk::serde::Deserialize;
 use near_sdk::serde_json;
-use tokio::task::JoinSet;
+use tokio::{sync::RwLock, task::JoinSet};
 
 use templar_common::{
     asset::{BorrowAsset, FungibleAsset},
@@ -59,13 +60,92 @@ struct Args {
     pub secret_key: Vec<SecretKey>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct AccountData {
+    pub market_account_ids: HashMap<AccountId, MarketAccounts>,
+    pub allowed_receiver_account_ids: HashSet<AccountId>,
+}
+
 #[derive(Debug, Clone)]
 struct App {
     pub args: Args,
     pub configuration: Configuration,
-    pub market_account_ids: HashMap<AccountId, MarketAccounts>,
-    pub allowed_receiver_account_ids: HashSet<AccountId>,
+    pub accounts: Arc<RwLock<AccountData>>,
     pub near_client: NearClient,
+}
+
+impl App {
+    pub fn new(args: Args, configuration: Configuration) -> Self {
+        let near_client = NearClient::new(
+            near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
+            KeyRotatingSigner::try_from_iter(
+                args.secret_key
+                    .iter()
+                    .map(|sk| (args.account_id.clone(), sk.clone())),
+            )
+            .unwrap(),
+        );
+
+        Self {
+            args,
+            configuration,
+            accounts: Arc::new(RwLock::new(AccountData::default())),
+            near_client,
+        }
+    }
+
+    pub async fn load_markets(&mut self) {
+        let mut markets = self.args.market.clone();
+
+        // Load markets from registry...
+        let mut set = JoinSet::new();
+        for registry_id in &self.args.registry {
+            set.spawn({
+                let near_client = self.near_client.clone();
+                let registry_id = registry_id.clone();
+                async move {
+                    near_client
+                        .load_deployments_from_registry(&registry_id)
+                        .await
+                }
+            });
+        }
+        markets.extend(set.join_all().await.into_iter().flatten());
+
+        // ...and add any individual markets.
+        let mut set = JoinSet::new();
+        for market in markets {
+            set.spawn({
+                let near_client = self.near_client.clone();
+                async move { near_client.load_market_accounts(&market).await }
+            });
+        }
+        let market_accounts_vec = set.join_all().await;
+
+        let mut market_account_ids = HashMap::new();
+        let mut allowed_receiver_account_ids = HashSet::new();
+
+        for market_accounts in market_accounts_vec.into_iter().flatten() {
+            let market_id = market_accounts.account_id.clone();
+
+            info!(
+                "Loaded market {market_id} with borrow asset {} and collateral asset {}",
+                market_accounts.borrow_asset, market_accounts.collateral_asset,
+            );
+
+            allowed_receiver_account_ids.insert(market_id);
+            allowed_receiver_account_ids
+                .insert(market_accounts.borrow_asset.contract_id().to_owned());
+            allowed_receiver_account_ids
+                .insert(market_accounts.collateral_asset.contract_id().to_owned());
+
+            market_account_ids.insert(market_accounts.account_id.clone(), market_accounts);
+        }
+
+        let mut handle = self.accounts.write().await;
+        handle.market_account_ids = market_account_ids;
+        handle.allowed_receiver_account_ids = allowed_receiver_account_ids;
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -90,7 +170,7 @@ pub enum PreconditionError {
 }
 
 impl App {
-    pub fn check_and_calculate_gas(
+    pub async fn check_and_calculate_gas(
         &self,
         signed_delegate_action: &SignedDelegateAction,
     ) -> Result<Gas, PreconditionError> {
@@ -99,8 +179,9 @@ impl App {
         }
 
         let receiver_id = &signed_delegate_action.delegate_action.receiver_id;
+        let accounts = self.accounts.read().await;
 
-        if !self.allowed_receiver_account_ids.contains(receiver_id) {
+        if !accounts.allowed_receiver_account_ids.contains(receiver_id) {
             return Err(PreconditionError::UnknownTransactionReceiverId {
                 account_id: receiver_id.clone(),
             });
@@ -120,7 +201,7 @@ impl App {
             })
             .map_err(|index| PreconditionError::UnsupportedAction { index })?;
 
-        if self.market_account_ids.contains_key(receiver_id) {
+        if accounts.market_account_ids.contains_key(receiver_id) {
             // Calling a market contract directly.
             for (index, call) in calls.iter().enumerate() {
                 if !self
@@ -173,7 +254,7 @@ impl App {
 
                 let market_id = args.receiver_id();
 
-                let Some(market_account_ids) = self.market_account_ids.get(market_id) else {
+                let Some(market_account_ids) = accounts.market_account_ids.get(market_id) else {
                     return Err(PreconditionError::UnknownTransferReceiverId {
                         account_id: market_id.to_owned(),
                         index,
@@ -220,69 +301,8 @@ async fn main() {
     let configuration: Configuration =
         serde_yaml::from_reader(File::open(&args.config).unwrap()).unwrap();
 
-    let near_client = NearClient::new(
-        near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-        KeyRotatingSigner::try_from_iter(
-            args.secret_key
-                .iter()
-                .map(|sk| (args.account_id.clone(), sk.clone())),
-        )
-        .unwrap(),
-    );
-
-    let mut markets = args.market.clone();
-
-    // Load markets from registry...
-    let mut set = JoinSet::new();
-    for registry_id in &args.registry {
-        set.spawn({
-            let near_client = near_client.clone();
-            let registry_id = registry_id.clone();
-            async move {
-                near_client
-                    .load_deployments_from_registry(&registry_id)
-                    .await
-            }
-        });
-    }
-    markets.extend(set.join_all().await.into_iter().flatten());
-
-    // ...and add any individual markets.
-    let mut set = JoinSet::new();
-    for market in markets {
-        set.spawn({
-            let near_client = near_client.clone();
-            async move { near_client.load_market_accounts(&market).await }
-        });
-    }
-    let market_accounts_vec = set.join_all().await;
-
-    let mut market_account_ids = HashMap::new();
-    let mut allowed_receiver_account_ids = HashSet::new();
-
-    for market_accounts in market_accounts_vec.into_iter().flatten() {
-        let market_id = market_accounts.account_id.clone();
-
-        info!(
-            "Loaded market {market_id} with borrow asset {} and collateral asset {}",
-            market_accounts.borrow_asset, market_accounts.collateral_asset,
-        );
-
-        allowed_receiver_account_ids.insert(market_id);
-        allowed_receiver_account_ids.insert(market_accounts.borrow_asset.contract_id().to_owned());
-        allowed_receiver_account_ids
-            .insert(market_accounts.collateral_asset.contract_id().to_owned());
-
-        market_account_ids.insert(market_accounts.account_id.clone(), market_accounts);
-    }
-
-    let app = App {
-        args,
-        configuration,
-        market_account_ids,
-        allowed_receiver_account_ids,
-        near_client,
-    };
+    let mut app = App::new(args, configuration);
+    app.load_markets().await;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], app.args.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -305,7 +325,10 @@ async fn relay(
     State(app): State<App>,
     Json(relay_request): Json<RelayRequest>,
 ) -> (StatusCode, Json<RelayResponse>) {
-    match app.check_and_calculate_gas(&relay_request.signed_delegate_action) {
+    match app
+        .check_and_calculate_gas(&relay_request.signed_delegate_action)
+        .await
+    {
         Ok(_gas) => {
             let tx_result = app
                 .near_client
