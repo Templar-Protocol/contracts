@@ -14,9 +14,8 @@ use near_fetch::signer::KeyRotatingSigner;
 use near_primitives::{
     action::{delegate::SignedDelegateAction, Action},
     types::{AccountId, Gas},
-    views::FinalExecutionOutcomeView,
 };
-use near_sdk::serde::{Deserialize, Serialize};
+use near_sdk::serde::Deserialize;
 use near_sdk::serde_json;
 use tokio::task::JoinSet;
 
@@ -25,8 +24,9 @@ use templar_common::{
     market::DepositMsg,
 };
 use templar_relayer::{
-    client::NearClient, Configuration, FtTransferCallArgs, MarketAccounts, MtTransferCallArgs,
-    TransferCallArgs,
+    client::NearClient,
+    message::{RelayRequest, RelayResponse},
+    Configuration, FtTransferCallArgs, MarketAccounts, MtTransferCallArgs, TransferCallArgs,
 };
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -299,26 +299,6 @@ async fn main() {
 
 async fn root() -> &'static str {
     "Hello, World!"
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "near_sdk::serde")]
-pub struct RelayRequest {
-    signed_delegate_action: SignedDelegateAction,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "near_sdk::serde")]
-pub enum RelayResponse {
-    Success {
-        execution: Box<FinalExecutionOutcomeView>,
-    },
-    Failure {
-        error: String,
-    },
-    Rejected {
-        reason: String,
-    },
 }
 
 async fn relay(

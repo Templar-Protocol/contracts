@@ -7,6 +7,7 @@ use near_sdk::{
 use templar_common::asset::{BorrowAsset, CollateralAsset, FungibleAsset};
 
 pub mod client;
+pub mod message;
 
 #[derive(Debug, Clone)]
 pub struct MarketAccounts {
