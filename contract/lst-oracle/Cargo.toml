@@ -1,9 +1,9 @@
 [package]
-name = "templar-lst-oracle-contract"
-version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 license.workspace = true
-repository = "https://github.com/Templar-Protocol/contracts"
+name = "templar-lst-oracle-contract"
+repository.workspace = true
+version.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
