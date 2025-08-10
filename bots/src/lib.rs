@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use clap::ValueEnum;
 use near_jsonrpc_client::{NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL};
-use near_sdk::{AccountId, Gas, near};
+use near_sdk::{near, AccountId, Gas};
 use templar_common::borrow::BorrowPosition;
 
 pub mod accumulator;

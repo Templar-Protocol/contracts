@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use clap::Parser;
-use templar_bots::liquidator::{Args, LiquidatorResult, setup_liquidators};
+use templar_bots::liquidator::{setup_liquidators, Args, LiquidatorResult};
 use tokio::time::sleep;
 use tracing::info;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> LiquidatorResult {
