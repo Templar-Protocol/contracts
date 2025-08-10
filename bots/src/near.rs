@@ -49,6 +49,18 @@ pub enum RpcError {
     /// No outcome for transaction
     #[error("No outcome for transaction: {0}")]
     NoOutcome(String),
+    /// Error sending request to Solver RPC
+    #[error("Error sending request to Solver RPC: {0}")]
+    SolverRequestError(reqwest::Error),
+    /// Error deserializing response from Solver RPC
+    #[error("Error deserializing response from Solver RPC: {0}")]
+    SolverResponseDeserialization(reqwest::Error),
+    /// No quote hash received from Solver RPC
+    #[error("No quote hash received from Solver RPC")]
+    NoQuoteHashReceived,
+    /// Error getting system time
+    #[error("Error getting system time: {0}")]
+    SystemTimeError(#[from] std::time::SystemTimeError),
 }
 
 pub type RpcResult<T = ()> = Result<T, RpcError>;

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use clap::ValueEnum;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
@@ -15,40 +14,7 @@ use crate::{
     Network, DEFAULT_GAS,
 };
 
-#[async_trait::async_trait]
-pub trait Swap {
-    /// Quotes the amount of `from` token to `to` token.
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128>;
-
-    /// Swaps `from` token to `to` token.
-    async fn swap(
-        &self,
-        from: &AccountId,
-        to: &AccountId,
-        amount: U128,
-    ) -> RpcResult<FinalExecutionStatus>;
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum SwapType {
-    RheaSwap,
-}
-
-impl SwapType {
-    #[must_use]
-    #[allow(
-        clippy::unwrap_used,
-        reason = "We know the contract IDs are valid NEAR account IDs."
-    )]
-    pub fn account_id(self, network: Network) -> AccountId {
-        match self {
-            SwapType::RheaSwap => match network {
-                Network::Mainnet => "dclv2.ref-labs.near".parse().unwrap(),
-                Network::Testnet => "dclv2.ref-dev.testnet".parse().unwrap(),
-            },
-        }
-    }
-}
+use super::{QuoteOutput, Swap};
 
 #[derive(Debug, Clone)]
 pub struct RheaSwap {
@@ -58,9 +24,16 @@ pub struct RheaSwap {
 }
 
 impl RheaSwap {
-    pub fn new(contract: AccountId, client: JsonRpcClient, signer: Arc<InMemorySigner>) -> Self {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "We know the contract IDs are valid NEAR account IDs."
+    )]
+    pub fn new(network: Network, client: JsonRpcClient, signer: Arc<InMemorySigner>) -> Self {
         Self {
-            contract,
+            contract: match network {
+                Network::Mainnet => "dclv2.ref-labs.near".parse().unwrap(),
+                Network::Testnet => "dclv2.ref-dev.testnet".parse().unwrap(),
+            },
             client,
             signer,
         }
@@ -91,9 +64,15 @@ impl QuoteRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
-struct QuoteResponse {
+pub struct QuoteResponse {
     amount: U128,
     tag: String,
+}
+
+impl QuoteOutput for QuoteResponse {
+    fn to_u128(&self) -> U128 {
+        self.amount
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,7 +104,15 @@ impl SwapRequestMsg {
 
 #[async_trait::async_trait]
 impl Swap for RheaSwap {
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128> {
+    type QuoteOutput = QuoteResponse;
+    type SwapOutput = FinalExecutionStatus;
+
+    async fn quote(
+        &self,
+        from: &AccountId,
+        to: &AccountId,
+        amount: U128,
+    ) -> RpcResult<Self::QuoteOutput> {
         let response: QuoteResponse = view(
             &self.client,
             self.contract.clone(),
@@ -133,7 +120,7 @@ impl Swap for RheaSwap {
             &QuoteRequest::new(from.clone(), to.clone(), amount),
         )
         .await?;
-        Ok(response.amount)
+        Ok(response)
     }
 
     async fn swap(
@@ -141,7 +128,7 @@ impl Swap for RheaSwap {
         from: &AccountId,
         to: &AccountId,
         amount: U128,
-    ) -> RpcResult<FinalExecutionStatus> {
+    ) -> RpcResult<Self::SwapOutput> {
         let msg = SwapRequestMsg::new(
             vec![format!("{}|{}|100", from, to)],
             to.clone(),

@@ -24,6 +24,7 @@ near-jsonrpc-client = { workspace = true }
 near-jsonrpc-primitives = { workspace = true }
 near-primitives = { workspace = true }
 near-sdk = { workspace = true }
+reqwest = { workspace = true }
 templar-common = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

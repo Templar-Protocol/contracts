@@ -12,7 +12,7 @@ use near_sdk::{serde_json::json, AccountId};
 use templar_bots::{
     liquidator::{Args, Liquidator, LiquidatorError, LiquidatorResult},
     near::{view, RpcResult},
-    swap::{RheaSwap, SwapType},
+    swap::{IntentsSwap, RheaSwap, Swap, SwapType},
 };
 use tokio::time::sleep;
 use tracing::{info, instrument};
@@ -73,30 +73,17 @@ pub async fn list_all_deployments(
     Ok(all_markets)
 }
 
-#[tokio::main]
-async fn main() -> LiquidatorResult {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env())
-        .init();
-
-    let args = Args::parse();
-    let client = JsonRpcClient::connect(args.network.rpc_url());
-    let signer = Arc::new(InMemorySigner::from_secret_key(
-        args.signer_account.clone(),
-        args.signer_key.clone(),
-    ));
-    let swap = match args.swap {
-        SwapType::RheaSwap => Arc::new(RheaSwap::new(
-            args.swap.account_id(args.network),
-            client.clone(),
-            signer.clone(),
-        )),
-    };
-    let asset = Arc::new(args.asset);
-
+#[instrument(skip(client, asset, swap), level = "debug")]
+async fn run_bot<S: Swap>(
+    client: JsonRpcClient,
+    signer: Arc<InMemorySigner>,
+    asset: Arc<AccountId>,
+    swap: Arc<S>,
+    args: &Args,
+) -> LiquidatorResult {
     let registry_refresh_interval = Duration::from_secs(args.registry_refresh_interval);
     let mut next_refresh = Instant::now();
+
     let mut markets = HashMap::<AccountId, Liquidator<_>>::new();
 
     loop {
@@ -137,5 +124,44 @@ async fn main() -> LiquidatorResult {
         );
         // Sleep for the specified interval before the next iteration
         sleep(Duration::from_secs(args.interval)).await;
+    }
+}
+
+#[tokio::main]
+async fn main() -> LiquidatorResult {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
+
+    let args = Args::parse();
+    let client = JsonRpcClient::connect(args.network.rpc_url());
+    let signer = Arc::new(InMemorySigner::from_secret_key(
+        args.signer_account.clone(),
+        args.signer_key.clone(),
+    ));
+    let asset = Arc::new(args.asset.clone());
+
+    match args.swap {
+        SwapType::RheaSwap => {
+            run_bot(
+                client.clone(),
+                signer.clone(),
+                asset,
+                Arc::new(RheaSwap::new(args.network, client, signer)),
+                &args,
+            )
+            .await
+        }
+        SwapType::NearIntents => {
+            run_bot(
+                client.clone(),
+                signer.clone(),
+                asset,
+                Arc::new(IntentsSwap::new(args.network, client, signer)),
+                &args,
+            )
+            .await
+        }
     }
 }
