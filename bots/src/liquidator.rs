@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
 use futures::{StreamExt, TryStreamExt};
@@ -23,7 +23,7 @@ use tracing::{error, info, instrument};
 
 use crate::{
     near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcError},
-    swap::{RheaSwap, Swap, SwapType},
+    swap::{Swap, SwapType},
     BorrowPositions, Network, DEFAULT_GAS,
 };
 
@@ -66,15 +66,21 @@ pub enum LiquidatorError {
     /// Error while fetching borrow positions.
     #[error("Failed to list borrow positions: {0}")]
     ListBorrowPositionsError(RpcError),
+    /// Error fetching registry deployments.
+    #[error("Failed to list deployments: {0}")]
+    ListDeploymentsError(RpcError),
+    /// Error fetching minimum acceptable liquidation amount.
+    #[error("Failed to fetch balance: {0}")]
+    FetchBalanceError(RpcError),
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
-    /// Market to run liquidations for
-    #[arg(short, long, env = "MARKET_ACCOUNT_ID")]
-    pub markets: Vec<AccountId>,
+    /// Market registries to run liquidations for
+    #[arg(short, long, env = "REGISTRY_ACCOUNT_IDS")]
+    pub registries: Vec<AccountId>,
     /// Swap to use for liquidations
     #[arg(long, env = "SWAP_TYPE")]
     pub swap: SwapType,
@@ -96,6 +102,9 @@ pub struct Args {
     /// Interval between liquidation attempts
     #[arg(short, long, env = "INTERVAL", default_value_t = 600)]
     pub interval: u64,
+    /// Registry refresh interval in seconds
+    #[arg(short, long, env = "REGISTRY_REFRESH_INTERVAL", default_value_t = 3600)]
+    pub registry_refresh_interval: u64,
     /// Concurency for liquidations
     #[arg(short, long, env = "CONCURRENCY", default_value_t = 10)]
     pub concurrency: usize,
@@ -103,21 +112,21 @@ pub struct Args {
 
 pub struct Liquidator<S: Swap> {
     client: JsonRpcClient,
-    signer: InMemorySigner,
-    asset: AccountId,
+    signer: Arc<InMemorySigner>,
+    asset: Arc<AccountId>,
     pub market: AccountId,
     timeout: u64,
-    swap: S,
+    swap: Arc<S>,
 }
 
 impl<S: Swap> Liquidator<S> {
     #[must_use]
     pub fn new(
         client: JsonRpcClient,
-        signer: InMemorySigner,
-        asset: AccountId,
+        signer: Arc<InMemorySigner>,
+        asset: Arc<AccountId>,
         market: AccountId,
-        swap: S,
+        swap: Arc<S>,
         timeout: u64,
     ) -> Self {
         Self {
@@ -162,7 +171,7 @@ impl<S: Swap> Liquidator<S> {
 
         Ok(Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: self.asset.clone(),
+            receiver_id: self.asset.as_ref().clone(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
@@ -212,7 +221,23 @@ impl<S: Swap> Liquidator<S> {
             .liquidation_amount(&position, &oracle_response, configuration)
             .await?;
 
-        if self.asset != borrow_asset {
+        // Implement this function based on your liquidation strategy
+        if !self
+            .should_liquidate(swap_amount, liquidation_amount)
+            .await?
+        {
+            info!("Skipping liquidation due to insufficient conditions");
+            return Ok(());
+        }
+
+        let should_swap = if self.asset.as_ref() == &borrow_asset {
+            let asset_balance = self.get_asset_balance(self.asset.as_ref().clone()).await?;
+            asset_balance >= liquidation_amount
+        } else {
+            true
+        };
+
+        if should_swap {
             match self
                 .swap
                 .swap(&self.asset, &borrow_asset, swap_amount)
@@ -245,7 +270,7 @@ impl<S: Swap> Liquidator<S> {
             }
         }
 
-        if self.asset == collateral_asset {
+        if self.asset.as_ref() == &collateral_asset {
             match self
                 .swap
                 .swap(
@@ -274,17 +299,7 @@ impl<S: Swap> Liquidator<S> {
         oracle_response: &OracleResponse,
         configuration: MarketConfiguration,
     ) -> LiquidatorResult<(U128, U128)> {
-        // TODO: Calculate optimal liquidation amount
-        // For purposes of this example implementation we will just use the minimum acceptable
-        // liquidation amount.
-        // Costs to take into account here are:
-        //  - Gas fees
-        //  - Price impact
-        //  - Slippage
-        // All of this would be used in calculating both the optimal liquidation amount and wether to
-        // perform full or partial liquidation
         let borrow_asset = &configuration.borrow_asset;
-        let collateral_asset = &configuration.collateral_asset;
         let price_pair = configuration
             .price_oracle_configuration
             .create_price_pair(oracle_response)?;
@@ -306,16 +321,6 @@ impl<S: Swap> Liquidator<S> {
                     )
                 })?,
                 min_liquidation_amount.into(),
-            )
-            .await
-            .map_err(LiquidatorError::QuoteError)?;
-        let _quote_after_liquidate = self
-            .swap
-            .quote(
-                // TODO: Enable multitoken swaps
-                &collateral_asset.contract_id(),
-                &self.asset,
-                position.collateral_asset_deposit.into(),
             )
             .await
             .map_err(LiquidatorError::QuoteError)?;
@@ -349,6 +354,19 @@ impl<S: Swap> Liquidator<S> {
         )
         .await
         .map_err(LiquidatorError::PriceFetchError)
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    async fn get_asset_balance(&self, asset: AccountId) -> LiquidatorResult<U128> {
+        let balance = view::<U128>(
+            &self.client,
+            asset,
+            "ft_balance_of",
+            json!({ "account_id": self.signer.account_id }),
+        )
+        .await
+        .map_err(LiquidatorError::FetchBalanceError)?;
+        Ok(balance)
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -429,34 +447,22 @@ impl<S: Swap> Liquidator<S> {
 
         Ok(())
     }
-}
 
-#[instrument(level = "debug")]
-pub fn setup_liquidators(args: &Args) -> LiquidatorResult<Vec<Liquidator<impl Swap>>> {
-    let client = JsonRpcClient::connect(args.network.rpc_url());
-    let signer =
-        InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
-    let asset = args.asset.clone();
-    let swap = match args.swap {
-        SwapType::RheaSwap => RheaSwap::new(
-            args.swap.account_id(args.network),
-            client.clone(),
-            signer.clone(),
-        ),
-    };
-
-    Ok(args
-        .markets
-        .iter()
-        .map(|market| {
-            Liquidator::new(
-                client.clone(),
-                signer.clone(),
-                asset.clone(),
-                market.clone(),
-                swap.clone(),
-                args.timeout,
-            )
-        })
-        .collect())
+    #[instrument(skip(self), level = "debug")]
+    pub async fn should_liquidate(
+        &self,
+        swap_amount: U128,
+        liquidation_amount: U128,
+    ) -> LiquidatorResult<bool> {
+        // TODO: Calculate optimal liquidation amount
+        // For purposes of this example implementation we will just use the minimum acceptable
+        // liquidation amount.
+        // Costs to take into account here are:
+        //  - Gas fees
+        //  - Price impact
+        //  - Slippage
+        // All of this would be used in calculating both the optimal liquidation amount and wether to
+        // perform full or partial liquidation
+        Ok(true)
+    }
 }

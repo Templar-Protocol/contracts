@@ -26,7 +26,7 @@ Running the Bot:
 
 ```bash
 liquidator-service \
-    --markets market1.testnet \
+    --registries registry1.testnet --registries registry2.testnet \
     --signer-key ed25519:\<YOUR_PRIVATE_KEY_HERE> \
     --signer-account liquidator.testnet \
     --asset usdc.testnet \
@@ -34,12 +34,13 @@ liquidator-service \
     --network testnet \
     --timeout 60 \
     --concurrency 10 \
-    --interval 600
+    --interval 600 \
+    --registry-refresh-interval 3600
 ```
 
 Arguments:
 
-- `--markets`: A list of markets to monitor for liquidations (e.g., templar-market1.testnet).
+- `--registries`: A list of registries to query markets from which will be monitored for liquidations (e.g., templar-registry1.testnet).
 - `--signer-key`: The private key of the signer account used to sign transactions.
 - `--signer-account`: The NEAR account that will perform the liquidations (e.g., templar-liquidator.testnet).
 - `--asset`: The asset to liquidate NEP-141 token account used for repayments (e.g., usdc.testnet).
@@ -48,10 +49,12 @@ Arguments:
 - `--timeout`: The timeout for RPC calls in seconds (default is 60 seconds).
 - `--concurrency`: The number of concurrent liquidation attempts (default is 10).
 - `--interval`: The interval in seconds for the service to check for liquidatable positions (default is 600 seconds).
+- `--registry-refresh-interval`: The interval in seconds for the service to check for new markets on the registries (default is 3600 seconds - 1 hour).
 
 How it works:
 
-1. The bot initializes a Liquidator object for each market specified in the `--markets` argument.
+1. The bot fetches all deployments for each registry specified in the `--registryes` argument.
+1. The bot initializes a Liquidator object for each market fetched.
 1. It continuously checks the status of borrowers in each market.
 1. If a borrower is found to be liquidatable, it calculates the liquidation amount based on the borrower's collateral and debt.
 1. It sends an `ft_transfer_call` RPC call to the smart contract to trigger the liquidation process.
@@ -66,7 +69,7 @@ Liquidation Logic:
 The liquidation logic is encapsulated within the `Liquidator` object, which is responsible for:
 
 - Checking a borrower's status to determine if they are below the required collateralization ratio.
-- Calculating the liquidation amount based on the borrower's collateral and debt. (This calculation should be implemented by the liquidator according to their specific strategy or requirements.)
+- Calculating the liquidation amount based on the borrower's collateral and debt.
 
 ```rust
 #[instrument(skip(self), level = "debug")]
@@ -76,17 +79,7 @@ async fn liquidation_amount(
     oracle_response: &OracleResponse,
     configuration: MarketConfiguration,
 ) -> LiquidatorResult<(U128, U128)> {
-    // TODO: Calculate optimal liquidation amount
-    // For purposes of this example implementation we will just use the minimum acceptable
-    // liquidation amount.
-    // Costs to take into account here are:
-    //  - Gas fees
-    //  - Price impact
-    //  - Slippage
-    // All of this would be used in calculating both the optimal liquidation amount and wether to
-    // perform full or partial liquidation
     let borrow_asset = &configuration.borrow_asset;
-    let collateral_asset = &configuration.collateral_asset;
     let price_pair = configuration
         .price_oracle_configuration
         .create_price_pair(oracle_response)?;
@@ -111,17 +104,29 @@ async fn liquidation_amount(
         )
         .await
         .map_err(LiquidatorError::QuoteError)?;
-    let _quote_after_liquidate = self
-        .swap
-        .quote(
-            // TODO: Enable multitoken swaps
-            &collateral_asset.contract_id(),
-            &self.asset,
-            position.collateral_asset_deposit.into(),
-        )
-        .await
-        .map_err(LiquidatorError::QuoteError)?;
     Ok((quote_to_liquidate, min_liquidation_amount.into()))
+}
+```
+
+- Deciding on whether the liquidation should happen or not (This calculation should be implemented by the liquidator according to their specific strategy or requirements.)
+
+```rust
+#[instrument(skip(self), level = "debug")]
+pub async fn should_liquidate(
+    &self,
+    swap_amount: U128,
+    liquidation_amount: U128,
+) -> LiquidatorResult<bool> {
+    // TODO: Calculate optimal liquidation amount
+    // For purposes of this example implementation we will just use the minimum acceptable
+    // liquidation amount.
+    // Costs to take into account here are:
+    //  - Gas fees
+    //  - Price impact
+    //  - Slippage
+    // All of this would be used in calculating both the optimal liquidation amount and wether to
+    // perform full or partial liquidation
+    Ok(true)
 }
 ```
 
@@ -171,6 +176,67 @@ async fn get_oracle_prices(
 ```
 
 The liquidator will fetch the price data from the oracle contract in order to execute the liquidation and gauge whether the liquidation is profitable.
+
+### Fetching deployed markets
+
+```rust
+#[instrument(skip(client), level = "debug")]
+pub async fn list_deployments(
+    client: &JsonRpcClient,
+    registry: AccountId,
+    count: Option<u32>,
+    offset: Option<u32>,
+) -> RpcResult<Vec<AccountId>> {
+    let mut all_deployments = Vec::new();
+    let page_size = 500;
+    let mut current_offset = 0;
+
+    loop {
+        let params = json!({
+            "offset": current_offset,
+            "count": page_size,
+        });
+
+        let page =
+            view::<Vec<AccountId>>(client, registry.clone(), "list_deployments", params).await?;
+
+        let fetched = page.len();
+
+        if fetched == 0 {
+            break;
+        }
+
+        all_deployments.extend(page);
+        current_offset += fetched;
+
+        if fetched < page_size {
+            break;
+        }
+    }
+
+    Ok(all_deployments)
+}
+
+#[instrument(skip(client), level = "debug")]
+pub async fn list_all_deployments(
+    client: JsonRpcClient,
+    registries: Vec<AccountId>,
+    concurrency: usize,
+) -> RpcResult<Vec<AccountId>> {
+    let all_markets: Vec<AccountId> = futures::stream::iter(registries)
+        .map(|registry| {
+            let client = client.clone();
+            async move { list_deployments(&client, registry, None, None).await }
+        })
+        .buffer_unordered(concurrency)
+        .try_concat()
+        .await?;
+
+    Ok(all_markets)
+}
+```
+
+The liquidator will periodically fetch all registries for all of their deployments (markets).
 
 ### Getting the borrow positions for a market
 
