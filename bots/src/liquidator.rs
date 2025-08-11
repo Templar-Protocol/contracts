@@ -19,7 +19,7 @@ use templar_common::{
     market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
     oracle::pyth::{OracleResponse, PriceIdentifier},
 };
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 use crate::{
     near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcError},
@@ -217,9 +217,33 @@ impl<S: Swap> Liquidator<S> {
 
         let collateral_asset = configuration.collateral_asset.contract_id();
 
-        let (swap_amount, liquidation_amount) = self
+        let liquidation_amount = self
             .liquidation_amount(&position, &oracle_response, configuration)
             .await?;
+
+        let swap_output_amount = if self.asset.as_ref() == &borrow_asset {
+            let asset_balance = self.get_asset_balance(self.asset.as_ref().clone()).await?;
+            if asset_balance >= liquidation_amount {
+                0.into()
+            } else {
+                (liquidation_amount.0 - asset_balance.0).into()
+            }
+        } else {
+            liquidation_amount
+        };
+
+        let swap_amount = self
+            .swap
+            .quote(&self.asset, &borrow_asset, swap_output_amount)
+            .await
+            .map_err(LiquidatorError::QuoteError)?;
+
+        let available = self.get_asset_balance(self.asset.as_ref().clone()).await?;
+
+        if available < swap_amount {
+            warn!("Insufficient asset balance for liquidation: {available:?} < {swap_amount:?}");
+            return Ok(());
+        }
 
         // Implement this function based on your liquidation strategy
         if !self
@@ -230,14 +254,7 @@ impl<S: Swap> Liquidator<S> {
             return Ok(());
         }
 
-        let should_swap = if self.asset.as_ref() == &borrow_asset {
-            let asset_balance = self.get_asset_balance(self.asset.as_ref().clone()).await?;
-            asset_balance >= liquidation_amount
-        } else {
-            true
-        };
-
-        if should_swap {
+        if swap_amount > 0.into() {
             match self
                 .swap
                 .swap(&self.asset, &borrow_asset, swap_amount)
@@ -298,8 +315,7 @@ impl<S: Swap> Liquidator<S> {
         position: &BorrowPosition,
         oracle_response: &OracleResponse,
         configuration: MarketConfiguration,
-    ) -> LiquidatorResult<(U128, U128)> {
-        let borrow_asset = &configuration.borrow_asset;
+    ) -> LiquidatorResult<U128> {
         let price_pair = configuration
             .price_oracle_configuration
             .create_price_pair(oracle_response)?;
@@ -310,21 +326,7 @@ impl<S: Swap> Liquidator<S> {
                     "Failed to calculate minimum acceptable liquidation amount".to_owned(),
                 )
             })?;
-        // Here we would check a quote for the swap to ensure desired profit margin is met
-        let quote_to_liquidate = self
-            .swap
-            .quote(
-                &self.asset,
-                &borrow_asset.clone().into_nep141().ok_or_else(|| {
-                    LiquidatorError::StandardSupportError(
-                        "Only NEP-141 borrow assets supported".to_owned(),
-                    )
-                })?,
-                min_liquidation_amount.into(),
-            )
-            .await
-            .map_err(LiquidatorError::QuoteError)?;
-        Ok((quote_to_liquidate, min_liquidation_amount.into()))
+        Ok(min_liquidation_amount.into())
     }
 
     #[instrument(skip(self), level = "debug")]
