@@ -10,21 +10,21 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{
-    AccountId, NearToken,
     json_types::U128,
     serde_json::{self, json},
+    AccountId, NearToken,
 };
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
-    market::{DepositMsg, LiquidateMsg, MarketConfiguration, error::RetrievalError},
+    market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
     oracle::pyth::{OracleResponse, PriceIdentifier},
 };
 use tracing::{error, info, instrument};
 
 use crate::{
-    BorrowPositions, DEFAULT_GAS, Network,
-    near::{RpcError, get_access_key_data, send_tx, serialize_and_encode, view},
+    near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcError},
     swap::{RheaSwap, Swap, SwapType},
+    BorrowPositions, Network, DEFAULT_GAS,
 };
 
 /// Errors that can occur during liquidation operations.

@@ -3,13 +3,13 @@ use std::time::Duration;
 use base64::Engine;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{
-    JsonRpcClient,
     errors::JsonRpcError,
     methods::{
         query::{RpcQueryError, RpcQueryRequest},
         send_tx::RpcSendTransactionRequest,
         tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
     },
+    JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
@@ -19,7 +19,7 @@ use near_primitives::{
     views::{FinalExecutionStatus, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
-    serde::{Serialize, de::DeserializeOwned},
+    serde::{de::DeserializeOwned, Serialize},
     serde_json,
 };
 use tokio::time::Instant;

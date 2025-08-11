@@ -1,9 +1,10 @@
 [package]
-name = "mock-mt"
-version = "0.1.0"
-edition = "2021"
-publish = false
+edition.workspace = true
 license.workspace = true
+name = "mock-mt"
+publish = false
+repository.workspace = true
+version = "0.0.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

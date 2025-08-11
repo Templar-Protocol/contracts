@@ -4,7 +4,7 @@ use clap::Parser;
 use templar_bots::accumulator::{Accumulator, Args};
 use tokio::time::sleep;
 use tracing::info;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

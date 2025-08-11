@@ -1957,7 +1957,7 @@ dependencies = [
 
 [[package]]
 name = "mock-ft"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "near-contract-standards",
  "near-sdk",
@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "mock-mt"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "near-contract-standards",
  "near-sdk",
@@ -1975,7 +1975,7 @@ dependencies = [
 
 [[package]]
 name = "mock-oracle"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "getrandom",
  "near-contract-standards",
@@ -3816,7 +3816,7 @@ dependencies = [
 
 [[package]]
 name = "templar-common"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "borsh",
  "hex",
@@ -3831,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "templar-lst-oracle-contract"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "getrandom",
  "hex-literal",
@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "templar-market-contract"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "getrandom",
  "near-contract-standards",
@@ -3862,7 +3862,7 @@ dependencies = [
 
 [[package]]
 name = "templar-registry-contract"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "getrandom",
  "near-sdk",

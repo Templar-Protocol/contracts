@@ -1,8 +1,10 @@
 [package]
+edition.workspace = true
+license.workspace = true
 name = "mock-oracle"
-version = "0.1.0"
-edition = "2021"
 publish = false
+repository.workspace = true
+version = "0.0.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
