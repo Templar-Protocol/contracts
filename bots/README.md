@@ -53,7 +53,7 @@ Arguments:
 
 How it works:
 
-1. The bot fetches all deployments for each registry specified in the `--registryes` argument.
+1. The bot fetches all deployments for each registry specified in the `--registries` argument.
 1. The bot initializes a Liquidator object for each market fetched.
 1. It continuously checks the status of borrowers in each market.
 1. If a borrower is found to be liquidatable, it calculates the liquidation amount based on the borrower's collateral and debt.
