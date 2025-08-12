@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use clap::ValueEnum;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
@@ -52,11 +54,11 @@ impl SwapType {
 pub struct RheaSwap {
     pub contract: AccountId,
     pub client: JsonRpcClient,
-    pub signer: InMemorySigner,
+    pub signer: Arc<InMemorySigner>,
 }
 
 impl RheaSwap {
-    pub fn new(contract: AccountId, client: JsonRpcClient, signer: InMemorySigner) -> Self {
+    pub fn new(contract: AccountId, client: JsonRpcClient, signer: Arc<InMemorySigner>) -> Self {
         Self {
             contract,
             client,
