@@ -21,8 +21,8 @@ impl FungibleAssetKind {
 
     pub fn account_id(&self) -> &AccountId {
         match self {
-            FungibleAssetKind::Nep141(account_id) => account_id,
-            FungibleAssetKind::Nep245 { account_id, .. } => account_id,
+            FungibleAssetKind::Nep141(account_id)
+            | FungibleAssetKind::Nep245 { account_id, .. } => account_id,
         }
     }
 }
