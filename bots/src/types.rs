@@ -53,6 +53,9 @@ impl From<AccountId> for FungibleAssetKind {
 
 impl From<(AccountId, String)> for FungibleAssetKind {
     fn from((account_id, token_id): (AccountId, String)) -> Self {
-        FungibleAssetKind::Nep245 { account_id, token_id }
+        FungibleAssetKind::Nep245 {
+            account_id,
+            token_id,
+        }
     }
 }

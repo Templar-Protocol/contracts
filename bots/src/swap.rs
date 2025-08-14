@@ -19,7 +19,12 @@ use crate::{
 #[async_trait::async_trait]
 pub trait Swap {
     /// Quotes the amount of `from` token to `to` token.
-    async fn quote(&self, from: &FungibleAssetKind, to: &FungibleAssetKind, amount: U128) -> RpcResult<U128>;
+    async fn quote(
+        &self,
+        from: &FungibleAssetKind,
+        to: &FungibleAssetKind,
+        amount: U128,
+    ) -> RpcResult<U128>;
 
     /// Swaps `from` token to `to` token.
     async fn swap(
@@ -79,7 +84,11 @@ struct QuoteRequest {
 }
 
 impl QuoteRequest {
-    pub fn new(input_token: &FungibleAssetKind, output_token: &FungibleAssetKind, output_amount: U128) -> Self {
+    pub fn new(
+        input_token: &FungibleAssetKind,
+        output_token: &FungibleAssetKind,
+        output_amount: U128,
+    ) -> Self {
         let input_contract = input_token.account_id();
         let output_contract = output_token.account_id();
 
@@ -131,14 +140,19 @@ impl SwapRequestMsg {
 
 #[async_trait::async_trait]
 impl Swap for RheaSwap {
-    async fn quote(&self, from: &FungibleAssetKind, to: &FungibleAssetKind, amount: U128) -> RpcResult<U128> {
+    async fn quote(
+        &self,
+        from: &FungibleAssetKind,
+        to: &FungibleAssetKind,
+        amount: U128,
+    ) -> RpcResult<U128> {
         let response: QuoteResponse = view(
             &self.client,
             self.contract.clone(),
             "quote_by_output",
             &QuoteRequest::new(from, to, amount),
         )
-            .await?;
+        .await?;
         Ok(response.amount)
     }
 
@@ -162,9 +176,12 @@ impl Swap for RheaSwap {
                     "receiver_id": self.contract,
                     "amount": amount,
                     "msg": serde_json::to_string(&msg)?,
-                })
+                }),
             ),
-            FungibleAssetKind::Nep245 { account_id, token_id } => (
+            FungibleAssetKind::Nep245 {
+                account_id,
+                token_id,
+            } => (
                 account_id.clone(),
                 "mt_transfer_call".to_string(),
                 json!({
@@ -172,7 +189,7 @@ impl Swap for RheaSwap {
                     "token_id": token_id,
                     "amount": amount,
                     "msg": serde_json::to_string(&msg)?,
-                })
+                }),
             ),
         };
 

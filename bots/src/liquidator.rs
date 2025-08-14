@@ -186,7 +186,7 @@ impl<S: Swap> Liquidator<S> {
                 "mt_transfer_call".to_string(), // <-- Different method
                 json!({
                     "receiver_id": self.market,
-                    "token_id": format!("nep141:{}", token_id),,
+                    "token_id": format!("nep141:{}", token_id),
                     "amount": liquidation_amount,
                     "msg": msg,
                 }),
@@ -232,28 +232,34 @@ impl<S: Swap> Liquidator<S> {
         info!("Liquidation reason: {reason:?}");
 
         // I really dislike these clones to be fair, but the is_nep141 and is_nep245 methods
-        // are a bit strange as it doesn't return what kind the asset is, but rather checks 
+        // are a bit strange as it doesn't return what kind the asset is, but rather checks
         // against another account_id and if it matches internally. Not ideal, but should be fixed
         // later as that isn't good practice.
-        let borrow_asset = if let Some(account_id) = configuration.borrow_asset.clone().into_nep141() {
-            FungibleAssetKind::from(account_id)
-        } else if let Some((contract_id, token_id)) = configuration.borrow_asset.clone().into_nep245() {
-            FungibleAssetKind::from((contract_id, token_id))
-        } else {
-            return Err(LiquidatorError::StandardSupportError(
-                "Unsupported borrow asset type".to_string()
-            ));
-        };
+        let borrow_asset =
+            if let Some(account_id) = configuration.borrow_asset.clone().into_nep141() {
+                FungibleAssetKind::from(account_id)
+            } else if let Some((contract_id, token_id)) =
+                configuration.borrow_asset.clone().into_nep245()
+            {
+                FungibleAssetKind::from((contract_id, token_id))
+            } else {
+                return Err(LiquidatorError::StandardSupportError(
+                    "Unsupported borrow asset type".to_string(),
+                ));
+            };
 
-        let collateral_asset = if let Some(account_id) = configuration.collateral_asset.clone().into_nep141() {
-            FungibleAssetKind::from(account_id)
-        } else if let Some((contract_id, token_id)) = configuration.collateral_asset.clone().into_nep245() {
-            FungibleAssetKind::from((contract_id, token_id))
-        } else {
-            return Err(LiquidatorError::StandardSupportError(
-                "Unsupported collateral asset type".to_string()
-            ));
-        };
+        let collateral_asset =
+            if let Some(account_id) = configuration.collateral_asset.clone().into_nep141() {
+                FungibleAssetKind::from(account_id)
+            } else if let Some((contract_id, token_id)) =
+                configuration.collateral_asset.clone().into_nep245()
+            {
+                FungibleAssetKind::from((contract_id, token_id))
+            } else {
+                return Err(LiquidatorError::StandardSupportError(
+                    "Unsupported collateral asset type".to_string(),
+                ));
+            };
 
         let liquidation_amount = self
             .liquidation_amount(&position, &oracle_response, configuration)
