@@ -14,21 +14,22 @@ name = "accumulator"
 path = "src/bin/accumulator-bot.rs"
 
 [dependencies]
-anyhow = { workspace = true }
-async-trait = { workspace = true }
-base64 = { workspace = true }
-clap = { workspace = true }
-futures = { workspace = true }
-near-crypto = { workspace = true }
-near-jsonrpc-client = { workspace = true }
-near-jsonrpc-primitives = { workspace = true }
-near-primitives = { workspace = true }
-near-sdk = { workspace = true }
-templar-common = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+clap.workspace = true
+futures.workspace = true
+near-account-id.workspace = true
+near-crypto.workspace = true
+near-jsonrpc-client.workspace = true
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
+near-sdk.workspace = true
+templar-common.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

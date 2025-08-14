@@ -18,7 +18,7 @@ impl FungibleAssetKind {
     pub fn is_nep141(&self, account_id: &AccountId) -> bool {
         matches!(self, FungibleAssetKind::Nep141(a) if a == account_id)
     }
-    
+
     pub fn account_id(&self) -> &AccountId {
         match self {
             FungibleAssetKind::Nep141(account_id) => account_id,
@@ -39,6 +39,20 @@ impl FromStr for FungibleAssetKind {
                 });
             }
         }
-        Ok(FungibleAssetKind::Nep141(AccountId::try_from(s.to_string())?))
+        Ok(FungibleAssetKind::Nep141(AccountId::try_from(
+            s.to_string(),
+        )?))
+    }
+}
+
+impl From<AccountId> for FungibleAssetKind {
+    fn from(account_id: AccountId) -> Self {
+        FungibleAssetKind::Nep141(account_id)
+    }
+}
+
+impl From<(AccountId, String)> for FungibleAssetKind {
+    fn from((account_id, token_id): (AccountId, String)) -> Self {
+        FungibleAssetKind::Nep245 { account_id, token_id }
     }
 }

@@ -8,8 +8,9 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{json_types::U128, near, serde_json::json, AccountId, NearToken};
+use near_sdk::{json_types::U128, near, serde_json, serde_json::json, AccountId, NearToken};
 
+use crate::types::FungibleAssetKind;
 use crate::{
     near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcResult},
     Network, DEFAULT_GAS,
@@ -18,13 +19,13 @@ use crate::{
 #[async_trait::async_trait]
 pub trait Swap {
     /// Quotes the amount of `from` token to `to` token.
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128>;
+    async fn quote(&self, from: &FungibleAssetKind, to: &FungibleAssetKind, amount: U128) -> RpcResult<U128>;
 
     /// Swaps `from` token to `to` token.
     async fn swap(
         &self,
-        from: &AccountId,
-        to: &AccountId,
+        from: &FungibleAssetKind,
+        to: &FungibleAssetKind,
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus>;
 }
@@ -78,12 +79,15 @@ struct QuoteRequest {
 }
 
 impl QuoteRequest {
-    pub fn new(input_token: AccountId, output_token: AccountId, output_amount: U128) -> Self {
+    pub fn new(input_token: &FungibleAssetKind, output_token: &FungibleAssetKind, output_amount: U128) -> Self {
+        let input_contract = input_token.account_id();
+        let output_contract = output_token.account_id();
+
         Self {
-            pool_ids: vec![format!("{}|{}|100", input_token, output_token)],
-            tag: format!("{}|100|{}", input_token, output_amount.0),
-            input_token,
-            output_token,
+            pool_ids: vec![format!("{}|{}|100", input_contract, output_contract)],
+            tag: format!("{}|100|{}", input_contract, output_amount.0),
+            input_token: input_contract.clone(),
+            output_token: output_contract.clone(),
             output_amount,
         }
     }
@@ -109,61 +113,78 @@ enum SwapRequestMsg {
 
 impl SwapRequestMsg {
     pub fn new(
-        pool_ids: Vec<String>,
-        output_token: AccountId,
+        input_token: &FungibleAssetKind,
+        output_token: &FungibleAssetKind,
         output_amount: U128,
-        client_id: String,
     ) -> Self {
+        let input_contract = input_token.account_id();
+        let output_contract = output_token.account_id();
+
         Self::SwapByOutput {
-            pool_ids,
-            output_token,
+            pool_ids: vec![format!("{}|{}|100", input_contract, output_contract)],
+            output_token: output_contract.clone(),
             output_amount,
-            client_id,
+            client_id: format!("{}|100|{}", input_contract, output_amount.0),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl Swap for RheaSwap {
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128> {
+    async fn quote(&self, from: &FungibleAssetKind, to: &FungibleAssetKind, amount: U128) -> RpcResult<U128> {
         let response: QuoteResponse = view(
             &self.client,
             self.contract.clone(),
             "quote_by_output",
-            &QuoteRequest::new(from.clone(), to.clone(), amount),
+            &QuoteRequest::new(from, to, amount),
         )
-        .await?;
+            .await?;
         Ok(response.amount)
     }
 
     async fn swap(
         &self,
-        from: &AccountId,
-        to: &AccountId,
+        from: &FungibleAssetKind,
+        to: &FungibleAssetKind, // Fixed: now takes FungibleAssetKind
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus> {
-        let msg = SwapRequestMsg::new(
-            vec![format!("{}|{}|100", from, to)],
-            to.clone(),
-            amount,
-            format!("{}|100|{}", from, amount.0),
-        );
+        let msg = SwapRequestMsg::new(from, to, amount);
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
+        // Need to determine which contract to call for the transfer
+        // For swaps, we typically transfer the input token to the swap contract
+        let (receiver_id, method_name, transfer_args) = match from {
+            FungibleAssetKind::Nep141(account_id) => (
+                account_id.clone(),
+                "ft_transfer_call".to_string(),
+                json!({
+                    "receiver_id": self.contract,
+                    "amount": amount,
+                    "msg": serde_json::to_string(&msg)?,
+                })
+            ),
+            FungibleAssetKind::Nep245 { account_id, token_id } => (
+                account_id.clone(),
+                "mt_transfer_call".to_string(),
+                json!({
+                    "receiver_id": self.contract,
+                    "token_id": token_id,
+                    "amount": amount,
+                    "msg": serde_json::to_string(&msg)?,
+                })
+            ),
+        };
+
         let tx = Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: to.clone(),
+            receiver_id,
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: "ft_transfer_call".to_string(),
-                args: serialize_and_encode(json!({
-                    "receiver_id": self.contract,
-                    "amount": amount,
-                    "msg": msg,
-                })),
+                method_name,
+                args: serialize_and_encode(transfer_args),
                 gas: DEFAULT_GAS,
                 deposit: NearToken::from_yoctonear(1).as_yoctonear(),
             }))],
