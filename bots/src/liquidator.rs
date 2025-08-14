@@ -186,7 +186,7 @@ impl<S: Swap> Liquidator<S> {
                 "mt_transfer_call".to_string(), // <-- Different method
                 json!({
                     "receiver_id": self.market,
-                    "token_id": token_id,
+                    "token_id": format!("nep141:{}", token_id),,
                     "amount": liquidation_amount,
                     "msg": msg,
                 }),
@@ -418,7 +418,7 @@ impl<S: Swap> Liquidator<S> {
                     "mt_balance_of",
                     json!({
                         "account_id": self.signer.account_id,
-                        "token_id": token_id
+                        "token_id": format!("nep141:{}", token_id)
                     }),
                 )
                 .await
