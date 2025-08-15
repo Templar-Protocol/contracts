@@ -4,7 +4,10 @@ use near_primitives::{
     action::{delegate::SignedDelegateAction, Action},
     types::Finality,
 };
-use near_sdk::{serde_json::json, AccountId};
+use near_sdk::{
+    serde_json::{self, json},
+    AccountId,
+};
 use templar_common::market::MarketConfiguration;
 
 use crate::MarketAccounts;
@@ -22,6 +25,14 @@ impl std::fmt::Debug for NearClient {
             .field("signer", &"[hidden]")
             .finish()
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum NearClientError {
+    #[error("Transport error: {0}")]
+    TransportError(#[from] near_fetch::Error),
+    #[error("ParseError error: {0}")]
+    ParseError(#[from] serde_json::Error),
 }
 
 #[allow(clippy::unwrap_used)]
@@ -45,29 +56,32 @@ impl NearClient {
             .await
     }
 
-    pub async fn load_deployments_from_registry(&self, registry_id: &AccountId) -> Vec<AccountId> {
-        self.client
+    pub async fn load_deployments_from_registry(
+        &self,
+        registry_id: &AccountId,
+    ) -> Result<Vec<AccountId>, NearClientError> {
+        Ok(self
+            .client
             .view(registry_id, "list_deployments")
             .args_json(json!({}))
             .finality(Finality::Final)
-            .await
-            .unwrap()
-            .json::<Vec<AccountId>>()
-            .unwrap()
+            .await?
+            .json::<Vec<AccountId>>()?)
     }
 
-    pub async fn load_market_accounts(&self, market_id: &AccountId) -> Option<MarketAccounts> {
+    pub async fn load_market_accounts(
+        &self,
+        market_id: &AccountId,
+    ) -> Result<MarketAccounts, NearClientError> {
         let market_configuration = self
             .client
             .view(market_id, "get_configuration")
             .args_json(json!({}))
             .finality(Finality::Final)
-            .await
-            .ok()?
-            .json::<MarketConfiguration>()
-            .ok()?;
+            .await?
+            .json::<MarketConfiguration>()?;
 
-        Some(MarketAccounts {
+        Ok(MarketAccounts {
             account_id: market_id.clone(),
             borrow_asset: market_configuration.borrow_asset,
             collateral_asset: market_configuration.collateral_asset,

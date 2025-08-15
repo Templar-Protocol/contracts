@@ -26,7 +26,7 @@ use templar_relayer::{
     message::{RelayRequest, RelayResponse},
     AssetTransfer, Configuration, MarketAccounts,
 };
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug, Clone)]
@@ -101,9 +101,16 @@ impl App {
                 let near_client = self.near_client.clone();
                 let registry_id = registry_id.clone();
                 async move {
-                    near_client
+                    match near_client
                         .load_deployments_from_registry(&registry_id)
                         .await
+                    {
+                        Ok(deployments) => deployments,
+                        Err(e) => {
+                            warn!("Failed to load deployments from registry {registry_id}: {e}");
+                            vec![]
+                        }
+                    }
                 }
             });
         }
@@ -114,7 +121,15 @@ impl App {
         for market in markets {
             set.spawn({
                 let near_client = self.near_client.clone();
-                async move { near_client.load_market_accounts(&market).await }
+                async move {
+                    match near_client.load_market_accounts(&market).await {
+                        Ok(market_accounts) => Some(market_accounts),
+                        Err(e) => {
+                            warn!("Failed to load accounts for market {market}: {e}");
+                            None
+                        }
+                    }
+                }
             });
         }
         let market_accounts_vec = set.join_all().await;
