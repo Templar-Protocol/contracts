@@ -17,12 +17,11 @@ use near_primitives::{
     types::{AccountId, Gas},
 };
 use near_sdk::serde_json;
-use sqlx::postgres::PgPoolOptions;
 use tokio::{sync::RwLock, task::JoinSet};
 
 use templar_common::market::DepositMsg;
 use templar_relayer::{
-    client::NearClient,
+    client::{database::Database, near::Near},
     error::PreconditionError,
     message::{RelayRequest, RelayResponse},
     AssetTransfer, Configuration, MarketAccounts,
@@ -69,13 +68,13 @@ struct App {
     pub args: Args,
     pub configuration: Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
-    pub near_client: NearClient,
-    pub db: sqlx::PgPool,
+    pub near: Near,
+    pub database: Database,
 }
 
 impl App {
     pub fn new(args: Args, configuration: Configuration) -> Self {
-        let near_client = NearClient::new(
+        let near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
             KeyRotatingSigner::try_from_iter(
                 args.secret_key
@@ -85,17 +84,14 @@ impl App {
             .unwrap(),
         );
 
-        let db = PgPoolOptions::new()
-            .max_connections(4)
-            .connect_lazy(&args.database_url)
-            .unwrap();
+        let database = Database::new(&args.database_url).unwrap();
 
         Self {
             args,
             configuration,
             accounts: Arc::new(RwLock::new(AccountData::default())),
-            near_client,
-            db,
+            near,
+            database,
         }
     }
 
@@ -106,13 +102,10 @@ impl App {
         let mut set = JoinSet::new();
         for registry_id in &self.args.registry {
             set.spawn({
-                let near_client = self.near_client.clone();
+                let near = self.near.clone();
                 let registry_id = registry_id.clone();
                 async move {
-                    match near_client
-                        .load_deployments_from_registry(&registry_id)
-                        .await
-                    {
+                    match near.load_deployments_from_registry(&registry_id).await {
                         Ok(deployments) => deployments,
                         Err(e) => {
                             warn!("Failed to load deployments from registry {registry_id}: {e}");
@@ -128,9 +121,9 @@ impl App {
         let mut set = JoinSet::new();
         for market in markets {
             set.spawn({
-                let near_client = self.near_client.clone();
+                let near = self.near.clone();
                 async move {
-                    match near_client.load_market_accounts(&market).await {
+                    match near.load_market_accounts(&market).await {
                         Ok(market_accounts) => Some(market_accounts),
                         Err(e) => {
                             warn!("Failed to load accounts for market {market}: {e}");
@@ -295,7 +288,7 @@ async fn relay(
     {
         Ok(_gas) => {
             let tx_result = app
-                .near_client
+                .near
                 .sign_and_send(relay_request.signed_delegate_action)
                 .await;
             match tx_result {
