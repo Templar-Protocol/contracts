@@ -29,7 +29,6 @@ jobs:
               - 'contract/**'
               - 'mock/**'
               - 'script/**'
-              - '**/Cargo.toml'
 
   gas-report:
     name: Gas report

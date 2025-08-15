@@ -25,7 +25,6 @@ jobs:
               - 'contract/**'
               - 'mock/**'
               - 'script/**'
-              - '**/Cargo.toml'
 
   test:
     uses: ./.github/workflows/test.yml
