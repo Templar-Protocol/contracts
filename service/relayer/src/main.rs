@@ -16,18 +16,15 @@ use near_primitives::{
     action::{delegate::SignedDelegateAction, Action},
     types::{AccountId, Gas},
 };
-use near_sdk::serde::Deserialize;
 use near_sdk::serde_json;
 use tokio::{sync::RwLock, task::JoinSet};
 
-use templar_common::{
-    asset::{BorrowAsset, FungibleAsset},
-    market::DepositMsg,
-};
+use templar_common::market::DepositMsg;
 use templar_relayer::{
     client::NearClient,
+    error::PreconditionError,
     message::{RelayRequest, RelayResponse},
-    Configuration, FtTransferCallArgs, MarketAccounts, MtTransferCallArgs, TransferCallArgs,
+    AssetTransfer, Configuration, MarketAccounts,
 };
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -148,27 +145,6 @@ impl App {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("Failed precondition: ")]
-pub enum PreconditionError {
-    #[error("Failed signature verification")]
-    SignatureVerificationFailure,
-    #[error("Unknown transaction receiver account ID {account_id}")]
-    UnknownTransactionReceiverId { account_id: AccountId },
-    #[error("Unsupported action at index {index}")]
-    UnsupportedAction { index: usize },
-    #[error("Argument deserialization failure at index {index}")]
-    ArgumentDeserializationFailure { index: usize },
-    #[error("Msg deserialization failure at index {index}")]
-    MsgDeserializationFailure { index: usize },
-    #[error("Unknown token transfer receiver account ID {account_id} at index {index}")]
-    UnknownTransferReceiverId { account_id: AccountId, index: usize },
-    #[error("Invalid message for asset at index {index}")]
-    InvalidMsgForAsset { index: usize },
-    #[error("Unknown function name `{name}` at index {index}")]
-    UnknownFunctionName { name: String, index: usize },
-}
-
 impl App {
     pub async fn check_and_calculate_gas(
         &self,
@@ -218,41 +194,8 @@ impl App {
         } else {
             // Token contract transfer call to market.
             for (index, call) in calls.iter().enumerate() {
-                fn deserialize_args<'de, T: Deserialize<'de>>(
-                    slice: &'de [u8],
-                    index: usize,
-                ) -> Result<T, PreconditionError> {
-                    serde_json::from_slice::<T>(slice)
-                        .map_err(|_| PreconditionError::ArgumentDeserializationFailure { index })
-                }
-
-                let (args, asset) = match &call.method_name[..] {
-                    "ft_transfer_call" => {
-                        let args = deserialize_args::<FtTransferCallArgs>(&call.args, index)?;
-
-                        (
-                            Box::new(args) as Box<dyn TransferCallArgs>,
-                            FungibleAsset::<BorrowAsset>::nep141(receiver_id.clone()),
-                        )
-                    }
-                    "mt_transfer_call" => {
-                        let args = deserialize_args::<MtTransferCallArgs>(&call.args, index)?;
-                        let token_id = args.token_id.clone();
-
-                        (
-                            Box::new(args) as Box<dyn TransferCallArgs>,
-                            FungibleAsset::<BorrowAsset>::nep245(receiver_id.clone(), token_id),
-                        )
-                    }
-                    name => {
-                        return Err(PreconditionError::UnknownFunctionName {
-                            name: name.to_owned(),
-                            index,
-                        });
-                    }
-                };
-
-                let market_id = args.receiver_id();
+                let transfer = AssetTransfer::parse(call, index, receiver_id.clone())?;
+                let market_id = transfer.token_receiver_id();
 
                 let Some(market_account_ids) = accounts.market_account_ids.get(market_id) else {
                     return Err(PreconditionError::UnknownTransferReceiverId {
@@ -261,19 +204,17 @@ impl App {
                     });
                 };
 
-                let Ok(msg) = serde_json::from_str::<DepositMsg>(args.msg()) else {
+                let Ok(msg) = serde_json::from_str::<DepositMsg>(transfer.args.msg()) else {
                     return Err(PreconditionError::MsgDeserializationFailure { index });
                 };
 
-                if market_account_ids.borrow_asset == asset {
-                    match msg {
-                        DepositMsg::Supply | DepositMsg::Repay => { /* ok */ }
-                        _ => return Err(PreconditionError::InvalidMsgForAsset { index }),
+                if transfer.asset() == market_account_ids.borrow_asset {
+                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
+                        return Err(PreconditionError::InvalidMsgForAsset { index });
                     }
-                } else if market_account_ids.collateral_asset == asset.coerce() {
-                    match msg {
-                        DepositMsg::Collateralize => { /* ok */ }
-                        _ => return Err(PreconditionError::InvalidMsgForAsset { index }),
+                } else if transfer.asset() == market_account_ids.collateral_asset {
+                    if !matches!(msg, DepositMsg::Collateralize) {
+                        return Err(PreconditionError::InvalidMsgForAsset { index });
                     }
                 } else {
                     return Err(PreconditionError::UnknownTransactionReceiverId {
