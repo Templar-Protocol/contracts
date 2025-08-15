@@ -5,4 +5,11 @@ allowed_methods:
   - withdraw_static_yield
   - withdraw_collateral
   - create_supply_withdrawal_request
+  - cancel_supply_withdrawal_request
   - execute_next_supply_withdrawal_request
+  - storage_deposit
+  - storage_unregister
+  - storage_withdraw
+starting_allowance_yocto: "250000000000000000000000" # 0.25 NEAR
+gas_price_expires_secs: 600 # 10 minutes
+fallback_yocto_per_tgas: "100000000" # 0.0001 NEAR / Tgas

@@ -3,7 +3,7 @@ use near_primitives::{action::FunctionCallAction, types::AccountId};
 use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
-    serde_json, AccountIdRef,
+    serde_json, AccountIdRef, NearToken,
 };
 use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
 
@@ -22,6 +22,9 @@ pub struct MarketAccounts {
 #[serde(crate = "near_sdk::serde")]
 pub struct Configuration {
     pub allowed_methods: Vec<String>,
+    pub starting_allowance_yocto: NearToken,
+    pub gas_price_expires_secs: u64,
+    pub fallback_yocto_per_tgas: NearToken,
 }
 
 pub struct AssetTransfer {

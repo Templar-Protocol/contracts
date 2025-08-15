@@ -42,6 +42,10 @@ impl Near {
         Self { client, signer }
     }
 
+    pub async fn fetch_gas_price(&self) -> Result<near_sdk::NearToken, near_fetch::Error> {
+        self.client.gas_price().await
+    }
+
     /// # Errors
     ///
     /// - When there is an error sending the transaction.
