@@ -1,13 +1,19 @@
 #![allow(clippy::unwrap_used, clippy::wildcard_imports)]
 
-use near_sdk::{json_types::U64, serde_json, Gas};
+use near_sdk::{json_types::U64, Gas};
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
     number::Decimal, time_chunk::TimeChunkConfiguration,
 };
 use test_utils::*;
 
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 #[tokio::main]
 async fn main() {
     const ITERATIONS: usize = 24;
@@ -142,21 +148,30 @@ async fn main() {
     println!();
     println!("### Action Gas Descriptors");
     println!();
-    println!("```json");
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&GasDescriptors {
-            collateralize: collateralize_gas_average as u64,
-            withdraw_collateral: withdraw_collateral_gas_average as u64,
-            borrow: borrow_gas_average as u64,
-            repay: repay_gas_average as u64,
-            supply: supply_gas.as_gas(),
-            create_supply_withdrawal_request: create_supply_withdrawal_gas.as_gas(),
-            execute_next_supply_withdrawal_request: execute_supply_withdrawal_gas.as_gas(),
-        })
-        .unwrap(),
-    );
-    println!("```");
+    println!("| Action | Gas  |");
+    println!("| -----: | ---: |");
+    let list = vec![
+        ("collateralize", collateralize_gas_average as u64),
+        (
+            "withdraw_collateral",
+            withdraw_collateral_gas_average as u64,
+        ),
+        ("borrow", borrow_gas_average as u64),
+        ("repay", repay_gas_average as u64),
+        ("supply", supply_gas.as_gas()),
+        (
+            "create_supply_withdrawal_request",
+            create_supply_withdrawal_gas.as_gas(),
+        ),
+        (
+            "execute_next_supply_withdrawal_request",
+            execute_supply_withdrawal_gas.as_gas(),
+        ),
+    ];
+    for (action_label, gas) in list {
+        println!("| `{action_label}` | {gas} |");
+    }
+    println!();
 }
 
 /// Estimate `snapshot_limit` that will maximize iterations while safely
