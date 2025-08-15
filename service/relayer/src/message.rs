@@ -1,3 +1,4 @@
+use axum::{http::StatusCode, Json};
 use near_primitives::{action::delegate::SignedDelegateAction, views::FinalExecutionOutcomeView};
 use near_sdk::serde::{Deserialize, Serialize};
 
@@ -47,6 +48,36 @@ pub enum RelayResponse {
     Rejected {
         reason: String,
     },
+}
+
+#[allow(clippy::needless_pass_by_value)]
+impl RelayResponse {
+    pub fn failure(e: impl ToString) -> (StatusCode, Json<RelayResponse>) {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Self::Failure {
+                error: e.to_string(),
+            }),
+        )
+    }
+
+    pub fn rejected(r: impl ToString) -> (StatusCode, Json<RelayResponse>) {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(Self::Rejected {
+                reason: r.to_string(),
+            }),
+        )
+    }
+
+    pub fn success(execution: FinalExecutionOutcomeView) -> (StatusCode, Json<RelayResponse>) {
+        (
+            StatusCode::OK,
+            Json(Self::Success {
+                execution: Box::new(execution),
+            }),
+        )
+    }
 }
 
 #[cfg(test)]

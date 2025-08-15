@@ -68,6 +68,9 @@ pub mod error {
 }
 
 impl Database {
+    /// # Errors
+    ///
+    /// - Database connection errors
     pub fn new(database_url: &str) -> Result<Self, sqlx::Error> {
         let connection = PgPoolOptions::new()
             .max_connections(4)
@@ -76,6 +79,9 @@ impl Database {
         Ok(Self { connection })
     }
 
+    /// # Errors
+    ///
+    /// - Query errors
     pub async fn get_available_allowance_or_create(
         &self,
         account_id: &AccountIdRef,
@@ -90,6 +96,12 @@ impl Database {
         }
     }
 
+    /// # Errors
+    ///
+    /// - Query errors
+    /// - Account does not exist
+    /// - Pending transaction already exists
+    /// - Insufficient allowance
     pub async fn set_pending_transaction(
         &self,
         account_id: &AccountIdRef,
@@ -151,10 +163,15 @@ impl Database {
         }
     }
 
+    /// # Errors
+    ///
+    /// - Account does not exist
+    /// - Pending transaction does not exist
+    /// - Query errors
     pub async fn record_transaction(
         &self,
         account_id: &AccountIdRef,
-        transaction_id: CryptoHash,
+        transaction_hash: CryptoHash,
         allowance_spent: NearToken,
         succeeded: bool,
     ) -> Result<(), error::RecordTransactionError> {
@@ -166,7 +183,7 @@ impl Database {
                 pending_transaction_issued_at = null
             where account_id = $1 and pending_transaction_hash = $2",
             account_id.as_str(),
-            &transaction_id.0,
+            &transaction_hash.0,
         )
         .execute(&mut *tx)
         .await?;
@@ -196,7 +213,7 @@ impl Database {
         sqlx::query!(
             "insert into call (account_id, transaction_hash, allowance_spent, succeeded) values ($1, $2, $3, $4)",
             account_id.as_str(),
-            &transaction_id.0,
+            &transaction_hash.0,
             Decimal::from(allowance_spent.as_yoctonear()),
             succeeded,
         ).execute(&mut *tx).await?;
@@ -204,6 +221,9 @@ impl Database {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// - Query errors
     pub async fn create_account(
         &self,
         account_id: &AccountIdRef,
@@ -220,6 +240,9 @@ impl Database {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// - Query errors
     pub async fn get_available_allowance(
         &self,
         account_id: &AccountIdRef,

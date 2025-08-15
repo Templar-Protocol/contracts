@@ -33,6 +33,10 @@ pub struct AssetTransfer {
 }
 
 impl AssetTransfer {
+    /// # Errors
+    ///
+    /// - Argument deserialization
+    /// - Unknown function name
     pub fn parse(
         call: &FunctionCallAction,
         index: usize,

@@ -6,23 +6,19 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
-    thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{extract::State, http::StatusCode, routing, Json, Router};
 use clap::Parser;
-use near_crypto::SecretKey;
-use near_fetch::signer::KeyRotatingSigner;
+use near_crypto::{InMemorySigner, SecretKey};
 use near_primitives::{
     action::{delegate::SignedDelegateAction, Action},
     types::{AccountId, Gas},
+    views::FinalExecutionStatus,
 };
 use near_sdk::{serde_json, NearToken};
-use tokio::{
-    sync::{OnceCell, RwLock},
-    task::{JoinHandle, JoinSet},
-};
+use tokio::{sync::RwLock, task::JoinSet};
 
 use templar_common::market::DepositMsg;
 use templar_relayer::{
@@ -101,12 +97,11 @@ impl App {
     pub fn new(args: Args, configuration: Configuration) -> Self {
         let near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-            KeyRotatingSigner::try_from_iter(
-                args.secret_key
-                    .iter()
-                    .map(|sk| (args.account_id.clone(), sk.clone())),
-            )
-            .unwrap(),
+            args.account_id.clone(),
+            args.secret_key
+                .iter()
+                .map(|s| InMemorySigner::from_secret_key(args.account_id.clone(), s.clone()).into())
+                .collect(),
         );
 
         let database = Database::new(&args.database_url).unwrap();
@@ -343,17 +338,18 @@ async fn relay(
         .await
     {
         Ok(gas) => {
-            let account_id = &relay_request
+            let account_id = relay_request
                 .signed_delegate_action
                 .delegate_action
-                .sender_id;
+                .sender_id
+                .clone();
 
             let gas_spend = app.price_gas(gas).await;
 
             let available_allowance = match app
                 .database
                 .get_available_allowance_or_create(
-                    account_id,
+                    &account_id,
                     app.configuration.starting_allowance_yocto,
                 )
                 .await
@@ -361,35 +357,61 @@ async fn relay(
                 Ok(available) => available,
                 Err(e) => {
                     error!("Database error trying to obtain available balance: {e}");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(RelayResponse::Failure {
-                            error: "Database Error".to_string(),
-                        }),
-                    );
+                    return RelayResponse::failure("Database Error");
                 }
             };
 
-            // TODO: Continue with database implementation
-
-            let tx_result = app
-                .near
-                .sign_and_send(relay_request.signed_delegate_action)
-                .await;
-            match tx_result {
-                Ok(execution) => (
-                    StatusCode::OK,
-                    Json(RelayResponse::Success {
-                        execution: Box::new(execution),
-                    }),
-                ),
-                Err(e) => (
-                    StatusCode::OK,
-                    Json(RelayResponse::Failure {
-                        error: e.to_string(),
-                    }),
-                ),
+            if available_allowance < gas_spend {
+                return RelayResponse::rejected("Insufficient allowance");
             }
+
+            let signed_transaction = match app
+                .near
+                .construct_delegate_transaction(relay_request.signed_delegate_action)
+                .await
+            {
+                Ok(tx) => tx,
+                Err(e) => {
+                    error!("Error constructing delegate transaction: {e}");
+                    return RelayResponse::failure(e);
+                }
+            };
+
+            let transaction_hash = signed_transaction.get_hash();
+
+            if let Err(e) = app
+                .database
+                .set_pending_transaction(&account_id, gas_spend, transaction_hash)
+                .await
+            {
+                return RelayResponse::rejected(e);
+            }
+
+            let tx_result = match app.near.send_transaction(signed_transaction).await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("Send transaction failure: {e}");
+                    return RelayResponse::failure(e);
+                }
+            };
+
+            let succeeded = matches!(tx_result.status, FinalExecutionStatus::SuccessValue(_));
+
+            let result = app
+                .database
+                .record_transaction(
+                    &account_id,
+                    transaction_hash,
+                    NearToken::from_yoctonear(tx_result.tokens_burnt()),
+                    succeeded,
+                )
+                .await;
+
+            if let Err(e) = result {
+                error!("Error recording transaction after submitting to blockchain: {e}");
+            }
+
+            RelayResponse::success(tx_result)
         }
         Err(e) => (
             StatusCode::BAD_REQUEST,
