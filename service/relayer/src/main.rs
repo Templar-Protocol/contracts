@@ -17,6 +17,7 @@ use near_primitives::{
     types::{AccountId, Gas},
 };
 use near_sdk::serde_json;
+use sqlx::postgres::PgPoolOptions;
 use tokio::{sync::RwLock, task::JoinSet};
 
 use templar_common::market::DepositMsg;
@@ -69,6 +70,7 @@ struct App {
     pub configuration: Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
     pub near_client: NearClient,
+    pub db: sqlx::PgPool,
 }
 
 impl App {
@@ -83,11 +85,17 @@ impl App {
             .unwrap(),
         );
 
+        let db = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_lazy(&args.database_url)
+            .unwrap();
+
         Self {
             args,
             configuration,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             near_client,
+            db,
         }
     }
 

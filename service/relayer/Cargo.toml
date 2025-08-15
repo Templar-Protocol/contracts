@@ -22,6 +22,10 @@ sqlx = { version = "0.8", features = [
     "derive",
     "macros",
     "migrate",
+    "chrono",
+    "rust_decimal",
+    "uuid",
+    "json",
 ] }
 templar-common = { path = "../../common" }
 thiserror.workspace = true
@@ -31,3 +35,7 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+# https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification
+[profile.dev.package.sqlx-macros]
+opt-level = 3
