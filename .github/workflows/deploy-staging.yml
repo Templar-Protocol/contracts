@@ -23,8 +23,9 @@ jobs:
             contracts:
               - 'common/**'
               - 'contract/**'
+              - 'mock/**'
+              - 'script/**'
               - '**/Cargo.toml'
-              - '**/Cargo.lock'
 
   test:
     uses: ./.github/workflows/test.yml
