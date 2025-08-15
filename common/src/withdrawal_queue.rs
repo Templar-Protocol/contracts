@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
-use crate::asset::BorrowAssetAmount;
+use crate::{asset::BorrowAssetAmount, asset_op};
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]
@@ -284,7 +284,7 @@ impl WithdrawalQueue {
                 });
             }
 
-            depth.join(amount);
+            asset_op!(depth += amount);
         }
 
         unreachable!()

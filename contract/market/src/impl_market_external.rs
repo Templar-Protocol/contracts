@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset_op,
     borrow::{BorrowPosition, BorrowStatus},
     contract::list,
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
@@ -91,16 +92,14 @@ impl MarketExternalInterface for Contract {
 
         let account_id = env::predecessor_account_id();
 
-        let proposed_amount = if let Some(borrow_position) =
-            self.borrow_position_ref(account_id.clone())
-        {
-            let mut a = borrow_position.inner().get_borrow_asset_principal();
-            a.join(amount)
-                .unwrap_or_else(|| env::panic_str("Requested borrow amount would cause overflow"));
-            a
-        } else {
-            amount
-        };
+        let proposed_amount =
+            if let Some(borrow_position) = self.borrow_position_ref(account_id.clone()) {
+                let mut borrow_principal = borrow_position.inner().get_borrow_asset_principal();
+                asset_op!(borrow_principal += amount);
+                borrow_principal
+            } else {
+                amount
+            };
 
         require!(
             self.configuration.borrow_range.contains(proposed_amount),
@@ -220,9 +219,7 @@ impl MarketExternalInterface for Contract {
             )
             .is_some();
 
-        self.borrow_asset_in_flight
-            .join(withdrawal_resolution.amount_to_account)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight overflow"));
+        asset_op!(self.borrow_asset_in_flight += withdrawal_resolution.amount_to_account);
 
         PromiseOrValue::Promise(
             self.configuration
@@ -295,11 +292,11 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.current_snapshot.deposited_active().into();
+        let deposited: Decimal = self.current_snapshot.borrow_asset_deposited_active().into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = self.current_snapshot.borrowed().into();
+        let borrowed: Decimal = self.current_snapshot.borrow_asset_borrowed().into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
@@ -334,14 +331,10 @@ impl MarketExternalInterface for Contract {
                 )
             };
 
-        static_yield_record
-            .borrow_asset
-            .split(borrow_asset_amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset yield underflow"));
-        static_yield_record
-            .collateral_asset
-            .split(collateral_asset_amount)
-            .unwrap_or_else(|| env::panic_str("Collateral asset yield underflow"));
+        asset_op! {
+            static_yield_record.borrow_asset -= borrow_asset_amount;
+            static_yield_record.collateral_asset -= collateral_asset_amount;
+        };
 
         self.static_yield.insert(&predecessor, &static_yield_record);
 

@@ -3,6 +3,7 @@ use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
+    asset_op,
     market::WithdrawalResolution,
     oracle::pyth::OracleResponse,
     price::PricePair,
@@ -193,8 +194,8 @@ impl Contract {
         borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
-            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
-            "New position must exceed initial minimum collateral ratio",
+            borrow_position.satisfies_mcr_maintenance(&price_pair),
+            "Borrow position must satisfy maintenance minimum collateral ratio after borrow.",
         );
 
         require!(
@@ -272,9 +273,7 @@ impl Contract {
         withdrawal_resolution: WithdrawalResolution,
         expected_success: bool,
     ) {
-        self.borrow_asset_in_flight
-            .split(withdrawal_resolution.amount_to_account)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight overflow"));
+        asset_op!(self.borrow_asset_in_flight -= withdrawal_resolution.amount_to_account);
 
         // Withdrawal succeeded: remove the withdrawal request from the queue.
         // Withdrawal failed but should have succeeded: remove request but still refund.
@@ -446,13 +445,13 @@ impl Contract {
         borrow_position.record_collateral_asset_withdrawal(proof, amount);
 
         require!(
-            borrow_position.satisfies_minimum_collateral_ratio(&price_pair),
-            "Borrow position must satisfy MCR after collateral withdrawal.",
+            borrow_position.satisfies_mcr_liquidation(&price_pair),
+            "Borrow position must satisfy liquidation minimum collateral ratio after collateral withdrawal.",
         );
 
         require!(
-            borrow_position.satisfies_minimum_initial_collateral_ratio(&price_pair),
-            "Borrow position must satisfy initial MCR after collateral withdrawal.",
+            borrow_position.satisfies_mcr_maintenance(&price_pair),
+            "Borrow position must satisfy maintenance minimum collateral ratio after collateral withdrawal.",
         );
 
         drop(borrow_position);
@@ -511,12 +510,7 @@ impl Contract {
 
         if !borrow_asset_amount.is_zero() {
             if matches!(env::promise_result(i), PromiseResult::Failed) {
-                static_yield
-                    .borrow_asset
-                    .join(borrow_asset_amount)
-                    .unwrap_or_else(|| {
-                        env::panic_str("Borrow asset static yield returned overflows")
-                    });
+                asset_op!(static_yield.borrow_asset += borrow_asset_amount);
             }
             i += 1;
         }
@@ -524,12 +518,7 @@ impl Contract {
         if !collateral_asset_amount.is_zero()
             && matches!(env::promise_result(i), PromiseResult::Failed)
         {
-            static_yield
-                .collateral_asset
-                .join(collateral_asset_amount)
-                .unwrap_or_else(|| {
-                    env::panic_str("Collateral asset static yield returned overflows")
-                });
+            asset_op!(static_yield.collateral_asset += collateral_asset_amount);
         }
     }
 }

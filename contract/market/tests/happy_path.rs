@@ -70,7 +70,7 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         );
     }
 
-    assert!(configuration.borrow_mcr.near_equal(dec!("1.2")));
+    assert!(configuration.borrow_mcr_liquidation.near_equal(dec!("1.2")));
 
     let bounds = c.storage_balance_bounds().await;
 
@@ -81,9 +81,9 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
 
     let snapshots = c.list_finalized_snapshots(None, None).await;
     assert_eq!(snapshots.len(), 1);
-    assert!(snapshots[0].yield_distribution.is_zero());
-    assert!(snapshots[0].deposited_active().is_zero());
-    assert!(snapshots[0].borrowed().is_zero());
+    assert!(snapshots[0].yield_distribution().is_zero());
+    assert!(snapshots[0].borrow_asset_deposited_active().is_zero());
+    assert!(snapshots[0].borrow_asset_borrowed().is_zero());
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;

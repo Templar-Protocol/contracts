@@ -1,8 +1,9 @@
 [package]
-name = "templar-bots"
-version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 license.workspace = true
+name = "templar-bots"
+repository.workspace = true
+version = "0.1.0"
 
 [[bin]]
 name = "liquidator"

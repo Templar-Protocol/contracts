@@ -69,6 +69,7 @@ impl MarketController {
         #[view] pub fn get_configuration() -> MarketConfiguration;
         #[view] pub fn get_finalized_snapshots_len() -> u32;
         #[view] pub fn list_finalized_snapshots(offset: Option<u32>, count: Option<u32>) -> Vec<Snapshot>;
+        #[view] pub fn get_current_snapshot() -> Snapshot;
         #[view] pub fn list_supply_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, SupplyPosition>;
         #[view] pub fn get_supply_position(account_id: &AccountId) -> Option<SupplyPosition>;
         #[view] pub fn list_borrow_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, BorrowPosition>;
@@ -122,11 +123,14 @@ impl MarketController {
 
         eprintln!("Market snapshots:");
         for (i, snapshot) in snapshots.iter().enumerate() {
-            eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
-            eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
-            eprintln!("\t\tDeposited (active):\t{}", snapshot.deposited_active(),);
-            eprintln!("\t\tBorrowed:\t{}", snapshot.borrowed());
-            eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
+            eprintln!("\t{i}: {}", snapshot.time_chunk().0 .0);
+            eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms().0);
+            eprintln!(
+                "\t\tDeposited (active):\t{}",
+                snapshot.borrow_asset_deposited_active(),
+            );
+            eprintln!("\t\tBorrowed:\t{}", snapshot.borrow_asset_borrowed());
+            eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution());
         }
     }
 }

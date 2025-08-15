@@ -9,12 +9,12 @@ use near_primitives::{
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
-use near_sdk::{AccountId, serde_json::json};
+use near_sdk::{serde_json::json, AccountId};
 use tracing::{error, info, instrument};
 
 use crate::{
-    BorrowPositions, DEFAULT_GAS, Network,
     near::{get_access_key_data, send_tx, serialize_and_encode, view},
+    BorrowPositions, Network, DEFAULT_GAS,
 };
 
 #[derive(Debug, Clone, Parser)]

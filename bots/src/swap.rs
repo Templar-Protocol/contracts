@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use clap::ValueEnum;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
@@ -6,11 +8,11 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{AccountId, AccountIdRef, NearToken, json_types::U128, near, serde_json::json};
+use near_sdk::{json_types::U128, near, serde_json::json, AccountId, AccountIdRef, NearToken};
 
 use crate::{
-    DEFAULT_GAS, Network,
-    near::{RpcResult, get_access_key_data, send_tx, serialize_and_encode, view},
+    near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcResult},
+    Network, DEFAULT_GAS,
 };
 
 #[async_trait::async_trait]
@@ -52,11 +54,11 @@ impl SwapType {
 pub struct RheaSwap {
     pub contract: AccountId,
     pub client: JsonRpcClient,
-    pub signer: InMemorySigner,
+    pub signer: Arc<InMemorySigner>,
 }
 
 impl RheaSwap {
-    pub fn new(contract: AccountId, client: JsonRpcClient, signer: InMemorySigner) -> Self {
+    pub fn new(contract: AccountId, client: JsonRpcClient, signer: Arc<InMemorySigner>) -> Self {
         Self {
             contract,
             client,
