@@ -3802,7 +3802,6 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "futures",
- "near-account-id",
  "near-crypto",
  "near-jsonrpc-client 0.16.1",
  "near-jsonrpc-primitives",
@@ -3821,6 +3820,7 @@ version = "1.0.0"
 dependencies = [
  "borsh",
  "hex",
+ "near-account-id",
  "near-contract-standards",
  "near-sdk",
  "primitive-types",

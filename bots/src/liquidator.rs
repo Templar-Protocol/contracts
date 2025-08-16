@@ -1,4 +1,3 @@
-use crate::types::FungibleAssetKind;
 use crate::{
     near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcError},
     swap::{Swap, SwapType},
@@ -18,7 +17,9 @@ use near_sdk::{
     serde_json::{self, json},
     AccountId, NearToken,
 };
+use std::fmt::Debug;
 use std::{collections::HashMap, sync::Arc};
+use templar_common::asset::{AssetClass, FromAsset, FungibleAsset};
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
@@ -91,7 +92,7 @@ pub struct Args {
     pub signer_account: AccountId,
     /// Asset to liquidate with - `"contract.near"` (`NEP-141`) or `"contract.near:token_id"` (`NEP-245`)
     #[arg(short, long, env = "ASSET_ACCOUNT_ID")]
-    pub asset: FungibleAssetKind,
+    pub asset: FungibleAsset<FromAsset>,
     /// Network to run liquidations on
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
@@ -112,7 +113,7 @@ pub struct Args {
 pub struct Liquidator<S: Swap> {
     client: JsonRpcClient,
     signer: Arc<InMemorySigner>,
-    asset: Arc<FungibleAssetKind>,
+    from_asset: Arc<FungibleAsset<FromAsset>>,
     pub market: AccountId,
     timeout: u64,
     swap: Arc<S>,
@@ -123,7 +124,7 @@ impl<S: Swap> Liquidator<S> {
     pub fn new(
         client: JsonRpcClient,
         signer: Arc<InMemorySigner>,
-        asset: Arc<FungibleAssetKind>,
+        from_asset: Arc<FungibleAsset<FromAsset>>,
         market: AccountId,
         swap: Arc<S>,
         timeout: u64,
@@ -131,7 +132,7 @@ impl<S: Swap> Liquidator<S> {
         Self {
             client,
             signer,
-            asset,
+            from_asset,
             market,
             timeout,
             swap,
@@ -168,40 +169,18 @@ impl<S: Swap> Liquidator<S> {
             account_id: borrow.clone(),
         }))?;
 
-        let (receiver_id, method_name, args) = match self.asset.as_ref() {
-            FungibleAssetKind::Nep141(account_id) => (
-                account_id.clone(),
-                "ft_transfer_call".to_string(),
-                json!({
-                    "receiver_id": self.market,
-                    "amount": liquidation_amount,
-                    "msg": msg,
-                }),
-            ),
-            FungibleAssetKind::Nep245 {
-                account_id,
-                token_id,
-            } => (
-                account_id.clone(),
-                "mt_transfer_call".to_string(), // <-- Different method
-                json!({
-                    "receiver_id": self.market,
-                    "token_id": format!("nep141:{}", token_id),
-                    "amount": liquidation_amount,
-                    "msg": msg,
-                }),
-            ),
-        };
-
+        let transfer_call_params =
+            self.from_asset
+                .transfer_call_params(&self.market, liquidation_amount, &msg);
         Ok(Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id,
+            receiver_id: self.market.clone(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name,
-                args: serialize_and_encode(args),
+                method_name: transfer_call_params.method_name.clone(),
+                args: serialize_and_encode(transfer_call_params.args),
                 gas: DEFAULT_GAS,
                 deposit: NearToken::from_yoctonear(1).as_yoctonear(),
             }))],
@@ -231,42 +210,16 @@ impl<S: Swap> Liquidator<S> {
 
         info!("Liquidation reason: {reason:?}");
 
-        // I really dislike these clones to be fair, but the is_nep141 and is_nep245 methods
-        // are a bit strange as it doesn't return what kind the asset is, but rather checks
-        // against another account_id and if it matches internally. Not ideal, but should be fixed
-        // later as that isn't good practice.
-        let borrow_asset =
-            if let Some(account_id) = configuration.borrow_asset.clone().into_nep141() {
-                FungibleAssetKind::from(account_id)
-            } else if let Some((contract_id, token_id)) =
-                configuration.borrow_asset.clone().into_nep245()
-            {
-                FungibleAssetKind::from((contract_id, token_id))
-            } else {
-                return Err(LiquidatorError::StandardSupportError(
-                    "Unsupported borrow asset type".to_string(),
-                ));
-            };
-
-        let collateral_asset =
-            if let Some(account_id) = configuration.collateral_asset.clone().into_nep141() {
-                FungibleAssetKind::from(account_id)
-            } else if let Some((contract_id, token_id)) =
-                configuration.collateral_asset.clone().into_nep245()
-            {
-                FungibleAssetKind::from((contract_id, token_id))
-            } else {
-                return Err(LiquidatorError::StandardSupportError(
-                    "Unsupported collateral asset type".to_string(),
-                ));
-            };
+        let from_asset_id = self.from_asset.as_ref().as_asset_id();
+        let borrow_asset_id = configuration.borrow_asset.as_asset_id();
+        let collateral_asset_id = configuration.collateral_asset.as_asset_id();
 
         let liquidation_amount = self
-            .liquidation_amount(&position, &oracle_response, configuration)
+            .liquidation_amount(&position, &oracle_response, &configuration)
             .await?;
 
-        let swap_output_amount = if self.asset_matches(&borrow_asset) {
-            let asset_balance = self.get_asset_balance(self.asset.as_ref()).await?;
+        let swap_output_amount = if from_asset_id == borrow_asset_id {
+            let asset_balance = self.get_asset_balance(self.from_asset.as_ref()).await?;
             if asset_balance >= liquidation_amount {
                 0.into()
             } else {
@@ -278,11 +231,15 @@ impl<S: Swap> Liquidator<S> {
 
         let swap_amount = self
             .swap
-            .quote(&self.asset, &borrow_asset, swap_output_amount)
+            .quote(
+                self.from_asset.as_ref().clone(),
+                configuration.borrow_asset.clone(),
+                swap_output_amount,
+            )
             .await
             .map_err(LiquidatorError::QuoteError)?;
 
-        let available = self.get_asset_balance(&self.asset).await?;
+        let available = self.get_asset_balance(&self.from_asset).await?;
 
         if available < swap_amount {
             warn!("Insufficient asset balance for liquidation: {available:?} < {swap_amount:?}");
@@ -301,7 +258,11 @@ impl<S: Swap> Liquidator<S> {
         if swap_amount > 0.into() {
             match self
                 .swap
-                .swap(&self.asset, &borrow_asset, swap_amount)
+                .swap(
+                    self.from_asset.as_ref().clone(),
+                    configuration.borrow_asset.clone(),
+                    swap_amount,
+                )
                 .await
             {
                 Ok(_) => {
@@ -331,12 +292,12 @@ impl<S: Swap> Liquidator<S> {
             }
         }
 
-        if self.asset_matches(&collateral_asset) {
+        if from_asset_id == collateral_asset_id {
             match self
                 .swap
                 .swap(
-                    &collateral_asset,
-                    &self.asset,
+                    configuration.collateral_asset.clone(),
+                    self.from_asset.as_ref().clone(),
                     position.collateral_asset_deposit.into(),
                 )
                 .await
@@ -358,7 +319,7 @@ impl<S: Swap> Liquidator<S> {
         &self,
         position: &BorrowPosition,
         oracle_response: &OracleResponse,
-        configuration: MarketConfiguration,
+        configuration: &MarketConfiguration,
     ) -> LiquidatorResult<U128> {
         let price_pair = configuration
             .price_oracle_configuration
@@ -403,34 +364,33 @@ impl<S: Swap> Liquidator<S> {
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_asset_balance(&self, asset: &FungibleAssetKind) -> LiquidatorResult<U128> {
-        let balance = match asset {
-            FungibleAssetKind::Nep141(account_id) => {
-                view::<U128>(
-                    &self.client,
-                    account_id.clone(),
-                    "ft_balance_of",
-                    json!({ "account_id": self.signer.account_id }),
-                )
-                .await
-            }
-            FungibleAssetKind::Nep245 {
-                account_id,
-                token_id,
-            } => {
-                view::<U128>(
-                    &self.client,
-                    account_id.clone(),
-                    "mt_balance_of",
-                    json!({
-                        "account_id": self.signer.account_id,
-                        "token_id": format!("nep141:{}", token_id)
-                    }),
-                )
-                .await
-            }
+    async fn get_asset_balance<A: AssetClass + Debug>(
+        &self,
+        asset: &FungibleAsset<A>,
+    ) -> LiquidatorResult<U128> {
+        let asset_id = asset.as_asset_id();
+        let balance = if let Some(token_id) = asset_id.1 {
+            view::<U128>(
+                &self.client,
+                asset_id.0.clone(),
+                "mt_balance_of",
+                json!({
+                    "account_id": self.signer.account_id,
+                    "token_id": format!("nep141:{}", token_id)
+                }),
+            )
+            .await
+        } else {
+            view::<U128>(
+                &self.client,
+                asset_id.0.clone(),
+                "ft_balance_of",
+                json!({ "account_id": self.signer.account_id }),
+            )
+            .await
         }
         .map_err(LiquidatorError::FetchBalanceError)?;
+
         Ok(balance)
     }
 
@@ -529,9 +489,5 @@ impl<S: Swap> Liquidator<S> {
         // All of this would be used in calculating both the optimal liquidation amount and wether to
         // perform full or partial liquidation
         Ok(true)
-    }
-
-    fn asset_matches(&self, other_asset: &FungibleAssetKind) -> bool {
-        self.asset.as_ref() == other_asset
     }
 }

@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use crate::{
+    near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcResult},
+    Network, DEFAULT_GAS,
+};
 use clap::ValueEnum;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
@@ -8,29 +12,24 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{json_types::U128, near, serde_json, serde_json::json, AccountId, NearToken};
-
-use crate::types::FungibleAssetKind;
-use crate::{
-    near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcResult},
-    Network, DEFAULT_GAS,
-};
+use near_sdk::{json_types::U128, near, serde_json, AccountId, NearToken};
+use templar_common::asset::{AssetClass, FungibleAsset};
 
 #[async_trait::async_trait]
 pub trait Swap {
     /// Quotes the amount of `from` token to `to` token.
-    async fn quote(
+    async fn quote<A: AssetClass, B: AssetClass>(
         &self,
-        from: &FungibleAssetKind,
-        to: &FungibleAssetKind,
+        from: FungibleAsset<A>,
+        to: FungibleAsset<B>,
         amount: U128,
     ) -> RpcResult<U128>;
 
     /// Swaps `from` token to `to` token.
-    async fn swap(
+    async fn swap<A: AssetClass, B: AssetClass>(
         &self,
-        from: &FungibleAssetKind,
-        to: &FungibleAssetKind,
+        from: FungibleAsset<A>,
+        to: FungibleAsset<B>,
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus>;
 }
@@ -84,19 +83,12 @@ struct QuoteRequest {
 }
 
 impl QuoteRequest {
-    pub fn new(
-        input_token: &FungibleAssetKind,
-        output_token: &FungibleAssetKind,
-        output_amount: U128,
-    ) -> Self {
-        let input_contract = input_token.account_id();
-        let output_contract = output_token.account_id();
-
+    pub fn new(input_token: AccountId, output_token: AccountId, output_amount: U128) -> Self {
         Self {
-            pool_ids: vec![format!("{}|{}|100", input_contract, output_contract)],
-            tag: format!("{}|100|{}", input_contract, output_amount.0),
-            input_token: input_contract.clone(),
-            output_token: output_contract.clone(),
+            pool_ids: vec![format!("{}|{}|100", input_token, output_token)],
+            tag: format!("{}|100|{}", input_token, output_amount.0),
+            input_token,
+            output_token,
             output_amount,
         }
     }
@@ -121,87 +113,73 @@ enum SwapRequestMsg {
 }
 
 impl SwapRequestMsg {
-    pub fn new(
-        input_token: &FungibleAssetKind,
-        output_token: &FungibleAssetKind,
-        output_amount: U128,
-    ) -> Self {
-        let input_contract = input_token.account_id();
-        let output_contract = output_token.account_id();
-
+    pub fn new(input_token: &AccountId, output_token: AccountId, output_amount: U128) -> Self {
         Self::SwapByOutput {
-            pool_ids: vec![format!("{}|{}|100", input_contract, output_contract)],
-            output_token: output_contract.clone(),
+            pool_ids: vec![format!("{}|{}|100", input_token, output_token)],
+            output_token,
             output_amount,
-            client_id: format!("{}|100|{}", input_contract, output_amount.0),
+            client_id: format!("{}|100|{}", input_token, output_amount.0),
         }
     }
 }
 
 #[async_trait::async_trait]
+#[allow(
+    clippy::expect_used,
+    reason = "Rhea was mostly implemented for testing purposes, and don't expect it to be used in production."
+)]
 impl Swap for RheaSwap {
-    async fn quote(
+    async fn quote<A: AssetClass, B: AssetClass>(
         &self,
-        from: &FungibleAssetKind,
-        to: &FungibleAssetKind,
+        from: FungibleAsset<A>,
+        to: FungibleAsset<B>,
         amount: U128,
     ) -> RpcResult<U128> {
         let response: QuoteResponse = view(
             &self.client,
             self.contract.clone(),
             "quote_by_output",
-            &QuoteRequest::new(from, to, amount),
+            &QuoteRequest::new(
+                from.into_nep141()
+                    .expect("MT not yet supported on Rhea `from` assets"),
+                to.into_nep141()
+                    .expect("MT not yet supported on Rhea `to` assets"),
+                amount,
+            ),
         )
         .await?;
         Ok(response.amount)
     }
 
-    async fn swap(
+    async fn swap<A: AssetClass, B: AssetClass>(
         &self,
-        from: &FungibleAssetKind,
-        to: &FungibleAssetKind, // Fixed: now takes FungibleAssetKind
+        from: FungibleAsset<A>,
+        to: FungibleAsset<B>,
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus> {
-        let msg = SwapRequestMsg::new(from, to, amount);
+        let msg = SwapRequestMsg::new(
+            &from
+                .clone()
+                .into_nep141()
+                .expect("MT not yet supported on Rhea `from` assets"),
+            to.into_nep141()
+                .expect("MT not yet supported on Rhea `to` assets"),
+            amount,
+        );
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-        // Need to determine which contract to call for the transfer
-        // For swaps, we typically transfer the input token to the swap contract
-        let (receiver_id, method_name, transfer_args) = match from {
-            FungibleAssetKind::Nep141(account_id) => (
-                account_id.clone(),
-                "ft_transfer_call".to_string(),
-                json!({
-                    "receiver_id": self.contract,
-                    "amount": amount,
-                    "msg": serde_json::to_string(&msg)?,
-                }),
-            ),
-            FungibleAssetKind::Nep245 {
-                account_id,
-                token_id,
-            } => (
-                account_id.clone(),
-                "mt_transfer_call".to_string(),
-                json!({
-                    "receiver_id": self.contract,
-                    "token_id": token_id,
-                    "amount": amount,
-                    "msg": serde_json::to_string(&msg)?,
-                }),
-            ),
-        };
-
+        let transfer_call_params =
+            from.transfer_call_params(&self.contract, amount, &serde_json::to_string(&msg)?);
         let tx = Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id,
+            receiver_id: transfer_call_params.account_id,
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name,
-                args: serialize_and_encode(transfer_args),
+                method_name: transfer_call_params.method_name,
+                args: serialize_and_encode(transfer_call_params.args),
                 gas: DEFAULT_GAS,
                 deposit: NearToken::from_yoctonear(1).as_yoctonear(),
             }))],

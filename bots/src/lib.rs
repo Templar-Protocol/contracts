@@ -9,7 +9,6 @@ pub mod accumulator;
 pub mod liquidator;
 pub mod near;
 pub mod swap;
-pub mod types;
 
 type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 

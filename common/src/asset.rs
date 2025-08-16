@@ -1,6 +1,6 @@
-use std::{fmt::Display, marker::PhantomData};
-
+use crate::number::Decimal;
 use near_contract_standards::fungible_token::core::ext_ft_core;
+use near_sdk::serde_json::Value;
 use near_sdk::{
     env,
     json_types::U128,
@@ -8,8 +8,17 @@ use near_sdk::{
     serde_json::{self, json},
     AccountId, Gas, NearToken, Promise,
 };
+use std::str::FromStr;
+use std::{fmt::Display, marker::PhantomData};
 
-use crate::number::Decimal;
+pub type AssetId<'a> = (&'a AccountId, Option<&'a String>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TransferCallParams {
+    pub account_id: AccountId,
+    pub method_name: String,
+    pub args: Value,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
@@ -59,6 +68,38 @@ impl<T: AssetClass> FungibleAsset<T> {
                 NearToken::from_yoctonear(1),
                 Self::GAS_MT_TRANSFER,
             ),
+        }
+    }
+
+    pub fn transfer_call_params(
+        &self,
+        receiver_id: &AccountId,
+        amount: U128,
+        msg: &str,
+    ) -> TransferCallParams {
+        match &self.kind {
+            FungibleAssetKind::Nep141(account_id) => TransferCallParams {
+                account_id: account_id.clone(),
+                method_name: "ft_transfer_call".to_string(),
+                args: json!({
+                    "receiver_id": receiver_id,
+                    "amount": amount,
+                    "msg": msg,
+                }),
+            },
+            FungibleAssetKind::Nep245 {
+                contract_id,
+                token_id,
+            } => TransferCallParams {
+                account_id: contract_id.clone(),
+                method_name: "mt_transfer_call".to_string(),
+                args: json!({
+                    "receiver_id": receiver_id,
+                    "token_id": format!("nep141:{}", token_id),
+                    "amount": amount,
+                    "msg": msg,
+                }),
+            },
         }
     }
 
@@ -114,6 +155,16 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    pub fn as_asset_id(&self) -> AssetId {
+        match &self.kind {
+            FungibleAssetKind::Nep141(account_id) => (account_id, None),
+            FungibleAssetKind::Nep245 {
+                contract_id,
+                token_id,
+            } => (contract_id, Some(token_id)),
+        }
+    }
+
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn current_account_balance(&self) -> Promise {
         let current_account_id = env::current_account_id();
@@ -159,10 +210,26 @@ impl<T: AssetClass> Display for FungibleAsset<T> {
     }
 }
 
+impl<T: AssetClass> FromStr for FungibleAsset<T> {
+    type Err = near_account_id::ParseAccountError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((contract_id, token_id)) = s.split_once(':') {
+            if let Some(token_id) = token_id.strip_prefix("nep245:") {
+                return Ok(FungibleAsset::nep245(
+                    AccountId::try_from(contract_id.to_string())?,
+                    token_id.to_string(),
+                ));
+            }
+        }
+        Ok(FungibleAsset::nep141(AccountId::try_from(s.to_string())?))
+    }
+}
+
 mod sealed {
     pub trait Sealed {}
 }
-pub trait AssetClass: sealed::Sealed + Copy + Clone {}
+pub trait AssetClass: sealed::Sealed + Copy + Clone + Send {}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
@@ -175,6 +242,28 @@ impl AssetClass for CollateralAsset {}
 pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}
 impl AssetClass for BorrowAsset {}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FromAsset;
+impl sealed::Sealed for FromAsset {}
+impl AssetClass for FromAsset {}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ToAsset;
+impl sealed::Sealed for ToAsset {}
+impl AssetClass for ToAsset {}
+
+impl From<FungibleAsset<CollateralAsset>> for FungibleAsset<ToAsset> {
+    fn from(asset: FungibleAsset<CollateralAsset>) -> Self {
+        asset.coerce()
+    }
+}
+
+impl From<BorrowAsset> for ToAsset {
+    fn from(_: BorrowAsset) -> Self {
+        ToAsset
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
