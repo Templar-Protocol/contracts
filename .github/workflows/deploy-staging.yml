@@ -3,17 +3,44 @@ on:
   pull_request:
 
 jobs:
+  # Check if we need to run contract-related jobs
+  check-changes:
+    name: Check for relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      should-run-contracts: ${{ steps.changes.outputs.contracts }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            contracts:
+              - 'common/**'
+              - 'contract/**'
+              - 'mock/**'
+              - 'script/**'
+
   test:
     uses: ./.github/workflows/test.yml
 
   gas-report:
+    needs: check-changes
+    if: needs.check-changes.outputs.should-run-contracts == 'true'
     uses: ./.github/workflows/gas-report.yml
 
   deploy-staging:
     name: Deploy to staging subaccount
     permissions:
       pull-requests: write
-    needs: [test, gas-report]
+    needs: [test, gas-report, check-changes]
+    # Run if contracts changed OR if gas-report was skipped
+    if: always() && needs.test.result == 'success' && (needs.gas-report.result == 'success' || needs.gas-report.result == 'skipped')
     runs-on: ubuntu-latest
     env:
       NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID: gh-${{ github.event.number }}.${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}

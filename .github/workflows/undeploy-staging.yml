@@ -4,9 +4,41 @@ on:
     types: [closed]
 
 jobs:
+  # Check if a staging environment was actually created (contract changes existed)
+  check-staging-exists:
+    name: Check if staging environment exists
+    runs-on: ubuntu-latest
+    outputs:
+      should-cleanup: ${{ steps.check.outputs.exists }}
+    env:
+      NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID: gh-${{ github.event.number }}.${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if staging account exists
+        id: check
+        run: |
+          # Install near CLI for account checking
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
+          
+          EXISTS=$(./script/ci/account-exists.sh \
+            --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+            --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" || echo "")
+          
+          if [[ -n "$EXISTS" ]]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Staging account exists, will proceed with cleanup"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Staging account does not exist, skipping cleanup"
+          fi
+
   cleanup-staging:
     name: Cleanup staging account
     runs-on: ubuntu-latest
+    needs: check-staging-exists
+    if: needs.check-staging-exists.outputs.should-cleanup == 'true'
     env:
       NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID: gh-${{ github.event.number }}.${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}
     steps:
