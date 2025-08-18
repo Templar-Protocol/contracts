@@ -219,11 +219,11 @@ impl<S: Swap> Liquidator<S> {
             .await?;
 
         let swap_output_amount = if from_asset_id == borrow_asset_id {
-            let asset_balance = self.get_asset_balance(self.from_asset.as_ref()).await?;
+            let asset_balance = self.get_asset_balance(&self.from_asset).await?;
             if asset_balance >= liquidation_amount {
                 0.into()
             } else {
-                (liquidation_amount.0 - asset_balance.0).into()
+                liquidation_amount.0.saturating_sub(asset_balance.0).into()
             }
         } else {
             liquidation_amount
