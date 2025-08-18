@@ -19,7 +19,7 @@ use near_sdk::{
 };
 use std::fmt::Debug;
 use std::{collections::HashMap, sync::Arc};
-use templar_common::asset::{AssetClass, FromAsset, FungibleAsset};
+use templar_common::asset::{AssetClass, FromAsset, FungibleAsset, ToAsset};
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
@@ -229,11 +229,12 @@ impl<S: Swap> Liquidator<S> {
             liquidation_amount
         };
 
+        let to_asset: FungibleAsset<ToAsset> = configuration.borrow_asset.clone().coerce();
         let swap_amount = self
             .swap
             .quote(
                 self.from_asset.as_ref().clone(),
-                configuration.borrow_asset.clone(),
+                to_asset,
                 swap_output_amount,
             )
             .await
@@ -260,7 +261,7 @@ impl<S: Swap> Liquidator<S> {
                 .swap
                 .swap(
                     self.from_asset.as_ref().clone(),
-                    configuration.borrow_asset.clone(),
+                    to_asset,
                     swap_amount,
                 )
                 .await
@@ -291,13 +292,17 @@ impl<S: Swap> Liquidator<S> {
                 return Err(LiquidatorError::LiquidationTransactionError(e));
             }
         }
-
+        
         if from_asset_id == collateral_asset_id {
+            let from_asset: FungibleAsset<ToAsset> =
+                configuration.collateral_asset.clone().coerce();
+            let to_asset: FungibleAsset<FromAsset> =
+                self.from_asset.as_ref().clone().coerce();
             match self
                 .swap
                 .swap(
-                    configuration.collateral_asset.clone(),
-                    self.from_asset.as_ref().clone(),
+                    from_asset,
+                    to_asset,
                     position.collateral_asset_deposit.into(),
                 )
                 .await
