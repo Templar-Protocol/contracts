@@ -1,9 +1,12 @@
+create type account_mark as enum ('default', 'always_deny', 'always_approve');
+
 create table account (
     account_id varchar(64) not null,
     allowance numeric(39, 0) not null,
     allowance_locked numeric(39, 0) not null default 0,
     pending_transaction_hash bytea default null,
     pending_transaction_issued_at timestamptz default null,
+    mark account_mark not null default 'default',
     created_at timestamptz not null default current_timestamp,
     updated_at timestamptz not null default current_timestamp,
     primary key (account_id)

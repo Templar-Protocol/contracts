@@ -99,10 +99,34 @@ impl Near {
             .await?;
 
         let QueryResponseKind::AccessKey(access_key) = response.kind else {
-            unimplemented!("NEAR RPC returned a valid response of the wrong kind");
+            unimplemented!("Invalid response kind");
         };
 
         Ok((access_key.nonce, response.block_hash))
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn fetch_near_balance(
+        &self,
+        account_id: AccountId,
+    ) -> Result<NearToken, JsonRpcError<RpcQueryError>> {
+        let response = self
+            .client
+            .call(methods::query::RpcQueryRequest {
+                block_reference: Finality::Final.into(),
+                request: QueryRequest::ViewAccount { account_id },
+            })
+            .await?;
+
+        let QueryResponseKind::ViewAccount(account) = response.kind else {
+            unimplemented!("Invalid response kind");
+        };
+
+        Ok(NearToken::from_yoctonear(
+            account.amount.saturating_sub(account.locked),
+        ))
     }
 
     /// # Errors
@@ -124,7 +148,7 @@ impl Near {
         Ok(Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
             public_key,
-            nonce,
+            nonce: nonce + 1,
             receiver_id: delegate_receiver_id,
             block_hash,
             actions,
@@ -164,7 +188,7 @@ impl Near {
             .await?;
 
         let QueryResponseKind::CallResult(result) = result.kind else {
-            unreachable!()
+            unimplemented!("Invalid response kind");
         };
 
         Ok(serde_json::from_slice(&result.result)?)

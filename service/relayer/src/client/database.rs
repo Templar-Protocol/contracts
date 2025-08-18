@@ -8,6 +8,14 @@ pub struct Database {
     connection: PgPool,
 }
 
+#[derive(Debug, sqlx::Type, PartialEq, Eq)]
+#[sqlx(type_name = "account_mark", rename_all = "lowercase")]
+pub enum AccountMark {
+    Default,
+    AlwaysApprove,
+    AlwaysDeny,
+}
+
 pub mod error {
     use near_primitives::hash::CryptoHash;
     use near_sdk::{AccountId, NearToken};
@@ -113,7 +121,12 @@ impl Database {
                 allowance_locked = $1,
                 pending_transaction_hash = $2,
                 pending_transaction_issued_at = now()
-            where account_id = $3 and allowance_locked = 0 and allowance >= $1",
+            where account_id = $3
+                and (
+                    (allowance_locked = 0 and allowance >= $1 and mark != 'always_deny')
+                    or mark = 'always_approve'
+                )
+                ",
             Decimal::from(allowance_lock_amount.as_yoctonear()),
             &transaction_hash.0,
             account_id.as_str(),
@@ -178,10 +191,12 @@ impl Database {
         let mut tx = self.connection.begin().await?;
         let result = sqlx::query!(
             "update account set
+                allowance = greatest(allowance - $1, 0),
                 allowance_locked = 0,
                 pending_transaction_hash = null,
                 pending_transaction_issued_at = null
-            where account_id = $1 and pending_transaction_hash = $2",
+            where account_id = $2 and pending_transaction_hash = $3",
+            Decimal::from(allowance_spent.as_yoctonear()),
             account_id.as_str(),
             &transaction_hash.0,
         )
@@ -248,14 +263,20 @@ impl Database {
         account_id: &AccountIdRef,
     ) -> Result<Option<NearToken>, sqlx::Error> {
         let result = sqlx::query!(
-            "select allowance, allowance_locked from account where account_id = $1",
+            "select allowance, allowance_locked, mark as \"mark: AccountMark\" from account where account_id = $1",
             account_id.as_str(),
         )
         .fetch_optional(&self.connection)
         .await?;
 
         Ok(result
-            .and_then(|r| u128::try_from(r.allowance.saturating_sub(r.allowance_locked)).ok())
+            .and_then(|r| {
+                if r.mark == AccountMark::AlwaysDeny {
+                    Some(0)
+                } else {
+                    u128::try_from(r.allowance.saturating_sub(r.allowance_locked)).ok()
+                }
+            })
             .map(NearToken::from_yoctonear))
     }
 }
