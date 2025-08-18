@@ -174,7 +174,7 @@ impl<S: Swap> Liquidator<S> {
                 .transfer_call_params(&self.market, liquidation_amount, &msg);
         Ok(Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: self.market.clone(),
+            receiver_id: transfer_call_params.account_id,
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
