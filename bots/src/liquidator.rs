@@ -234,7 +234,7 @@ impl<S: Swap> Liquidator<S> {
             .swap
             .quote(
                 self.from_asset.as_ref().clone(),
-                to_asset,
+                to_asset.clone(),
                 swap_output_amount,
             )
             .await
@@ -259,11 +259,7 @@ impl<S: Swap> Liquidator<S> {
         if swap_amount > 0.into() {
             match self
                 .swap
-                .swap(
-                    self.from_asset.as_ref().clone(),
-                    to_asset,
-                    swap_amount,
-                )
+                .swap(self.from_asset.as_ref().clone(), to_asset, swap_amount)
                 .await
             {
                 Ok(_) => {
@@ -292,12 +288,11 @@ impl<S: Swap> Liquidator<S> {
                 return Err(LiquidatorError::LiquidationTransactionError(e));
             }
         }
-        
+
         if from_asset_id == collateral_asset_id {
             let from_asset: FungibleAsset<ToAsset> =
                 configuration.collateral_asset.clone().coerce();
-            let to_asset: FungibleAsset<FromAsset> =
-                self.from_asset.as_ref().clone().coerce();
+            let to_asset: FungibleAsset<FromAsset> = self.from_asset.as_ref().clone().coerce();
             match self
                 .swap
                 .swap(
