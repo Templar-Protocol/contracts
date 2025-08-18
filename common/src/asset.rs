@@ -253,18 +253,6 @@ pub struct ToAsset;
 impl sealed::Sealed for ToAsset {}
 impl AssetClass for ToAsset {}
 
-impl From<FungibleAsset<CollateralAsset>> for FungibleAsset<ToAsset> {
-    fn from(asset: FungibleAsset<CollateralAsset>) -> Self {
-        asset.coerce()
-    }
-}
-
-impl From<BorrowAsset> for ToAsset {
-    fn from(_: BorrowAsset) -> Self {
-        ToAsset
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 #[serde(from = "U128", into = "U128")]
