@@ -87,6 +87,12 @@ impl Database {
         Ok(Self { connection })
     }
 
+    pub async fn close(&self) {
+        tracing::info!("Closing database connection...");
+        self.connection.close().await;
+        tracing::info!("Database connection closed.");
+    }
+
     /// # Errors
     ///
     /// - Query errors

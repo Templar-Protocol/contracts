@@ -18,7 +18,7 @@ use near_primitives::{
     views::FinalExecutionStatus,
 };
 use near_sdk::{serde_json, NearToken};
-use tokio::{sync::RwLock, task::JoinSet};
+use tokio::{signal, sync::RwLock, task::JoinSet};
 
 use templar_common::market::DepositMsg;
 use templar_relayer::{
@@ -37,7 +37,7 @@ struct Args {
     #[arg(short, long, env = "PORT", default_value_t = 3000)]
     pub port: u16,
     /// Postgres database connection URL.
-    #[arg(long, env = "DATABASE_URL", default_value = "DELETEME")]
+    #[arg(long, env = "DATABASE_URL")]
     pub database_url: String,
     /// NEAR RPC connection URL.
     #[arg(long, env = "RPC_URL", default_value = "https://rpc.testnet.near.org")]
@@ -105,7 +105,7 @@ impl App {
     }
 
     pub async fn estimate_cost_of_gas(&self, gas: Gas) -> Option<NearToken> {
-        const TERA: u128 = 1_000_000_000_000;
+        const TERA: u128 = near_sdk::Gas::from_tgas(1).as_gas() as u128;
 
         let price_per_tgas = self.cache.gas_price().await;
         price_per_tgas
@@ -279,6 +279,8 @@ async fn main() {
     let mut app = App::new(args, configuration);
     app.load_markets().await;
 
+    let database = app.database.clone();
+
     let addr = SocketAddr::from(([0, 0, 0, 0], app.args.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
@@ -289,7 +291,38 @@ async fn main() {
 
     tracing::info!("Listening on {}", listener.local_addr().unwrap());
 
-    axum::serve(listener, router).await.unwrap();
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal(database))
+        .await
+        .unwrap();
+}
+
+// https://github.com/tokio-rs/axum/blob/9ec85d69703a9065a1098bb43bd93113695d5ade/examples/graceful-shutdown/src/main.rs
+#[allow(clippy::expect_used)]
+async fn shutdown_signal(database: Database) {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    database.close().await;
 }
 
 async fn root() -> &'static str {
