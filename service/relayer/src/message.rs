@@ -5,33 +5,32 @@ use near_sdk::serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayRequest {
-    #[serde(with = "with_base64")]
+    #[serde(with = "with_borsh_base64")]
     pub signed_delegate_action: SignedDelegateAction,
 }
 
-mod with_base64 {
-    use near_sdk::base64::engine::{general_purpose::STANDARD as BASE64, Engine};
-    use near_sdk::serde::de::DeserializeOwned;
-    use near_sdk::serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
-    use near_sdk::serde_json;
+mod with_borsh_base64 {
+    use near_sdk::base64::prelude::*;
+    use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+    use near_sdk::serde::{de, ser, Deserialize, Deserializer, Serializer};
 
     pub fn deserialize<'a, D, T>(deserializer: D) -> Result<T, D::Error>
     where
         D: Deserializer<'a>,
-        T: DeserializeOwned,
+        T: BorshDeserialize,
     {
         let s = <&str>::deserialize(deserializer)?;
-        let bytes = BASE64.decode(s).map_err(de::Error::custom)?;
-        serde_json::from_slice::<T>(&bytes).map_err(de::Error::custom)
+        let bytes = BASE64_STANDARD.decode(s).map_err(de::Error::custom)?;
+        borsh::from_slice::<T>(&bytes).map_err(de::Error::custom)
     }
 
     pub fn serialize<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
-        T: Serialize,
+        T: BorshSerialize,
     {
-        let bytes = serde_json::to_vec(value).map_err(ser::Error::custom)?;
-        let s = BASE64.encode(bytes);
+        let bytes = borsh::to_vec(value).map_err(ser::Error::custom)?;
+        let s = BASE64_STANDARD.encode(bytes);
         serializer.serialize_str(&s)
     }
 }
