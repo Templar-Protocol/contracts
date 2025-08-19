@@ -211,7 +211,7 @@ impl<T: AssetClass> Display for FungibleAsset<T> {
 }
 
 impl<T: AssetClass> FromStr for FungibleAsset<T> {
-    type Err = near_account_id::ParseAccountError;
+    type Err = <AccountId as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((contract_id, token_id)) = s.split_once(':') {
