@@ -6,7 +6,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use axum::{extract::State, http::StatusCode, routing, Json, Router};
@@ -22,6 +22,7 @@ use tokio::{sync::RwLock, task::JoinSet};
 
 use templar_common::market::DepositMsg;
 use templar_relayer::{
+    cache::{Cache, CacheHandle},
     client::{database::Database, near::Near},
     error::PreconditionError,
     message::{RelayRequest, RelayResponse},
@@ -65,31 +66,12 @@ struct AccountData {
 }
 
 #[derive(Debug, Clone)]
-struct GasPriceCache {
-    price_per_tgas: NearToken,
-    updated_at: SystemTime,
-}
-
-impl GasPriceCache {
-    pub fn is_valid(&self, expires_s: u64) -> bool {
-        self.updated_at
-            .elapsed()
-            .is_ok_and(|elapsed| elapsed < Duration::from_secs(expires_s))
-    }
-
-    pub fn price_gas(&self, gas: u64) -> NearToken {
-        self.price_per_tgas
-            .saturating_mul(u128::from(near_sdk::Gas::from_gas(gas).as_tgas()))
-    }
-}
-
-#[derive(Debug, Clone)]
 struct App {
     pub args: Args,
     pub configuration: Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
     pub near: Near,
-    pub gas_price: Arc<RwLock<GasPriceCache>>,
+    pub cache: Arc<CacheHandle>,
     pub database: Database,
 }
 
@@ -106,44 +88,29 @@ impl App {
 
         let database = Database::new(&args.database_url).unwrap();
 
+        let cache = Cache::start(
+            near.clone(),
+            Duration::from_secs(configuration.gas_price_refresh_secs),
+            Duration::from_secs(configuration.nonce_refresh_secs),
+        );
+
         Self {
             args,
             configuration,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             near,
-            gas_price: Arc::new(RwLock::new(GasPriceCache {
-                price_per_tgas: NearToken::from_near(0),
-                updated_at: UNIX_EPOCH,
-            })),
+            cache: Arc::new(cache),
             database,
         }
     }
 
-    pub async fn price_gas(&self, gas: Gas) -> NearToken {
-        let read_handle = self.gas_price.read().await;
-        if !read_handle.price_per_tgas.is_zero()
-            && read_handle.is_valid(self.configuration.gas_price_expires_secs)
-        {
-            return read_handle.price_gas(gas);
-        }
-        drop(read_handle);
+    pub async fn estimate_cost_of_gas(&self, gas: Gas) -> Option<NearToken> {
+        const TERA: u128 = 1_000_000_000_000;
 
-        // Refresh gas price
-        let mut write_handle = self.gas_price.write().await;
-        if !write_handle.is_valid(self.configuration.gas_price_expires_secs) {
-            info!("Refreshing gas price");
-            match self.near.fetch_gas_price().await {
-                Ok(price) => {
-                    write_handle.price_per_tgas = price;
-                    write_handle.updated_at = SystemTime::now();
-                }
-                Err(e) => {
-                    tracing::error!("Failed to fetch gas price, using fallback: {e}");
-                    write_handle.price_per_tgas = self.configuration.fallback_yocto_per_tgas;
-                }
-            }
-        }
-        write_handle.price_gas(gas)
+        let price_per_tgas = self.cache.gas_price().await;
+        price_per_tgas
+            .checked_mul(u128::from(gas))?
+            .checked_div(TERA)
     }
 
     pub async fn load_markets(&mut self) {
@@ -344,7 +311,10 @@ async fn relay(
                 .sender_id
                 .clone();
 
-            let gas_spend = app.price_gas(gas).await;
+            let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
+                error!("Failed to estimate cost of gas: {gas}");
+                return RelayResponse::failure("Failed to estimate cost of gas");
+            };
 
             let available_allowance = match app
                 .database
@@ -361,7 +331,7 @@ async fn relay(
                 }
             };
 
-            if available_allowance < gas_spend {
+            if available_allowance < cost_of_gas {
                 return RelayResponse::rejected("Insufficient allowance");
             }
 
@@ -381,7 +351,7 @@ async fn relay(
 
             if let Err(e) = app
                 .database
-                .set_pending_transaction(&account_id, gas_spend, transaction_hash)
+                .set_pending_transaction(&account_id, cost_of_gas, transaction_hash)
                 .await
             {
                 return RelayResponse::rejected(e);
@@ -397,7 +367,7 @@ async fn relay(
 
             let succeeded = matches!(tx_result.status, FinalExecutionStatus::SuccessValue(_));
 
-            let result = app
+            if let Err(e) = app
                 .database
                 .record_transaction(
                     &account_id,
@@ -405,9 +375,8 @@ async fn relay(
                     NearToken::from_yoctonear(tx_result.tokens_burnt()),
                     succeeded,
                 )
-                .await;
-
-            if let Err(e) = result {
+                .await
+            {
                 error!("Error recording transaction after submitting to blockchain: {e}");
             }
 

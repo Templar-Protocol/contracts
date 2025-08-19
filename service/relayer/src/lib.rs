@@ -7,6 +7,7 @@ use near_sdk::{
 };
 use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
 
+pub mod cache;
 pub mod client;
 pub mod error;
 pub mod message;
@@ -23,8 +24,8 @@ pub struct MarketAccounts {
 pub struct Configuration {
     pub allowed_methods: Vec<String>,
     pub starting_allowance_yocto: NearToken,
-    pub gas_price_expires_secs: u64,
-    pub fallback_yocto_per_tgas: NearToken,
+    pub gas_price_refresh_secs: u64,
+    pub nonce_refresh_secs: u64,
 }
 
 pub struct AssetTransfer {
