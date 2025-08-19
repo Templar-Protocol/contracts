@@ -1,21 +1,20 @@
 use crate::{
-    near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcError},
+    near::{get_access_key_data, send_tx, view, RpcError},
     swap::{Swap, SwapType},
-    BorrowPositions, Network, DEFAULT_GAS,
+    BorrowPositions, Network,
 };
 use clap::Parser;
 use futures::{StreamExt, TryStreamExt};
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
-    action::{Action, FunctionCallAction},
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, NearToken,
+    AccountId,
 };
 use std::fmt::Debug;
 use std::{collections::HashMap, sync::Arc};
@@ -169,21 +168,16 @@ impl<S: Swap> Liquidator<S> {
             account_id: borrow.clone(),
         }))?;
 
-        let transfer_call_params =
+        let action =
             self.from_asset
-                .transfer_call_params(&self.market, liquidation_amount, &msg);
+                .create_function_call_action(&self.market, liquidation_amount, &msg);
         Ok(Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: transfer_call_params.account_id,
+            receiver_id: self.from_asset.contract_id(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: transfer_call_params.method_name.clone(),
-                args: serialize_and_encode(transfer_call_params.args),
-                gas: DEFAULT_GAS,
-                deposit: NearToken::from_yoctonear(1).as_yoctonear(),
-            }))],
+            actions: vec![action],
         }))
     }
 
@@ -210,15 +204,11 @@ impl<S: Swap> Liquidator<S> {
 
         info!("Liquidation reason: {reason:?}");
 
-        let from_asset_id = self.from_asset.as_ref().as_asset_id();
-        let borrow_asset_id = configuration.borrow_asset.as_asset_id();
-        let collateral_asset_id = configuration.collateral_asset.as_asset_id();
-
         let liquidation_amount = self
             .liquidation_amount(&position, &oracle_response, &configuration)
             .await?;
 
-        let swap_output_amount = if from_asset_id == borrow_asset_id {
+        let swap_output_amount = if self.from_asset.as_ref() == &configuration.borrow_asset {
             let asset_balance = self.get_asset_balance(&self.from_asset).await?;
             if asset_balance >= liquidation_amount {
                 0.into()
@@ -289,7 +279,7 @@ impl<S: Swap> Liquidator<S> {
             }
         }
 
-        if from_asset_id == collateral_asset_id {
+        if self.from_asset.as_ref() == &configuration.collateral_asset {
             let from_asset: FungibleAsset<ToAsset> =
                 configuration.collateral_asset.clone().coerce();
             let to_asset: FungibleAsset<FromAsset> = self.from_asset.as_ref().clone().coerce();
@@ -372,7 +362,7 @@ impl<S: Swap> Liquidator<S> {
         let balance = if let Some(token_id) = asset_id.1 {
             view::<U128>(
                 &self.client,
-                asset_id.0.clone(),
+                AccountId::from(asset_id.0),
                 "mt_balance_of",
                 json!({
                     "account_id": self.signer.account_id,
@@ -383,7 +373,7 @@ impl<S: Swap> Liquidator<S> {
         } else {
             view::<U128>(
                 &self.client,
-                asset_id.0.clone(),
+                AccountId::from(asset_id.0),
                 "ft_balance_of",
                 json!({ "account_id": self.signer.account_id }),
             )

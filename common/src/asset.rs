@@ -1,8 +1,10 @@
 use crate::number::Decimal;
 use near_contract_standards::fungible_token::core::ext_ft_core;
+use near_primitives::action::{Action, FunctionCallAction};
+use near_sdk::base64::Engine;
 use near_sdk::serde_json::Value;
 use near_sdk::{
-    env,
+    base64, env,
     json_types::U128,
     near,
     serde_json::{self, json},
@@ -71,36 +73,43 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
-    pub fn transfer_call_params(
+    #[allow(clippy::expect_used, reason = "Args serialization shouldn't fail")]
+    pub fn create_function_call_action(
         &self,
         receiver_id: &AccountId,
         amount: U128,
         msg: &str,
-    ) -> TransferCallParams {
-        match &self.kind {
-            FungibleAssetKind::Nep141(account_id) => TransferCallParams {
-                account_id: account_id.clone(),
-                method_name: "ft_transfer_call".to_string(),
-                args: json!({
+    ) -> Action {
+        let (method_name, args_json) = match &self.kind {
+            FungibleAssetKind::Nep141(..) => (
+                "ft_transfer_call".to_string(),
+                json!({
                     "receiver_id": receiver_id,
                     "amount": amount,
                     "msg": msg,
                 }),
-            },
-            FungibleAssetKind::Nep245 {
-                contract_id,
-                token_id,
-            } => TransferCallParams {
-                account_id: contract_id.clone(),
-                method_name: "mt_transfer_call".to_string(),
-                args: json!({
+            ),
+            FungibleAssetKind::Nep245 { token_id, .. } => (
+                "mt_transfer_call".to_string(),
+                json!({
                     "receiver_id": receiver_id,
                     "token_id": format!("nep141:{}", token_id),
                     "amount": amount,
                     "msg": msg,
                 }),
-            },
-        }
+            ),
+        };
+
+        let args = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_string(&args_json).expect("Failed to serialize data"))
+            .into_bytes();
+
+        Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name,
+            args,
+            gas: Self::GAS_MT_TRANSFER.as_gas(),
+            deposit: NearToken::from_yoctonear(1).as_yoctonear(),
+        }))
     }
 
     pub fn nep141(contract_id: AccountId) -> Self {
@@ -252,6 +261,29 @@ impl AssetClass for FromAsset {}
 pub struct ToAsset;
 impl sealed::Sealed for ToAsset {}
 impl AssetClass for ToAsset {}
+
+macro_rules! impl_cross_eq {
+    ($a:ident, $b:ident) => {
+        impl PartialEq<FungibleAsset<$b>> for FungibleAsset<$a> {
+            fn eq(&self, other: &FungibleAsset<$b>) -> bool {
+                self.kind == other.kind // Compare the actual FungibleAssetKind
+            }
+        }
+
+        impl PartialEq<FungibleAsset<$a>> for FungibleAsset<$b> {
+            fn eq(&self, other: &FungibleAsset<$a>) -> bool {
+                self.kind == other.kind // Compare the actual FungibleAssetKind
+            }
+        }
+    };
+}
+
+impl_cross_eq!(CollateralAsset, BorrowAsset);
+impl_cross_eq!(CollateralAsset, FromAsset);
+impl_cross_eq!(CollateralAsset, ToAsset);
+impl_cross_eq!(BorrowAsset, FromAsset);
+impl_cross_eq!(BorrowAsset, ToAsset);
+impl_cross_eq!(FromAsset, ToAsset);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
@@ -423,5 +455,55 @@ mod tests {
         asset_op! {
             a -= 101u128;
         };
+    }
+
+    #[test]
+    fn test_cross_type_with_same_kind() {
+        let collateral = FungibleAsset::<CollateralAsset> {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep141("usdc.near".parse().unwrap()),
+        };
+
+        let borrow = FungibleAsset::<BorrowAsset> {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep141("usdc.near".parse().unwrap()),
+        };
+
+        // Different types but same kind = equal!
+        assert_eq!(collateral, borrow);
+        assert_eq!(borrow, collateral);
+    }
+
+    #[test]
+    fn test_cross_type_with_different_kind() {
+        let collateral = FungibleAsset::<CollateralAsset> {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep141("usdc.near".parse().unwrap()),
+        };
+
+        let borrow = FungibleAsset::<BorrowAsset> {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep141("usdt.near".parse().unwrap()),
+        };
+
+        // Different types and different kind = not equal
+        assert_ne!(collateral, borrow);
+        assert_ne!(borrow, collateral);
+    }
+
+    #[test]
+    fn test_same_type_equality() {
+        let asset1 = FungibleAsset::<CollateralAsset> {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep141("usdc.near".parse().unwrap()),
+        };
+
+        let asset2 = FungibleAsset::<CollateralAsset> {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep141("usdc.near".parse().unwrap()),
+        };
+
+        // Same type, same kind = equal (uses derived PartialEq)
+        assert_eq!(asset1, asset2);
     }
 }

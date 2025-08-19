@@ -1,18 +1,17 @@
 use std::sync::Arc;
 
 use crate::{
-    near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcResult},
-    Network, DEFAULT_GAS,
+    near::{get_access_key_data, send_tx, view, RpcResult},
+    Network,
 };
 use clap::ValueEnum;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
-    action::{Action, FunctionCallAction},
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{json_types::U128, near, serde_json, AccountId, NearToken};
+use near_sdk::{json_types::U128, near, serde_json, AccountId};
 use templar_common::asset::{AssetClass, FungibleAsset};
 
 #[async_trait::async_trait]
@@ -169,20 +168,15 @@ impl Swap for RheaSwap {
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-        let transfer_call_params =
-            from.transfer_call_params(&self.contract, amount, &serde_json::to_string(&msg)?);
+        let action =
+            from.create_function_call_action(&self.contract, amount, &serde_json::to_string(&msg)?);
         let tx = Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: transfer_call_params.account_id,
+            receiver_id: from.contract_id(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: transfer_call_params.method_name,
-                args: serialize_and_encode(transfer_call_params.args),
-                gas: DEFAULT_GAS,
-                deposit: NearToken::from_yoctonear(1).as_yoctonear(),
-            }))],
+            actions: vec![action],
         });
 
         send_tx(&self.client, &self.signer, 10, tx).await

@@ -188,7 +188,7 @@ impl MarketConfiguration {
     ///
     /// If the configuration is invalid.
     pub fn validate(&self) -> Result<(), error::ConfigurationValidationError> {
-        if self.borrow_asset == self.collateral_asset.clone().coerce() {
+        if self.borrow_asset == self.collateral_asset {
             return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
         }
 
