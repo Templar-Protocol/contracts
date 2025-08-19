@@ -12,23 +12,23 @@ use near_primitives::{
     views::FinalExecutionStatus,
 };
 use near_sdk::{json_types::U128, near, serde_json, AccountId};
-use templar_common::asset::{AssetClass, FungibleAsset};
+use templar_common::asset::{FromAsset, FungibleAsset, ToAsset};
 
 #[async_trait::async_trait]
 pub trait Swap {
     /// Quotes the amount of `from` token to `to` token.
-    async fn quote<A: AssetClass, B: AssetClass>(
+    async fn quote(
         &self,
-        from: FungibleAsset<A>,
-        to: FungibleAsset<B>,
+        from: FungibleAsset<FromAsset>,
+        to: FungibleAsset<ToAsset>,
         amount: U128,
     ) -> RpcResult<U128>;
 
     /// Swaps `from` token to `to` token.
-    async fn swap<A: AssetClass, B: AssetClass>(
+    async fn swap(
         &self,
-        from: FungibleAsset<A>,
-        to: FungibleAsset<B>,
+        from: FungibleAsset<FromAsset>,
+        to: FungibleAsset<ToAsset>,
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus>;
 }
@@ -128,10 +128,10 @@ impl SwapRequestMsg {
     reason = "Rhea was mostly implemented for testing purposes, and don't expect it to be used in production."
 )]
 impl Swap for RheaSwap {
-    async fn quote<A: AssetClass, B: AssetClass>(
+    async fn quote(
         &self,
-        from: FungibleAsset<A>,
-        to: FungibleAsset<B>,
+        from: FungibleAsset<FromAsset>,
+        to: FungibleAsset<ToAsset>,
         amount: U128,
     ) -> RpcResult<U128> {
         let response: QuoteResponse = view(
@@ -150,10 +150,10 @@ impl Swap for RheaSwap {
         Ok(response.amount)
     }
 
-    async fn swap<A: AssetClass, B: AssetClass>(
+    async fn swap(
         &self,
-        from: FungibleAsset<A>,
-        to: FungibleAsset<B>,
+        from: FungibleAsset<FromAsset>,
+        to: FungibleAsset<ToAsset>,
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus> {
         let msg = SwapRequestMsg::new(

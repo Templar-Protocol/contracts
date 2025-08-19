@@ -280,9 +280,9 @@ impl<S: Swap> Liquidator<S> {
         }
 
         if self.from_asset.as_ref() == &configuration.collateral_asset {
-            let from_asset: FungibleAsset<ToAsset> =
+            let from_asset: FungibleAsset<FromAsset> =
                 configuration.collateral_asset.clone().coerce();
-            let to_asset: FungibleAsset<FromAsset> = self.from_asset.as_ref().clone().coerce();
+            let to_asset: FungibleAsset<ToAsset> = self.from_asset.as_ref().clone().coerce();
             match self
                 .swap
                 .swap(
