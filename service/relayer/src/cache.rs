@@ -68,20 +68,18 @@ impl<T> CacheRecord<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct Cache {
-    gas_price: CacheRecord<NearToken>,
-    nonce: HashMap<(AccountId, PublicKey), CacheRecord<u64>>,
+    request: mpsc::Sender<CacheRequest>,
 }
 
 impl Cache {
-    pub fn start(near: Near, gas_price_refresh: Duration, nonce_refresh: Duration) -> CacheHandle {
+    pub fn new(near: Near, gas_price_refresh: Duration, nonce_refresh: Duration) -> Self {
         let (send, mut recv) = mpsc::channel::<CacheRequest>(64);
 
         tokio::spawn(async move {
-            let mut cache = Cache {
-                gas_price: CacheRecord::empty(),
-                nonce: HashMap::new(),
-            };
+            let mut gas_price = CacheRecord::empty();
+            let mut nonce = HashMap::new();
 
             let update_gas = || async { near.fetch_gas_price().await };
             let update_nonce = |(account_id, public_key)| {
@@ -90,17 +88,12 @@ impl Cache {
 
             while let Some(request) = recv.recv().await {
                 match request {
-                    CacheRequest::Exit(sender) => {
-                        tracing::debug!("Received exit signal, exiting...");
-                        drop(sender);
-                        break;
-                    }
                     CacheRequest::GasPrice(sender) => {
-                        let fresh = cache.gas_price.fetch(update_gas, gas_price_refresh).await;
+                        let fresh = gas_price.fetch(update_gas, gas_price_refresh).await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(price) = fresh {
                             sender.send(*price).unwrap();
-                        } else if let Some(price) = cache.gas_price.stale() {
+                        } else if let Some(price) = gas_price.stale() {
                             tracing::warn!("Failed to fetch gas price, sending stale value.");
                             sender.send(*price).unwrap();
                         } else {
@@ -110,10 +103,7 @@ impl Cache {
                         }
                     }
                     CacheRequest::Nonce { key, sender } => {
-                        let entry = cache
-                            .nonce
-                            .entry(key.clone())
-                            .or_insert_with(CacheRecord::empty);
+                        let entry = nonce.entry(key.clone()).or_insert_with(CacheRecord::empty);
                         let fresh = entry
                             .fetch_update(update_nonce(key.clone()), nonce_refresh, |n| *n += 1)
                             .await;
@@ -136,12 +126,11 @@ impl Cache {
             }
         });
 
-        CacheHandle { request: send }
+        Self { request: send }
     }
 }
 
 enum CacheRequest {
-    Exit(oneshot::Sender<()>),
     GasPrice(oneshot::Sender<NearToken>),
     Nonce {
         key: (AccountId, PublicKey),
@@ -149,13 +138,8 @@ enum CacheRequest {
     },
 }
 
-#[derive(Debug)]
-pub struct CacheHandle {
-    request: mpsc::Sender<CacheRequest>,
-}
-
 #[allow(clippy::unwrap_used)]
-impl CacheHandle {
+impl Cache {
     pub async fn gas_price(&self) -> NearToken {
         let (send, recv) = oneshot::channel();
         self.request
@@ -175,18 +159,5 @@ impl CacheHandle {
             .await
             .unwrap();
         recv.await.unwrap()
-    }
-}
-
-#[allow(clippy::unwrap_used)]
-impl Drop for CacheHandle {
-    fn drop(&mut self) {
-        let r = self.request.clone();
-
-        tokio::spawn(async move {
-            let (send, recv) = oneshot::channel();
-            r.send(CacheRequest::Exit(send)).await.unwrap();
-            recv.await.unwrap_err();
-        });
     }
 }

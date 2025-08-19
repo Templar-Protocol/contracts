@@ -1,5 +1,5 @@
 use near_primitives::hash::CryptoHash;
-use near_sdk::{AccountIdRef, NearToken};
+use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
 use tracing::warn;
 
@@ -91,6 +91,41 @@ impl Database {
         tracing::info!("Closing database connection...");
         self.connection.close().await;
         tracing::info!("Database connection closed.");
+    }
+
+    /// # Errors
+    ///
+    /// - Query errors
+    pub async fn get_pending_transactions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<(AccountId, CryptoHash)>, sqlx::Error> {
+        let results = sqlx::query!(
+            "select
+                account_id,
+                pending_transaction_hash as \"pending_transaction_hash: [u8; 32]\"
+            from account
+            where pending_transaction_hash is not null
+            order by pending_transaction_issued_at asc
+            limit $1",
+            limit,
+        )
+        .fetch_all(&self.connection)
+        .await?;
+
+        Ok(results
+            .into_iter()
+            .filter_map(|r| {
+                // Since this is a filter-map, there is technically the
+                // possibility that we get (and skip) some invalid records
+                // here. The number of invalid records could exceed `limit`,
+                // causing us to always return an empty list.
+                let account_id: AccountId = r.account_id.parse().ok()?;
+                #[allow(clippy::unwrap_used, reason = "Guaranteed not null by query")]
+                let hash = CryptoHash(r.pending_transaction_hash.unwrap());
+                Some((account_id, hash))
+            })
+            .collect())
     }
 
     /// # Errors

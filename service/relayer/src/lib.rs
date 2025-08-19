@@ -7,6 +7,7 @@ use near_sdk::{
 };
 use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
 
+pub mod broom;
 pub mod cache;
 pub mod client;
 pub mod error;

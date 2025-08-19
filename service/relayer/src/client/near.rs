@@ -12,7 +12,7 @@ use near_primitives::{
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction, TransactionV0},
     types::Finality,
-    views::QueryRequest,
+    views::{FinalExecutionOutcomeView, QueryRequest},
 };
 use near_sdk::{
     serde::{de::DeserializeOwned, Serialize},
@@ -65,6 +65,28 @@ impl Near {
         let method = methods::gas_price::RpcGasPriceRequest { block_id: None };
         let response = self.client.call(method).await?;
         Ok(NearToken::from_yoctonear(response.gas_price))
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn fetch_transaction_status(
+        &self,
+        account_id: AccountId,
+        transaction_hash: CryptoHash,
+    ) -> Result<Option<FinalExecutionOutcomeView>, JsonRpcError<RpcTransactionError>> {
+        let response = self
+            .client
+            .call(methods::tx::RpcTransactionStatusRequest {
+                transaction_info: methods::tx::TransactionInfo::TransactionId {
+                    tx_hash: transaction_hash,
+                    sender_account_id: account_id,
+                },
+                wait_until: near_primitives::views::TxExecutionStatus::Final,
+            })
+            .await?;
+
+        Ok(response.final_execution_outcome.map(|o| o.into_outcome()))
     }
 
     pub fn next_signer(&self) -> &Signer {

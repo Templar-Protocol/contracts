@@ -22,7 +22,8 @@ use tokio::{signal, sync::RwLock, task::JoinSet};
 
 use templar_common::market::DepositMsg;
 use templar_relayer::{
-    cache::{Cache, CacheHandle},
+    broom::Broom,
+    cache::Cache,
     client::{database::Database, near::Near},
     error::PreconditionError,
     message::{RelayRequest, RelayResponse},
@@ -71,7 +72,9 @@ struct App {
     pub configuration: Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
     pub near: Near,
-    pub cache: Arc<CacheHandle>,
+    pub cache: Arc<Cache>,
+    /// This field is only relevant for its Drop implementation, which shuts down the Broom.
+    pub _broom: Arc<Broom>,
     pub database: Database,
 }
 
@@ -88,11 +91,13 @@ impl App {
 
         let database = Database::new(&args.database_url).unwrap();
 
-        let cache = Cache::start(
+        let cache = Cache::new(
             near.clone(),
             Duration::from_secs(configuration.gas_price_refresh_secs),
             Duration::from_secs(configuration.nonce_refresh_secs),
         );
+
+        let broom = Broom::new(database.clone(), near.clone(), 16, Duration::from_secs(10));
 
         Self {
             args,
@@ -100,6 +105,7 @@ impl App {
             accounts: Arc::new(RwLock::new(AccountData::default())),
             near,
             cache: Arc::new(cache),
+            _broom: Arc::new(broom),
             database,
         }
     }
@@ -318,9 +324,9 @@ async fn shutdown_signal(database: Database) {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
+        () = ctrl_c => {},
+        () = terminate => {},
+    };
 
     database.close().await;
 }
