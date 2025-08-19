@@ -194,6 +194,18 @@ impl Database {
         allowance_spent: NearToken,
         succeeded: bool,
     ) -> Result<(), error::RecordTransactionError> {
+        let already_inserted = sqlx::query!(
+            "select 1 as inserted from call where account_id = $1 and transaction_hash = $2",
+            account_id.as_str(),
+            &transaction_hash.0,
+        )
+        .fetch_optional(&self.connection)
+        .await?;
+
+        if already_inserted.is_some() {
+            return Ok(());
+        }
+
         let mut tx = self.connection.begin().await?;
         let result = sqlx::query!(
             "update account set
@@ -210,12 +222,14 @@ impl Database {
         .await?;
 
         if result.rows_affected() == 0 {
+            tx.rollback().await?;
+
             warn!("Failed to unlock allowance for {account_id}");
             let account = sqlx::query!(
                 "select pending_transaction_hash from account where account_id = $1",
                 account_id.as_str(),
             )
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&self.connection)
             .await?;
             let account = account.ok_or_else(|| error::AccountDoesNotExistError {
                 account_id: account_id.to_owned(),
@@ -238,6 +252,8 @@ impl Database {
             Decimal::from(allowance_spent.as_yoctonear()),
             succeeded,
         ).execute(&mut *tx).await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
