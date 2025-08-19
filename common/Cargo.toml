@@ -8,8 +8,6 @@ version.workspace = true
 [dependencies]
 borsh.workspace = true
 hex.workspace = true
-near-account-id.workspace = true
-near-primitives.workspace = true
 near-contract-standards.workspace = true
 near-sdk.workspace = true
 thiserror.workspace = true

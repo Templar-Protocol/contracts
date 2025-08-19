@@ -3820,9 +3820,7 @@ version = "1.0.0"
 dependencies = [
  "borsh",
  "hex",
- "near-account-id",
  "near-contract-standards",
- "near-primitives",
  "near-sdk",
  "primitive-types",
  "rand",

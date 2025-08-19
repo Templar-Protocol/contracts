@@ -1,3 +1,4 @@
+use crate::near::create_function_call_action;
 use crate::{
     near::{get_access_key_data, send_tx, view, RpcError},
     swap::{Swap, SwapType},
@@ -169,8 +170,7 @@ impl<S: Swap> Liquidator<S> {
         }))?;
 
         let action =
-            self.from_asset
-                .create_function_call_action(&self.market, liquidation_amount, &msg);
+            create_function_call_action(&self.from_asset, &self.market, liquidation_amount, &msg);
         Ok(Transaction::V0(TransactionV0 {
             nonce,
             receiver_id: self.from_asset.contract_id(),

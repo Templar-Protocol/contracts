@@ -12,18 +12,24 @@ use near_jsonrpc_client::{
     JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::action::{Action, FunctionCallAction};
 use near_primitives::{
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction},
     types::{AccountId, BlockReference},
     views::{FinalExecutionStatus, QueryRequest, TxExecutionStatus},
 };
+use near_sdk::json_types::U128;
+use near_sdk::serde_json::json;
 use near_sdk::{
     serde::{de::DeserializeOwned, Serialize},
-    serde_json,
+    serde_json, Gas, NearToken,
 };
+use templar_common::asset::{AssetClass, FungibleAsset};
 use tokio::time::Instant;
 use tracing::instrument;
+
+pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
 
 /// Error types for RPC operations
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +94,46 @@ pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .encode(serde_json::to_string(&data).expect("Failed to serialize data"))
         .into_bytes()
+}
+
+pub fn create_function_call_action<A: AssetClass>(
+    asset: &FungibleAsset<A>,
+    receiver_id: &AccountId,
+    amount: U128,
+    msg: &str,
+) -> Action {
+    let asset_id = asset.as_asset_id();
+    // NEP-245
+    let (method_name, args_json, gas) = if let Some(token_id) = asset_id.1 {
+        (
+            "mt_transfer_call".to_string(),
+            json!({
+                "receiver_id": receiver_id,
+                "token_id": format!("nep141:{}", token_id),
+                "amount": amount,
+                "msg": msg,
+            }),
+            FungibleAsset::<A>::GAS_MT_TRANSFER.as_gas(),
+        )
+    } else {
+        (
+            "ft_transfer_call".to_string(),
+            json!({
+                "receiver_id": receiver_id,
+                "amount": amount,
+                "msg": msg,
+            }),
+            FungibleAsset::<A>::GAS_FT_TRANSFER.as_gas(),
+        )
+    };
+
+    let args = serialize_and_encode(&args_json);
+    Action::FunctionCall(Box::new(FunctionCallAction {
+        method_name,
+        args,
+        gas,
+        deposit: NearToken::from_yoctonear(1).as_yoctonear(),
+    }))
 }
 
 #[instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]

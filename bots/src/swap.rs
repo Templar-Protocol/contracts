@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::near::create_function_call_action;
 use crate::{
     near::{get_access_key_data, send_tx, view, RpcResult},
     Network,
@@ -168,8 +169,12 @@ impl Swap for RheaSwap {
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-        let action =
-            from.create_function_call_action(&self.contract, amount, &serde_json::to_string(&msg)?);
+        let action = create_function_call_action(
+            &from,
+            &self.contract,
+            amount,
+            &serde_json::to_string(&msg)?,
+        );
         let tx = Transaction::V0(TransactionV0 {
             nonce,
             receiver_id: from.contract_id(),

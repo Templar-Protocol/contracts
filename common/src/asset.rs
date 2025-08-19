@@ -1,10 +1,8 @@
 use crate::number::Decimal;
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_primitives::action::{Action, FunctionCallAction};
-use near_sdk::base64::Engine;
 use near_sdk::serde_json::Value;
 use near_sdk::{
-    base64, env,
+    env,
     json_types::U128,
     near,
     serde_json::{self, json},
@@ -71,45 +69,6 @@ impl<T: AssetClass> FungibleAsset<T> {
                 Self::GAS_MT_TRANSFER,
             ),
         }
-    }
-
-    #[allow(clippy::expect_used, reason = "Args serialization shouldn't fail")]
-    pub fn create_function_call_action(
-        &self,
-        receiver_id: &AccountId,
-        amount: U128,
-        msg: &str,
-    ) -> Action {
-        let (method_name, args_json) = match &self.kind {
-            FungibleAssetKind::Nep141(..) => (
-                "ft_transfer_call".to_string(),
-                json!({
-                    "receiver_id": receiver_id,
-                    "amount": amount,
-                    "msg": msg,
-                }),
-            ),
-            FungibleAssetKind::Nep245 { token_id, .. } => (
-                "mt_transfer_call".to_string(),
-                json!({
-                    "receiver_id": receiver_id,
-                    "token_id": format!("nep141:{}", token_id),
-                    "amount": amount,
-                    "msg": msg,
-                }),
-            ),
-        };
-
-        let args = base64::engine::general_purpose::STANDARD
-            .encode(serde_json::to_string(&args_json).expect("Failed to serialize data"))
-            .into_bytes();
-
-        Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name,
-            args,
-            gas: Self::GAS_MT_TRANSFER.as_gas(),
-            deposit: NearToken::from_yoctonear(1).as_yoctonear(),
-        }))
     }
 
     pub fn nep141(contract_id: AccountId) -> Self {
