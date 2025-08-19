@@ -223,15 +223,25 @@ impl<T: AssetClass> FromStr for FungibleAsset<T> {
     type Err = <AccountId as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some((contract_id, token_id)) = s.split_once(':') {
-            if let Some(token_id) = token_id.strip_prefix("nep245:") {
-                return Ok(FungibleAsset::nep245(
-                    AccountId::try_from(contract_id.to_string())?,
+        if let Some(rest) = s.strip_prefix("nep141:") {
+            Ok(FungibleAsset::nep141(AccountId::from_str(rest)?))
+        } else if let Some(rest) = s.strip_prefix("nep245:") {
+            if let Some((contract_id, token_id)) = rest.split_once(':') {
+                Ok(FungibleAsset::nep245(
+                    AccountId::from_str(contract_id)?,
                     token_id.to_string(),
-                ));
+                ))
+            } else {
+                // This will fail and return a AccountId failure, this can be changed with own error
+                // type in the future.
+                match AccountId::from_str("") {
+                    Ok(_) => unreachable!("Empty string should not be a valid AccountId"),
+                    Err(e) => Err(e),
+                }
             }
+        } else {
+            Ok(FungibleAsset::nep141(AccountId::from_str(s)?))
         }
-        Ok(FungibleAsset::nep141(AccountId::try_from(s.to_string())?))
     }
 }
 
