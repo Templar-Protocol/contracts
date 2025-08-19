@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select 1 as inserted from call where account_id = $1 and transaction_hash = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inserted",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5ae8551b4f17301adf80272053184d4c280034e134f4f68835376991017023f9"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update account set\n                allowance_locked = $1,\n                pending_transaction_hash = $2,\n                pending_transaction_issued_at = now()\n            where account_id = $3\n                and (\n                    (allowance_locked = 0 and allowance >= $1 and mark != 'always_deny')\n                    or mark = 'always_approve'\n                )\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Numeric",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5b43073c681d188e22debd12f21111fe43697c4a92eb1fdc28d3c2535e6d0b80"
+}

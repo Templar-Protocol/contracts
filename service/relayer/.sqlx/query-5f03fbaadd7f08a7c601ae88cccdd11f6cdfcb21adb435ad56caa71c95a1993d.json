@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select allowance, allowance_locked, pending_transaction_hash from account where account_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allowance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 1,
+        "name": "allowance_locked",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 2,
+        "name": "pending_transaction_hash",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "5f03fbaadd7f08a7c601ae88cccdd11f6cdfcb21adb435ad56caa71c95a1993d"
+}

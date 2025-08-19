@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select allowance, allowance_locked, mark as \"mark: AccountMark\" from account where account_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allowance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 1,
+        "name": "allowance_locked",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 2,
+        "name": "mark: AccountMark",
+        "type_info": {
+          "Custom": {
+            "name": "account_mark",
+            "kind": {
+              "Enum": [
+                "default",
+                "always_deny",
+                "always_approve"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "740839d74280e0f3be04deb0ea58c07ff9fb9169015c7b3c7f59678472dd6275"
+}

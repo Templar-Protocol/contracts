@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into account (account_id, allowance) values ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a47b388844b5ab8959e86d608eaaa91fa9843e2fc040350a4204dcd7dbbefab1"
+}

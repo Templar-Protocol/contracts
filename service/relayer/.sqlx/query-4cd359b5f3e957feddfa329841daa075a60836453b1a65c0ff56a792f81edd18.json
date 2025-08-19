@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pending_transaction_hash from account where account_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pending_transaction_hash",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "4cd359b5f3e957feddfa329841daa075a60836453b1a65c0ff56a792f81edd18"
+}
