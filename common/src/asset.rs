@@ -11,7 +11,7 @@ use near_sdk::{
 use std::str::FromStr;
 use std::{fmt::Display, marker::PhantomData};
 
-pub type AssetId<'a> = (&'a AccountId, Option<&'a String>);
+pub type AssetId<'a> = (&'a near_sdk::AccountIdRef, Option<&'a str>);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TransferCallParams {
