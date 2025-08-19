@@ -5,7 +5,7 @@ use std::{
 
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::NearToken;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::client::{database::Database, near::Near};
 
@@ -40,6 +40,11 @@ impl Broom {
                     .await
                     .unwrap();
 
+                debug!(
+                    "Broom processing {} pending transactions...",
+                    pending_transactions.len(),
+                );
+
                 for (account_id, transaction_hash) in pending_transactions {
                     let status = match near
                         .fetch_transaction_status(account_id.clone(), transaction_hash)
@@ -60,7 +65,7 @@ impl Broom {
                         .record_transaction(&account_id, transaction_hash, allowance_spent, success)
                         .await
                     {
-                        warn!("Error trying to automatically record transaction ({account_id}, {transaction_hash}): {e}");
+                        warn!("Broom error trying to automatically record transaction ({account_id}, {transaction_hash}): {e}");
                     }
                 }
 
