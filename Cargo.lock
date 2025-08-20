@@ -3821,6 +3821,7 @@ dependencies = [
  "borsh",
  "hex",
  "near-contract-standards",
+ "near-primitives",
  "near-sdk",
  "primitive-types",
  "rand",

@@ -1,4 +1,3 @@
-use crate::near::create_function_call_action;
 use crate::{
     near::{get_access_key_data, send_tx, view, RpcError},
     swap::{Swap, SwapType},
@@ -19,7 +18,7 @@ use near_sdk::{
 };
 use std::fmt::Debug;
 use std::{collections::HashMap, sync::Arc};
-use templar_common::asset::{AssetClass, FromAsset, FungibleAsset, ToAsset};
+use templar_common::asset::{AssetClass, FromAsset, FungibleAsset, FungibleAssetAmount, ToAsset};
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
@@ -161,7 +160,7 @@ impl<S: Swap> Liquidator<S> {
     fn create_transfer_tx(
         &self,
         borrow: &AccountId,
-        liquidation_amount: U128,
+        liquidation_amount: FungibleAssetAmount<FromAsset>,
         nonce: u64,
         block_hash: CryptoHash,
     ) -> LiquidatorResult<Transaction> {
@@ -169,15 +168,16 @@ impl<S: Swap> Liquidator<S> {
             account_id: borrow.clone(),
         }))?;
 
-        let action =
-            create_function_call_action(&self.from_asset, &self.market, liquidation_amount, &msg);
+        let function_call =
+            self.from_asset
+                .transfer_call_action(&self.market, liquidation_amount, &msg);
         Ok(Transaction::V0(TransactionV0 {
             nonce,
             receiver_id: self.from_asset.contract_id(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
-            actions: vec![action],
+            actions: vec![function_call.into()],
         }))
     }
 
@@ -267,7 +267,7 @@ impl<S: Swap> Liquidator<S> {
             .map_err(LiquidatorError::AccessKeyDataError)?;
 
         let transfer_call_tx =
-            self.create_transfer_tx(&borrow, liquidation_amount, nonce, block_hash)?;
+            self.create_transfer_tx(&borrow, liquidation_amount.into(), nonce, block_hash)?;
 
         match send_tx(&self.client, &self.signer, self.timeout, transfer_call_tx).await {
             Ok(_) => {
@@ -358,11 +358,10 @@ impl<S: Swap> Liquidator<S> {
         &self,
         asset: &FungibleAsset<A>,
     ) -> LiquidatorResult<U128> {
-        let asset_id = asset.as_asset_id();
-        let balance = if let Some(token_id) = asset_id.1 {
+        let balance = if let Some((contract_id, token_id)) = asset.as_nep245() {
             view::<U128>(
                 &self.client,
-                AccountId::from(asset_id.0),
+                contract_id.to_owned(),
                 "mt_balance_of",
                 json!({
                     "account_id": self.signer.account_id,
@@ -370,14 +369,16 @@ impl<S: Swap> Liquidator<S> {
                 }),
             )
             .await
-        } else {
+        } else if let Some(contract_id) = asset.as_nep141() {
             view::<U128>(
                 &self.client,
-                AccountId::from(asset_id.0),
+                contract_id.to_owned(),
                 "ft_balance_of",
                 json!({ "account_id": self.signer.account_id }),
             )
             .await
+        } else {
+            unreachable!()
         }
         .map_err(LiquidatorError::FetchBalanceError)?;
 

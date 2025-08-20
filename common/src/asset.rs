@@ -1,6 +1,7 @@
 use crate::number::Decimal;
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::serde_json::Value;
+use near_sdk::AccountIdRef;
 use near_sdk::{
     env,
     json_types::U128,
@@ -11,8 +12,6 @@ use near_sdk::{
 use std::str::FromStr;
 use std::{fmt::Display, marker::PhantomData};
 
-pub type AssetId<'a> = (&'a near_sdk::AccountIdRef, Option<&'a str>);
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TransferCallParams {
     pub account_id: AccountId,
@@ -20,7 +19,7 @@ pub struct TransferCallParams {
     pub args: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
 pub struct FungibleAsset<T: AssetClass> {
     #[serde(skip)]
@@ -28,6 +27,12 @@ pub struct FungibleAsset<T: AssetClass> {
     discriminant: PhantomData<T>,
     #[serde(flatten)]
     kind: FungibleAssetKind,
+}
+
+impl<T: AssetClass, U: AssetClass> PartialEq<FungibleAsset<U>> for FungibleAsset<T> {
+    fn eq(&self, other: &FungibleAsset<U>) -> bool {
+        PartialEq::eq(&self.kind, &other.kind)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -71,6 +76,47 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn transfer_call_action(
+        &self,
+        receiver_id: &near_sdk::AccountIdRef,
+        amount: FungibleAssetAmount<T>,
+        msg: &str,
+    ) -> near_primitives::action::FunctionCallAction {
+        let (method_name, args, gas) = match self.kind {
+            FungibleAssetKind::Nep141(_) => (
+                "ft_transfer_call",
+                json!({
+                    "receiver_id": receiver_id,
+                    "amount": amount,
+                    "msg": msg,
+                }),
+                Self::GAS_FT_TRANSFER,
+            ),
+            FungibleAssetKind::Nep245 { ref token_id, .. } => (
+                "mt_transfer_call",
+                json!({
+                    "receiver_id": receiver_id,
+                    "token_id": token_id,
+                    "amount": amount,
+                    "msg": msg,
+                }),
+                Self::GAS_MT_TRANSFER,
+            ),
+        };
+
+        near_primitives::action::FunctionCallAction {
+            method_name: method_name.to_string(),
+            #[allow(
+                clippy::unwrap_used,
+                reason = "All of the types have infallible serialization"
+            )]
+            args: serde_json::to_vec(&args).unwrap(),
+            gas: gas.as_gas(),
+            deposit: NearToken::from_yoctonear(1).as_yoctonear(),
+        }
+    }
+
     pub fn nep141(contract_id: AccountId) -> Self {
         Self {
             discriminant: PhantomData,
@@ -99,6 +145,13 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    pub fn as_nep141(&self) -> Option<&AccountIdRef> {
+        match self.kind {
+            FungibleAssetKind::Nep141(ref contract_id) => Some(contract_id),
+            FungibleAssetKind::Nep245 { .. } => None,
+        }
+    }
+
     pub fn is_nep245(&self, account_id: &AccountId, token_id: &str) -> bool {
         let t = token_id;
         matches!(self.kind, FungibleAssetKind::Nep245 { ref contract_id, ref token_id } if contract_id == account_id && token_id == t)
@@ -114,22 +167,22 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    pub fn as_nep245(&self) -> Option<(&AccountIdRef, &str)> {
+        match self.kind {
+            FungibleAssetKind::Nep245 {
+                ref contract_id,
+                ref token_id,
+            } => Some((contract_id, token_id)),
+            FungibleAssetKind::Nep141(_) => None,
+        }
+    }
+
     pub fn contract_id(&self) -> AccountId {
         match self.kind {
             FungibleAssetKind::Nep245 {
                 ref contract_id, ..
             }
             | FungibleAssetKind::Nep141(ref contract_id) => contract_id.clone(),
-        }
-    }
-
-    pub fn as_asset_id(&self) -> AssetId {
-        match &self.kind {
-            FungibleAssetKind::Nep141(account_id) => (account_id, None),
-            FungibleAssetKind::Nep245 {
-                contract_id,
-                token_id,
-            } => (contract_id, Some(token_id)),
         }
     }
 
@@ -204,55 +257,23 @@ impl<T: AssetClass> FromStr for FungibleAsset<T> {
     }
 }
 
-mod sealed {
-    pub trait Sealed {}
-}
-pub trait AssetClass: sealed::Sealed + Copy + Clone + Send {}
+pub trait AssetClass: Copy + Clone + Send {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub struct CollateralAsset;
-impl sealed::Sealed for CollateralAsset {}
-impl AssetClass for CollateralAsset {}
-
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub struct BorrowAsset;
-impl sealed::Sealed for BorrowAsset {}
-impl AssetClass for BorrowAsset {}
-
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FromAsset;
-impl sealed::Sealed for FromAsset {}
-impl AssetClass for FromAsset {}
-
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ToAsset;
-impl sealed::Sealed for ToAsset {}
-impl AssetClass for ToAsset {}
-
-macro_rules! impl_cross_eq {
-    ($a:ident, $b:ident) => {
-        impl PartialEq<FungibleAsset<$b>> for FungibleAsset<$a> {
-            fn eq(&self, other: &FungibleAsset<$b>) -> bool {
-                self.kind == other.kind // Compare the actual FungibleAssetKind
-            }
-        }
-
-        impl PartialEq<FungibleAsset<$a>> for FungibleAsset<$b> {
-            fn eq(&self, other: &FungibleAsset<$a>) -> bool {
-                self.kind == other.kind // Compare the actual FungibleAssetKind
-            }
-        }
+macro_rules! asset_class {
+    ($n:ident) => {
+        #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+        #[near(serializers = [borsh, json])]
+        pub struct $n;
+        impl AssetClass for $n {}
     };
+    ($n:ident, $($tail:tt)+) => {
+        asset_class!($n);
+        asset_class!($($tail)+);
+    };
+    () => {};
 }
 
-impl_cross_eq!(CollateralAsset, BorrowAsset);
-impl_cross_eq!(CollateralAsset, FromAsset);
-impl_cross_eq!(CollateralAsset, ToAsset);
-impl_cross_eq!(BorrowAsset, FromAsset);
-impl_cross_eq!(BorrowAsset, ToAsset);
-impl_cross_eq!(FromAsset, ToAsset);
+asset_class![CollateralAsset, BorrowAsset, FromAsset, ToAsset];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
