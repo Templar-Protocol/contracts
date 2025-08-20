@@ -1,6 +1,5 @@
 use crate::number::Decimal;
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::serde_json::Value;
 use near_sdk::AccountIdRef;
 use near_sdk::{
     env,
@@ -11,13 +10,6 @@ use near_sdk::{
 };
 use std::str::FromStr;
 use std::{fmt::Display, marker::PhantomData};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TransferCallParams {
-    pub account_id: AccountId,
-    pub method_name: String,
-    pub args: Value,
-}
 
 #[derive(Debug, Clone, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
