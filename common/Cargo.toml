@@ -14,7 +14,7 @@ thiserror.workspace = true
 primitive-types.workspace = true
 schemars.workspace = true
 
-[target.'cfg(not(target_family = "wasm32"))'.dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 near-primitives.workspace = true
 
 [dev-dependencies]
