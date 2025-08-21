@@ -1,32 +1,35 @@
-use error::PreconditionError;
+use std::collections::{HashMap, HashSet};
+
 use near_primitives::{action::FunctionCallAction, types::AccountId};
 use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
-    serde_json, AccountIdRef, NearToken,
+    serde_json, AccountIdRef,
 };
+
 use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
 
+use error::PreconditionError;
+
+pub mod app;
 pub mod broom;
 pub mod cache;
 pub mod client;
 pub mod error;
 pub mod message;
+pub mod route;
+
+#[derive(Debug, Clone, Default)]
+pub struct AccountData {
+    pub market_account_ids: HashMap<AccountId, MarketAccounts>,
+    pub allowed_receiver_account_ids: HashSet<AccountId>,
+}
 
 #[derive(Debug, Clone)]
 pub struct MarketAccounts {
     pub account_id: AccountId,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub borrow_asset: FungibleAsset<BorrowAsset>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct Configuration {
-    pub allowed_methods: Vec<String>,
-    pub starting_allowance_yocto: NearToken,
-    pub gas_price_refresh_secs: u64,
-    pub nonce_refresh_secs: u64,
 }
 
 pub struct AssetTransfer {
