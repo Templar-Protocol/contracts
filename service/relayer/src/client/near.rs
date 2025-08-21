@@ -25,6 +25,8 @@ use templar_common::market::MarketConfiguration;
 
 use crate::{cache::Cache, MarketData};
 
+pub const STORAGE_DEPOSIT_GAS: u64 = Gas::from_tgas(5).as_gas();
+
 #[derive(Debug, Clone)]
 pub struct Near {
     client: JsonRpcClient,
@@ -208,7 +210,7 @@ impl Near {
                 "registration_only": true,
             }))
             .unwrap(),
-            gas: Gas::from_tgas(5).as_gas(),
+            gas: STORAGE_DEPOSIT_GAS,
             deposit: amount.as_yoctonear(),
         };
 

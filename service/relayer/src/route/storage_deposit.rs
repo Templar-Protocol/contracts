@@ -4,13 +4,14 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use near_primitives::hash::CryptoHash;
+use near_primitives::{hash::CryptoHash, views::FinalExecutionStatus};
 use near_sdk::{
     serde::{Deserialize, Serialize},
-    AccountId,
+    AccountId, NearToken,
 };
+use tracing::warn;
 
-use crate::app::App;
+use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
@@ -80,15 +81,37 @@ pub async fn storage_deposit(
         return StorageDepositResponse::StorageBalanceAlreadyExists;
     }
 
+    let Some(mut allowance_lock_amount) = app.estimate_cost_of_gas(STORAGE_DEPOSIT_GAS).await
+    else {
+        return StorageDepositResponse::Failure {
+            error: "Failed to estimate gas cost".to_string(),
+        };
+    };
+    allowance_lock_amount = allowance_lock_amount.saturating_add(storage_balance_bounds.min);
+
     let signed_transaction = app
         .near
         .construct_storage_deposit_transaction(
             &app.cache,
-            account_id,
+            account_id.clone(),
             contract_id,
             storage_balance_bounds.min,
         )
         .await;
+
+    if let Err(e) = app
+        .database
+        .set_pending_transaction(
+            &account_id,
+            allowance_lock_amount,
+            signed_transaction.get_hash(),
+        )
+        .await
+    {
+        return StorageDepositResponse::Failure {
+            error: e.to_string(),
+        };
+    };
 
     let execution = match app.near.send_transaction(signed_transaction).await {
         Ok(result) => result,
@@ -98,6 +121,27 @@ pub async fn storage_deposit(
             };
         }
     };
+
+    let mut allowance_spent = NearToken::from_yoctonear(execution.tokens_burnt());
+
+    let succeeded = matches!(execution.status, FinalExecutionStatus::SuccessValue(_));
+
+    if succeeded {
+        allowance_spent = allowance_spent.saturating_add(storage_balance_bounds.min);
+    }
+
+    if let Err(e) = app
+        .database
+        .record_transaction(
+            &account_id,
+            execution.transaction.hash,
+            allowance_spent,
+            succeeded,
+        )
+        .await
+    {
+        warn!("Failed to record transaction: {e}");
+    }
 
     StorageDepositResponse::Success {
         transaction_hash: execution.transaction.hash,
