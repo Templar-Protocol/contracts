@@ -16,7 +16,7 @@ use test_utils::*;
 )]
 #[tokio::main]
 async fn main() {
-    const ITERATIONS: usize = 24;
+    const ITERATIONS: usize = 128;
 
     setup_test!(
         extract(c)
