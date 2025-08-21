@@ -8,10 +8,7 @@ use std::{
 use clap::Parser;
 use near_crypto::{InMemorySigner, SecretKey};
 use near_primitives::action::{delegate::SignedDelegateAction, Action};
-use near_sdk::{
-    serde::{Deserialize, Serialize},
-    serde_json, AccountId, NearToken,
-};
+use near_sdk::{serde_json, AccountId, NearToken};
 use templar_common::market::DepositMsg;
 use tokio::{sync::RwLock, task::JoinSet};
 use tracing::{info, warn};
@@ -23,6 +20,9 @@ use crate::{
     error::PreconditionError,
     AccountData, AssetTransfer, ContractData,
 };
+
+mod configuration;
+pub use configuration::Configuration;
 
 #[derive(Parser, Debug, Clone)]
 pub struct Args {
@@ -50,15 +50,6 @@ pub struct Args {
     /// Comma-separated list of private keys to use to sign transactions for the account that the relayer controls.
     #[arg(short = 'k', long, env = "SECRET_KEY")]
     pub secret_key: Vec<SecretKey>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct Configuration {
-    pub allowed_methods: Vec<String>,
-    pub starting_allowance_yocto: NearToken,
-    pub gas_price_refresh_secs: u64,
-    pub nonce_refresh_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -89,11 +80,16 @@ impl App {
 
         let cache = Cache::new(
             near.clone(),
-            Duration::from_secs(configuration.gas_price_refresh_secs),
-            Duration::from_secs(configuration.nonce_refresh_secs),
+            Duration::from_secs(configuration.cache.gas_price_secs),
+            Duration::from_secs(configuration.cache.nonce_secs),
         );
 
-        let broom = Broom::new(database.clone(), near.clone(), 16, Duration::from_secs(10));
+        let broom = Broom::new(
+            database.clone(),
+            near.clone(),
+            configuration.broom.batch_size,
+            Duration::from_secs(configuration.broom.interval_secs),
+        );
 
         Self {
             args,
