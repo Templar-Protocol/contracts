@@ -8,7 +8,7 @@ use near_jsonrpc_client::{
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
-    action::{delegate::SignedDelegateAction, Action},
+    action::{delegate::SignedDelegateAction, FunctionCallAction},
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction, TransactionV0},
     types::Finality,
@@ -17,11 +17,13 @@ use near_primitives::{
 use near_sdk::{
     serde::{de::DeserializeOwned, Serialize},
     serde_json::{self, json},
-    AccountId, NearToken,
+    AccountId, AccountIdRef, Gas, NearToken,
 };
+use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBounds};
+
 use templar_common::market::MarketConfiguration;
 
-use crate::MarketAccounts;
+use crate::{cache::Cache, MarketData};
 
 #[derive(Debug, Clone)]
 pub struct Near {
@@ -154,28 +156,71 @@ impl Near {
     /// # Errors
     ///
     /// - RPC errors for nonce query
+    #[must_use]
     pub async fn construct_delegate_transaction(
         &self,
+        cache: &Cache,
         signed_delegate_action: SignedDelegateAction,
-    ) -> Result<SignedTransaction, JsonRpcError<RpcQueryError>> {
+    ) -> SignedTransaction {
         let delegate_receiver_id = signed_delegate_action.delegate_action.sender_id.clone();
-        let actions = vec![Action::Delegate(Box::new(signed_delegate_action))];
         let signer = self.next_signer();
         let public_key = signer.public_key();
 
-        let (nonce, block_hash) = self
-            .fetch_nonce(self.account_id.clone(), public_key.clone())
-            .await?;
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
 
-        Ok(Transaction::V0(TransactionV0 {
+        Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
             public_key,
-            nonce: nonce + 1,
+            nonce,
             receiver_id: delegate_receiver_id,
             block_hash,
-            actions,
+            actions: vec![signed_delegate_action.into()],
         })
-        .sign(signer))
+        .sign(signer)
+    }
+
+    /// Constructs a storage deposit transaction for the given account and contract.
+    ///
+    /// # Errors
+    ///
+    /// - RPC transaction error
+    #[must_use]
+    pub async fn construct_storage_deposit_transaction(
+        &self,
+        cache: &Cache,
+        account_id: AccountId,
+        contract_id: AccountId,
+        amount: NearToken,
+    ) -> SignedTransaction {
+        let signer = self.next_signer();
+        let public_key = signer.public_key();
+
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
+
+        let action = FunctionCallAction {
+            method_name: "storage_deposit".to_string(),
+            args: serde_json::to_vec(&json!({
+                "account_id": account_id,
+                "registration_only": true,
+            }))
+            .unwrap(),
+            gas: Gas::from_tgas(5).as_gas(),
+            deposit: amount.as_yoctonear(),
+        };
+
+        Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key,
+            nonce,
+            receiver_id: contract_id,
+            block_hash,
+            actions: vec![action.into()],
+        })
+        .sign(signer)
     }
 
     /// # Errors
@@ -195,7 +240,7 @@ impl Near {
         &self,
         account_id: AccountId,
         method_name: impl Into<String>,
-        args: &impl Serialize,
+        args: impl Serialize,
     ) -> Result<T, ViewError> {
         let result = self
             .client
@@ -204,7 +249,7 @@ impl Near {
                 request: QueryRequest::CallFunction {
                     account_id,
                     method_name: method_name.into(),
-                    args: serde_json::to_vec(args)?.into(),
+                    args: serde_json::to_vec(&args)?.into(),
                 },
             })
             .await?;
@@ -222,10 +267,36 @@ impl Near {
     /// - RPC errors
     pub async fn load_deployments_from_registry(
         &self,
-        registry_id: &AccountId,
+        registry_id: AccountId,
     ) -> Result<Vec<AccountId>, ViewError> {
-        self.view(registry_id.clone(), "list_deployments", &json!({}))
+        self.view(registry_id, "list_deployments", json!({})).await
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn load_storage_balance_bounds(
+        &self,
+        contract_id: AccountId,
+    ) -> Result<StorageBalanceBounds, ViewError> {
+        self.view(contract_id, "storage_balance_bounds", json!({}))
             .await
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn load_storage_balance_of(
+        &self,
+        contract_id: AccountId,
+        account_id: &AccountIdRef,
+    ) -> Result<Option<StorageBalance>, ViewError> {
+        self.view(
+            contract_id,
+            "storage_balance_of",
+            &json!({ "account_id": account_id }),
+        )
+        .await
     }
 
     /// # Errors
@@ -234,13 +305,13 @@ impl Near {
     /// - RPC errors
     pub async fn load_market_accounts(
         &self,
-        market_id: &AccountId,
-    ) -> Result<MarketAccounts, ViewError> {
+        market_id: AccountId,
+    ) -> Result<MarketData, ViewError> {
         let market_configuration = self
-            .view::<MarketConfiguration>(market_id.clone(), "get_configuration", &json!({}))
+            .view::<MarketConfiguration>(market_id.clone(), "get_configuration", json!({}))
             .await?;
 
-        Ok(MarketAccounts {
+        Ok(MarketData {
             account_id: market_id.clone(),
             borrow_asset: market_configuration.borrow_asset,
             collateral_asset: market_configuration.collateral_asset,

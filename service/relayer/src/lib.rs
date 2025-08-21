@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use near_primitives::{action::FunctionCallAction, types::AccountId};
 use near_sdk::{
@@ -7,6 +7,7 @@ use near_sdk::{
     serde_json, AccountIdRef,
 };
 
+use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
 
 use error::PreconditionError;
@@ -16,17 +17,21 @@ pub mod broom;
 pub mod cache;
 pub mod client;
 pub mod error;
-pub mod message;
 pub mod route;
 
 #[derive(Debug, Clone, Default)]
 pub struct AccountData {
-    pub market_account_ids: HashMap<AccountId, MarketAccounts>,
-    pub allowed_receiver_account_ids: HashSet<AccountId>,
+    pub market_data: HashMap<AccountId, MarketData>,
+    pub allowed_contract_data: HashMap<AccountId, ContractData>,
 }
 
 #[derive(Debug, Clone)]
-pub struct MarketAccounts {
+pub struct ContractData {
+    pub storage_balance_bounds: Option<StorageBalanceBounds>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MarketData {
     pub account_id: AccountId,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub borrow_asset: FungibleAsset<BorrowAsset>,

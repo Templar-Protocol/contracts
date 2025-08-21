@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use near_primitives::views::FinalExecutionStatus;
+use near_primitives::views::{ActionView, FinalExecutionStatus};
 use near_sdk::NearToken;
 use tracing::{debug, warn};
 
@@ -58,8 +58,31 @@ impl Broom {
                         }
                     };
 
-                    let allowance_spent = NearToken::from_yoctonear(status.tokens_burnt());
+                    let allowance_spent_gas = NearToken::from_yoctonear(status.tokens_burnt());
+
                     let success = matches!(status.status, FinalExecutionStatus::SuccessValue(_));
+
+                    let allowance_spent = if success {
+                        let allowance_spent_storage_deposit = NearToken::from_yoctonear(
+                            status
+                                .transaction
+                                .actions
+                                .iter()
+                                .filter_map(|a| match a {
+                                    ActionView::FunctionCall {
+                                        method_name,
+                                        deposit,
+                                        ..
+                                    } if method_name == "storage_deposit" => Some(*deposit),
+                                    _ => None,
+                                })
+                                .sum(),
+                        );
+
+                        allowance_spent_gas.saturating_add(allowance_spent_storage_deposit)
+                    } else {
+                        allowance_spent_gas
+                    };
 
                     if let Err(e) = database
                         .record_transaction(&account_id, transaction_hash, allowance_spent, success)

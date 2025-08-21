@@ -1,11 +1,14 @@
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use near_crypto::PublicKey;
+use near_jsonrpc_client::{errors::JsonRpcError, methods::query::RpcQueryError};
+use near_primitives::hash::CryptoHash;
 use near_sdk::{AccountId, NearToken};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::client::near::Near;
 
@@ -79,11 +82,16 @@ impl Cache {
 
         tokio::spawn(async move {
             let mut gas_price = CacheRecord::empty();
-            let mut nonce = HashMap::new();
+            let mut nonce = HashMap::<(AccountId, PublicKey), CacheRecord<u64>>::new();
+            let block_hash = Arc::new(RwLock::new(CryptoHash::new()));
 
             let update_gas = || async { near.fetch_gas_price().await };
             let update_nonce = |(account_id, public_key)| {
-                || async { near.fetch_nonce(account_id, public_key).await.map(|r| r.0) }
+                || async {
+                    let (nonce, hash) = near.fetch_nonce(account_id, public_key).await?;
+                    *block_hash.write().await = hash;
+                    Ok::<_, JsonRpcError<RpcQueryError>>(nonce + 1)
+                }
             };
 
             while let Some(request) = recv.recv().await {
@@ -108,13 +116,13 @@ impl Cache {
                             .fetch_update(update_nonce(key.clone()), nonce_refresh, |n| *n += 1)
                             .await;
                         #[allow(clippy::unwrap_used)]
-                        if let Ok(price) = fresh {
-                            sender.send(*price).unwrap();
-                        } else if let Some(price) = entry.update_stale(|n| *n += 1) {
+                        if let Ok(nonce) = fresh {
+                            sender.send((*nonce, *block_hash.read().await)).unwrap();
+                        } else if let Some(nonce) = entry.update_stale(|n| *n += 1) {
                             tracing::warn!(
                                 "Failed to fetch nonce for {key:?}, sending stale value."
                             );
-                            sender.send(*price).unwrap();
+                            sender.send((*nonce, *block_hash.read().await)).unwrap();
                         } else {
                             tracing::error!(
                                 "Failed to fetch nonce for {key:?}, no stale value cached."
@@ -134,7 +142,7 @@ enum CacheRequest {
     GasPrice(oneshot::Sender<NearToken>),
     Nonce {
         key: (AccountId, PublicKey),
-        sender: oneshot::Sender<u64>,
+        sender: oneshot::Sender<(u64, CryptoHash)>,
     },
 }
 
@@ -149,7 +157,7 @@ impl Cache {
         recv.await.unwrap()
     }
 
-    pub async fn nonce(&self, account_id: AccountId, public_key: PublicKey) -> u64 {
+    pub async fn nonce(&self, account_id: AccountId, public_key: PublicKey) -> (u64, CryptoHash) {
         let (send, recv) = oneshot::channel();
         self.request
             .send(CacheRequest::Nonce {

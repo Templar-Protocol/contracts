@@ -4554,6 +4554,7 @@ dependencies = [
  "near-jsonrpc-primitives",
  "near-primitives",
  "near-sdk",
+ "near-sdk-contract-tools",
  "serde_yaml",
  "sqlx",
  "templar-common",

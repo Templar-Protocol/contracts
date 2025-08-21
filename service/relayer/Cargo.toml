@@ -13,6 +13,7 @@ near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
 near-primitives.workspace = true
 near-sdk.workspace = true
+near-sdk-contract-tools.workspace = true
 serde_yaml = "0.9.34"
 sqlx = { version = "0.8", features = [
     "runtime-tokio",

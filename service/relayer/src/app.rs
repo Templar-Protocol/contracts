@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -21,7 +21,7 @@ use crate::{
     cache::Cache,
     client::{database::Database, near::Near},
     error::PreconditionError,
-    AccountData, AssetTransfer,
+    AccountData, AssetTransfer, ContractData,
 };
 
 #[derive(Parser, Debug, Clone)]
@@ -125,7 +125,10 @@ impl App {
                 let near = self.near.clone();
                 let registry_id = registry_id.clone();
                 async move {
-                    match near.load_deployments_from_registry(&registry_id).await {
+                    match near
+                        .load_deployments_from_registry(registry_id.clone())
+                        .await
+                    {
                         Ok(deployments) => deployments,
                         Err(e) => {
                             warn!("Failed to load deployments from registry {registry_id}: {e}");
@@ -143,7 +146,7 @@ impl App {
             set.spawn({
                 let near = self.near.clone();
                 async move {
-                    match near.load_market_accounts(&market).await {
+                    match near.load_market_accounts(market.clone()).await {
                         Ok(market_accounts) => Some(market_accounts),
                         Err(e) => {
                             warn!("Failed to load accounts for market {market}: {e}");
@@ -155,8 +158,8 @@ impl App {
         }
         let market_accounts_vec = set.join_all().await;
 
-        let mut market_account_ids = HashMap::new();
-        let mut allowed_receiver_account_ids = HashSet::new();
+        let mut markets = HashMap::new();
+        let mut allowed_contracts = HashMap::new();
 
         for market_accounts in market_accounts_vec.into_iter().flatten() {
             let market_id = market_accounts.account_id.clone();
@@ -166,18 +169,38 @@ impl App {
                 market_accounts.borrow_asset, market_accounts.collateral_asset,
             );
 
-            allowed_receiver_account_ids.insert(market_id);
-            allowed_receiver_account_ids
-                .insert(market_accounts.borrow_asset.contract_id().to_owned());
-            allowed_receiver_account_ids
-                .insert(market_accounts.collateral_asset.contract_id().to_owned());
+            for contract_id in [
+                market_id,
+                market_accounts.borrow_asset.contract_id().to_owned(),
+                market_accounts.collateral_asset.contract_id().to_owned(),
+            ] {
+                if let Entry::Vacant(e) = allowed_contracts.entry(contract_id.clone()) {
+                    let storage_balance_bounds = self
+                        .near
+                        .load_storage_balance_bounds(contract_id.clone())
+                        .await
+                        .ok();
 
-            market_account_ids.insert(market_accounts.account_id.clone(), market_accounts);
+                    info!(
+                        "Loaded storage balance bounds for contract {}: {}",
+                        contract_id,
+                        storage_balance_bounds
+                            .as_ref()
+                            .map_or(NearToken::from_near(0), |bounds| bounds.min),
+                    );
+
+                    e.insert(ContractData {
+                        storage_balance_bounds,
+                    });
+                }
+            }
+
+            markets.insert(market_accounts.account_id.clone(), market_accounts);
         }
 
         let mut handle = self.accounts.write().await;
-        handle.market_account_ids = market_account_ids;
-        handle.allowed_receiver_account_ids = allowed_receiver_account_ids;
+        handle.market_data = markets;
+        handle.allowed_contract_data = allowed_contracts;
     }
 
     /// Check and calculate gas for a signed delegate action.
@@ -201,7 +224,7 @@ impl App {
         let receiver_id = &signed_delegate_action.delegate_action.receiver_id;
         let accounts = self.accounts.read().await;
 
-        if !accounts.allowed_receiver_account_ids.contains(receiver_id) {
+        if !accounts.allowed_contract_data.contains_key(receiver_id) {
             return Err(PreconditionError::UnknownTransactionReceiverId {
                 account_id: receiver_id.clone(),
             });
@@ -221,7 +244,7 @@ impl App {
             })
             .map_err(|index| PreconditionError::UnsupportedAction { index })?;
 
-        if accounts.market_account_ids.contains_key(receiver_id) {
+        if accounts.market_data.contains_key(receiver_id) {
             // Calling a market contract directly.
             for (index, call) in calls.iter().enumerate() {
                 if !self
@@ -241,7 +264,7 @@ impl App {
                 let transfer = AssetTransfer::parse(call, index, receiver_id.clone())?;
                 let market_id = transfer.token_receiver_id();
 
-                let Some(market_account_ids) = accounts.market_account_ids.get(market_id) else {
+                let Some(market_account_ids) = accounts.market_data.get(market_id) else {
                     return Err(PreconditionError::UnknownTransferReceiverId {
                         account_id: market_id.to_owned(),
                         index,

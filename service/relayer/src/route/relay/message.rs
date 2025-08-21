@@ -1,5 +1,5 @@
-use axum::{http::StatusCode, Json};
-use near_primitives::{action::delegate::SignedDelegateAction, views::FinalExecutionOutcomeView};
+use axum::{http::StatusCode, response::IntoResponse, Json};
+use near_primitives::{action::delegate::SignedDelegateAction, hash::CryptoHash};
 use near_sdk::serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -38,44 +38,19 @@ mod with_borsh_base64 {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub enum RelayResponse {
-    Success {
-        execution: Box<FinalExecutionOutcomeView>,
-    },
-    Failure {
-        error: String,
-    },
-    Rejected {
-        reason: String,
-    },
+    Success { transaction_hash: CryptoHash },
+    Failure { error: String },
+    Rejected { reason: String },
 }
 
-#[allow(clippy::needless_pass_by_value)]
-impl RelayResponse {
-    pub fn failure(e: impl ToString) -> (StatusCode, Json<RelayResponse>) {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(Self::Failure {
-                error: e.to_string(),
-            }),
-        )
-    }
-
-    pub fn rejected(r: impl ToString) -> (StatusCode, Json<RelayResponse>) {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(Self::Rejected {
-                reason: r.to_string(),
-            }),
-        )
-    }
-
-    pub fn success(execution: FinalExecutionOutcomeView) -> (StatusCode, Json<RelayResponse>) {
-        (
-            StatusCode::OK,
-            Json(Self::Success {
-                execution: Box::new(execution),
-            }),
-        )
+impl IntoResponse for RelayResponse {
+    fn into_response(self) -> axum::response::Response {
+        let status_code = match self {
+            RelayResponse::Success { .. } => StatusCode::OK,
+            RelayResponse::Failure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            RelayResponse::Rejected { .. } => StatusCode::BAD_REQUEST,
+        };
+        (status_code, Json(self)).into_response()
     }
 }
 

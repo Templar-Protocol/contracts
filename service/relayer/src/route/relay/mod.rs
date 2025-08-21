@@ -1,17 +1,17 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, Json};
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::NearToken;
 use tracing::error;
 
-use crate::{
-    app::App,
-    message::{RelayRequest, RelayResponse},
-};
+use crate::app::App;
+
+mod message;
+use message::{RelayRequest, RelayResponse};
 
 pub async fn relay(
     State(app): State<App>,
     Json(relay_request): Json<RelayRequest>,
-) -> (StatusCode, Json<RelayResponse>) {
+) -> RelayResponse {
     match app
         .check_and_calculate_gas(&relay_request.signed_delegate_action)
         .await
@@ -25,7 +25,9 @@ pub async fn relay(
 
             let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
                 error!("Failed to estimate cost of gas: {gas}");
-                return RelayResponse::failure("Failed to estimate cost of gas");
+                return RelayResponse::Failure {
+                    error: "Failed to estimate cost of gas".to_string(),
+                };
             };
 
             let available_allowance = match app
@@ -39,25 +41,22 @@ pub async fn relay(
                 Ok(available) => available,
                 Err(e) => {
                     error!("Database error trying to obtain available balance: {e}");
-                    return RelayResponse::failure("Database Error");
+                    return RelayResponse::Failure {
+                        error: "Database Error".to_string(),
+                    };
                 }
             };
 
             if available_allowance < cost_of_gas {
-                return RelayResponse::rejected("Insufficient allowance");
+                return RelayResponse::Rejected {
+                    reason: "Insufficient allowance".to_string(),
+                };
             }
 
-            let signed_transaction = match app
+            let signed_transaction = app
                 .near
-                .construct_delegate_transaction(relay_request.signed_delegate_action)
-                .await
-            {
-                Ok(tx) => tx,
-                Err(e) => {
-                    error!("Error constructing delegate transaction: {e}");
-                    return RelayResponse::failure(e);
-                }
-            };
+                .construct_delegate_transaction(&app.cache, relay_request.signed_delegate_action)
+                .await;
 
             let transaction_hash = signed_transaction.get_hash();
 
@@ -66,14 +65,18 @@ pub async fn relay(
                 .set_pending_transaction(&account_id, cost_of_gas, transaction_hash)
                 .await
             {
-                return RelayResponse::rejected(e);
+                return RelayResponse::Rejected {
+                    reason: e.to_string(),
+                };
             }
 
             let tx_result = match app.near.send_transaction(signed_transaction).await {
                 Ok(r) => r,
                 Err(e) => {
                     error!("Send transaction failure: {e}");
-                    return RelayResponse::failure(e);
+                    return RelayResponse::Failure {
+                        error: e.to_string(),
+                    };
                 }
             };
 
@@ -92,13 +95,12 @@ pub async fn relay(
                 error!("Error recording transaction after submitting to blockchain: {e}");
             }
 
-            RelayResponse::success(tx_result)
+            RelayResponse::Success {
+                transaction_hash: tx_result.transaction.hash,
+            }
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(RelayResponse::Rejected {
-                reason: e.to_string(),
-            }),
-        ),
+        Err(e) => RelayResponse::Rejected {
+            reason: e.to_string(),
+        },
     }
 }

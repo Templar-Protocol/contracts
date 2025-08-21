@@ -1,7 +1,6 @@
 use near_sdk::AccountId;
 
 #[derive(Debug, thiserror::Error)]
-#[error("Failed precondition: ")]
 pub enum PreconditionError {
     #[error("Failed signature verification")]
     SignatureVerificationFailure,
