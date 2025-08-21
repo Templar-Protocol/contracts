@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -32,11 +32,11 @@ pub enum StorageDepositResponse {
 impl IntoResponse for StorageDepositResponse {
     fn into_response(self) -> Response {
         let status_code = match self {
-            StorageDepositResponse::Success { .. } => StatusCode::OK,
-            StorageDepositResponse::Failure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-            StorageDepositResponse::UnknownContractId
-            | StorageDepositResponse::StorageBalanceAlreadyExists
-            | StorageDepositResponse::ContractHasNoStorageRequirements => StatusCode::BAD_REQUEST,
+            Self::Success { .. } => StatusCode::OK,
+            Self::Failure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::UnknownContractId
+            | Self::StorageBalanceAlreadyExists
+            | Self::ContractHasNoStorageRequirements => StatusCode::BAD_REQUEST,
         };
         (status_code, Json(self)).into_response()
     }
@@ -44,10 +44,10 @@ impl IntoResponse for StorageDepositResponse {
 
 pub async fn storage_deposit(
     State(app): State<App>,
-    Query(StorageDepositRequest {
+    Json(StorageDepositRequest {
         account_id,
         contract_id,
-    }): Query<StorageDepositRequest>,
+    }): Json<StorageDepositRequest>,
 ) -> StorageDepositResponse {
     let accounts = app.accounts.read().await;
 

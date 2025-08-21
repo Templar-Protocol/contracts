@@ -46,9 +46,9 @@ pub enum RelayResponse {
 impl IntoResponse for RelayResponse {
     fn into_response(self) -> axum::response::Response {
         let status_code = match self {
-            RelayResponse::Success { .. } => StatusCode::OK,
-            RelayResponse::Failure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-            RelayResponse::Rejected { .. } => StatusCode::BAD_REQUEST,
+            Self::Success { .. } => StatusCode::OK,
+            Self::Failure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Rejected { .. } => StatusCode::BAD_REQUEST,
         };
         (status_code, Json(self)).into_response()
     }
