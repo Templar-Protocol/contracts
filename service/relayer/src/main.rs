@@ -40,6 +40,10 @@ async fn main() {
             "/relay",
             routing::post(templar_relayer::route::relay::relay),
         )
+        .route(
+            "/get_allowance",
+            routing::get(templar_relayer::route::get_allowance::get_allowance),
+        )
         .with_state(app);
 
     tracing::info!("Listening on {}", listener.local_addr().unwrap());
