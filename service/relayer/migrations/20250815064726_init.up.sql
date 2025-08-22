@@ -4,7 +4,7 @@ create table account (
     account_id varchar(64) not null,
     allowance numeric(39, 0) not null,
     allowance_locked numeric(39, 0) not null default 0,
-    pending_transaction_hash bytea default null,
+    pending_transaction_hash varchar(45) default null,
     pending_transaction_issued_at timestamptz default null,
     mark account_mark not null default 'default',
     created_at timestamptz not null default current_timestamp,
@@ -25,7 +25,7 @@ create trigger updated_at_trigger before update on account for each row execute 
 create table call (
     id uuid not null default gen_random_uuid(),
     account_id varchar(64) not null,
-    transaction_hash bytea unique not null,
+    transaction_hash varchar(45) unique not null,
     allowance_spent numeric(39, 0) not null,
     succeeded bool not null,
     created_at timestamptz not null default current_timestamp,

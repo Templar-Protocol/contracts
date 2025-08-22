@@ -16,7 +16,7 @@
       {
         "ordinal": 2,
         "name": "pending_transaction_hash",
-        "type_info": "Bytea"
+        "type_info": "Varchar"
       }
     ],
     "parameters": {

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n                account_id,\n                pending_transaction_hash\n            from account\n            where pending_transaction_hash is not null\n            order by pending_transaction_issued_at asc\n            limit $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "pending_transaction_hash",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "d9a6d5066791cec39090dab21b22d91f4712ba4f2b5e8298dcd2cb3cf4d63446"
+}

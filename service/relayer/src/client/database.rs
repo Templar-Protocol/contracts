@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use near_primitives::{
     hash::CryptoHash,
     views::{ActionView, FinalExecutionOutcomeView, FinalExecutionStatus},
@@ -106,7 +108,7 @@ impl Database {
         let results = sqlx::query!(
             "select
                 account_id,
-                pending_transaction_hash as \"pending_transaction_hash: [u8; 32]\"
+                pending_transaction_hash
             from account
             where pending_transaction_hash is not null
             order by pending_transaction_issued_at asc
@@ -125,7 +127,10 @@ impl Database {
                 // causing us to always return an empty list.
                 let account_id: AccountId = r.account_id.parse().ok()?;
                 #[allow(clippy::unwrap_used, reason = "Guaranteed not null by query")]
-                let hash = CryptoHash(r.pending_transaction_hash.unwrap());
+                let hash = r
+                    .pending_transaction_hash
+                    .and_then(|hash| CryptoHash::from_str(&hash).ok())
+                    .unwrap();
                 Some((account_id, hash))
             })
             .collect())
@@ -172,7 +177,7 @@ impl Database {
                 )
                 ",
             Decimal::from(allowance_lock_amount.as_yoctonear()),
-            &transaction_hash.0,
+            transaction_hash.to_string(),
             account_id.as_str(),
         )
         .execute(&self.connection)
@@ -187,9 +192,8 @@ impl Database {
                 account_id: account_id.to_owned(),
             })?;
             if let Some(pending_transaction_hash) = record.pending_transaction_hash {
-                let pending_transaction_hash = Some(CryptoHash(
-                    <[u8; 32]>::try_from(pending_transaction_hash).unwrap_or_default(),
-                ));
+                let pending_transaction_hash =
+                    Some(CryptoHash::from_str(&pending_transaction_hash).unwrap_or_default());
                 Err(error::PendingTransactionError {
                     account_id: account_id.to_owned(),
                     pending_transaction_hash,
@@ -272,7 +276,7 @@ impl Database {
         let already_inserted = sqlx::query!(
             "select 1 as inserted from call where account_id = $1 and transaction_hash = $2",
             account_id.as_str(),
-            &transaction_hash.0,
+            transaction_hash.to_string(),
         )
         .fetch_optional(&self.connection)
         .await?;
@@ -291,7 +295,7 @@ impl Database {
             where account_id = $2 and pending_transaction_hash = $3",
             Decimal::from(allowance_spent.as_yoctonear()),
             account_id.as_str(),
-            &transaction_hash.0,
+            transaction_hash.to_string(),
         )
         .execute(&mut *tx)
         .await?;
@@ -323,7 +327,7 @@ impl Database {
         sqlx::query!(
             "insert into call (account_id, transaction_hash, allowance_spent, succeeded) values ($1, $2, $3, $4)",
             account_id.as_str(),
-            &transaction_hash.0,
+            transaction_hash.to_string(),
             Decimal::from(allowance_spent.as_yoctonear()),
             succeeded,
         ).execute(&mut *tx).await?;
