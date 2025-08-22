@@ -44,10 +44,6 @@ async fn main() {
             "/get_allowance",
             routing::get(templar_relayer::route::get_allowance::get_allowance),
         )
-        .route(
-            "/storage_deposit",
-            routing::post(templar_relayer::route::storage_deposit::storage_deposit),
-        )
         .with_state(app);
 
     tracing::info!("Listening on {}", listener.local_addr().unwrap());

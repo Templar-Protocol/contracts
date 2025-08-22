@@ -3,7 +3,12 @@ use std::sync::{atomic::AtomicUsize, Arc};
 use near_crypto::{PublicKey, Signer};
 use near_jsonrpc_client::{
     errors::JsonRpcError,
-    methods::{self, gas_price::RpcGasPriceError, query::RpcQueryError, tx::RpcTransactionError},
+    methods::{
+        self,
+        gas_price::RpcGasPriceError,
+        query::RpcQueryError,
+        tx::{RpcTransactionError, RpcTransactionResponse},
+    },
     JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -12,7 +17,7 @@ use near_primitives::{
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction, TransactionV0},
     types::Finality,
-    views::{FinalExecutionOutcomeView, QueryRequest},
+    views::{FinalExecutionOutcomeView, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
     serde::{de::DeserializeOwned, Serialize},
@@ -78,7 +83,7 @@ impl Near {
         &self,
         account_id: AccountId,
         transaction_hash: CryptoHash,
-    ) -> Result<Option<FinalExecutionOutcomeView>, JsonRpcError<RpcTransactionError>> {
+    ) -> Result<FinalExecutionOutcomeView, JsonRpcError<RpcTransactionError>> {
         let response = self
             .client
             .call(methods::tx::RpcTransactionStatusRequest {
@@ -90,7 +95,11 @@ impl Near {
             })
             .await?;
 
-        Ok(response.final_execution_outcome.map(|o| o.into_outcome()))
+        #[allow(
+            clippy::unwrap_used,
+            reason = "TxExecutionStatus::Final guarantees outcome is not None"
+        )]
+        Ok(response.final_execution_outcome.unwrap().into_outcome())
     }
 
     pub fn next_signer(&self) -> &Signer {
@@ -231,10 +240,13 @@ impl Near {
     pub async fn send_transaction(
         &self,
         signed_transaction: SignedTransaction,
-    ) -> Result<near_primitives::views::FinalExecutionOutcomeView, JsonRpcError<RpcTransactionError>>
-    {
+        wait_until: TxExecutionStatus,
+    ) -> Result<RpcTransactionResponse, JsonRpcError<RpcTransactionError>> {
         self.client
-            .call(methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction })
+            .call(methods::send_tx::RpcSendTransactionRequest {
+                signed_transaction,
+                wait_until,
+            })
             .await
     }
 

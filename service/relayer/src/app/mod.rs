@@ -1,5 +1,6 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
+    future::Future,
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -7,16 +8,27 @@ use std::{
 
 use clap::Parser;
 use near_crypto::{InMemorySigner, SecretKey};
-use near_primitives::action::{delegate::SignedDelegateAction, Action};
+use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
+use near_primitives::{
+    action::{delegate::SignedDelegateAction, Action},
+    transaction::SignedTransaction,
+    views::{FinalExecutionOutcomeView, TxExecutionStatus},
+};
 use near_sdk::{serde_json, AccountId, NearToken};
 use templar_common::market::DepositMsg;
 use tokio::{sync::RwLock, task::JoinSet};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     broom::Broom,
     cache::Cache,
-    client::{database::Database, near::Near},
+    client::{
+        database::{
+            error::{RecordTransactionError, SetPendingTransactionError},
+            Database,
+        },
+        near::Near,
+    },
     error::PreconditionError,
     AccountData, AssetTransfer, ContractData,
 };
@@ -212,7 +224,7 @@ impl App {
     pub async fn check_and_calculate_gas(
         &self,
         signed_delegate_action: &SignedDelegateAction,
-    ) -> Result<u64, PreconditionError> {
+    ) -> Result<(u64, ContractData), PreconditionError> {
         if !signed_delegate_action.verify() {
             return Err(PreconditionError::SignatureVerificationFailure);
         }
@@ -220,11 +232,11 @@ impl App {
         let receiver_id = &signed_delegate_action.delegate_action.receiver_id;
         let accounts = self.accounts.read().await;
 
-        if !accounts.allowed_contract_data.contains_key(receiver_id) {
+        let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id).cloned() else {
             return Err(PreconditionError::UnknownTransactionReceiverId {
                 account_id: receiver_id.clone(),
             });
-        }
+        };
 
         let actions = signed_delegate_action.delegate_action.get_actions();
         let len = actions.len();
@@ -287,6 +299,66 @@ impl App {
             }
         }
 
-        Ok(calls.iter().map(|call| call.gas).sum())
+        let gas_total = calls.iter().map(|call| call.gas).sum();
+
+        Ok((gas_total, contract_data))
     }
+
+    /// # Errors
+    ///
+    /// - When sending the transaction
+    /// - When resolving the transaction in the database
+    pub async fn send_and_resolve_transaction(
+        &self,
+        account_id: AccountId,
+        cost_of_gas: NearToken,
+        signed_transaction: SignedTransaction,
+        wait_until: TxExecutionStatus,
+    ) -> Result<
+        impl Future<Output = Result<FinalExecutionOutcomeView, ResolveTransactionError>>,
+        SendTransactionError,
+    > {
+        let transaction_hash = signed_transaction.get_hash();
+
+        self.database
+            .set_pending_transaction(&account_id, cost_of_gas, transaction_hash)
+            .await?;
+
+        let result = self
+            .near
+            .send_transaction(signed_transaction, wait_until)
+            .await?;
+
+        let near = self.near.clone();
+        let database = self.database.clone();
+
+        Ok(async move {
+            let status = if let Some(outcome) = result.final_execution_outcome {
+                outcome.into_outcome()
+            } else {
+                near.fetch_transaction_status(account_id.clone(), transaction_hash)
+                    .await?
+            };
+
+            database.record_transaction(&account_id, &status).await?;
+
+            Ok(status)
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SendTransactionError {
+    #[error("RPC error: {0}")]
+    Rpc(#[from] JsonRpcError<RpcTransactionError>),
+    #[error("Set pending transaction error: {0}")]
+    SetPendingTransaction(#[from] SetPendingTransactionError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolveTransactionError {
+    #[error("RPC error: {0}")]
+    Rpc(#[from] JsonRpcError<RpcTransactionError>),
+    #[error("Record transaction error: {0}")]
+    RecordTransaction(#[from] RecordTransactionError),
 }

@@ -1,4 +1,7 @@
-use near_primitives::hash::CryptoHash;
+use near_primitives::{
+    hash::CryptoHash,
+    views::{ActionView, FinalExecutionOutcomeView, FinalExecutionStatus},
+};
 use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
 use tracing::warn;
@@ -223,6 +226,43 @@ impl Database {
     /// - Pending transaction does not exist
     /// - Query errors
     pub async fn record_transaction(
+        &self,
+        account_id: &AccountIdRef,
+        status: &FinalExecutionOutcomeView,
+    ) -> Result<(), error::RecordTransactionError> {
+        let allowance_spent_gas = NearToken::from_yoctonear(status.tokens_burnt());
+
+        let success = matches!(status.status, FinalExecutionStatus::SuccessValue(_));
+
+        let allowance_spent = if success {
+            let allowance_spent_storage_deposit = NearToken::from_yoctonear(
+                status
+                    .transaction
+                    .actions
+                    .iter()
+                    .filter_map(|a| match a {
+                        ActionView::FunctionCall {
+                            method_name,
+                            deposit,
+                            ..
+                        } if method_name == "storage_deposit" => Some(*deposit),
+                        _ => None,
+                    })
+                    .sum(),
+            );
+
+            allowance_spent_gas.saturating_add(allowance_spent_storage_deposit)
+        } else {
+            allowance_spent_gas
+        };
+
+        let transaction_hash = status.transaction.hash;
+
+        self.insert_into_call(account_id, transaction_hash, allowance_spent, success)
+            .await
+    }
+
+    async fn insert_into_call(
         &self,
         account_id: &AccountIdRef,
         transaction_hash: CryptoHash,

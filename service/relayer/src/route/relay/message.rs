@@ -1,5 +1,7 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
-use near_primitives::{action::delegate::SignedDelegateAction, hash::CryptoHash};
+use near_primitives::{
+    action::delegate::SignedDelegateAction, hash::CryptoHash, views::TxExecutionStatus,
+};
 use near_sdk::serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -7,6 +9,10 @@ use near_sdk::serde::{Deserialize, Serialize};
 pub struct RelayRequest {
     #[serde(with = "with_borsh_base64")]
     pub signed_delegate_action: SignedDelegateAction,
+    #[serde(default)]
+    pub storage_deposit: bool,
+    #[serde(default)]
+    pub wait_until: TxExecutionStatus,
 }
 
 mod with_borsh_base64 {
@@ -76,6 +82,8 @@ mod tests {
                 },
                 signature: Signature::empty(near_crypto::KeyType::ED25519),
             },
+            storage_deposit: false,
+            wait_until: TxExecutionStatus::default(),
         };
 
         let s = serde_json::to_string_pretty(&r).unwrap();

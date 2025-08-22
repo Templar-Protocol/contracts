@@ -3,8 +3,6 @@ use std::{
     time::Duration,
 };
 
-use near_primitives::views::{ActionView, FinalExecutionStatus};
-use near_sdk::NearToken;
 use tracing::{debug, warn};
 
 use crate::client::{database::Database, near::Near};
@@ -50,44 +48,14 @@ impl Broom {
                         .fetch_transaction_status(account_id.clone(), transaction_hash)
                         .await
                     {
-                        Ok(Some(s)) => s,
-                        Ok(None) => continue,
+                        Ok(s) => s,
                         Err(e) => {
                             warn!("Failed to fetch transaction status for ({account_id}, {transaction_hash}): {e}");
                             continue;
                         }
                     };
 
-                    let allowance_spent_gas = NearToken::from_yoctonear(status.tokens_burnt());
-
-                    let success = matches!(status.status, FinalExecutionStatus::SuccessValue(_));
-
-                    let allowance_spent = if success {
-                        let allowance_spent_storage_deposit = NearToken::from_yoctonear(
-                            status
-                                .transaction
-                                .actions
-                                .iter()
-                                .filter_map(|a| match a {
-                                    ActionView::FunctionCall {
-                                        method_name,
-                                        deposit,
-                                        ..
-                                    } if method_name == "storage_deposit" => Some(*deposit),
-                                    _ => None,
-                                })
-                                .sum(),
-                        );
-
-                        allowance_spent_gas.saturating_add(allowance_spent_storage_deposit)
-                    } else {
-                        allowance_spent_gas
-                    };
-
-                    if let Err(e) = database
-                        .record_transaction(&account_id, transaction_hash, allowance_spent, success)
-                        .await
-                    {
+                    if let Err(e) = database.record_transaction(&account_id, &status).await {
                         warn!("Broom error trying to automatically record transaction ({account_id}, {transaction_hash}): {e}");
                     }
                 }

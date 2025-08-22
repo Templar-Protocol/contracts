@@ -8,8 +8,9 @@ allowed_methods:
   - cancel_supply_withdrawal_request
   - execute_next_supply_withdrawal_request
   - storage_deposit
-  - storage_unregister
-  - storage_withdraw
+  # Don't enable the storage withdrawal methods, because they can be used to easily extract NEAR from the relayer.
+  # - storage_unregister
+  # - storage_withdraw
 starting_allowance_yocto: "250000000000000000000000" # 0.25 NEAR
 cache:
   gas_price_secs: 600 # 10 minutes
