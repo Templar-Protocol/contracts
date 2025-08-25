@@ -106,10 +106,7 @@ pub async fn relay(
 
             let available_allowance = match app
                 .database
-                .get_available_allowance_or_create(
-                    &account_id,
-                    app.configuration.starting_allowance_yocto,
-                )
+                .get_available_allowance_or_create(&account_id, app.args.starting_allowance_yocto)
                 .await
             {
                 Ok(available) => available,

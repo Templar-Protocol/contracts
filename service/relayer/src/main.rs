@@ -1,6 +1,4 @@
-#![allow(clippy::unwrap_used)]
-
-use std::{fs::File, net::SocketAddr};
+use std::net::SocketAddr;
 
 use axum::{routing, Router};
 use clap::Parser;
@@ -8,10 +6,12 @@ use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use templar_relayer::{
-    app::{App, Args, Configuration},
+    app::{App, Configuration},
     client::database::Database,
+    route,
 };
 
+#[allow(clippy::unwrap_used)]
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -21,12 +21,9 @@ async fn main() {
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let args = Args::parse();
+    let args = Configuration::parse();
 
-    let configuration: Configuration =
-        serde_yaml::from_reader(File::open(&args.config).unwrap()).unwrap();
-
-    let mut app = App::new(args, configuration);
+    let mut app = App::new(args);
     app.database.migrate().await.unwrap();
     app.load_markets().await;
 
@@ -37,13 +34,10 @@ async fn main() {
 
     let router = Router::new()
         .route("/", routing::get(|| async { "Hello, World!" }))
-        .route(
-            "/relay",
-            routing::post(templar_relayer::route::relay::relay),
-        )
+        .route("/relay", routing::post(route::relay::relay))
         .route(
             "/get_allowance",
-            routing::get(templar_relayer::route::get_allowance::get_allowance),
+            routing::get(route::get_allowance::get_allowance),
         )
         .with_state(app);
 

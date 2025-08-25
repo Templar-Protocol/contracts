@@ -4555,7 +4555,6 @@ dependencies = [
  "near-primitives",
  "near-sdk",
  "near-sdk-contract-tools",
- "serde_yaml",
  "sqlx",
  "templar-common",
  "thiserror 2.0.11",

@@ -1,13 +1,11 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
     future::Future,
-    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
 
-use clap::Parser;
-use near_crypto::{InMemorySigner, SecretKey};
+use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
 use near_primitives::{
     action::{delegate::SignedDelegateAction, Action},
@@ -33,41 +31,12 @@ use crate::{
     AccountData, AssetTransfer, ContractData,
 };
 
-mod configuration;
-pub use configuration::Configuration;
-
-#[derive(Parser, Debug, Clone)]
-pub struct Args {
-    /// Run the relayer on this port.
-    #[arg(short, long, env = "PORT", default_value_t = 3000)]
-    pub port: u16,
-    /// Postgres database connection URL.
-    #[arg(long, env = "DATABASE_URL")]
-    pub database_url: String,
-    /// NEAR RPC connection URL.
-    #[arg(long, env = "RPC_URL", default_value = "https://rpc.testnet.near.org")]
-    pub rpc_url: String,
-    /// Path to YAML configuration file.
-    #[arg(short, long, env = "CONFIG", default_value = "./config.yaml")]
-    pub config: PathBuf,
-    /// Comma-separated list of registries to query for markets to monitor.
-    #[arg(long, env = "REGISTRY")]
-    pub registry: Vec<AccountId>,
-    /// Comma-separated list of markets to monitor.
-    #[arg(long, env = "MARKET")]
-    pub market: Vec<AccountId>,
-    /// Account ID of the NEAR account that the relayer controls.
-    #[arg(short, long, env = "ACCOUNT_ID")]
-    pub account_id: AccountId,
-    /// Comma-separated list of private keys to use to sign transactions for the account that the relayer controls.
-    #[arg(short = 'k', long, env = "SECRET_KEY")]
-    pub secret_key: Vec<SecretKey>,
-}
+mod args;
+pub use args::Configuration;
 
 #[derive(Debug, Clone)]
 pub struct App {
-    pub args: Args,
-    pub configuration: Configuration,
+    pub args: args::Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
     pub near: Near,
     pub cache: Arc<Cache>,
@@ -77,7 +46,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(args: Args, configuration: Configuration) -> Self {
+    pub fn new(args: args::Configuration) -> Self {
         let near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
             args.account_id.clone(),
@@ -92,20 +61,19 @@ impl App {
 
         let cache = Cache::new(
             near.clone(),
-            Duration::from_secs(configuration.cache.gas_price_secs),
-            Duration::from_secs(configuration.cache.nonce_secs),
+            Duration::from_secs(args.cache_gas_price_secs),
+            Duration::from_secs(args.cache_nonce_secs),
         );
 
         let broom = Broom::new(
             database.clone(),
             near.clone(),
-            configuration.broom.batch_size,
-            Duration::from_secs(configuration.broom.interval_secs),
+            args.broom_batch_size,
+            Duration::from_secs(args.broom_interval_secs),
         );
 
         Self {
             args,
-            configuration,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             near,
             cache: Arc::new(cache),
@@ -124,11 +92,11 @@ impl App {
     }
 
     pub async fn load_markets(&mut self) {
-        let mut markets = self.args.market.clone();
+        let mut markets = self.args.monitor.market.clone();
 
         // Load markets from registry...
         let mut set = JoinSet::new();
-        for registry_id in &self.args.registry {
+        for registry_id in &self.args.monitor.registry {
             set.spawn({
                 let near = self.near.clone();
                 let registry_id = registry_id.clone();
@@ -255,11 +223,7 @@ impl App {
         if accounts.market_data.contains_key(receiver_id) {
             // Calling a market contract directly.
             for (index, call) in calls.iter().enumerate() {
-                if !self
-                    .configuration
-                    .allowed_methods
-                    .contains(&call.method_name)
-                {
+                if !self.args.allowed_methods.contains(&call.method_name) {
                     return Err(PreconditionError::UnknownFunctionName {
                         name: call.method_name.clone(),
                         index,

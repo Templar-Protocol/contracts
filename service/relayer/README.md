@@ -27,7 +27,43 @@ Use the `relayer.Dockerfile` to build the relayer image:
 docker build -f relayer.Dockerfile .
 ```
 
-## How to use
+## Help
+
+```text
+Usage: templar-relayer [OPTIONS] --database-url <DATABASE_URL> --account-id <ACCOUNT_ID> <--registry <REGISTRY>|--market <MARKET>>
+
+Options:
+  -p, --port <PORT>
+          Run the relayer on this port [env: PORT=] [default: 3000]
+      --database-url <DATABASE_URL>
+          Postgres database connection URL [env: DATABASE_URL=]
+      --rpc-url <RPC_URL>
+          NEAR RPC connection URL [env: RPC_URL=] [default: https://rpc.testnet.near.org]
+      --registry <REGISTRY>
+          Comma-separated list of registries to query for markets to monitor [env: REGISTRY=]
+      --market <MARKET>
+          Comma-separated list of markets to monitor [env: MARKET=]
+  -a, --account-id <ACCOUNT_ID>
+          Account ID of the NEAR account that the relayer controls [env: ACCOUNT_ID=]
+  -k, --secret-key <SECRET_KEY>
+          Comma-separated list of private keys to use to sign transactions for the account that the relayer controls [env: SECRET_KEY=]
+      --allowed-methods <ALLOWED_METHODS>
+          Comma-separated list of allowed methods [env: ALLOWED_METHODS=] [default: borrow apply_interest harvest_yield withdraw_static_yield withdraw_collateral create_supply_withdrawal_request cancel_supply_withdrawal_request execute_next_supply_withdrawal_request storage_deposit]
+      --starting-allowance-yocto <STARTING_ALLOWANCE_YOCTO>
+          Starting allowance in yoctoNEAR [env: STARTING_ALLOWANCE_YOCTO=] [default: "0.25 NEAR"]
+      --cache-gas-price-secs <CACHE_GAS_PRICE_SECS>
+          Refresh the cached gas price after X seconds [env: CACHE_GAS_PRICE_SECS=] [default: 600]
+      --cache-nonce-secs <CACHE_NONCE_SECS>
+          Refresh a cached nonce after X seconds [env: CACHE_NONCE_SECS=] [default: 60]
+      --broom-batch-size <BROOM_BATCH_SIZE>
+          Broom batch size [env: BROOM_BATCH_SIZE=] [default: 16]
+      --broom-interval-secs <BROOM_INTERVAL_SECS>
+          Broom interval in seconds [env: BROOM_INTERVAL_SECS=] [default: 300]
+  -h, --help
+          Print help
+```
+
+## Routes
 
 ### `POST /relay`
 

@@ -25,7 +25,5 @@ WORKDIR /app
 
 COPY --from=builder /usr/src/relayer/target/release/templar-relayer /usr/local/bin/templar-relayer
 COPY /service/relayer/config.yaml .
-RUN ls -al
-RUN pwd
 
 CMD [ "templar-relayer" ]
