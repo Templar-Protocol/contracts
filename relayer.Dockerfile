@@ -28,4 +28,4 @@ COPY /service/relayer/config.yaml .
 RUN ls -al
 RUN pwd
 
-CMD [ "templar-relayer", "--config", "/app/config.yaml" ]
+CMD [ "templar-relayer" ]
