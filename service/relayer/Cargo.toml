@@ -21,30 +21,14 @@ sqlx = { version = "0.8", features = [
     "derive",
     "macros",
     "migrate",
-    "chrono",
     "rust_decimal",
     "uuid",
-    "json",
 ] }
 templar-common = { path = "../../common" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[build-dependencies]
-sqlx = { version = "0.8", features = [
-    "runtime-tokio",
-    "tls-native-tls",
-    "postgres",
-    "derive",
-    "macros",
-    "migrate",
-    "chrono",
-    "rust_decimal",
-    "uuid",
-    "json",
-] }
 
 [lints]
 workspace = true
