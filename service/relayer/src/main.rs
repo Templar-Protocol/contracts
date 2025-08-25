@@ -27,6 +27,7 @@ async fn main() {
         serde_yaml::from_reader(File::open(&args.config).unwrap()).unwrap();
 
     let mut app = App::new(args, configuration);
+    app.database.migrate().await.unwrap();
     app.load_markets().await;
 
     let database = app.database.clone();

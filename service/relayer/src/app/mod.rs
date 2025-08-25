@@ -51,7 +51,7 @@ pub struct Args {
     #[arg(short, long, env = "CONFIG", default_value = "./config.yaml")]
     pub config: PathBuf,
     /// Comma-separated list of registries to query for markets to monitor.
-    #[arg(long, env = "REGISTRY", default_value = "[]")]
+    #[arg(long, env = "REGISTRY")]
     pub registry: Vec<AccountId>,
     /// Comma-separated list of markets to monitor.
     #[arg(long, env = "MARKET")]

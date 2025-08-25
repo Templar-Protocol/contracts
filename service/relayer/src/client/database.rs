@@ -98,6 +98,15 @@ impl Database {
         tracing::info!("Database connection closed.");
     }
 
+    /// Migrate the database schema.
+    ///
+    /// # Errors
+    ///
+    /// - Database migration errors
+    pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
+        sqlx::migrate!("./migrations").run(&self.connection).await
+    }
+
     /// # Errors
     ///
     /// - Query errors
