@@ -24,6 +24,5 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY --from=builder /usr/src/relayer/target/release/templar-relayer /usr/local/bin/templar-relayer
-COPY /service/relayer/config.yaml .
 
 CMD [ "templar-relayer" ]

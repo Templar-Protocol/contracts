@@ -18,7 +18,7 @@ services:
       - rustup_home:/usr/local/rustup
       - cargo_home:/usr/local/cargo
     working_dir: /usr/src/relayer
-    command: cargo run --package templar-relayer --profile dev -- --config service/relayer/config.yaml
+    command: cargo run --package templar-relayer --profile dev
     depends_on:
       - postgres
     env_file:
