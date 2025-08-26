@@ -19,10 +19,10 @@ pub struct Configuration {
     #[arg(short, long, env = "ACCOUNT_ID")]
     pub account_id: AccountId,
     /// Comma-separated list of private keys to use to sign transactions for the account that the relayer controls.
-    #[arg(short = 'k', long, env = "SECRET_KEY")]
+    #[arg(short = 'k', long, env = "SECRET_KEY", value_delimiter = ',')]
     pub secret_key: Vec<SecretKey>,
     /// Comma-separated list of allowed methods.
-    #[arg(long, env = "ALLOWED_METHODS", default_values_t = default_allowed_methods())]
+    #[arg(long, env = "ALLOWED_METHODS", default_values_t = default_allowed_methods(), value_delimiter = ',')]
     pub allowed_methods: Vec<String>,
     /// Starting allowance in yoctoNEAR.
     #[arg(long, env = "STARTING_ALLOWANCE_YOCTO", default_value = "0.25 NEAR")]
@@ -45,10 +45,10 @@ pub struct Configuration {
 #[group(required = true, multiple = true)]
 pub struct Monitor {
     /// Comma-separated list of registries to query for markets to monitor.
-    #[arg(long, env = "REGISTRY")]
+    #[arg(long, env = "REGISTRY", value_delimiter = ',')]
     pub registry: Vec<AccountId>,
     /// Comma-separated list of markets to monitor.
-    #[arg(long, env = "MARKET")]
+    #[arg(long, env = "MARKET", value_delimiter = ',')]
     pub market: Vec<AccountId>,
 }
 
