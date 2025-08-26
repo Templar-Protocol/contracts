@@ -24,7 +24,33 @@ docker compose up
 Use the `relayer.Dockerfile` to build the relayer image:
 
 ```bash
-docker build -f relayer.Dockerfile .
+docker build -f relayer.Dockerfile . -t templar-relayer
+```
+
+Upload the image to the server:
+
+```bash
+docker save templar-relayer | ssh -C user@server docker load
+```
+
+On the server, using Caddy:
+
+`/etc/caddy/Caddyfile`:
+
+```Caddyfile
+templar-relayer.example.com {
+    reverse_proxy localhost:3000
+}
+```
+
+Run the relayer:
+
+```bash
+docker run \
+    --network host \
+    --env-file .env \
+    --restart always \
+    templar-relayer
 ```
 
 ## Help
