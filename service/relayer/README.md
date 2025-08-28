@@ -12,7 +12,7 @@ For development, you can start the relayer with a local Postgres database:
 
 ```bash
 cd service/relayer
-docker compose up
+docker compose -f compose.dev.yaml up
 ```
 
 > [!NOTE]
@@ -21,37 +21,34 @@ docker compose up
 
 ### Production
 
-Use the `relayer.Dockerfile` to build the relayer image:
+1. Build the `templar-relayer` image:
 
-```bash
-docker build -f relayer.Dockerfile . -t templar-relayer
-```
+   ```bash
+   docker compose -f compose.prod.yaml build
+   ```
 
-Upload the image to the server:
+1. Upload the image to the server:
 
-```bash
-docker save templar-relayer | ssh -C user@server docker load
-```
+   ```bash
+   scp compose.prod.yaml templar-relayer:~/compose.yaml
+   docker save templar-relayer:latest | ssh -C templar-relayer docker load
+   ```
 
-On the server, using Caddy:
+1. Set up Caddy on the server:
 
-`/etc/caddy/Caddyfile`:
+   `/etc/caddy/Caddyfile`:
 
-```Caddyfile
-templar-relayer.example.com {
-    reverse_proxy localhost:3000
-}
-```
+   ```Caddyfile
+   templar-relayer.example.com {
+       reverse_proxy localhost:3000
+   }
+   ```
 
-Run the relayer:
+1. Run the relayer server:
 
-```bash
-docker run \
-    --network host \
-    --env-file .env \
-    --restart always \
-    templar-relayer
-```
+   ```bash
+   docker compose up -d
+   ```
 
 ## Help
 
