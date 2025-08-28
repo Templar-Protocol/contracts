@@ -18,6 +18,10 @@ Templar Protocol is a chain-agnostic overcollateralized lending DeFi protocol.
   Smart contracts for testing.
 - `script` \
   Shell scripts for testing and CI/CD.
+- `service` \
+  Standalone executable services.
+  - `relayer` \
+    The relayer pays for transaction fees on behalf of users who submit signed delegate actions.
 
 ## Build and run tests
 
