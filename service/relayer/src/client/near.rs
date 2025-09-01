@@ -156,7 +156,7 @@ impl Near {
             .await?;
 
         let QueryResponseKind::ViewAccount(account) = response.kind else {
-            unimplemented!("Invalid response kind");
+            unreachable!("Invalid response kind");
         };
 
         Ok(NearToken::from_yoctonear(
