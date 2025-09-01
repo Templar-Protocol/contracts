@@ -109,8 +109,12 @@ fn deserialize_args<'de, T: Deserialize<'de>>(
     slice: &'de [u8],
     index: usize,
 ) -> Result<T, PreconditionError> {
-    serde_json::from_slice::<T>(slice)
-        .map_err(|_| PreconditionError::ArgumentDeserializationFailure { index })
+    serde_json::from_slice::<T>(slice).map_err(|_| {
+        PreconditionError::ArgumentDeserializationFailure {
+            index,
+            args: slice.to_vec(),
+        }
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

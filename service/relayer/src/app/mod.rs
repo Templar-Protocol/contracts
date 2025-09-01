@@ -215,10 +215,10 @@ impl App {
                     v.push(fc);
                     Ok(v)
                 } else {
-                    Err(v.len())
+                    Err((v.len(), action))
                 }
             })
-            .map_err(|index| PreconditionError::UnsupportedAction { index })?;
+            .map_err(|(index, action)| PreconditionError::UnsupportedAction { index, action })?;
 
         if accounts.market_data.contains_key(receiver_id) {
             // Calling a market contract directly.
@@ -243,17 +243,30 @@ impl App {
                     });
                 };
 
-                let Ok(msg) = serde_json::from_str::<DepositMsg>(transfer.args.msg()) else {
-                    return Err(PreconditionError::MsgDeserializationFailure { index });
+                let msg = transfer.args.msg();
+                let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
+                    return Err(PreconditionError::MsgDeserializationFailure {
+                        index,
+                        msg: msg.to_string(),
+                    });
                 };
 
+                #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
                     if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
-                        return Err(PreconditionError::InvalidMsgForAsset { index });
+                        return Err(PreconditionError::InvalidMsgForAsset {
+                            index,
+                            expected: "\"Supply\" or \"Repay\"".to_string(),
+                            actual: serde_json::to_string(&msg).unwrap(),
+                        });
                     }
                 } else if transfer.asset() == market_account_ids.collateral_asset {
                     if !matches!(msg, DepositMsg::Collateralize) {
-                        return Err(PreconditionError::InvalidMsgForAsset { index });
+                        return Err(PreconditionError::InvalidMsgForAsset {
+                            index,
+                            expected: "\"Collateralize\"".to_string(),
+                            actual: serde_json::to_string(&msg).unwrap(),
+                        });
                     }
                 } else {
                     return Err(PreconditionError::UnknownTransactionReceiverId {
