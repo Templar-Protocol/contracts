@@ -103,31 +103,68 @@ impl<A: AssetClass + PartialOrd> AmountRange<A> {
     }
 }
 
+/// Configuration for a single asset-pair borrow market.
+///
+/// A market's configuration is immutable after deployment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
+    /// As time passes, the market creates snapshots of its state. These
+    /// snapshots are used to calculate the interest charged to borrowers,
+    /// yield earned by suppliers, etc. A **time chunk** represents the period
+    /// of time over which a snapshot is taken, and is used as a disambiguating
+    /// index for snapshots.
     pub time_chunk_configuration: TimeChunkConfiguration,
+    /// The borrow asset supported by this market.
     pub borrow_asset: FungibleAsset<BorrowAsset>,
+    /// The collateral asset supported by this market.
     pub collateral_asset: FungibleAsset<CollateralAsset>,
+    /// The market communicates with a price oracle to determine asset
+    /// valuations.
     pub price_oracle_configuration: PriceOracleConfiguration,
+    /// A borrow position must satisfy this minimum collateralization ratio
+    /// after any modifications (e.g. withdrawing collateral).
+    ///
+    /// Must be greater than or equal to `borrow_mcr_liquidation`.
     pub borrow_mcr_maintenance: Decimal,
+    /// A borrow position is eligible for liquidation if it does not satisfy
+    /// this minimu collateralization ratio.
+    ///
+    /// Must be less than or equal to `borrow_mcr_maintenance`.
     pub borrow_mcr_liquidation: Decimal,
-    /// How much of the deposited principal may be lent out (up to 100%)?
+    /// Maintain a reserve of some% of the deposited supply; how much of the
+    /// deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
-    /// Set to 99% for starters.
     pub borrow_asset_maximum_usage_ratio: Decimal,
     /// The origination fee is a one-time amount added to the principal of the
     /// borrow. That is to say, the origination fee is denominated in units of
     /// the borrow asset and is paid by the borrowing account during repayment
     /// (or liquidation).
     pub borrow_origination_fee: Fee<BorrowAsset>,
+    /// Interest rate is decided by a function of utilization ratio [0.0, 1.0].
     pub borrow_interest_rate_strategy: InterestRateStrategy,
+    /// If a maximum borrow duration is configured, a borrow position is
+    /// instantly eligible for liquidation (regardless of collateralization
+    /// ratio) after this period has expired.
     pub borrow_maximum_duration_ms: Option<U64>,
+    /// A borrow position's principal must be within this range after modification.
     pub borrow_range: ValidAmountRange<BorrowAsset>,
+    /// A supply position's deposit must be within this range after modification.
     pub supply_range: ValidAmountRange<BorrowAsset>,
+    /// A supply position may only request to withdraw amounts within this range.
     pub supply_withdrawal_range: ValidAmountRange<BorrowAsset>,
+    /// A time-bound fee for supply, to discourage extremely short-lived
+    /// supply positions.
     pub supply_withdrawal_fee: TimeBasedFee<BorrowAsset>,
+    /// Determines how yield is distributed between suppliers (dynamically
+    /// allocated based on deposit) and statically-configured accounts (e.g. a
+    /// protocol insurance account).
     pub yield_weights: YieldWeights,
+    /// For collecting supply withdrawal fees.
+    ///
+    /// Supply withdrawal fees cannot be distributed to other suppliers
+    /// because there may not be any suppliers to earn those fees after the
+    /// last one withdraws.
     pub protocol_account_id: AccountId,
     /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
     ///

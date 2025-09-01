@@ -1,5 +1,9 @@
 # Supply
 
+Accounts may deposit assets to the market's supply to earn yield.
+
+## Deposit
+
 To add funds to a market's supply, send the funds using a callback-notifying `ft_transfer_call` or `mt_transfer_call` function call. Note that if the funds are not sent using a `*_call` function, the contract will not be able to respond to the transfer: the funds will not be tracked by the contract, they will not be added to the supply, and they cannot be returned or withdrawn.
 
 For example:

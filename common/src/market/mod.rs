@@ -67,14 +67,24 @@ impl YieldWeights {
     }
 }
 
+/// Parsed from the string parameter `msg` passed by `*_transfer_call` to
+/// `*_on_transfer` calls.
 #[near(serializers = [json])]
 pub enum DepositMsg {
+    /// Add the attached tokens to the sender's supply position's deposit.
     Supply,
+    /// Add the attached tokens to the sender's borrow position's collateral
+    /// deposit.
     Collateralize,
+    /// Use the attached tokens to pay down the sender's borrow position's
+    /// liability (sans fees).
     Repay,
+    /// Liquidate an account that is below the configured liquidation
+    /// collateralization ratio threshold.
     Liquidate(LiquidateMsg),
 }
 
+/// Indicate an account to liquidate.
 #[near(serializers = [json])]
 pub struct LiquidateMsg {
     pub account_id: AccountId,
