@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::client::{database::Database, near::Near};
 
@@ -55,7 +55,7 @@ impl Broom {
                         }
                     }
                 } else {
-                    info!("Failed to fetch pending transactions.");
+                    warn!("Failed to fetch pending transactions.");
                 };
 
                 tokio::time::sleep(delay).await;
