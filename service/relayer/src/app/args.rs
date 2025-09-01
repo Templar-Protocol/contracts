@@ -11,7 +11,7 @@ pub struct Configuration {
     #[arg(long, env = "DATABASE_URL")]
     pub database_url: String,
     /// NEAR RPC connection URL.
-    #[arg(long, env = "RPC_URL", default_value = "https://rpc.testnet.near.org")]
+    #[arg(long, env = "RPC_URL", default_value_t = String::from("https://rpc.testnet.near.org"))]
     pub rpc_url: String,
     #[clap(flatten)]
     pub monitor: Monitor,
@@ -25,19 +25,19 @@ pub struct Configuration {
     #[arg(long, env = "ALLOWED_METHODS", default_values_t = default_allowed_methods(), value_delimiter = ',')]
     pub allowed_methods: Vec<String>,
     /// Starting allowance in yoctoNEAR.
-    #[arg(long, env = "STARTING_ALLOWANCE_YOCTO", default_value = "0.25 NEAR")]
+    #[arg(long, env = "STARTING_ALLOWANCE_YOCTO", default_value_t = NearToken::from_millinear(250))]
     pub starting_allowance_yocto: NearToken,
     /// Refresh the cached gas price after X seconds.
-    #[arg(long, env = "CACHE_GAS_PRICE_SECS", default_value = "600")]
+    #[arg(long, env = "CACHE_GAS_PRICE_SECS", default_value_t = 600)]
     pub cache_gas_price_secs: u64,
     /// Refresh a cached nonce after X seconds.
-    #[arg(long, env = "CACHE_NONCE_SECS", default_value = "60")]
+    #[arg(long, env = "CACHE_NONCE_SECS", default_value_t = 60)]
     pub cache_nonce_secs: u64,
     /// Broom batch size.
-    #[arg(long, env = "BROOM_BATCH_SIZE", default_value = "16")]
+    #[arg(long, env = "BROOM_BATCH_SIZE", default_value_t = 16)]
     pub broom_batch_size: u32,
     /// Broom interval in seconds.
-    #[arg(long, env = "BROOM_INTERVAL_SECS", default_value = "300")]
+    #[arg(long, env = "BROOM_INTERVAL_SECS", default_value_t = 300)]
     pub broom_interval_secs: u64,
 }
 
