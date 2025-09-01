@@ -192,44 +192,47 @@ impl Database {
         .execute(&self.connection)
         .await?;
 
-        if affected.rows_affected() == 0 {
-            let account = sqlx::query!(
-                "select allowance, allowance_locked, pending_transaction_hash from account where account_id = $1",
-                account_id.as_str(),
-            ).fetch_optional(&self.connection).await?;
-            let record = account.ok_or_else(|| error::AccountDoesNotExistError {
+        if affected.rows_affected() != 0 {
+            return Ok(());
+        }
+
+        // Update failed, let's see why
+        let account = sqlx::query!(
+            "select allowance, allowance_locked, pending_transaction_hash from account where account_id = $1",
+            account_id.as_str(),
+        ).fetch_optional(&self.connection).await?;
+
+        let record = account.ok_or_else(|| error::AccountDoesNotExistError {
+            account_id: account_id.to_owned(),
+        })?;
+
+        if let Some(pending_transaction_hash) = record.pending_transaction_hash {
+            let pending_transaction_hash =
+                Some(CryptoHash::from_str(&pending_transaction_hash).unwrap_or_default());
+            Err(error::PendingTransactionError {
                 account_id: account_id.to_owned(),
-            })?;
-            if let Some(pending_transaction_hash) = record.pending_transaction_hash {
-                let pending_transaction_hash =
-                    Some(CryptoHash::from_str(&pending_transaction_hash).unwrap_or_default());
-                Err(error::PendingTransactionError {
-                    account_id: account_id.to_owned(),
-                    pending_transaction_hash,
-                }
-                .into())
-            } else if !record.allowance_locked.is_zero() {
-                Err(error::PendingTransactionError {
-                    account_id: account_id.to_owned(),
-                    pending_transaction_hash: None,
-                }
-                .into())
-            } else if Decimal::from(allowance_lock_amount.as_yoctonear()) > record.allowance {
-                Err(error::InsufficientAllowanceError {
-                    account_id: account_id.to_owned(),
-                    actual: NearToken::from_yoctonear(
-                        u128::try_from(record.allowance).unwrap_or(u128::MAX),
-                    ),
-                    required: allowance_lock_amount,
-                }
-                .into())
-            } else {
-                Err(error::SetPendingTransactionError::UnknownError(
-                    account_id.to_owned(),
-                ))
+                pending_transaction_hash,
             }
+            .into())
+        } else if !record.allowance_locked.is_zero() {
+            Err(error::PendingTransactionError {
+                account_id: account_id.to_owned(),
+                pending_transaction_hash: None,
+            }
+            .into())
+        } else if Decimal::from(allowance_lock_amount.as_yoctonear()) > record.allowance {
+            Err(error::InsufficientAllowanceError {
+                account_id: account_id.to_owned(),
+                actual: NearToken::from_yoctonear(
+                    u128::try_from(record.allowance).unwrap_or(u128::MAX),
+                ),
+                required: allowance_lock_amount,
+            }
+            .into())
         } else {
-            Ok(())
+            Err(error::SetPendingTransactionError::UnknownError(
+                account_id.to_owned(),
+            ))
         }
     }
 
