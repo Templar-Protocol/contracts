@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select 1 as inserted from call where account_id = $1 and transaction_hash = $2",
+  "query": "\nSELECT\n    1 AS inserted\nFROM\n    call\nWHERE\n    account_id = $1\n    AND transaction_hash = $2\n",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       null
     ]
   },
-  "hash": "5ae8551b4f17301adf80272053184d4c280034e134f4f68835376991017023f9"
+  "hash": "f3706a906062747e482f487f1e0b97cac139ee87e664bc2aa0c162d816a3eed3"
 }

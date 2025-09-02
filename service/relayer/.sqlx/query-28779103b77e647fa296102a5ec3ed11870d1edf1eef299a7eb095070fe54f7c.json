@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select allowance, allowance_locked, mark as \"mark: AccountMark\" from account where account_id = $1",
+  "query": "\nSELECT\n    allowance,\n    allowance_locked,\n    mark AS \"mark: AccountMark\"\nFROM\n    account\nWHERE\n    account_id = $1\n",
   "describe": {
     "columns": [
       {
@@ -41,5 +41,5 @@
       false
     ]
   },
-  "hash": "740839d74280e0f3be04deb0ea58c07ff9fb9169015c7b3c7f59678472dd6275"
+  "hash": "28779103b77e647fa296102a5ec3ed11870d1edf1eef299a7eb095070fe54f7c"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select allowance, allowance_locked, pending_transaction_hash from account where account_id = $1",
+  "query": "\nSELECT\n    allowance,\n    allowance_locked,\n    pending_transaction_hash\nFROM\n    account\nWHERE\n    account_id = $1\n",
   "describe": {
     "columns": [
       {
@@ -30,5 +30,5 @@
       true
     ]
   },
-  "hash": "5f03fbaadd7f08a7c601ae88cccdd11f6cdfcb21adb435ad56caa71c95a1993d"
+  "hash": "184ff85f7ca14b5f4ca1edbb8f3aa6b33041d99473a86b4a3d0ea079b2737f17"
 }
