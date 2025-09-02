@@ -1,5 +1,7 @@
-drop table if exists call;
-drop table if exists account;
-drop type if exists account_mark;
+DROP TABLE IF EXISTS call;
 
-drop function if exists updated_at;
+DROP TABLE IF EXISTS account;
+
+DROP TYPE IF EXISTS account_mark;
+
+DROP FUNCTION IF EXISTS updated_at;

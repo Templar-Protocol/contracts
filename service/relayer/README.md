@@ -19,6 +19,15 @@ docker compose -f compose.dev.yaml up
 >
 > Be sure to run `cargo sqlx prepare` after changing SQL queries, otherwise the CI/CD will not be able to build the project.
 
+#### SQL formatting
+
+Install [sleek](https://sleek.dev) to format SQL queries, including queries inline in Rust source files:
+
+```bash
+cargo install --locked sleek
+make sql-fmt # from project root
+```
+
 ### Production
 
 1. Build the `templar-relayer` image:

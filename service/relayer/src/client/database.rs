@@ -122,13 +122,19 @@ impl Database {
         limit: i64,
     ) -> Result<Vec<(AccountId, CryptoHash)>, sqlx::Error> {
         let results = sqlx::query!(
-            "select
-                account_id,
-                pending_transaction_hash
-            from account
-            where pending_transaction_hash is not null
-            order by pending_transaction_issued_at asc
-            limit $1",
+            "
+SELECT
+    account_id,
+    pending_transaction_hash
+FROM
+    account
+WHERE
+    pending_transaction_hash IS NOT NULL
+ORDER BY
+    pending_transaction_issued_at ASC
+LIMIT
+    $1
+",
             limit,
         )
         .fetch_all(&self.connection)
@@ -182,16 +188,24 @@ impl Database {
         transaction_hash: CryptoHash,
     ) -> Result<(), error::SetPendingTransactionError> {
         let affected = sqlx::query!(
-            "update account set
-                allowance_locked = $1,
-                pending_transaction_hash = $2,
-                pending_transaction_issued_at = now()
-            where account_id = $3
-                and (
-                    (allowance_locked = 0 and allowance >= $1 and mark != 'always_deny')
-                    or mark = 'always_approve'
-                )
-                ",
+            r#"
+UPDATE
+    account
+SET
+    allowance_locked = $1,
+    pending_transaction_hash = $2,
+    pending_transaction_issued_at = NOW()
+WHERE
+    account_id = $3
+    AND (
+        (
+            allowance_locked = 0
+            AND allowance >= $1
+            AND mark != 'always_deny'
+        )
+        OR mark = 'always_approve'
+    )
+"#,
             Decimal::from(allowance_lock_amount.as_yoctonear()),
             transaction_hash.to_string(),
             account_id.as_str(),
@@ -205,9 +219,20 @@ impl Database {
 
         // Update failed, let's see why
         let account = sqlx::query!(
-            "select allowance, allowance_locked, pending_transaction_hash from account where account_id = $1",
+            "
+SELECT
+    allowance,
+    allowance_locked,
+    pending_transaction_hash
+FROM
+    account
+WHERE
+    account_id = $1
+",
             account_id.as_str(),
-        ).fetch_optional(&self.connection).await?;
+        )
+        .fetch_optional(&self.connection)
+        .await?;
 
         let record = account.ok_or_else(|| error::AccountDoesNotExistError {
             account_id: account_id.to_owned(),
@@ -293,7 +318,15 @@ impl Database {
         succeeded: bool,
     ) -> Result<(), error::RecordTransactionError> {
         let already_inserted = sqlx::query!(
-            "select 1 as inserted from call where account_id = $1 and transaction_hash = $2",
+            "
+SELECT
+    1 AS inserted
+FROM
+    call
+WHERE
+    account_id = $1
+    AND transaction_hash = $2
+",
             account_id.as_str(),
             transaction_hash.to_string(),
         )
@@ -306,12 +339,18 @@ impl Database {
 
         let mut tx = self.connection.begin().await?;
         let result = sqlx::query!(
-            "update account set
-                allowance = greatest(allowance - $1, 0),
-                allowance_locked = 0,
-                pending_transaction_hash = null,
-                pending_transaction_issued_at = null
-            where account_id = $2 and pending_transaction_hash = $3",
+            "
+UPDATE
+    account
+SET
+    allowance = greatest(allowance - $1, 0),
+    allowance_locked = 0,
+    pending_transaction_hash = NULL,
+    pending_transaction_issued_at = NULL
+WHERE
+    account_id = $2
+    AND pending_transaction_hash = $3
+",
             Decimal::from(allowance_spent.as_yoctonear()),
             account_id.as_str(),
             transaction_hash.to_string(),
@@ -324,7 +363,14 @@ impl Database {
 
             warn!("Failed to unlock allowance for {account_id}");
             let account = sqlx::query!(
-                "select pending_transaction_hash from account where account_id = $1",
+                "
+SELECT
+    pending_transaction_hash
+FROM
+    account
+WHERE
+    account_id = $1
+",
                 account_id.as_str(),
             )
             .fetch_optional(&self.connection)
@@ -344,12 +390,24 @@ impl Database {
         }
 
         sqlx::query!(
-            "insert into call (account_id, transaction_hash, allowance_spent, succeeded) values ($1, $2, $3, $4)",
+            "
+INSERT INTO
+    call (
+        account_id,
+        transaction_hash,
+        allowance_spent,
+        succeeded
+    )
+VALUES
+    ($1, $2, $3, $4)
+",
             account_id.as_str(),
             transaction_hash.to_string(),
             Decimal::from(allowance_spent.as_yoctonear()),
             succeeded,
-        ).execute(&mut *tx).await?;
+        )
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
 
@@ -365,7 +423,12 @@ impl Database {
         allowance: NearToken,
     ) -> Result<(), sqlx::Error> {
         sqlx::query!(
-            "insert into account (account_id, allowance) values ($1, $2)",
+            "
+INSERT INTO
+    account (account_id, allowance)
+VALUES
+    ($1, $2)
+",
             account_id.as_str(),
             Decimal::from(allowance.as_yoctonear()),
         )
@@ -383,7 +446,16 @@ impl Database {
         account_id: &AccountIdRef,
     ) -> Result<Option<NearToken>, sqlx::Error> {
         let result = sqlx::query!(
-            "select allowance, allowance_locked, mark as \"mark: AccountMark\" from account where account_id = $1",
+            "
+SELECT
+    allowance,
+    allowance_locked,
+    mark AS \"mark: AccountMark\"
+FROM
+    account
+WHERE
+    account_id = $1
+",
             account_id.as_str(),
         )
         .fetch_optional(&self.connection)
