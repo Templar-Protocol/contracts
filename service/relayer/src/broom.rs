@@ -1,36 +1,31 @@
-use std::{
-    sync::{atomic::AtomicBool, Arc},
-    time::Duration,
-};
+use std::time::Duration;
 
+use tokio::{select, sync::watch};
 use tracing::{debug, warn};
 
 use crate::client::{database::Database, near::Near};
 
-#[derive(Debug)]
-pub struct Broom {
-    kill_switch: Arc<AtomicBool>,
-}
+pub async fn start(
+    database: Database,
+    near: Near,
+    batch_size: u32,
+    delay: Duration,
+    kill: watch::Sender<()>,
+) {
+    let batch_size = i64::from(batch_size);
 
-impl Drop for Broom {
-    fn drop(&mut self) {
-        self.kill_switch
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
+    let mut interval = tokio::time::interval(delay);
+    let mut on_kill = kill.subscribe();
 
-impl Broom {
-    pub fn new(database: Database, near: Near, batch_size: u32, delay: Duration) -> Self {
-        let kill_switch = Arc::new(AtomicBool::new(false));
-
-        let kill = Self {
-            kill_switch: Arc::clone(&kill_switch),
-        };
-
-        tokio::spawn(async move {
-            while !kill_switch.load(std::sync::atomic::Ordering::Relaxed) {
+    loop {
+        select! {
+            _ = on_kill.changed() => {
+                debug!("Received kill notification.");
+                break;
+            }
+            _ = interval.tick() => {
                 if let Ok(pending_transactions) = database
-                    .get_pending_transactions(i64::from(batch_size))
+                    .get_pending_transactions(batch_size)
                     .await
                 {
                     debug!(
@@ -56,12 +51,8 @@ impl Broom {
                     }
                 } else {
                     warn!("Failed to fetch pending transactions.");
-                };
-
-                tokio::time::sleep(delay).await;
+                }
             }
-        });
-
-        kill
+        }
     }
 }

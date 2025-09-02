@@ -6,6 +6,7 @@ use near_primitives::{
 };
 use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
+use tokio::sync::watch;
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -84,18 +85,24 @@ impl Database {
     /// # Errors
     ///
     /// - Database connection errors
-    pub fn new(database_url: &str) -> Result<Self, sqlx::Error> {
+    pub fn new(database_url: &str, kill: watch::Sender<()>) -> Result<Self, sqlx::Error> {
         let connection = PgPoolOptions::new()
             .max_connections(4)
             .connect_lazy(database_url)?;
 
-        Ok(Self { connection })
-    }
+        tokio::spawn({
+            let connection = connection.clone();
+            async move {
+                let mut on_kill = kill.subscribe();
+                #[allow(clippy::unwrap_used)]
+                on_kill.changed().await.unwrap();
+                tracing::info!("Closing database connection...");
+                connection.close().await;
+                tracing::info!("Database connection closed.");
+            }
+        });
 
-    pub async fn close(&self) {
-        tracing::info!("Closing database connection...");
-        self.connection.close().await;
-        tracing::info!("Database connection closed.");
+        Ok(Self { connection })
     }
 
     /// Migrate the database schema.

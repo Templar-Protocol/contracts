@@ -8,7 +8,10 @@ use near_crypto::PublicKey;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::query::RpcQueryError};
 use near_primitives::hash::CryptoHash;
 use near_sdk::{AccountId, NearToken};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot, watch, RwLock},
+};
 
 use crate::client::near::Near;
 
@@ -76,25 +79,46 @@ pub struct Cache {
     request: mpsc::Sender<CacheRequest>,
 }
 
-impl Cache {
-    pub fn new(near: Near, gas_price_refresh: Duration, nonce_refresh: Duration) -> Self {
-        let (send, mut recv) = mpsc::channel::<CacheRequest>(64);
+async fn start(
+    mut recv: mpsc::Receiver<CacheRequest>,
+    near: Near,
+    gas_price_refresh: Duration,
+    nonce_refresh: Duration,
+    kill: watch::Sender<()>,
+) {
+    let mut gas_price = CacheRecord::empty();
+    let mut nonce = HashMap::<(AccountId, PublicKey), CacheRecord<u64>>::new();
+    let block_hash = Arc::new(RwLock::new(CryptoHash::new()));
 
-        tokio::spawn(async move {
-            let mut gas_price = CacheRecord::empty();
-            let mut nonce = HashMap::<(AccountId, PublicKey), CacheRecord<u64>>::new();
-            let block_hash = Arc::new(RwLock::new(CryptoHash::new()));
+    let update_gas = || async { near.fetch_gas_price().await };
+    let update_nonce = |(account_id, public_key)| {
+        || async {
+            let (nonce, hash) = near.fetch_nonce(account_id, public_key).await?;
+            *block_hash.write().await = hash;
+            Ok::<_, JsonRpcError<RpcQueryError>>(nonce + 1)
+        }
+    };
 
-            let update_gas = || async { near.fetch_gas_price().await };
-            let update_nonce = |(account_id, public_key)| {
-                || async {
-                    let (nonce, hash) = near.fetch_nonce(account_id, public_key).await?;
-                    *block_hash.write().await = hash;
-                    Ok::<_, JsonRpcError<RpcQueryError>>(nonce + 1)
-                }
-            };
+    let exec_kill = |msg: &str| {
+        tracing::error!("{msg}");
+        #[allow(clippy::unwrap_used, reason = "We're panicking here anyways")]
+        kill.send(()).unwrap();
+        panic!("{msg}");
+    };
 
-            while let Some(request) = recv.recv().await {
+    let mut on_kill = kill.subscribe();
+
+    loop {
+        select! {
+            _ = on_kill.changed() => {
+                tracing::debug!("Received kill notification.");
+                break;
+            }
+            request = recv.recv() => {
+                let Some(request) = request else {
+                    tracing::debug!("Cache sender dropped, exiting.");
+                    break;
+                };
                 match request {
                     CacheRequest::GasPrice(sender) => {
                         let fresh = gas_price.fetch(update_gas, gas_price_refresh).await;
@@ -106,8 +130,7 @@ impl Cache {
                             sender.send(*price).unwrap();
                         } else {
                             // We should only ever *not* have a stale value on startup, so this should be a "fail-fast" case.
-                            tracing::error!("Failed to fetch gas price, no stale value cached.");
-                            panic!("Failed to fetch gas price.");
+                            exec_kill("Failed to fetch gas price, no stale value cached.");
                         }
                     }
                     CacheRequest::Nonce { key, sender } => {
@@ -124,15 +147,27 @@ impl Cache {
                             );
                             sender.send((*nonce, *block_hash.read().await)).unwrap();
                         } else {
-                            tracing::error!(
+                            exec_kill(&format!(
                                 "Failed to fetch nonce for {key:?}, no stale value cached."
-                            );
-                            panic!("Failed to fetch nonce for {key:?}.");
+                            ));
                         }
                     }
                 }
             }
-        });
+        }
+    }
+}
+
+impl Cache {
+    pub fn new(
+        near: Near,
+        gas_price_refresh: Duration,
+        nonce_refresh: Duration,
+        kill: watch::Sender<()>,
+    ) -> Self {
+        let (send, recv) = mpsc::channel::<CacheRequest>(64);
+
+        tokio::spawn(start(recv, near, gas_price_refresh, nonce_refresh, kill));
 
         Self { request: send }
     }

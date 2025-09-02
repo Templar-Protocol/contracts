@@ -14,11 +14,14 @@ use near_primitives::{
 };
 use near_sdk::{serde_json, AccountId, NearToken};
 use templar_common::market::DepositMsg;
-use tokio::{sync::RwLock, task::JoinSet};
+use tokio::{
+    sync::{watch, RwLock},
+    task::JoinSet,
+};
 use tracing::{error, info, warn};
 
 use crate::{
-    broom::Broom,
+    broom,
     cache::Cache,
     client::{
         database::{
@@ -40,13 +43,11 @@ pub struct App {
     pub accounts: Arc<RwLock<AccountData>>,
     pub near: Near,
     pub cache: Arc<Cache>,
-    /// This field is only relevant for its Drop implementation, which shuts down the Broom.
-    _broom: Arc<Broom>,
     pub database: Database,
 }
 
 impl App {
-    pub fn new(args: args::Configuration) -> Self {
+    pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> Self {
         let near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
             args.account_id.clone(),
@@ -57,27 +58,28 @@ impl App {
         );
 
         #[allow(clippy::unwrap_used)]
-        let database = Database::new(&args.database_url).unwrap();
+        let database = Database::new(&args.database_url, kill.clone()).unwrap();
 
         let cache = Cache::new(
             near.clone(),
             Duration::from_secs(args.cache_gas_price_secs),
             Duration::from_secs(args.cache_nonce_secs),
+            kill.clone(),
         );
 
-        let broom = Broom::new(
+        tokio::spawn(broom::start(
             database.clone(),
             near.clone(),
             args.broom_batch_size,
             Duration::from_secs(args.broom_interval_secs),
-        );
+            kill,
+        ));
 
         Self {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             near,
             cache: Arc::new(cache),
-            _broom: Arc::new(broom),
             database,
         }
     }
