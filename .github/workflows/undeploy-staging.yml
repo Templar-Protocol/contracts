@@ -16,11 +16,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install near CLI
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
-          near config edit-connection "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" --key rpc_url --value "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
-          near config edit-connection "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" --key rpc_api_key --value "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
+      - name: Install NEAR CLI
+        uses: ./.github/actions/install-near-cli.yml
+        with:
+          network: "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
+          rpc-url: "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
+          rpc_api_key: "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
 
       - name: Check if staging account exists
         id: check
@@ -48,11 +49,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install near CLI
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
-          near config edit-connection "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" --key rpc_url --value "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
-          near config edit-connection "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" --key rpc_api_key --value "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
+      - name: Install NEAR CLI
+        uses: ./.github/actions/install-near-cli.yml
+        with:
+          network: "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
+          rpc-url: "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
+          rpc_api_key: "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.85.0
