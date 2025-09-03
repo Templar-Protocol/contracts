@@ -3,3 +3,5 @@ authors = ["peer2 <peer2@templarprotocol.com>"]
 language = "en"
 src = "src"
 title = "Templar Protocol Documentation"
+
+[preprocessor.cmdrun]
