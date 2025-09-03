@@ -119,7 +119,7 @@ pub trait MarketExternalInterface {
     /// Removes a supply position from the withdrawal queue.
     fn cancel_supply_withdrawal_request(&mut self);
 
-    /// Attempts to satisfy the first withdrawal request in the queue.
+    /// Attempts to fulfill the first withdrawal request in the queue.
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()>;
 
     /// Retrieves the status of a withdrawal request in the queue.

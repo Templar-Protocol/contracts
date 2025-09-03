@@ -4,13 +4,7 @@ Accounts may deposit assets to the market's supply to earn yield.
 
 ## Deposit
 
-To add funds to a market's supply, send the funds using a callback-notifying [`ft_transfer_call`](https://docs.near.org/primitives/ft#attaching-fts-to-a-call) or `mt_transfer_call` function call.
-
-<div class="warning">
-
-If the funds are not sent using a `*_transfer_call` function, the contract will not be able to respond to the transfer: the funds will not be tracked by the contract, they will not be added to the supply, and **the funds cannot be returned or withdrawn**.
-
-</div>
+To add funds to a market's supply, send the to the contract, specifying `"Supply"` as the transfer `msg`.
 
 For example:
 
