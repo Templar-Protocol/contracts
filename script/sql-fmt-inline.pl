@@ -33,9 +33,11 @@ sub process_query {
     my $pid = open3(my $stdin, my $stdout, $stderr, 'sleek');
 
     # Remove escape sequences
-    $query =~ s/\\\\/\\/g;
-    $query =~ s/\\'/'/g;
-    $query =~ s/\\"/"/g;
+    if ($s_prefix ne "r#") {
+        $query =~ s/\\\\/\\/g;
+        $query =~ s/\\'/'/g;
+        $query =~ s/\\"/"/g;
+    }
     # Send the query to sleek
     print $stdin "$query\n";
     close $stdin;  # Close the input to signal completion
