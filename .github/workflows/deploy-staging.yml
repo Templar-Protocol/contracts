@@ -57,7 +57,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install NEAR CLI
-        uses: ./.github/actions/install-near-cli.yml
+        uses: ./.github/actions/install-near-cli
         with:
           network: "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
           rpc-url: "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
