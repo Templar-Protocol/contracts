@@ -7,7 +7,13 @@ use templar_common::{
 };
 use test_utils::*;
 
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 #[tokio::main]
 async fn main() {
     const ITERATIONS: usize = 128;
@@ -23,21 +29,44 @@ async fn main() {
         })
     );
 
-    c.supply_and_harvest_until_activation(&supply_user, 120_000)
+    let e = c
+        .supply_and_harvest_until_activation(&supply_user, 120_000)
         .await;
+    let supply_gas = e.total_gas_burnt;
     let harvest_yield_0 = c
         .harvest_yield_execution(&supply_user, None, Some(HarvestYieldMode::Compounding))
         .await;
     let snapshot_count_before = c.list_finalized_snapshots(None, None).await.len();
-    c.collateralize(&borrow_user, 2000).await;
-    c.collateralize(&borrow_user_2, 2000).await;
+
+    let (a, b) = tokio::join!(
+        async {
+            c.collateralize(&borrow_user, 2000)
+                .await
+                .total_gas_burnt
+                .as_gas() as f64
+                / 2f64
+        },
+        async {
+            c.collateralize(&borrow_user_2, 2000)
+                .await
+                .total_gas_burnt
+                .as_gas() as f64
+                / 2f64
+        },
+    );
+    let collateralize_gas_average = a + b;
 
     c.borrow(&borrow_user_2, 1000).await;
     let apply_interest_0 = c.apply_interest(&borrow_user_2, None, None).await;
 
+    let mut borrow_gas_average = 0f64;
+    let mut repay_gas_average = 0f64;
+
     for _ in 0..ITERATIONS {
-        c.borrow(&borrow_user, 1000).await;
-        c.repay(&borrow_user, 1100).await;
+        let e = c.borrow(&borrow_user, 1000).await;
+        borrow_gas_average += e.total_gas_burnt.as_gas() as f64 / ITERATIONS as f64;
+        let e = c.repay(&borrow_user, 1100).await;
+        repay_gas_average += e.total_gas_burnt.as_gas() as f64 / ITERATIONS as f64;
     }
 
     let apply_interest_max = c.apply_interest(&borrow_user_2, None, None).await;
@@ -64,7 +93,34 @@ async fn main() {
         target_gas,
     );
 
-    println!("**Gas Report**");
+    let (a, b) = tokio::join!(
+        async {
+            c.withdraw_collateral(&borrow_user, 1000)
+                .await
+                .total_gas_burnt
+                .as_gas() as f64
+                / 2f64
+        },
+        async {
+            c.withdraw_collateral(&borrow_user_2, 10)
+                .await
+                .total_gas_burnt
+                .as_gas() as f64
+                / 2f64
+        },
+    );
+    let withdraw_collateral_gas_average = a + b;
+
+    let e = c
+        .create_supply_withdrawal_request(&supply_user, 120_000)
+        .await;
+    let create_supply_withdrawal_gas = e.total_gas_burnt;
+    let e = c.execute_next_supply_withdrawal_request(&supply_user).await;
+    let execute_supply_withdrawal_gas = e.total_gas_burnt;
+
+    println!("## Gas Report");
+    println!();
+    println!("### Snapshot Limits");
     println!();
     println!("`harvest_yield`");
     println!();
@@ -89,6 +145,33 @@ async fn main() {
     );
     println!();
     println!("Estimated snapshot limit: {apply_interest_snapshot_limit}");
+    println!();
+    println!("### Action Gas Descriptors");
+    println!();
+    println!("| Action | Gas  |");
+    println!("| -----: | ---: |");
+    let list = vec![
+        ("collateralize", collateralize_gas_average as u64),
+        (
+            "withdraw_collateral",
+            withdraw_collateral_gas_average as u64,
+        ),
+        ("borrow", borrow_gas_average as u64),
+        ("repay", repay_gas_average as u64),
+        ("supply", supply_gas.as_gas()),
+        (
+            "create_supply_withdrawal_request",
+            create_supply_withdrawal_gas.as_gas(),
+        ),
+        (
+            "execute_next_supply_withdrawal_request",
+            execute_supply_withdrawal_gas.as_gas(),
+        ),
+    ];
+    for (action_label, gas) in list {
+        println!("| `{action_label}` | {gas} |");
+    }
+    println!();
 }
 
 /// Estimate `snapshot_limit` that will maximize iterations while safely
