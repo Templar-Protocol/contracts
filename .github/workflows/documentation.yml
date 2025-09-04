@@ -17,16 +17,34 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
       - name: Install dependencies
         run: |
           cd docs
           make install-deps
+
       - name: Build documentation
         run: ./script/build-docs.sh
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
