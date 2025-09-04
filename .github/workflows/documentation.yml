@@ -1,0 +1,28 @@
+name: Build & deploy documentation site to GitHub Pages
+# To merge:
+# on:
+#   push:
+#     branches: [dev]
+# For testing:
+on:
+  pull_request:
+
+jobs:
+  build-and-deploy:
+    name: Build documentation and deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{steps.deployment.outputs.page_url}}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Build documentation
+        run: ./script/build-docs.sh
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
