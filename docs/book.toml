@@ -5,10 +5,6 @@ authors = ["peer2 <peer2@templarprotocol.com>"]
 language = "en"
 src = "src"
 
-[preprocessor.cmdrun]
-
-[output.linkcheck]
-
 [output.html]
 git-repository-url = "https://github.com/Templar-Protocol/contracts/"
 git-repository-icon = "fa-github"
