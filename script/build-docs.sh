@@ -14,6 +14,6 @@ mdbook build --dest-dir $ROOT_DIR/_site/guide
 echo "Building Rust documentation..."
 cd $ROOT_DIR
 cargo doc --workspace --no-deps
-cp -r $ROOT_DIR/target/doc $ROOT_DIR/_site/doc
+cp -r $ROOT_DIR/target/doc $ROOT_DIR/_site
 
-echo "docs.templarfi.org" > $ROOT_DIR/_site/CNAME
+cp -r $ROOT_DIR/docs/static/* $ROOT_DIR/_site
