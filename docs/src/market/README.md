@@ -43,8 +43,8 @@ near contract \
 
 ## Snapshots
 
-Interest and yield on borrow and supply positions (respectively) are calculated using a market-snapshot system.
+Interest and yield on borrow and supply positions are calculated using a snapshot system.
 
-Every time a "time chunk" (wlog 1 hour, configurable) elapses, the contract takes a snapshot, recording such things as the total supply deposit, amount borrowed, timestamp, etc. Taking a snapshot is a relatively inexpensive process.
+Every time a "time chunk" (wlog 1 hour, configurable) elapses, the contract takes a snapshot, recording such things as the total supply deposit, amount borrowed, timestamp, etc.
 
-Whenever a borrow or supply position update requires, interest/yield calculations are triggered. (They can also be triggered explicitly using `harvest_yield()` and `accumulate_interest()`.) These calculations iterate from the snapshot at which the record was last updated until the most-recently-finalized snapshot.
+Whenever a borrow or supply position update requires, interest/yield calculations are triggered. (They can also be triggered explicitly using `harvest_yield` and `accumulate_interest`.) These calculations iterate from the snapshot at which the record was last updated until the most-recently-finalized snapshot unless a snapshot limit is provided.
