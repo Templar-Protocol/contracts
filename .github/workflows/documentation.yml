@@ -11,6 +11,10 @@ jobs:
   build-and-deploy:
     name: Build documentation and deploy
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{steps.deployment.outputs.page_url}}
@@ -29,15 +33,17 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
+            _site/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      - name: Install dependencies
+      - name: Install mdbook
         run: |
-          cd docs
-          make install-deps
+          mkdir bin
+          readlink -f bin >> "$GITHUB_PATH"
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=bin
 
       - name: Build documentation
         run: ./script/build-docs.sh

@@ -7,7 +7,7 @@ The Templar Protocol documentation site is generated using [mdBook](https://rust
 1. Install dependencies:
 
    ```bash
-   make install-deps
+   cargo install mdbook
    ```
 
 1. Start mdBook server:
