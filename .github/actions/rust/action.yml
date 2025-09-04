@@ -1,0 +1,29 @@
+name: Setup Rust
+description: Install Rust version and setup caching
+inputs:
+  targets:
+    description: Rust targets to install
+    required: false
+    default: wasm32-unknown-unknown
+  components:
+    description: Rust components to install
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@1.85.0
+      with:
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
