@@ -1,4 +1,4 @@
-# Markets
+# Market
 
 A single Templar market represents a pair of collateral and borrow assets, such as BTC/USDC for Bitcoin-collateralized USDC loans.
 

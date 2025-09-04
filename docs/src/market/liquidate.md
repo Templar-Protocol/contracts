@@ -8,7 +8,7 @@ A liquidator will follow this high-level workflow:
 
 1. The liquidator obtains a list of accounts borrowing from the market by calling `list_borrows`.
 1. The liquidator checks the status of each account by calling `get_borrow_status(account_id)`.
-1. If an account's status is `Liquidation`, that means the liquidator can obtain a spread by sending an amount of borrow asset to the market. The maximum spread is `liquidation_maximum_spread` in [the market configuration](./index.md#configuration).
+1. If an account's status is `Liquidation`, that means the liquidator can obtain a spread by sending an amount of borrow asset to the market. The maximum spread is `liquidation_maximum_spread` in [the market configuration](./#configuration).
 1. To perform the liquidation, the liquidator transfer-calls the appropriate amount of borrow asset to the market. That is to say, the liquidator calls `ft_transfer_call`/`mt_transfer_call` on the borrow asset's smart contract, specifying the market as the receiver. The `msg` parameter indicates 1) that the transfer is for a liquidation, and 2) which account is to be liquidated.
 
 Thus, the arguments to a liquidation call might look something like this:

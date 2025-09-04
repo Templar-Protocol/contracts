@@ -1,4 +1,4 @@
 .PHONY: install-deps
 
 install-deps:
-	cargo install --locked mdbook mdbook-cmdrun
+	cargo install mdbook mdbook-cmdrun mdbook-linkcheck
