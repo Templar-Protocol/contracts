@@ -44,4 +44,4 @@ Large numbers are serialized as strings instead of numerical literals to ensure 
 
 The command attaches 100 teragas units and 0 NEAR to the call, signs the transaction as `account.near` using a key saved to the local keychain, and sends the transaction to NEAR mainnet.
 
-Please refer to [the user guide](https://github.com/near/near-cli-rs/blob/main/docs/GUIDE.en.md) for more details.
+Please refer to [the `near-cli-rs` user guide](https://github.com/near/near-cli-rs/blob/main/docs/GUIDE.en.md) for more details.

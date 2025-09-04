@@ -1,4 +1,4 @@
-# Borrow
+# Borrow { #borrow-1 }
 
 Accounts may borrow assets from the market's supply.
 
@@ -6,7 +6,7 @@ Borrow positions must be collateralized with a minimum amount of collateral asse
 
 ## Deposit collateral
 
-To add collateral to an account's position, transfer-call the market tokens with a `msg` of `"Collateralize"`:
+To add collateral to an account's position, transfer-call the market tokens with a `msg` of [`"Collateralize"`](../../doc/templar_common/market/enum.DepositMsg.html#variant.Collateralize):
 
 ```bash
 near contract call-function as-transaction \
@@ -23,7 +23,7 @@ near contract call-function as-transaction \
 
 ## Withdraw collateral
 
-The collateral withdrawal process is relatively straightforward as compared to [the supply withdrawal process](supply.md#withdraw): simply call `withdraw_collateral`, passing the amount of collateral asset tokens you wish to withdraw:
+The collateral withdrawal process is relatively straightforward as compared to [the supply withdrawal process](supply.md#withdraw): simply call [`withdraw_collateral`](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.withdraw_collateral), passing the amount of collateral asset tokens you wish to withdraw:
 
 ```bash
 near contract call-function as-transaction \
@@ -34,7 +34,7 @@ near contract call-function as-transaction \
     sign-as <account-id>
 ```
 
-While this process is simple, collateral can only be withdraw so long as the value of the remaining collateral continues to satisfy the market's `borrow_mcr_maintenance` requirement.
+While this process is simple, collateral can only be withdraw so long as the value of the remaining collateral continues to satisfy the market's [`borrow_mcr_maintenance`](../../doc/templar_common/market/struct.MarketConfiguration.html#structfield.borrow_mcr_maintenance) requirement.
 
 ## Borrow
 
@@ -57,7 +57,7 @@ As long as an account has a liability (principal + interest/fees), some or all o
 
 To unlock the collateral, the account must repay its liability to the market.
 
-To perform a repayment, transfer-call tokens to the market with a `msg` of `"Repay"`:
+To perform a repayment, transfer-call tokens to the market with a `msg` of [`"Repay"`](../../doc/templar_common/market/enum.DepositMsg.html#variant.Repay):
 
 ```bash
 near contract call-function as-transaction \

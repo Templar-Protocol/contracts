@@ -10,17 +10,17 @@ Markets support NEAR fungible asset contracts implementing [the NEP-141 standard
 
 Accounts can interact with markets in seven primary ways:
 
-1. Deposit supply.
-1. Withdraw supply.
-1. Deposit collateral.
-1. Withdraw collateral.
-1. Borrow supply.
-1. Repay supply.
-1. Liquidate borrow position.
+1. [Deposit supply](supply.md#deposit)
+1. [Withdraw supply](supply.md#withdraw)
+1. [Deposit collateral](borrow.md#deposit-collateral)
+1. [Withdraw collateral](borrow.md#withdraw-collateral)
+1. [Borrow supply](borrow.md#borrow)
+1. [Repay supply](borrow.md#repay)
+1. [Liquidate borrow position](liquidate.md)
 
 ## Configuration
 
-A market's configuration is immutable after deployment. It can be obtained from the market contract by calling the `get_configuration` function.
+[A market's configuration](../../doc/templar_common/market/struct.MarketConfiguration.html) is immutable after deployment. It can be obtained from the market contract by calling [the `get_configuration` function](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.get_configuration).
 
 ### Example
 
@@ -111,6 +111,6 @@ near contract \
 
 Interest and yield on borrow and supply positions are calculated using a snapshot system.
 
-Every time a "time chunk" (wlog 1 hour, configurable) elapses, the contract takes a snapshot, recording such things as the total supply deposit, amount borrowed, timestamp, etc.
+After a ["time chunk"](../../doc/templar_common/time_chunk/enum.TimeChunkConfiguration.html) (e.g. 1 hour) elapses, the contract takes a snapshot, recording such things as the total supply deposit, amount borrowed, timestamp, etc.
 
-Whenever a borrow or supply position update requires, interest/yield calculations are triggered. (They can also be triggered explicitly using `harvest_yield` and `accumulate_interest`.) These calculations iterate from the snapshot at which the record was last updated until the most-recently-finalized snapshot unless a snapshot limit is provided.
+Whenever a borrow or supply position update requires, interest/yield calculations are triggered. (They can also be triggered explicitly using [`harvest_yield`](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.harvest_yield) and [`apply_interest`](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.apply_interest).) These calculations iterate from the snapshot at which the record was last updated until the most-recently-finalized snapshot unless a snapshot limit is provided.
