@@ -3,7 +3,10 @@ use std::num::NonZeroU16;
 
 use near_sdk::{env, near, AccountId};
 
-use crate::{asset::BorrowAssetAmount, number::Decimal};
+use crate::{
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    number::Decimal,
+};
 mod configuration;
 pub use configuration::{MarketConfiguration, APY_LIMIT};
 mod external;
@@ -78,6 +81,9 @@ pub enum DepositMsg {
 #[near(serializers = [json])]
 pub struct LiquidateMsg {
     pub account_id: AccountId,
+    /// How much collateral to liquidate?
+    /// Attempts to liquidate the whole position if `None`.
+    pub amount: Option<CollateralAssetAmount>,
 }
 
 #[derive(Clone, Debug)]

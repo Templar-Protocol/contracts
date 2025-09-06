@@ -368,6 +368,7 @@ impl UnifiedMarketController {
         liquidator_user: &Account,
         account_id: &AccountId,
         borrow_asset_amount: u128,
+        expect_receive_collateral: u128,
     ) -> ExecutionSuccess {
         eprintln!(
             "{} executing liquidation against {} for {}...",
@@ -382,6 +383,7 @@ impl UnifiedMarketController {
                 borrow_asset_amount,
                 serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
                     account_id: account_id.clone(),
+                    amount: Some(expect_receive_collateral.into()),
                 }))
                 .unwrap(),
             )

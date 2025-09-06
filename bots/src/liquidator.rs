@@ -167,6 +167,8 @@ impl<S: Swap> Liquidator<S> {
     ) -> LiquidatorResult<Transaction> {
         let msg = serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
             account_id: borrow.clone(),
+            // TODO: This should be an amount expected to receive
+            amount: None,
         }))?;
 
         Ok(Transaction::V0(TransactionV0 {

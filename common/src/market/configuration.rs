@@ -7,7 +7,7 @@ use crate::{
         AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount,
         FungibleAsset, FungibleAssetAmount,
     },
-    borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
+    borrow::{BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
@@ -225,57 +225,40 @@ impl MarketConfiguration {
 
     pub fn borrow_status(
         &self,
-        borrow_position: &BorrowPosition,
-        price_pair: &PricePair,
+        collateralization_ratio: Option<Decimal>,
+        started_at_block_timestamp_ms: Option<impl Into<u64>>,
         block_timestamp_ms: u64,
     ) -> BorrowStatus {
-        if !self.satisfies_mcr_liquidation(borrow_position, price_pair) {
-            return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
+        if started_at_block_timestamp_ms.is_some_and(|started_at| {
+            !self.is_within_maximum_borrow_duration(started_at.into(), block_timestamp_ms)
+        }) {
+            return BorrowStatus::Liquidation(LiquidationReason::Expiration);
         }
 
-        if !self.is_within_maximum_borrow_duration(borrow_position, block_timestamp_ms) {
-            return BorrowStatus::Liquidation(LiquidationReason::Expiration);
+        if let Some(cr) = collateralization_ratio {
+            if cr < self.borrow_mcr_liquidation {
+                return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
+            }
+
+            if cr < self.borrow_mcr_maintenance {
+                return BorrowStatus::MaintenanceRequired;
+            }
         }
 
         BorrowStatus::Healthy
     }
 
-    fn is_within_maximum_borrow_duration(
+    pub fn is_within_maximum_borrow_duration(
         &self,
-        borrow_position: &BorrowPosition,
+        started_at_block_timestamp_ms: u64,
         block_timestamp_ms: u64,
     ) -> bool {
         let Some(U64(maximum_duration_ms)) = self.borrow_maximum_duration_ms else {
             return true;
         };
-        borrow_position
-            .started_at_block_timestamp_ms
-            .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
+        block_timestamp_ms
+            .checked_sub(started_at_block_timestamp_ms)
             .is_none_or(|duration_ms| duration_ms <= maximum_duration_ms)
-    }
-
-    pub fn satisfies_mcr_maintenance(
-        &self,
-        borrow_position: &BorrowPosition,
-        oracle_price_proof: &PricePair,
-    ) -> bool {
-        satisfies_minimum_collateral_ratio(
-            self.borrow_mcr_maintenance,
-            borrow_position,
-            oracle_price_proof,
-        )
-    }
-
-    pub fn satisfies_mcr_liquidation(
-        &self,
-        borrow_position: &BorrowPosition,
-        oracle_price_proof: &PricePair,
-    ) -> bool {
-        satisfies_minimum_collateral_ratio(
-            self.borrow_mcr_liquidation,
-            borrow_position,
-            oracle_price_proof,
-        )
     }
 
     pub fn minimum_acceptable_liquidation_amount(
@@ -292,27 +275,6 @@ impl MarketConfiguration {
     }
 }
 
-fn satisfies_minimum_collateral_ratio(
-    mcr: Decimal,
-    borrow_position: &BorrowPosition,
-    price_pair: &PricePair,
-) -> bool {
-    let borrow_liability = borrow_position.get_total_borrow_asset_liability();
-    if borrow_liability.is_zero() {
-        return true;
-    }
-
-    let collateral_valuation = Valuation::pessimistic(
-        borrow_position.collateral_asset_deposit,
-        &price_pair.collateral,
-    );
-    let borrow_valuation = Valuation::optimistic(borrow_liability, &price_pair.borrow);
-
-    collateral_valuation
-        .ratio(borrow_valuation)
-        .is_some_and(|ratio| ratio >= mcr)
-}
-
 #[cfg(test)]
 mod tests {
     use near_sdk::{
@@ -321,37 +283,7 @@ mod tests {
     };
     use rstest::rstest;
 
-    use crate::{borrow::InterestAccumulationProof, dec, oracle::pyth};
-
     use super::*;
-
-    #[test]
-    fn test_satisfies_minimum_collateral_ratio() {
-        let mut b = BorrowPosition::new(0);
-        b.increase_collateral_asset_deposit(121u128.into());
-        b.increase_borrow_asset_principal(InterestAccumulationProof::test(), 100u128.into(), 0);
-        assert!(satisfies_minimum_collateral_ratio(
-            dec!("1.2"),
-            &b,
-            &PricePair::new(
-                &pyth::Price {
-                    price: near_sdk::json_types::I64(10000),
-                    conf: U64(1),
-                    expo: -4,
-                    publish_time: 0,
-                },
-                18,
-                &pyth::Price {
-                    price: near_sdk::json_types::I64(10000),
-                    conf: U64(1),
-                    expo: -4,
-                    publish_time: 0,
-                },
-                18,
-            )
-            .unwrap()
-        ));
-    }
 
     #[rstest]
     #[case(1, 0)]

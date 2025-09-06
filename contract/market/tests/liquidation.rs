@@ -35,6 +35,7 @@ async fn successful_liquidation_totally_underwater() {
         &liquidator_user,
         borrow_user.id(),
         300, // this is fmv (i.e. NOT what a real liquidator would do to purchase bad debt)
+        500,
     )
     .await;
 
@@ -90,8 +91,16 @@ async fn successful_liquidation_good_debt_under_mcr(
         (Decimal::from(collateral_asset_price_pct) / 100u32).to_f64_lossy(),
     )
     .await;
-    c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
+    let r = c
+        .liquidate(
+            &liquidator_user,
+            borrow_user.id(),
+            liquidation_amount,
+            collateral_amount,
+        )
         .await;
+
+    print_execution(&r);
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -177,7 +186,7 @@ async fn successful_liquidation_with_spread(
 
     c.set_collateral_asset_price(collateral_asset_price.to_f64_lossy())
         .await;
-    c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount)
+    c.liquidate(&liquidator_user, borrow_user.id(), liquidation_amount, 2000)
         .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
@@ -212,7 +221,8 @@ async fn fail_liquidation_too_little_attached() {
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
     c.set_collateral_asset_price(0.5).await;
-    c.liquidate(&liquidator_user, borrow_user.id(), 150).await;
+    c.liquidate(&liquidator_user, borrow_user.id(), 150, 500)
+        .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -251,7 +261,8 @@ async fn fail_liquidation_healthy_borrow() {
     let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
-    c.liquidate(&liquidator_user, borrow_user.id(), 300).await;
+    c.liquidate(&liquidator_user, borrow_user.id(), 300, 500)
+        .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -275,7 +286,7 @@ async fn fail_liquidation_healthy_borrow() {
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Position is already liquidation locked"]
+#[should_panic = "Smart contract panicked: Attempt to liquidate more collateral than position has deposited"]
 async fn liquidators_race() {
     setup_test!(
         extract(c)
@@ -292,8 +303,8 @@ async fn liquidators_race() {
     let balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
 
     let (r1, r2) = tokio::join!(
-        c.liquidate(&liquidator_user, borrow_user.id(), 300),
-        c.liquidate(&liquidator_user, borrow_user.id(), 300),
+        c.liquidate(&liquidator_user, borrow_user.id(), 300, 500),
+        c.liquidate(&liquidator_user, borrow_user.id(), 300, 500),
     );
 
     let balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
@@ -304,10 +315,12 @@ async fn liquidators_race() {
         "Liquidation should only occur once",
     );
 
+    print_execution(&r1);
     for o in r1.outcomes() {
         o.clone().into_result().unwrap();
     }
 
+    print_execution(&r2);
     for o in r2.outcomes() {
         o.clone().into_result().unwrap();
     }
@@ -332,7 +345,8 @@ async fn successful_liquidation_only_from_interest() {
         c.supply_and_harvest_until_activation(&supply_user, 10_000_000),
         c.collateralize(&borrow_user, 2_000_000),
     );
-    c.borrow(&borrow_user, 1_000_000 - 1).await;
+    let r = c.borrow(&borrow_user, 1_000_000 - 1).await;
+    eprintln!("Borrow execution: {r:#?}");
 
     let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -343,8 +357,16 @@ async fn successful_liquidation_only_from_interest() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    c.liquidate(&liquidator_user, borrow_user.id(), 2_000_000 * 95 / 100)
+    let r = c
+        .liquidate(
+            &liquidator_user,
+            borrow_user.id(),
+            2_000_000 * 95 / 100,
+            2_000_000,
+        )
         .await;
+
+    eprintln!("{r:#?}");
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -431,7 +453,7 @@ async fn extreme_prices(
         publish_time: 0,
     })
     .await;
-    c.liquidate(&liquidator_user, borrow_user.id(), liquidate_for)
+    c.liquidate(&liquidator_user, borrow_user.id(), liquidate_for, 2000)
         .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
@@ -450,14 +472,14 @@ async fn extreme_prices(
         );
     } else {
         assert_eq!(
-            collateral_balance_after - collateral_balance_before,
-            0,
+            collateral_balance_before, collateral_balance_after,
             "Liquidator should not obtain collateral",
         );
         assert_eq!(
-            borrow_balance_before - borrow_balance_after,
-            0,
+            borrow_balance_before, borrow_balance_after,
             "Liquidation should not transfer borrow asset tokens",
         );
     }
 }
+
+// TODO: Write partial liquidation tests
