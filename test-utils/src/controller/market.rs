@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, Gas, NearToken,
+    AccountId, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
@@ -86,6 +86,8 @@ impl MarketController {
         pub fn apply_interest(account_id: Option<&AccountId>, snapshot_limit: Option<u32>);
         #[call(tgas(300))]
         pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
+        #[call(exec, tgas(300))]
+        pub fn harvest_yield_exec["harvest_yield"](account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
         #[call(tgas(42))]
@@ -94,27 +96,6 @@ impl MarketController {
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
         #[call(tgas(20))]
         pub fn execute_next_supply_withdrawal_request();
-    }
-
-    pub async fn harvest_yield_execution(
-        &self,
-        supply_user: &Account,
-        account_id: Option<&AccountId>,
-        mode: Option<HarvestYieldMode>,
-    ) -> ExecutionSuccess {
-        eprintln!("{} harvesting yield...", supply_user.id());
-        self.call_exec(
-            supply_user,
-            "harvest_yield",
-            serde_json::to_vec(&json!({
-                "account_id": account_id,
-                "mode": mode,
-            }))
-            .unwrap(),
-            NearToken::from_near(0),
-            Gas::from_tgas(300),
-        )
-        .await
     }
 
     #[allow(unused)] // This is useful for debugging tests

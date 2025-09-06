@@ -1,11 +1,6 @@
 use std::collections::HashMap;
 
-use near_sdk::{
-    borsh,
-    json_types::Base64VecU8,
-    serde_json::{self, json},
-    AccountId, Gas, NearToken,
-};
+use near_sdk::{borsh, json_types::Base64VecU8, serde_json::json, AccountId, Gas, NearToken};
 use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 use tokio::sync::OnceCell;
 
@@ -51,7 +46,7 @@ impl RegistryController {
         version_key: &str,
         code: &[u8],
     ) -> ExecutionSuccess {
-        self.call_exec(
+        self.call_raw(
             executor,
             "add_version",
             borsh::to_vec(&(version_key, code)).unwrap(),
@@ -72,13 +67,12 @@ impl RegistryController {
         self.call_exec(
             self.contract.as_account(),
             "deploy_market",
-            serde_json::to_vec(&json!({
+            json!({
                 "name": name,
                 "version_key": version_key,
                 "init_args": Base64VecU8(init_args),
                 "full_access_keys": full_access_keys,
-            }))
-            .unwrap(),
+            }),
             deposit,
             Gas::from_tgas(300),
         )
