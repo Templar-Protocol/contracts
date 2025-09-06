@@ -132,11 +132,6 @@ impl Contract {
 
         borrow_position.accumulate_interest();
 
-        near_sdk::log!(
-            "Borrow status: {:?}",
-            borrow_position.status(price_pair, env::block_timestamp_ms()),
-        );
-
         require!(
             borrow_position
                 .status(price_pair, env::block_timestamp_ms())

@@ -83,14 +83,6 @@ impl BorrowPosition {
         }
     }
 
-    // pub(crate) fn full_liquidation(&mut self, current_snapshot_index: u32) {
-    //     self.is_liquidation_locked = false;
-    //     self.started_at_block_timestamp_ms = None;
-    //     self.collateral_asset_deposit = 0.into();
-    //     self.borrow_asset_principal = 0.into();
-    //     self.borrow_asset_fees.clear(current_snapshot_index);
-    // }
-
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
         self.borrow_asset_principal
     }
@@ -274,7 +266,6 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
 
     pub fn status(&self, price_pair: &PricePair, block_timestamp_ms: u64) -> BorrowStatus {
         let collateralization_ratio = self.position.collateralization_ratio(price_pair);
-        near_sdk::log!("Collateralization ratio: {collateralization_ratio:?}");
         self.market.configuration.borrow_status(
             collateralization_ratio,
             self.position.started_at_block_timestamp_ms,
@@ -528,9 +519,7 @@ impl<'a> BorrowPositionGuard<'a> {
         amount_liquidated: CollateralAssetAmount,
     ) {
         let proof = self.accumulate_interest();
-        near_sdk::log!("Borrow asset fees: {:#?}", self.inner().borrow_asset_fees);
         let liability_reduction = self.reduce_borrow_asset_liability(proof, amount_recovered);
-        near_sdk::log!("{liability_reduction:?}");
         self.market
             .record_borrow_asset_yield_distribution(liability_reduction.remaining);
         self.liquidation_unlock(amount_liquidated);

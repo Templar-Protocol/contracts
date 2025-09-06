@@ -91,16 +91,13 @@ async fn successful_liquidation_good_debt_under_mcr(
         (Decimal::from(collateral_asset_price_pct) / 100u32).to_f64_lossy(),
     )
     .await;
-    let r = c
-        .liquidate(
-            &liquidator_user,
-            borrow_user.id(),
-            liquidation_amount,
-            collateral_amount,
-        )
-        .await;
-
-    print_execution(&r);
+    c.liquidate(
+        &liquidator_user,
+        borrow_user.id(),
+        liquidation_amount,
+        collateral_amount,
+    )
+    .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -315,12 +312,10 @@ async fn liquidators_race() {
         "Liquidation should only occur once",
     );
 
-    print_execution(&r1);
     for o in r1.outcomes() {
         o.clone().into_result().unwrap();
     }
 
-    print_execution(&r2);
     for o in r2.outcomes() {
         o.clone().into_result().unwrap();
     }
@@ -345,8 +340,7 @@ async fn successful_liquidation_only_from_interest() {
         c.supply_and_harvest_until_activation(&supply_user, 10_000_000),
         c.collateralize(&borrow_user, 2_000_000),
     );
-    let r = c.borrow(&borrow_user, 1_000_000 - 1).await;
-    eprintln!("Borrow execution: {r:#?}");
+    c.borrow(&borrow_user, 1_000_000 - 1).await;
 
     let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -357,16 +351,13 @@ async fn successful_liquidation_only_from_interest() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    let r = c
-        .liquidate(
-            &liquidator_user,
-            borrow_user.id(),
-            2_000_000 * 95 / 100,
-            2_000_000,
-        )
-        .await;
-
-    eprintln!("{r:#?}");
+    c.liquidate(
+        &liquidator_user,
+        borrow_user.id(),
+        2_000_000 * 95 / 100,
+        2_000_000,
+    )
+    .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
