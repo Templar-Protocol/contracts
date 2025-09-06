@@ -16,16 +16,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install NEAR CLI
+        uses: ./.github/actions/install-near-cli
+        with:
+          network: "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
+          rpc-url: "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
+          rpc_api_key: "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
+
       - name: Check if staging account exists
         id: check
         run: |
-          # Install near CLI for account checking
-          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
-          
           EXISTS=$(./script/ci/account-exists.sh \
             --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" || echo "")
-          
+
           if [[ -n "$EXISTS" ]]; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "Staging account exists, will proceed with cleanup"
@@ -44,10 +48,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Install near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.22.0/near-cli-rs-installer.sh | sh
+
+      - name: Install NEAR CLI
+        uses: ./.github/actions/install-near-cli
+        with:
+          network: "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
+          rpc-url: "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
+          rpc_api_key: "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.85.0
+
       - uses: actions/cache@v4
         with:
           path: |
