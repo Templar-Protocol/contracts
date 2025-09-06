@@ -80,21 +80,21 @@ impl MarketController {
         #[view] pub fn get_supply_withdrawal_queue_status() -> WithdrawalQueueStatus;
         #[view] pub fn get_last_yield_rate() -> Decimal;
 
-        #[call(tgas(300))]
+        #[call(exec, tgas(300))]
         pub fn borrow(amount: U128);
-        #[call(tgas(300))]
+        #[call(exec, tgas(300))]
         pub fn apply_interest(account_id: Option<&AccountId>, snapshot_limit: Option<u32>);
         #[call(tgas(300))]
         pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(exec, tgas(300))]
         pub fn harvest_yield_exec["harvest_yield"](account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
-        #[call(tgas(20))]
+        #[call(exec, tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
-        #[call(tgas(42))]
+        #[call(exec, tgas(42))]
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
-        #[call]
+        #[call(exec)]
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
-        #[call(tgas(20))]
+        #[call(exec, tgas(20))]
         pub fn execute_next_supply_withdrawal_request();
     }
 
