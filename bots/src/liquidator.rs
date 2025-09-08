@@ -15,6 +15,7 @@ use near_sdk::{
     AccountId, NearToken,
 };
 use templar_common::{
+    asset::{BorrowAsset, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
     market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
     oracle::pyth::{OracleResponse, PriceIdentifier},
@@ -26,6 +27,110 @@ use crate::{
     swap::{Swap, SwapType},
     BorrowPositions, Network, DEFAULT_GAS,
 };
+
+/// Thin wrapper around `FungibleAsset<BorrowAsset>` for CLI parsing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetSpec(pub FungibleAsset<BorrowAsset>);
+
+impl AssetSpec {
+    // Delegate all functionality to the wrapped FungibleAsset
+    pub fn contract_id(&self) -> AccountId {
+        self.0.contract_id()
+    }
+
+    pub fn is_nep141(&self) -> bool {
+        self.0.clone().into_nep141().is_some()
+    }
+
+    pub fn is_nep245(&self) -> bool {
+        self.0.clone().into_nep245().is_some()
+    }
+
+    // Bot-specific RPC methods
+    pub fn balance_method(&self) -> &'static str {
+        if self.is_nep245() {
+            "mt_balance_of"
+        } else {
+            "ft_balance_of"
+        }
+    }
+
+    pub fn balance_args(&self, account_id: &AccountId) -> serde_json::Value {
+        match self.0.clone().into_nep245() {
+            Some((_, ref token_id)) => json!({
+                "account_id": account_id,
+                "token_id": token_id,
+            }),
+            None => json!({ "account_id": account_id }),
+        }
+    }
+
+    pub fn transfer_method(&self) -> &'static str {
+        if self.is_nep245() {
+            "mt_transfer"
+        } else {
+            "ft_transfer"
+        }
+    }
+
+    pub fn transfer_args(&self, receiver_id: &AccountId, amount: U128, memo: Option<&str>) -> serde_json::Value {
+        match self.0.clone().into_nep245() {
+            Some((_, ref token_id)) => json!({
+                "receiver_id": receiver_id,
+                "token_id": token_id,
+                "amount": amount,
+            }),
+            None => json!({
+                "receiver_id": receiver_id,
+                "amount": amount,
+                "memo": memo
+            }),
+        }
+    }
+}
+
+impl std::str::FromStr for AssetSpec {
+    type Err = AssetSpecError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(':').collect();
+        
+        match parts.as_slice() {
+            ["nep141", contract_id] => {
+                let account_id = contract_id.parse::<AccountId>()
+                    .map_err(|e| AssetSpecError::InvalidAccountId(e.to_string()))?;
+                Ok(AssetSpec(FungibleAsset::nep141(account_id)))
+            }
+            ["nep245", contract_id, token_id] => {
+                let account_id = contract_id.parse::<AccountId>()
+                    .map_err(|e| AssetSpecError::InvalidAccountId(e.to_string()))?;
+                
+                if token_id.is_empty() {
+                    return Err(AssetSpecError::EmptyTokenId);
+                }
+                
+                Ok(AssetSpec(FungibleAsset::nep245(account_id, (*token_id).to_string())))
+            }
+            _ => Err(AssetSpecError::InvalidFormat),
+        }
+    }
+}
+
+impl std::fmt::Display for AssetSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AssetSpecError {
+    #[error("Invalid format. Expected 'nep141:contract_id' or 'nep245:contract_id:token_id'")]
+    InvalidFormat,
+    #[error("Invalid account ID: {0}")]
+    InvalidAccountId(String),
+    #[error("Token ID cannot be empty for NEP-245 assets")]
+    EmptyTokenId,
+}
 
 /// Errors that can occur during liquidation operations.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +177,9 @@ pub enum LiquidatorError {
     /// Error fetching minimum acceptable liquidation amount.
     #[error("Failed to fetch balance: {0}")]
     FetchBalanceError(RpcError),
+    /// Asset specification error.
+    #[error("Asset specification error: {0}")]
+    AssetSpecError(#[from] AssetSpecError),
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
@@ -90,9 +198,9 @@ pub struct Args {
     /// Signer `AccountId`.
     #[arg(short, long, env = "SIGNER_ACCOUNT_ID")]
     pub signer_account: AccountId,
-    /// Asset to liquidate
-    #[arg(short, long, env = "ASSET_ACCOUNT_ID")]
-    pub asset: AccountId,
+    /// Asset specification (NEP-141 or NEP-245) to liquidate
+    #[arg(short, long, env = "ASSET_SPEC")]
+    pub asset: AssetSpec,
     /// Network to run liquidations on
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
@@ -103,7 +211,7 @@ pub struct Args {
     #[arg(short, long, env = "INTERVAL", default_value_t = 600)]
     pub interval: u64,
     /// Registry refresh interval in seconds
-    #[arg(short, long, env = "REGISTRY_REFRESH_INTERVAL", default_value_t = 3600)]
+    #[arg(long, env = "REGISTRY_REFRESH_INTERVAL", default_value_t = 3600)]
     pub registry_refresh_interval: u64,
     /// Concurency for liquidations
     #[arg(short, long, env = "CONCURRENCY", default_value_t = 10)]
@@ -113,7 +221,7 @@ pub struct Args {
 pub struct Liquidator<S: Swap> {
     client: JsonRpcClient,
     signer: Arc<InMemorySigner>,
-    asset: Arc<AccountId>,
+    asset: Arc<AssetSpec>,
     pub market: AccountId,
     timeout: u64,
     swap: Arc<S>,
@@ -124,7 +232,7 @@ impl<S: Swap> Liquidator<S> {
     pub fn new(
         client: JsonRpcClient,
         signer: Arc<InMemorySigner>,
-        asset: Arc<AccountId>,
+        asset: Arc<AssetSpec>,
         market: AccountId,
         swap: Arc<S>,
         timeout: u64,
@@ -137,6 +245,18 @@ impl<S: Swap> Liquidator<S> {
             timeout,
             swap,
         }
+    }
+
+    /// Gets the asset specification for testing purposes.
+    #[cfg(test)]
+    pub fn asset(&self) -> &AssetSpec {
+        &self.asset
+    }
+
+    /// Gets the timeout for testing purposes.
+    #[cfg(test)]
+    pub fn timeout(&self) -> u64 {
+        self.timeout
     }
 
     #[instrument(skip(self), level = "debug")]
@@ -158,8 +278,29 @@ impl<S: Swap> Liquidator<S> {
         .map_err(LiquidatorError::FetchBorrowStatus)
     }
 
-    fn create_transfer_tx(
+    /// Converts a market configuration borrow asset to `AssetSpec`.
+    fn borrow_asset_to_spec(
+        configuration: &MarketConfiguration,
+    ) -> AssetSpec {
+        AssetSpec(configuration.borrow_asset.clone())
+    }
+
+    /// Converts a market configuration collateral asset to `AssetSpec`.
+    fn collateral_asset_to_spec(
+        configuration: &MarketConfiguration,
+    ) -> AssetSpec {
+        AssetSpec(configuration.collateral_asset.clone().coerce())
+    }
+
+    /// Creates a transfer transaction for liquidation.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `LiquidatorError::SerializationError` if message serialization fails,
+    /// or `LiquidatorError::TransactionBuildError` if transaction building fails.
+    pub fn create_transfer_tx(
         &self,
+        borrow_asset: &AssetSpec,
         borrow: &AccountId,
         liquidation_amount: U128,
         nonce: u64,
@@ -171,17 +312,17 @@ impl<S: Swap> Liquidator<S> {
 
         Ok(Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: self.asset.as_ref().clone(),
+            receiver_id: borrow_asset.contract_id().clone(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: "ft_transfer_call".to_string(),
-                args: serialize_and_encode(json!({
-                    "receiver_id": self.market,
-                    "amount": liquidation_amount,
-                    "msg": msg,
-                })),
+                method_name: borrow_asset.transfer_method().to_string(),
+                args: serialize_and_encode(borrow_asset.transfer_args(
+                    &self.market,
+                    liquidation_amount,
+                    Some(&msg),
+                )),
                 gas: DEFAULT_GAS,
                 deposit: NearToken::from_yoctonear(1).as_yoctonear(),
             }))],
@@ -211,18 +352,15 @@ impl<S: Swap> Liquidator<S> {
 
         info!("Liquidation reason: {reason:?}");
 
-        let Some(borrow_asset) = configuration.borrow_asset.clone().into_nep141() else {
-            unreachable!("Only NEP-141 and NEP-245 assets are supported");
-        };
-
-        let collateral_asset = configuration.collateral_asset.contract_id();
+        let borrow_asset = Self::borrow_asset_to_spec(&configuration);
+        let collateral_asset = Self::collateral_asset_to_spec(&configuration);
 
         let liquidation_amount = self
             .liquidation_amount(&position, &oracle_response, configuration)
             .await?;
 
         let swap_output_amount = if self.asset.as_ref() == &borrow_asset {
-            let asset_balance = self.get_asset_balance(self.asset.as_ref().clone()).await?;
+            let asset_balance = self.get_asset_balance(self.asset.as_ref()).await?;
             if asset_balance >= liquidation_amount {
                 0.into()
             } else {
@@ -234,11 +372,11 @@ impl<S: Swap> Liquidator<S> {
 
         let swap_amount = self
             .swap
-            .quote(&self.asset, &borrow_asset, swap_output_amount)
+            .quote(self.asset.as_ref(), &borrow_asset, swap_output_amount)
             .await
             .map_err(LiquidatorError::QuoteError)?;
 
-        let available = self.get_asset_balance(self.asset.as_ref().clone()).await?;
+        let available = self.get_asset_balance(self.asset.as_ref()).await?;
 
         if available < swap_amount {
             warn!("Insufficient asset balance for liquidation: {available:?} < {swap_amount:?}");
@@ -257,7 +395,7 @@ impl<S: Swap> Liquidator<S> {
         if swap_amount > 0.into() {
             match self
                 .swap
-                .swap(&self.asset, &borrow_asset, swap_amount)
+                .swap(self.asset.as_ref(), &borrow_asset, swap_amount)
                 .await
             {
                 Ok(_) => {
@@ -275,7 +413,7 @@ impl<S: Swap> Liquidator<S> {
             .map_err(LiquidatorError::AccessKeyDataError)?;
 
         let transfer_call_tx =
-            self.create_transfer_tx(&borrow, liquidation_amount, nonce, block_hash)?;
+            self.create_transfer_tx(&borrow_asset, &borrow, liquidation_amount, nonce, block_hash)?;
 
         match send_tx(&self.client, &self.signer, self.timeout, transfer_call_tx).await {
             Ok(_) => {
@@ -292,7 +430,7 @@ impl<S: Swap> Liquidator<S> {
                 .swap
                 .swap(
                     &collateral_asset,
-                    &self.asset,
+                    self.asset.as_ref(),
                     position.collateral_asset_deposit.into(),
                 )
                 .await
@@ -359,12 +497,12 @@ impl<S: Swap> Liquidator<S> {
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_asset_balance(&self, asset: AccountId) -> LiquidatorResult<U128> {
+    async fn get_asset_balance(&self, asset: &AssetSpec) -> LiquidatorResult<U128> {
         let balance = view::<U128>(
             &self.client,
-            asset,
-            "ft_balance_of",
-            json!({ "account_id": self.signer.account_id }),
+            asset.contract_id().clone(),
+            asset.balance_method(),
+            asset.balance_args(&self.signer.account_id),
         )
         .await
         .map_err(LiquidatorError::FetchBalanceError)?;
@@ -466,5 +604,94 @@ impl<S: Swap> Liquidator<S> {
         // All of this would be used in calculating both the optimal liquidation amount and wether to
         // perform full or partial liquidation
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templar_common::asset::{BorrowAsset, FungibleAsset};
+
+    #[test]
+    fn test_asset_spec_nep141_parsing() {
+        let spec: AssetSpec = "nep141:token.near".parse().unwrap();
+        assert!(spec.is_nep141());
+        assert!(!spec.is_nep245());
+        assert_eq!(spec.contract_id(), "token.near".parse::<AccountId>().unwrap());
+        assert_eq!(spec.to_string(), "nep141:token.near");
+    }
+
+    #[test]
+    fn test_asset_spec_nep245_parsing() {
+        let spec: AssetSpec = "nep245:multi.near:token123".parse().unwrap();
+        assert!(!spec.is_nep141());
+        assert!(spec.is_nep245());
+        assert_eq!(spec.contract_id(), "multi.near".parse::<AccountId>().unwrap());
+        assert_eq!(spec.to_string(), "nep245:multi.near:token123");
+    }
+
+    #[test]
+    fn test_asset_spec_invalid_format() {
+        assert!(matches!("invalid".parse::<AssetSpec>(), Err(AssetSpecError::InvalidFormat)));
+        assert!(matches!("nep141".parse::<AssetSpec>(), Err(AssetSpecError::InvalidFormat)));
+        assert!(matches!("nep245:contract".parse::<AssetSpec>(), Err(AssetSpecError::InvalidFormat)));
+    }
+
+    #[test]
+    fn test_asset_spec_invalid_account_id() {
+        assert!(matches!("nep141:a".parse::<AssetSpec>(), Err(AssetSpecError::InvalidAccountId(_))));
+    }
+
+    #[test]
+    fn test_asset_spec_empty_token_id() {
+        assert!(matches!("nep245:contract.near:".parse::<AssetSpec>(), Err(AssetSpecError::EmptyTokenId)));
+    }
+
+    #[test]
+    fn test_asset_spec_methods() {
+        let nep141_spec: AssetSpec = "nep141:token.near".parse().unwrap();
+        assert_eq!(nep141_spec.balance_method(), "ft_balance_of");
+        assert_eq!(nep141_spec.transfer_method(), "ft_transfer");
+
+        let nep245_spec: AssetSpec = "nep245:multi.near:token123".parse().unwrap();
+        assert_eq!(nep245_spec.balance_method(), "mt_balance_of");
+        assert_eq!(nep245_spec.transfer_method(), "mt_transfer");
+    }
+
+    #[test]
+    fn test_asset_spec_args() {
+        let nep141_spec: AssetSpec = "nep141:token.near".parse().unwrap();
+        let account_id: AccountId = "user.near".parse().unwrap();
+        
+        let balance_args = nep141_spec.balance_args(&account_id);
+        let expected = serde_json::json!({ "account_id": "user.near" });
+        assert_eq!(balance_args, expected);
+
+        let transfer_args = nep141_spec.transfer_args(&account_id, U128::from(100), Some("test"));
+        let expected = serde_json::json!({
+            "receiver_id": "user.near",
+            "amount": "100",
+            "memo": "test"
+        });
+        assert_eq!(transfer_args, expected);
+    }
+
+    #[test]
+    fn test_fungible_asset_compatibility() {
+        // Test that we can create AssetSpec from FungibleAsset directly
+        let fungible_asset = FungibleAsset::<BorrowAsset>::nep141("token.near".parse::<AccountId>().unwrap());
+        let asset_spec = AssetSpec(fungible_asset.clone());
+        
+        assert!(asset_spec.is_nep141());
+        assert_eq!(asset_spec.contract_id(), "token.near".parse::<AccountId>().unwrap());
+        assert_eq!(asset_spec.to_string(), "nep141:token.near");
+
+        // Test NEP-245
+        let fungible_asset = FungibleAsset::<BorrowAsset>::nep245("multi.near".parse::<AccountId>().unwrap(), "token123".to_string());
+        let asset_spec = AssetSpec(fungible_asset);
+        
+        assert!(asset_spec.is_nep245());
+        assert_eq!(asset_spec.contract_id(), "multi.near".parse::<AccountId>().unwrap());
+        assert_eq!(asset_spec.to_string(), "nep245:multi.near:token123");
     }
 }

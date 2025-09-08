@@ -49,6 +49,12 @@ pub enum RpcError {
     /// No outcome for transaction
     #[error("No outcome for transaction: {0}")]
     NoOutcome(String),
+    /// Validation error
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }
 
 pub type RpcResult<T = ()> = Result<T, RpcError>;
