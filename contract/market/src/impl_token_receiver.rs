@@ -91,8 +91,8 @@ impl FungibleTokenReceiver for Contract {
                         .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
-                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
-                                .liquidate_transfer_call_01_consume_oracle_response(
+                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .liquidate_transfer_call_01_consume_price(
                                     sender_id,
                                     amount,
                                     msg,
@@ -213,8 +213,8 @@ impl Nep245Receiver for Contract {
                         .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
-                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
-                                .liquidate_transfer_call_01_consume_oracle_response(
+                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .liquidate_transfer_call_01_consume_price(
                                     sender_id,
                                     amount,
                                     msg,

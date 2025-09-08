@@ -389,12 +389,12 @@ impl Contract {
     }
 
     // ~3.3 Tgas
-    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE: Gas = Gas::from_tgas(4)
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(4)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
         .saturating_add(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE);
 
     #[private]
-    pub fn liquidate_transfer_call_01_consume_oracle_response(
+    pub fn liquidate_transfer_call_01_consume_price(
         &mut self,
         liquidator_id: AccountId,
         amount: BorrowAssetAmount,
@@ -418,7 +418,7 @@ impl Contract {
                 self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE)
                     .liquidate_transfer_call_02_finalize(
                         liquidator_id,
-                        msg.account_id.clone(),
+                        msg.account_id,
                         amount,
                         amount_liquidated,
                         return_style,
