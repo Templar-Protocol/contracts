@@ -336,6 +336,7 @@ fn create_transfer_tx(
 ) -> LiquidatorResult<Transaction> {
     let msg = serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
         account_id: borrow.clone(),
+        amount: None,
     }))?;
 
     Ok(Transaction::V0(TransactionV0 {
