@@ -8,7 +8,7 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{json_types::U128, near, AccountId, NearToken, serde_json};
+use near_sdk::{json_types::U128, near, serde_json, AccountId, NearToken};
 
 use crate::{
     near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcResult},
@@ -85,14 +85,10 @@ struct QuoteRequest {
 }
 
 impl QuoteRequest {
-    pub fn new(
-        from_asset: &AssetSpec,
-        to_asset: &AssetSpec,
-        output_amount: U128,
-    ) -> Self {
+    pub fn new(from_asset: &AssetSpec, to_asset: &AssetSpec, output_amount: U128) -> Self {
         let input_token = from_asset.contract_id().clone();
         let output_token = to_asset.contract_id().clone();
-        
+
         Self {
             pool_ids: vec![format!("{}|{}|100", input_token, output_token)],
             tag: format!("{}|100|{}", input_token, output_amount.0),
@@ -122,14 +118,10 @@ enum SwapRequestMsg {
 }
 
 impl SwapRequestMsg {
-    pub fn new(
-        from_asset: &AssetSpec,
-        to_asset: &AssetSpec,
-        output_amount: U128,
-    ) -> Self {
+    pub fn new(from_asset: &AssetSpec, to_asset: &AssetSpec, output_amount: U128) -> Self {
         let input_token = from_asset.contract_id().clone();
         let output_token = to_asset.contract_id().clone();
-        
+
         Self::SwapByOutput {
             pool_ids: vec![format!("{}|{}|100", input_token, output_token)],
             output_token,
@@ -180,10 +172,11 @@ impl Swap for RheaSwap {
         let msg = SwapRequestMsg::new(from_asset, to_asset, amount);
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-        let msg_string = serde_json::to_string(&msg)
-            .map_err(|e| crate::near::RpcError::SerializationError(
-                format!("Failed to serialize swap message: {e}")
-            ))?;
+        let msg_string = serde_json::to_string(&msg).map_err(|e| {
+            crate::near::RpcError::SerializationError(format!(
+                "Failed to serialize swap message: {e}"
+            ))
+        })?;
 
         let tx = Transaction::V0(TransactionV0 {
             nonce,

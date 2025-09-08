@@ -73,7 +73,12 @@ impl AssetSpec {
         }
     }
 
-    pub fn transfer_args(&self, receiver_id: &AccountId, amount: U128, memo: Option<&str>) -> serde_json::Value {
+    pub fn transfer_args(
+        &self,
+        receiver_id: &AccountId,
+        amount: U128,
+        memo: Option<&str>,
+    ) -> serde_json::Value {
         match self.0.clone().into_nep245() {
             Some((_, ref token_id)) => json!({
                 "receiver_id": receiver_id,
@@ -94,22 +99,27 @@ impl std::str::FromStr for AssetSpec {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split(':').collect();
-        
+
         match parts.as_slice() {
             ["nep141", contract_id] => {
-                let account_id = contract_id.parse::<AccountId>()
+                let account_id = contract_id
+                    .parse::<AccountId>()
                     .map_err(|e| AssetSpecError::InvalidAccountId(e.to_string()))?;
                 Ok(AssetSpec(FungibleAsset::nep141(account_id)))
             }
             ["nep245", contract_id, token_id] => {
-                let account_id = contract_id.parse::<AccountId>()
+                let account_id = contract_id
+                    .parse::<AccountId>()
                     .map_err(|e| AssetSpecError::InvalidAccountId(e.to_string()))?;
-                
+
                 if token_id.is_empty() {
                     return Err(AssetSpecError::EmptyTokenId);
                 }
-                
-                Ok(AssetSpec(FungibleAsset::nep245(account_id, (*token_id).to_string())))
+
+                Ok(AssetSpec(FungibleAsset::nep245(
+                    account_id,
+                    (*token_id).to_string(),
+                )))
             }
             _ => Err(AssetSpecError::InvalidFormat),
         }
@@ -279,23 +289,19 @@ impl<S: Swap> Liquidator<S> {
     }
 
     /// Converts a market configuration borrow asset to `AssetSpec`.
-    fn borrow_asset_to_spec(
-        configuration: &MarketConfiguration,
-    ) -> AssetSpec {
+    fn borrow_asset_to_spec(configuration: &MarketConfiguration) -> AssetSpec {
         AssetSpec(configuration.borrow_asset.clone())
     }
 
     /// Converts a market configuration collateral asset to `AssetSpec`.
-    fn collateral_asset_to_spec(
-        configuration: &MarketConfiguration,
-    ) -> AssetSpec {
+    fn collateral_asset_to_spec(configuration: &MarketConfiguration) -> AssetSpec {
         AssetSpec(configuration.collateral_asset.clone().coerce())
     }
 
     /// Creates a transfer transaction for liquidation.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns `LiquidatorError::SerializationError` if message serialization fails,
     /// or `LiquidatorError::TransactionBuildError` if transaction building fails.
     pub fn create_transfer_tx(
@@ -412,8 +418,13 @@ impl<S: Swap> Liquidator<S> {
             .await
             .map_err(LiquidatorError::AccessKeyDataError)?;
 
-        let transfer_call_tx =
-            self.create_transfer_tx(&borrow_asset, &borrow, liquidation_amount, nonce, block_hash)?;
+        let transfer_call_tx = self.create_transfer_tx(
+            &borrow_asset,
+            &borrow,
+            liquidation_amount,
+            nonce,
+            block_hash,
+        )?;
 
         match send_tx(&self.client, &self.signer, self.timeout, transfer_call_tx).await {
             Ok(_) => {
@@ -617,7 +628,10 @@ mod tests {
         let spec: AssetSpec = "nep141:token.near".parse().unwrap();
         assert!(spec.is_nep141());
         assert!(!spec.is_nep245());
-        assert_eq!(spec.contract_id(), "token.near".parse::<AccountId>().unwrap());
+        assert_eq!(
+            spec.contract_id(),
+            "token.near".parse::<AccountId>().unwrap()
+        );
         assert_eq!(spec.to_string(), "nep141:token.near");
     }
 
@@ -626,25 +640,43 @@ mod tests {
         let spec: AssetSpec = "nep245:multi.near:token123".parse().unwrap();
         assert!(!spec.is_nep141());
         assert!(spec.is_nep245());
-        assert_eq!(spec.contract_id(), "multi.near".parse::<AccountId>().unwrap());
+        assert_eq!(
+            spec.contract_id(),
+            "multi.near".parse::<AccountId>().unwrap()
+        );
         assert_eq!(spec.to_string(), "nep245:multi.near:token123");
     }
 
     #[test]
     fn test_asset_spec_invalid_format() {
-        assert!(matches!("invalid".parse::<AssetSpec>(), Err(AssetSpecError::InvalidFormat)));
-        assert!(matches!("nep141".parse::<AssetSpec>(), Err(AssetSpecError::InvalidFormat)));
-        assert!(matches!("nep245:contract".parse::<AssetSpec>(), Err(AssetSpecError::InvalidFormat)));
+        assert!(matches!(
+            "invalid".parse::<AssetSpec>(),
+            Err(AssetSpecError::InvalidFormat)
+        ));
+        assert!(matches!(
+            "nep141".parse::<AssetSpec>(),
+            Err(AssetSpecError::InvalidFormat)
+        ));
+        assert!(matches!(
+            "nep245:contract".parse::<AssetSpec>(),
+            Err(AssetSpecError::InvalidFormat)
+        ));
     }
 
     #[test]
     fn test_asset_spec_invalid_account_id() {
-        assert!(matches!("nep141:a".parse::<AssetSpec>(), Err(AssetSpecError::InvalidAccountId(_))));
+        assert!(matches!(
+            "nep141:a".parse::<AssetSpec>(),
+            Err(AssetSpecError::InvalidAccountId(_))
+        ));
     }
 
     #[test]
     fn test_asset_spec_empty_token_id() {
-        assert!(matches!("nep245:contract.near:".parse::<AssetSpec>(), Err(AssetSpecError::EmptyTokenId)));
+        assert!(matches!(
+            "nep245:contract.near:".parse::<AssetSpec>(),
+            Err(AssetSpecError::EmptyTokenId)
+        ));
     }
 
     #[test]
@@ -662,7 +694,7 @@ mod tests {
     fn test_asset_spec_args() {
         let nep141_spec: AssetSpec = "nep141:token.near".parse().unwrap();
         let account_id: AccountId = "user.near".parse().unwrap();
-        
+
         let balance_args = nep141_spec.balance_args(&account_id);
         let expected = serde_json::json!({ "account_id": "user.near" });
         assert_eq!(balance_args, expected);
@@ -679,19 +711,29 @@ mod tests {
     #[test]
     fn test_fungible_asset_compatibility() {
         // Test that we can create AssetSpec from FungibleAsset directly
-        let fungible_asset = FungibleAsset::<BorrowAsset>::nep141("token.near".parse::<AccountId>().unwrap());
+        let fungible_asset =
+            FungibleAsset::<BorrowAsset>::nep141("token.near".parse::<AccountId>().unwrap());
         let asset_spec = AssetSpec(fungible_asset.clone());
-        
+
         assert!(asset_spec.is_nep141());
-        assert_eq!(asset_spec.contract_id(), "token.near".parse::<AccountId>().unwrap());
+        assert_eq!(
+            asset_spec.contract_id(),
+            "token.near".parse::<AccountId>().unwrap()
+        );
         assert_eq!(asset_spec.to_string(), "nep141:token.near");
 
         // Test NEP-245
-        let fungible_asset = FungibleAsset::<BorrowAsset>::nep245("multi.near".parse::<AccountId>().unwrap(), "token123".to_string());
+        let fungible_asset = FungibleAsset::<BorrowAsset>::nep245(
+            "multi.near".parse::<AccountId>().unwrap(),
+            "token123".to_string(),
+        );
         let asset_spec = AssetSpec(fungible_asset);
-        
+
         assert!(asset_spec.is_nep245());
-        assert_eq!(asset_spec.contract_id(), "multi.near".parse::<AccountId>().unwrap());
+        assert_eq!(
+            asset_spec.contract_id(),
+            "multi.near".parse::<AccountId>().unwrap()
+        );
         assert_eq!(asset_spec.to_string(), "nep245:multi.near:token123");
     }
 }
