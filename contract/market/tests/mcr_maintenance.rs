@@ -53,7 +53,7 @@ async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] mai
 #[case(dec!("1"), dec!("2"))]
 #[case(dec!("1"), dec!("5"))]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Borrow position must satisfy maintenance minimum collateral ratio"]
+#[should_panic = "Smart contract panicked: Borrow position must be healthy after borrow"]
 async fn fail_below_mcr_maintenance(#[case] liquidation: Decimal, #[case] maintenance: Decimal) {
     setup_test!(
         extract(c)
@@ -119,7 +119,7 @@ async fn not_in_liquidation_if_below_mcr_maintenance(
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Borrow position must satisfy maintenance minimum collateral ratio after collateral withdrawal."]
+#[should_panic = "Smart contract panicked: Borrow position must be healthy after collateral withdrawal"]
 async fn withdraw_collateral_below_mcr_maintenance() {
     setup_test!(
         extract(c)
