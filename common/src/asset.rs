@@ -1,4 +1,7 @@
-use std::{fmt::Display, marker::PhantomData};
+use std::{
+    fmt::{Debug, Display},
+    marker::PhantomData,
+};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -176,13 +179,19 @@ pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}
 impl AssetClass for BorrowAsset {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 #[serde(from = "U128", into = "U128")]
 pub struct FungibleAssetAmount<T: AssetClass> {
     amount: U128,
     #[borsh(skip)]
     discriminant: PhantomData<T>,
+}
+
+impl<T: AssetClass> Debug for FungibleAssetAmount<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}<{}>", self.amount.0, std::any::type_name::<T>())
+    }
 }
 
 impl<T: AssetClass> Default for FungibleAssetAmount<T> {
