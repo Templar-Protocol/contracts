@@ -1,6 +1,7 @@
 use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
+#[cfg(not(target_arch = "wasm32"))]
 use near_primitives::action::FunctionCallAction;
 use near_sdk::{
     env,
@@ -63,6 +64,7 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn transfer_call_action(
         &self,
         receiver_id: &AccountId,
@@ -103,6 +105,7 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn balance_of_action(&self, account_id: &AccountId) -> FunctionCallAction {
         let (method_name, args) = match self.kind {
             FungibleAssetKind::Nep141(_) => (
