@@ -248,7 +248,7 @@ impl MarketConfiguration {
         BorrowStatus::Healthy
     }
 
-    pub fn is_within_maximum_borrow_duration(
+    fn is_within_maximum_borrow_duration(
         &self,
         started_at_block_timestamp_ms: u64,
         block_timestamp_ms: u64,
