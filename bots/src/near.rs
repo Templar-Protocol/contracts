@@ -49,6 +49,14 @@ pub enum RpcError {
     /// No outcome for transaction
     #[error("No outcome for transaction: {0}")]
     NoOutcome(String),
+}
+
+/// Error types for application-level operations
+#[derive(Debug, thiserror::Error)]
+pub enum AppError {
+    /// RPC operation failed
+    #[error("RPC error: {0}")]
+    Rpc(#[from] RpcError),
     /// Validation error
     #[error("Validation error: {0}")]
     ValidationError(String),
@@ -58,6 +66,7 @@ pub enum RpcError {
 }
 
 pub type RpcResult<T = ()> = Result<T, RpcError>;
+pub type AppResult<T = ()> = Result<T, AppError>;
 
 #[instrument(skip(client), level = "debug")]
 pub async fn get_access_key_data(

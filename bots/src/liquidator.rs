@@ -5,17 +5,17 @@ use futures::{StreamExt, TryStreamExt};
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
-    action::{Action, FunctionCallAction},
+    action::Action,
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, NearToken,
+    AccountId,
 };
 use templar_common::{
-    asset::{BorrowAsset, FungibleAsset},
+    asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset, FungibleAssetParseError},
     borrow::{BorrowPosition, BorrowStatus},
     market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
     oracle::pyth::{OracleResponse, PriceIdentifier},
@@ -23,124 +23,10 @@ use templar_common::{
 use tracing::{error, info, instrument, warn};
 
 use crate::{
-    near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcError},
+    near::{get_access_key_data, send_tx, view, AppError, RpcError},
     swap::{Swap, SwapType},
-    BorrowPositions, Network, DEFAULT_GAS,
+    BorrowPositions, Network,
 };
-
-/// Thin wrapper around `FungibleAsset<BorrowAsset>` for CLI parsing
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AssetSpec(pub FungibleAsset<BorrowAsset>);
-
-impl AssetSpec {
-    // Delegate all functionality to the wrapped FungibleAsset
-    pub fn contract_id(&self) -> AccountId {
-        self.0.contract_id()
-    }
-
-    pub fn is_nep141(&self) -> bool {
-        self.0.clone().into_nep141().is_some()
-    }
-
-    pub fn is_nep245(&self) -> bool {
-        self.0.clone().into_nep245().is_some()
-    }
-
-    // Bot-specific RPC methods
-    pub fn balance_method(&self) -> &'static str {
-        if self.is_nep245() {
-            "mt_balance_of"
-        } else {
-            "ft_balance_of"
-        }
-    }
-
-    pub fn balance_args(&self, account_id: &AccountId) -> serde_json::Value {
-        match self.0.clone().into_nep245() {
-            Some((_, ref token_id)) => json!({
-                "account_id": account_id,
-                "token_id": token_id,
-            }),
-            None => json!({ "account_id": account_id }),
-        }
-    }
-
-    pub fn transfer_method(&self) -> &'static str {
-        if self.is_nep245() {
-            "mt_transfer"
-        } else {
-            "ft_transfer"
-        }
-    }
-
-    pub fn transfer_args(
-        &self,
-        receiver_id: &AccountId,
-        amount: U128,
-        memo: Option<&str>,
-    ) -> serde_json::Value {
-        match self.0.clone().into_nep245() {
-            Some((_, ref token_id)) => json!({
-                "receiver_id": receiver_id,
-                "token_id": token_id,
-                "amount": amount,
-            }),
-            None => json!({
-                "receiver_id": receiver_id,
-                "amount": amount,
-                "memo": memo
-            }),
-        }
-    }
-}
-
-impl std::str::FromStr for AssetSpec {
-    type Err = AssetSpecError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split(':').collect();
-
-        match parts.as_slice() {
-            ["nep141", contract_id] => {
-                let account_id = contract_id
-                    .parse::<AccountId>()
-                    .map_err(|e| AssetSpecError::InvalidAccountId(e.to_string()))?;
-                Ok(AssetSpec(FungibleAsset::nep141(account_id)))
-            }
-            ["nep245", contract_id, token_id] => {
-                let account_id = contract_id
-                    .parse::<AccountId>()
-                    .map_err(|e| AssetSpecError::InvalidAccountId(e.to_string()))?;
-
-                if token_id.is_empty() {
-                    return Err(AssetSpecError::EmptyTokenId);
-                }
-
-                Ok(AssetSpec(FungibleAsset::nep245(
-                    account_id,
-                    (*token_id).to_string(),
-                )))
-            }
-            _ => Err(AssetSpecError::InvalidFormat),
-        }
-    }
-}
-
-impl std::fmt::Display for AssetSpec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AssetSpecError {
-    #[error("Invalid format. Expected 'nep141:contract_id' or 'nep245:contract_id:token_id'")]
-    InvalidFormat,
-    #[error("Invalid account ID: {0}")]
-    InvalidAccountId(String),
-    #[error("Token ID cannot be empty for NEP-245 assets")]
-    EmptyTokenId,
-}
 
 /// Errors that can occur during liquidation operations.
 #[derive(Debug, thiserror::Error)]
@@ -162,7 +48,7 @@ pub enum LiquidatorError {
     StandardSupportError(String),
     /// Quote error.
     #[error("Failed to get quote: {0}")]
-    QuoteError(RpcError),
+    QuoteError(AppError),
     /// Error fetching market configuration.
     #[error("Failed to get market configuration: {0}")]
     GetConfigurationError(RpcError),
@@ -174,7 +60,7 @@ pub enum LiquidatorError {
     AccessKeyDataError(RpcError),
     /// Swap transaction error.
     #[error("Swap transaction error: {0}")]
-    SwapTransactionError(RpcError),
+    SwapTransactionError(AppError),
     /// Liquidation transaction error.
     #[error("Liquidation transaction error: {0}")]
     LiquidationTransactionError(RpcError),
@@ -187,9 +73,9 @@ pub enum LiquidatorError {
     /// Error fetching minimum acceptable liquidation amount.
     #[error("Failed to fetch balance: {0}")]
     FetchBalanceError(RpcError),
-    /// Asset specification error.
-    #[error("Asset specification error: {0}")]
-    AssetSpecError(#[from] AssetSpecError),
+    /// Asset parsing error.
+    #[error("Asset parsing error: {0}")]
+    AssetParseError(FungibleAssetParseError),
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
@@ -208,9 +94,9 @@ pub struct Args {
     /// Signer `AccountId`.
     #[arg(short, long, env = "SIGNER_ACCOUNT_ID")]
     pub signer_account: AccountId,
-    /// Asset specification (NEP-141 or NEP-245) to liquidate
+    /// Asset specification (NEP-141 or NEP-245) to liquidate with - "nep141:contract.near" (NEP-141) or "nep245:contract.near:token_id" (NEP-245)
     #[arg(short, long, env = "ASSET_SPEC")]
-    pub asset: AssetSpec,
+    pub asset: FungibleAsset<BorrowAsset>,
     /// Network to run liquidations on
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
@@ -231,7 +117,7 @@ pub struct Args {
 pub struct Liquidator<S: Swap> {
     client: JsonRpcClient,
     signer: Arc<InMemorySigner>,
-    asset: Arc<AssetSpec>,
+    asset: Arc<FungibleAsset<BorrowAsset>>,
     pub market: AccountId,
     timeout: u64,
     swap: Arc<S>,
@@ -242,7 +128,7 @@ impl<S: Swap> Liquidator<S> {
     pub fn new(
         client: JsonRpcClient,
         signer: Arc<InMemorySigner>,
-        asset: Arc<AssetSpec>,
+        asset: Arc<FungibleAsset<BorrowAsset>>,
         market: AccountId,
         swap: Arc<S>,
         timeout: u64,
@@ -259,7 +145,7 @@ impl<S: Swap> Liquidator<S> {
 
     /// Gets the asset specification for testing purposes.
     #[cfg(test)]
-    pub fn asset(&self) -> &AssetSpec {
+    pub fn asset(&self) -> &FungibleAsset<BorrowAsset> {
         &self.asset
     }
 
@@ -288,14 +174,14 @@ impl<S: Swap> Liquidator<S> {
         .map_err(LiquidatorError::FetchBorrowStatus)
     }
 
-    /// Converts a market configuration borrow asset to `AssetSpec`.
-    fn borrow_asset_to_spec(configuration: &MarketConfiguration) -> AssetSpec {
-        AssetSpec(configuration.borrow_asset.clone())
+    /// Converts a market configuration borrow asset to `FungibleAsset`.
+    fn borrow_asset_to_spec(configuration: &MarketConfiguration) -> FungibleAsset<BorrowAsset> {
+        configuration.borrow_asset.clone()
     }
 
-    /// Converts a market configuration collateral asset to `AssetSpec`.
-    fn collateral_asset_to_spec(configuration: &MarketConfiguration) -> AssetSpec {
-        AssetSpec(configuration.collateral_asset.clone().coerce())
+    /// Converts a market configuration collateral asset to `FungibleAsset`.
+    fn collateral_asset_to_spec(configuration: &MarketConfiguration) -> FungibleAsset<CollateralAsset> {
+        configuration.collateral_asset.clone()
     }
 
     /// Creates a transfer transaction for liquidation.
@@ -306,7 +192,7 @@ impl<S: Swap> Liquidator<S> {
     /// or `LiquidatorError::TransactionBuildError` if transaction building fails.
     pub fn create_transfer_tx(
         &self,
-        borrow_asset: &AssetSpec,
+        borrow_asset: &FungibleAsset<BorrowAsset>,
         borrow: &AccountId,
         liquidation_amount: U128,
         nonce: u64,
@@ -316,22 +202,15 @@ impl<S: Swap> Liquidator<S> {
             account_id: borrow.clone(),
         }))?;
 
+        let function_call = borrow_asset.transfer_call_action(&self.market, liquidation_amount.into(), &msg);
+
         Ok(Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: borrow_asset.contract_id().clone(),
+            receiver_id: borrow_asset.contract_id(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: borrow_asset.transfer_method().to_string(),
-                args: serialize_and_encode(borrow_asset.transfer_args(
-                    &self.market,
-                    liquidation_amount,
-                    Some(&msg),
-                )),
-                gas: DEFAULT_GAS,
-                deposit: NearToken::from_yoctonear(1).as_yoctonear(),
-            }))],
+            actions: vec![Action::FunctionCall(Box::new(function_call))],
         }))
     }
 
@@ -436,7 +315,7 @@ impl<S: Swap> Liquidator<S> {
             }
         }
 
-        if self.asset.as_ref() == &collateral_asset {
+        if self.asset.contract_id() == collateral_asset.contract_id() {
             match self
                 .swap
                 .swap(
@@ -508,15 +387,21 @@ impl<S: Swap> Liquidator<S> {
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_asset_balance(&self, asset: &AssetSpec) -> LiquidatorResult<U128> {
+    async fn get_asset_balance<A: AssetClass>(&self, asset: &FungibleAsset<A>) -> LiquidatorResult<U128> {
+        let balance_action = asset.balance_of_action(&self.signer.account_id);
+        
+        let args: serde_json::Value = serde_json::from_slice(&balance_action.args)
+            .expect("Balance action args should be valid JSON");
+        
         let balance = view::<U128>(
             &self.client,
-            asset.contract_id().clone(),
-            asset.balance_method(),
-            asset.balance_args(&self.signer.account_id),
+            asset.contract_id(),
+            &balance_action.method_name,
+            args,
         )
         .await
         .map_err(LiquidatorError::FetchBalanceError)?;
+
         Ok(balance)
     }
 
@@ -621,13 +506,13 @@ impl<S: Swap> Liquidator<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use templar_common::asset::{BorrowAsset, FungibleAsset};
+    use templar_common::asset::{BorrowAsset, FungibleAsset, FungibleAssetParseError};
 
     #[test]
     fn test_asset_spec_nep141_parsing() {
-        let spec: AssetSpec = "nep141:token.near".parse().unwrap();
-        assert!(spec.is_nep141());
-        assert!(!spec.is_nep245());
+        let spec: FungibleAsset<BorrowAsset> = "nep141:token.near".parse().unwrap();
+        assert!(spec.clone().into_nep141().is_some());
+        assert!(spec.clone().into_nep245().is_none());
         assert_eq!(
             spec.contract_id(),
             "token.near".parse::<AccountId>().unwrap()
@@ -637,9 +522,9 @@ mod tests {
 
     #[test]
     fn test_asset_spec_nep245_parsing() {
-        let spec: AssetSpec = "nep245:multi.near:token123".parse().unwrap();
-        assert!(!spec.is_nep141());
-        assert!(spec.is_nep245());
+        let spec: FungibleAsset<BorrowAsset> = "nep245:multi.near:token123".parse().unwrap();
+        assert!(spec.clone().into_nep141().is_none());
+        assert!(spec.clone().into_nep245().is_some());
         assert_eq!(
             spec.contract_id(),
             "multi.near".parse::<AccountId>().unwrap()
@@ -650,90 +535,84 @@ mod tests {
     #[test]
     fn test_asset_spec_invalid_format() {
         assert!(matches!(
-            "invalid".parse::<AssetSpec>(),
-            Err(AssetSpecError::InvalidFormat)
+            "invalid".parse::<FungibleAsset<BorrowAsset>>(),
+            Err(FungibleAssetParseError::InvalidFormat)
         ));
         assert!(matches!(
-            "nep141".parse::<AssetSpec>(),
-            Err(AssetSpecError::InvalidFormat)
+            "nep141".parse::<FungibleAsset<BorrowAsset>>(),
+            Err(FungibleAssetParseError::InvalidFormat)
         ));
         assert!(matches!(
-            "nep245:contract".parse::<AssetSpec>(),
-            Err(AssetSpecError::InvalidFormat)
+            "nep245:contract".parse::<FungibleAsset<BorrowAsset>>(),
+            Err(FungibleAssetParseError::InvalidFormat)
         ));
     }
 
     #[test]
     fn test_asset_spec_invalid_account_id() {
         assert!(matches!(
-            "nep141:a".parse::<AssetSpec>(),
-            Err(AssetSpecError::InvalidAccountId(_))
+            "nep141:a".parse::<FungibleAsset<BorrowAsset>>(),
+            Err(FungibleAssetParseError::InvalidAccountId(_))
         ));
     }
 
     #[test]
     fn test_asset_spec_empty_token_id() {
         assert!(matches!(
-            "nep245:contract.near:".parse::<AssetSpec>(),
-            Err(AssetSpecError::EmptyTokenId)
+            "nep245:contract.near:".parse::<FungibleAsset<BorrowAsset>>(),
+            Err(FungibleAssetParseError::EmptyTokenId)
         ));
     }
 
     #[test]
-    fn test_asset_spec_methods() {
-        let nep141_spec: AssetSpec = "nep141:token.near".parse().unwrap();
-        assert_eq!(nep141_spec.balance_method(), "ft_balance_of");
-        assert_eq!(nep141_spec.transfer_method(), "ft_transfer");
+    fn test_asset_methods() {
+        let nep141_spec: FungibleAsset<BorrowAsset> = "nep141:token.near".parse().unwrap();
+        assert!(nep141_spec.clone().into_nep141().is_some());
+        assert!(nep141_spec.clone().into_nep245().is_none());
 
-        let nep245_spec: AssetSpec = "nep245:multi.near:token123".parse().unwrap();
-        assert_eq!(nep245_spec.balance_method(), "mt_balance_of");
-        assert_eq!(nep245_spec.transfer_method(), "mt_transfer");
+        let nep245_spec: FungibleAsset<BorrowAsset> = "nep245:multi.near:token123".parse().unwrap();
+        assert!(nep245_spec.clone().into_nep141().is_none());
+        assert!(nep245_spec.clone().into_nep245().is_some());
     }
 
     #[test]
-    fn test_asset_spec_args() {
-        let nep141_spec: AssetSpec = "nep141:token.near".parse().unwrap();
+    fn test_asset_compatibility() {
+        let nep141_spec: FungibleAsset<BorrowAsset> = "nep141:token.near".parse().unwrap();
         let account_id: AccountId = "user.near".parse().unwrap();
 
-        let balance_args = nep141_spec.balance_args(&account_id);
-        let expected = serde_json::json!({ "account_id": "user.near" });
-        assert_eq!(balance_args, expected);
+        // Test that we can get the balance action
+        let balance_action = nep141_spec.balance_of_action(&account_id);
+        assert_eq!(balance_action.method_name, "ft_balance_of");
 
-        let transfer_args = nep141_spec.transfer_args(&account_id, U128::from(100), Some("test"));
-        let expected = serde_json::json!({
-            "receiver_id": "user.near",
-            "amount": "100",
-            "memo": "test"
-        });
-        assert_eq!(transfer_args, expected);
+        let nep245_spec: FungibleAsset<BorrowAsset> = "nep245:multi.near:token123".parse().unwrap();
+        let balance_action = nep245_spec.balance_of_action(&account_id);
+        assert_eq!(balance_action.method_name, "mt_balance_of");
     }
 
     #[test]
     fn test_fungible_asset_compatibility() {
-        // Test that we can create AssetSpec from FungibleAsset directly
+        // Test that we can create FungibleAsset directly
         let fungible_asset =
             FungibleAsset::<BorrowAsset>::nep141("token.near".parse::<AccountId>().unwrap());
-        let asset_spec = AssetSpec(fungible_asset.clone());
 
-        assert!(asset_spec.is_nep141());
+        assert!(fungible_asset.clone().into_nep141().is_some());
         assert_eq!(
-            asset_spec.contract_id(),
+            fungible_asset.contract_id(),
             "token.near".parse::<AccountId>().unwrap()
         );
-        assert_eq!(asset_spec.to_string(), "nep141:token.near");
+        assert_eq!(fungible_asset.to_string(), "nep141:token.near");
 
         // Test NEP-245
         let fungible_asset = FungibleAsset::<BorrowAsset>::nep245(
             "multi.near".parse::<AccountId>().unwrap(),
             "token123".to_string(),
         );
-        let asset_spec = AssetSpec(fungible_asset);
 
-        assert!(asset_spec.is_nep245());
+        assert!(fungible_asset.clone().into_nep245().is_some());
         assert_eq!(
-            asset_spec.contract_id(),
+            fungible_asset.contract_id(),
             "multi.near".parse::<AccountId>().unwrap()
         );
-        assert_eq!(asset_spec.to_string(), "nep245:multi.near:token123");
+        assert_eq!(fungible_asset.to_string(), "nep245:multi.near:token123");
     }
 }
