@@ -646,8 +646,8 @@ async fn partial_liquidation() {
 }
 
 #[tokio::test]
+#[should_panic = "Smart contract panicked: Liquidation offer too low"]
 async fn partial_liquidation_fail_offer_too_little() {
-    let spread = dec!("0.05");
     setup_test!(
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
@@ -655,9 +655,6 @@ async fn partial_liquidation_fail_offer_too_little() {
             c.borrow_mcr_liquidation = dec!("2");
             c.borrow_mcr_maintenance = dec!("2");
             c.borrow_origination_fee = Fee::zero();
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
-            c.liquidation_maximum_spread = spread;
         })
     );
 
@@ -682,24 +679,20 @@ async fn partial_liquidation_fail_offer_too_little() {
             10_000.into(),
         )
         .await;
-    print_execution(&r);
 
     let collateral_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
-    eprintln!("Collateral before: {collateral_before}");
-    eprintln!("Collateral after: {collateral_after}");
-    eprintln!("Borrow before: {borrow_before}");
-    eprintln!("Borrow after: {borrow_after}");
+    assert_eq!(
+        collateral_before, collateral_after,
+        "Liquidator should not receive any collateral asset",
+    );
+    assert_eq!(
+        borrow_before, borrow_after,
+        "Liquidator should not send any borrow asset",
+    );
 
-    // assert_eq!(
-    //     collateral_after_alice - collateral_before_alice,
-    //     liquidate_collateral,
-    //     "Alice receives collateral",
-    // );
-    // assert_eq!(
-    //     borrow_before_alice - borrow_after_alice,
-    //     pay_for_collateral,
-    //     "Alice pays for collateral",
-    // );
+    for outcome in r.outcomes() {
+        outcome.clone().into_result().unwrap();
+    }
 }
