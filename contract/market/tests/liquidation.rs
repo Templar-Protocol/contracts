@@ -372,26 +372,36 @@ async fn successful_liquidation_only_from_interest() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    c.liquidate(
-        &liquidator_user,
-        borrow_user.id(),
-        2_000_000.into(),
-        (2_000_000 * 95 / 100).into(),
-    )
-    .await;
+    let (collateral, price) = c
+        .liquidatable_collateral_with_spread(borrow_user.id())
+        .await;
+
+    assert!(!collateral.is_zero());
+    assert!(!price.is_zero());
+
+    c.liquidate(&liquidator_user, borrow_user.id(), collateral, price)
+        .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
-        2_000_000,
+        collateral.into(),
         "Liquidator should obtain all collateral after a successful liquidation",
     );
     assert_eq!(
         borrow_balance_before - borrow_balance_after,
-        2_000_000 * 95 / 100,
+        price.into(),
         "Liquidation should transfer correct amount of tokens",
+    );
+
+    let prices = c.get_prices().await;
+    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
+
+    assert!(
+        !status.is_liquidation(),
+        "Borrow should not be in liquidation after liquidation of all liquidatable collateral",
     );
 }
 
