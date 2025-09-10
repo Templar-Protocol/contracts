@@ -72,7 +72,7 @@ impl RheaSwap {
         }
     }
 
-    /// Default fee tier for RheaSwap DCL pools (0.2%)
+    /// Default fee tier for `RheaSwap` DCL pools (0.2%)
     const DEFAULT_FEE: u32 = 2000;
 }
 
@@ -97,7 +97,7 @@ impl QuoteRequest {
         let output_token = to_asset.contract_id();
 
         // Create pool ID in the format: input_token|output_token|fee
-        let pool_id = format!("{}|{}|{}", input_token, output_token, fee);
+        let pool_id = format!("{input_token}|{output_token}|{fee}");
 
         Self {
             pool_ids: vec![pool_id],
@@ -137,7 +137,7 @@ impl SwapRequestMsg {
         let output_token = to_asset.contract_id();
 
         // Create pool ID in the format: input_token|output_token|fee
-        let pool_id = format!("{}|{}|{}", input_token, output_token, fee);
+        let pool_id = format!("{input_token}|{output_token}|{fee}");
 
         Self::SwapByOutput {
             pool_ids: vec![pool_id],

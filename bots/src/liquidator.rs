@@ -94,7 +94,7 @@ pub struct Args {
     /// Signer `AccountId`.
     #[arg(short, long, env = "SIGNER_ACCOUNT_ID")]
     pub signer_account: AccountId,
-    /// Asset specification (NEP-141 or NEP-245) to liquidate with - "nep141:contract.near" (NEP-141) or "nep245:contract.near:token_id" (NEP-245)
+    /// Asset specification (NEP-141 or NEP-245) to liquidate with - "nep141:contract.near" (NEP-141) or "`nep245:contract.near:token_id`" (NEP-245)
     #[arg(short, long, env = "ASSET_SPEC")]
     pub asset: FungibleAsset<BorrowAsset>,
     /// Network to run liquidations on
@@ -397,7 +397,7 @@ impl<S: Swap> Liquidator<S> {
         let balance_action = asset.balance_of_action(&self.signer.account_id);
 
         let args: serde_json::Value = serde_json::from_slice(&balance_action.args)
-            .expect("Balance action args should be valid JSON");
+            .map_err(LiquidatorError::SerializeError)?;
 
         let balance = view::<U128>(
             &self.client,
