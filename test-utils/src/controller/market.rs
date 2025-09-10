@@ -14,6 +14,7 @@ use templar_common::{
     market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration},
     number::Decimal,
     oracle::pyth::{self, OracleResponse},
+    price::Convert,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -367,8 +368,8 @@ impl UnifiedMarketController {
         &self,
         liquidator_user: &Account,
         account_id: &AccountId,
-        borrow_asset_amount: u128,
-        expect_receive_collateral: u128,
+        expect_receive_collateral: CollateralAssetAmount,
+        borrow_asset_amount: BorrowAssetAmount,
     ) -> ExecutionSuccess {
         eprintln!(
             "{} executing liquidation against {} for {}...",
@@ -383,10 +384,46 @@ impl UnifiedMarketController {
                 borrow_asset_amount,
                 serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
                     account_id: account_id.clone(),
-                    amount: Some(expect_receive_collateral.into()),
+                    amount: Some(expect_receive_collateral),
                 }))
                 .unwrap(),
             )
             .await
+    }
+
+    pub async fn liquidatable_collateral_fmv(
+        &self,
+        account_id: &AccountId,
+    ) -> (CollateralAssetAmount, BorrowAssetAmount) {
+        let price_pair = self
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&self.get_prices().await)
+            .unwrap();
+        let borrow_position = self.get_borrow_position(account_id).await.unwrap();
+        let liquidate_collateral = borrow_position
+            .liquidatable_collateral(&price_pair, self.configuration.borrow_mcr_liquidation);
+        let pay_for_collateral = price_pair
+            .convert(liquidate_collateral)
+            .to_u128_ceil()
+            .unwrap()
+            .max(1)
+            .into();
+        (liquidate_collateral, pay_for_collateral)
+    }
+
+    pub async fn liquidatable_collateral_with_spread(
+        &self,
+        account_id: &AccountId,
+    ) -> (CollateralAssetAmount, BorrowAssetAmount) {
+        let (collateral_asset_amount, borrow_asset_amount) =
+            self.liquidatable_collateral_fmv(account_id).await;
+        let discounted_amount = (u128::from(borrow_asset_amount)
+            * (Decimal::ONE - self.configuration.liquidation_maximum_spread))
+            .to_u128_ceil()
+            .unwrap()
+            .max(1)
+            .into();
+        (collateral_asset_amount, discounted_amount)
     }
 }

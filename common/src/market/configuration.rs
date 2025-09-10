@@ -11,7 +11,7 @@ use crate::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
-    price::{PricePair, Valuation},
+    price::{Convert, PricePair},
     time_chunk::TimeChunkConfiguration,
 };
 
@@ -266,12 +266,9 @@ impl MarketConfiguration {
         amount: CollateralAssetAmount,
         price_pair: &PricePair,
     ) -> Option<BorrowAssetAmount> {
-        ((1u32 - self.liquidation_maximum_spread)
-            * Valuation::pessimistic(amount, &price_pair.collateral).ratio(
-                Valuation::optimistic(BorrowAssetAmount::new(1), &price_pair.borrow),
-            )?)
-        .to_u128_ceil()
-        .map(BorrowAssetAmount::new)
+        ((1u32 - self.liquidation_maximum_spread) * price_pair.convert(amount))
+            .to_u128_ceil()
+            .map(BorrowAssetAmount::new)
     }
 }
 

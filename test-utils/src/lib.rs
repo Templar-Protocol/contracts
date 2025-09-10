@@ -276,14 +276,20 @@ pub fn print_execution(e: &ExecutionSuccess) {
                 eprintln!("\t\t{log}");
             }
         }
-        if let Ok(ValueOrReceiptId::Value(value)) = receipt.clone().into_result() {
-            if let Some(s) = value
-                .json::<serde_json::Value>()
-                .ok()
-                .and_then(|v| serde_json::to_string(&v).ok())
-            {
-                eprintln!("\tReturn value: {s}");
+        match receipt.clone().into_result() {
+            Ok(ValueOrReceiptId::Value(value)) => {
+                if let Some(s) = value
+                    .json::<serde_json::Value>()
+                    .ok()
+                    .and_then(|v| serde_json::to_string(&v).ok())
+                {
+                    eprintln!("\tReturn value: {s}");
+                }
             }
+            Err(e) => {
+                eprintln!("\tError: {e:?}");
+            }
+            _ => {}
         }
         eprintln!();
     }

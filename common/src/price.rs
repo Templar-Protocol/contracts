@@ -78,6 +78,44 @@ impl PricePair {
     }
 }
 
+pub trait Appraise<T: AssetClass> {
+    fn valuation(&self, amount: FungibleAssetAmount<T>) -> Valuation;
+}
+
+pub trait Convert<T: AssetClass, U: AssetClass> {
+    fn convert(&self, amount: FungibleAssetAmount<T>) -> Decimal;
+}
+
+impl Appraise<BorrowAsset> for PricePair {
+    fn valuation(&self, amount: FungibleAssetAmount<BorrowAsset>) -> Valuation {
+        Valuation::optimistic(amount, &self.borrow)
+    }
+}
+
+impl Convert<BorrowAsset, CollateralAsset> for PricePair {
+    fn convert(&self, amount: FungibleAssetAmount<BorrowAsset>) -> Decimal {
+        #[allow(clippy::unwrap_used, reason = "not div0")]
+        self.valuation(amount)
+            .ratio(self.valuation(FungibleAssetAmount::<CollateralAsset>::new(1)))
+            .unwrap()
+    }
+}
+
+impl Appraise<CollateralAsset> for PricePair {
+    fn valuation(&self, amount: FungibleAssetAmount<CollateralAsset>) -> Valuation {
+        Valuation::pessimistic(amount, &self.collateral)
+    }
+}
+
+impl Convert<CollateralAsset, BorrowAsset> for PricePair {
+    fn convert(&self, amount: FungibleAssetAmount<CollateralAsset>) -> Decimal {
+        #[allow(clippy::unwrap_used, reason = "not div0")]
+        self.valuation(amount)
+            .ratio(self.valuation(FungibleAssetAmount::<BorrowAsset>::new(1)))
+            .unwrap()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Valuation {
     coefficient: primitive_types::U256,

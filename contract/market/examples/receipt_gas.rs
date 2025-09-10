@@ -22,8 +22,13 @@ async fn main() {
 
     c.set_collateral_asset_price(0.85).await;
 
-    c.liquidate(&liquidator_user, borrow_user.id(), 11_000, 13_000)
-        .await;
+    c.liquidate(
+        &liquidator_user,
+        borrow_user.id(),
+        13_000.into(),
+        11_000.into(),
+    )
+    .await;
 
     let r = c
         .withdraw_static_yield(&insurance_yield_user, None, None)
