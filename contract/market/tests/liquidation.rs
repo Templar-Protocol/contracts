@@ -696,3 +696,76 @@ async fn partial_liquidation_fail_offer_too_little() {
         outcome.clone().into_result().unwrap();
     }
 }
+
+#[rstest]
+#[case(&[dec!("0.5"), dec!("0.5")])]
+#[case(&[dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1")])]
+#[case(&[dec!("0.5"), dec!("0.25"), dec!("0.125"), dec!("0.0625"), dec!("0.0625")])]
+#[tokio::test]
+async fn many_little_partial_liquidations(#[case] pattern: &[Decimal]) {
+    setup_test!(
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+        config(|c| {
+            c.borrow_mcr_liquidation = dec!("2");
+            c.borrow_mcr_maintenance = dec!("2");
+            c.borrow_origination_fee = Fee::zero();
+        })
+    );
+
+    c.set_collateral_asset_price(5f64).await;
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1_000_000),
+        c.collateralize(&borrow_user, 150_000),
+    );
+    c.borrow(&borrow_user, 100_000).await;
+
+    c.set_collateral_asset_price(1f64).await;
+
+    let collateral_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
+    let borrow_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
+
+    let (collateral, price) = c
+        .liquidatable_collateral_with_spread(borrow_user.id())
+        .await;
+    let collateral = u128::from(collateral);
+    let price = u128::from(price);
+
+    let mut total_collateral = 0;
+    let mut total_paid = 0;
+
+    for fraction in pattern {
+        let collateral_fraction = (collateral * fraction).to_u128_floor().unwrap();
+        let price_fraction = (price * fraction).to_u128_ceil().unwrap();
+        eprintln!("Collateral fraction: {collateral_fraction}");
+        eprintln!("Price fraction: {price_fraction}");
+        let r = c
+            .liquidate(
+                &liquidator_user,
+                borrow_user.id(),
+                collateral_fraction.into(),
+                price_fraction.into(),
+            )
+            .await;
+        for outcome in r.outcomes() {
+            outcome.clone().into_result().unwrap();
+        }
+        total_collateral += collateral_fraction;
+        total_paid += price_fraction;
+    }
+
+    let collateral_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
+    let borrow_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
+
+    assert_eq!(
+        collateral_after - collateral_before,
+        total_collateral,
+        "Liquidator should receive the requested amount of collateral asset",
+    );
+    assert_eq!(
+        borrow_before - borrow_after,
+        total_paid,
+        "Liquidator should pay the correct amount of borrow asset",
+    );
+}
