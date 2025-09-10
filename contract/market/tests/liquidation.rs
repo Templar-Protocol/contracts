@@ -37,25 +37,25 @@ async fn successful_liquidation_totally_underwater() {
 
     c.set_collateral_asset_price(0.5).await;
     let (collateral, price) = c.liquidatable_collateral_fmv(borrow_user.id()).await;
-    c.liquidate(
-        &liquidator_user,
-        borrow_user.id(),
-        collateral, // this is fmv (i.e. NOT what a real liquidator would do)
-        price,
-    )
-    .await;
+    assert_eq!(
+        collateral,
+        500.into(),
+        "All collateral should be liquidatable",
+    );
+    c.liquidate(&liquidator_user, borrow_user.id(), collateral, price)
+        .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
-        500,
+        collateral.into(),
         "Liquidator should obtain all collateral after a successful liquidation",
     );
     assert_eq!(
         borrow_balance_before - borrow_balance_after,
-        300,
+        price.into(),
         "Liquidation should transfer correct amount of tokens",
     );
 }
