@@ -180,7 +180,9 @@ impl<S: Swap> Liquidator<S> {
     }
 
     /// Converts a market configuration collateral asset to `FungibleAsset`.
-    fn collateral_asset_to_spec(configuration: &MarketConfiguration) -> FungibleAsset<CollateralAsset> {
+    fn collateral_asset_to_spec(
+        configuration: &MarketConfiguration,
+    ) -> FungibleAsset<CollateralAsset> {
         configuration.collateral_asset.clone()
     }
 
@@ -202,7 +204,8 @@ impl<S: Swap> Liquidator<S> {
             account_id: borrow.clone(),
         }))?;
 
-        let function_call = borrow_asset.transfer_call_action(&self.market, liquidation_amount.into(), &msg);
+        let function_call =
+            borrow_asset.transfer_call_action(&self.market, liquidation_amount.into(), &msg);
 
         Ok(Transaction::V0(TransactionV0 {
             nonce,
@@ -387,12 +390,15 @@ impl<S: Swap> Liquidator<S> {
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_asset_balance<A: AssetClass>(&self, asset: &FungibleAsset<A>) -> LiquidatorResult<U128> {
+    async fn get_asset_balance<A: AssetClass>(
+        &self,
+        asset: &FungibleAsset<A>,
+    ) -> LiquidatorResult<U128> {
         let balance_action = asset.balance_of_action(&self.signer.account_id);
-        
+
         let args: serde_json::Value = serde_json::from_slice(&balance_action.args)
             .expect("Balance action args should be valid JSON");
-        
+
         let balance = view::<U128>(
             &self.client,
             asset.contract_id(),

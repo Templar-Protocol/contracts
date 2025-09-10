@@ -71,7 +71,7 @@ impl RheaSwap {
             signer,
         }
     }
-    
+
     /// Default fee tier for RheaSwap DCL pools (0.2%)
     const DEFAULT_FEE: u32 = 2000;
 }
@@ -87,10 +87,15 @@ struct QuoteRequest {
 }
 
 impl QuoteRequest {
-    pub fn new<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(from_asset: &FungibleAsset<F>, to_asset: &FungibleAsset<T>, output_amount: U128, fee: u32) -> Self {
+    pub fn new<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+        from_asset: &FungibleAsset<F>,
+        to_asset: &FungibleAsset<T>,
+        output_amount: U128,
+        fee: u32,
+    ) -> Self {
         let input_token = from_asset.contract_id();
         let output_token = to_asset.contract_id();
-        
+
         // Create pool ID in the format: input_token|output_token|fee
         let pool_id = format!("{}|{}|{}", input_token, output_token, fee);
 
@@ -122,10 +127,15 @@ enum SwapRequestMsg {
 }
 
 impl SwapRequestMsg {
-    pub fn new<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(from_asset: &FungibleAsset<F>, to_asset: &FungibleAsset<T>, output_amount: U128, fee: u32) -> Self {
+    pub fn new<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+        from_asset: &FungibleAsset<F>,
+        to_asset: &FungibleAsset<T>,
+        output_amount: U128,
+        fee: u32,
+    ) -> Self {
         let input_token = from_asset.contract_id();
         let output_token = to_asset.contract_id();
-        
+
         // Create pool ID in the format: input_token|output_token|fee
         let pool_id = format!("{}|{}|{}", input_token, output_token, fee);
 
@@ -179,9 +189,7 @@ impl Swap for RheaSwap {
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
         let msg_string = serde_json::to_string(&msg).map_err(|e| {
-            AppError::SerializationError(format!(
-                "Failed to serialize swap message: {e}"
-            ))
+            AppError::SerializationError(format!("Failed to serialize swap message: {e}"))
         })?;
 
         let tx = Transaction::V0(TransactionV0 {
@@ -190,13 +198,13 @@ impl Swap for RheaSwap {
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(from_asset.transfer_call_action(
-                &self.contract,
-                amount.into(),
-                &msg_string,
-            )))],
+            actions: vec![Action::FunctionCall(Box::new(
+                from_asset.transfer_call_action(&self.contract, amount.into(), &msg_string),
+            ))],
         });
 
-        send_tx(&self.client, &self.signer, 10, tx).await.map_err(AppError::from)
+        send_tx(&self.client, &self.signer, 10, tx)
+            .await
+            .map_err(AppError::from)
     }
 }
