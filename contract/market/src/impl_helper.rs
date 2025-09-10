@@ -382,12 +382,7 @@ impl Contract {
 
         if success {
             let proof = borrow_position.accumulate_interest();
-            borrow_position.record_liquidation(
-                proof,
-                liquidator_id,
-                initial_liquidation.recovered,
-                initial_liquidation.liquidated,
-            );
+            borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
             return_style.serialize(initial_liquidation.refund)
         } else {
             // Somehow transfer of collateral failed. This could mean:

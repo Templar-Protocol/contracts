@@ -40,7 +40,7 @@ async fn successful_liquidation_totally_underwater() {
     c.liquidate(
         &liquidator_user,
         borrow_user.id(),
-        collateral, // this is fmv (i.e. NOT what a real liquidator would do to purchase bad debt)
+        collateral, // this is fmv (i.e. NOT what a real liquidator would do)
         price,
     )
     .await;
@@ -63,24 +63,26 @@ async fn successful_liquidation_totally_underwater() {
 // Caveat to this test: Make sure that the yield distribution value is
 // divisible by 10 for easy maths.
 #[rstest]
-#[case(110, 5000, 2450, 50, 2500)]
-#[case(120, 1250, 1000, 88, 1100)] // fmv
-#[case(120, 1250, 1000, 88, 1070)] // liquidator spread of ~2.7%
+#[case(110, 5000, 2450, 50, dec!("1"))]
+#[case(120, 1250, 1000, 88, dec!("1"))]
+#[case(120, 1250, 1000, 88, dec!(".973"))]
+#[case(120, 1250, 1000, 88, dec!(".95"))]
 #[tokio::test]
 async fn successful_liquidation_good_debt_under_mcr(
     #[case] mcr: u16,
     #[case] collateral_amount: u128,
     #[case] borrow_amount: u128,
     #[case] collateral_asset_price_pct: u128,
-    #[case] price: u128,
+    #[case] fmv_frac: Decimal,
 ) {
     setup_test!(
         extract(c, protocol_yield_user, insurance_yield_user)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
-            c.borrow_origination_fee = Fee::zero();
+            c.borrow_origination_fee = Fee::Flat(10.into());
             c.borrow_mcr_liquidation = Decimal::from(mcr) / 100u32;
             c.borrow_mcr_maintenance = Decimal::from(mcr) / 100u32;
+            c.borrow_interest_rate_strategy = InterestRateStrategy::zero();
         })
     );
 
@@ -90,6 +92,9 @@ async fn successful_liquidation_good_debt_under_mcr(
     );
     c.borrow(&borrow_user, borrow_amount).await;
 
+    let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    assert_eq!(position.borrow_asset_fees.get_total(), 10.into());
+
     let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
@@ -97,29 +102,29 @@ async fn successful_liquidation_good_debt_under_mcr(
         (Decimal::from(collateral_asset_price_pct) / 100u32).to_f64_lossy(),
     )
     .await;
-    c.liquidate(
-        &liquidator_user,
-        borrow_user.id(),
-        collateral_amount.into(),
-        price.into(),
-    )
-    .await;
+    let (liquidate, price) = c.liquidatable_collateral_fmv(borrow_user.id()).await;
+    let price = (u128::from(price) * fmv_frac)
+        .to_u128_ceil()
+        .unwrap()
+        .into();
+    c.liquidate(&liquidator_user, borrow_user.id(), liquidate, price)
+        .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
-        collateral_amount,
-        "Liquidator should obtain all collateral after a successful liquidation",
+        liquidate.into(),
+        "Liquidator should obtain collateral after a successful liquidation",
     );
     assert_eq!(
         borrow_balance_before - borrow_balance_after,
-        price,
+        price.into(),
         "Liquidation should transfer correct amount of tokens",
     );
 
-    let yield_amount = price - borrow_amount;
+    let yield_amount = u128::from(price).saturating_sub(borrow_amount).max(10);
 
     tokio::join!(
         async {
@@ -138,6 +143,11 @@ async fn successful_liquidation_good_debt_under_mcr(
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
             assert_eq!(u128::from(insurance_yield.borrow_asset), yield_amount / 10);
+        },
+        async {
+            let prices = c.get_prices().await;
+            let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
+            assert!(!status.is_liquidation());
         },
     );
 }
@@ -185,9 +195,11 @@ async fn successful_liquidation_with_spread(
 
     c.set_collateral_asset_price(collateral_asset_price.to_f64_lossy())
         .await;
-    let (collateral, price) = c
-        .liquidatable_collateral_with_spread(borrow_user.id())
-        .await;
+    let (collateral, price) = c.liquidatable_collateral_fmv(borrow_user.id()).await;
+    let price = (u128::from(price) * (Decimal::ONE - target_spread))
+        .to_u128_ceil()
+        .unwrap()
+        .into();
     c.liquidate(&liquidator_user, borrow_user.id(), collateral, price)
         .await;
 
@@ -288,7 +300,7 @@ async fn fail_liquidation_healthy_borrow() {
 }
 
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Attempt to liquidate more collateral than position has deposited"]
+#[should_panic = "Smart contract panicked: Attempt to liquidate more collateral than is currently eligible"]
 async fn liquidators_race() {
     setup_test!(
         extract(c)
@@ -548,8 +560,11 @@ async fn partial_liquidation() {
         .create_price_pair(&c.get_prices().await)
         .unwrap();
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    let liquidate_collateral = borrow_position
-        .liquidatable_collateral(&price_pair, c.configuration.borrow_mcr_liquidation);
+    let liquidate_collateral = borrow_position.liquidatable_collateral(
+        &price_pair,
+        c.configuration.borrow_mcr_liquidation,
+        c.configuration.liquidation_maximum_spread,
+    );
     let pay_for_collateral = price_pair
         .convert(liquidate_collateral)
         .to_u128_ceil()

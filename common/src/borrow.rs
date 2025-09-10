@@ -151,15 +151,27 @@ impl BorrowPosition {
         &self,
         price_pair: &PricePair,
         mcr_liquidation: Decimal,
+        liquidator_spread: Decimal,
     ) -> CollateralAssetAmount {
-        // (c - l) / (b - l) = m
-        // l = (c - m * b) / (1 - m)
+        // c = Value of collateral
+        // b = Value of borrow (liability)
+        // l = Value of amount of collateral to liquidate
+        // m = Liquidation MCR
+        // d = Liquidation discount (spread)
+        // *_p = Price of *
+        // *_a = Amount of *
         //
-        // c = c_a * c_p
+        // We should be just at the liquidation MCR after liquidating the
+        // maximum amount of collateral:
+        // (c - l) / (b - l) = m
+        // l = (m * b - c) / (m - 1)
+        //
+        // l = l_a * c_p
+        // c = c_a * c_p * (1 - d)
         // b = b_a * b_p
         //
-        // l = (c_a - m * b_a * b_p / c_p) / (1 - m)
-        // l = m * (b_a * b_p / c_p - c_a / m) / (m - 1)
+        // l_a * c_p = (m * b_a * b_p - c_a * c_p * (1 - d)) / (m - 1)
+        // l_a = m * (b_a * b_p / c_p - c_a * (1 - d) / m) / (m - 1)
 
         let collateral_amount = Decimal::from(self.collateral_asset_deposit);
         let liability_valuation = price_pair.valuation(self.get_total_borrow_asset_liability());
@@ -168,24 +180,12 @@ impl BorrowPosition {
         let scaled_liability = liability_valuation
             .ratio(price_pair.valuation(CollateralAssetAmount::new(1)))
             .unwrap();
-        let scaled_collateral_amount = collateral_amount / mcr_liquidation;
+        let scaled_collateral_amount =
+            collateral_amount * (Decimal::ONE - liquidator_spread) / mcr_liquidation;
 
         if scaled_liability <= scaled_collateral_amount {
             CollateralAssetAmount::zero()
         } else {
-            // #[cfg(not(target_family = "wasm"))]
-            // {
-            //     eprintln!("{mcr_liquidation} * ({scaled_liability:?} - {scaled_collateral_amount}) / ({mcr_liquidation} - 1)");
-            //     eprintln!(
-            //         "[{}]",
-            //         scaled_liability
-            //             .as_repr()
-            //             .iter()
-            //             .map(|b| format!("{b:02x}"))
-            //             .collect::<Vec<_>>()
-            //             .join(", ")
-            //     );
-            // }
             // Multiplication by mcr_liquidation here could cause overflow
             let unscaled_amount =
                 (scaled_liability - scaled_collateral_amount) / (mcr_liquidation - Decimal::ONE);
@@ -231,14 +231,14 @@ pub mod error {
     pub enum InitialLiquidationError {
         #[error("Borrow position is not eligible for liquidation")]
         Ineligible,
-        #[error("Attempt to liquidate more collateral than is currently eligible: requested {requested} > available {available}")]
+        #[error("Attempt to liquidate more collateral than is currently eligible: {requested} requested > {available} available")]
         ExcessiveLiquidation {
             requested: CollateralAssetAmount,
             available: CollateralAssetAmount,
         },
         #[error("Failed to calculate value of collateral")]
         ValueCalculationFailure,
-        #[error("Liquidation offer too low: offered {offered} < minimum acceptable {minimum_acceptable}")]
+        #[error("Liquidation offer too low: {offered} offered < {minimum_acceptable} minimum acceptable")]
         OfferTooLow {
             offered: BorrowAssetAmount,
             minimum_acceptable: BorrowAssetAmount,
@@ -356,8 +356,11 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     }
 
     pub fn liquidatable_collateral(&self, price_pair: &PricePair) -> CollateralAssetAmount {
-        self.position
-            .liquidatable_collateral(price_pair, self.market.configuration.borrow_mcr_liquidation)
+        self.position.liquidatable_collateral(
+            price_pair,
+            self.market.configuration.borrow_mcr_liquidation,
+            self.market.configuration.liquidation_maximum_spread,
+        )
     }
 }
 
@@ -677,24 +680,24 @@ impl<'a> BorrowPositionGuard<'a> {
         })
     }
 
-    pub fn record_liquidation(
+    pub fn record_liquidation_final(
         &mut self,
         proof: InterestAccumulationProof,
         liquidator_id: AccountId,
-        amount_recovered: BorrowAssetAmount,
-        amount_liquidated: CollateralAssetAmount,
+        initial_liquidation: &InitialLiquidation,
     ) {
-        let liability_reduction = self.reduce_borrow_asset_liability(proof, amount_recovered);
+        let liability_reduction =
+            self.reduce_borrow_asset_liability(proof, initial_liquidation.recovered);
         self.market
             .record_borrow_asset_yield_distribution(liability_reduction.remaining);
-        self.liquidation_unlock(amount_liquidated);
-        self.record_collateral_asset_withdrawal(proof, amount_liquidated);
+        self.liquidation_unlock(initial_liquidation.liquidated);
+        self.record_collateral_asset_withdrawal(proof, initial_liquidation.liquidated);
 
         MarketEvent::Liquidation {
             liquidator_id,
             account_id: self.account_id.clone(),
-            borrow_asset_recovered: amount_recovered,
-            collateral_asset_liquidated: amount_liquidated,
+            borrow_asset_recovered: initial_liquidation.recovered,
+            collateral_asset_liquidated: initial_liquidation.liquidated,
         }
         .emit();
     }
