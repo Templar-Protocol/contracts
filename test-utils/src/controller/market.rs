@@ -419,14 +419,23 @@ impl UnifiedMarketController {
         &self,
         account_id: &AccountId,
     ) -> (CollateralAssetAmount, BorrowAssetAmount) {
-        let (collateral_asset_amount, borrow_asset_amount) =
-            self.liquidatable_collateral_fmv(account_id).await;
-        let discounted_amount = (u128::from(borrow_asset_amount)
+        let price_pair = self
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&self.get_prices().await)
+            .unwrap();
+        let borrow_position = self.get_borrow_position(account_id).await.unwrap();
+        let liquidate_collateral = borrow_position.liquidatable_collateral(
+            &price_pair,
+            self.configuration.borrow_mcr_liquidation,
+            self.configuration.liquidation_maximum_spread,
+        );
+        let pay_for_collateral = (price_pair.convert(liquidate_collateral)
             * (Decimal::ONE - self.configuration.liquidation_maximum_spread))
             .to_u128_ceil()
             .unwrap()
             .max(1)
             .into();
-        (collateral_asset_amount, discounted_amount)
+        (liquidate_collateral, pay_for_collateral)
     }
 }

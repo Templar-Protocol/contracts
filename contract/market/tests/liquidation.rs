@@ -465,10 +465,10 @@ async fn extreme_prices(
         .liquidatable_collateral_with_spread(borrow_user.id())
         .await;
 
-    assert!(!liquidate.is_zero());
-    assert!(!price.is_zero());
     eprintln!("Collateral: {liquidate:?}");
     eprintln!("Price: {price:?}");
+    assert!(!liquidate.is_zero());
+    assert!(!price.is_zero());
 
     c.liquidate(
         &liquidator_user,
@@ -490,15 +490,13 @@ async fn extreme_prices(
         "Liquidation should not transfer borrow asset tokens",
     );
 
-    let r = c
-        .liquidate(
-            &liquidator_user,
-            borrow_user.id(),
-            liquidate,
-            price, // offer enough this time
-        )
-        .await;
-    print_execution(&r);
+    c.liquidate(
+        &liquidator_user,
+        borrow_user.id(),
+        liquidate,
+        price, // offer enough this time
+    )
+    .await;
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
