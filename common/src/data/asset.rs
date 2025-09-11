@@ -11,6 +11,9 @@ use near_sdk::{
 
 use crate::number::Decimal;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
 pub struct FungibleAsset<T: AssetClass> {
@@ -313,38 +316,3 @@ impl<T: AssetClass> std::fmt::Display for FungibleAssetAmount<T> {
 
 pub type BorrowAssetAmount = FungibleAssetAmount<BorrowAsset>;
 pub type CollateralAssetAmount = FungibleAssetAmount<CollateralAsset>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use near_sdk::serde_json;
-
-    #[test]
-    fn serialization() {
-        let amount = BorrowAssetAmount::new(100);
-        let serialized = serde_json::to_string(&amount).unwrap();
-        assert_eq!(serialized, "\"100\"");
-        let deserialized: BorrowAssetAmount = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized, amount);
-    }
-
-    #[test]
-    #[should_panic = "a + u128::MAX overflow"]
-    fn asset_op_macro_overflow() {
-        let mut a = BorrowAssetAmount::new(100);
-
-        asset_op! {
-            a += u128::MAX;
-        };
-    }
-
-    #[test]
-    #[should_panic = "a - 101u128 underflow"]
-    fn asset_op_macro_underflow() {
-        let mut a = BorrowAssetAmount::new(100);
-
-        asset_op! {
-            a -= 101u128;
-        };
-    }
-}

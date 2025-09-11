@@ -6,8 +6,7 @@ use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
     asset_op,
-    event::MarketEvent,
-    market::{Market, WithdrawalResolution},
+    market::{Market, MarketEvent, WithdrawalResolution},
     number::Decimal,
 };
 

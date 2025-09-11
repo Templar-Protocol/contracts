@@ -6,6 +6,8 @@ use near_sdk::{env, near, AccountId};
 use crate::{asset::BorrowAssetAmount, number::Decimal};
 mod configuration;
 pub use configuration::{MarketConfiguration, APY_LIMIT};
+mod event;
+pub use event::*;
 mod external;
 pub use external::*;
 mod r#impl;

@@ -3,13 +3,14 @@ use std::ops::{Deref, DerefMut};
 use near_sdk::{env, json_types::U64, near, AccountId};
 
 use crate::{
-    accumulator::{AccumulationRecord, Accumulator},
-    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     asset_op,
-    event::MarketEvent,
-    market::Market,
+    data::{
+        accumulator::{AccumulationRecord, Accumulator},
+        asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
+        price::PricePair,
+    },
+    market::{Market, MarketEvent},
     number::Decimal,
-    price::PricePair,
     MS_IN_A_YEAR,
 };
 

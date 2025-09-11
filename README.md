@@ -29,6 +29,12 @@ Templar Protocol is a chain-agnostic overcollateralized lending DeFi protocol.
 ./script/test.sh
 ```
 
+## Generate scope-of-work for auditing
+
+```bash
+./script/sow.sh
+```
+
 ## Links
 
 - [Website](https://templarfi.org/)
