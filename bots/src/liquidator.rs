@@ -218,7 +218,7 @@ impl<S: Swap> Liquidator<S> {
         let collateral_asset = configuration.collateral_asset.contract_id();
 
         let liquidation_amount = self
-            .liquidation_amount(&position, &oracle_response, configuration)
+            .liquidation_amount(&position, &oracle_response, &configuration)
             .await?;
 
         let swap_output_amount = if self.asset.as_ref() == &borrow_asset {
@@ -287,11 +287,11 @@ impl<S: Swap> Liquidator<S> {
             }
         }
 
-        if self.asset.as_ref() == &collateral_asset {
+        if self.asset.as_ref() == collateral_asset {
             match self
                 .swap
                 .swap(
-                    &collateral_asset,
+                    collateral_asset,
                     &self.asset,
                     position.collateral_asset_deposit.into(),
                 )
@@ -314,7 +314,7 @@ impl<S: Swap> Liquidator<S> {
         &self,
         position: &BorrowPosition,
         oracle_response: &OracleResponse,
-        configuration: MarketConfiguration,
+        configuration: &MarketConfiguration,
     ) -> LiquidatorResult<U128> {
         let price_pair = configuration
             .price_oracle_configuration

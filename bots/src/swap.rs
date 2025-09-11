@@ -8,7 +8,7 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{json_types::U128, near, serde_json::json, AccountId, NearToken};
+use near_sdk::{json_types::U128, near, serde_json::json, AccountId, AccountIdRef, NearToken};
 
 use crate::{
     near::{get_access_key_data, send_tx, serialize_and_encode, view, RpcResult},
@@ -18,13 +18,13 @@ use crate::{
 #[async_trait::async_trait]
 pub trait Swap {
     /// Quotes the amount of `from` token to `to` token.
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128>;
+    async fn quote(&self, from: &AccountIdRef, to: &AccountIdRef, amount: U128) -> RpcResult<U128>;
 
     /// Swaps `from` token to `to` token.
     async fn swap(
         &self,
-        from: &AccountId,
-        to: &AccountId,
+        from: &AccountIdRef,
+        to: &AccountIdRef,
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus>;
 }
@@ -125,12 +125,12 @@ impl SwapRequestMsg {
 
 #[async_trait::async_trait]
 impl Swap for RheaSwap {
-    async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128> {
+    async fn quote(&self, from: &AccountIdRef, to: &AccountIdRef, amount: U128) -> RpcResult<U128> {
         let response: QuoteResponse = view(
             &self.client,
             self.contract.clone(),
             "quote_by_output",
-            &QuoteRequest::new(from.clone(), to.clone(), amount),
+            &QuoteRequest::new(from.into(), to.into(), amount),
         )
         .await?;
         Ok(response.amount)
@@ -138,13 +138,13 @@ impl Swap for RheaSwap {
 
     async fn swap(
         &self,
-        from: &AccountId,
-        to: &AccountId,
+        from: &AccountIdRef,
+        to: &AccountIdRef,
         amount: U128,
     ) -> RpcResult<FinalExecutionStatus> {
         let msg = SwapRequestMsg::new(
             vec![format!("{}|{}|100", from, to)],
-            to.clone(),
+            to.into(),
             amount,
             format!("{}|100|{}", from, amount.0),
         );
@@ -153,7 +153,7 @@ impl Swap for RheaSwap {
 
         let tx = Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: to.clone(),
+            receiver_id: to.into(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
