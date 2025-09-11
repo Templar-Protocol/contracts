@@ -1,11 +1,7 @@
 name: Build & deploy documentation site to GitHub Pages
-# To merge:
-# on:
-#   push:
-#     branches: [dev]
-# For testing:
 on:
-  pull_request:
+  push:
+    branches: [dev]
 
 jobs:
   build-and-deploy:
