@@ -19,7 +19,7 @@ use templar_common::asset::{AssetClass, FungibleAsset};
 #[async_trait::async_trait]
 pub trait Swap {
     /// Quotes the amount needed to swap from `from_asset` to obtain `output_amount` of `to_asset`.
-    async fn quote<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+    async fn quote<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
@@ -27,7 +27,7 @@ pub trait Swap {
     ) -> AppResult<U128>;
 
     /// Swaps `amount` of `from_asset` to `to_asset`.
-    async fn swap<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+    async fn swap<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
@@ -87,7 +87,7 @@ struct QuoteRequest {
 }
 
 impl QuoteRequest {
-    pub fn new<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+    pub fn new<F: AssetClass, T: AssetClass>(
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
         output_amount: U128,
@@ -127,7 +127,7 @@ enum SwapRequestMsg {
 }
 
 impl SwapRequestMsg {
-    pub fn new<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+    pub fn new<F: AssetClass, T: AssetClass>(
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
         output_amount: U128,
@@ -149,7 +149,7 @@ impl SwapRequestMsg {
 
 #[async_trait::async_trait]
 impl Swap for RheaSwap {
-    async fn quote<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+    async fn quote<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
@@ -172,7 +172,7 @@ impl Swap for RheaSwap {
         Ok(response.amount)
     }
 
-    async fn swap<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+    async fn swap<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,

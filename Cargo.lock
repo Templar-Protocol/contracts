@@ -3808,7 +3808,6 @@ dependencies = [
  "near-primitives",
  "near-sdk",
  "near-workspaces",
- "rstest",
  "templar-common",
  "test-utils",
  "thiserror 2.0.11",

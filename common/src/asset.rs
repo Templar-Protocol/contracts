@@ -263,7 +263,9 @@ impl<T: AssetClass> std::str::FromStr for FungibleAsset<T> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FungibleAssetParseError {
-    #[error("Invalid format. Expected 'nep141:contract_id' or 'nep245:contract_id:token_id'")]
+    #[error(
+        "Invalid format. Expected 'nep141:<contract_id>' or 'nep245:<contract_id>:<token_id>'"
+    )]
     InvalidFormat,
     #[error("Invalid account ID: {0}")]
     InvalidAccountId(String),

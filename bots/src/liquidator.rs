@@ -5,7 +5,6 @@ use futures::{StreamExt, TryStreamExt};
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
-    action::Action,
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
@@ -15,7 +14,7 @@ use near_sdk::{
     AccountId,
 };
 use templar_common::{
-    asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset, FungibleAssetParseError},
+    asset::{AssetClass, BorrowAsset, FungibleAsset, FungibleAssetParseError},
     borrow::{BorrowPosition, BorrowStatus},
     market::{error::RetrievalError, DepositMsg, LiquidateMsg, MarketConfiguration},
     oracle::pyth::{OracleResponse, PriceIdentifier},
@@ -177,18 +176,6 @@ impl<S: Swap> Liquidator<S> {
         Ok(result)
     }
 
-    /// Converts a market configuration borrow asset to `FungibleAsset`.
-    fn borrow_asset_to_spec(configuration: &MarketConfiguration) -> FungibleAsset<BorrowAsset> {
-        configuration.borrow_asset.clone()
-    }
-
-    /// Converts a market configuration collateral asset to `FungibleAsset`.
-    fn collateral_asset_to_spec(
-        configuration: &MarketConfiguration,
-    ) -> FungibleAsset<CollateralAsset> {
-        configuration.collateral_asset.clone()
-    }
-
     /// Creates a transfer transaction for liquidation.
     ///
     /// # Errors
@@ -216,7 +203,7 @@ impl<S: Swap> Liquidator<S> {
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(function_call))],
+            actions: vec![function_call.into()],
         }))
     }
 
@@ -244,14 +231,14 @@ impl<S: Swap> Liquidator<S> {
 
         info!("Liquidation reason: {reason:?}");
 
-        let borrow_asset = Self::borrow_asset_to_spec(&configuration);
-        let collateral_asset = Self::collateral_asset_to_spec(&configuration);
-
         let liquidation_amount = self
-            .liquidation_amount(&position, &oracle_response, configuration)
+            .liquidation_amount(&position, &oracle_response, configuration.clone())
             .await?;
 
-        let swap_output_amount = if self.asset.as_ref() == &borrow_asset {
+        let borrow_asset = &configuration.borrow_asset;
+        let collateral_asset = &configuration.collateral_asset;
+
+        let swap_output_amount = if self.asset.as_ref() == borrow_asset {
             let asset_balance = self.get_asset_balance(self.asset.as_ref()).await?;
             if asset_balance >= liquidation_amount {
                 0.into()
@@ -264,7 +251,7 @@ impl<S: Swap> Liquidator<S> {
 
         let swap_amount = self
             .swap
-            .quote(self.asset.as_ref(), &borrow_asset, swap_output_amount)
+            .quote(self.asset.as_ref(), borrow_asset, swap_output_amount)
             .await
             .map_err(LiquidatorError::QuoteError)?;
 
@@ -287,7 +274,7 @@ impl<S: Swap> Liquidator<S> {
         if swap_amount > 0.into() {
             match self
                 .swap
-                .swap(self.asset.as_ref(), &borrow_asset, swap_amount)
+                .swap(self.asset.as_ref(), borrow_asset, swap_amount)
                 .await
             {
                 Ok(_) => {
@@ -304,13 +291,8 @@ impl<S: Swap> Liquidator<S> {
             .await
             .map_err(LiquidatorError::AccessKeyDataError)?;
 
-        let transfer_call_tx = self.create_transfer_tx(
-            &borrow_asset,
-            &borrow,
-            liquidation_amount,
-            nonce,
-            block_hash,
-        )?;
+        let transfer_call_tx =
+            self.create_transfer_tx(borrow_asset, &borrow, liquidation_amount, nonce, block_hash)?;
 
         match send_tx(&self.client, &self.signer, self.timeout, transfer_call_tx).await {
             Ok(_) => {
@@ -322,11 +304,11 @@ impl<S: Swap> Liquidator<S> {
             }
         }
 
-        if self.asset.contract_id() == collateral_asset.contract_id() {
+        if self.asset.as_ref() == &collateral_asset.clone().coerce::<BorrowAsset>() {
             match self
                 .swap
                 .swap(
-                    &collateral_asset,
+                    collateral_asset,
                     self.asset.as_ref(),
                     position.collateral_asset_deposit.into(),
                 )
@@ -539,7 +521,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Swap for MockSwap {
-        async fn quote<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+        async fn quote<F: AssetClass, T: AssetClass>(
             &self,
             _from_asset: &FungibleAsset<F>,
             _to_asset: &FungibleAsset<T>,
@@ -550,7 +532,7 @@ mod tests {
             Ok(U128(input_amount))
         }
 
-        async fn swap<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+        async fn swap<F: AssetClass, T: AssetClass>(
             &self,
             _from_asset: &FungibleAsset<F>,
             _to_asset: &FungibleAsset<T>,
@@ -564,7 +546,7 @@ mod tests {
     #[tokio::test]
     async fn test_liquidator_bot_creation_integration() {
         // Integration test for creating a liquidator bot with realistic parameters
-        
+
         let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
         let signer_key = SecretKey::from_seed(near_crypto::KeyType::ED25519, "test-liquidator");
         let liquidator_account_id: AccountId = "liquidator.testnet".parse().unwrap();
@@ -577,9 +559,9 @@ mod tests {
 
         // Test with NEP-141 asset (USDC-like token)
         let usdc_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep141(
-            "usdc.testnet".parse().unwrap()
+            "usdc.testnet".parse().unwrap(),
         ));
-        
+
         let liquidator = Liquidator::new(
             client.clone(),
             signer.clone(),
@@ -588,7 +570,7 @@ mod tests {
             swap.clone(),
             120, // 2 minute timeout
         );
-        
+
         // Verify liquidator properties
         assert_eq!(liquidator.asset(), &*usdc_asset);
         assert_eq!(liquidator.timeout(), 120);
@@ -601,7 +583,7 @@ mod tests {
             "multitoken.testnet".parse().unwrap(),
             "eth".to_string(),
         ));
-        
+
         let mt_liquidator = Liquidator::new(
             client,
             signer,
@@ -610,10 +592,10 @@ mod tests {
             swap,
             60,
         );
-        
+
         assert_eq!(mt_liquidator.asset(), &*mt_asset);
         assert_eq!(mt_liquidator.timeout(), 60);
-        
+
         println!("✓ Multi-token liquidator bot created successfully");
         println!("✓ Liquidator bot integration test completed");
     }
@@ -621,7 +603,7 @@ mod tests {
     #[tokio::test]
     async fn test_liquidator_bot_should_liquidate_logic() {
         // Test the liquidator's decision-making logic
-        
+
         let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
         let signer_key = SecretKey::from_seed(near_crypto::KeyType::ED25519, "test-liquidator");
         let liquidator_account_id: AccountId = "liquidator.testnet".parse().unwrap();
@@ -633,37 +615,30 @@ mod tests {
         let swap = Arc::new(MockSwap::new(1.0));
 
         let usdc_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep141(
-            "usdc.testnet".parse().unwrap()
+            "usdc.testnet".parse().unwrap(),
         ));
-        
-        let liquidator = Liquidator::new(
-            client,
-            signer,
-            usdc_asset,
-            market_id,
-            swap,
-            60,
-        );
+
+        let liquidator = Liquidator::new(client, signer, usdc_asset, market_id, swap, 60);
 
         // Test should_liquidate logic with different amounts
         let small_swap_amount = U128(100);
         let small_liquidation_amount = U128(200);
-        
+
         let should_liquidate_small = liquidator
             .should_liquidate(small_swap_amount, small_liquidation_amount)
             .await
             .unwrap();
-        
+
         assert!(should_liquidate_small, "Should liquidate small amounts");
 
         let large_swap_amount = U128(10_000);
         let large_liquidation_amount = U128(20_000);
-        
+
         let should_liquidate_large = liquidator
             .should_liquidate(large_swap_amount, large_liquidation_amount)
             .await
             .unwrap();
-        
+
         assert!(should_liquidate_large, "Should liquidate large amounts");
 
         println!("✓ Liquidator decision logic working correctly");
