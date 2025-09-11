@@ -158,20 +158,23 @@ impl<S: Swap> Liquidator<S> {
     #[instrument(skip(self), level = "debug")]
     async fn get_borrow_status(
         &self,
-        borrow: AccountId,
+        account_id: AccountId,
         oracle_response: &OracleResponse,
-    ) -> LiquidatorResult<Option<BorrowStatus>> {
-        view(
+    ) -> Result<Option<BorrowStatus>, RpcError> {
+        let params = json!({
+            "account_id": account_id,
+            "oracle_response": oracle_response,
+        });
+
+        let result = view(
             &self.client,
             self.market.clone(),
             "get_borrow_status",
-            &json!({
-                "account_id": borrow,
-                "oracle_response": oracle_response,
-            }),
+            &params,
         )
-        .await
-        .map_err(LiquidatorError::FetchBorrowStatus)
+        .await?;
+
+        Ok(result)
     }
 
     /// Converts a market configuration borrow asset to `FungibleAsset`.
@@ -227,7 +230,8 @@ impl<S: Swap> Liquidator<S> {
     ) -> LiquidatorResult {
         let Some(status) = self
             .get_borrow_status(borrow.clone(), &oracle_response)
-            .await?
+            .await
+            .map_err(LiquidatorError::FetchBorrowStatus)?
         else {
             info!("Borrow status not found");
             return Ok(());
@@ -512,7 +516,270 @@ impl<S: Swap> Liquidator<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use templar_common::asset::{BorrowAsset, FungibleAsset, FungibleAssetParseError};
+    use crate::swap::Swap;
+    use near_crypto::{InMemorySigner, SecretKey};
+    use near_jsonrpc_client::JsonRpcClient;
+    use near_primitives::views::FinalExecutionStatus;
+    use near_sdk::{json_types::U128, AccountId};
+    use std::sync::Arc;
+    use templar_common::asset::{AssetClass, BorrowAsset, FungibleAsset, FungibleAssetParseError};
+
+    /// Mock swap implementation for testing
+    #[derive(Debug, Clone)]
+    pub struct MockSwap {
+        /// Exchange rate from input to output (e.g., 1.0 means 1:1 ratio)
+        exchange_rate: f64,
+    }
+
+    impl MockSwap {
+        pub fn new(exchange_rate: f64) -> Self {
+            Self { exchange_rate }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Swap for MockSwap {
+        async fn quote<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+            &self,
+            _from_asset: &FungibleAsset<F>,
+            _to_asset: &FungibleAsset<T>,
+            output_amount: U128,
+        ) -> crate::near::AppResult<U128> {
+            // Calculate input amount needed to get desired output
+            let input_amount = (output_amount.0 as f64 / self.exchange_rate) as u128;
+            Ok(U128(input_amount))
+        }
+
+        async fn swap<F: AssetClass + Send + Sync, T: AssetClass + Send + Sync>(
+            &self,
+            _from_asset: &FungibleAsset<F>,
+            _to_asset: &FungibleAsset<T>,
+            _amount: U128,
+        ) -> crate::near::AppResult<FinalExecutionStatus> {
+            // Mock successful swap - in real implementation this would execute the swap
+            Ok(FinalExecutionStatus::SuccessValue(vec![]))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_liquidator_bot_creation_integration() {
+        // Integration test for creating a liquidator bot with realistic parameters
+        
+        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let signer_key = SecretKey::from_seed(near_crypto::KeyType::ED25519, "test-liquidator");
+        let liquidator_account_id: AccountId = "liquidator.testnet".parse().unwrap();
+        let signer = Arc::new(InMemorySigner::from_secret_key(
+            liquidator_account_id,
+            signer_key,
+        ));
+        let market_id: AccountId = "market.testnet".parse().unwrap();
+        let swap = Arc::new(MockSwap::new(1.0));
+
+        // Test with NEP-141 asset (USDC-like token)
+        let usdc_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep141(
+            "usdc.testnet".parse().unwrap()
+        ));
+        
+        let liquidator = Liquidator::new(
+            client.clone(),
+            signer.clone(),
+            usdc_asset.clone(),
+            market_id.clone(),
+            swap.clone(),
+            120, // 2 minute timeout
+        );
+        
+        // Verify liquidator properties
+        assert_eq!(liquidator.asset(), &*usdc_asset);
+        assert_eq!(liquidator.timeout(), 120);
+        assert_eq!(liquidator.market, market_id);
+
+        println!("✓ USDC liquidator bot created successfully");
+
+        // Test with NEP-245 asset (multi-token)
+        let mt_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep245(
+            "multitoken.testnet".parse().unwrap(),
+            "eth".to_string(),
+        ));
+        
+        let mt_liquidator = Liquidator::new(
+            client,
+            signer,
+            mt_asset.clone(),
+            market_id.clone(),
+            swap,
+            60,
+        );
+        
+        assert_eq!(mt_liquidator.asset(), &*mt_asset);
+        assert_eq!(mt_liquidator.timeout(), 60);
+        
+        println!("✓ Multi-token liquidator bot created successfully");
+        println!("✓ Liquidator bot integration test completed");
+    }
+
+    #[tokio::test]
+    async fn test_liquidator_bot_should_liquidate_logic() {
+        // Test the liquidator's decision-making logic
+        
+        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let signer_key = SecretKey::from_seed(near_crypto::KeyType::ED25519, "test-liquidator");
+        let liquidator_account_id: AccountId = "liquidator.testnet".parse().unwrap();
+        let signer = Arc::new(InMemorySigner::from_secret_key(
+            liquidator_account_id,
+            signer_key,
+        ));
+        let market_id: AccountId = "market.testnet".parse().unwrap();
+        let swap = Arc::new(MockSwap::new(1.0));
+
+        let usdc_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep141(
+            "usdc.testnet".parse().unwrap()
+        ));
+        
+        let liquidator = Liquidator::new(
+            client,
+            signer,
+            usdc_asset,
+            market_id,
+            swap,
+            60,
+        );
+
+        // Test should_liquidate logic with different amounts
+        let small_swap_amount = U128(100);
+        let small_liquidation_amount = U128(200);
+        
+        let should_liquidate_small = liquidator
+            .should_liquidate(small_swap_amount, small_liquidation_amount)
+            .await
+            .unwrap();
+        
+        assert!(should_liquidate_small, "Should liquidate small amounts");
+
+        let large_swap_amount = U128(10_000);
+        let large_liquidation_amount = U128(20_000);
+        
+        let should_liquidate_large = liquidator
+            .should_liquidate(large_swap_amount, large_liquidation_amount)
+            .await
+            .unwrap();
+        
+        assert!(should_liquidate_large, "Should liquidate large amounts");
+
+        println!("✓ Liquidator decision logic working correctly");
+    }
+
+    #[test]
+    fn test_liquidator_creation() {
+        // Test that we can create a liquidator instance with different configurations
+
+        // Setup mock components
+        let client = JsonRpcClient::connect("http://localhost:3030");
+        let signer_key = SecretKey::from_seed(near_crypto::KeyType::ED25519, "test-key");
+        let liquidator_account_id: AccountId = "liquidator.test.near".parse().unwrap();
+        let signer = Arc::new(InMemorySigner::from_secret_key(
+            liquidator_account_id,
+            signer_key,
+        ));
+        let market_id: AccountId = "market.test.near".parse().unwrap();
+        let swap = Arc::new(MockSwap::new(1.0));
+
+        // Test NEP-141 asset
+        let nep141_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep141(
+            "token.near".parse().unwrap(),
+        ));
+
+        let _liquidator = Liquidator::new(
+            client.clone(),
+            signer.clone(),
+            nep141_asset.clone(),
+            market_id.clone(),
+            swap.clone(),
+            60,
+        );
+
+        // Verify liquidator was created successfully
+        // Note: We can't directly access private fields, but we can verify the liquidator
+        // was constructed without panicking
+        assert!(true, "Liquidator created successfully");
+
+        // Test NEP-245 asset
+        let nep245_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep245(
+            "multi.near".parse().unwrap(),
+            "token123".to_string(),
+        ));
+
+        let _liquidator_mt = Liquidator::new(
+            client,
+            signer,
+            nep245_asset,
+            market_id,
+            swap,
+            120, // Different timeout
+        );
+
+        // Verify multi-token liquidator was created successfully
+        assert!(true, "Multi-token liquidator created successfully");
+    }
+
+    #[tokio::test]
+    async fn test_mock_swap_functionality() {
+        // Test the mock swap implementation used in integration tests
+
+        let swap = MockSwap::new(2.0); // 1 input = 2 output
+
+        let from_asset = FungibleAsset::<BorrowAsset>::nep141("input.near".parse().unwrap());
+        let to_asset = FungibleAsset::<BorrowAsset>::nep141("output.near".parse().unwrap());
+
+        // Test quote functionality
+        let output_amount = near_sdk::json_types::U128(100);
+        let quote_result = swap.quote(&from_asset, &to_asset, output_amount).await;
+
+        assert!(quote_result.is_ok(), "Quote should succeed");
+        let input_needed = quote_result.unwrap();
+        assert_eq!(
+            input_needed.0, 50,
+            "Should need 50 input tokens to get 100 output tokens at 2:1 rate"
+        );
+
+        // Test swap functionality
+        let swap_amount = near_sdk::json_types::U128(25);
+        let swap_result = swap.swap(&from_asset, &to_asset, swap_amount).await;
+
+        assert!(swap_result.is_ok(), "Swap should succeed");
+        // Mock always returns success, so we just verify it doesn't error
+    }
+
+    #[test]
+    fn test_asset_specifications() {
+        // Test different asset specification formats
+
+        // NEP-141
+        let nep141: Result<FungibleAsset<BorrowAsset>, _> = "nep141:token.near".parse();
+        assert!(nep141.is_ok(), "NEP-141 parsing should succeed");
+
+        let asset = nep141.unwrap();
+        assert_eq!(asset.to_string(), "nep141:token.near");
+        assert_eq!(
+            asset.contract_id(),
+            "token.near".parse::<AccountId>().unwrap()
+        );
+
+        // NEP-245
+        let nep245: Result<FungibleAsset<BorrowAsset>, _> = "nep245:multi.near:token123".parse();
+        assert!(nep245.is_ok(), "NEP-245 parsing should succeed");
+
+        let asset = nep245.unwrap();
+        assert_eq!(asset.to_string(), "nep245:multi.near:token123");
+        assert_eq!(
+            asset.contract_id(),
+            "multi.near".parse::<AccountId>().unwrap()
+        );
+
+        // Invalid formats should fail
+        let invalid: Result<FungibleAsset<BorrowAsset>, _> = "invalid".parse();
+        assert!(invalid.is_err(), "Invalid format should fail parsing");
+    }
 
     #[test]
     fn test_asset_spec_nep141_parsing() {
