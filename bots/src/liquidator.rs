@@ -528,6 +528,11 @@ mod tests {
             output_amount: U128,
         ) -> crate::near::AppResult<U128> {
             // Calculate input amount needed to get desired output
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
             let input_amount = (output_amount.0 as f64 / self.exchange_rate) as u128;
             Ok(U128(input_amount))
         }
@@ -676,7 +681,7 @@ mod tests {
         // Verify liquidator was created successfully
         // Note: We can't directly access private fields, but we can verify the liquidator
         // was constructed without panicking
-        assert!(true, "Liquidator created successfully");
+        println!("Liquidator created successfully");
 
         // Test NEP-245 asset
         let nep245_asset = Arc::new(FungibleAsset::<BorrowAsset>::nep245(
@@ -694,7 +699,7 @@ mod tests {
         );
 
         // Verify multi-token liquidator was created successfully
-        assert!(true, "Multi-token liquidator created successfully");
+        println!("Multi-token liquidator created successfully");
     }
 
     #[tokio::test]
