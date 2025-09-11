@@ -56,6 +56,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Generate gas report
         id: generate
+        env:
+          SQLX_OFFLINE: true
         run: |
           ./script/ci/gas-report.sh > gas-report.md
           cat gas-report.md >> $GITHUB_STEP_SUMMARY

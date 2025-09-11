@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+
+FROM rust:1.85.0 AS builder
+
+WORKDIR /usr/src/relayer
+
+COPY . .
+
+ENV SQLX_OFFLINE=true
+RUN \
+    # cache dependencies, etc.
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/usr/local/rustup \
+    cargo build --package templar-relayer --profile release
+
+# Runtime image
+FROM debian:12-slim
+
+RUN apt-get update && \
+    apt-get install -y ca-certificates libssl3 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /usr/src/relayer/target/release/templar-relayer /usr/local/bin/templar-relayer
+
+CMD [ "templar-relayer" ]

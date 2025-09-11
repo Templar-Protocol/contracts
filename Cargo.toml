@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bots", "common", "contract/*", "mock/*", "test-utils"]
+members = ["bots", "common", "contract/*", "mock/*", "service/*", "test-utils"]
 
 [workspace.package]
 license = "MIT"
@@ -20,7 +20,7 @@ hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 near-contract-standards = "5.7"
 near-crypto = "0.28.0"
-near-jsonrpc-client = "0.16.0"
+near-jsonrpc-client = "0.15.1"
 near-jsonrpc-primitives = "0.28.0"
 near-primitives = "0.28.0"
 near-sdk = { version = "5.7", features = ["unstable"] }
@@ -60,3 +60,7 @@ debug = false
 panic = "abort"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
 overflow-checks = true
+
+# https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification
+[profile.dev.package.sqlx-macros]
+opt-level = 3

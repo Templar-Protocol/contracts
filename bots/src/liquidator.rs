@@ -199,7 +199,7 @@ impl<S: Swap> Liquidator<S> {
 
         Ok(Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: borrow_asset.contract_id(),
+            receiver_id: borrow_asset.contract_id().into(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
@@ -232,7 +232,7 @@ impl<S: Swap> Liquidator<S> {
         info!("Liquidation reason: {reason:?}");
 
         let liquidation_amount = self
-            .liquidation_amount(&position, &oracle_response, configuration.clone())
+            .liquidation_amount(&position, &oracle_response, &configuration)
             .await?;
 
         let borrow_asset = &configuration.borrow_asset;
@@ -309,7 +309,7 @@ impl<S: Swap> Liquidator<S> {
                 .swap
                 .swap(
                     collateral_asset,
-                    self.asset.as_ref(),
+                    &self.asset,
                     position.collateral_asset_deposit.into(),
                 )
                 .await
@@ -331,7 +331,7 @@ impl<S: Swap> Liquidator<S> {
         &self,
         position: &BorrowPosition,
         oracle_response: &OracleResponse,
-        configuration: MarketConfiguration,
+        configuration: &MarketConfiguration,
     ) -> LiquidatorResult<U128> {
         let price_pair = configuration
             .price_oracle_configuration
@@ -387,7 +387,7 @@ impl<S: Swap> Liquidator<S> {
 
         let balance = view::<U128>(
             &self.client,
-            asset.contract_id(),
+            asset.contract_id().into(),
             &balance_action.method_name,
             args,
         )

@@ -93,8 +93,8 @@ impl QuoteRequest {
         output_amount: U128,
         fee: u32,
     ) -> Self {
-        let input_token = from_asset.contract_id();
-        let output_token = to_asset.contract_id();
+        let input_token: AccountId = from_asset.contract_id().into();
+        let output_token: AccountId = to_asset.contract_id().into();
 
         // Create pool ID in the format: input_token|output_token|fee
         let pool_id = format!("{input_token}|{output_token}|{fee}");
@@ -133,8 +133,8 @@ impl SwapRequestMsg {
         output_amount: U128,
         fee: u32,
     ) -> Self {
-        let input_token = from_asset.contract_id();
-        let output_token = to_asset.contract_id();
+        let input_token: AccountId = from_asset.contract_id().into();
+        let output_token: AccountId = to_asset.contract_id().into();
 
         // Create pool ID in the format: input_token|output_token|fee
         let pool_id = format!("{input_token}|{output_token}|{fee}");
@@ -194,7 +194,7 @@ impl Swap for RheaSwap {
 
         let tx = Transaction::V0(TransactionV0 {
             nonce,
-            receiver_id: from_asset.contract_id().clone(),
+            receiver_id: from_asset.contract_id().into(),
             block_hash,
             signer_id: self.signer.account_id.clone(),
             public_key: self.signer.public_key().clone(),
