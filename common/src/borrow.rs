@@ -358,7 +358,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn liquidatable_collateral(&self, price_pair: &PricePair) -> CollateralAssetAmount {
         self.position.liquidatable_collateral(
             price_pair,
-            self.market.configuration.borrow_mcr_liquidation,
+            self.market.configuration.borrow_mcr_maintenance,
             self.market.configuration.liquidation_maximum_spread,
         )
     }

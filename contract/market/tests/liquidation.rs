@@ -147,7 +147,7 @@ async fn successful_liquidation_good_debt_under_mcr(
         async {
             let prices = c.get_prices().await;
             let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
-            assert!(!status.is_liquidation());
+            assert!(status.is_healthy());
         },
     );
 }
@@ -257,6 +257,10 @@ async fn fail_liquidation_too_little_attached() {
         300,
     );
     assert_eq!(u128::from(borrow_position.collateral_asset_deposit), 500);
+
+    let prices = c.get_prices().await;
+    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
+    assert!(status.is_liquidation());
 }
 
 #[tokio::test]
@@ -297,6 +301,10 @@ async fn fail_liquidation_healthy_borrow() {
         300,
     );
     assert_eq!(u128::from(borrow_position.collateral_asset_deposit), 500);
+
+    let prices = c.get_prices().await;
+    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
+    assert!(status.is_healthy());
 }
 
 #[tokio::test]
@@ -400,8 +408,8 @@ async fn successful_liquidation_only_from_interest() {
     let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
 
     assert!(
-        !status.is_liquidation(),
-        "Borrow should not be in liquidation after liquidation of all liquidatable collateral",
+        status.is_healthy(),
+        "Borrow should be healthy after liquidation of all liquidatable collateral",
     );
 }
 
@@ -411,7 +419,6 @@ async fn successful_liquidation_only_from_interest() {
 #[case((10, 1000), (10, 1000), (90, 999), (10, 1000))]
 #[case((10, 1000), (10, 1000), (10, 1000), (11, 1000))]
 #[case((10, 1000), (10, 1000), (10, -1000), (10, 1000))]
-// #[case((10, 1000), (10, 1000), (10, -1000), (10, -1000))] // technically no liquidation here...
 #[tokio::test]
 async fn extreme_prices(
     #[case] (collateral_price, collateral_exponent): (i64, i32),
@@ -691,6 +698,10 @@ async fn partial_liquidation_fail_offer_too_little() {
         borrow_before, borrow_after,
         "Liquidator should not send any borrow asset",
     );
+
+    let prices = c.get_prices().await;
+    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
+    assert!(status.is_liquidation());
 
     for outcome in r.outcomes() {
         outcome.clone().into_result().unwrap();
