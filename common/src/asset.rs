@@ -1,6 +1,8 @@
 use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
+#[cfg(not(target_arch = "wasm32"))]
+use near_primitives::action::FunctionCallAction;
 use near_sdk::{
     env,
     json_types::U128,
@@ -59,6 +61,77 @@ impl<T: AssetClass> FungibleAsset<T> {
                 NearToken::from_yoctonear(1),
                 Self::GAS_MT_TRANSFER,
             ),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn transfer_call_action(
+        &self,
+        receiver_id: &AccountId,
+        amount: FungibleAssetAmount<T>,
+        msg: &str,
+    ) -> FunctionCallAction {
+        let (method_name, args, gas) = match self.kind {
+            FungibleAssetKind::Nep141(_) => (
+                "ft_transfer_call",
+                json!({
+                    "receiver_id": receiver_id,
+                    "amount": u128::from(amount),
+                    "msg": msg,
+                }),
+                Self::GAS_FT_TRANSFER,
+            ),
+            FungibleAssetKind::Nep245 { ref token_id, .. } => (
+                "mt_transfer_call",
+                json!({
+                    "receiver_id": receiver_id,
+                    "token_id": token_id,
+                    "amount": u128::from(amount),
+                    "msg": msg,
+                }),
+                Self::GAS_MT_TRANSFER,
+            ),
+        };
+
+        FunctionCallAction {
+            method_name: method_name.to_string(),
+            #[allow(
+                clippy::unwrap_used,
+                reason = "All of the types have infallible serialization"
+            )]
+            args: serde_json::to_vec(&args).unwrap(),
+            gas: gas.as_gas(),
+            deposit: NearToken::from_yoctonear(1).as_yoctonear(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn balance_of_action(&self, account_id: &AccountId) -> FunctionCallAction {
+        let (method_name, args) = match self.kind {
+            FungibleAssetKind::Nep141(_) => (
+                "ft_balance_of",
+                json!({
+                    "account_id": account_id,
+                }),
+            ),
+            FungibleAssetKind::Nep245 { ref token_id, .. } => (
+                "mt_balance_of",
+                json!({
+                    "account_id": account_id,
+                    "token_id": token_id,
+                }),
+            ),
+        };
+
+        FunctionCallAction {
+            method_name: method_name.to_string(),
+            #[allow(
+                clippy::unwrap_used,
+                reason = "All of the types have infallible serialization"
+            )]
+            args: serde_json::to_vec(&args).unwrap(),
+            gas: Gas::from_tgas(3).as_gas(),
+            deposit: 0,
         }
     }
 
@@ -159,10 +232,51 @@ impl<T: AssetClass> Display for FungibleAsset<T> {
     }
 }
 
+impl<T: AssetClass> std::str::FromStr for FungibleAsset<T> {
+    type Err = FungibleAssetParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(':').collect();
+
+        match parts.as_slice() {
+            ["nep141", contract_id] => {
+                let account_id = contract_id
+                    .parse::<AccountId>()
+                    .map_err(|e| FungibleAssetParseError::InvalidAccountId(e.to_string()))?;
+                Ok(FungibleAsset::nep141(account_id))
+            }
+            ["nep245", contract_id, token_id] => {
+                let account_id = contract_id
+                    .parse::<AccountId>()
+                    .map_err(|e| FungibleAssetParseError::InvalidAccountId(e.to_string()))?;
+
+                if token_id.is_empty() {
+                    return Err(FungibleAssetParseError::EmptyTokenId);
+                }
+
+                Ok(FungibleAsset::nep245(account_id, (*token_id).to_string()))
+            }
+            _ => Err(FungibleAssetParseError::InvalidFormat),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FungibleAssetParseError {
+    #[error(
+        "Invalid format. Expected 'nep141:<contract_id>' or 'nep245:<contract_id>:<token_id>'"
+    )]
+    InvalidFormat,
+    #[error("Invalid account ID: {0}")]
+    InvalidAccountId(String),
+    #[error("Token ID cannot be empty for NEP-245 assets")]
+    EmptyTokenId,
+}
+
 mod sealed {
     pub trait Sealed {}
 }
-pub trait AssetClass: sealed::Sealed + Copy + Clone {}
+pub trait AssetClass: sealed::Sealed + Copy + Clone + Send + Sync + std::fmt::Debug {}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
