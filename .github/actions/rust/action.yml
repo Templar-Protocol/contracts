@@ -18,12 +18,6 @@ runs:
         targets: ${{ inputs.targets }}
         components: ${{ inputs.components }}
 
-    - uses: actions/cache@v4
+    - uses: Swatinem/rust-cache@v2
       with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
