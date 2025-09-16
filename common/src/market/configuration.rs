@@ -192,13 +192,13 @@ impl MarketConfiguration {
             return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
         }
 
-        if self.borrow_mcr_maintenance < 1u32
+        if self.borrow_mcr_maintenance <= 1u32
             || self.borrow_mcr_maintenance < self.borrow_mcr_liquidation
         {
             return Err(error::out_of_bounds("borrow_mcr_maintenance"));
         }
 
-        if self.borrow_mcr_liquidation < 1u32 {
+        if self.borrow_mcr_liquidation <= 1u32 {
             return Err(error::out_of_bounds("borrow_mcr_liquidation"));
         }
 
