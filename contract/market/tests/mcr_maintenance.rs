@@ -4,10 +4,9 @@ use test_utils::*;
 
 #[rstest]
 #[case(dec!("1.2"), dec!("1.4"))]
-#[case(dec!("1"), dec!("1"))]
-#[case(dec!("1"), dec!("1.1"))]
-#[case(dec!("1"), dec!("2"))]
-#[case(dec!("1"), dec!("5"))]
+#[case(dec!("1.000000000000000000000000000001"), dec!("1.000000000000000000000000000001"))]
+#[case(dec!("1.00000001"), dec!("1.1"))]
+#[case(dec!("1.00000000000000000000000000000000001"), dec!("5"))]
 #[tokio::test]
 async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] maintenance: Decimal) {
     setup_test!(
@@ -48,10 +47,10 @@ async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] mai
 
 #[rstest]
 #[case(dec!("1.2"), dec!("1.4"))]
-#[case(dec!("1"), dec!("1"))]
-#[case(dec!("1"), dec!("1.1"))]
-#[case(dec!("1"), dec!("2"))]
-#[case(dec!("1"), dec!("5"))]
+#[case(dec!("1.001"), dec!("1.001"))]
+#[case(dec!("1.001"), dec!("1.1"))]
+#[case(dec!("1.001"), dec!("2"))]
+#[case(dec!("1.001"), dec!("5"))]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Borrow position must be healthy after borrow"]
 async fn fail_below_mcr_maintenance(#[case] liquidation: Decimal, #[case] maintenance: Decimal) {
@@ -78,7 +77,7 @@ async fn fail_below_mcr_maintenance(#[case] liquidation: Decimal, #[case] mainte
 
 #[rstest]
 #[case(dec!("1.2"), dec!("1.4"))]
-#[case(dec!("1"), dec!("1.1"))]
+#[case(dec!("1.001"), dec!("1.1"))]
 #[case(dec!("1.5"), dec!("2"))]
 #[case(dec!("1.5"), dec!("5"))]
 #[tokio::test]
