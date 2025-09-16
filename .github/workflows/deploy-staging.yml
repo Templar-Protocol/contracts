@@ -51,10 +51,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
-        with:
-          targets: wasm32-unknown-unknown
+      - uses: ./.github/actions/rust
 
       - name: Install NEAR CLI
         uses: ./.github/actions/install-near-cli
@@ -62,16 +59,6 @@ jobs:
           network: "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}"
           rpc-url: "${{ vars.NEAR_CONTRACT_STAGING_RPC_URL }}"
           rpc_api_key: "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-near CLI
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.16.1/cargo-near-installer.sh | sh

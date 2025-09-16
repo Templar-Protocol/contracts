@@ -1,0 +1,40 @@
+name: Build & deploy documentation site to GitHub Pages
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  build-and-deploy:
+    name: Build documentation and deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{steps.deployment.outputs.page_url}}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/rust
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install mdbook
+        run: |
+          mkdir bin
+          readlink -f bin >> "$GITHUB_PATH"
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=bin
+
+      - name: Build documentation
+        run: ./script/build-docs.sh
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

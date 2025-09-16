@@ -13,9 +13,29 @@ use near_sdk::{
 
 use crate::number::Decimal;
 
+/// Assets may be configuread as one of the supported asset types.
+///
+/// The following asset contract standards are supported:
+///
+/// - [NEP-141 Fungible Token (FT)](https://nomicon.io/Standards/Tokens/FungibleToken/Core)
+/// - [NEP-245 Multi-Token (MT)](https://nomicon.io/Standards/Tokens/MultiToken/Core)
+///
+/// ---
+///
+/// Assets can be constructed using associated functions:
+///
+/// ```
+/// let my_ft = FungibleAsset::<BorrowAsset>::nep141("contract_id".parse().unwrap());
+/// let my_mt = FungibleAsset::<CollateralAsset>::nep245(
+///     "contract_id".parse().unwrap(),
+///     "token_id".to_string(),
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
 pub struct FungibleAsset<T: AssetClass> {
+    // Necessary because there is no clean way to use PhantomData<T> in an enum.
+    // https://internals.rust-lang.org/t/type-parameter-not-used-on-enums/13342
     #[serde(skip)]
     #[borsh(skip)]
     discriminant: PhantomData<T>,

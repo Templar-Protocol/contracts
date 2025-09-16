@@ -320,18 +320,29 @@ impl Iterator for WithdrawalQueueIter<'_> {
     }
 }
 
+/// Status of a single account in the withdrawal queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub struct WithdrawalRequestStatus {
+    /// What index is this account in the queue?
+    /// That is, how many other withdrawal requests are ahead of this account
+    /// in the queue?
     pub index: u32,
+    /// Sum of requested amounts of the requests ahead of this account in the
+    /// queue.
     pub depth: BorrowAssetAmount,
+    /// The amount that this account has requested to withdraw from the
+    /// contract.
     pub amount: BorrowAssetAmount,
 }
 
+/// Status of the withdrawal queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub struct WithdrawalQueueStatus {
+    /// Sum of all amounts of requests in the queue.
     pub depth: BorrowAssetAmount,
+    /// Number of requests in the queue.
     pub length: u32,
 }
 
