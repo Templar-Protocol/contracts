@@ -73,8 +73,7 @@ impl Market {
         }
 
         let first_snapshot = Snapshot::new(configuration.time_chunk_configuration.previous());
-        let mut current_snapshot = first_snapshot.clone();
-        current_snapshot.set_time_chunk(configuration.time_chunk_configuration.now());
+        let current_snapshot = Snapshot::new(configuration.time_chunk_configuration.now());
 
         let mut self_ = Self {
             prefix: prefix.clone(),
@@ -120,46 +119,53 @@ impl Market {
 
     fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
         let time_chunk = self.configuration.time_chunk_configuration.now();
+        let block_timestamp_ms = env::block_timestamp_ms().into();
+        let current_snapshot_index = self.finalized_snapshots.len();
 
-        // If still in current time chunk, just update the current snapshot.
-        if self.current_snapshot.time_chunk == time_chunk {
-            self.current_snapshot.update_active(
-                self.borrow_asset_deposited_active,
-                self.borrow_asset_borrowed,
-                self.collateral_asset_deposited,
-                &self.configuration.borrow_interest_rate_strategy,
-            );
-            self.current_snapshot.add_yield(yield_distribution);
-            self.current_snapshot.set_borrow_asset_deposited_incoming(
-                *self
-                    .borrow_asset_deposited_incoming
-                    .get(&self.finalized_snapshots.len())
-                    .unwrap_or(&0.into()),
-            );
-        } else {
-            // Otherwise, finalize the current snapshot and create a new one.
-            let deposited_incoming = self
+        self.current_snapshot.end_timestamp_ms = block_timestamp_ms;
+        self.current_snapshot.borrow_asset_borrowed = self.borrow_asset_borrowed;
+        self.current_snapshot.collateral_asset_deposited = self.collateral_asset_deposited;
+        self.current_snapshot.update(
+            self.borrow_asset_deposited_active,
+            *self
                 .borrow_asset_deposited_incoming
-                .remove(&self.finalized_snapshots.len())
-                .unwrap_or(0.into());
-            asset_op!(self.borrow_asset_deposited_active += deposited_incoming);
-            let mut snapshot = Snapshot::new(time_chunk);
-            snapshot.set_yield_distribution(yield_distribution);
-            snapshot.set_borrow_asset_deposited_incoming(deposited_incoming);
-            snapshot.update_active(
-                self.borrow_asset_deposited_active,
-                self.borrow_asset_borrowed,
-                self.collateral_asset_deposited,
-                &self.configuration.borrow_interest_rate_strategy,
-            );
-            std::mem::swap(&mut snapshot, &mut self.current_snapshot);
+                .get(&current_snapshot_index)
+                .unwrap_or(&0.into()),
+            &self.configuration.borrow_interest_rate_strategy,
+        );
+
+        // Finalize this snapshot if necessary
+        if self.current_snapshot.time_chunk != time_chunk {
+            // Activate incoming funds
+            if let Some(incoming) = self
+                .borrow_asset_deposited_incoming
+                .remove(&current_snapshot_index)
+            {
+                asset_op!(self.borrow_asset_deposited_active += incoming);
+            }
+
+            // Emit event and push finalized snapshot
             MarketEvent::SnapshotFinalized {
-                index: self.finalized_snapshots.len(),
-                snapshot: snapshot.clone(),
+                index: current_snapshot_index,
+                snapshot: self.current_snapshot.clone(),
             }
             .emit();
-            self.finalized_snapshots.push(snapshot);
+            self.finalized_snapshots.push(self.current_snapshot.clone());
+
+            // Reset for the new time chunk
+            self.current_snapshot.time_chunk = time_chunk;
+            self.current_snapshot.yield_distribution = 0.into();
+            self.current_snapshot.update(
+                self.borrow_asset_deposited_active,
+                *self
+                    .borrow_asset_deposited_incoming
+                    .get(&(current_snapshot_index + 1))
+                    .unwrap_or(&0.into()),
+                &self.configuration.borrow_interest_rate_strategy,
+            );
         }
+
+        asset_op!(self.current_snapshot.yield_distribution += yield_distribution);
 
         self.finalized_snapshots.len()
     }

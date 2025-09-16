@@ -163,7 +163,12 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             }
 
             if !snapshot.borrow_asset_deposited_active.is_zero() {
-                accumulated += amount * Decimal::from(snapshot.yield_distribution())
+                // TODO: Remove, this is just for testing.
+                require!(
+                    amount <= u128::from(snapshot.borrow_asset_deposited_active),
+                    "Amount is greater than active",
+                );
+                accumulated += amount * Decimal::from(snapshot.yield_distribution)
                     / Decimal::from(snapshot.borrow_asset_deposited_active);
             }
 

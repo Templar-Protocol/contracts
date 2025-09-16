@@ -123,14 +123,14 @@ impl MarketController {
 
         eprintln!("Market snapshots:");
         for (i, snapshot) in snapshots.iter().enumerate() {
-            eprintln!("\t{i}: {}", snapshot.time_chunk().0 .0);
-            eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms().0);
+            eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
+            eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
             eprintln!(
                 "\t\tDeposited (active):\t{}",
-                snapshot.borrow_asset_deposited_active(),
+                snapshot.borrow_asset_deposited_active,
             );
-            eprintln!("\t\tBorrowed:\t{}", snapshot.borrow_asset_borrowed());
-            eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution());
+            eprintln!("\t\tBorrowed:\t{}", snapshot.borrow_asset_borrowed);
+            eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
         }
     }
 }
