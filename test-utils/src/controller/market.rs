@@ -403,7 +403,7 @@ impl UnifiedMarketController {
         let borrow_position = self.get_borrow_position(account_id).await.unwrap();
         let liquidate_collateral = borrow_position.liquidatable_collateral(
             &price_pair,
-            self.configuration.borrow_mcr_liquidation,
+            self.configuration.borrow_mcr_maintenance,
             self.configuration.liquidation_maximum_spread,
         );
         let pay_for_collateral = price_pair
@@ -427,7 +427,7 @@ impl UnifiedMarketController {
         let borrow_position = self.get_borrow_position(account_id).await.unwrap();
         let liquidate_collateral = borrow_position.liquidatable_collateral(
             &price_pair,
-            self.configuration.borrow_mcr_liquidation,
+            self.configuration.borrow_mcr_maintenance,
             self.configuration.liquidation_maximum_spread,
         );
         let pay_for_collateral = (price_pair.convert(liquidate_collateral)

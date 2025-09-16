@@ -577,7 +577,7 @@ async fn partial_liquidation() {
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
     let liquidate_collateral = borrow_position.liquidatable_collateral(
         &price_pair,
-        c.configuration.borrow_mcr_liquidation,
+        c.configuration.borrow_mcr_maintenance,
         c.configuration.liquidation_maximum_spread,
     );
     let pay_for_collateral = price_pair

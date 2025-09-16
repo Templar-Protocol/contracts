@@ -150,18 +150,18 @@ impl BorrowPosition {
     pub fn liquidatable_collateral(
         &self,
         price_pair: &PricePair,
-        mcr_liquidation: Decimal,
+        mcr: Decimal,
         liquidator_spread: Decimal,
     ) -> CollateralAssetAmount {
         // c = Value of collateral
         // b = Value of borrow (liability)
         // l = Value of amount of collateral to liquidate
-        // m = Liquidation MCR
+        // m = Target MCR
         // d = Liquidation discount (spread)
         // *_p = Price of *
         // *_a = Amount of *
         //
-        // We should be just at the liquidation MCR after liquidating the
+        // We should be just at the target MCR after liquidating the
         // maximum amount of collateral:
         // (c - l) / (b - l) = m
         // l = (m * b - c) / (m - 1)
@@ -180,19 +180,18 @@ impl BorrowPosition {
         let scaled_liability = liability_valuation
             .ratio(price_pair.valuation(CollateralAssetAmount::new(1)))
             .unwrap();
-        let scaled_collateral_amount =
-            collateral_amount * (Decimal::ONE - liquidator_spread) / mcr_liquidation;
+        let scaled_collateral_amount = collateral_amount * (Decimal::ONE - liquidator_spread) / mcr;
 
         if scaled_liability <= scaled_collateral_amount {
             CollateralAssetAmount::zero()
         } else {
-            // Multiplication by mcr_liquidation here could cause overflow
+            // Multiplication by mcr here could cause overflow
             let unscaled_amount =
-                (scaled_liability - scaled_collateral_amount) / (mcr_liquidation - Decimal::ONE);
-            if unscaled_amount >= collateral_amount / mcr_liquidation {
+                (scaled_liability - scaled_collateral_amount) / (mcr - Decimal::ONE);
+            if unscaled_amount >= collateral_amount / mcr {
                 self.collateral_asset_deposit
             } else {
-                let amount = mcr_liquidation * unscaled_amount;
+                let amount = mcr * unscaled_amount;
                 amount
                     .to_u128_ceil()
                     .map_or(self.collateral_asset_deposit, CollateralAssetAmount::new)
