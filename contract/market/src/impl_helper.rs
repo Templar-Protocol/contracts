@@ -29,7 +29,8 @@ impl Contract {
             );
         }
 
-        let mut supply_position = self.get_or_create_supply_position_guard(account_id);
+        let snapshot = self.snapshot();
+        let mut supply_position = self.get_or_create_supply_position_guard(snapshot, account_id);
         let proof = supply_position.accumulate_yield();
         supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         require!(
@@ -58,7 +59,8 @@ impl Contract {
             );
         }
 
-        let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
+        let snapshot = self.snapshot();
+        let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
         if borrow_position.inner().is_liquidation_locked {
             env::panic_str("Cannot add collateral while liquidation locked");
         }
@@ -77,7 +79,8 @@ impl Contract {
         amount: BorrowAssetAmount,
         price_pair: &PricePair,
     ) -> BorrowAssetAmount {
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
             // No borrow exists: just return the whole amount.
             return amount;
         };
@@ -96,7 +99,8 @@ impl Contract {
         amount: BorrowAssetAmount,
         price_pair: &PricePair,
     ) -> CollateralAssetAmount {
-        let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
+        let snapshot = self.snapshot();
+        let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
 
         borrow_position.accumulate_interest();
 
@@ -127,9 +131,12 @@ impl Contract {
         amount: BorrowAssetAmount,
         success: bool,
     ) -> BorrowAssetAmount {
-        let mut borrow_position = self.borrow_position_guard(account_id).unwrap_or_else(|| {
-            env::panic_str("Invariant violation: Liquidation of nonexistent position.")
-        });
+        let snapshot = self.snapshot();
+        let mut borrow_position = self
+            .borrow_position_guard(snapshot, account_id)
+            .unwrap_or_else(|| {
+                env::panic_str("Invariant violation: Liquidation of nonexistent position.")
+            });
 
         if success {
             borrow_position.record_full_liquidation(liquidator_id, amount);
@@ -166,9 +173,7 @@ impl Contract {
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
         let price_pair = self.price_pair(oracle_response);
-
-        // TODO: accumulate_interest() also creates a snapshot; reorder code to not call this twice.
-        self.market.snapshot();
+        let snapshot = self.snapshot();
 
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.get_borrow_asset_available_to_borrow();
@@ -183,7 +188,8 @@ impl Contract {
             .of(amount)
             .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
 
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
+        else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -223,7 +229,8 @@ impl Contract {
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
             env::panic_str("Invariant violation: borrow position does not exist after transfer.");
         };
 
@@ -264,8 +271,8 @@ impl Contract {
         }
     }
 
-    // ~2.4 Tgas
-    pub const GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL: Gas = Gas::from_tgas(4);
+    // ~3.7 Tgas
+    pub const GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE: Gas = Gas::from_tgas(5);
 
     #[private]
     pub fn execute_next_supply_withdrawal_request_01_finalize(
@@ -281,8 +288,9 @@ impl Contract {
 
         let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
+        let snapshot = self.snapshot();
         if let Some(mut supply_position) =
-            self.supply_position_guard(withdrawal_resolution.account_id.clone())
+            self.supply_position_guard(snapshot, withdrawal_resolution.account_id.clone())
         {
             supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
         }
@@ -437,7 +445,9 @@ impl Contract {
     ) -> Promise {
         let price_pair = self.price_pair(oracle_response);
 
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
+        else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -482,7 +492,8 @@ impl Contract {
                 self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
             }
         } else {
-            let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
+            let snapshot = self.snapshot();
+            let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
                 env::panic_str(
                     "Invariant violation: Borrow position must exist after collateral withdrawal.",
                 );

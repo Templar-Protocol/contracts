@@ -30,6 +30,7 @@ impl Contract {
     #[init]
     pub fn new(configuration: MarketConfiguration) -> Self {
         let mut market = Market::new(StorageKey::Market, configuration);
+        let snapshot = market.snapshot();
         let storage_usage_1 = env::storage_usage();
         market.finalized_snapshots.flush();
         let storage_usage_2 = env::storage_usage();
@@ -41,11 +42,11 @@ impl Contract {
         // 128 (max account length in bytes)
         let zero_account: AccountId = "0".repeat(64).parse().unwrap();
 
-        drop(market.get_or_create_supply_position_guard(zero_account.clone()));
+        drop(market.get_or_create_supply_position_guard(snapshot, zero_account.clone()));
         let storage_usage_3 = env::storage_usage();
         let storage_usage_supply_position = storage_usage_3.saturating_sub(storage_usage_2);
 
-        drop(market.get_or_create_borrow_position_guard(zero_account.clone()));
+        drop(market.get_or_create_borrow_position_guard(snapshot, zero_account.clone()));
         let storage_usage_4 = env::storage_usage();
         let storage_usage_borrow_position = storage_usage_4.saturating_sub(storage_usage_3);
 

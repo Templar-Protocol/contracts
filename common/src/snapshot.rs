@@ -2,8 +2,6 @@ use near_sdk::{env, json_types::U64, near};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    asset_op,
-    interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
     time_chunk::TimeChunk,
 };
@@ -32,31 +30,6 @@ impl Snapshot {
             collateral_asset_deposited: 0.into(),
             yield_distribution: BorrowAssetAmount::zero(),
             interest_rate: Decimal::ZERO,
-        }
-    }
-
-    pub fn update(
-        &mut self,
-        active: BorrowAssetAmount,
-        incoming: BorrowAssetAmount,
-        interest_rate_strategy: &InterestRateStrategy,
-    ) {
-        self.borrow_asset_deposited_incoming = incoming;
-        self.borrow_asset_deposited_active = active;
-        asset_op!(
-            self.borrow_asset_deposited_active += incoming;
-        );
-        self.interest_rate = interest_rate_strategy.at(self.usage_ratio());
-    }
-
-    pub fn usage_ratio(&self) -> Decimal {
-        if self.borrow_asset_deposited_active.is_zero() || self.borrow_asset_borrowed.is_zero() {
-            Decimal::ZERO
-        } else if self.borrow_asset_borrowed >= self.borrow_asset_deposited_active {
-            Decimal::ONE
-        } else {
-            Decimal::from(self.borrow_asset_borrowed)
-                / Decimal::from(self.borrow_asset_deposited_active)
         }
     }
 }

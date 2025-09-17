@@ -300,7 +300,6 @@ impl<'a> SupplyPositionGuard<'a> {
 
     pub fn accumulate_yield_partial(&mut self, snapshot_limit: u32) {
         require!(snapshot_limit > 0, "snapshot_limit must be nonzero");
-        self.market.snapshot();
 
         let accumulation_record = self.calculate_yield(snapshot_limit);
         self.activate_incoming(accumulation_record.next_snapshot_index);
@@ -341,8 +340,6 @@ impl<'a> SupplyPositionGuard<'a> {
         if !amount_to_remove.is_zero() {
             self.remove_active(amount_to_remove);
         }
-
-        self.market.snapshot();
 
         // The only way to withdraw from a position is if it already has a deposit.
         // Adding a deposit guarantees started_at_block_timestamp_ms != None
@@ -406,8 +403,6 @@ impl<'a> SupplyPositionGuard<'a> {
         }
 
         self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
-
-        self.market.snapshot();
 
         if !amount.is_zero() {
             MarketEvent::SupplyDeposited {

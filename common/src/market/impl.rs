@@ -16,8 +16,12 @@ use crate::{
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
+    time_chunk::TimeChunk,
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
+
+#[derive(Debug, Copy, Clone)]
+pub struct SnapshotProof(());
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -49,7 +53,8 @@ pub struct Market {
     pub collateral_asset_deposited: CollateralAssetAmount,
     pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub current_snapshot: Snapshot,
+    pub current_time_chunk: TimeChunk,
+    pub current_yield_distribution: BorrowAssetAmount,
     pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
@@ -73,7 +78,7 @@ impl Market {
         }
 
         let first_snapshot = Snapshot::new(configuration.time_chunk_configuration.previous());
-        let current_snapshot = Snapshot::new(configuration.time_chunk_configuration.now());
+        let last_time_chunk = configuration.time_chunk_configuration.now();
 
         let mut self_ = Self {
             prefix: prefix.clone(),
@@ -85,7 +90,8 @@ impl Market {
             collateral_asset_deposited: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            current_snapshot,
+            current_time_chunk: last_time_chunk,
+            current_yield_distribution: 0.into(),
             finalized_snapshots: ChunkedAppendOnlyList::new(key!(FinalizedSnapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
@@ -113,61 +119,72 @@ impl Market {
             .unwrap()
     }
 
-    pub fn snapshot(&mut self) -> u32 {
-        self.snapshot_with_yield_distribution(BorrowAssetAmount::zero())
+    pub fn current_snapshot(&self) -> Snapshot {
+        let incoming = *self
+            .borrow_asset_deposited_incoming
+            .get(&self.finalized_snapshots.len())
+            .unwrap_or(&0.into());
+
+        let mut active = self.borrow_asset_deposited_active;
+        asset_op!(active += incoming);
+
+        let interest_rate = self
+            .configuration
+            .borrow_interest_rate_strategy
+            .at(usage_ratio(active, self.borrow_asset_borrowed));
+
+        Snapshot {
+            time_chunk: self.current_time_chunk,
+            end_timestamp_ms: env::block_timestamp_ms().into(),
+            borrow_asset_deposited_active: active,
+            borrow_asset_deposited_incoming: incoming,
+            borrow_asset_borrowed: self.borrow_asset_borrowed,
+            collateral_asset_deposited: self.collateral_asset_deposited,
+            yield_distribution: self.current_yield_distribution,
+            interest_rate,
+        }
     }
 
-    fn snapshot_with_yield_distribution(&mut self, yield_distribution: BorrowAssetAmount) -> u32 {
-        let time_chunk = self.configuration.time_chunk_configuration.now();
-        let block_timestamp_ms = env::block_timestamp_ms().into();
-        let current_snapshot_index = self.finalized_snapshots.len();
+    pub fn snapshot(&mut self) -> SnapshotProof {
+        let now = self.configuration.time_chunk_configuration.now();
 
-        self.current_snapshot.end_timestamp_ms = block_timestamp_ms;
-        self.current_snapshot.borrow_asset_borrowed = self.borrow_asset_borrowed;
-        self.current_snapshot.collateral_asset_deposited = self.collateral_asset_deposited;
-        self.current_snapshot.update(
-            self.borrow_asset_deposited_active,
-            *self
-                .borrow_asset_deposited_incoming
-                .get(&current_snapshot_index)
-                .unwrap_or(&0.into()),
-            &self.configuration.borrow_interest_rate_strategy,
-        );
-
-        // Finalize this snapshot if necessary
-        if self.current_snapshot.time_chunk != time_chunk {
-            // Activate incoming funds
-            if let Some(incoming) = self
-                .borrow_asset_deposited_incoming
-                .remove(&current_snapshot_index)
-            {
-                asset_op!(self.borrow_asset_deposited_active += incoming);
-            }
-
-            // Emit event and push finalized snapshot
-            MarketEvent::SnapshotFinalized {
-                index: current_snapshot_index,
-                snapshot: self.current_snapshot.clone(),
-            }
-            .emit();
-            self.finalized_snapshots.push(self.current_snapshot.clone());
-
-            // Reset for the new time chunk
-            self.current_snapshot.time_chunk = time_chunk;
-            self.current_snapshot.yield_distribution = 0.into();
-            self.current_snapshot.update(
-                self.borrow_asset_deposited_active,
-                *self
-                    .borrow_asset_deposited_incoming
-                    .get(&(current_snapshot_index + 1))
-                    .unwrap_or(&0.into()),
-                &self.configuration.borrow_interest_rate_strategy,
-            );
+        // Do we need to finalize the current snapshot?
+        if self.current_time_chunk == now {
+            return SnapshotProof(());
         }
 
-        asset_op!(self.current_snapshot.yield_distribution += yield_distribution);
+        let snapshot = self.current_snapshot();
+        let current_snapshot_index = self.finalized_snapshots.len();
 
-        self.finalized_snapshots.len()
+        // Emit event and push finalized snapshot
+        MarketEvent::SnapshotFinalized {
+            index: current_snapshot_index,
+            snapshot: snapshot.clone(),
+        }
+        .emit();
+        self.finalized_snapshots.push(snapshot);
+
+        // Activate incoming funds
+        let incoming = self
+            .borrow_asset_deposited_incoming
+            .remove(&current_snapshot_index)
+            .unwrap_or(0.into());
+        asset_op!(self.borrow_asset_deposited_active += incoming);
+
+        // Reset for the new time chunk
+        self.current_time_chunk = now;
+        self.current_yield_distribution = 0.into();
+
+        SnapshotProof(())
+    }
+
+    pub fn interest_rate(&self) -> Decimal {
+        self.configuration
+            .borrow_interest_rate_strategy
+            .at(usage_ratio(
+                self.borrow_asset_deposited_active,
+                self.borrow_asset_borrowed,
+            ))
     }
 
     pub fn get_borrow_asset_available_to_borrow(&self) -> BorrowAssetAmount {
@@ -197,7 +214,11 @@ impl Market {
             .map(|position| SupplyPositionRef::new(self, account_id, position))
     }
 
-    pub fn supply_position_guard(&mut self, account_id: AccountId) -> Option<SupplyPositionGuard> {
+    pub fn supply_position_guard(
+        &mut self,
+        _proof: SnapshotProof,
+        account_id: AccountId,
+    ) -> Option<SupplyPositionGuard> {
         self.supply_positions
             .get(&account_id)
             .map(|position| SupplyPositionGuard::new(self, account_id, position))
@@ -205,12 +226,13 @@ impl Market {
 
     pub fn get_or_create_supply_position_guard(
         &mut self,
+        _proof: SnapshotProof,
         account_id: AccountId,
     ) -> SupplyPositionGuard {
         let position = self
             .supply_positions
             .get(&account_id)
-            .unwrap_or_else(|| SupplyPosition::new(self.snapshot()));
+            .unwrap_or_else(|| SupplyPosition::new(self.finalized_snapshots.len()));
 
         SupplyPositionGuard::new(self, account_id, position)
     }
@@ -233,7 +255,11 @@ impl Market {
             .map(|position| BorrowPositionRef::new(self, account_id, position))
     }
 
-    pub fn borrow_position_guard(&mut self, account_id: AccountId) -> Option<BorrowPositionGuard> {
+    pub fn borrow_position_guard(
+        &mut self,
+        _proof: SnapshotProof,
+        account_id: AccountId,
+    ) -> Option<BorrowPositionGuard> {
         self.borrow_positions
             .get(&account_id)
             .map(|position| BorrowPositionGuard::new(self, account_id, position))
@@ -241,12 +267,13 @@ impl Market {
 
     pub fn get_or_create_borrow_position_guard(
         &mut self,
+        _proof: SnapshotProof,
         account_id: AccountId,
     ) -> BorrowPositionGuard {
         let position = self
             .borrow_positions
             .get(&account_id)
-            .unwrap_or_else(|| BorrowPosition::new(self.snapshot()));
+            .unwrap_or_else(|| BorrowPosition::new(self.finalized_snapshots.len()));
 
         BorrowPositionGuard::new(self, account_id, position)
     }
@@ -267,14 +294,15 @@ impl Market {
     ) -> Result<Option<WithdrawalResolution>, WithdrawalQueueLockError> {
         let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
-        let Some((amount, mut supply_position)) =
-            self.supply_position_guard(account_id)
-                .and_then(|supply_position| {
-                    // Cap withdrawal amount to deposit amount at most.
-                    let amount = supply_position.total_deposit().min(requested_amount);
+        let proof = self.snapshot();
+        let Some((amount, mut supply_position)) = self
+            .supply_position_guard(proof, account_id)
+            .and_then(|supply_position| {
+                // Cap withdrawal amount to deposit amount at most.
+                let amount = supply_position.total_deposit().min(requested_amount);
 
-                    (!amount.is_zero()).then_some((amount, supply_position))
-                })
+                (!amount.is_zero()).then_some((amount, supply_position))
+            })
         else {
             // The amount that the entry is eligible to withdraw is zero, so skip it.
             self.withdrawal_queue
@@ -350,6 +378,16 @@ impl Market {
         }
 
         // Next, dynamic (supply-based) yield.
-        self.snapshot_with_yield_distribution(amount);
+        asset_op!(self.current_yield_distribution += amount);
+    }
+}
+
+fn usage_ratio(active: BorrowAssetAmount, borrowed: BorrowAssetAmount) -> Decimal {
+    if active.is_zero() || borrowed.is_zero() {
+        Decimal::ZERO
+    } else if borrowed >= active {
+        Decimal::ONE
+    } else {
+        Decimal::from(borrowed) / Decimal::from(active)
     }
 }
