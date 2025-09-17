@@ -93,7 +93,7 @@ jobs:
             echo "Account already exists, adding tokens and removing old market versions"
 
             near tokens "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
-              send-near "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '5 NEAR' \
+              send-near "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '6 NEAR' \
               network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
               sign-with-plaintext-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
               send
