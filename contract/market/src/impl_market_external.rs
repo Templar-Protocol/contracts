@@ -36,7 +36,11 @@ impl MarketExternalInterface for Contract {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(),
             deposited_active: self.borrow_asset_deposited_active,
-            deposited_incoming: self.borrow_asset_deposited_incoming.clone(),
+            deposited_incoming: self
+                .borrow_asset_deposited_incoming
+                .iter()
+                .map(|incoming| (incoming.activate_at_snapshot_index, incoming.amount))
+                .collect(),
             borrowed: self.borrow_asset_borrowed,
         }
     }

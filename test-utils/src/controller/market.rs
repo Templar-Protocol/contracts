@@ -92,7 +92,7 @@ impl MarketController {
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
         #[call]
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
-        #[call(tgas(20))]
+        #[call(tgas(25))]
         pub fn execute_next_supply_withdrawal_request();
     }
 

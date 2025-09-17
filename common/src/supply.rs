@@ -7,6 +7,7 @@ use crate::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
     asset_op,
     event::MarketEvent,
+    incoming_deposit::IncomingDeposit,
     market::{Market, WithdrawalResolution},
     number::Decimal,
 };
@@ -15,13 +16,6 @@ use crate::{
 /// supply position. This serves as proof that the yield has accrued, so it
 /// is safe to perform certain other operations.
 pub struct YieldAccumulationProof(());
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct IncomingDeposit {
-    pub amount: BorrowAssetAmount,
-    pub activate_at_snapshot_index: u32,
-}
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -255,17 +249,26 @@ impl<'a> SupplyPositionGuard<'a> {
                 "Too many deposits without running accumulation",
             );
             incoming.push(IncomingDeposit {
-                amount,
                 activate_at_snapshot_index,
+                amount,
             });
         }
 
-        self.market
+        if let Some(incoming) = self
+            .market
             .borrow_asset_deposited_incoming
-            .entry(activate_at_snapshot_index)
-            .or_insert(BorrowAssetAmount::zero())
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Market `borrow_asset_deposited_incoming` overflow"));
+            .iter_mut()
+            .find(|incoming| incoming.activate_at_snapshot_index == activate_at_snapshot_index)
+        {
+            asset_op!(incoming.amount += amount);
+        } else {
+            self.market
+                .borrow_asset_deposited_incoming
+                .push(IncomingDeposit {
+                    activate_at_snapshot_index,
+                    amount,
+                });
+        }
     }
 
     /// Returns the amount successfully removed from incoming.
@@ -274,14 +277,20 @@ impl<'a> SupplyPositionGuard<'a> {
         while let Some(newest) = self.position.borrow_asset_deposit.incoming.pop() {
             asset_op!(total += newest.amount);
 
-            self.market
+            let Some(market_incoming) = self
+                .market
                 .borrow_asset_deposited_incoming
-                .entry(newest.activate_at_snapshot_index)
-                .and_modify(|a| {
-                    a.split(newest.amount).unwrap_or_else(|| {
-                        env::panic_str("Market `borrow_asset_deposited_incoming` underflow")
-                    });
-                });
+                .iter_mut()
+                .find(|incoming| {
+                    incoming.activate_at_snapshot_index == newest.activate_at_snapshot_index
+                })
+            else {
+                env::panic_str("Invariant violation: Market incoming entry should exist if position incoming entry exists");
+            };
+            asset_op!(
+                @msg("Invariant violation: Market incoming >= position incoming should hold for all snapshot indices")
+                market_incoming.amount -= newest.amount;
+            );
 
             #[allow(clippy::comparison_chain)]
             if total == amount {

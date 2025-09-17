@@ -20,16 +20,24 @@ async fn main() {
 
     c.borrow(&borrow_user, 10_000).await;
 
-    c.set_collateral_asset_price(0.85).await;
+    // c.repay(&borrow_user, 10_000).await;
 
-    c.liquidate(&liquidator_user, borrow_user.id(), 11_000)
-        .await;
+    // c.set_collateral_asset_price(0.85).await;
 
-    let r = c
-        .withdraw_static_yield(&insurance_yield_user, None, None)
+    // c.liquidate(&liquidator_user, borrow_user.id(), 11_000)
+    //     .await;
+
+    // let r = c
+    //     .withdraw_static_yield(&insurance_yield_user, None, None)
+    //     .await;
+
+    c.create_supply_withdrawal_request(&supply_user, 1_000)
         .await;
+    let r = c.execute_next_supply_withdrawal_request(&supply_user).await;
 
     for receipt in r.receipt_outcomes() {
         eprintln!("{}: {}", receipt.executor_id, receipt.gas_burnt);
     }
+
+    eprintln!("Total gas: {}", r.total_gas_burnt);
 }

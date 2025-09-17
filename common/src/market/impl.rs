@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
@@ -11,6 +9,7 @@ use crate::{
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
+    incoming_deposit::IncomingDeposit,
     market::{MarketConfiguration, WithdrawalResolution},
     number::Decimal,
     snapshot::Snapshot,
@@ -39,8 +38,8 @@ pub struct Market {
     pub configuration: MarketConfiguration,
     /// Total amount of borrow asset earning interest in the market.
     pub borrow_asset_deposited_active: BorrowAssetAmount,
-    /// Mapping of upcoming snapshot indices to amounts of borrow asset that will be activated.
-    pub borrow_asset_deposited_incoming: HashMap<u32, BorrowAssetAmount>,
+    /// Upcoming snapshot indices with amounts of borrow asset that will be activated.
+    pub borrow_asset_deposited_incoming: Vec<IncomingDeposit>,
     /// Sending borrow asset out, because if somebody sends the contract borrow asset, it's ok for the
     /// contract to attempt to fulfill withdrawal request, even if the market thinks it doesn't have
     /// enough to fulfill.
@@ -55,7 +54,7 @@ pub struct Market {
     pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub current_time_chunk: TimeChunk,
     pub current_yield_distribution: BorrowAssetAmount,
-    pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 128>,
+    pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 32>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
@@ -84,7 +83,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited_active: 0.into(),
-            borrow_asset_deposited_incoming: HashMap::new(),
+            borrow_asset_deposited_incoming: Vec::new(),
             borrow_asset_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
             collateral_asset_deposited: 0.into(),
@@ -103,10 +102,10 @@ impl Market {
     }
 
     pub fn total_incoming(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposited_incoming.values().fold(
+        self.borrow_asset_deposited_incoming.iter().fold(
             BorrowAssetAmount::zero(),
             |mut total_incoming, incoming| {
-                asset_op!(total_incoming += *incoming);
+                asset_op!(total_incoming += incoming.amount);
                 total_incoming
             },
         )
@@ -120,10 +119,15 @@ impl Market {
     }
 
     pub fn current_snapshot(&self) -> Snapshot {
-        let incoming = *self
+        let current_snapshot_index = self.finalized_snapshots.len();
+        let incoming = self
             .borrow_asset_deposited_incoming
-            .get(&self.finalized_snapshots.len())
-            .unwrap_or(&0.into());
+            .iter()
+            .find_map(|incoming| {
+                (incoming.activate_at_snapshot_index == current_snapshot_index)
+                    .then_some(incoming.amount)
+            })
+            .unwrap_or(0.into());
 
         let mut active = self.borrow_asset_deposited_active;
         asset_op!(active += incoming);
@@ -165,11 +169,14 @@ impl Market {
         self.finalized_snapshots.push(snapshot);
 
         // Activate incoming funds
-        let incoming = self
-            .borrow_asset_deposited_incoming
-            .remove(&current_snapshot_index)
-            .unwrap_or(0.into());
-        asset_op!(self.borrow_asset_deposited_active += incoming);
+        for i in 0..self.borrow_asset_deposited_incoming.len() {
+            let incoming = &self.borrow_asset_deposited_incoming[i];
+            if incoming.activate_at_snapshot_index == current_snapshot_index {
+                asset_op!(self.borrow_asset_deposited_active += incoming.amount);
+                self.borrow_asset_deposited_incoming.remove(i);
+                break;
+            }
+        }
 
         // Reset for the new time chunk
         self.current_time_chunk = now;
