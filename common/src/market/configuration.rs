@@ -7,11 +7,11 @@ use crate::{
         AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount,
         FungibleAsset, FungibleAssetAmount,
     },
-    borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
+    borrow::{BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
-    price::{PricePair, Valuation},
+    price::{Convert, PricePair},
     time_chunk::TimeChunkConfiguration,
 };
 
@@ -103,31 +103,68 @@ impl<A: AssetClass + PartialOrd> AmountRange<A> {
     }
 }
 
+/// Configuration for a single asset-pair borrow market.
+///
+/// A market's configuration is immutable after deployment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
+    /// As time passes, the market creates snapshots of its state. These
+    /// snapshots are used to calculate the interest charged to borrowers,
+    /// yield earned by suppliers, etc. A **time chunk** represents the period
+    /// of time over which a snapshot is taken, and is used as a disambiguating
+    /// index for snapshots.
     pub time_chunk_configuration: TimeChunkConfiguration,
+    /// The borrow asset supported by this market.
     pub borrow_asset: FungibleAsset<BorrowAsset>,
+    /// The collateral asset supported by this market.
     pub collateral_asset: FungibleAsset<CollateralAsset>,
+    /// The market communicates with a price oracle to determine asset
+    /// valuations.
     pub price_oracle_configuration: PriceOracleConfiguration,
+    /// A borrow position must satisfy this minimum collateralization ratio
+    /// after any modifications (e.g. withdrawing collateral).
+    ///
+    /// Must be greater than or equal to `borrow_mcr_liquidation`.
     pub borrow_mcr_maintenance: Decimal,
+    /// A borrow position is eligible for liquidation if it does not satisfy
+    /// this minimu collateralization ratio.
+    ///
+    /// Must be less than or equal to `borrow_mcr_maintenance`.
     pub borrow_mcr_liquidation: Decimal,
-    /// How much of the deposited principal may be lent out (up to 100%)?
+    /// Maintain a reserve of some% of the deposited supply; how much of the
+    /// deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
-    /// Set to 99% for starters.
     pub borrow_asset_maximum_usage_ratio: Decimal,
     /// The origination fee is a one-time amount added to the principal of the
     /// borrow. That is to say, the origination fee is denominated in units of
     /// the borrow asset and is paid by the borrowing account during repayment
     /// (or liquidation).
     pub borrow_origination_fee: Fee<BorrowAsset>,
+    /// Interest rate is decided by a function of utilization ratio [0.0, 1.0].
     pub borrow_interest_rate_strategy: InterestRateStrategy,
+    /// If a maximum borrow duration is configured, a borrow position is
+    /// instantly eligible for liquidation (regardless of collateralization
+    /// ratio) after this period has expired.
     pub borrow_maximum_duration_ms: Option<U64>,
+    /// A borrow position's principal must be within this range after modification.
     pub borrow_range: ValidAmountRange<BorrowAsset>,
+    /// A supply position's deposit must be within this range after modification.
     pub supply_range: ValidAmountRange<BorrowAsset>,
+    /// A supply position may only request to withdraw amounts within this range.
     pub supply_withdrawal_range: ValidAmountRange<BorrowAsset>,
+    /// A time-bound fee for supply, to discourage extremely short-lived
+    /// supply positions.
     pub supply_withdrawal_fee: TimeBasedFee<BorrowAsset>,
+    /// Determines how yield is distributed between suppliers (dynamically
+    /// allocated based on deposit) and statically-configured accounts (e.g. a
+    /// protocol insurance account).
     pub yield_weights: YieldWeights,
+    /// For collecting supply withdrawal fees.
+    ///
+    /// Supply withdrawal fees cannot be distributed to other suppliers
+    /// because there may not be any suppliers to earn those fees after the
+    /// last one withdraws.
     pub protocol_account_id: AccountId,
     /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
     ///
@@ -192,13 +229,13 @@ impl MarketConfiguration {
             return Err(error::must_not_equal("borrow_asset", "collateral_asset"));
         }
 
-        if self.borrow_mcr_maintenance < 1u32
+        if self.borrow_mcr_maintenance <= 1u32
             || self.borrow_mcr_maintenance < self.borrow_mcr_liquidation
         {
             return Err(error::out_of_bounds("borrow_mcr_maintenance"));
         }
 
-        if self.borrow_mcr_liquidation < 1u32 {
+        if self.borrow_mcr_liquidation <= 1u32 {
             return Err(error::out_of_bounds("borrow_mcr_liquidation"));
         }
 
@@ -225,16 +262,24 @@ impl MarketConfiguration {
 
     pub fn borrow_status(
         &self,
-        borrow_position: &BorrowPosition,
-        price_pair: &PricePair,
+        collateralization_ratio: Option<Decimal>,
+        started_at_block_timestamp_ms: Option<impl Into<u64>>,
         block_timestamp_ms: u64,
     ) -> BorrowStatus {
-        if !self.satisfies_mcr_liquidation(borrow_position, price_pair) {
-            return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
+        if started_at_block_timestamp_ms.is_some_and(|started_at| {
+            !self.is_within_maximum_borrow_duration(started_at.into(), block_timestamp_ms)
+        }) {
+            return BorrowStatus::Liquidation(LiquidationReason::Expiration);
         }
 
-        if !self.is_within_maximum_borrow_duration(borrow_position, block_timestamp_ms) {
-            return BorrowStatus::Liquidation(LiquidationReason::Expiration);
+        if let Some(cr) = collateralization_ratio {
+            if cr < self.borrow_mcr_liquidation {
+                return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
+            }
+
+            if cr < self.borrow_mcr_maintenance {
+                return BorrowStatus::MaintenanceRequired;
+            }
         }
 
         BorrowStatus::Healthy
@@ -242,40 +287,15 @@ impl MarketConfiguration {
 
     fn is_within_maximum_borrow_duration(
         &self,
-        borrow_position: &BorrowPosition,
+        started_at_block_timestamp_ms: u64,
         block_timestamp_ms: u64,
     ) -> bool {
         let Some(U64(maximum_duration_ms)) = self.borrow_maximum_duration_ms else {
             return true;
         };
-        borrow_position
-            .started_at_block_timestamp_ms
-            .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
+        block_timestamp_ms
+            .checked_sub(started_at_block_timestamp_ms)
             .is_none_or(|duration_ms| duration_ms <= maximum_duration_ms)
-    }
-
-    pub fn satisfies_mcr_maintenance(
-        &self,
-        borrow_position: &BorrowPosition,
-        oracle_price_proof: &PricePair,
-    ) -> bool {
-        satisfies_minimum_collateral_ratio(
-            self.borrow_mcr_maintenance,
-            borrow_position,
-            oracle_price_proof,
-        )
-    }
-
-    pub fn satisfies_mcr_liquidation(
-        &self,
-        borrow_position: &BorrowPosition,
-        oracle_price_proof: &PricePair,
-    ) -> bool {
-        satisfies_minimum_collateral_ratio(
-            self.borrow_mcr_liquidation,
-            borrow_position,
-            oracle_price_proof,
-        )
     }
 
     pub fn minimum_acceptable_liquidation_amount(
@@ -283,34 +303,10 @@ impl MarketConfiguration {
         amount: CollateralAssetAmount,
         price_pair: &PricePair,
     ) -> Option<BorrowAssetAmount> {
-        ((1u32 - self.liquidation_maximum_spread)
-            * Valuation::pessimistic(amount, &price_pair.collateral).ratio(
-                Valuation::optimistic(BorrowAssetAmount::new(1), &price_pair.borrow),
-            )?)
-        .to_u128_ceil()
-        .map(BorrowAssetAmount::new)
+        ((1u32 - self.liquidation_maximum_spread) * price_pair.convert(amount))
+            .to_u128_ceil()
+            .map(BorrowAssetAmount::new)
     }
-}
-
-fn satisfies_minimum_collateral_ratio(
-    mcr: Decimal,
-    borrow_position: &BorrowPosition,
-    price_pair: &PricePair,
-) -> bool {
-    let borrow_liability = borrow_position.get_total_borrow_asset_liability();
-    if borrow_liability.is_zero() {
-        return true;
-    }
-
-    let collateral_valuation = Valuation::pessimistic(
-        borrow_position.collateral_asset_deposit,
-        &price_pair.collateral,
-    );
-    let borrow_valuation = Valuation::optimistic(borrow_liability, &price_pair.borrow);
-
-    collateral_valuation
-        .ratio(borrow_valuation)
-        .is_some_and(|ratio| ratio >= mcr)
 }
 
 #[cfg(test)]
@@ -321,37 +317,7 @@ mod tests {
     };
     use rstest::rstest;
 
-    use crate::{borrow::InterestAccumulationProof, dec, oracle::pyth};
-
     use super::*;
-
-    #[test]
-    fn test_satisfies_minimum_collateral_ratio() {
-        let mut b = BorrowPosition::new(0);
-        b.increase_collateral_asset_deposit(121u128.into());
-        b.increase_borrow_asset_principal(InterestAccumulationProof::test(), 100u128.into(), 0);
-        assert!(satisfies_minimum_collateral_ratio(
-            dec!("1.2"),
-            &b,
-            &PricePair::new(
-                &pyth::Price {
-                    price: near_sdk::json_types::I64(10000),
-                    conf: U64(1),
-                    expo: -4,
-                    publish_time: 0,
-                },
-                18,
-                &pyth::Price {
-                    price: near_sdk::json_types::I64(10000),
-                    conf: U64(1),
-                    expo: -4,
-                    publish_time: 0,
-                },
-                18,
-            )
-            .unwrap()
-        ));
-    }
 
     #[rstest]
     #[case(1, 0)]

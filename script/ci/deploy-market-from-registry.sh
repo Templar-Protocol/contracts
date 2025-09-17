@@ -36,7 +36,7 @@ near contract call-function as-transaction "${REGISTRY_ID}" \
     deploy_market \
         json-args "${ARGS}" \
         prepaid-gas '300.0 Tgas' \
-        attached-deposit '5 NEAR' \
+        attached-deposit '6 NEAR' \
     sign-as "${ACCOUNT_ID}" \
     network-config "${NETWORK}" \
     sign-with-plaintext-private-key "${PRIVATE_KEY}" \

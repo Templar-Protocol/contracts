@@ -5,14 +5,25 @@ use crate::{
     price::PricePair,
 };
 
+/// Oracle configuration.
+///
+/// Supports oracles that implement
+/// [Pyth Network](https://docs.pyth.network/)'s functionality.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct PriceOracleConfiguration {
+    /// Account ID of the oracle contract.
     pub account_id: AccountId,
+    /// Price identifier of the collateral asset in the oracle contract.
     pub collateral_asset_price_id: PriceIdentifier,
+    /// Collateral asset decimals, to convert the oracle price.
     pub collateral_asset_decimals: i32,
+    /// Price identifier of the borrow asset in the oracle contract.
     pub borrow_asset_price_id: PriceIdentifier,
+    /// Borrow asset decimals, to convert the oracle price.
     pub borrow_asset_decimals: i32,
+    /// Maximum price age to accept from the oracle, after which the price
+    /// will be considered stale and rejected.
     pub price_maximum_age_s: u32,
 }
 

@@ -76,7 +76,7 @@ impl MarketExternalInterface for Contract {
         account_id: AccountId,
         oracle_response: OracleResponse,
     ) -> Option<BorrowStatus> {
-        let borrow_position = self.get_borrow_position(account_id)?;
+        let borrow_position = self.borrow_position_ref(account_id)?;
 
         let price_pair = self
             .configuration
@@ -84,11 +84,7 @@ impl MarketExternalInterface for Contract {
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-        Some(self.configuration.borrow_status(
-            &borrow_position,
-            &price_pair,
-            env::block_timestamp_ms(),
-        ))
+        Some(borrow_position.status(&price_pair, env::block_timestamp_ms()))
     }
 
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {

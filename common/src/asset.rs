@@ -1,4 +1,7 @@
-use std::{fmt::Display, marker::PhantomData};
+use std::{
+    fmt::{Debug, Display},
+    marker::PhantomData,
+};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
 #[cfg(not(target_arch = "wasm32"))]
@@ -13,9 +16,29 @@ use near_sdk::{
 
 use crate::number::Decimal;
 
+/// Assets may be configuread as one of the supported asset types.
+///
+/// The following asset contract standards are supported:
+///
+/// - [NEP-141 Fungible Token (FT)](https://nomicon.io/Standards/Tokens/FungibleToken/Core)
+/// - [NEP-245 Multi-Token (MT)](https://nomicon.io/Standards/Tokens/MultiToken/Core)
+///
+/// ---
+///
+/// Assets can be constructed using associated functions:
+///
+/// ```
+/// let my_ft = FungibleAsset::<BorrowAsset>::nep141("contract_id".parse().unwrap());
+/// let my_mt = FungibleAsset::<CollateralAsset>::nep245(
+///     "contract_id".parse().unwrap(),
+///     "token_id".to_string(),
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
 pub struct FungibleAsset<T: AssetClass> {
+    // Necessary because there is no clean way to use PhantomData<T> in an enum.
+    // https://internals.rust-lang.org/t/type-parameter-not-used-on-enums/13342
     #[serde(skip)]
     #[borsh(skip)]
     discriminant: PhantomData<T>,
@@ -290,13 +313,19 @@ pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}
 impl AssetClass for BorrowAsset {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 #[serde(from = "U128", into = "U128")]
 pub struct FungibleAssetAmount<T: AssetClass> {
     amount: U128,
     #[borsh(skip)]
     discriminant: PhantomData<T>,
+}
+
+impl<T: AssetClass> Debug for FungibleAssetAmount<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}<{}>", self.amount.0, std::any::type_name::<T>())
+    }
 }
 
 impl<T: AssetClass> Default for FungibleAssetAmount<T> {

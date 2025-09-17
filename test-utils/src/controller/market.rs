@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, Gas, NearToken,
+    AccountId, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
@@ -14,6 +14,7 @@ use templar_common::{
     market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration},
     number::Decimal,
     oracle::pyth::{self, OracleResponse},
+    price::Convert,
     snapshot::Snapshot,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -80,41 +81,22 @@ impl MarketController {
         #[view] pub fn get_supply_withdrawal_queue_status() -> WithdrawalQueueStatus;
         #[view] pub fn get_last_yield_rate() -> Decimal;
 
-        #[call(tgas(300))]
+        #[call(exec, tgas(300))]
         pub fn borrow(amount: U128);
-        #[call(tgas(300))]
+        #[call(exec, tgas(300))]
         pub fn apply_interest(account_id: Option<&AccountId>, snapshot_limit: Option<u32>);
         #[call(tgas(300))]
         pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
-        #[call(tgas(20))]
+        #[call(exec, tgas(300))]
+        pub fn harvest_yield_exec["harvest_yield"](account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
+        #[call(exec, tgas(20))]
         pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
-        #[call(tgas(42))]
+        #[call(exec, tgas(42))]
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
-        #[call]
+        #[call(exec)]
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
-        #[call(tgas(25))]
+        #[call(exec, tgas(25))]
         pub fn execute_next_supply_withdrawal_request();
-    }
-
-    pub async fn harvest_yield_execution(
-        &self,
-        supply_user: &Account,
-        account_id: Option<&AccountId>,
-        mode: Option<HarvestYieldMode>,
-    ) -> ExecutionSuccess {
-        eprintln!("{} harvesting yield...", supply_user.id());
-        self.call_exec(
-            supply_user,
-            "harvest_yield",
-            serde_json::to_vec(&json!({
-                "account_id": account_id,
-                "mode": mode,
-            }))
-            .unwrap(),
-            NearToken::from_near(0),
-            Gas::from_tgas(300),
-        )
-        .await
     }
 
     #[allow(unused)] // This is useful for debugging tests
@@ -386,7 +368,8 @@ impl UnifiedMarketController {
         &self,
         liquidator_user: &Account,
         account_id: &AccountId,
-        borrow_asset_amount: u128,
+        expect_receive_collateral: CollateralAssetAmount,
+        borrow_asset_amount: BorrowAssetAmount,
     ) -> ExecutionSuccess {
         eprintln!(
             "{} executing liquidation against {} for {}...",
@@ -401,9 +384,58 @@ impl UnifiedMarketController {
                 borrow_asset_amount,
                 serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
                     account_id: account_id.clone(),
+                    amount: Some(expect_receive_collateral),
                 }))
                 .unwrap(),
             )
             .await
+    }
+
+    pub async fn liquidatable_collateral_fmv(
+        &self,
+        account_id: &AccountId,
+    ) -> (CollateralAssetAmount, BorrowAssetAmount) {
+        let price_pair = self
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&self.get_prices().await)
+            .unwrap();
+        let borrow_position = self.get_borrow_position(account_id).await.unwrap();
+        let liquidate_collateral = borrow_position.liquidatable_collateral(
+            &price_pair,
+            self.configuration.borrow_mcr_maintenance,
+            self.configuration.liquidation_maximum_spread,
+        );
+        let pay_for_collateral = price_pair
+            .convert(liquidate_collateral)
+            .to_u128_ceil()
+            .unwrap()
+            .max(1)
+            .into();
+        (liquidate_collateral, pay_for_collateral)
+    }
+
+    pub async fn liquidatable_collateral_with_spread(
+        &self,
+        account_id: &AccountId,
+    ) -> (CollateralAssetAmount, BorrowAssetAmount) {
+        let price_pair = self
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&self.get_prices().await)
+            .unwrap();
+        let borrow_position = self.get_borrow_position(account_id).await.unwrap();
+        let liquidate_collateral = borrow_position.liquidatable_collateral(
+            &price_pair,
+            self.configuration.borrow_mcr_maintenance,
+            self.configuration.liquidation_maximum_spread,
+        );
+        let pay_for_collateral = (price_pair.convert(liquidate_collateral)
+            * (Decimal::ONE - self.configuration.liquidation_maximum_spread))
+            .to_u128_ceil()
+            .unwrap()
+            .max(1)
+            .into();
+        (liquidate_collateral, pay_for_collateral)
     }
 }

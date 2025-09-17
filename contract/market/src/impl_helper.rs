@@ -4,7 +4,8 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     asset_op,
-    market::WithdrawalResolution,
+    borrow::InitialLiquidation,
+    market::{LiquidateMsg, WithdrawalResolution},
     oracle::pyth::OracleResponse,
     price::PricePair,
     self_ext,
@@ -61,12 +62,14 @@ impl Contract {
 
         let snapshot = self.snapshot();
         let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
-        if borrow_position.inner().is_liquidation_locked {
+        if !borrow_position.inner().liquidation_lock.is_zero() {
             env::panic_str("Cannot add collateral while liquidation locked");
         }
         let proof = borrow_position.accumulate_interest();
         require!(
-            !borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            !borrow_position
+                .status(price_pair, env::block_timestamp_ms())
+                .is_liquidation(),
             "Cannot add collateral when eligible for liquidation",
         );
         borrow_position.record_collateral_asset_deposit(proof, amount);
@@ -86,75 +89,15 @@ impl Contract {
         };
         let proof = borrow_position.accumulate_interest();
         require!(
-            !borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
+            !borrow_position
+                .status(price_pair, env::block_timestamp_ms())
+                .is_liquidation(),
             "Cannot repay when eligible for liquidation",
         );
         // Returns the amount that should be returned to the borrower.
-        borrow_position.record_repay(proof, amount)
-    }
-
-    pub fn execute_liquidate_initial(
-        &mut self,
-        account_id: AccountId,
-        amount: BorrowAssetAmount,
-        price_pair: &PricePair,
-    ) -> CollateralAssetAmount {
-        let snapshot = self.snapshot();
-        let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
-
-        borrow_position.accumulate_interest();
-
-        require!(
-            borrow_position.is_eligible_for_liquidation(price_pair, env::block_timestamp_ms()),
-            "Borrow position is not eligible for liquidation",
-        );
-
-        let minimum_acceptable_amount = borrow_position
-            .minimum_acceptable_liquidation_amount(price_pair)
-            .unwrap_or_else(|| env::panic_str("Minimum acceptable amount calculation overflow"));
-
-        require!(
-            amount >= minimum_acceptable_amount,
-            "Too little attached to liquidate",
-        );
-
-        borrow_position.liquidation_lock();
-
-        borrow_position.inner().collateral_asset_deposit
-    }
-
-    /// Returns the amount to return to the liquidator.
-    pub fn execute_liquidate_final(
-        &mut self,
-        liquidator_id: AccountId,
-        account_id: AccountId,
-        amount: BorrowAssetAmount,
-        success: bool,
-    ) -> BorrowAssetAmount {
-        let snapshot = self.snapshot();
-        let mut borrow_position = self
-            .borrow_position_guard(snapshot, account_id)
-            .unwrap_or_else(|| {
-                env::panic_str("Invariant violation: Liquidation of nonexistent position.")
-            });
-
-        if success {
-            borrow_position.record_full_liquidation(liquidator_id, amount);
-            BorrowAssetAmount::zero()
-        } else {
-            // Somehow transfer of collateral failed. This could mean:
-            //
-            // 1. Somehow the contract does not have enough collateral
-            //  available. This would be indicative of a *fundamental flaw*
-            //  in the contract (i.e. this should never happen).
-            //
-            // 2. More likely, in a multichain context, communication
-            //  broke down somewhere between the signer and the remote RPC.
-            //  Could be as simple as a nonce sync issue. Should just wait
-            //  and try again later.
-            borrow_position.liquidation_unlock();
-            amount
-        }
+        borrow_position
+            .record_repay(proof, amount)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
     }
 }
 
@@ -201,13 +144,10 @@ impl Contract {
         borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
 
         require!(
-            borrow_position.satisfies_mcr_maintenance(&price_pair),
-            "Borrow position must satisfy maintenance minimum collateral ratio after borrow.",
-        );
-
-        require!(
-            !borrow_position.is_eligible_for_liquidation(&price_pair, env::block_timestamp_ms()),
-            "New position would be in liquidation",
+            borrow_position
+                .status(&price_pair, env::block_timestamp_ms())
+                .is_healthy(),
+            "Borrow position must be healthy after borrow",
         );
 
         drop(borrow_position);
@@ -376,16 +316,16 @@ impl Contract {
     }
 
     // ~4.9 Tgas
-    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE: Gas = Gas::from_tgas(7)
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
         .saturating_add(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE);
 
     #[private]
-    pub fn liquidate_transfer_call_01_consume_oracle_response(
+    pub fn liquidate_transfer_call_01_consume_price(
         &mut self,
         liquidator_id: AccountId,
-        account_id: AccountId,
         amount: BorrowAssetAmount,
+        msg: LiquidateMsg,
         return_style: ReturnStyle,
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
@@ -395,18 +335,34 @@ impl Contract {
             .create_price_pair(&oracle_response)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-        let liquidated_collateral =
-            self.execute_liquidate_initial(account_id.clone(), amount, &price_pair);
+        let result = {
+            let snapshot = self.snapshot();
+            let mut borrow_position = self
+                .borrow_position_guard(snapshot, msg.account_id.clone())
+                .unwrap_or_else(|| env::panic_str("Borrow position does not exist"));
+
+            let proof = borrow_position.accumulate_interest();
+
+            borrow_position
+                .record_liquidation_initial(
+                    proof,
+                    amount,
+                    msg.amount,
+                    &price_pair,
+                    env::block_timestamp_ms(),
+                )
+                .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+        };
 
         self.configuration
             .collateral_asset
-            .transfer(liquidator_id.clone(), liquidated_collateral)
+            .transfer(liquidator_id.clone(), result.liquidated)
             .then(
                 self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE)
                     .liquidate_transfer_call_02_finalize(
                         liquidator_id,
-                        account_id,
-                        amount,
+                        msg.account_id,
+                        result,
                         return_style,
                     ),
             )
@@ -422,15 +378,38 @@ impl Contract {
         &mut self,
         liquidator_id: AccountId,
         account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
+        initial_liquidation: InitialLiquidation,
         return_style: ReturnStyle,
     ) -> serde_json::Value {
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        let refund_to_liquidator =
-            self.execute_liquidate_final(liquidator_id, account_id, borrow_asset_amount, success);
+        let snapshot = self.snapshot();
+        let mut borrow_position = self
+            .borrow_position_guard(snapshot, account_id)
+            .unwrap_or_else(|| {
+                env::panic_str("Invariant violation: Liquidation of nonexistent position.")
+            });
 
-        return_style.serialize(refund_to_liquidator)
+        if success {
+            let proof = borrow_position.accumulate_interest();
+            borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
+            return_style.serialize(initial_liquidation.refund)
+        } else {
+            // Somehow transfer of collateral failed. This could mean:
+            //
+            // 1. Somehow the contract does not have enough collateral
+            //  available. This would be indicative of a *fundamental flaw*
+            //  in the contract (i.e. this should never happen).
+            //
+            // 2. More likely, in a multichain context, communication
+            //  broke down somewhere between the signer and the remote RPC.
+            //  Could be as simple as a nonce sync issue. Should just wait
+            //  and try again later.
+            borrow_position.liquidation_unlock(initial_liquidation.liquidated);
+            let mut return_amount = initial_liquidation.recovered;
+            asset_op!(return_amount += initial_liquidation.refund);
+            return_style.serialize(return_amount)
+        }
     }
 
     // ~5.0 Tgas
@@ -457,13 +436,10 @@ impl Contract {
         borrow_position.record_collateral_asset_withdrawal(proof, amount);
 
         require!(
-            borrow_position.satisfies_mcr_liquidation(&price_pair),
-            "Borrow position must satisfy liquidation minimum collateral ratio after collateral withdrawal.",
-        );
-
-        require!(
-            borrow_position.satisfies_mcr_maintenance(&price_pair),
-            "Borrow position must satisfy maintenance minimum collateral ratio after collateral withdrawal.",
+            borrow_position
+                .status(&price_pair, env::block_timestamp_ms())
+                .is_healthy(),
+            "Borrow position must be healthy after collateral withdrawal",
         );
 
         drop(borrow_position);

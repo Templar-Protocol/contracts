@@ -23,6 +23,13 @@ async fn main() {
     // c.repay(&borrow_user, 10_000).await;
 
     // c.set_collateral_asset_price(0.85).await;
+    c.liquidate(
+        &liquidator_user,
+        borrow_user.id(),
+        13_000.into(),
+        11_000.into(),
+    )
+    .await;
 
     // c.liquidate(&liquidator_user, borrow_user.id(), 11_000)
     //     .await;
