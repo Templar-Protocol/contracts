@@ -44,13 +44,13 @@ impl MtController {
         #[view]
         pub fn redemption_rate(token_id: String) -> U128;
 
-        #[call(yocto(1))]
+        #[call(exec, yocto(1))]
         pub fn mt_transfer(token_id: String, receiver_id: &AccountId, amount: U128);
 
-        #[call(yocto(1), tgas(300))]
+        #[call(exec, yocto(1), tgas(300))]
         pub fn mt_transfer_call(token_id: String, receiver_id: &AccountId, amount: U128, msg: String);
 
-        #[call]
+        #[call(exec)]
         pub fn mint(token_id: String, amount: U128);
 
         #[call]

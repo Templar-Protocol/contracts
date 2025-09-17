@@ -61,10 +61,9 @@ pub enum MarketEvent {
         borrow_asset_principal_remaining: BorrowAssetAmount,
     },
     #[event_version("1.0.0")]
-    FullLiquidation {
+    Liquidation {
         liquidator_id: AccountId,
         account_id: AccountId,
-        borrow_asset_principal: BorrowAssetAmount,
         borrow_asset_recovered: BorrowAssetAmount,
         collateral_asset_liquidated: CollateralAssetAmount,
     },

@@ -49,16 +49,16 @@ impl FtController {
         #[view]
         pub fn redemption_rate() -> U128;
 
-        #[call(yocto(1))]
+        #[call(exec, yocto(1))]
         pub fn ft_transfer(receiver_id: &AccountId, amount: U128);
 
-        #[call(yocto(1), tgas(300))]
+        #[call(exec, yocto(1), tgas(300))]
         pub fn ft_transfer_call(receiver_id: &AccountId, amount: U128, msg: String);
 
-        #[call]
+        #[call(exec)]
         pub fn mint(amount: U128);
 
-        #[call]
+        #[call(exec)]
         pub fn set_redemption_rate(redemption_rate: U128);
     }
 }

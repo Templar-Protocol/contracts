@@ -4,7 +4,7 @@ use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
 use near_sdk_contract_tools::mt::*;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    market::{DepositMsg, LiquidateMsg},
+    market::DepositMsg,
     self_ext,
 };
 
@@ -83,7 +83,7 @@ impl FungibleTokenReceiver for Contract {
                         ),
                 )
             }
-            DepositMsg::Liquidate(LiquidateMsg { account_id }) => {
+            DepositMsg::Liquidate(msg) => {
                 let amount = use_borrow_asset();
 
                 PromiseOrValue::Promise(
@@ -91,11 +91,11 @@ impl FungibleTokenReceiver for Contract {
                         .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
-                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
-                                .liquidate_transfer_call_01_consume_oracle_response(
+                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .liquidate_transfer_call_01_consume_price(
                                     sender_id,
-                                    account_id,
                                     amount,
+                                    msg,
                                     RETURN_STYLE,
                                 ),
                         ),
@@ -205,7 +205,7 @@ impl Nep245Receiver for Contract {
                         ),
                 )
             }
-            DepositMsg::Liquidate(LiquidateMsg { account_id }) => {
+            DepositMsg::Liquidate(msg) => {
                 let amount = use_borrow_asset();
 
                 PromiseOrValue::Promise(
@@ -213,11 +213,11 @@ impl Nep245Receiver for Contract {
                         .price_oracle_configuration
                         .retrieve_price_pair()
                         .then(
-                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_ORACLE_RESPONSE)
-                                .liquidate_transfer_call_01_consume_oracle_response(
+                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
+                                .liquidate_transfer_call_01_consume_price(
                                     sender_id,
-                                    account_id,
                                     amount,
+                                    msg,
                                     RETURN_STYLE,
                                 ),
                         ),
