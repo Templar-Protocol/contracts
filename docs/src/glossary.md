@@ -15,7 +15,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 **Borrow Asset**
 : The token that users can borrow from the market. Typically a stablecoin like USDC, but can be any supported token.
 
-**Borrow Position** { #borrow-position }
+**Borrow Position**
 : A user's borrowing account containing collateral deposits, borrowed amounts, accumulated interest, and current status.
 
 **Borrower**
@@ -23,7 +23,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 ## C
 
-**Collateral Asset** { #collateral-asset }
+**Collateral Asset**
 : The token deposited by borrowers to secure their loans. Must be worth more than the borrowed amount due to over-collateralization requirements.
 
 **Collateralization Ratio (CR)**
@@ -88,7 +88,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 **Maximum Usage Ratio**
 : The maximum percentage of supplied assets that can be borrowed from a market, preventing over-utilization and maintaining liquidity reserves.
 
-**MCR (Minimum Collateralization Ratio)** { #mcr-minimum-collateralization-ratio }
+**MCR (Minimum Collateralization Ratio)**
 : The minimum ratio of collateral value to borrowed value required to maintain a position. Different MCR levels trigger maintenance requirements or liquidation.
 
 **MCR Liquidation**
@@ -98,6 +98,9 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 : The minimum collateralization ratio required for new borrows or collateral withdrawals.
 
 ## N
+
+**NEAR Intents**
+: A NEAR Protocol feature that allows users to express desired outcomes (intents) that can be fulfilled by solvers, enabling more flexible and efficient transaction execution. See the [official NEAR Intents documentation](https://docs.near.org/chain-abstraction/intents/overview).
 
 **NEP-141**
 : The NEAR Protocol standard for fungible tokens, similar to Ethereum's ERC-20. See the [official NEP-141 specification](https://nomicon.io/Standards/Tokens/FungibleToken/Core).
@@ -119,13 +122,13 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 ## P
 
 **Partial Liquidation**
-: Liquidating only enough collateral to bring a position back to the minimum collateralization ratio, rather than liquidating the entire position.
+: Liquidating only enough collateral to bring a position back to the maintenance MCR, rather than liquidating the entire position.
 
 **Principal**
 : The original amount borrowed or supplied, excluding accumulated interest and fees.
 
 **Protocol Revenue**
-: Fees collected by the protocol from borrowers and suppliers, used for operations and governance.
+: Fees collected by the protocol from borrowers and suppliers, distributed to suppliers and other accounts according to configured yield weights.
 
 **Pyth Network**
 : A decentralized oracle network providing high-frequency price feeds for various assets.
@@ -145,6 +148,9 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 **Stablecoin**
 : A cryptocurrency designed to maintain stable value, typically pegged to a fiat currency like USD. Commonly used as borrow assets in lending protocols.
+
+**Static Yield**
+: A fixed yield rate mechanism that provides predictable returns independent of market utilization, often used for specific asset strategies or risk management.
 
 **Supply**
 : The total amount of assets deposited by suppliers that are available for borrowing in a market.
