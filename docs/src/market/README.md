@@ -6,6 +6,35 @@ Suppliers may deposit borrow assets into the market, and their funds will earn y
 
 Markets support NEAR fungible asset contracts implementing [the NEP-141 standard](https://nomicon.io/Standards/Tokens/FungibleToken/Core) or [the NEP-245 standard](https://nomicon.io/Standards/Tokens/MultiToken/Core). The borrow and collateral assets do not need to implement the same standard.
 
+## Storage Management
+
+Before interacting with a market (supplying, borrowing, depositing collateral, etc.), accounts must first register with the market contract by making a storage deposit. This is required because the market contract implements [NEP-145 (Storage Management)](https://nomicon.io/Standards/StorageManagement) to cover the storage costs of maintaining user positions on-chain.
+
+### Making a Storage Deposit
+
+To register with a market and deposit the required storage cost:
+
+```bash
+near contract call-function as-transaction \
+    <market-id> storage_deposit \
+    json-args '{}' \
+    prepaid-gas '10.0 Tgas' \
+    attached-deposit '0.00125 NEAR' \
+    sign-as <account-id>
+```
+
+The minimum required deposit can be obtained by calling the `storage_balance_bounds` function:
+
+```bash
+near contract call-function as-read-only \
+    <market-id> storage_balance_bounds \
+    json-args '{}' \
+    network-config mainnet \
+    now
+```
+
+**Note:** This storage deposit step is handled automatically in the Templar frontend application, but must be done manually when interacting directly with the market contracts.
+
 ## Interactions
 
 Accounts can interact with markets in seven primary ways:
