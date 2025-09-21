@@ -7,6 +7,7 @@ use crate::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
     asset_op,
     event::MarketEvent,
+    incoming_deposit::IncomingDeposit,
     market::{Market, WithdrawalResolution},
     number::Decimal,
 };
@@ -15,13 +16,6 @@ use crate::{
 /// supply position. This serves as proof that the yield has accrued, so it
 /// is safe to perform certain other operations.
 pub struct YieldAccumulationProof(());
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct IncomingDeposit {
-    pub amount: BorrowAssetAmount,
-    pub activate_at_snapshot_index: u32,
-}
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -163,7 +157,12 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             }
 
             if !snapshot.borrow_asset_deposited_active.is_zero() {
-                accumulated += amount * Decimal::from(snapshot.yield_distribution())
+                // TODO: Remove, this is just for testing.
+                require!(
+                    amount <= u128::from(snapshot.borrow_asset_deposited_active),
+                    "Amount is greater than active",
+                );
+                accumulated += amount * Decimal::from(snapshot.yield_distribution)
                     / Decimal::from(snapshot.borrow_asset_deposited_active);
             }
 
@@ -250,17 +249,26 @@ impl<'a> SupplyPositionGuard<'a> {
                 "Too many deposits without running accumulation",
             );
             incoming.push(IncomingDeposit {
-                amount,
                 activate_at_snapshot_index,
+                amount,
             });
         }
 
-        self.market
+        if let Some(incoming) = self
+            .market
             .borrow_asset_deposited_incoming
-            .entry(activate_at_snapshot_index)
-            .or_insert(BorrowAssetAmount::zero())
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Market `borrow_asset_deposited_incoming` overflow"));
+            .iter_mut()
+            .find(|incoming| incoming.activate_at_snapshot_index == activate_at_snapshot_index)
+        {
+            asset_op!(incoming.amount += amount);
+        } else {
+            self.market
+                .borrow_asset_deposited_incoming
+                .push(IncomingDeposit {
+                    activate_at_snapshot_index,
+                    amount,
+                });
+        }
     }
 
     /// Returns the amount successfully removed from incoming.
@@ -269,14 +277,20 @@ impl<'a> SupplyPositionGuard<'a> {
         while let Some(newest) = self.position.borrow_asset_deposit.incoming.pop() {
             asset_op!(total += newest.amount);
 
-            self.market
+            let Some(market_incoming) = self
+                .market
                 .borrow_asset_deposited_incoming
-                .entry(newest.activate_at_snapshot_index)
-                .and_modify(|a| {
-                    a.split(newest.amount).unwrap_or_else(|| {
-                        env::panic_str("Market `borrow_asset_deposited_incoming` underflow")
-                    });
-                });
+                .iter_mut()
+                .find(|incoming| {
+                    incoming.activate_at_snapshot_index == newest.activate_at_snapshot_index
+                })
+            else {
+                env::panic_str("Invariant violation: Market incoming entry should exist if position incoming entry exists");
+            };
+            asset_op!(
+                @msg("Invariant violation: Market incoming >= position incoming should hold for all snapshot indices")
+                market_incoming.amount -= newest.amount;
+            );
 
             #[allow(clippy::comparison_chain)]
             if total == amount {
@@ -295,7 +309,6 @@ impl<'a> SupplyPositionGuard<'a> {
 
     pub fn accumulate_yield_partial(&mut self, snapshot_limit: u32) {
         require!(snapshot_limit > 0, "snapshot_limit must be nonzero");
-        self.market.snapshot();
 
         let accumulation_record = self.calculate_yield(snapshot_limit);
         self.activate_incoming(accumulation_record.next_snapshot_index);
@@ -336,8 +349,6 @@ impl<'a> SupplyPositionGuard<'a> {
         if !amount_to_remove.is_zero() {
             self.remove_active(amount_to_remove);
         }
-
-        self.market.snapshot();
 
         // The only way to withdraw from a position is if it already has a deposit.
         // Adding a deposit guarantees started_at_block_timestamp_ms != None
@@ -401,8 +412,6 @@ impl<'a> SupplyPositionGuard<'a> {
         }
 
         self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
-
-        self.market.snapshot();
 
         if !amount.is_zero() {
             MarketEvent::SupplyDeposited {

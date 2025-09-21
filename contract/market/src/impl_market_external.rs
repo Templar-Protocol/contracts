@@ -24,8 +24,8 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
-    fn get_current_snapshot(&self) -> &Snapshot {
-        &self.current_snapshot
+    fn get_current_snapshot(&self) -> Snapshot {
+        self.current_snapshot()
     }
 
     fn get_finalized_snapshots_len(&self) -> u32 {
@@ -36,7 +36,11 @@ impl MarketExternalInterface for Contract {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(),
             deposited_active: self.borrow_asset_deposited_active,
-            deposited_incoming: self.borrow_asset_deposited_incoming.clone(),
+            deposited_incoming: self
+                .borrow_asset_deposited_incoming
+                .iter()
+                .map(|incoming| (incoming.activate_at_snapshot_index, incoming.amount))
+                .collect(),
             borrowed: self.borrow_asset_borrowed,
         }
     }
@@ -114,7 +118,9 @@ impl MarketExternalInterface for Contract {
     fn withdraw_collateral(&mut self, amount: CollateralAssetAmount) -> Promise {
         let account_id = env::predecessor_account_id();
 
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
+        else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -150,7 +156,8 @@ impl MarketExternalInterface for Contract {
 
     fn apply_interest(&mut self, account_id: Option<AccountId>, snapshot_limit: Option<u32>) {
         let account_id = account_id.unwrap_or_else(env::predecessor_account_id);
-        if let Some(mut borrow_position) = self.borrow_position_guard(account_id) {
+        let snapshot = self.snapshot();
+        if let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) {
             borrow_position.accumulate_interest_partial(snapshot_limit.unwrap_or(u32::MAX));
         }
     }
@@ -225,7 +232,7 @@ impl MarketExternalInterface for Contract {
                     withdrawal_resolution.amount_to_account,
                 )
                 .then(
-                    self_ext!(Self::GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL)
+                    self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
                         .execute_next_supply_withdrawal_request_01_finalize(
                             withdrawal_resolution,
                             expect_success,
@@ -259,7 +266,8 @@ impl MarketExternalInterface for Contract {
             "Only the position holder can compound yield",
         );
 
-        let Some(mut supply_position) = self.supply_position_guard(account_id) else {
+        let snapshot = self.snapshot();
+        let Some(mut supply_position) = self.supply_position_guard(snapshot, account_id) else {
             return BorrowAssetAmount::zero();
         };
 
@@ -288,15 +296,15 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.current_snapshot.borrow_asset_deposited_active().into();
+        let deposited: Decimal = self.borrow_asset_deposited_active.into();
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = self.current_snapshot.borrow_asset_borrowed().into();
+        let borrowed: Decimal = self.borrow_asset_borrowed.into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
-        self.current_snapshot.interest_rate() * borrowed * supply_weight / deposited / total_weight
+        self.interest_rate() * borrowed * supply_weight / deposited / total_weight
     }
 
     fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {

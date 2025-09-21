@@ -30,7 +30,8 @@ impl Contract {
             );
         }
 
-        let mut supply_position = self.get_or_create_supply_position_guard(account_id);
+        let snapshot = self.snapshot();
+        let mut supply_position = self.get_or_create_supply_position_guard(snapshot, account_id);
         let proof = supply_position.accumulate_yield();
         supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
         require!(
@@ -59,7 +60,8 @@ impl Contract {
             );
         }
 
-        let mut borrow_position = self.get_or_create_borrow_position_guard(account_id);
+        let snapshot = self.snapshot();
+        let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
         if !borrow_position.inner().liquidation_lock.is_zero() {
             env::panic_str("Cannot add collateral while liquidation locked");
         }
@@ -80,7 +82,8 @@ impl Contract {
         amount: BorrowAssetAmount,
         price_pair: &PricePair,
     ) -> BorrowAssetAmount {
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
             // No borrow exists: just return the whole amount.
             return amount;
         };
@@ -101,7 +104,8 @@ impl Contract {
 /// External helpers.
 #[near]
 impl Contract {
-    pub const GAS_BORROW_01_CONSUME_PRICE: Gas = Gas::from_tgas(9)
+    // 3.9 Tgas
+    pub const GAS_BORROW_01_CONSUME_PRICE: Gas = Gas::from_tgas(6)
         .saturating_add(FungibleAsset::<BorrowAsset>::GAS_FT_TRANSFER)
         .saturating_add(Self::GAS_BORROW_02_FINALIZE);
 
@@ -113,9 +117,7 @@ impl Contract {
         #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
         let price_pair = self.price_pair(oracle_response);
-
-        // TODO: accumulate_interest() also creates a snapshot; reorder code to not call this twice.
-        self.market.snapshot();
+        let snapshot = self.snapshot();
 
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.get_borrow_asset_available_to_borrow();
@@ -130,7 +132,8 @@ impl Contract {
             .of(amount)
             .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
 
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
+        else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -158,7 +161,8 @@ impl Contract {
             )
     }
 
-    pub const GAS_BORROW_02_FINALIZE: Gas = Gas::from_tgas(9);
+    // 3.1 Tgas
+    pub const GAS_BORROW_02_FINALIZE: Gas = Gas::from_tgas(6);
 
     #[private]
     pub fn borrow_02_finalize(
@@ -167,7 +171,8 @@ impl Contract {
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
     ) {
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
             env::panic_str("Invariant violation: borrow position does not exist after transfer.");
         };
 
@@ -208,8 +213,8 @@ impl Contract {
         }
     }
 
-    // ~2.4 Tgas
-    pub const GAS_AFTER_EXECUTE_NEXT_WITHDRAWAL: Gas = Gas::from_tgas(4);
+    // ~5.8 Tgas
+    pub const GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE: Gas = Gas::from_tgas(8);
 
     #[private]
     pub fn execute_next_supply_withdrawal_request_01_finalize(
@@ -225,8 +230,9 @@ impl Contract {
 
         let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
+        let snapshot = self.snapshot();
         if let Some(mut supply_position) =
-            self.supply_position_guard(withdrawal_resolution.account_id.clone())
+            self.supply_position_guard(snapshot, withdrawal_resolution.account_id.clone())
         {
             supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
         }
@@ -273,8 +279,8 @@ impl Contract {
         }
     }
 
-    // ~3.1 TGas
-    pub const GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
+    // ~3.4 TGas
+    pub const GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(6);
 
     #[private]
     pub fn collateralize_transfer_call_01_consume_price(
@@ -291,8 +297,8 @@ impl Contract {
         return_style.serialize(CollateralAssetAmount::zero())
     }
 
-    // ~3.3 TGas
-    pub const GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(5);
+    // ~4.3 TGas
+    pub const GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7);
 
     #[private]
     pub fn repay_transfer_call_01_consume_price(
@@ -309,8 +315,8 @@ impl Contract {
         return_style.serialize(amount)
     }
 
-    // ~3.3 Tgas
-    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(4)
+    // ~4.9 Tgas
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
         .saturating_add(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE);
 
@@ -330,8 +336,9 @@ impl Contract {
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         let result = {
+            let snapshot = self.snapshot();
             let mut borrow_position = self
-                .borrow_position_guard(msg.account_id.clone())
+                .borrow_position_guard(snapshot, msg.account_id.clone())
                 .unwrap_or_else(|| env::panic_str("Borrow position does not exist"));
 
             let proof = borrow_position.accumulate_interest();
@@ -361,8 +368,8 @@ impl Contract {
             )
     }
 
-    // ~3.2 Tgas
-    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(4);
+    // ~4.6 Tgas
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(7);
 
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
@@ -376,9 +383,12 @@ impl Contract {
     ) -> serde_json::Value {
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        let mut borrow_position = self.borrow_position_guard(account_id).unwrap_or_else(|| {
-            env::panic_str("Invariant violation: Liquidation of nonexistent position.")
-        });
+        let snapshot = self.snapshot();
+        let mut borrow_position = self
+            .borrow_position_guard(snapshot, account_id)
+            .unwrap_or_else(|| {
+                env::panic_str("Invariant violation: Liquidation of nonexistent position.")
+            });
 
         if success {
             let proof = borrow_position.accumulate_interest();
@@ -402,8 +412,8 @@ impl Contract {
         }
     }
 
-    // ~7.25 Tgas
-    pub const GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE: Gas = Gas::from_tgas(9)
+    // ~5.0 Tgas
+    pub const GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
         .saturating_add(Self::GAS_WITHDRAW_COLLATERAL_02_FINALIZE);
 
@@ -416,7 +426,9 @@ impl Contract {
     ) -> Promise {
         let price_pair = self.price_pair(oracle_response);
 
-        let Some(mut borrow_position) = self.borrow_position_guard(account_id.clone()) else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
+        else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
@@ -441,8 +453,8 @@ impl Contract {
             )
     }
 
-    // ~1.96 Tgas
-    pub const GAS_WITHDRAW_COLLATERAL_02_FINALIZE: Gas = Gas::from_tgas(3);
+    // ~2.2 Tgas
+    pub const GAS_WITHDRAW_COLLATERAL_02_FINALIZE: Gas = Gas::from_tgas(5);
 
     #[private]
     pub fn withdraw_collateral_02_finalize(
@@ -458,7 +470,8 @@ impl Contract {
                 self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
             }
         } else {
-            let Some(mut borrow_position) = self.borrow_position_guard(account_id) else {
+            let snapshot = self.snapshot();
+            let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
                 env::panic_str(
                     "Invariant violation: Borrow position must exist after collateral withdrawal.",
                 );
@@ -469,8 +482,8 @@ impl Contract {
         }
     }
 
-    // ~2.0 Tgas
-    pub const GAS_WITHDRAW_STATIC_YIELD_01_FINALIZE: Gas = Gas::from_tgas(3);
+    // ~2.1 Tgas
+    pub const GAS_WITHDRAW_STATIC_YIELD_01_FINALIZE: Gas = Gas::from_tgas(5);
 
     #[private]
     pub fn withdraw_static_yield_01_finalize(

@@ -272,7 +272,7 @@ impl<M> BorrowPositionRef<M> {
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
     pub fn estimate_current_snapshot_interest(&self) -> BorrowAssetAmount {
         let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
-        let interest_in_current_snapshot = self.market.current_snapshot.interest_rate()
+        let interest_in_current_snapshot = self.market.interest_rate()
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())
             / *MS_IN_A_YEAR;
@@ -328,7 +328,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                         ))
                     }),
             );
-            accumulated += principal * snapshot.interest_rate() * duration_ms / *MS_IN_A_YEAR;
+            accumulated += principal * snapshot.interest_rate * duration_ms / *MS_IN_A_YEAR;
 
             prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
             next_snapshot_index = i as u32 + 1;
@@ -515,7 +515,6 @@ impl<'a> BorrowPositionGuard<'a> {
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
 
         asset_op!(self.market.borrow_asset_borrowed += amount);
-        self.market.snapshot();
 
         MarketEvent::BorrowWithdrawn {
             account_id: self.account_id.clone(),
@@ -549,8 +548,6 @@ impl<'a> BorrowPositionGuard<'a> {
 
         let liability_reduction = self.reduce_borrow_asset_liability(proof, amount);
 
-        self.market.snapshot();
-
         MarketEvent::BorrowRepaid {
             account_id: self.account_id.clone(),
             borrow_asset_fees_repaid: liability_reduction.to_fees,
@@ -563,8 +560,6 @@ impl<'a> BorrowPositionGuard<'a> {
     }
 
     pub fn accumulate_interest_partial(&mut self, snapshot_limit: u32) {
-        self.market.snapshot();
-
         let accumulation_record = self.calculate_interest(snapshot_limit);
 
         if !accumulation_record.amount.is_zero() {

@@ -34,7 +34,7 @@ pub trait MarketExternalInterface {
     fn get_configuration(&self) -> MarketConfiguration;
 
     /// Retrieve the current snapshot (in progress; not yet finalized).
-    fn get_current_snapshot(&self) -> &Snapshot;
+    fn get_current_snapshot(&self) -> Snapshot;
 
     /// Retrieve the count of finalized snapshots.
     fn get_finalized_snapshots_len(&self) -> u32;
