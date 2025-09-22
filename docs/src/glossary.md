@@ -150,7 +150,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 : A cryptocurrency designed to maintain stable value, typically pegged to a fiat currency like USD. Commonly used as borrow assets in lending protocols.
 
 **Static Yield**
-: A fixed yield rate mechanism that provides predictable returns independent of market utilization, often used for specific asset strategies or risk management.
+: A fixed allocation of market revenue to specific accounts, independent of their supply activity. Defined in the market's yield_weights configuration, static yield is distributed proportionally to designated accounts and can be withdrawn using the withdraw_static_yield function.
 
 **Supply**
 : The total amount of assets deposited by suppliers that are available for borrowing in a market.
