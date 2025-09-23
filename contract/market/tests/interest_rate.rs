@@ -91,7 +91,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         eprintln!("Borrow position 1: {borrow_position_1:#?}");
         eprintln!("Borrow position 2: {borrow_position_2:#?}");
 
-        let f = principal * strategy.at(dec!("0.2")) / *MS_PER_YEAR;
+        let f = principal * strategy.at(dec!("0.2")) / MS_PER_YEAR;
 
         let approximation_below = (f * duration_inner.as_millis()).to_u128_ceil().unwrap();
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();

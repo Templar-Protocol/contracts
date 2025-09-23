@@ -278,17 +278,15 @@ async fn snapshot_with_full_repayment() {
     eprintln!("Total liability before repayment: {total_liability:?}");
 
     // Repay everything (including any accrued interest)
-    c.repay(&borrow_user, total_liability).await;
+    let r = c.repay(&borrow_user, total_liability).await;
+    print_execution(&r);
 
     // Create snapshot after full repayment
     tokio::time::sleep(Duration::from_secs(1)).await;
     c.collateralize(&borrow_user, 1).await;
 
-    let final_snapshots_len = c.get_finalized_snapshots_len().await;
-    let snapshots = c
-        .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
-        .await;
-    let final_snapshot = &snapshots[0];
+    let snapshots = c.list_finalized_snapshots(None, None).await;
+    let final_snapshot = &snapshots[snapshots.len() - 1];
 
     eprintln!(
         "After full repayment: borrowed={:?}",
@@ -300,6 +298,9 @@ async fn snapshot_with_full_repayment() {
         "Final position liability: {:?}",
         final_position.get_total_borrow_asset_liability()
     );
+
+    eprintln!("Final snapshot:");
+    eprintln!("{final_snapshot:#?}");
 
     // Verify snapshot reflects full repayment
     assert!(
