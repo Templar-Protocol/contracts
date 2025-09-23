@@ -667,6 +667,25 @@ mod tests {
     }
 
     #[rstest]
+    #[test]
+    fn const_constructors_are_correct() {
+        assert_eq!(Decimal::from_u8(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(Decimal::from_u8(u8::MAX).to_u128_ceil().unwrap(), 0xff);
+        assert_eq!(Decimal::from_u16(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(Decimal::from_u16(u16::MAX).to_u128_ceil().unwrap(), 0xffff);
+        assert_eq!(Decimal::from_u32(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(
+            Decimal::from_u32(u32::MAX).to_u128_ceil().unwrap(),
+            0xffff_ffff,
+        );
+        assert_eq!(Decimal::from_u64(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(
+            Decimal::from_u64(u64::MAX).to_u128_ceil().unwrap(),
+            0xffff_ffff_ffff_ffff,
+        );
+    }
+
+    #[rstest]
     #[case(0, 0)]
     #[case(0, 1)]
     #[case(1, 0)]

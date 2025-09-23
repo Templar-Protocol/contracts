@@ -12,9 +12,7 @@ async fn snapshot_captures_borrow_and_collateral_state() {
         accounts(borrow_user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(), // 0.5 seconds
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500); // 0.5 seconds
         })
     );
 
@@ -81,9 +79,7 @@ async fn multiple_snapshots_show_progression() {
         accounts(user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 1000.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1000);
         })
     );
 
@@ -139,9 +135,7 @@ async fn snapshot_reflects_repayment_changes() {
         config(|c| {
             c.borrow_interest_rate_strategy = InterestRateStrategy::zero();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
     );
 
@@ -194,9 +188,7 @@ async fn snapshot_handles_zero_operations() {
         extract(c)
         accounts(supply_user)
         config(|c| {
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(), // 0.5 seconds
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500); // 0.5 seconds
         })
     );
 
@@ -254,9 +246,7 @@ async fn snapshot_with_full_repayment() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
     );
 
@@ -318,9 +308,7 @@ async fn snapshot_field_validation() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("2000"), dec!("3000")).unwrap(); // Higher rates for testing
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
     );
 
@@ -405,7 +393,7 @@ async fn many_users_different_snapshots() {
         accounts(user1, user2, user3, user4, user5, supply_user1, supply_user2)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs { divisor: 1.into() };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1);
         })
     );
 
@@ -476,7 +464,7 @@ async fn many_users_same_snapshot() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs { divisor: 10_000.into() } ;
+            c.time_chunk_configuration = TimeChunkConfiguration::new(10_000);
         })
     );
 

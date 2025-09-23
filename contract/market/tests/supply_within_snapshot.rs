@@ -16,9 +16,7 @@ async fn funds_activation() {
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("10000"), dec!("10000")).unwrap();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: (8 * 1000).into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(8 * 1000);
             c.yield_weights = YieldWeights::new_with_supply_weight(1);
         })
     );
@@ -112,9 +110,7 @@ async fn partial_snapshot_no_earnings() {
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("10000"), dec!("10000")).unwrap();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: (12 * 1000).into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(12 * 1000);
             c.yield_weights = YieldWeights::new_with_supply_weight(1);
         })
     );

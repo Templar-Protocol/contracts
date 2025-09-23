@@ -104,8 +104,7 @@ pub fn market_configuration(
     yield_weights: YieldWeights,
 ) -> MarketConfiguration {
     MarketConfiguration {
-        time_chunk_configuration:
-            templar_common::time_chunk::TimeChunkConfiguration::BlockTimestampMs { divisor: U64(1) },
+        time_chunk_configuration: templar_common::time_chunk::TimeChunkConfiguration::new(1),
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         price_oracle_configuration: PriceOracleConfiguration {

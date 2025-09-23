@@ -311,7 +311,7 @@ impl MarketConfiguration {
 
     pub fn single_snapshot_maximum_interest(&self) -> Decimal {
         self.borrow_interest_rate_strategy.at(Decimal::ONE)
-            * self.time_chunk_configuration.minimum_duration_ms()
+            * self.time_chunk_configuration.duration_ms.0
             / MS_PER_YEAR
     }
 }

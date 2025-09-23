@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::wildcard_imports)]
 
-use near_sdk::{json_types::U64, Gas};
+use near_sdk::Gas;
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
     number::Decimal, time_chunk::TimeChunkConfiguration,
@@ -25,7 +25,7 @@ async fn main() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs { divisor: U64(1) };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1);
         })
     );
 
