@@ -10,7 +10,7 @@ use crate::{
     market::{Market, SnapshotProof},
     number::Decimal,
     price::{Appraise, Convert, PricePair, Valuation},
-    MS_IN_A_YEAR,
+    MS_PER_YEAR,
 };
 
 /// This struct can only be constructed after accumulating interest on a
@@ -293,7 +293,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         let interest_in_current_snapshot = self.market.interest_rate()
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())
-            / *MS_IN_A_YEAR;
+            / MS_PER_YEAR;
         #[allow(clippy::unwrap_used, reason = "Interest rate guaranteed <= APY_LIMIT")]
         interest_in_current_snapshot.to_u128_ceil().unwrap().into()
     }
@@ -346,7 +346,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                         ))
                     }),
             );
-            accumulated += principal * snapshot.interest_rate * duration_ms / *MS_IN_A_YEAR;
+            accumulated += principal * snapshot.interest_rate * duration_ms / MS_PER_YEAR;
 
             prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
             next_snapshot_index = i as u32 + 1;

@@ -623,6 +623,23 @@ impl_int!(u64);
 impl_int!(u128);
 impl_int!(::primitive_types::U256);
 
+macro_rules! impl_from_const {
+    ($t:ty,$name:ident) => {
+        impl Decimal {
+            pub const fn $name(value: $t) -> Self {
+                Self {
+                    repr: U512([0, 0, value as u64, 0, 0, 0, 0, 0]),
+                }
+            }
+        }
+    };
+}
+
+impl_from_const!(u8, from_u8);
+impl_from_const!(u16, from_u16);
+impl_from_const!(u32, from_u32);
+impl_from_const!(u64, from_u64);
+
 #[cfg(test)]
 mod tests {
     use near_sdk::serde_json;
