@@ -17,6 +17,7 @@ use crate::{
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
+    MS_IN_A_YEAR,
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -183,6 +184,21 @@ impl Market {
         self.current_yield_distribution = 0.into();
 
         SnapshotProof(())
+    }
+
+    pub fn single_snapshot_fee(&self, amount: BorrowAssetAmount) -> Option<BorrowAssetAmount> {
+        (u128::from(amount)
+            * self
+                .configuration
+                .borrow_interest_rate_strategy
+                .at(Decimal::ONE)
+            * self
+                .configuration
+                .time_chunk_configuration
+                .minimum_duration_ms()
+            / *MS_IN_A_YEAR)
+            .to_u128_ceil()
+            .map(Into::into)
     }
 
     pub fn interest_rate(&self) -> Decimal {

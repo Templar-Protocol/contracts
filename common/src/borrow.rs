@@ -493,11 +493,17 @@ impl<'a> BorrowPositionGuard<'a> {
         .emit();
     }
 
+    /// # Errors
+    ///
+    /// - If there is not enough borrow asset available to borrow.
+    /// - If there is an error calculating the fee (e.g. overflow).
     pub fn record_borrow_initial(
         &mut self,
         _proof: SnapshotProof,
+        _interest: InterestAccumulationProof,
         amount: BorrowAssetAmount,
         price_pair: &PricePair,
+        block_timestamp_ms: u64,
     ) -> Result<InitialBorrow, error::InitialBorrowError> {
         // Ensure we have enough funds to dispense.
         let available_to_borrow = self.market.get_borrow_asset_available_to_borrow();
@@ -505,34 +511,25 @@ impl<'a> BorrowPositionGuard<'a> {
             return Err(error::InitialBorrowError::InsufficientBorrowAssetAvailable);
         }
 
-        let Some(origination_fee) = self.market.configuration.borrow_origination_fee.of(amount)
-        else {
-            return Err(error::InitialBorrowError::FeeCalculationFailure);
-        };
+        let origination_fee = self
+            .market
+            .configuration
+            .borrow_origination_fee
+            .of(amount)
+            .ok_or(error::InitialBorrowError::FeeCalculationFailure)?;
 
         // Necessary because we track borrows in terms of whole snapshots, so
         // this covers the interest that could be missed because of ignoring
         // fractional snapshots.
         // TODO: Make this a method of the market configuration
-        let single_snapshot_fee: BorrowAssetAmount = (u128::from(amount)
-            * self
-                .market
-                .configuration
-                .borrow_interest_rate_strategy
-                .at(Decimal::ONE)
-            * self
-                .market
-                .configuration
-                .time_chunk_configuration
-                .minimum_duration_ms()
-            / *MS_IN_A_YEAR).to_u128_ceil().unwrap(/* TODO: error */).into();
+        let single_snapshot_fee = self
+            .market
+            .single_snapshot_fee(amount)
+            .ok_or(error::InitialBorrowError::FeeCalculationFailure)?;
 
         let mut fees = origination_fee;
-        asset_op!(fees += single_snapshot_fee);
-
-        // accumulate_interest() creates a snapshot, which activates funds to
-        // ensure that we have the maximum amount available to borrow.
-        self.accumulate_interest();
+        fees.join(single_snapshot_fee)
+            .ok_or(error::InitialBorrowError::FeeCalculationFailure)?;
 
         asset_op! {
             self.market.borrow_asset_in_flight += amount;
@@ -540,10 +537,12 @@ impl<'a> BorrowPositionGuard<'a> {
             self.position.in_flight += fees;
         };
 
-        if !self
-            .status(price_pair, env::block_timestamp_ms())
-            .is_healthy()
-        {
+        if !self.status(price_pair, block_timestamp_ms).is_healthy() {
+            asset_op! {
+                self.market.borrow_asset_in_flight -= amount;
+                self.position.in_flight -= amount;
+                self.position.in_flight -= fees;
+            };
             return Err(error::InitialBorrowError::Undercollateralization);
         }
 
@@ -556,6 +555,7 @@ impl<'a> BorrowPositionGuard<'a> {
         interest: InterestAccumulationProof,
         borrow: &InitialBorrow,
         success: bool,
+        block_timestamp_ms: u64,
     ) {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
@@ -572,7 +572,7 @@ impl<'a> BorrowPositionGuard<'a> {
             // withdrawal record.
             self.position.borrow_asset_fees.add_once(borrow.fees);
             self.position
-                .increase_borrow_asset_principal(interest, borrow.amount, env::block_timestamp_ms())
+                .increase_borrow_asset_principal(interest, borrow.amount, block_timestamp_ms)
                 .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
 
             asset_op!(self.market.borrow_asset_borrowed += borrow.amount);

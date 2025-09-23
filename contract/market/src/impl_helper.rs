@@ -124,8 +124,16 @@ impl Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
+        let interest = borrow_position.accumulate_interest();
+
         let initial_borrow = borrow_position
-            .record_borrow_initial(snapshot, amount, &price_pair)
+            .record_borrow_initial(
+                snapshot,
+                interest,
+                amount,
+                &price_pair,
+                env::block_timestamp_ms(),
+            )
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         drop(borrow_position);
@@ -151,7 +159,13 @@ impl Contract {
 
         let proof = borrow_position.accumulate_interest();
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
-        borrow_position.record_borrow_final(snapshot, proof, &initial_borrow, success);
+        borrow_position.record_borrow_final(
+            snapshot,
+            proof,
+            &initial_borrow,
+            success,
+            env::block_timestamp_ms(),
+        );
     }
 
     // ~5.8 Tgas
