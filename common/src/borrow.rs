@@ -521,7 +521,6 @@ impl<'a> BorrowPositionGuard<'a> {
         // Necessary because we track borrows in terms of whole snapshots, so
         // this covers the interest that could be missed because of ignoring
         // fractional snapshots.
-        // TODO: Make this a method of the market configuration
         let single_snapshot_fee = self
             .market
             .single_snapshot_fee(amount)
