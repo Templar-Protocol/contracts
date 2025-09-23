@@ -7,7 +7,7 @@ use crate::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     asset_op,
     event::MarketEvent,
-    market::Market,
+    market::{Market, SnapshotProof},
     number::Decimal,
     price::{Appraise, Convert, PricePair, Valuation},
     MS_IN_A_YEAR,
@@ -217,6 +217,14 @@ pub struct InitialLiquidation {
     pub refund: BorrowAssetAmount,
 }
 
+#[must_use]
+#[derive(Debug, Clone)]
+#[near(serializers = [json, borsh])]
+pub struct InitialBorrow {
+    pub amount: BorrowAssetAmount,
+    pub fees: BorrowAssetAmount,
+}
+
 pub mod error {
     use thiserror::Error;
 
@@ -242,6 +250,16 @@ pub mod error {
             offered: BorrowAssetAmount,
             minimum_acceptable: BorrowAssetAmount,
         },
+    }
+
+    #[derive(Debug, Error)]
+    pub enum InitialBorrowError {
+        #[error("Insufficient borrow asset available")]
+        InsufficientBorrowAssetAvailable,
+        #[error("Fee calculation failed")]
+        FeeCalculationFailure,
+        #[error("Borrow position must be healthy after borrow")]
+        Undercollateralization,
     }
 }
 
@@ -475,52 +493,118 @@ impl<'a> BorrowPositionGuard<'a> {
         .emit();
     }
 
-    pub fn record_borrow_asset_in_flight_start(
+    pub fn record_borrow_initial(
         &mut self,
-        _proof: InterestAccumulationProof,
+        _proof: SnapshotProof,
         amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
+        price_pair: &PricePair,
+    ) -> Result<InitialBorrow, error::InitialBorrowError> {
+        // Ensure we have enough funds to dispense.
+        let available_to_borrow = self.market.get_borrow_asset_available_to_borrow();
+        if amount > available_to_borrow {
+            return Err(error::InitialBorrowError::InsufficientBorrowAssetAvailable);
+        }
+
+        let Some(origination_fee) = self.market.configuration.borrow_origination_fee.of(amount)
+        else {
+            return Err(error::InitialBorrowError::FeeCalculationFailure);
+        };
+
+        // Necessary because we track borrows in terms of whole snapshots, so
+        // this covers the interest that could be missed because of ignoring
+        // fractional snapshots.
+        // TODO: Make this a method of the market configuration
+        let single_snapshot_fee: BorrowAssetAmount = (u128::from(amount)
+            * self
+                .market
+                .configuration
+                .borrow_interest_rate_strategy
+                .at(Decimal::ONE)
+            * self
+                .market
+                .configuration
+                .time_chunk_configuration
+                .minimum_duration_ms()
+            / *MS_IN_A_YEAR).to_u128_ceil().unwrap(/* TODO: error */).into();
+
+        let mut fees = origination_fee;
+        asset_op!(fees += single_snapshot_fee);
+
+        // accumulate_interest() creates a snapshot, which activates funds to
+        // ensure that we have the maximum amount available to borrow.
+        self.accumulate_interest();
+
         asset_op! {
             self.market.borrow_asset_in_flight += amount;
             self.position.in_flight += amount;
             self.position.in_flight += fees;
         };
+
+        if !self
+            .status(price_pair, env::block_timestamp_ms())
+            .is_healthy()
+        {
+            return Err(error::InitialBorrowError::Undercollateralization);
+        }
+
+        Ok(InitialBorrow { amount, fees })
     }
 
-    pub fn record_borrow_asset_in_flight_end(
+    pub fn record_borrow_final(
         &mut self,
-        _proof: InterestAccumulationProof,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
+        _snapshot: SnapshotProof,
+        interest: InterestAccumulationProof,
+        borrow: &InitialBorrow,
+        success: bool,
     ) {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
         asset_op! {
-            self.market.borrow_asset_in_flight -= amount;
-            self.position.in_flight -= amount;
-            self.position.in_flight -= fees;
+            self.market.borrow_asset_in_flight -= borrow.amount;
+            self.position.in_flight -= borrow.amount;
+            self.position.in_flight -= borrow.fees;
         };
-    }
 
-    pub fn record_borrow_asset_withdrawal(
-        &mut self,
-        proof: InterestAccumulationProof,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
-        self.position.borrow_asset_fees.add_once(fees);
-        self.position
-            .increase_borrow_asset_principal(proof, amount, env::block_timestamp_ms())
-            .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
+        if success {
+            // GREAT SUCCESS
+            //
+            // Borrow position has already been created: finalize
+            // withdrawal record.
+            self.position.borrow_asset_fees.add_once(borrow.fees);
+            self.position
+                .increase_borrow_asset_principal(interest, borrow.amount, env::block_timestamp_ms())
+                .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
 
-        asset_op!(self.market.borrow_asset_borrowed += amount);
+            asset_op!(self.market.borrow_asset_borrowed += borrow.amount);
 
-        MarketEvent::BorrowWithdrawn {
-            account_id: self.account_id.clone(),
-            borrow_asset_amount: amount,
+            MarketEvent::BorrowWithdrawn {
+                account_id: self.account_id.clone(),
+                borrow_asset_amount: borrow.amount,
+            }
+            .emit();
+        } else {
+            // Likely reasons for failure:
+            //
+            // 1. Price oracle is out-of-date. This is kind of bad, but
+            //  not necessarily catastrophic nor unrecoverable. Probably,
+            //  the oracle is just lagging and will be fine if the user
+            //  tries again later.
+            //
+            // Mitigation strategy: Revert locks & state changes (i.e. do
+            // nothing else).
+            //
+            // 2. MPC signing failed or took too long. Need to do a bit
+            //  more research to see if it is possible for the signature to
+            //  still show up on chain after the promise expires.
+            //
+            // Mitigation strategy: Retain locks until we know the
+            // signature will not be issued. Note that we can't implement
+            // this strategy until we implement asset transfer for MPC
+            // assets, so we IGNORE THIS CASE FOR NOW.
+            //
+            // TODO: Implement case 2 mitigation.
+            // NOTE: Not needed for chain-local (NEP-141-only) tokens.
         }
-        .emit();
     }
 
     /// Returns the amount that is left over after repaying the whole
@@ -538,13 +622,6 @@ impl<'a> BorrowPositionGuard<'a> {
         if !self.position.liquidation_lock.is_zero() {
             return Err(error::LiquidationLockError);
         }
-
-        let current_snapshot_interest = self.estimate_current_snapshot_interest();
-        // Amortize current snapshot fees so that when the current snapshot is
-        // finalized, the fees are not doubled.
-        self.position
-            .borrow_asset_fees
-            .amortize(current_snapshot_interest);
 
         let liability_reduction = self.reduce_borrow_asset_liability(proof, amount);
 

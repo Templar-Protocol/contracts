@@ -25,7 +25,7 @@ async fn main() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: U64(1) };
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs { divisor: U64(1) };
         })
     );
 

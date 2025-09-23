@@ -28,7 +28,7 @@ async fn many_snapshots() {
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: 1.into() };
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs { divisor: 1.into() };
         })
     );
 

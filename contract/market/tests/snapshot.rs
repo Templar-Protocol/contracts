@@ -404,7 +404,7 @@ async fn many_users_different_snapshots() {
         accounts(user1, user2, user3, user4, user5, supply_user1, supply_user2)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: 1.into() };
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs { divisor: 1.into() };
         })
     );
 
@@ -475,7 +475,7 @@ async fn many_users_same_snapshot() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: 100.into() } ;
+            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs { divisor: 10_000.into() } ;
         })
     );
 
