@@ -33,7 +33,6 @@ thiserror.workspace = true
 getrandom.workspace = true
 near-sdk.workspace = true
 p256 = "0.13.2"
-# spki = { version = "0.7.3", features = ["alloc", "std", "base64", "pem"] }
 hex.workspace = true
 
 [dev-dependencies]
