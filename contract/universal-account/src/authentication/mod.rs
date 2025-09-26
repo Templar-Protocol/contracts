@@ -1,14 +1,10 @@
-use near_sdk::{serde::Deserialize, Promise};
-
 pub mod passkey;
 
-pub trait Nonce {
-    fn nonce(&self) -> u64;
-}
-
-pub trait Executor {
-    type Input: Nonce + for<'a> Deserialize<'a>;
+pub trait SignedMessage {
+    type Key;
+    type Output;
     type Error: ToString;
 
-    fn execute(&self, input: &Self::Input) -> Result<Promise, Self::Error>;
+    fn nonce(&self) -> u64;
+    fn execute(&self, key: &Self::Key) -> Result<Self::Output, Self::Error>;
 }

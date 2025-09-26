@@ -5,7 +5,7 @@ use near_sdk::{
     near,
     serde::{self, de, Deserialize, Serialize},
 };
-use p256::ecdsa::{self};
+use p256::ecdsa;
 
 #[derive(Clone, Debug)]
 #[near(serializers = [])]

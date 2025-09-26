@@ -7,7 +7,10 @@ use near_sdk::{
 
 use templar_common::contract::list;
 
-use authentication::{passkey::Passkey, Executor, Nonce};
+use authentication::{
+    passkey::{self, Passkey},
+    SignedMessage,
+};
 
 mod authentication;
 mod key;
@@ -15,25 +18,29 @@ mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
-pub enum Selector {
+pub enum KeyId {
     Passkey(Passkey),
 }
 
-fn execute_payload<T: Executor>(key: &T, input: &T::Input, nonce: &mut u64) -> Promise {
+fn execute_arg<M: SignedMessage<Output = Promise>>(
+    msg: &M,
+    key: &M::Key,
+    nonce: &mut u64,
+) -> Promise {
     *nonce += 1;
-    require!(input.nonce() == *nonce, "Nonce out-of-sync");
-    key.execute(input)
+    require!(msg.nonce() == *nonce, "Nonce out-of-sync");
+    msg.execute(key)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()))
 }
 
-fn parse_input<T: DeserializeOwned>(input: serde_json::Value) -> T {
-    serde_json::from_value(input).unwrap_or_else(|e| env::panic_str(&e.to_string()))
+fn parse_arg<T: DeserializeOwned>(arg: serde_json::Value) -> T {
+    serde_json::from_value(arg).unwrap_or_else(|e| env::panic_str(&e.to_string()))
 }
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
-    keys: IterableMap<Selector, U64>,
+    keys: IterableMap<KeyId, U64>,
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshStorageKey)]
@@ -45,7 +52,7 @@ enum StorageKey {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(key: Selector, nonce: U64) -> Self {
+    pub fn new(key: KeyId, nonce: U64) -> Self {
         let mut self_ = Self {
             keys: IterableMap::new(StorageKey::Keys),
         };
@@ -55,21 +62,21 @@ impl Contract {
         self_
     }
 
-    pub fn nonce(&self, key: Selector) -> Option<U64> {
+    pub fn nonce(&self, key: KeyId) -> Option<U64> {
         self.keys.get(&key).copied()
     }
 
-    pub fn list_keys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&Selector> {
+    pub fn list_keys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&KeyId> {
         list(self.keys.keys(), offset, count)
     }
 
     #[private]
-    pub fn add_key(&mut self, key: Selector, nonce: U64) {
+    pub fn add_key(&mut self, key: KeyId, nonce: U64) {
         self.keys.insert(key, nonce);
     }
 
     #[private]
-    pub fn remove_key(&mut self, key: Selector) {
+    pub fn remove_key(&mut self, key: KeyId) {
         require!(
             self.keys.len() > 1,
             "Cannot remove last key using this function",
@@ -77,27 +84,25 @@ impl Contract {
         self.keys.remove(&key);
     }
 
-    pub fn execute(&mut self, key: Selector, input: serde_json::Value) -> Promise {
-        self.execute_batch(key, vec![input])
+    pub fn execute(&mut self, key: KeyId, arg: serde_json::Value) -> Promise {
+        self.execute_batch(key, vec![arg])
     }
 
-    pub fn execute_batch(&mut self, key: Selector, inputs: Vec<serde_json::Value>) -> Promise {
+    pub fn execute_batch(&mut self, key: KeyId, args: Vec<serde_json::Value>) -> Promise {
         let Some(nonce) = self.keys.get_mut(&key) else {
             env::panic_str("Key does not exist")
         };
 
-        let Selector::Passkey(key) = key;
+        let KeyId::Passkey(key) = key;
 
-        let mut inputs = inputs.into_iter().map(parse_input);
+        let mut args = args.into_iter().map(parse_arg);
 
-        let first = inputs
-            .next()
-            .unwrap_or_else(|| env::panic_str("Empty input"));
+        let first: passkey::Message = args.next().unwrap_or_else(|| env::panic_str("Empty input"));
 
-        let mut promise = execute_payload(&key, &first, &mut nonce.0);
+        let mut promise = execute_arg(&first, &key, &mut nonce.0);
 
-        for input in inputs {
-            promise = promise.then(execute_payload(&key, &input, &mut nonce.0));
+        for arg in args {
+            promise = promise.then(execute_arg(&arg, &key, &mut nonce.0));
         }
 
         promise
