@@ -11,7 +11,7 @@ use p256::ecdsa::signature::Verifier;
 
 use crate::transaction::Transaction;
 
-use super::{NonceExtractor, PayloadExecutor};
+use super::{Executor, Nonce};
 
 #[derive(Clone, Debug)]
 #[near(serializers = [])]
@@ -131,7 +131,7 @@ pub struct Input {
     signature: Signature,
 }
 
-impl NonceExtractor for Input {
+impl Nonce for Input {
     fn nonce(&self) -> u64 {
         self.payload.parsed.nonce.0
     }
@@ -153,7 +153,7 @@ pub enum Error {
     InvalidSignature,
 }
 
-impl PayloadExecutor for Passkey {
+impl Executor for Passkey {
     type Input = Input;
     type Error = Error;
 

@@ -7,7 +7,7 @@ use near_sdk::{
 
 use templar_common::contract::list;
 
-use authentication::{passkey::Passkey, NonceExtractor, PayloadExecutor};
+use authentication::{passkey::Passkey, Executor, Nonce};
 
 mod authentication;
 mod key;
@@ -19,7 +19,7 @@ pub enum Selector {
     Passkey(Passkey),
 }
 
-fn execute_payload<T: PayloadExecutor>(key: &T, input: &T::Input, nonce: &mut u64) -> Promise {
+fn execute_payload<T: Executor>(key: &T, input: &T::Input, nonce: &mut u64) -> Promise {
     *nonce += 1;
     require!(input.nonce() == *nonce, "Nonce out-of-sync");
     key.execute(input)
