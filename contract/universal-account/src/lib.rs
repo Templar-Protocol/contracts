@@ -7,10 +7,7 @@ use near_sdk::{
 
 use templar_common::contract::list;
 
-use authentication::{
-    passkey::{self, Passkey},
-    SignedMessage,
-};
+use authentication::{passkey, SignedMessage};
 
 mod authentication;
 mod key;
@@ -19,7 +16,7 @@ mod transaction;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub enum KeyId {
-    Passkey(Passkey),
+    Passkey(key::p256::PublicKey),
 }
 
 fn execute_arg<M: SignedMessage<Output = Promise>>(

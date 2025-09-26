@@ -23,7 +23,7 @@ pub struct Message {
 }
 
 impl SignedMessage for Message {
-    type Key = Passkey;
+    type Key = crate::key::p256::PublicKey;
     type Output = Promise;
     type Error = Error;
 
@@ -39,7 +39,7 @@ impl SignedMessage for Message {
         ]
         .concat();
 
-        VerifyingKey::from(key.public_key.0)
+        VerifyingKey::from(key.0)
             .verify(&sig_base, &*self.signature)
             .map_err(|_| Error::InvalidSignature)?;
 
@@ -54,12 +54,6 @@ impl SignedMessage for Message {
 
         Ok(self.payload.parsed.construct_promise())
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-pub struct Passkey {
-    public_key: crate::key::p256::PublicKey,
 }
 
 #[derive(Debug, thiserror::Error)]
