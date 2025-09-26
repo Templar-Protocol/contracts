@@ -44,7 +44,7 @@ impl SignedMessage for Message {
             .map_err(|_| Error::InvalidSignature)?;
 
         // Check that the un-hashed payload we received hashes to the value that was signed.
-        let payload_hash = BASE64_STANDARD_NO_PAD
+        let payload_hash = BASE64_URL_SAFE_NO_PAD
             .decode(&self.client_data_json.parsed.challenge)
             .map_err(|_| Error::InvalidChallenge)?;
 
