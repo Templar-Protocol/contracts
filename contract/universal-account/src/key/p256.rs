@@ -14,6 +14,18 @@ type ByteEncoding = [u8; KEY_LENGTH];
 #[near(serializers = [])]
 pub struct PublicKey(pub p256::PublicKey);
 
+impl From<PublicKey> for p256::PublicKey {
+    fn from(value: PublicKey) -> Self {
+        value.0
+    }
+}
+
+impl From<p256::PublicKey> for PublicKey {
+    fn from(value: p256::PublicKey) -> Self {
+        Self(value)
+    }
+}
+
 impl Deref for PublicKey {
     type Target = p256::PublicKey;
 

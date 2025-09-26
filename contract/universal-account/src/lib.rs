@@ -9,9 +9,9 @@ use templar_common::contract::list;
 
 use authentication::{passkey, SignedMessage};
 
-mod authentication;
-mod key;
-mod transaction;
+pub mod authentication;
+pub mod key;
+pub mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
@@ -19,7 +19,7 @@ pub enum KeyId {
     Passkey(key::p256::PublicKey),
 }
 
-fn execute_arg<M: SignedMessage<Output = Promise>>(
+fn execute_message<M: SignedMessage<Output = Promise>>(
     msg: &M,
     key: &M::Key,
     nonce: &mut u64,
@@ -30,7 +30,7 @@ fn execute_arg<M: SignedMessage<Output = Promise>>(
         .unwrap_or_else(|e| env::panic_str(&e.to_string()))
 }
 
-fn parse_arg<T: DeserializeOwned>(arg: serde_json::Value) -> T {
+fn parse_message<T: DeserializeOwned>(arg: serde_json::Value) -> T {
     serde_json::from_value(arg).unwrap_or_else(|e| env::panic_str(&e.to_string()))
 }
 
@@ -81,25 +81,27 @@ impl Contract {
         self.keys.remove(&key);
     }
 
-    pub fn execute(&mut self, key: KeyId, arg: serde_json::Value) -> Promise {
-        self.execute_batch(key, vec![arg])
+    pub fn execute(&mut self, key: KeyId, message: serde_json::Value) -> Promise {
+        self.execute_batch(key, vec![message])
     }
 
-    pub fn execute_batch(&mut self, key: KeyId, args: Vec<serde_json::Value>) -> Promise {
+    pub fn execute_batch(&mut self, key: KeyId, messages: Vec<serde_json::Value>) -> Promise {
         let Some(nonce) = self.keys.get_mut(&key) else {
             env::panic_str("Key does not exist")
         };
 
         let KeyId::Passkey(key) = key;
 
-        let mut args = args.into_iter().map(parse_arg);
+        let mut messages = messages.into_iter().map(parse_message);
 
-        let first: passkey::Message = args.next().unwrap_or_else(|| env::panic_str("Empty input"));
+        let first: passkey::Message = messages
+            .next()
+            .unwrap_or_else(|| env::panic_str("Empty input"));
 
-        let mut promise = execute_arg(&first, &key, &mut nonce.0);
+        let mut promise = execute_message(&first, &key, &mut nonce.0);
 
-        for arg in args {
-            promise = promise.then(execute_arg(&arg, &key, &mut nonce.0));
+        for message in messages {
+            promise = promise.then(execute_message(&message, &key, &mut nonce.0));
         }
 
         promise

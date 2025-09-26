@@ -9,17 +9,17 @@ use crate::transaction::Transaction;
 
 use super::SignedMessage;
 
-mod data;
-mod signature;
-mod with_raw_string;
+pub mod data;
+pub mod signature;
+pub mod with_raw_string;
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct Message {
-    authenticator_data: AuthenticatorData,
-    payload: WithRawString<Transaction>,
-    client_data_json: WithRawString<ClientDataJson>,
-    signature: Signature,
+    pub authenticator_data: AuthenticatorData,
+    pub payload: WithRawString<Transaction>,
+    pub client_data_json: WithRawString<ClientDataJson>,
+    pub signature: Signature,
 }
 
 impl SignedMessage for Message {
