@@ -1,7 +1,7 @@
 [package]
 edition.workspace = true
 license.workspace = true
-name = "templar-intermediate-account-contract"
+name = "templar-universal-account-contract"
 repository.workspace = true
 version.workspace = true
 

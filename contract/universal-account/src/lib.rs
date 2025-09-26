@@ -5,11 +5,12 @@ use near_sdk::{
     serde_json, store::IterableMap, BorshStorageKey, PanicOnDefault, Promise,
 };
 
-use payload::{passkey::Passkey, NonceExtractor, PayloadExecutor};
 use templar_common::contract::list;
 
+use authentication::{passkey::Passkey, NonceExtractor, PayloadExecutor};
+
+mod authentication;
 mod key;
-mod payload;
 mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
