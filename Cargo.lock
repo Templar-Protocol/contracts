@@ -4691,6 +4691,7 @@ dependencies = [
  "near-workspaces",
  "p256",
  "rstest",
+ "schemars",
  "templar-common",
  "test-utils",
  "thiserror 2.0.11",

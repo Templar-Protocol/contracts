@@ -1,18 +1,21 @@
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::str::FromStr;
 
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use near_sdk::serde::{de, Deserialize, Serialize};
+use near_sdk::borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
+use near_sdk::serde::{self, de, Deserialize, Serialize};
 use near_sdk::{bs58, near};
-use p256::ecdsa::{signature, VerifyingKey};
+
+const KEY_LENGTH: usize = 65;
+type ByteEncoding = [u8; KEY_LENGTH];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [])]
-pub struct PublicKey(pub VerifyingKey);
+pub struct PublicKey(pub p256::PublicKey);
 
 impl Deref for PublicKey {
-    type Target = VerifyingKey;
+    type Target = p256::PublicKey;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -26,7 +29,7 @@ pub enum ParseError {
     #[error("Invalid base58: {0}")]
     InvalidBase58(#[from] bs58::decode::Error),
     #[error("Invalid key data: {0}")]
-    InvalidKeyData(#[from] signature::Error),
+    InvalidKeyData(#[from] p256::elliptic_curve::Error),
 }
 
 impl Display for PublicKey {
@@ -42,16 +45,29 @@ impl FromStr for PublicKey {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let key_bs58 = s.strip_prefix("p256:").ok_or(ParseError::MissingPrefix)?;
         let key_bytes = bs58::decode(key_bs58).into_vec()?;
-        let key = VerifyingKey::from_sec1_bytes(&key_bytes)?;
+        let key = p256::PublicKey::from_sec1_bytes(&key_bytes)?;
 
         Ok(Self(key))
+    }
+}
+
+impl schemars::JsonSchema for PublicKey {
+    fn schema_name() -> String {
+        "PublicKey".to_string()
+    }
+
+    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = gen.subschema_for::<String>().into_object();
+        schema.metadata().description = Some("NIST P256 public key".to_string());
+        schema.string().pattern = Some("^p256:[1-9A-HJ-NP-Za-km-z]{88,89}$".to_string());
+        schema.into()
     }
 }
 
 impl<'de> Deserialize<'de> for PublicKey {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: near_sdk::serde::Deserializer<'de>,
+        D: serde::Deserializer<'de>,
     {
         let s = <&str as Deserialize>::deserialize(deserializer)?;
         Self::from_str(s).map_err(de::Error::custom)
@@ -61,15 +77,28 @@ impl<'de> Deserialize<'de> for PublicKey {
 impl Serialize for PublicKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: near_sdk::serde::Serializer,
+        S: serde::Serializer,
     {
         <String as Serialize>::serialize(&self.to_string(), serializer)
     }
 }
 
+impl BorshSchema for PublicKey {
+    fn add_definitions_recursively(
+        definitions: &mut BTreeMap<borsh::schema::Declaration, borsh::schema::Definition>,
+    ) {
+        <ByteEncoding as BorshSchema>::add_definitions_recursively(definitions);
+    }
+
+    fn declaration() -> borsh::schema::Declaration {
+        String::from("PublicKey")
+    }
+}
+
 impl BorshSerialize for PublicKey {
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        let bytes = self.0.to_sec1_bytes();
+        #[allow(clippy::unwrap_used, reason = "Key length is known")]
+        let bytes: ByteEncoding = (&*self.0.to_sec1_bytes()).try_into().unwrap();
         BorshSerialize::serialize(&bytes, writer)
     }
 }
@@ -77,9 +106,9 @@ impl BorshSerialize for PublicKey {
 impl BorshDeserialize for PublicKey {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         Ok(Self(
-            VerifyingKey::from_sec1_bytes(&<Box<[u8]> as BorshDeserialize>::deserialize_reader(
-                reader,
-            )?)
+            p256::PublicKey::from_sec1_bytes(
+                &<ByteEncoding as BorshDeserialize>::deserialize_reader(reader)?,
+            )
             .map_err(|e| std::io::Error::other(e.to_string()))?,
         ))
     }

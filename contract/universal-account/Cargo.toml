@@ -32,6 +32,7 @@ templar-common.workspace = true
 thiserror.workspace = true
 getrandom.workspace = true
 near-sdk.workspace = true
+schemars.workspace = true
 p256 = "0.13.2"
 hex.workspace = true
 
