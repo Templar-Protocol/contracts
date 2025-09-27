@@ -1,13 +1,13 @@
-use data::{AuthenticatorData, ClientDataJson};
 use near_sdk::{base64::prelude::*, env, near, Promise};
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::VerifyingKey;
-use signature::Signature;
-use with_raw_string::WithRawString;
-
-use crate::transaction::Transaction;
 
 use super::SignedMessage;
+use crate::transaction::Transaction;
+
+use data::{AuthenticatorData, ClientDataJson};
+use signature::Signature;
+use with_raw_string::WithRawString;
 
 pub mod data;
 pub mod signature;

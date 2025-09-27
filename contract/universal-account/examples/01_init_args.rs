@@ -1,7 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
 use near_sdk::{json_types::U64, serde_json};
-use templar_universal_account_contract::{key::p256::PublicKey, KeyId};
+
+use templar_universal_account::key::p256::PublicKey;
+use templar_universal_account_contract::KeyId;
 
 pub fn main() {
     // Replace with your own public key.

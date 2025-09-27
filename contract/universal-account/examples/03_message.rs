@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
 use near_sdk::serde_json::{self, json};
-use templar_universal_account_contract::{
-    authentication::passkey::Message, key::p256::PublicKey, KeyId,
-};
+
+use templar_universal_account::{authentication::passkey::Message, key::p256::PublicKey};
+use templar_universal_account_contract::KeyId;
 
 pub fn main() {
     let message: Message = serde_json::from_value(json!({

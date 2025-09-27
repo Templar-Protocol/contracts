@@ -28,6 +28,7 @@ container_build_command = [
 ]
 
 [dependencies]
+templar-universal-account.path = "../../universal-account"
 templar-common.workspace = true
 thiserror.workspace = true
 getrandom.workspace = true

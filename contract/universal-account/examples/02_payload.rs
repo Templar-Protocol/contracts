@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use near_sdk::{base64::prelude::*, env::sha256, json_types::U64, serde_json, NearToken};
-use templar_universal_account_contract::transaction::{Action, Transaction};
+
+use templar_universal_account::transaction::{Action, Transaction};
 
 pub fn main() {
     let transaction = Transaction {

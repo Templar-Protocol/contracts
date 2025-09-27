@@ -6,12 +6,10 @@ use near_sdk::{
 };
 
 use templar_common::contract::list;
-
-use authentication::{passkey, SignedMessage};
-
-pub mod authentication;
-pub mod key;
-pub mod transaction;
+use templar_universal_account::{
+    authentication::{passkey, SignedMessage},
+    key,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]

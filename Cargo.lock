@@ -4682,6 +4682,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-universal-account"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "near-sdk",
+ "p256",
+ "schemars",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "templar-universal-account-contract"
 version = "1.0.0"
 dependencies = [
@@ -4693,6 +4704,7 @@ dependencies = [
  "rstest",
  "schemars",
  "templar-common",
+ "templar-universal-account",
  "test-utils",
  "thiserror 2.0.11",
  "tokio",
