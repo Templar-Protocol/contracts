@@ -28,14 +28,10 @@ container_build_command = [
 ]
 
 [dependencies]
-templar-universal-account.path = "../../universal-account"
-templar-common.workspace = true
-thiserror.workspace = true
 getrandom.workspace = true
 near-sdk.workspace = true
-schemars.workspace = true
-p256 = "0.13.2"
-hex.workspace = true
+templar-common.workspace = true
+templar-universal-account.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }

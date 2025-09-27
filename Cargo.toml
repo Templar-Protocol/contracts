@@ -31,6 +31,7 @@ primitive-types = { version = "0.10.1" }
 rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 templar-common = { path = "./common" }
+templar-universal-account = { path = "./universal-account" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }

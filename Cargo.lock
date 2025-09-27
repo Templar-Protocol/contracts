@@ -4697,16 +4697,12 @@ name = "templar-universal-account-contract"
 version = "1.0.0"
 dependencies = [
  "getrandom",
- "hex",
  "near-sdk",
  "near-workspaces",
- "p256",
  "rstest",
- "schemars",
  "templar-common",
  "templar-universal-account",
  "test-utils",
- "thiserror 2.0.11",
  "tokio",
 ]
 
@@ -4728,6 +4724,7 @@ dependencies = [
  "near-sdk-contract-tools",
  "near-workspaces",
  "templar-common",
+ "templar-universal-account",
  "tokio",
 ]
 

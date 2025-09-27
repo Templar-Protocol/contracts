@@ -11,6 +11,7 @@ near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true
 templar-common.workspace = true
+templar-universal-account.workspace = true
 tokio.workspace = true
 
 [[example]]

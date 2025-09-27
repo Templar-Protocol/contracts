@@ -8,14 +8,8 @@ use near_sdk::{
 use templar_common::contract::list;
 use templar_universal_account::{
     authentication::{passkey, SignedMessage},
-    key,
+    key::KeyId,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub enum KeyId {
-    Passkey(key::p256::PublicKey),
-}
 
 fn execute_message<M: SignedMessage<Output = Promise>>(
     msg: &M,
