@@ -16,7 +16,7 @@ pub fn main() {
             "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97631d00000000",
         )
         .unwrap(),
-        payload: r#"{"parameters":{"index":"0","nonce":"1"},"account_id":"my-universal-account.testnet","receiver_id":"alice.testnet","actions":[{"Transfer":{"amount":"1000000000000000000000000"}}]}"#.parse().unwrap(),
+        payload: r#"{"parameters":{"index":"0","nonce":"1"},"account_id":"my-universal-account.testnet","transactions":[{"receiver_id":"alice.testnet","actions":[{"Transfer":{"amount":"1000000000000000000000000"}}]}]}"#.parse().unwrap(),
         client_data_json: r#"{"type":"webauthn.get","challenge":"85VxczPqag4d7XrZFvpPZBBuac_cLiQZGONVSkdl9LE","origin":"http://localhost:3000","crossOrigin":false}"#.parse().unwrap(),
         signature: "MEUCICy0TG2AuV8mOv-HEsTayGBiA4huWNJ5sUKzsQWt1xwnAiEA5_lulYfwRnf9dPSHBNciq63jrIFx0LAB519gQuJGxU8".parse().unwrap(),
     };

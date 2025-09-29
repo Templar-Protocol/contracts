@@ -54,7 +54,5 @@ impl UniversalAccountController {
 
         #[call(exec, tgas(300))]
         pub fn execute_passkey["execute"](key: KeyId, message: passkey::Message);
-        #[call(exec, tgas(300))]
-        pub fn execute_batch_passkey["execute_batch"](key: KeyId, messages: Vec<passkey::Message>);
     }
 }

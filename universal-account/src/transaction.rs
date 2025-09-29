@@ -1,5 +1,5 @@
 use near_sdk::{
-    json_types::{U128, U64},
+    json_types::{Base64VecU8, U128, U64},
     near, AccountId, Allowance, Gas, GasWeight, NearToken, Promise,
 };
 use std::num::NonZeroU128;
@@ -29,17 +29,17 @@ impl Transaction {
 pub enum Action {
     CreateAccount,
     DeployContract {
-        code: Vec<u8>,
+        code: Base64VecU8,
     },
     FunctionCall {
         function_name: String,
-        arguments: Vec<u8>,
+        arguments: Base64VecU8,
         amount: NearToken,
         gas: Gas,
     },
     FunctionCallWeight {
         function_name: String,
-        arguments: Vec<u8>,
+        arguments: Base64VecU8,
         amount: NearToken,
         gas: Gas,
         weight: U64,
@@ -86,13 +86,18 @@ impl Action {
     pub fn add(&self, promise: Promise) -> Promise {
         match self {
             Action::CreateAccount => promise.create_account(),
-            Action::DeployContract { code } => promise.deploy_contract(code.clone()),
+            Action::DeployContract { code } => promise.deploy_contract(code.0.clone()),
             Action::FunctionCall {
                 function_name,
                 arguments,
                 amount,
                 gas,
-            } => promise.function_call(function_name.to_string(), arguments.clone(), *amount, *gas),
+            } => promise.function_call(
+                function_name.to_string(),
+                arguments.0.clone(),
+                *amount,
+                *gas,
+            ),
             Action::FunctionCallWeight {
                 function_name,
                 arguments,
@@ -101,7 +106,7 @@ impl Action {
                 weight,
             } => promise.function_call_weight(
                 function_name.to_string(),
-                arguments.clone(),
+                arguments.0.clone(),
                 *amount,
                 *gas,
                 GasWeight(weight.0),

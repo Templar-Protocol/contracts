@@ -63,7 +63,7 @@ pub async fn universal_account() {
             actions: vec![
                 Action::FunctionCall {
                     function_name: "storage_deposit".to_string(),
-                    arguments: serde_json::to_vec(&json!({})).unwrap(),
+                    arguments: serde_json::to_vec(&json!({})).unwrap().into(),
                     amount: NearToken::from_near(1).saturating_div(4),
                     gas: near_sdk::Gas::from_tgas(30),
                 },
@@ -72,13 +72,16 @@ pub async fn universal_account() {
                     arguments: serde_json::to_vec(&json!({
                         "amount": "100",
                     }))
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                     amount: NearToken::from_near(0),
                     gas: near_sdk::Gas::from_tgas(30),
                 },
             ],
         }],
     });
+
+    eprintln!("{}", serde_json::to_string_pretty(&payload.parsed).unwrap());
 
     let challenge = payload.hash();
 
@@ -95,7 +98,7 @@ pub async fn universal_account() {
         }),
     );
 
-    eprintln!("{message:#?}");
+    // eprintln!("{message:#?}");
     eprintln!("{}", serde_json::to_string_pretty(&message).unwrap());
 
     let e = uac
