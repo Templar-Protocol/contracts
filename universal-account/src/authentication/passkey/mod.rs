@@ -1,7 +1,10 @@
-use near_sdk::{base64::prelude::*, env, near, Promise};
+use near_sdk::{env, near, Promise};
+use p256::ecdsa::signature::SignerMut;
 use p256::ecdsa::signature::Verifier;
-use p256::ecdsa::VerifyingKey;
+use p256::ecdsa::{SigningKey, VerifyingKey};
 
+use super::ExecutionParameters;
+use super::Key;
 use super::SignedMessage;
 use crate::transaction::Transaction;
 
@@ -13,6 +16,43 @@ pub mod data;
 pub mod signature;
 pub mod with_raw_string;
 
+fn sig_base(
+    authenticator_data: &AuthenticatorData,
+    client_data_json: &WithRawString<ClientDataJson>,
+) -> Vec<u8> {
+    [
+        &**authenticator_data,
+        &env::sha256(client_data_json.raw.as_bytes()),
+    ]
+    .concat()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [borsh, json])]
+pub struct Passkey(pub crate::key::p256::PublicKey);
+
+impl Key for Passkey {
+    type Message = Message;
+    type Error = Error;
+
+    fn verify_and_execute(&self, message: &Message) -> Result<Promise, Error> {
+        // Check signature
+        VerifyingKey::from(*self.0)
+            .verify(
+                &sig_base(&message.authenticator_data, &message.client_data_json),
+                &*message.signature,
+            )
+            .map_err(|_| Error::InvalidSignature)?;
+
+        // Check that the payload actually hashes to the signed challenge
+        if message.payload.hash() != message.client_data_json.parsed.challenge.as_slice() {
+            return Err(Error::PayloadHashMismatch);
+        }
+
+        Ok(message.execute())
+    }
+}
+
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct Message {
@@ -22,44 +62,44 @@ pub struct Message {
     pub signature: Signature,
 }
 
-impl SignedMessage for Message {
-    type Key = crate::key::p256::PublicKey;
-    type Output = Promise;
-    type Error = Error;
+impl Message {
+    pub fn new_and_sign(
+        key: &p256::SecretKey,
+        payload: WithRawString<Transaction>,
+        authenticator_data: AuthenticatorData,
+        client_data_json: WithRawString<ClientDataJson>,
+    ) -> Self {
+        let signature = Signature(
+            SigningKey::from(key).sign(&sig_base(&authenticator_data, &client_data_json)),
+        );
 
-    fn nonce(&self) -> u64 {
-        self.payload.parsed.nonce.0
+        Self {
+            authenticator_data,
+            payload,
+            client_data_json,
+            signature,
+        }
+    }
+}
+
+impl SignedMessage for Message {
+    type Output = Promise;
+
+    fn account_id(&self) -> &near_sdk::AccountIdRef {
+        &self.payload.parsed.account_id
     }
 
-    fn execute(&self, key: &Self::Key) -> Result<Self::Output, Self::Error> {
-        // Check signature
-        let sig_base = [
-            &*self.authenticator_data,
-            &env::sha256(self.client_data_json.raw.as_bytes()),
-        ]
-        .concat();
+    fn parameters(&self) -> &ExecutionParameters {
+        &self.payload.parsed.parameters
+    }
 
-        VerifyingKey::from(key.0)
-            .verify(&sig_base, &*self.signature)
-            .map_err(|_| Error::InvalidSignature)?;
-
-        // Check that the un-hashed payload we received hashes to the value that was signed.
-        let payload_hash = BASE64_URL_SAFE_NO_PAD
-            .decode(&self.client_data_json.parsed.challenge)
-            .map_err(|_| Error::InvalidChallenge)?;
-
-        if env::sha256(self.payload.raw.as_bytes()) != payload_hash {
-            return Err(Error::PayloadHashMismatch);
-        }
-
-        Ok(self.payload.parsed.construct_promise())
+    fn execute(&self) -> Promise {
+        self.payload.parsed.construct_promise()
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Invalid challenge")]
-    InvalidChallenge,
     #[error("Payload hash mismatch")]
     PayloadHashMismatch,
     #[error("Invalid signature")]

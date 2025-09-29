@@ -4699,6 +4699,7 @@ dependencies = [
  "getrandom",
  "near-sdk",
  "near-workspaces",
+ "p256",
  "rstest",
  "templar-common",
  "templar-universal-account",

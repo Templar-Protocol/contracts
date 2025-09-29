@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{fmt::Display, ops::Deref, str::FromStr};
 
 use near_sdk::{
     base64::prelude::*,
@@ -11,6 +11,18 @@ use p256::ecdsa;
 #[near(serializers = [])]
 pub struct Signature(pub ecdsa::DerSignature);
 
+impl From<ecdsa::DerSignature> for Signature {
+    fn from(value: ecdsa::DerSignature) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Signature> for ecdsa::DerSignature {
+    fn from(value: Signature) -> Self {
+        value.0
+    }
+}
+
 impl Deref for Signature {
     type Target = ecdsa::DerSignature;
 
@@ -19,18 +31,37 @@ impl Deref for Signature {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ParseError {
+    #[error(transparent)]
+    Base64(#[from] near_sdk::base64::DecodeError),
+    #[error(transparent)]
+    Signature(#[from] ecdsa::signature::Error),
+}
+
+impl FromStr for Signature {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let signature_bytes = BASE64_URL_SAFE_NO_PAD.decode(s)?;
+        let signature = ecdsa::DerSignature::try_from(signature_bytes.as_slice())?;
+        Ok(Self(signature))
+    }
+}
+
+impl Display for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", BASE64_URL_SAFE_NO_PAD.encode(self.0.as_bytes()))
+    }
+}
+
 impl<'de> Deserialize<'de> for Signature {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let signature_b64url: String = serde::Deserialize::deserialize(deserializer)?;
-        let signature_bytes = BASE64_URL_SAFE_NO_PAD
-            .decode(signature_b64url)
-            .map_err(de::Error::custom)?;
-        let signature =
-            ecdsa::DerSignature::try_from(signature_bytes.as_slice()).map_err(de::Error::custom)?;
-        Ok(Self(signature))
+        let s: String = serde::Deserialize::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(de::Error::custom)
     }
 }
 
@@ -39,8 +70,7 @@ impl Serialize for Signature {
     where
         S: serde::Serializer,
     {
-        let signature_b64url = BASE64_URL_SAFE_NO_PAD.encode(self.0.as_bytes());
-        Serialize::serialize(&signature_b64url, serializer)
+        Serialize::serialize(&self.to_string(), serializer)
     }
 }
 

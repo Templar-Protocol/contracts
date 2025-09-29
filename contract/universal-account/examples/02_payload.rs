@@ -2,12 +2,19 @@
 
 use near_sdk::{base64::prelude::*, env::sha256, json_types::U64, serde_json, NearToken};
 
-use templar_universal_account::transaction::{Action, Transaction};
+use templar_universal_account::{
+    transaction::{Action, Transaction},
+    ExecutionParameters,
+};
 
 pub fn main() {
     let transaction = Transaction {
         receiver_id: "alice.testnet".parse().unwrap(),
-        nonce: U64(1),
+        parameters: ExecutionParameters {
+            index: U64(0),
+            nonce: U64(1),
+        },
+        account_id: "my-universal-account.testnet".parse().unwrap(),
         actions: vec![Action::Transfer {
             amount: NearToken::from_near(1),
         }],

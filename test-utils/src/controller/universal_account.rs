@@ -1,6 +1,6 @@
 use near_sdk::{json_types::U64, serde_json::json};
 use near_workspaces::{Account, Contract};
-use templar_universal_account::{authentication::passkey, key::KeyId};
+use templar_universal_account::{authentication::passkey, ExecutionParameters, KeyId};
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
@@ -48,7 +48,7 @@ impl UniversalAccountController {
 
     define! {
         #[view]
-        pub fn nonce(key: KeyId) -> Option<U64>;
+        pub fn get_key(key: KeyId) -> Option<ExecutionParameters>;
         #[view]
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
 
