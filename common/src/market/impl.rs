@@ -1,6 +1,6 @@
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
-    env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
+    env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
 use crate::{
@@ -208,11 +208,7 @@ impl Market {
         .to_u128_ceil()
         .unwrap();
 
-        let incoming = self.incoming_at(self.finalized_snapshots.len());
-        require!(incoming.is_zero());
-
         u128::from(self.borrow_asset_deposited_active)
-            .saturating_add(u128::from(incoming))
             .saturating_sub(u128::from(self.borrow_asset_borrowed))
             .saturating_sub(u128::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
