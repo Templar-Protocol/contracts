@@ -63,7 +63,7 @@ pub struct BorrowPosition {
     pub collateral_asset_deposit: CollateralAssetAmount,
     borrow_asset_principal: BorrowAssetAmount,
     pub borrow_asset_fees: Accumulator<BorrowAsset>,
-    pub in_flight: BorrowAssetAmount,
+    in_flight: BorrowAssetAmount,
     pub liquidation_lock: CollateralAssetAmount,
 }
 
@@ -84,15 +84,20 @@ impl BorrowPosition {
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
-        self.borrow_asset_principal
+        let mut total = BorrowAssetAmount::zero();
+        asset_op! {
+            total += self.borrow_asset_principal;
+            total += self.in_flight;
+        };
+        total
     }
 
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         asset_op! {
             total += self.borrow_asset_principal;
-            total += self.borrow_asset_fees.get_total();
             total += self.in_flight;
+            total += self.borrow_asset_fees.get_total();
         };
         total
     }
@@ -260,6 +265,8 @@ pub mod error {
         FeeCalculationFailure,
         #[error("Borrow position must be healthy after borrow")]
         Undercollateralization,
+        #[error("New borrow position is outside of allowable range")]
+        OutsideAllowableRange,
     }
 }
 
@@ -370,6 +377,13 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
             self.position.started_at_block_timestamp_ms,
             block_timestamp_ms,
         )
+    }
+
+    pub fn within_allowable_borrow_range(&self) -> bool {
+        self.market
+            .configuration
+            .borrow_range
+            .contains(self.position.get_borrow_asset_principal())
     }
 
     pub fn liquidatable_collateral(&self, price_pair: &PricePair) -> CollateralAssetAmount {
@@ -531,18 +545,24 @@ impl<'a> BorrowPositionGuard<'a> {
             .ok_or(error::InitialBorrowError::FeeCalculationFailure)?;
 
         asset_op! {
-            self.market.borrow_asset_in_flight += amount;
+            self.market.borrow_asset_borrowed_in_flight += amount;
             self.position.in_flight += amount;
-            self.position.in_flight += fees;
         };
 
         if !self.status(price_pair, block_timestamp_ms).is_healthy() {
             asset_op! {
-                self.market.borrow_asset_in_flight -= amount;
+                self.market.borrow_asset_borrowed_in_flight -= amount;
                 self.position.in_flight -= amount;
-                self.position.in_flight -= fees;
             };
             return Err(error::InitialBorrowError::Undercollateralization);
+        }
+
+        if !self.within_allowable_borrow_range() {
+            asset_op! {
+                self.market.borrow_asset_borrowed_in_flight -= amount;
+                self.position.in_flight -= amount;
+            };
+            return Err(error::InitialBorrowError::OutsideAllowableRange);
         }
 
         Ok(InitialBorrow { amount, fees })
@@ -559,9 +579,8 @@ impl<'a> BorrowPositionGuard<'a> {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
         asset_op! {
-            self.market.borrow_asset_in_flight -= borrow.amount;
+            self.market.borrow_asset_borrowed_in_flight -= borrow.amount;
             self.position.in_flight -= borrow.amount;
-            self.position.in_flight -= borrow.fees;
         };
 
         if success {

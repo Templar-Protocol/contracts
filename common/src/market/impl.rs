@@ -40,13 +40,14 @@ pub struct Market {
     pub borrow_asset_deposited_active: BorrowAssetAmount,
     /// Upcoming snapshot indices with amounts of borrow asset that will be activated.
     pub borrow_asset_deposited_incoming: Vec<IncomingDeposit>,
+    pub borrow_asset_withdrawal_in_flight: BorrowAssetAmount,
     /// Sending borrow asset out, because if somebody sends the contract borrow asset, it's ok for the
     /// contract to attempt to fulfill withdrawal request, even if the market thinks it doesn't have
     /// enough to fulfill.
-    pub borrow_asset_in_flight: BorrowAssetAmount,
+    pub borrow_asset_borrowed_in_flight: BorrowAssetAmount,
     /// Amount of borrow asset that has been withdrawn (is in use by) by borrowers.
     ///
-    /// `borrow_asset_deposited_active - borrow_asset_borrowed >= 0` should always be true.
+    /// `borrow_asset_deposited_active - borrow_asset_borrowed - borrow_asset_borrowed_in_flight >= 0` should always be true.
     pub borrow_asset_borrowed: BorrowAssetAmount,
     /// Market-wide collateral asset deposit tracking.
     pub collateral_asset_deposited: CollateralAssetAmount,
@@ -88,7 +89,8 @@ impl Market {
             configuration,
             borrow_asset_deposited_active: 0.into(),
             borrow_asset_deposited_incoming: Vec::new(),
-            borrow_asset_in_flight: 0.into(),
+            borrow_asset_withdrawal_in_flight: 0.into(),
+            borrow_asset_borrowed_in_flight: 0.into(),
             borrow_asset_borrowed: 0.into(),
             collateral_asset_deposited: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
@@ -104,6 +106,12 @@ impl Market {
         self_.finalized_snapshots.push(first_snapshot);
 
         self_
+    }
+
+    pub fn borrowed(&self) -> BorrowAssetAmount {
+        let mut total = self.borrow_asset_borrowed;
+        asset_op!(total += self.borrow_asset_borrowed_in_flight);
+        total
     }
 
     pub fn total_incoming(&self) -> BorrowAssetAmount {
@@ -139,16 +147,18 @@ impl Market {
         let mut active = self.borrow_asset_deposited_active;
         asset_op!(active += incoming);
 
+        let borrowed = self.borrowed();
+
         let interest_rate = self
             .configuration
             .borrow_interest_rate_strategy
-            .at(usage_ratio(active, self.borrow_asset_borrowed));
+            .at(usage_ratio(active, borrowed));
 
         Snapshot {
             time_chunk: self.current_time_chunk,
             end_timestamp_ms: env::block_timestamp_ms().into(),
             borrow_asset_deposited_active: active,
-            borrow_asset_borrowed: self.borrow_asset_borrowed,
+            borrow_asset_borrowed: borrowed,
             collateral_asset_deposited: self.collateral_asset_deposited,
             yield_distribution: self.current_yield_distribution,
             interest_rate,
@@ -205,7 +215,7 @@ impl Market {
             .borrow_interest_rate_strategy
             .at(usage_ratio(
                 self.borrow_asset_deposited_active,
-                self.borrow_asset_borrowed,
+                self.borrowed(),
             ))
     }
 
@@ -220,8 +230,7 @@ impl Market {
         .unwrap();
 
         u128::from(self.borrow_asset_deposited_active)
-            .saturating_sub(u128::from(self.borrow_asset_borrowed))
-            .saturating_sub(u128::from(self.borrow_asset_in_flight))
+            .saturating_sub(u128::from(self.borrowed()))
             .saturating_sub(must_retain)
             .into()
     }
