@@ -210,7 +210,7 @@ impl<'a> SupplyPositionGuard<'a> {
         Self(SupplyPositionRef::new(market, account_id, position))
     }
 
-    fn activate_incoming(&mut self, until_snapshot_index: u32) {
+    fn activate_incoming(&mut self, through_snapshot_index: u32) {
         let mut incoming = self
             .position
             .borrow_asset_deposit
@@ -219,7 +219,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .into_iter()
             .peekable();
         while let Some(deposit) =
-            incoming.next_if(|d| d.activate_at_snapshot_index < until_snapshot_index)
+            incoming.next_if(|d| d.activate_at_snapshot_index <= through_snapshot_index)
         {
             asset_op!(self.position.borrow_asset_deposit.active += deposit.amount);
         }

@@ -53,22 +53,10 @@ async fn snapshot_captures_borrow_and_collateral_state() {
 
     check(
         states!(
-            {
-                active += 2_000_000,
-                incoming += 2_000_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                collateral += 1_000_000,
-            },
-            {
-                borrowed += 500_000,
-            },
-            {
-                collateral += 1,
-            },
+            { active += 2_000_000 },
+            { collateral += 1_000_000 },
+            { borrowed += 500_000 },
+            { collateral += 1 },
         ),
         snapshots,
     );
@@ -110,22 +98,10 @@ async fn multiple_snapshots_show_progression() {
 
     check(
         states!(
-            {
-                active = 3_000_000,
-                incoming = 3_000_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                collateral += 1_000_000,
-            },
-            {
-                borrowed += 400_000,
-            },
-            {
-                borrowed += 200_000,
-            },
+            { active = 3_000_000 },
+            { collateral += 1_000_000 },
+            { borrowed += 400_000 },
+            { borrowed += 200_000 },
         ),
         snapshots,
     );
@@ -224,25 +200,7 @@ async fn snapshot_handles_zero_operations() {
 
     let snapshots = c.list_finalized_snapshots(None, None).await;
 
-    check(
-        states!(
-            {
-                active = 1_000_000,
-                incoming = 1_000_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                active += 1,
-                incoming = 1,
-            },
-            {
-                incoming = 0,
-            },
-        ),
-        snapshots,
-    );
+    check(states!({ active = 1_000_000 }, { active += 1 }), snapshots);
 }
 
 #[tokio::test]
@@ -350,31 +308,13 @@ async fn snapshot_field_validation() {
 
     check(
         states!(
-            {
-                active = 1_500_000,
-                incoming = 1_500_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                collateral += 1,
-            },
-            {
-                collateral += 800_000,
-            },
-            {
-                collateral += 1,
-            },
-            {
-                borrowed += 400_000,
-            },
-            {
-                collateral += 1,
-            },
-            {
-                collateral += 1,
-            },
+            { active = 1_500_000 },
+            { collateral += 1 },
+            { collateral += 800_000 },
+            { collateral += 1 },
+            { borrowed += 400_000 },
+            { collateral += 1 },
+            { collateral += 1 },
         ),
         &snapshots,
     );
@@ -436,16 +376,8 @@ async fn many_users_different_snapshots() {
 
     check(
         states!(
-            {
-                active += 2_000_000,
-                incoming = 2_000_000,
-            },
-            { incoming = 0 },
-            {
-                active += 1_500_000,
-                incoming = 1_500_000,
-            },
-            { incoming = 0 },
+            { active += 2_000_000 },
+            { active += 1_500_000 },
             { collateral += 400_000 },
             { collateral += 350_000 },
             { collateral += 300_000 },
@@ -519,11 +451,7 @@ async fn many_users_same_snapshot() {
 
     check(
         states!(
-            {
-                active += 2_000_000 + 1_500_000,
-                incoming = 2_000_000 + 1_500_000,
-            },
-            { incoming = 0 },
+            { active += 2_000_000 + 1_500_000 },
             { collateral += 400_000 + 350_000 + 300_000 + 250_000 + 200_000 },
             { borrowed += 150_000 + 120_000 + 100_000 + 80_000 + 60_000 },
         ),
@@ -555,6 +483,8 @@ async fn incoming() {
     {
         c.harvest_yield(&supply_user, None, None).await;
     }
+    // Finalize snapshot where funds were activated
+    c.harvest_yield(&supply_user, None, None).await;
     // Two more to ensure we have snapshots afterwards
     c.harvest_yield(&supply_user, None, None).await;
     c.harvest_yield(&supply_user, None, None).await;
@@ -576,26 +506,14 @@ async fn incoming() {
     assert!(snapshot_before_before
         .borrow_asset_deposited_active
         .is_zero());
-    assert!(snapshot_before_before
-        .borrow_asset_deposited_incoming
-        .is_zero());
     assert!(snapshot_before.borrow_asset_deposited_active.is_zero());
-    assert!(snapshot_before.borrow_asset_deposited_incoming.is_zero());
     assert_eq!(snapshot_at.borrow_asset_deposited_active, 2_000_000.into());
-    assert_eq!(
-        snapshot_at.borrow_asset_deposited_incoming,
-        2_000_000.into(),
-    );
     assert_eq!(
         snapshot_after.borrow_asset_deposited_active,
         2_000_000.into(),
     );
-    assert!(snapshot_after.borrow_asset_deposited_incoming.is_zero());
     assert_eq!(
         snapshot_after_after.borrow_asset_deposited_active,
         2_000_000.into(),
     );
-    assert!(snapshot_after_after
-        .borrow_asset_deposited_incoming
-        .is_zero());
 }

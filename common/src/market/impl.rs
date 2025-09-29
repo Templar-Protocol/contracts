@@ -1,6 +1,6 @@
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
-    env, near, AccountId, BorshStorageKey, IntoStorageKey,
+    env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
 use crate::{
@@ -111,6 +111,15 @@ impl Market {
         )
     }
 
+    pub fn incoming_at(&self, snapshot_index: u32) -> BorrowAssetAmount {
+        self.borrow_asset_deposited_incoming
+            .iter()
+            .find_map(|incoming| {
+                (incoming.activate_at_snapshot_index == snapshot_index).then_some(incoming.amount)
+            })
+            .unwrap_or(0.into())
+    }
+
     pub fn get_last_finalized_snapshot(&self) -> &Snapshot {
         #[allow(clippy::unwrap_used, reason = "Snapshots are never empty")]
         self.finalized_snapshots
@@ -120,14 +129,7 @@ impl Market {
 
     pub fn current_snapshot(&self) -> Snapshot {
         let current_snapshot_index = self.finalized_snapshots.len();
-        let incoming = self
-            .borrow_asset_deposited_incoming
-            .iter()
-            .find_map(|incoming| {
-                (incoming.activate_at_snapshot_index == current_snapshot_index)
-                    .then_some(incoming.amount)
-            })
-            .unwrap_or(0.into());
+        let incoming = self.incoming_at(current_snapshot_index);
 
         let mut active = self.borrow_asset_deposited_active;
         asset_op!(active += incoming);
@@ -141,7 +143,6 @@ impl Market {
             time_chunk: self.current_time_chunk,
             end_timestamp_ms: env::block_timestamp_ms().into(),
             borrow_asset_deposited_active: active,
-            borrow_asset_deposited_incoming: incoming,
             borrow_asset_borrowed: self.borrow_asset_borrowed,
             collateral_asset_deposited: self.collateral_asset_deposited,
             yield_distribution: self.current_yield_distribution,
@@ -167,6 +168,9 @@ impl Market {
         }
         .emit();
         self.finalized_snapshots.push(snapshot);
+
+        // We just pushed a snapshot
+        let current_snapshot_index = current_snapshot_index + 1;
 
         // Activate incoming funds
         for i in 0..self.borrow_asset_deposited_incoming.len() {
@@ -204,7 +208,11 @@ impl Market {
         .to_u128_ceil()
         .unwrap();
 
+        let incoming = self.incoming_at(self.finalized_snapshots.len());
+        require!(incoming.is_zero());
+
         u128::from(self.borrow_asset_deposited_active)
+            .saturating_add(u128::from(incoming))
             .saturating_sub(u128::from(self.borrow_asset_borrowed))
             .saturating_sub(u128::from(self.borrow_asset_in_flight))
             .saturating_sub(must_retain)
