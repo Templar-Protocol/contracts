@@ -89,21 +89,10 @@ impl MarketExternalInterface for Contract {
 
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
-
         let account_id = env::predecessor_account_id();
-
-        let proposed_amount =
-            if let Some(borrow_position) = self.borrow_position_ref(account_id.clone()) {
-                let mut borrow_principal = borrow_position.inner().get_borrow_asset_principal();
-                asset_op!(borrow_principal += amount);
-                borrow_principal
-            } else {
-                amount
-            };
-
         require!(
-            self.configuration.borrow_range.contains(proposed_amount),
-            "New borrow position is outside of allowable range",
+            self.borrow_position_ref(account_id.clone()).is_some(),
+            "Borrow position does not exist",
         );
 
         self.configuration

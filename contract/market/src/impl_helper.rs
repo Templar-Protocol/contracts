@@ -141,7 +141,12 @@ impl Contract {
         // ensure that we have the maximum amount available to borrow.
         let proof = borrow_position.accumulate_interest();
 
-        borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
+        borrow_position.record_borrow_asset_in_flight_start(proof, amount);
+
+        require!(
+            borrow_position.within_allowable_borrow_range(),
+            "New borrow position is outside of allowable range",
+        );
 
         require!(
             borrow_position
@@ -177,7 +182,7 @@ impl Contract {
         };
 
         let proof = borrow_position.accumulate_interest();
-        borrow_position.record_borrow_asset_in_flight_end(proof, amount, fees);
+        borrow_position.record_borrow_asset_in_flight_end(proof, amount);
 
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {

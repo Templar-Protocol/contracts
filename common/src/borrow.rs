@@ -359,6 +359,13 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         )
     }
 
+    pub fn within_allowable_borrow_range(&self) -> bool {
+        self.market
+            .configuration
+            .borrow_range
+            .contains(self.position.get_borrow_asset_principal())
+    }
+
     pub fn liquidatable_collateral(&self, price_pair: &PricePair) -> CollateralAssetAmount {
         self.position.liquidatable_collateral(
             price_pair,
@@ -484,12 +491,10 @@ impl<'a> BorrowPositionGuard<'a> {
         &mut self,
         _proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
     ) {
         asset_op! {
             self.market.borrow_asset_borrowed_in_flight += amount;
             self.position.in_flight += amount;
-            self.position.in_flight += fees;
         };
     }
 
@@ -497,14 +502,12 @@ impl<'a> BorrowPositionGuard<'a> {
         &mut self,
         _proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
     ) {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
         asset_op! {
             self.market.borrow_asset_borrowed_in_flight -= amount;
             self.position.in_flight -= amount;
-            self.position.in_flight -= fees;
         };
     }
 
