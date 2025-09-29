@@ -66,13 +66,13 @@ impl Contract {
             env::panic_str("Cannot add collateral while liquidation locked");
         }
         let proof = borrow_position.accumulate_interest();
+        borrow_position.record_collateral_asset_deposit(proof, amount);
         require!(
             !borrow_position
                 .status(price_pair, env::block_timestamp_ms())
                 .is_liquidation(),
-            "Cannot add collateral when eligible for liquidation",
+            "Position is eligible for liquidation after collateralization",
         );
-        borrow_position.record_collateral_asset_deposit(proof, amount);
     }
 
     /// Returns the amount that should be returned to the account.
