@@ -57,6 +57,7 @@ pub struct Market {
     pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 32>,
     pub withdrawal_queue: WithdrawalQueue,
     pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
+    single_snapshot_maximum_interest_precomputed: Decimal,
 }
 
 impl Market {
@@ -79,6 +80,9 @@ impl Market {
         let first_snapshot = Snapshot::new(configuration.time_chunk_configuration.previous());
         let last_time_chunk = configuration.time_chunk_configuration.now();
 
+        let single_snapshot_maximum_interest_precomputed =
+            configuration.single_snapshot_maximum_interest();
+
         let mut self_ = Self {
             prefix: prefix.clone(),
             configuration,
@@ -94,6 +98,7 @@ impl Market {
             finalized_snapshots: ChunkedAppendOnlyList::new(key!(FinalizedSnapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
+            single_snapshot_maximum_interest_precomputed,
         };
 
         self_.finalized_snapshots.push(first_snapshot);
@@ -183,6 +188,12 @@ impl Market {
         self.current_yield_distribution = 0.into();
 
         SnapshotProof(())
+    }
+
+    pub fn single_snapshot_fee(&self, amount: BorrowAssetAmount) -> Option<BorrowAssetAmount> {
+        (u128::from(amount) * self.single_snapshot_maximum_interest_precomputed)
+            .to_u128_ceil()
+            .map(Into::into)
     }
 
     pub fn interest_rate(&self) -> Decimal {
