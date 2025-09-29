@@ -8,7 +8,7 @@ use templar_universal_account::{
     authentication::passkey::{
         data::{AuthenticatorData, ClientDataJson},
         with_raw_string::WithRawString,
-        Message, Passkey,
+        Message, Passkey, Payload,
     },
     key::p256::PublicKey,
     transaction::{Action, Transaction},
@@ -23,7 +23,7 @@ use test_utils::{
 pub async fn universal_account() {
     let worker = near_workspaces::sandbox().await.unwrap();
 
-    test_utils::accounts!(worker, uni_account, third_party, ft_account);
+    test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
     let secret_key = p256::SecretKey::random(&mut OsRng);
     let public_key: PublicKey = secret_key.public_key().into();
@@ -52,30 +52,32 @@ pub async fn universal_account() {
         "Nonce and index should be zero immediately after deployment",
     );
 
-    let payload = WithRawString::from_parsed(Transaction {
+    let payload = WithRawString::from_parsed(Payload {
         parameters: ExecutionParameters {
             index: U64(0),
             nonce: U64(1),
         },
         account_id: uac.contract().id().clone(),
-        receiver_id: ft.contract().id().clone(),
-        actions: vec![
-            Action::FunctionCall {
-                function_name: "storage_deposit".to_string(),
-                arguments: serde_json::to_vec(&json!({})).unwrap(),
-                amount: NearToken::from_near(1).saturating_div(4),
-                gas: near_sdk::Gas::from_tgas(30),
-            },
-            Action::FunctionCall {
-                function_name: "mint".to_string(),
-                arguments: serde_json::to_vec(&json!({
-                    "amount": "100",
-                }))
-                .unwrap(),
-                amount: NearToken::from_near(0),
-                gas: near_sdk::Gas::from_tgas(30),
-            },
-        ],
+        transactions: vec![Transaction {
+            receiver_id: ft.contract().id().clone(),
+            actions: vec![
+                Action::FunctionCall {
+                    function_name: "storage_deposit".to_string(),
+                    arguments: serde_json::to_vec(&json!({})).unwrap(),
+                    amount: NearToken::from_near(1).saturating_div(4),
+                    gas: near_sdk::Gas::from_tgas(30),
+                },
+                Action::FunctionCall {
+                    function_name: "mint".to_string(),
+                    arguments: serde_json::to_vec(&json!({
+                        "amount": "100",
+                    }))
+                    .unwrap(),
+                    amount: NearToken::from_near(0),
+                    gas: near_sdk::Gas::from_tgas(30),
+                },
+            ],
+        }],
     });
 
     let challenge = payload.hash();
@@ -94,6 +96,7 @@ pub async fn universal_account() {
     );
 
     eprintln!("{message:#?}");
+    eprintln!("{}", serde_json::to_string_pretty(&message).unwrap());
 
     let e = uac
         .execute_passkey(&third_party, key_id.clone(), message)

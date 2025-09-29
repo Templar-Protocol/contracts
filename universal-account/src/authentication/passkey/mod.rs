@@ -1,3 +1,4 @@
+use near_sdk::AccountId;
 use near_sdk::{env, near, Promise};
 use p256::ecdsa::signature::SignerMut;
 use p256::ecdsa::signature::Verifier;
@@ -55,9 +56,17 @@ impl Key for Passkey {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
+pub struct Payload {
+    pub parameters: ExecutionParameters,
+    pub account_id: AccountId,
+    pub transactions: Vec<Transaction>,
+}
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
 pub struct Message {
     pub authenticator_data: AuthenticatorData,
-    pub payload: WithRawString<Transaction>,
+    pub payload: WithRawString<Payload>,
     pub client_data_json: WithRawString<ClientDataJson>,
     pub signature: Signature,
 }
@@ -65,7 +74,7 @@ pub struct Message {
 impl Message {
     pub fn new_and_sign(
         key: &p256::SecretKey,
-        payload: WithRawString<Transaction>,
+        payload: WithRawString<Payload>,
         authenticator_data: AuthenticatorData,
         client_data_json: WithRawString<ClientDataJson>,
     ) -> Self {
@@ -93,8 +102,20 @@ impl SignedMessage for Message {
         &self.payload.parsed.parameters
     }
 
-    fn execute(&self) -> Promise {
-        self.payload.parsed.construct_promise()
+    fn execute(&self) -> Self::Output {
+        let mut promise = self
+            .payload
+            .parsed
+            .transactions
+            .first()
+            .unwrap_or_else(|| env::panic_str("empty"))
+            .construct_promise();
+
+        for tx in &self.payload.parsed.transactions[1..] {
+            promise = promise.then(tx.construct_promise());
+        }
+
+        promise
     }
 }
 

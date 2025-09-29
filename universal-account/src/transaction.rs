@@ -4,13 +4,9 @@ use near_sdk::{
 };
 use std::num::NonZeroU128;
 
-use crate::ExecutionParameters;
-
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
 pub struct Transaction {
-    pub parameters: ExecutionParameters,
-    pub account_id: AccountId,
     pub receiver_id: AccountId,
     pub actions: Vec<Action>,
 }
