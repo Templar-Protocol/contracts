@@ -63,7 +63,7 @@ pub struct BorrowPosition {
     pub collateral_asset_deposit: CollateralAssetAmount,
     borrow_asset_principal: BorrowAssetAmount,
     pub borrow_asset_fees: Accumulator<BorrowAsset>,
-    pub in_flight: BorrowAssetAmount,
+    in_flight: BorrowAssetAmount,
     pub liquidation_lock: CollateralAssetAmount,
 }
 
@@ -84,15 +84,20 @@ impl BorrowPosition {
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
-        self.borrow_asset_principal
+        let mut total = BorrowAssetAmount::zero();
+        asset_op! {
+            total += self.borrow_asset_principal;
+            total += self.in_flight;
+        };
+        total
     }
 
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         asset_op! {
             total += self.borrow_asset_principal;
-            total += self.borrow_asset_fees.get_total();
             total += self.in_flight;
+            total += self.borrow_asset_fees.get_total();
         };
         total
     }
@@ -482,7 +487,7 @@ impl<'a> BorrowPositionGuard<'a> {
         fees: BorrowAssetAmount,
     ) {
         asset_op! {
-            self.market.borrow_asset_in_flight += amount;
+            self.market.borrow_asset_borrowed_in_flight += amount;
             self.position.in_flight += amount;
             self.position.in_flight += fees;
         };
@@ -497,7 +502,7 @@ impl<'a> BorrowPositionGuard<'a> {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
         asset_op! {
-            self.market.borrow_asset_in_flight -= amount;
+            self.market.borrow_asset_borrowed_in_flight -= amount;
             self.position.in_flight -= amount;
             self.position.in_flight -= fees;
         };

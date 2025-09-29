@@ -41,7 +41,7 @@ impl MarketExternalInterface for Contract {
                 .iter()
                 .map(|incoming| (incoming.activate_at_snapshot_index, incoming.amount))
                 .collect(),
-            borrowed: self.borrow_asset_borrowed,
+            borrowed: self.borrowed(),
         }
     }
 
@@ -216,13 +216,12 @@ impl MarketExternalInterface for Contract {
         // does not account for in internal accounting.
         let expect_success = u128::from(self.borrow_asset_deposited_active)
             .saturating_add(u128::from(self.total_incoming()))
-            .checked_sub(
-                u128::from(self.borrow_asset_borrowed)
-                    .saturating_add(self.borrow_asset_in_flight.into()),
-            )
+            .checked_sub(u128::from(self.borrowed()))
             .is_some();
 
-        asset_op!(self.borrow_asset_in_flight += withdrawal_resolution.amount_to_account);
+        asset_op!(
+            self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account
+        );
 
         PromiseOrValue::Promise(
             self.configuration
@@ -300,7 +299,7 @@ impl MarketExternalInterface for Contract {
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = self.borrow_asset_borrowed.into();
+        let borrowed: Decimal = self.borrowed().into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
