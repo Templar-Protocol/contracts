@@ -268,8 +268,7 @@ async fn snapshot_with_full_repayment() {
     eprintln!("Total liability before repayment: {total_liability:?}");
 
     // Repay everything (including any accrued interest)
-    let r = c.repay(&borrow_user, total_liability).await;
-    print_execution(&r);
+    c.repay(&borrow_user, total_liability).await;
 
     // Create snapshot after full repayment
     tokio::time::sleep(Duration::from_secs(1)).await;
