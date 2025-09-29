@@ -176,7 +176,9 @@ impl Contract {
         &mut self,
         withdrawal_resolution: WithdrawalResolution,
     ) {
-        asset_op!(self.borrow_asset_in_flight -= withdrawal_resolution.amount_to_account);
+        asset_op!(
+            self.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account
+        );
 
         // Withdrawal succeeded: remove the withdrawal request from the queue.
         // Withdrawal failed but should have succeeded: remove request but still refund.
