@@ -16,8 +16,7 @@ pub mod supply;
 pub mod time_chunk;
 pub mod withdrawal_queue;
 
-pub static MS_IN_A_YEAR: std::sync::LazyLock<number::Decimal> =
-    std::sync::LazyLock::new(|| number::Decimal::from(31_556_952_000_u128)); // 1000 * 60 * 60 * 24 * 365.2425
+pub static MS_PER_YEAR: number::Decimal = number::Decimal::from_u64(31_556_952_000); // 1000 * 60 * 60 * 24 * 365.2425
 
 pub mod contract {
     pub fn list<T, U: FromIterator<T>>(

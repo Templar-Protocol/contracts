@@ -13,6 +13,7 @@ use crate::{
     number::Decimal,
     price::{Convert, PricePair},
     time_chunk::TimeChunkConfiguration,
+    MS_PER_YEAR,
 };
 
 use super::{PriceOracleConfiguration, YieldWeights};
@@ -306,6 +307,12 @@ impl MarketConfiguration {
         ((1u32 - self.liquidation_maximum_spread) * price_pair.convert(amount))
             .to_u128_ceil()
             .map(BorrowAssetAmount::new)
+    }
+
+    pub fn single_snapshot_maximum_interest(&self) -> Decimal {
+        self.borrow_interest_rate_strategy.at(Decimal::ONE)
+            * self.time_chunk_configuration.duration_ms.0
+            / MS_PER_YEAR
     }
 }
 

@@ -623,6 +623,23 @@ impl_int!(u64);
 impl_int!(u128);
 impl_int!(::primitive_types::U256);
 
+macro_rules! impl_from_const {
+    ($t:ty,$name:ident) => {
+        impl Decimal {
+            pub const fn $name(value: $t) -> Self {
+                Self {
+                    repr: U512([0, 0, value as u64, 0, 0, 0, 0, 0]),
+                }
+            }
+        }
+    };
+}
+
+impl_from_const!(u8, from_u8);
+impl_from_const!(u16, from_u16);
+impl_from_const!(u32, from_u32);
+impl_from_const!(u64, from_u64);
+
 #[cfg(test)]
 mod tests {
     use near_sdk::serde_json;
@@ -647,6 +664,25 @@ mod tests {
         d /= Decimal::from(u128::pow(2, 64));
         d /= Decimal::from(u128::pow(2, 64));
         d.to_u128_floor().unwrap()
+    }
+
+    #[rstest]
+    #[test]
+    fn const_constructors_are_correct() {
+        assert_eq!(Decimal::from_u8(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(Decimal::from_u8(u8::MAX).to_u128_ceil().unwrap(), 0xff);
+        assert_eq!(Decimal::from_u16(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(Decimal::from_u16(u16::MAX).to_u128_ceil().unwrap(), 0xffff);
+        assert_eq!(Decimal::from_u32(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(
+            Decimal::from_u32(u32::MAX).to_u128_ceil().unwrap(),
+            0xffff_ffff,
+        );
+        assert_eq!(Decimal::from_u64(0).to_u128_ceil().unwrap(), 0);
+        assert_eq!(
+            Decimal::from_u64(u64::MAX).to_u128_ceil().unwrap(),
+            0xffff_ffff_ffff_ffff,
+        );
     }
 
     #[rstest]
