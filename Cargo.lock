@@ -4481,7 +4481,7 @@ dependencies = [
 
 [[package]]
 name = "templar-common"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "borsh",
  "hex",
@@ -4497,7 +4497,7 @@ dependencies = [
 
 [[package]]
 name = "templar-lst-oracle-contract"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "getrandom",
  "hex-literal",
@@ -4513,7 +4513,7 @@ dependencies = [
 
 [[package]]
 name = "templar-market-contract"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "getrandom",
  "near-contract-standards",
@@ -4529,7 +4529,7 @@ dependencies = [
 
 [[package]]
 name = "templar-registry-contract"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "getrandom",
  "near-sdk",
