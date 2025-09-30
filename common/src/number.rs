@@ -143,6 +143,10 @@ impl Decimal {
         self.repr.0
     }
 
+    pub const fn from_repr(repr: [u64; 8]) -> Self {
+        Self { repr: U512(repr) }
+    }
+
     pub fn is_zero(&self) -> bool {
         self.repr.is_zero()
     }

@@ -440,25 +440,14 @@ impl Contract {
     pub fn withdraw_static_yield_01_finalize(
         &mut self,
         account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
-        collateral_asset_amount: CollateralAssetAmount,
+        amount: BorrowAssetAmount,
     ) {
-        let mut static_yield = self.static_yield.get(&account_id).unwrap_or_else(|| {
+        let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
             env::panic_str("Invariant violation: static yield entry must exist during callback")
         });
-        let mut i = 0;
 
-        if !borrow_asset_amount.is_zero() {
-            if matches!(env::promise_result(i), PromiseResult::Failed) {
-                asset_op!(static_yield.borrow_asset += borrow_asset_amount);
-            }
-            i += 1;
-        }
-
-        if !collateral_asset_amount.is_zero()
-            && matches!(env::promise_result(i), PromiseResult::Failed)
-        {
-            asset_op!(static_yield.collateral_asset += collateral_asset_amount);
+        if matches!(env::promise_result(0), PromiseResult::Failed) {
+            yield_record.add_once(amount);
         }
     }
 }
