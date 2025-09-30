@@ -203,10 +203,15 @@ impl MarketExternalInterface for Contract {
 
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
-        let expect_success = u128::from(self.borrow_asset_deposited_active)
+        let has_sufficient_liquidity = u128::from(self.borrow_asset_deposited_active)
             .saturating_add(u128::from(self.total_incoming()))
             .checked_sub(u128::from(self.borrowed()))
             .is_some();
+
+        require!(
+            has_sufficient_liquidity,
+            "Insufficient liquidity to fulfill the request at this time",
+        );
 
         asset_op!(
             self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account
@@ -221,10 +226,7 @@ impl MarketExternalInterface for Contract {
                 )
                 .then(
                     self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
-                        .execute_next_supply_withdrawal_request_01_finalize(
-                            withdrawal_resolution,
-                            expect_success,
-                        ),
+                        .execute_next_supply_withdrawal_request_01_finalize(withdrawal_resolution),
                 ),
         )
     }
