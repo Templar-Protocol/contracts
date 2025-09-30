@@ -14,10 +14,6 @@ pub enum MarketEvent {
         snapshot: Snapshot,
     },
     #[event_version("1.0.0")]
-    GlobalYieldDistributed {
-        borrow_asset_amount: BorrowAssetAmount,
-    },
-    #[event_version("1.0.0")]
     YieldAccumulated {
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
