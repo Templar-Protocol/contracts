@@ -316,7 +316,7 @@ impl MarketConfiguration {
             * YEAR_PER_MS
     }
 
-    pub fn yield_rate(&self, snapshot: &Snapshot) -> Decimal {
+    pub fn supply_yield_rate_from_interest(&self, snapshot: &Snapshot) -> Decimal {
         if snapshot.borrow_asset_deposited_active.is_zero() {
             return Decimal::ZERO;
         }

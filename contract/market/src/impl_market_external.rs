@@ -286,7 +286,8 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        self.configuration.yield_rate(&self.current_snapshot())
+        self.configuration
+            .supply_yield_rate_from_interest(&self.current_snapshot())
     }
 
     fn get_static_yield(&self, account_id: AccountId) -> Option<Accumulator<BorrowAsset>> {

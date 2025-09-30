@@ -93,7 +93,9 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let supply_yield_2 = u128::from(supply_position_2.borrow_asset_yield.get_total())
             + u128::from(supply_position_2.borrow_asset_yield.pending_estimate);
 
-        let yield_rate = c.configuration.yield_rate(&current_snapshot);
+        let yield_rate = c
+            .configuration
+            .supply_yield_rate_from_interest(&current_snapshot);
 
         let supply_yield_min =
             supply_amount * yield_rate * duration_inner.as_millis() * YEAR_PER_MS
