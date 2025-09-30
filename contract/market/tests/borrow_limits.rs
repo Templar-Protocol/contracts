@@ -1,6 +1,7 @@
 use rstest::rstest;
 use templar_common::{fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal};
 use test_utils::*;
+use tokio::task::JoinSet;
 
 #[rstest]
 #[case(0, &[1], u128::MAX)]
@@ -90,9 +91,14 @@ async fn borrow_above_maximum(
         c.collateralize(&borrow_user, 2000),
     );
 
+    let mut set = JoinSet::new();
     for amount in amounts {
-        c.borrow(&borrow_user, *amount).await;
+        let amount = *amount;
+        let borrow_user = borrow_user.clone();
+        let c = c.clone();
+        set.spawn(async move { c.borrow(&borrow_user, amount).await });
     }
+    set.join_all().await;
 }
 
 #[rstest]

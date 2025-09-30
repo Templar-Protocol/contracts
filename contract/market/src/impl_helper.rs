@@ -175,9 +175,10 @@ impl Contract {
     pub fn execute_next_supply_withdrawal_request_01_finalize(
         &mut self,
         withdrawal_resolution: WithdrawalResolution,
-        expected_success: bool,
     ) {
-        asset_op!(self.borrow_asset_in_flight -= withdrawal_resolution.amount_to_account);
+        asset_op!(
+            self.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account
+        );
 
         // Withdrawal succeeded: remove the withdrawal request from the queue.
         // Withdrawal failed but should have succeeded: remove request but still refund.
@@ -192,22 +193,20 @@ impl Contract {
             supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
         }
 
-        if withdrawal_succeeded || expected_success {
-            // TODO: If this panics, this is BIG BAD, as it means there is
-            // some way to unlock the queue while a withdrawal is in-flight.
-            // So, maybe we should not *actually* panic here, but do some sort of recovery?
-            let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
-                env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
-            });
+        // TODO: If this panics, this is BIG BAD, as it means there is
+        // some way to unlock the queue while a withdrawal is in-flight.
+        // So, maybe we should not *actually* panic here, but do some sort of recovery?
+        let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
+            env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
+        });
 
-            // This is another consistency check: that the account at the
-            // head of the queue cannot change while transfers are
-            // in-flight. This should be maintained by the queue itself.
-            require!(
-                popped_account == withdrawal_resolution.account_id,
-                "Invariant violation: Queue shifted while locked/in-flight.",
-            );
-        }
+        // This is another consistency check: that the account at the
+        // head of the queue cannot change while transfers are
+        // in-flight. This should be maintained by the queue itself.
+        require!(
+            popped_account == withdrawal_resolution.account_id,
+            "Invariant violation: Queue shifted while locked/in-flight.",
+        );
 
         if withdrawal_succeeded {
             self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
@@ -221,9 +220,6 @@ impl Contract {
         } else {
             // Possible reasons for failure:
             // - MPC signer failure (multichain; TODO).
-            // - The contract does not control enough of the borrow asset to
-            //   fulfill the withdrawal request. That is to say, it has
-            //   distributed all of the funds to current borrows.
             // - If we expected success but it still failed, this means the
             //   receiving account cannot receive tokens for some reason. For
             //   NEP-141 tokens, this usually means that the user opted out of

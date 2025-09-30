@@ -41,7 +41,7 @@ impl MarketExternalInterface for Contract {
                 .iter()
                 .map(|incoming| (incoming.activate_at_snapshot_index, incoming.amount))
                 .collect(),
-            borrowed: self.borrow_asset_borrowed,
+            borrowed: self.borrowed(),
         }
     }
 
@@ -89,21 +89,10 @@ impl MarketExternalInterface for Contract {
 
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
-
         let account_id = env::predecessor_account_id();
-
-        let proposed_amount =
-            if let Some(borrow_position) = self.borrow_position_ref(account_id.clone()) {
-                let mut borrow_principal = borrow_position.inner().get_borrow_asset_principal();
-                asset_op!(borrow_principal += amount);
-                borrow_principal
-            } else {
-                amount
-            };
-
         require!(
-            self.configuration.borrow_range.contains(proposed_amount),
-            "New borrow position is outside of allowable range",
+            self.borrow_position_ref(account_id.clone()).is_some(),
+            "Borrow position does not exist",
         );
 
         self.configuration
@@ -214,15 +203,19 @@ impl MarketExternalInterface for Contract {
 
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
-        let expect_success = u128::from(self.borrow_asset_deposited_active)
+        let has_sufficient_liquidity = u128::from(self.borrow_asset_deposited_active)
             .saturating_add(u128::from(self.total_incoming()))
-            .checked_sub(
-                u128::from(self.borrow_asset_borrowed)
-                    .saturating_add(self.borrow_asset_in_flight.into()),
-            )
+            .checked_sub(u128::from(self.borrowed()))
             .is_some();
 
-        asset_op!(self.borrow_asset_in_flight += withdrawal_resolution.amount_to_account);
+        require!(
+            has_sufficient_liquidity,
+            "Insufficient liquidity to fulfill the request at this time",
+        );
+
+        asset_op!(
+            self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account
+        );
 
         PromiseOrValue::Promise(
             self.configuration
@@ -233,10 +226,7 @@ impl MarketExternalInterface for Contract {
                 )
                 .then(
                     self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
-                        .execute_next_supply_withdrawal_request_01_finalize(
-                            withdrawal_resolution,
-                            expect_success,
-                        ),
+                        .execute_next_supply_withdrawal_request_01_finalize(withdrawal_resolution),
                 ),
         )
     }
@@ -300,7 +290,7 @@ impl MarketExternalInterface for Contract {
         if deposited.is_zero() {
             return Decimal::ZERO;
         }
-        let borrowed: Decimal = self.borrow_asset_borrowed.into();
+        let borrowed: Decimal = self.borrowed().into();
         let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
         let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
 
