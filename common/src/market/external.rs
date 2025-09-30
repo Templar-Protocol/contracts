@@ -162,6 +162,7 @@ pub trait MarketExternalInterface {
     /// or [`MarketConfiguration::protocol_account_id`]).
     fn get_static_yield(&self, account_id: AccountId) -> Option<Accumulator<BorrowAsset>>;
 
+    /// Accumulates yield for an account that earns static yield.
     fn accumulate_static_yield(
         &mut self,
         account_id: Option<AccountId>,
@@ -172,5 +173,8 @@ pub trait MarketExternalInterface {
     /// statically configured to earn yield (e.g.
     /// [`MarketConfiguration::yield_weights`] or
     /// [`MarketConfiguration::protocol_account_id`]).
+    ///
+    /// Calls to this function should be preceded by calls to
+    /// [`MarketExternalInterface::accumulate_static_yield`].
     fn withdraw_static_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise;
 }
