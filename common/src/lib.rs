@@ -11,14 +11,11 @@ pub mod number;
 pub mod oracle;
 pub mod price;
 pub mod snapshot;
-pub mod static_yield;
 pub mod supply;
 pub mod time_chunk;
 pub mod withdrawal_queue;
 
-pub static MS_PER_YEAR: number::Decimal = number::Decimal::from_u64(31_556_952_000); // 1000 * 60 * 60 * 24 * 365.2425
-
-/// Approximation of `1 / MS_PER_YEAR`.
+/// Approximation of `1 / (1000 * 60 * 60 * 24 * 365.2425)`.
 ///
 /// exact = 0.00000000003168873850681143096456210346297...
 /// this  = 0.00000000003168873850681143096456210346

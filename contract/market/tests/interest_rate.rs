@@ -3,7 +3,7 @@ use std::time::Duration;
 use rstest::rstest;
 use templar_common::{
     asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
-    market::HarvestYieldMode, number::Decimal, MS_PER_YEAR, YEAR_PER_MS,
+    market::HarvestYieldMode, number::Decimal, YEAR_PER_MS,
 };
 use test_utils::*;
 use tokio::time::Instant;
@@ -113,7 +113,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         eprintln!("Borrow position 1: {borrow_position_1:#?}");
         eprintln!("Borrow position 2: {borrow_position_2:#?}");
 
-        let f = principal * strategy.at(dec!("0.2")) / MS_PER_YEAR;
+        let f = principal * strategy.at(dec!("0.2")) * YEAR_PER_MS;
 
         let approximation_below = (f * duration_inner.as_millis()).to_u128_ceil().unwrap();
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
