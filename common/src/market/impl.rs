@@ -4,7 +4,8 @@ use near_sdk::{
 };
 
 use crate::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    accumulator::{AccumulationRecord, Accumulator},
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     asset_op,
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
@@ -13,10 +14,10 @@ use crate::{
     market::{MarketConfiguration, WithdrawalResolution},
     number::Decimal,
     snapshot::Snapshot,
-    static_yield::StaticYieldRecord,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
+    YEAR_PER_MS,
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -57,7 +58,7 @@ pub struct Market {
     pub current_yield_distribution: BorrowAssetAmount,
     pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 32>,
     pub withdrawal_queue: WithdrawalQueue,
-    pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
+    pub static_yield: LookupMap<AccountId, Accumulator<BorrowAsset>>,
     single_snapshot_maximum_interest_precomputed: Decimal,
 }
 
@@ -312,7 +313,7 @@ impl Market {
     pub fn cleanup_borrow_position(&mut self, account_id: &AccountId) -> bool {
         self.borrow_positions
             .get(account_id)
-            .filter(BorrowPosition::can_be_removed)
+            .filter(|p| !p.exists())
             .and_then(|_| self.borrow_positions.remove(account_id))
             .is_some()
     }
@@ -353,65 +354,100 @@ impl Market {
         let mut yield_record = self
             .static_yield
             .get(&self.configuration.protocol_account_id)
-            .unwrap_or_default();
+            .unwrap_or_else(|| Accumulator::new(1));
 
-        asset_op!(yield_record.borrow_asset += amount);
+        yield_record.add_once(amount);
 
         self.static_yield
             .insert(&self.configuration.protocol_account_id, &yield_record);
     }
 
-    pub fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+    pub fn record_borrow_asset_yield_distribution(&mut self, amount: BorrowAssetAmount) {
         // Sanity.
         if amount.is_zero() {
             return;
         }
 
-        MarketEvent::GlobalYieldDistributed {
-            borrow_asset_amount: amount,
-        }
-        .emit();
-
-        // First, static yield.
-
-        let total_weight =
-            Decimal::from(u16::from(self.configuration.yield_weights.total_weight()));
-        let total_amount = Decimal::from(amount);
-        let amount_per_weight = total_amount / total_weight;
-
-        for (account_id, share_weight) in &self.configuration.yield_weights.r#static {
-            #[allow(clippy::unwrap_used, reason = "share_weight / total_weight <= 1")]
-            let share = amount
-                .split((*share_weight * amount_per_weight).to_u128_floor().unwrap())
-                // Safety:
-                // Guaranteed share_weight <= total_weight
-                // Guaranteed sum(share_weights) == total_weight
-                // Guaranteed sum(floor(total_amount * share_weight / total_weight) for each share_weight in share_weights) <= total_amount
-                // Therefore this should never panic.
-                .unwrap();
-
-            let mut yield_record = self.static_yield.get(account_id).unwrap_or_default();
-            // Assuming borrow_asset is implemented correctly:
-            // this only panics if the circulating supply is somehow >u128::MAX
-            // and we have somehow obtained >u128::MAX amount.
-            //
-            // NOTE: This is not necessary when working with NEP-141
-            // tokens, which are required by standard to use 128-bit balances.
-            //
-            // Otherwise, borrow_asset is implemented incorrectly.
-            // TODO: If that is the case, how to deal?
-            //
-            // Probably, it is okay to ignore this case. We can assume
-            // that the configuration will only specify
-            // correctly-implemented token contracts.
-            asset_op!(yield_record.borrow_asset += share);
-            self.static_yield.insert(account_id, &yield_record);
-        }
-
-        // Next, dynamic (supply-based) yield.
         asset_op!(self.current_yield_distribution += amount);
     }
+
+    /// Accumulate static yield for an account.
+    ///
+    /// # Errors
+    ///
+    /// - When the account is not configured to earn static yield.
+    pub fn accumulate_static_yield(
+        &mut self,
+        account_id: &AccountId,
+        snapshot_limit: u32,
+    ) -> Result<(), UnknownAccount> {
+        let weight_numerator = *self
+            .configuration
+            .yield_weights
+            .r#static
+            .get(account_id)
+            .ok_or(UnknownAccount)?;
+        let weight_denominator = self.configuration.yield_weights.total_weight().get();
+        let mut accumulator = self
+            .static_yield
+            .get(account_id)
+            .unwrap_or_else(|| Accumulator::new(1));
+
+        let mut next_snapshot_index = accumulator.get_next_snapshot_index();
+        let mut accumulated = Decimal::ZERO;
+
+        #[allow(clippy::unwrap_used, reason = "Guaranteed previous snapshot exists")]
+        let mut prev_end_timestamp_ms = self
+            .finalized_snapshots
+            .get(next_snapshot_index.checked_sub(1).unwrap())
+            .unwrap()
+            .end_timestamp_ms
+            .0;
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "Assume # of snapshots is never >u32::MAX"
+        )]
+        for (i, snapshot) in self
+            .finalized_snapshots
+            .iter()
+            .enumerate()
+            .skip(next_snapshot_index as usize)
+            .take(snapshot_limit as usize)
+        {
+            let snapshot_duration_ms = snapshot.end_timestamp_ms.0 - prev_end_timestamp_ms;
+            let interest_paid_by_borrowers = Decimal::from(snapshot.borrow_asset_borrowed)
+                * snapshot.interest_rate
+                * snapshot_duration_ms
+                * YEAR_PER_MS;
+            let other_yield = Decimal::from(snapshot.yield_distribution);
+            accumulated +=
+                (interest_paid_by_borrowers + other_yield) * weight_numerator / weight_denominator;
+
+            next_snapshot_index = i as u32 + 1;
+            prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
+        }
+
+        let accumulation_record = AccumulationRecord {
+            // Accumulated amount is derived from real balances, so it should
+            // never overflow underlying data type.
+            #[allow(clippy::unwrap_used, reason = "Derived from real balances")]
+            amount: accumulated.to_u128_floor().unwrap().into(),
+            fraction_as_u128_dividend: accumulated.fractional_part_as_u128_dividend(),
+            next_snapshot_index,
+        };
+
+        accumulator.accumulate(accumulation_record);
+
+        self.static_yield.insert(account_id, &accumulator);
+
+        Ok(())
+    }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("This account does not earn static yield")]
+pub struct UnknownAccount;
 
 fn usage_ratio(active: BorrowAssetAmount, borrowed: BorrowAssetAmount) -> Decimal {
     if active.is_zero() || borrowed.is_zero() {

@@ -18,6 +18,15 @@ pub mod withdrawal_queue;
 
 pub static MS_PER_YEAR: number::Decimal = number::Decimal::from_u64(31_556_952_000); // 1000 * 60 * 60 * 24 * 365.2425
 
+/// Approximation of `1 / MS_PER_YEAR`.
+///
+/// exact = 0.00000000003168873850681143096456210346297...
+/// this  = 0.00000000003168873850681143096456210346
+///
+/// error =~ 9.375e-27 %
+pub static YEAR_PER_MS: number::Decimal =
+    number::Decimal::from_repr([0x40FC_AB61_4AE4_B2B5, 0x22D7_9641, 0, 0, 0, 0, 0, 0]);
+
 pub mod contract {
     pub fn list<T, U: FromIterator<T>>(
         i: impl IntoIterator<Item = T>,

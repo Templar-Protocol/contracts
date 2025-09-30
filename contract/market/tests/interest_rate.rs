@@ -3,7 +3,7 @@ use std::time::Duration;
 use rstest::rstest;
 use templar_common::{
     asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
-    market::HarvestYieldMode, number::Decimal, MS_PER_YEAR,
+    market::HarvestYieldMode, number::Decimal, MS_PER_YEAR, YEAR_PER_MS,
 };
 use test_utils::*;
 use tokio::time::Instant;
@@ -33,9 +33,11 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         })
     );
 
+    let supply_amount = principal * 5;
+
     tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, principal * 5),
-        c.supply_and_harvest_until_activation(&supply_user_2, principal * 5),
+        c.supply_and_harvest_until_activation(&supply_user, supply_amount),
+        c.supply_and_harvest_until_activation(&supply_user_2, supply_amount),
         c.collateralize(&borrow_user, principal * 5),
         c.collateralize(&borrow_user_2, principal * 5),
     );
@@ -71,11 +73,18 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         eprintln!("Done sleeping!");
 
         let duration_inner = time_inner.elapsed();
-        let (borrow_position_1, borrow_position_2, supply_position_1, supply_position_2) = tokio::join!(
+        let (
+            borrow_position_1,
+            borrow_position_2,
+            supply_position_1,
+            supply_position_2,
+            current_snapshot,
+        ) = tokio::join!(
             async { c.get_borrow_position(borrow_user.id()).await.unwrap() },
             async { c.get_borrow_position(borrow_user_2.id()).await.unwrap() },
             async { c.get_supply_position(supply_user.id()).await.unwrap() },
             async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
+            c.get_current_snapshot(),
         );
         let duration_outer = time_outer.elapsed();
 
@@ -84,9 +93,22 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let supply_yield_2 = u128::from(supply_position_2.borrow_asset_yield.get_total())
             + u128::from(supply_position_2.borrow_asset_yield.pending_estimate);
 
-        // No yield yet.
-        assert_eq!(supply_yield_1, 0);
-        assert_eq!(supply_yield_2, 0);
+        let yield_rate = c.configuration.yield_rate(&current_snapshot);
+
+        let supply_yield_min =
+            supply_amount * yield_rate * duration_inner.as_millis() * YEAR_PER_MS
+                + c.configuration.single_snapshot_maximum_interest();
+        let supply_yield_max =
+            supply_amount * yield_rate * duration_outer.as_millis() * YEAR_PER_MS
+                + c.configuration.single_snapshot_maximum_interest();
+
+        eprintln!("{supply_yield_min} <= {supply_yield_1} <= {supply_yield_max} ?");
+        eprintln!("{supply_yield_min} <= {supply_yield_2} <= {supply_yield_max} ?");
+
+        assert!(supply_yield_min <= Decimal::from(supply_yield_1));
+        assert!(Decimal::from(supply_yield_1) <= supply_yield_max);
+        assert!(supply_yield_min <= Decimal::from(supply_yield_2));
+        assert!(Decimal::from(supply_yield_2) <= supply_yield_max);
 
         eprintln!("Borrow position 1: {borrow_position_1:#?}");
         eprintln!("Borrow position 2: {borrow_position_2:#?}");
@@ -96,15 +118,15 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
         let approximation_below = (f * duration_inner.as_millis()).to_u128_ceil().unwrap();
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
 
-        let actual_1 = u128::from(borrow_position_1.borrow_asset_fees.get_total())
-            + u128::from(borrow_position_1.borrow_asset_fees.pending_estimate);
+        let actual_1 = u128::from(borrow_position_1.interest.get_total())
+            + u128::from(borrow_position_1.interest.pending_estimate);
         eprintln!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
         assert!(approximation_below <= actual_1);
         assert!(actual_1 <= approximation_above);
 
-        let actual_2 = u128::from(borrow_position_2.borrow_asset_fees.get_total())
-            + u128::from(borrow_position_2.borrow_asset_fees.pending_estimate);
+        let actual_2 = u128::from(borrow_position_2.interest.get_total())
+            + u128::from(borrow_position_2.interest.pending_estimate);
         eprintln!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
         assert!(approximation_below <= actual_2);
@@ -127,7 +149,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
                 .repay(
                     &borrow_user,
                     (u128::from(borrow_position_before.get_total_borrow_asset_liability())
-                        + u128::from(borrow_position_before.borrow_asset_fees.pending_estimate))
+                        + u128::from(borrow_position_before.interest.pending_estimate))
                         * 110
                         / 100, /* overpayment */
                 )
@@ -150,7 +172,7 @@ async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateSt
             c.repay(
                 &borrow_user_2,
                 (u128::from(borrow_position_before.get_total_borrow_asset_liability())
-                    + u128::from(borrow_position_before.borrow_asset_fees.pending_estimate))
+                    + u128::from(borrow_position_before.interest.pending_estimate))
                     * 110
                     / 100, /* overpayment */
             )

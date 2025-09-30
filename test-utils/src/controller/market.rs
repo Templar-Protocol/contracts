@@ -9,14 +9,14 @@ use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    accumulator::Accumulator,
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
     market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration},
     number::Decimal,
     oracle::pyth::{self, OracleResponse},
     price::Convert,
     snapshot::Snapshot,
-    static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
@@ -76,7 +76,7 @@ impl MarketController {
         #[view] pub fn list_borrow_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, BorrowPosition>;
         #[view] pub fn get_borrow_position(account_id: &AccountId) -> Option<BorrowPosition>;
         #[view] pub fn get_borrow_status(account_id: &AccountId, oracle_response: OracleResponse) -> Option<BorrowStatus>;
-        #[view] pub fn get_static_yield(account_id: &AccountId) -> Option<StaticYieldRecord>;
+        #[view] pub fn get_static_yield(account_id: &AccountId) -> Option<Accumulator<BorrowAsset>>;
         #[view] pub fn get_supply_withdrawal_request_status(account_id: &AccountId) -> Option<WithdrawalRequestStatus>;
         #[view] pub fn get_supply_withdrawal_queue_status() -> WithdrawalQueueStatus;
         #[view] pub fn get_last_yield_rate() -> Decimal;
@@ -89,8 +89,10 @@ impl MarketController {
         pub fn harvest_yield(account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
         #[call(exec, tgas(300))]
         pub fn harvest_yield_exec["harvest_yield"](account_id: Option<&AccountId>, mode: Option<HarvestYieldMode>) -> BorrowAssetAmount;
+        #[call(exec, tgas(300))]
+        pub fn accumulate_static_yield(account_id: Option<AccountId>, snapshot_limit: Option<u32>);
         #[call(exec, tgas(20))]
-        pub fn withdraw_static_yield(borrow_asset_amount: Option<BorrowAssetAmount>, collateral_asset_amount: Option<CollateralAssetAmount>);
+        pub fn withdraw_static_yield(amount: Option<BorrowAssetAmount>);
         #[call(exec, tgas(42))]
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
         #[call(exec)]
