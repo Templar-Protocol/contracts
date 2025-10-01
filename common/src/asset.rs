@@ -87,6 +87,36 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
+    pub fn transfer_call(
+        &self,
+        receiver_id: &AccountId,
+        amount: FungibleAssetAmount<T>,
+        msg: Option<&str>,
+    ) -> Promise {
+        let msg = msg.unwrap_or_default().to_string();
+        match self.kind {
+            FungibleAssetKind::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
+                .with_static_gas(Self::GAS_FT_TRANSFER)
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .ft_transfer_call(receiver_id.clone(), u128::from(amount).into(), None, msg),
+            FungibleAssetKind::Nep245 {
+                ref contract_id,
+                ref token_id,
+            } => Promise::new(contract_id.clone()).function_call(
+                "mt_transfer_call".into(),
+                serde_json::to_vec(&json!({
+                   "receiver_id": receiver_id,
+                   "token_id": token_id,
+                   "amount": amount,
+                   "msg": msg,
+                }))
+                .unwrap(),
+                NearToken::from_yoctonear(1),
+                Self::GAS_MT_TRANSFER,
+            ),
+        }
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub fn transfer_call_action(
         &self,
