@@ -1,0 +1,98 @@
+/// Fixed-point helpers and fee-accrual math using 18-decimal WAD precision.
+use templar_common::primitive_types::U256;
+
+pub type WADFraction = u128;
+pub const WAD: u128 = 1e18 as u128;
+
+/// Multiplies two WAD-scaled values and floors the result: floor(x * y / WAD).
+#[inline]
+pub fn mul_wad_floor(x: u128, y: u128) -> u128 {
+    mul_div_floor(x, y, WAD)
+}
+
+/// Multiplies and divides with flooring: floor(x * y / denom).
+/// Uses 256-bit intermediate to avoid overflow; returns 0 if denom is 0.
+#[inline]
+pub fn mul_div_floor(x: u128, y: u128, denom: u128) -> u128 {
+    if denom == 0 {
+        return 0;
+    }
+    let num = U256::from(x) * U256::from(y);
+    let q = num / U256::from(denom);
+    q.as_u128()
+}
+
+/// Multiplies and divides with ceiling: ceil(x * y / denom).
+/// Uses 256-bit intermediate to avoid overflow; returns 0 if denom is 0.
+#[inline]
+pub fn mul_div_ceil(x: u128, y: u128, denom: u128) -> u128 {
+    if denom == 0 {
+        return 0;
+    }
+    let num = U256::from(x) * U256::from(y);
+    let d = U256::from(denom);
+    let q = (num + d - U256::from(1)) / d;
+    q.as_u128()
+}
+
+/// Computes fee shares to mint given:
+/// - `cur_total_assets`: current total assets under management
+/// - `last_total_assets`: previous total assets snapshot
+/// - `performance_fee`: WAD fraction (1e18 = 100%)
+/// - `total_supply`: current total share supply
+///
+/// Floors intermediate divisions; returns 0 when no profit, zero fee, or zero supply.
+#[inline]
+pub fn compute_fee_shares(
+    cur_total_assets: u128,
+    last_total_assets: u128,
+    performance_fee: u128,
+    total_supply: u128,
+) -> u128 {
+    if performance_fee == 0 || total_supply == 0 || cur_total_assets <= last_total_assets {
+        return 0;
+    }
+    let profit = cur_total_assets - last_total_assets;
+    let fee_assets = mul_wad_floor(profit, performance_fee);
+    if fee_assets == 0 {
+        return 0;
+    }
+    // ERC-4626-like: mint shares so that fee_shares / (total_supply + fee_shares) = fee_assets / cur_total_assets
+    // Rearranged and floored:
+    let denom = cur_total_assets.saturating_sub(fee_assets).max(1);
+    mul_div_floor(fee_assets, total_supply, denom)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: u128 = WAD;
+
+    #[test]
+    fn mul_wad_floor_rounds_down() {
+        // 0.3333... * 0.3333... ~= 0.1111...
+        let third = W / 3;
+        let res = mul_wad_floor(third, third);
+        // floor(1/9 * W) = floor(0.111... * 1e18)
+        assert!(res <= W / 9);
+        assert_eq!(res, (W / 9) - 1); // typical floor loss
+    }
+    #[test]
+    fn convert_roundtrip_bounds() {
+        // For any totals, redeem(convert_to_shares(a)) ≤ a and
+        // convert_to_shares(convert_to_assets(s)) ≥ s due to floor/ceil pairing.
+        let a = 1_234_567u128;
+        let s = 987_654u128;
+        // Fake a contract-like environment:
+        let ts = 10_000u128;
+        let ta = 12_000u128;
+        let to_sh = mul_div_floor(a, ts + 1, ta + 1);
+        let back_a = mul_div_floor(to_sh, ta + 1, ts + 1);
+        assert!(back_a <= a);
+
+        let to_a = mul_div_floor(s, ta + 1, ts + 1);
+        let back_s = mul_div_ceil(to_a, ts + 1, ta + 1);
+        assert!(back_s >= s);
+    }
+}
