@@ -53,7 +53,7 @@ impl App {
             args.account_id.clone(),
             args.secret_key
                 .iter()
-                .map(|s| InMemorySigner::from_secret_key(args.account_id.clone(), s.clone()).into())
+                .map(|s| InMemorySigner::from_secret_key(args.account_id.clone(), s.clone()))
                 .collect(),
         );
 

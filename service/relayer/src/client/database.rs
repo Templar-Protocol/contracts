@@ -278,7 +278,8 @@ WHERE
         account_id: &AccountIdRef,
         status: &FinalExecutionOutcomeView,
     ) -> Result<(), error::RecordTransactionError> {
-        let allowance_spent_gas = NearToken::from_yoctonear(status.tokens_burnt());
+        let allowance_spent_gas =
+            NearToken::from_yoctonear(status.transaction_outcome.outcome.tokens_burnt);
 
         let success = matches!(status.status, FinalExecutionStatus::SuccessValue(_));
 
