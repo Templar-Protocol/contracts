@@ -19,9 +19,7 @@ pub fn main() {
     println!(
         "{{\"configuration\":{}}}",
         serde_json::to_string(&MarketConfiguration {
-            time_chunk_configuration: TimeChunkConfiguration::BlockTimestampMs {
-                divisor: (1000u64 * 60 * 10).into(), // every 10 minutes
-            },
+            time_chunk_configuration: TimeChunkConfiguration::new(1000u64 * 60 * 10), // every 10 minutes
             borrow_asset: FungibleAsset::nep141("usdt.fakes.testnet".parse().unwrap()),
             collateral_asset: FungibleAsset::nep141("wrap.testnet".parse().unwrap()),
             price_oracle_configuration: PriceOracleConfiguration {

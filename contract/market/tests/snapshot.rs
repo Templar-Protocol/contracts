@@ -12,9 +12,7 @@ async fn snapshot_captures_borrow_and_collateral_state() {
         accounts(borrow_user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(), // 0.5 seconds
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500); // 0.5 seconds
         })
     );
 
@@ -53,22 +51,10 @@ async fn snapshot_captures_borrow_and_collateral_state() {
 
     check(
         states!(
-            {
-                active += 2_000_000,
-                incoming += 2_000_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                collateral += 1_000_000,
-            },
-            {
-                borrowed += 500_000,
-            },
-            {
-                collateral += 1,
-            },
+            { active += 2_000_000 },
+            { collateral += 1_000_000 },
+            { borrowed += 500_000 },
+            { collateral += 1 },
         ),
         snapshots,
     );
@@ -81,9 +67,7 @@ async fn multiple_snapshots_show_progression() {
         accounts(user, supply_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 1000.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1000);
         })
     );
 
@@ -110,22 +94,10 @@ async fn multiple_snapshots_show_progression() {
 
     check(
         states!(
-            {
-                active = 3_000_000,
-                incoming = 3_000_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                collateral += 1_000_000,
-            },
-            {
-                borrowed += 400_000,
-            },
-            {
-                borrowed += 200_000,
-            },
+            { active = 3_000_000 },
+            { collateral += 1_000_000 },
+            { borrowed += 400_000 },
+            { borrowed += 200_000 },
         ),
         snapshots,
     );
@@ -139,9 +111,7 @@ async fn snapshot_reflects_repayment_changes() {
         config(|c| {
             c.borrow_interest_rate_strategy = InterestRateStrategy::zero();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
     );
 
@@ -194,9 +164,7 @@ async fn snapshot_handles_zero_operations() {
         extract(c)
         accounts(supply_user)
         config(|c| {
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(), // 0.5 seconds
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500); // 0.5 seconds
         })
     );
 
@@ -224,25 +192,7 @@ async fn snapshot_handles_zero_operations() {
 
     let snapshots = c.list_finalized_snapshots(None, None).await;
 
-    check(
-        states!(
-            {
-                active = 1_000_000,
-                incoming = 1_000_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                active += 1,
-                incoming = 1,
-            },
-            {
-                incoming = 0,
-            },
-        ),
-        snapshots,
-    );
+    check(states!({ active = 1_000_000 }, { active += 1 }), snapshots);
 }
 
 #[tokio::test]
@@ -254,9 +204,7 @@ async fn snapshot_with_full_repayment() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
     );
 
@@ -284,11 +232,8 @@ async fn snapshot_with_full_repayment() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     c.collateralize(&borrow_user, 1).await;
 
-    let final_snapshots_len = c.get_finalized_snapshots_len().await;
-    let snapshots = c
-        .list_finalized_snapshots(Some(final_snapshots_len - 1), Some(1))
-        .await;
-    let final_snapshot = &snapshots[0];
+    let snapshots = c.list_finalized_snapshots(None, None).await;
+    let final_snapshot = &snapshots[snapshots.len() - 1];
 
     eprintln!(
         "After full repayment: borrowed={:?}",
@@ -300,6 +245,9 @@ async fn snapshot_with_full_repayment() {
         "Final position liability: {:?}",
         final_position.get_total_borrow_asset_liability()
     );
+
+    eprintln!("Final snapshot:");
+    eprintln!("{final_snapshot:#?}");
 
     // Verify snapshot reflects full repayment
     assert!(
@@ -317,9 +265,7 @@ async fn snapshot_field_validation() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("2000"), dec!("3000")).unwrap(); // Higher rates for testing
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 500.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
     );
 
@@ -350,31 +296,13 @@ async fn snapshot_field_validation() {
 
     check(
         states!(
-            {
-                active = 1_500_000,
-                incoming = 1_500_000,
-            },
-            {
-                incoming = 0,
-            },
-            {
-                collateral += 1,
-            },
-            {
-                collateral += 800_000,
-            },
-            {
-                collateral += 1,
-            },
-            {
-                borrowed += 400_000,
-            },
-            {
-                collateral += 1,
-            },
-            {
-                collateral += 1,
-            },
+            { active = 1_500_000 },
+            { collateral += 1 },
+            { collateral += 800_000 },
+            { collateral += 1 },
+            { borrowed += 400_000 },
+            { collateral += 1 },
+            { collateral += 1 },
         ),
         &snapshots,
     );
@@ -404,7 +332,7 @@ async fn many_users_different_snapshots() {
         accounts(user1, user2, user3, user4, user5, supply_user1, supply_user2)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: 1.into() };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1);
         })
     );
 
@@ -436,16 +364,8 @@ async fn many_users_different_snapshots() {
 
     check(
         states!(
-            {
-                active += 2_000_000,
-                incoming = 2_000_000,
-            },
-            { incoming = 0 },
-            {
-                active += 1_500_000,
-                incoming = 1_500_000,
-            },
-            { incoming = 0 },
+            { active += 2_000_000 },
+            { active += 1_500_000 },
             { collateral += 400_000 },
             { collateral += 350_000 },
             { collateral += 300_000 },
@@ -475,7 +395,7 @@ async fn many_users_same_snapshot() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: 100.into() } ;
+            c.time_chunk_configuration = TimeChunkConfiguration::new(10_000);
         })
     );
 
@@ -519,11 +439,7 @@ async fn many_users_same_snapshot() {
 
     check(
         states!(
-            {
-                active += 2_000_000 + 1_500_000,
-                incoming = 2_000_000 + 1_500_000,
-            },
-            { incoming = 0 },
+            { active += 2_000_000 + 1_500_000 },
             { collateral += 400_000 + 350_000 + 300_000 + 250_000 + 200_000 },
             { borrowed += 150_000 + 120_000 + 100_000 + 80_000 + 60_000 },
         ),
@@ -555,6 +471,8 @@ async fn incoming() {
     {
         c.harvest_yield(&supply_user, None, None).await;
     }
+    // Finalize snapshot where funds were activated
+    c.harvest_yield(&supply_user, None, None).await;
     // Two more to ensure we have snapshots afterwards
     c.harvest_yield(&supply_user, None, None).await;
     c.harvest_yield(&supply_user, None, None).await;
@@ -576,26 +494,14 @@ async fn incoming() {
     assert!(snapshot_before_before
         .borrow_asset_deposited_active
         .is_zero());
-    assert!(snapshot_before_before
-        .borrow_asset_deposited_incoming
-        .is_zero());
     assert!(snapshot_before.borrow_asset_deposited_active.is_zero());
-    assert!(snapshot_before.borrow_asset_deposited_incoming.is_zero());
     assert_eq!(snapshot_at.borrow_asset_deposited_active, 2_000_000.into());
-    assert_eq!(
-        snapshot_at.borrow_asset_deposited_incoming,
-        2_000_000.into(),
-    );
     assert_eq!(
         snapshot_after.borrow_asset_deposited_active,
         2_000_000.into(),
     );
-    assert!(snapshot_after.borrow_asset_deposited_incoming.is_zero());
     assert_eq!(
         snapshot_after_after.borrow_asset_deposited_active,
         2_000_000.into(),
     );
-    assert!(snapshot_after_after
-        .borrow_asset_deposited_incoming
-        .is_zero());
 }

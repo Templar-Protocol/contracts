@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::wildcard_imports)]
 
-use near_sdk::{json_types::U64, Gas};
+use near_sdk::Gas;
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
     number::Decimal, time_chunk::TimeChunkConfiguration,
@@ -25,7 +25,7 @@ async fn main() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockHeight { divisor: U64(1) };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1);
         })
     );
 
@@ -73,6 +73,8 @@ async fn main() {
     let harvest_yield_max = c
         .harvest_yield_exec(&supply_user, None, Some(HarvestYieldMode::Compounding))
         .await;
+
+    c.repay(&borrow_user_2, 1100).await;
 
     let snapshot_count_after = c.list_finalized_snapshots(None, None).await.len();
     let snapshot_count = snapshot_count_after - snapshot_count_before;
@@ -151,21 +153,24 @@ async fn main() {
     println!("| Action | Gas  |");
     println!("| -----: | ---: |");
     let list = vec![
-        ("collateralize", collateralize_gas_average as u64),
+        (
+            "collateralize",
+            Gas::from_gas(collateralize_gas_average as u64),
+        ),
         (
             "withdraw_collateral",
-            withdraw_collateral_gas_average as u64,
+            Gas::from_gas(withdraw_collateral_gas_average as u64),
         ),
-        ("borrow", borrow_gas_average as u64),
-        ("repay", repay_gas_average as u64),
-        ("supply", supply_gas.as_gas()),
+        ("borrow", Gas::from_gas(borrow_gas_average as u64)),
+        ("repay", Gas::from_gas(repay_gas_average as u64)),
+        ("supply", supply_gas),
         (
             "create_supply_withdrawal_request",
-            create_supply_withdrawal_gas.as_gas(),
+            create_supply_withdrawal_gas,
         ),
         (
             "execute_next_supply_withdrawal_request",
-            execute_supply_withdrawal_gas.as_gas(),
+            execute_supply_withdrawal_gas,
         ),
     ];
     for (action_label, gas) in list {

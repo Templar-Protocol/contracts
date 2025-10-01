@@ -93,7 +93,7 @@ async fn successful_liquidation_good_debt_under_mcr(
     c.borrow(&borrow_user, borrow_amount).await;
 
     let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(position.borrow_asset_fees.get_total(), 10.into());
+    assert_eq!(position.fees, 10.into());
 
     let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -126,6 +126,9 @@ async fn successful_liquidation_good_debt_under_mcr(
 
     let yield_amount = u128::from(price).saturating_sub(borrow_amount).max(10);
 
+    // finalize a snapshot
+    c.apply_interest(&borrow_user, None, None).await;
+
     tokio::join!(
         async {
             c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
@@ -137,12 +140,16 @@ async fn successful_liquidation_good_debt_under_mcr(
             );
         },
         async {
+            c.accumulate_static_yield(&protocol_yield_user, None, None)
+                .await;
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert_eq!(u128::from(protocol_yield.borrow_asset), yield_amount / 10);
+            assert_eq!(u128::from(protocol_yield.get_total()), yield_amount / 10);
         },
         async {
+            c.accumulate_static_yield(&insurance_yield_user, None, None)
+                .await;
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(u128::from(insurance_yield.borrow_asset), yield_amount / 10);
+            assert_eq!(u128::from(insurance_yield.get_total()), yield_amount / 10);
         },
         async {
             let prices = c.get_prices().await;
@@ -561,9 +568,14 @@ async fn partial_liquidation() {
         })
     );
 
+    let compensate_initial_fee = (100_000u128 * c.configuration.single_snapshot_maximum_interest())
+        .to_u128_ceil()
+        .unwrap()
+        * 2;
+
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 1_000_000),
-        c.collateralize(&borrow_user, 200_000),
+        c.collateralize(&borrow_user, 200_000 + compensate_initial_fee),
     );
     c.borrow(&borrow_user, 100_000).await;
 

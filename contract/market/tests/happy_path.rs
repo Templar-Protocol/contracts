@@ -270,13 +270,12 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         },
         // Protocol yield.
         async {
-            let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert!(protocol_yield.collateral_asset.is_zero());
-            assert_eq!(u128::from(protocol_yield.borrow_asset), 10);
-            let balance_before = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
-            let result = c
-                .withdraw_static_yield(&protocol_yield_user, None, None)
+            c.accumulate_static_yield(&protocol_yield_user, None, None)
                 .await;
+            let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
+            assert_eq!(u128::from(protocol_yield.get_total()), 10);
+            let balance_before = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
+            let result = c.withdraw_static_yield(&protocol_yield_user, None).await;
             for receipt in result.receipt_outcomes() {
                 assert!(&receipt.executor_id != c.collateral_asset.contract().id());
             }
@@ -286,13 +285,12 @@ async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
         },
         // Insurance yield.
         async {
-            let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert!(insurance_yield.collateral_asset.is_zero());
-            assert_eq!(u128::from(insurance_yield.borrow_asset), 10);
-            let balance_before = c.borrow_asset.balance_of(insurance_yield_user.id()).await;
-            let result = c
-                .withdraw_static_yield(&insurance_yield_user, None, None)
+            c.accumulate_static_yield(&insurance_yield_user, None, None)
                 .await;
+            let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
+            assert_eq!(u128::from(insurance_yield.get_total()), 10);
+            let balance_before = c.borrow_asset.balance_of(insurance_yield_user.id()).await;
+            let result = c.withdraw_static_yield(&insurance_yield_user, None).await;
             for receipt in result.receipt_outcomes() {
                 assert!(&receipt.executor_id != c.collateral_asset.contract().id());
             }

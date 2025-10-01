@@ -36,6 +36,7 @@ async fn successful_withdrawal() {
 
 #[rstest]
 #[tokio::test]
+#[should_panic = "Smart contract panicked: Insufficient liquidity to fulfill the request at this time"]
 async fn unsuccessful_withdrawal() {
     setup_test!(extract(c) accounts(borrow_user, supply_user));
 
@@ -45,7 +46,6 @@ async fn unsuccessful_withdrawal() {
     );
     c.borrow(&borrow_user, 5_000).await;
 
-    let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
@@ -57,21 +57,6 @@ async fn unsuccessful_withdrawal() {
         },
     );
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
-    assert_eq!(
-        balance_before, balance_after,
-        "Supply user does not receive anything"
-    );
-
-    let status = c.get_supply_withdrawal_queue_status().await;
-    assert_eq!(
-        status,
-        WithdrawalQueueStatus {
-            depth: 10_000.into(),
-            length: 1
-        },
-        "Status of queue remains unchanged",
-    );
 }
 
 #[rstest]

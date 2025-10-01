@@ -20,7 +20,8 @@ async fn cannot_borrow_untracked_funds() {
 }
 
 #[tokio::test]
-async fn can_withdraw_untracked_funds() {
+#[should_panic = "Smart contract panicked: Insufficient liquidity to fulfill the request at this time"]
+async fn cannot_withdraw_untracked_funds() {
     setup_test!(extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
