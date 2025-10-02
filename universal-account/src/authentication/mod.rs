@@ -11,10 +11,8 @@ pub trait Key<M: ExecutionContextProvider> {
     /// # Errors
     ///
     /// - If checking the signature fails
-    fn verify_and_execute(
-        &self,
-        message: &M,
-    ) -> Result<<M::Payload as Execute>::Output, Self::Error>;
+    fn verify_signature(&self, message: &M)
+        -> Result<<M::Payload as Execute>::Output, Self::Error>;
 }
 
 #[derive(Debug, thiserror::Error)]

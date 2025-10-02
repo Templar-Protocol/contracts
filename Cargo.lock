@@ -4937,6 +4937,7 @@ dependencies = [
  "axum",
  "clap",
  "dotenvy",
+ "hex",
  "near-crypto 0.31.1",
  "near-jsonrpc-client 0.18.0",
  "near-jsonrpc-primitives 0.31.1",

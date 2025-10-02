@@ -5,6 +5,7 @@ use near_jsonrpc_client::{
     errors::JsonRpcError,
     methods::{
         self,
+        block::RpcBlockError,
         gas_price::RpcGasPriceError,
         query::RpcQueryError,
         tx::{RpcTransactionError, RpcTransactionResponse},
@@ -16,7 +17,7 @@ use near_primitives::{
     action::{delegate::SignedDelegateAction, FunctionCallAction},
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction, TransactionV0},
-    types::Finality,
+    types::{BlockId, Finality},
     views::{FinalExecutionOutcomeView, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
@@ -74,6 +75,23 @@ impl Near {
         let method = methods::gas_price::RpcGasPriceRequest { block_id: None };
         let response = self.client.call(method).await?;
         Ok(NearToken::from_yoctonear(response.gas_price))
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn fetch_block_timestamp_ms(
+        &self,
+        block_hash: CryptoHash,
+    ) -> Result<u64, JsonRpcError<RpcBlockError>> {
+        let response = self
+            .client
+            .call(methods::block::RpcBlockRequest {
+                block_reference: BlockId::Hash(block_hash).into(),
+            })
+            .await?;
+
+        Ok(response.header.timestamp_nanosec / 1_000_000)
     }
 
     /// # Errors

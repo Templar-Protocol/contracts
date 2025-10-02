@@ -39,6 +39,18 @@ pub struct Configuration {
     /// Broom interval in seconds.
     #[arg(long, env = "BROOM_INTERVAL_SECS", default_value_t = 300)]
     pub broom_interval_secs: u64,
+
+    // === UNIVERSAL ACCOUNT ===
+    /// How difficult should the proof-of-work for universal account deployment be?
+    ///
+    /// iterations ~ 2^difficulty
+    #[arg(long, env = "UA_CREATE_POW_DIFFICULTY", default_value_t = 17)]
+    pub ua_create_pow_difficulty: usize,
+    /// How fresh must the universal account creation signature be?
+    ///
+    /// Based on the block hash referenced in the creation request.
+    #[arg(long, env = "UA_CREATE_BLOCKREF_MAX_AGE_MS", default_value_t = 1000 * 60 * 10 /* 10 minutes */)]
+    pub ua_create_blockref_max_age_ms: u64,
 }
 
 #[derive(Args, Debug, Clone)]

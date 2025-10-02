@@ -85,7 +85,7 @@ impl Contract {
             .verify_and_increment_nonce(&current_account_id, key_entry)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-        key.verify_and_execute(&message)
+        key.verify_signature(&message)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
     }
 }

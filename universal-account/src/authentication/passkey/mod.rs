@@ -34,7 +34,7 @@ impl<T: Execute> Key<Message<T>> for Passkey {
     type Signature = Signature;
     type Error = Error;
 
-    fn verify_and_execute(&self, message: &Message<T>) -> Result<T::Output, Error> {
+    fn verify_signature(&self, message: &Message<T>) -> Result<T::Output, Error> {
         // Check signature
         VerifyingKey::from(*self.0)
             .verify(&message.payload_prehash(), &**message.signature())

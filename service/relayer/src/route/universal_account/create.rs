@@ -1,97 +1,105 @@
-use axum::{extract::State, response::IntoResponse, Json};
+use std::time::{Duration, SystemTime};
+
+use axum::{extract::State, Json};
 use near_primitives::hash::CryptoHash;
-use near_sdk::{
-    json_types::U64,
-    serde::{Deserialize, Serialize},
-};
+use near_sdk::serde::{Deserialize, Serialize};
+
 use sha2::{Digest, Sha256};
+use templar_universal_account::{
+    authentication::{
+        passkey::{self, Passkey},
+        ExecutionContextProvider, Key,
+    },
+    Execute,
+};
 
-use templar_universal_account::authentication::passkey::{self, Passkey};
+use crate::{app::App, route::SimpleResponse};
 
-use crate::app::App;
+use super::pow::{Pow, PowTarget};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
-pub struct CreatePasskey {
+pub struct CreatePasskeyAccount {
     pub key: Passkey,
     pub block_hash: CryptoHash,
-    pub pow_nonce: U64,
 }
 
-impl CreatePasskey {
-    pub fn pow_hash(key: &Passkey, block_hash: &CryptoHash, pow_nonce: u64) -> [u8; 32] {
-        Sha256::digest(Sha256::digest(
-            format!("{},{block_hash},{pow_nonce}", &key.0).as_bytes(),
-        ))
-        .into()
-    }
-
-    pub fn difficulty(hash: &[u8]) -> usize {
-        let mut d = 0;
-        for b in hash {
-            if *b == 0 {
-                d += 8;
-            } else {
-                d += b.leading_zeros() as usize;
-                break;
-            }
-        }
-        d
-    }
-
-    pub fn pow(
-        key: Passkey,
-        block_hash: CryptoHash,
-        target_difficulty: usize,
-        limit: u64,
-    ) -> Option<Self> {
-        let prefix = format!("{},{block_hash},", &key.0);
-        let pow_nonce = (0u64..=limit).find(|nonce| {
-            Self::difficulty(&Sha256::digest(Sha256::digest(
-                format!("{prefix}{nonce}").as_bytes(),
-            ))) >= target_difficulty
-        })?;
-
-        Some(Self {
-            key,
-            block_hash,
-            pow_nonce: U64(pow_nonce),
-        })
-    }
-
-    pub fn verify_pow(&self, difficulty: usize) -> bool {
-        let hash = Self::pow_hash(&self.key, &self.block_hash, self.pow_nonce.0);
-        let submitted_difficulty = Self::difficulty(&hash);
-        submitted_difficulty >= difficulty
+impl PowTarget for CreatePasskeyAccount {
+    fn pow_target(&self) -> String {
+        format!("{},{}", &self.key.0, &self.block_hash)
     }
 }
 
-#[test]
-fn mine() {
-    let passkey = Passkey("p256:S8avjv5zYFYhViXo7giqwynnMdox3RAytXQ7FG9a2tj8WxZnU6KUr36MSuUvgrwk4uGNMdiXt6vwtL9yBvj6VAUL".parse().unwrap());
-    let block_hash = CryptoHash::hash_borsh("test7");
-    let result = CreatePasskey::pow(passkey, block_hash, 17, 1_000_000).unwrap();
-    println!("{result:?}");
-    let hash = CreatePasskey::pow_hash(&result.key, &result.block_hash, result.pow_nonce.0);
-    println!("{hash:?}");
-    let difficulty = CreatePasskey::difficulty(&hash);
-    println!("{difficulty}");
+impl Execute for CreatePasskeyAccount {
+    type Output = Self;
+
+    fn execute(&self) -> Self::Output {
+        self.clone()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub enum CreateRequest {
-    Passkey(passkey::Message<CreatePasskey>),
+    Passkey(passkey::Message<Pow<CreatePasskeyAccount>>),
 }
 
-pub struct CreateResponse {}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub enum CreateResponse {}
 
-impl IntoResponse for CreateResponse {
-    fn into_response(self) -> axum::response::Response {
-        todo!()
+pub async fn create(
+    State(app): State<App>,
+    Json(request): Json<CreateRequest>,
+) -> SimpleResponse<CreateResponse> {
+    let CreateRequest::Passkey(message) = request;
+
+    let pow = message.payload();
+
+    let actual_difficulty = pow.difficulty();
+    let expected_difficulty = app.args.ua_create_pow_difficulty;
+    if actual_difficulty < expected_difficulty {
+        return SimpleResponse::Rejected { reason: format!("Difficulty requirement not reached: expected {expected_difficulty}, got {actual_difficulty}") };
     }
-}
 
-pub async fn create(State(app): State<App>, Json(request): Json<CreateRequest>) -> CreateResponse {
+    let passkey = &pow.payload.key;
+    let payload = match passkey.verify_signature(&message) {
+        Ok(payload) => payload,
+        Err(e) => {
+            return SimpleResponse::Rejected {
+                reason: format!("Invalid payload: {e}"),
+            };
+        }
+    };
+
+    // Check block timestamp (make sure signature is not too old)
+
+    let block_hash = payload.block_hash;
+    let Ok(block_timestamp_ms) = app.near.fetch_block_timestamp_ms(block_hash).await else {
+        return SimpleResponse::Failure {
+            error: "Failed to fetch block timestamp".to_string(),
+        };
+    };
+
+    let Some(block_timestamp) =
+        SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(block_timestamp_ms))
+    else {
+        return SimpleResponse::Failure {
+            error: "Failed to calculate block age".to_string(),
+        };
+    };
+
+    if !block_timestamp.elapsed().is_ok_and(|duration| {
+        duration <= Duration::from_millis(app.args.ua_create_blockref_max_age_ms)
+    }) {
+        return SimpleResponse::Rejected {
+            reason: "Block reference is too old".to_string(),
+        };
+    }
+
+    // Check that account does not exist already
+
+    let account_slug = hex::encode(&Sha256::digest(payload.key.0.to_sec1_bytes())[0..12]);
+
     todo!()
 }

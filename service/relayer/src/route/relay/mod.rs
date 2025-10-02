@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 use near_primitives::views::TxExecutionStatus;
 use tracing::error;
 
-use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS};
+use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 
 mod message;
 use message::{RelayRequest, RelayResponse};
@@ -15,11 +15,11 @@ pub async fn relay(
         storage_deposit,
         wait_until,
     }): Json<RelayRequest>,
-) -> RelayResponse {
+) -> SimpleResponse<RelayResponse> {
     let (gas, contract_data) = match app.check_and_calculate_gas(&signed_delegate_action).await {
         Ok(x) => x,
         Err(e) => {
-            return RelayResponse::Rejected {
+            return SimpleResponse::Rejected {
                 reason: e.to_string(),
             }
         }
@@ -36,7 +36,7 @@ pub async fn relay(
             .as_ref()
             .filter(|b| !b.min.is_zero())
         else {
-            return RelayResponse::Rejected {
+            return SimpleResponse::Rejected {
                 reason: "Contract has no storage requirements".to_string(),
             };
         };
@@ -48,14 +48,14 @@ pub async fn relay(
         {
             Ok(storage_balance) => storage_balance,
             Err(e) => {
-                return RelayResponse::Failure {
+                return SimpleResponse::Failure {
                     error: e.to_string(),
                 };
             }
         };
 
         if storage_balance.is_some() {
-            return RelayResponse::Rejected {
+            return SimpleResponse::Rejected {
                 reason: "Storage balance already exists".to_string(),
             };
         }
@@ -65,7 +65,7 @@ pub async fn relay(
             .await
             .map(|amount| amount.saturating_add(storage_balance_bounds.min))
         else {
-            return RelayResponse::Failure {
+            return SimpleResponse::Failure {
                 error: "Failed to estimate gas cost".to_string(),
             };
         };
@@ -92,7 +92,7 @@ pub async fn relay(
             Ok(future) => future,
             Err(e) => {
                 error!("Send transaction failure: {e}");
-                return RelayResponse::Failure {
+                return SimpleResponse::Failure {
                     error: e.to_string(),
                 };
             }
@@ -106,7 +106,7 @@ pub async fn relay(
 
     let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
         error!("Failed to estimate cost of gas: {gas}");
-        return RelayResponse::Failure {
+        return SimpleResponse::Failure {
             error: "Failed to estimate cost of gas".to_string(),
         };
     };
@@ -119,14 +119,14 @@ pub async fn relay(
         Ok(available) => available,
         Err(e) => {
             error!("Database error trying to obtain available balance: {e}");
-            return RelayResponse::Failure {
+            return SimpleResponse::Failure {
                 error: "Database Error".to_string(),
             };
         }
     };
 
     if available_allowance < cost_of_gas {
-        return RelayResponse::Rejected {
+        return SimpleResponse::Rejected {
             reason: "Insufficient allowance".to_string(),
         };
     }
@@ -145,7 +145,7 @@ pub async fn relay(
         Ok(future) => future,
         Err(e) => {
             error!("Send transaction failure: {e}");
-            return RelayResponse::Failure {
+            return SimpleResponse::Failure {
                 error: e.to_string(),
             };
         }
@@ -158,5 +158,5 @@ pub async fn relay(
         }
     });
 
-    RelayResponse::Success { transaction_hash }
+    RelayResponse { transaction_hash }.into()
 }
