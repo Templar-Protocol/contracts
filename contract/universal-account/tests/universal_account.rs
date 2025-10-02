@@ -10,7 +10,7 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         Message, Passkey, Payload,
     },
-    key::p256::PublicKey,
+    encoding::p256::PublicKey,
     transaction::{Action, Transaction},
     ExecutionParameters, KeyId,
 };
@@ -58,7 +58,7 @@ pub async fn universal_account() {
             nonce: U64(1),
         },
         account_id: uac.contract().id().clone(),
-        transactions: vec![Transaction {
+        payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![
                 Action::FunctionCall {

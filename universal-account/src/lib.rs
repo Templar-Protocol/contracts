@@ -2,7 +2,7 @@ use authentication::passkey::Passkey;
 use near_sdk::{json_types::U64, near};
 
 pub mod authentication;
-pub mod key;
+pub mod encoding;
 pub mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -16,4 +16,10 @@ pub enum KeyId {
 pub struct ExecutionParameters {
     pub index: U64,
     pub nonce: U64,
+}
+
+pub trait Execute {
+    type Output;
+
+    fn execute(&self) -> Self::Output;
 }

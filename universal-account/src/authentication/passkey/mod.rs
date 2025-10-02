@@ -1,13 +1,11 @@
+use near_sdk::serde::de::DeserializeOwned;
 use near_sdk::AccountId;
-use near_sdk::{env, near, Promise};
-use p256::ecdsa::signature::SignerMut;
-use p256::ecdsa::signature::Verifier;
+use near_sdk::{env, near};
+use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 
-use super::ExecutionParameters;
-use super::Key;
-use super::SignedMessage;
-use crate::transaction::Transaction;
+use super::{ExecutionParameters, Key, VerifiablePayload};
+use crate::Execute;
 
 use data::{AuthenticatorData, ClientDataJson};
 use signature::Signature;
@@ -30,13 +28,12 @@ fn sig_base(
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
-pub struct Passkey(pub crate::key::p256::PublicKey);
+pub struct Passkey(pub crate::encoding::p256::PublicKey);
 
-impl Key for Passkey {
-    type Message = Message;
+impl<T: Execute> Key<Message<T>> for Passkey {
     type Error = Error;
 
-    fn verify_and_execute(&self, message: &Message) -> Result<Promise, Error> {
+    fn verify_and_execute(&self, message: &Message<T>) -> Result<T::Output, Error> {
         // Check signature
         VerifyingKey::from(*self.0)
             .verify(
@@ -46,35 +43,36 @@ impl Key for Passkey {
             .map_err(|_| Error::InvalidSignature)?;
 
         // Check that the payload actually hashes to the signed challenge
-        if message.payload.hash() != message.client_data_json.parsed.challenge.as_slice() {
+        if message.message.hash() != message.client_data_json.parsed.challenge.as_slice() {
             return Err(Error::PayloadHashMismatch);
         }
 
-        Ok(message.execute())
+        Ok(message.payload().execute())
     }
 }
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-pub struct Payload {
+pub struct Payload<T> {
     pub parameters: ExecutionParameters,
     pub account_id: AccountId,
-    pub transactions: Vec<Transaction>,
+    pub payload: T,
 }
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-pub struct Message {
+#[serde(bound = "T: DeserializeOwned")]
+pub struct Message<T> {
     pub authenticator_data: AuthenticatorData,
-    pub payload: WithRawString<Payload>,
+    pub message: WithRawString<Payload<T>>,
     pub client_data_json: WithRawString<ClientDataJson>,
     pub signature: Signature,
 }
 
-impl Message {
+impl<T> Message<T> {
     pub fn new_and_sign(
         key: &p256::SecretKey,
-        payload: WithRawString<Payload>,
+        message: WithRawString<Payload<T>>,
         authenticator_data: AuthenticatorData,
         client_data_json: WithRawString<ClientDataJson>,
     ) -> Self {
@@ -84,38 +82,26 @@ impl Message {
 
         Self {
             authenticator_data,
-            payload,
+            message,
             client_data_json,
             signature,
         }
     }
 }
 
-impl SignedMessage for Message {
-    type Output = Promise;
+impl<T: Execute> VerifiablePayload for Message<T> {
+    type Payload = T;
 
     fn account_id(&self) -> &near_sdk::AccountIdRef {
-        &self.payload.parsed.account_id
+        &self.message.parsed.account_id
     }
 
     fn parameters(&self) -> &ExecutionParameters {
-        &self.payload.parsed.parameters
+        &self.message.parsed.parameters
     }
 
-    fn execute(&self) -> Self::Output {
-        let mut promise = self
-            .payload
-            .parsed
-            .transactions
-            .first()
-            .unwrap_or_else(|| env::panic_str("empty"))
-            .construct_promise();
-
-        for tx in &self.payload.parsed.transactions[1..] {
-            promise = promise.then(tx.construct_promise());
-        }
-
-        promise
+    fn payload(&self) -> &Self::Payload {
+        &self.message.parsed.payload
     }
 }
 

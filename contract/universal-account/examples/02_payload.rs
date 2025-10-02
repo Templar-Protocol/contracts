@@ -15,7 +15,7 @@ pub fn main() {
             nonce: U64(1),
         },
         account_id: "my-universal-account.testnet".parse().unwrap(),
-        transactions: vec![Transaction {
+        payload: vec![Transaction {
             receiver_id: "alice.testnet".parse().unwrap(),
             actions: vec![Action::Transfer {
                 amount: NearToken::from_near(1),

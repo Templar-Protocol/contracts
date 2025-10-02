@@ -7,7 +7,8 @@ use near_sdk::{
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    authentication::{passkey, Key, SignedMessage},
+    authentication::{passkey, Key, VerifiablePayload},
+    transaction::Transaction,
     ExecutionParameters, KeyId,
 };
 
@@ -75,7 +76,7 @@ impl Contract {
 
         let KeyId::Passkey(key) = key;
 
-        let message: passkey::Message =
+        let message: passkey::Message<Vec<Transaction>> =
             serde_json::from_value(message).unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         let current_account_id = env::current_account_id();

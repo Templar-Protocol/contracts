@@ -1,8 +1,11 @@
 use near_sdk::{
+    env,
     json_types::{Base64VecU8, U128, U64},
     near, AccountId, Allowance, Gas, GasWeight, NearToken, Promise,
 };
 use std::num::NonZeroU128;
+
+use crate::Execute;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
@@ -11,12 +14,31 @@ pub struct Transaction {
     pub actions: Vec<Action>,
 }
 
-impl Transaction {
-    pub fn construct_promise(&self) -> Promise {
+impl Execute for Transaction {
+    type Output = Promise;
+
+    fn execute(&self) -> Self::Output {
         let mut promise = Promise::new(self.receiver_id.clone());
 
         for action in &self.actions {
             promise = action.add(promise);
+        }
+
+        promise
+    }
+}
+
+impl Execute for Vec<Transaction> {
+    type Output = Promise;
+
+    fn execute(&self) -> Self::Output {
+        let mut promise = self
+            .first()
+            .unwrap_or_else(|| env::panic_str("empty"))
+            .execute();
+
+        for tx in &self[1..] {
+            promise = promise.then(tx.execute());
         }
 
         promise

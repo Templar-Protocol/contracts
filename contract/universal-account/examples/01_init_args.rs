@@ -2,7 +2,9 @@
 
 use near_sdk::{json_types::U64, serde_json};
 
-use templar_universal_account::{authentication::passkey::Passkey, key::p256::PublicKey, KeyId};
+use templar_universal_account::{
+    authentication::passkey::Passkey, encoding::p256::PublicKey, KeyId,
+};
 
 pub fn main() {
     // Replace with your own public key.
