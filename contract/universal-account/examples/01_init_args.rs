@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use near_sdk::{json_types::U64, serde_json};
+use near_sdk::serde_json;
 
 use templar_universal_account::{
     authentication::passkey::Passkey, encoding::p256::PublicKey, KeyId,
@@ -13,7 +13,6 @@ pub fn main() {
 
     let init = serde_json::json!({
         "key": KeyId::Passkey(Passkey(public_key)),
-        "nonce": U64(0),
     });
 
     println!("{}", serde_json::to_string(&init).unwrap());
