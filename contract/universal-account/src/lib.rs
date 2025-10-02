@@ -7,7 +7,7 @@ use near_sdk::{
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    authentication::{passkey, Key, VerifiablePayload},
+    authentication::{passkey, ExecutionContextProvider, Key},
     transaction::Transaction,
     ExecutionParameters, KeyId,
 };
@@ -81,14 +81,9 @@ impl Contract {
 
         let current_account_id = env::current_account_id();
 
-        require!(
-            message.account_id() == current_account_id,
-            "Account mismatch"
-        );
-        let p = message.parameters();
-        require!(p.index == key_entry.index, "Key index mismatch");
-        require!(p.nonce.0 == key_entry.nonce.0 + 1, "Nonce mismatch");
-        key_entry.nonce.0 += 1;
+        message
+            .verify_and_increment_nonce(&current_account_id, key_entry)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         key.verify_and_execute(&message)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))

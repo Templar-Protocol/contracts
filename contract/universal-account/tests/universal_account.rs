@@ -8,7 +8,7 @@ use templar_universal_account::{
     authentication::passkey::{
         data::{AuthenticatorData, ClientDataJson},
         with_raw_string::WithRawString,
-        Message, Passkey, Payload,
+        Passkey, Payload, UncheckedMessage,
     },
     encoding::p256::PublicKey,
     transaction::{Action, Transaction},
@@ -85,7 +85,7 @@ pub async fn universal_account() {
 
     let challenge = payload.hash();
 
-    let message = Message::new_and_sign(
+    let message = UncheckedMessage::new_and_sign(
         &secret_key,
         payload,
         AuthenticatorData(Box::new([0xff_u8; 32])),

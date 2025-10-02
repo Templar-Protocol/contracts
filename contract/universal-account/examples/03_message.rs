@@ -5,14 +5,14 @@ use std::str::FromStr;
 use near_sdk::serde_json::{self, json};
 
 use templar_universal_account::{
-    authentication::passkey::{data::AuthenticatorData, Message, Passkey},
+    authentication::passkey::{data::AuthenticatorData, Passkey, UncheckedMessage},
     encoding::p256::PublicKey,
     transaction::Transaction,
     KeyId,
 };
 
 pub fn main() {
-    let message: Message<Vec<Transaction>> = Message {
+    let message: UncheckedMessage<Vec<Transaction>> = UncheckedMessage {
         authenticator_data: AuthenticatorData::from_str(
             "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97631d00000000",
         )
