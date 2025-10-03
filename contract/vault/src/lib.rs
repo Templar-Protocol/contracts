@@ -8,7 +8,6 @@ use near_sdk::{
     store::{IterableMap, LookupMap, Vector},
     AccountId, BorshStorageKey, IntoStorageKey, NearToken, PanicOnDefault, Promise, PromiseOrValue,
 };
-use near_sdk_contract_tools::rbac::Rbac;
 use near_sdk_contract_tools::{
     ft::{
         nep141::GAS_FOR_FT_TRANSFER_CALL, ContractMetadata, FungibleToken, Nep141Controller,
@@ -21,8 +20,8 @@ use near_sdk_contract_tools::{owner::Owner, rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
-        ext_self, MarketConfiguration, PendingValue, TimestampNs, GAS_CB, GAS_XFER, MAX_QUEUE_LEN,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        ext_self, MarketConfiguration, PendingValue, TimestampNs, VaultConfiguration, GAS_CB,
+        GAS_XFER, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
     },
 };
 pub use wad::*;
@@ -175,19 +174,20 @@ impl Contract {
     /// - `fee_recipient`: account to receive performance fees.
     /// - `skim_recipient`: account to receive skimmed tokens.
     /// - `name`/`symbol`/`decimals`: metadata for the share token.
-    pub fn new(
-        owner_id: AccountId,
-        curator_id: AccountId,
-        guardian_id: AccountId,
-        underlying_token_id: FungibleAsset<BorrowAsset>,
-        initial_timelock_sec: u32,
-        fee_recipient: AccountId,
-        skim_recipient: AccountId,
-        name: String,
-        symbol: String,
-        // TODO: decide if should assert decimals as underlying
-        decimals: u8,
-    ) -> Self {
+    pub fn new(configuration: VaultConfiguration) -> Self {
+        let VaultConfiguration {
+            owner,
+            curator,
+            guardian,
+            underlying_token,
+            initial_timelock_sec,
+            fee_recipient,
+            skim_recipient,
+            name,
+            symbol,
+            decimals,
+        } = configuration;
+
         let timelock_ns = u64::from(initial_timelock_sec) * 1_000_000_000;
         assert!(
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&timelock_ns),
@@ -216,7 +216,7 @@ impl Contract {
         let storage_usage_role = env::storage_usage();
 
         let mut contract = Self {
-            underlying_asset: underlying_token_id,
+            underlying_asset: underlying_token,
             timelock_ns,
             performance_fee: Default::default(),
             fee_recipient,
@@ -238,12 +238,40 @@ impl Contract {
             storage_usage_role,
         };
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals));
-        Owner::init(&mut contract, &owner_id);
-        Rbac::add_role(&mut contract, &curator_id, &Role::Curator);
-        Rbac::add_role(&mut contract, &curator_id, &Role::Allocator);
-        Rbac::add_role(&mut contract, &guardian_id, &Role::Guardian);
+        Owner::init(&mut contract, &owner);
+        Rbac::add_role(&mut contract, &curator, &Role::Curator);
+        Rbac::add_role(&mut contract, &curator, &Role::Allocator);
+        Rbac::add_role(&mut contract, &guardian, &Role::Guardian);
 
         contract
+    }
+
+    pub fn get_configuration(&self) -> VaultConfiguration {
+        let timelock_sec = self.timelock_ns / 1_000_000_000;
+        VaultConfiguration {
+            owner: self.own_get_owner().expect("Owner not set"),
+            curator: Self::with_members_of(&Role::Curator, |members| {
+                assert!(
+                    members.len() == 1,
+                    "Invariant violation: Cannot Have more than 1 Curator"
+                );
+                members.iter().next().expect("Curator not set").clone()
+            }),
+            guardian: Self::with_members_of(&Role::Guardian, |members| {
+                assert!(
+                    members.len() == 1,
+                    "Invariant violation: Cannot Have more than 1 Guardian"
+                );
+                members.iter().next().expect("Guardian not set").clone()
+            }),
+            underlying_token: self.underlying_asset.clone(),
+            initial_timelock_sec: timelock_sec as u32,
+            fee_recipient: self.fee_recipient.clone(),
+            skim_recipient: self.skim_recipient.clone(),
+            name: self.get_metadata().name,
+            symbol: self.get_metadata().symbol,
+            decimals: self.get_metadata().decimals,
+        }
     }
 
     /// Sets the Curator account. Also grants/removes the Allocator role accordingly.

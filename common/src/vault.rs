@@ -1,6 +1,9 @@
 use near_sdk::{json_types::U128, near, AccountId, Gas};
 
-use crate::supply::SupplyPosition;
+use crate::{
+    asset::{BorrowAsset, FungibleAsset},
+    supply::SupplyPosition,
+};
 
 pub type TimestampNs = u64;
 
@@ -30,6 +33,21 @@ pub struct MarketConfiguration {
     pub enabled: bool,
     // Timestamp (ns) after which market can be removed (if pending removal)
     pub removable_at: TimestampNs,
+}
+
+#[near(serializers = [json, borsh])]
+pub struct VaultConfiguration {
+    pub owner_id: AccountId,
+    pub curator_id: AccountId,
+    pub guardian_id: AccountId,
+    pub underlying_token_id: FungibleAsset<BorrowAsset>,
+    pub initial_timelock_sec: u32,
+    pub fee_recipient: AccountId,
+    pub skim_recipient: AccountId,
+    pub name: String,
+    pub symbol: String,
+    // TODO: decide if should assert decimals as underlying
+    pub decimals: u8,
 }
 
 #[near_sdk::ext_contract(ext_self)]

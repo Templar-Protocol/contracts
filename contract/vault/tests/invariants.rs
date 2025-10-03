@@ -32,3 +32,11 @@
 // TODO: Withdraw read onlky credits idle
 
 // TODO: on error, assume no risk
+//
+//
+//
+
+// TODO: test harness
+// We need:
+// - market setup (using market::setup_test)
+// - vault version of setup_test, utilising the market principal
