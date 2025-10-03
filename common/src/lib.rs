@@ -10,6 +10,7 @@ pub mod market;
 pub mod number;
 pub mod oracle;
 pub mod price;
+pub mod registry;
 pub mod snapshot;
 pub mod supply;
 pub mod time_chunk;

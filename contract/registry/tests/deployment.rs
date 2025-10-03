@@ -6,7 +6,9 @@ use tokio::task::JoinSet;
 
 #[tokio::test]
 pub async fn deploy_from_registry() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+    let worker = near_workspaces::sandbox_with_version("2.7.0")
+        .await
+        .unwrap();
     let r = setup_registry(&worker).await;
 
     accounts!(
@@ -42,7 +44,7 @@ pub async fn deploy_from_registry() {
         let r = r.clone();
         let init_args = init_args.clone();
         async move {
-            r.deploy_market(
+            r.deploy(
                 r.contract().as_account(),
                 "one",
                 "market@0.0.0",
@@ -57,7 +59,7 @@ pub async fn deploy_from_registry() {
         let r = r.clone();
         let init_args = init_args.clone();
         async move {
-            r.deploy_market(
+            r.deploy(
                 r.contract().as_account(),
                 "two",
                 "market@0.0.0",
@@ -72,7 +74,7 @@ pub async fn deploy_from_registry() {
         let r = r.clone();
         let init_args = init_args.clone();
         async move {
-            r.deploy_market(
+            r.deploy(
                 r.contract().as_account(),
                 "three",
                 "market@0.0.0",
@@ -98,7 +100,9 @@ pub async fn deploy_from_registry() {
 
 #[tokio::test]
 async fn deploy_with_access_key() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+    let worker = near_workspaces::sandbox_with_version("2.7.0")
+        .await
+        .unwrap();
     let r = setup_registry(&worker).await;
 
     accounts!(
@@ -122,7 +126,7 @@ async fn deploy_with_access_key() {
         .unwrap();
 
     let market_id = r
-        .deploy_market(
+        .deploy(
             r.contract().as_account(),
             "market",
             "market@0.0.0".to_string(),
@@ -158,7 +162,9 @@ async fn deploy_with_access_key() {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Market ID collision"]
 pub async fn market_id_collision() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+    let worker = near_workspaces::sandbox_with_version("2.7.0")
+        .await
+        .unwrap();
     let r = setup_registry(&worker).await;
 
     accounts!(
@@ -188,7 +194,7 @@ pub async fn market_id_collision() {
     }))
     .unwrap();
 
-    r.deploy_market(
+    r.deploy(
         r.contract().as_account(),
         "market",
         "market@0.0.0",
@@ -197,7 +203,7 @@ pub async fn market_id_collision() {
     )
     .await;
 
-    r.deploy_market(
+    r.deploy(
         r.contract().as_account(),
         "market",
         "market@0.0.0",
