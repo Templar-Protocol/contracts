@@ -28,7 +28,9 @@ use templar_common::{
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
     registry::DeployMode,
+    vault::VaultConfiguration,
 };
+use crate::controller::vault::{UnifiedVaultController, VaultController};
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cccccccc232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
@@ -83,14 +85,47 @@ macro_rules! accounts {
 macro_rules! setup_test {
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
         $crate::accounts!($w, $($n),*);
-        let s = $crate::setup_everything(&$w, $f).await;
+        let s = $crate::setup_everything(&$w, $f, |_| {}).await;
+        ::tokio::join!(
+            $(s.c.init_account(&$n)),*
+        );
+        let $crate::SetupEverything { $($e,)* .. } = s;
+    };
+    ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr) vconfig($v:expr)) => {
+        $crate::accounts!($w, $($n),*);
+        let s = $crate::setup_everything(&$w, $f, $v).await;
         ::tokio::join!(
             $(s.c.init_account(&$n)),*
         );
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config(|_| {}))
+        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}), vconfig(|_| {}))
+    };
+}
+
+#[macro_export]
+macro_rules! setup_test {
+    (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
+        let worker = near_workspaces::sandbox().await.unwrap();
+        $crate::accounts!(worker, $($n),*);
+        let s = $crate::setup_everything(&worker, $f, |_| {}).await;
+        ::tokio::join!(
+            $(s.c.init_account(&$n)),*
+        );
+        let $crate::SetupEverything { $($e,)* .. } = s;
+    };
+    (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr) vconfig($v:expr)) => {
+        let worker = near_workspaces::sandbox().await.unwrap();
+        $crate::accounts!(worker, $($n),*);
+        let s = $crate::setup_everything(&worker, $f, $v).await;
+        ::tokio::join!(
+            $(s.c.init_account(&$n)),*
+        );
+        let $crate::SetupEverything { $($e,)* .. } = s;
+    };
+    (extract($($e:ident),*) accounts($($n:ident),*)) => {
+        $crate::setup_test!(extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}))
     };
 }
 
@@ -135,6 +170,28 @@ pub fn market_configuration(
     }
 }
 
+pub fn vault_configuration(
+    owner_id: AccountId,
+    curator_id: AccountId,
+    guardian_id: AccountId,
+    borrow_asset_id: AccountId,
+    skim_recipient_id: AccountId,
+    fee_recipient_id: AccountId,
+) -> VaultConfiguration {
+    VaultConfiguration {
+        owner: owner_id,
+        curator: curator_id,
+        guardian: guardian_id,
+        underlying_token: FungibleAsset::nep141(borrow_asset_id),
+        initial_timelock_sec: 0,
+        fee_recipient: fee_recipient_id,
+        skim_recipient: skim_recipient_id,
+        name: "Vault".to_string(),
+        symbol: "VAULT".to_string(),
+        decimals: 24,
+    }
+}
+
 async fn compile_contract(p: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_WORKSPACE_DIR")).join(p);
     near_workspaces::compile_project(path.to_str().unwrap())
@@ -163,11 +220,13 @@ pub struct SetupEverything {
     pub c: UnifiedMarketController,
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
+    pub vault: UnifiedVaultController,
 }
 
 pub async fn setup_everything(
     worker: &Worker<Sandbox>,
     customize_market_configuration: impl FnOnce(&mut MarketConfiguration),
+    customize_vault_configuration: impl FnOnce(&mut VaultConfiguration),
 ) -> SetupEverything {
     accounts!(
         worker,
@@ -176,7 +235,13 @@ pub async fn setup_everything(
         insurance_yield_user,
         collateral_asset,
         borrow_asset,
-        price_oracle
+        price_oracle,
+        vault,
+        vault_owner,
+        vault_curator,
+        vault_guardian,
+        skim_recipient,
+        fee_recipient
     );
     let mut config = market_configuration(
         price_oracle.id().clone(),
@@ -189,7 +254,17 @@ pub async fn setup_everything(
     );
     customize_market_configuration(&mut config);
 
-    let (market, price_oracle, borrow_asset, collateral_asset) = tokio::join!(
+    let mut vault_config = vault_configuration(
+        vault_owner.id().clone(),
+        vault_curator.id().clone(),
+        vault_guardian.id().clone(),
+        borrow_asset.id().clone(),
+        skim_recipient.id().clone(),
+        fee_recipient.id().clone(),
+    );
+    customize_vault_configuration(&mut vault_config);
+
+    let (market, price_oracle, borrow_asset, collateral_asset, vault) = tokio::join!(
         MarketController::deploy(market, &config),
         OracleController::deploy(price_oracle),
         async {
@@ -221,6 +296,7 @@ pub async fn setup_everything(
                 }
             }
         },
+        VaultController::deploy(vault, &vault_config)
     );
 
     let c =
@@ -229,17 +305,23 @@ pub async fn setup_everything(
     c.set_borrow_asset_price(1.0).await;
     c.set_collateral_asset_price(1.0).await;
 
+    let v = UnifiedVaultController::new(vault, vault_config, c.clone());
+
     // Asset opt-ins.
     tokio::join!(
         c.storage_deposits(c.market.contract().as_account()),
         c.init_account(&protocol_yield_user),
         c.init_account(&insurance_yield_user),
+        v.storage_deposits(v.vault.contract().as_account()),
+        v.init_account(&skim_recipient),
+        v.init_account(&fee_recipient)
     );
 
     SetupEverything {
         c,
         protocol_yield_user,
         insurance_yield_user,
+        vault: v,
     }
 }
 

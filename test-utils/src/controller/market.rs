@@ -30,7 +30,7 @@ use super::{oracle::OracleController, token::TokenController, ContractController
 
 #[derive(Clone)]
 pub struct MarketController {
-    contract: Contract,
+    pub(crate) contract: Contract,
 }
 
 impl ContractController for MarketController {
