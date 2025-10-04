@@ -21,6 +21,7 @@ use near_primitives::{
     views::{FinalExecutionOutcomeView, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
+    json_types::Base64VecU8,
     serde::{de::DeserializeOwned, Serialize},
     serde_json::{self, json},
     AccountId, AccountIdRef, Gas, NearToken,
@@ -32,6 +33,7 @@ use templar_common::market::MarketConfiguration;
 use crate::{cache::Cache, MarketData};
 
 pub const STORAGE_DEPOSIT_GAS: u64 = Gas::from_tgas(5).as_gas();
+pub const DEPLOY_GAS: u64 = Gas::from_tgas(10).as_gas();
 
 #[derive(Debug, Clone)]
 pub struct Near {
@@ -252,6 +254,48 @@ impl Near {
         .sign(signer)
     }
 
+    /// Deploy a version of a contract from a registry.
+    #[must_use]
+    pub async fn construct_deploy_from_registry_transaction(
+        &self,
+        cache: &Cache,
+        registry_id: AccountId,
+        name: String,
+        version_key: String,
+        init_args: impl Serialize,
+        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
+    ) -> SignedTransaction {
+        let signer = self.next_signer();
+        let public_key = signer.public_key();
+
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
+
+        let action = FunctionCallAction {
+            method_name: "deploy".to_string(),
+            args: serde_json::to_vec(&json!({
+                "name": name,
+                "version_key": version_key,
+                "init_args": Base64VecU8(serde_json::to_vec(&init_args).unwrap()),
+                "full_access_keys": full_access_keys,
+            }))
+            .unwrap(),
+            gas: DEPLOY_GAS,
+            deposit: 0,
+        };
+
+        Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key,
+            nonce,
+            receiver_id: registry_id,
+            block_hash,
+            actions: vec![action.into()],
+        })
+        .sign(signer)
+    }
+
     /// # Errors
     ///
     /// - RPC errors
@@ -302,6 +346,17 @@ impl Near {
         registry_id: AccountId,
     ) -> Result<Vec<AccountId>, ViewError> {
         self.view(registry_id, "list_deployments", json!({})).await
+    }
+
+    /// # Errors
+    ///
+    /// - Serialization/deserialization errors
+    /// - RPC errors
+    pub async fn load_versions_from_registry(
+        &self,
+        registry_id: AccountId,
+    ) -> Result<Vec<String>, ViewError> {
+        self.view(registry_id, "list_versions", json!({})).await
     }
 
     /// # Errors

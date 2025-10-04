@@ -41,19 +41,31 @@ pub use args::Configuration;
 pub struct App {
     pub args: args::Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
-    pub near: Near,
+    pub relay_near: Near,
+    pub ua_near: Near,
     pub cache: Arc<Cache>,
     pub database: Database,
 }
 
 impl App {
     pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> Self {
-        let near = Near::new(
+        let relay_near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-            args.account_id.clone(),
-            args.secret_key
+            args.relay.account_id.clone(),
+            args.relay
+                .secret_key
                 .iter()
-                .map(|s| InMemorySigner::from_secret_key(args.account_id.clone(), s.clone()))
+                .map(|s| InMemorySigner::from_secret_key(args.relay.account_id.clone(), s.clone()))
+                .collect(),
+        );
+
+        let ua_near = Near::new(
+            near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
+            args.ua.account_id.clone(),
+            args.ua
+                .secret_key
+                .iter()
+                .map(|s| InMemorySigner::from_secret_key(args.ua.account_id.clone(), s.clone()))
                 .collect(),
         );
 
@@ -61,7 +73,7 @@ impl App {
         let database = Database::new(&args.database_url, kill.clone()).unwrap();
 
         let cache = Cache::new(
-            near.clone(),
+            relay_near.clone(),
             Duration::from_secs(args.cache_gas_price_secs),
             Duration::from_secs(args.cache_nonce_secs),
             kill.clone(),
@@ -69,7 +81,7 @@ impl App {
 
         tokio::spawn(broom::start(
             database.clone(),
-            near.clone(),
+            relay_near.clone(),
             args.broom_batch_size,
             Duration::from_secs(args.broom_interval_secs),
             kill,
@@ -78,7 +90,8 @@ impl App {
         Self {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
-            near,
+            relay_near,
+            ua_near,
             cache: Arc::new(cache),
             database,
         }
@@ -100,7 +113,7 @@ impl App {
         let mut set = JoinSet::new();
         for registry_id in &self.args.monitor.registry {
             set.spawn({
-                let near = self.near.clone();
+                let near = self.relay_near.clone();
                 let registry_id = registry_id.clone();
                 async move {
                     match near
@@ -122,7 +135,7 @@ impl App {
         let mut set = JoinSet::new();
         for market in markets {
             set.spawn({
-                let near = self.near.clone();
+                let near = self.relay_near.clone();
                 async move {
                     match near.load_market_accounts(market.clone()).await {
                         Ok(market_accounts) => Some(market_accounts),
@@ -154,7 +167,7 @@ impl App {
             ] {
                 if let Entry::Vacant(e) = allowed_contracts.entry(contract_id.clone()) {
                     let storage_balance_bounds = self
-                        .near
+                        .relay_near
                         .load_storage_balance_bounds(contract_id.clone())
                         .await
                         .ok();
@@ -225,7 +238,7 @@ impl App {
         if accounts.market_data.contains_key(receiver_id) {
             // Calling a market contract directly.
             for (index, call) in calls.iter().enumerate() {
-                if !self.args.allowed_methods.contains(&call.method_name) {
+                if !self.args.relay.allowed_methods.contains(&call.method_name) {
                     return Err(PreconditionError::UnknownFunctionName {
                         name: call.method_name.clone(),
                         index,
@@ -304,11 +317,11 @@ impl App {
             .await?;
 
         let result = self
-            .near
+            .relay_near
             .send_transaction(signed_transaction, wait_until)
             .await?;
 
-        let near = self.near.clone();
+        let near = self.relay_near.clone();
         let database = self.database.clone();
 
         Ok(async move {

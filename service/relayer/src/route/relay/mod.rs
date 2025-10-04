@@ -42,7 +42,7 @@ pub async fn relay(
         };
 
         let storage_balance = match app
-            .near
+            .relay_near
             .load_storage_balance_of(contract_id.clone(), &account_id)
             .await
         {
@@ -71,7 +71,7 @@ pub async fn relay(
         };
 
         let signed_transaction = app
-            .near
+            .relay_near
             .construct_storage_deposit_transaction(
                 &app.cache,
                 account_id.clone(),
@@ -113,7 +113,7 @@ pub async fn relay(
 
     let available_allowance = match app
         .database
-        .get_available_allowance_or_create(&account_id, app.args.starting_allowance_yocto)
+        .get_available_allowance_or_create(&account_id, app.args.relay.starting_allowance_yocto)
         .await
     {
         Ok(available) => available,
@@ -132,7 +132,7 @@ pub async fn relay(
     }
 
     let signed_transaction = app
-        .near
+        .relay_near
         .construct_delegate_transaction(&app.cache, signed_delegate_action)
         .await;
 

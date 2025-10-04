@@ -15,18 +15,8 @@ pub struct Configuration {
     pub rpc_url: String,
     #[clap(flatten)]
     pub monitor: Monitor,
-    /// Account ID of the NEAR account that the relayer controls.
-    #[arg(short, long, env = "ACCOUNT_ID")]
-    pub account_id: AccountId,
-    /// Comma-separated list of private keys to use to sign transactions for the account that the relayer controls.
-    #[arg(short = 'k', long, env = "SECRET_KEY", value_delimiter = ',')]
-    pub secret_key: Vec<SecretKey>,
-    /// Comma-separated list of allowed methods.
-    #[arg(long, env = "ALLOWED_METHODS", default_values_t = default_allowed_methods(), value_delimiter = ',')]
-    pub allowed_methods: Vec<String>,
-    /// Starting allowance in yoctoNEAR.
-    #[arg(long, env = "STARTING_ALLOWANCE_YOCTO", default_value_t = NearToken::from_millinear(250))]
-    pub starting_allowance_yocto: NearToken,
+    #[clap(flatten)]
+    pub relay: Relay,
     /// Refresh the cached gas price after X seconds.
     #[arg(long, env = "CACHE_GAS_PRICE_SECS", default_value_t = 600)]
     pub cache_gas_price_secs: u64,
@@ -40,17 +30,8 @@ pub struct Configuration {
     #[arg(long, env = "BROOM_INTERVAL_SECS", default_value_t = 300)]
     pub broom_interval_secs: u64,
 
-    // === UNIVERSAL ACCOUNT ===
-    /// How difficult should the proof-of-work for universal account deployment be?
-    ///
-    /// iterations ~ 2^difficulty
-    #[arg(long, env = "UA_CREATE_POW_DIFFICULTY", default_value_t = 17)]
-    pub ua_create_pow_difficulty: usize,
-    /// How fresh must the universal account creation signature be?
-    ///
-    /// Based on the block hash referenced in the creation request.
-    #[arg(long, env = "UA_CREATE_BLOCKREF_MAX_AGE_MS", default_value_t = 1000 * 60 * 10 /* 10 minutes */)]
-    pub ua_create_blockref_max_age_ms: u64,
+    #[clap(flatten)]
+    pub ua: UniversalAccount,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -62,6 +43,56 @@ pub struct Monitor {
     /// Comma-separated list of markets to monitor.
     #[arg(long, env = "MARKET", value_delimiter = ',')]
     pub market: Vec<AccountId>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct Relay {
+    /// Account ID of the NEAR account that the relayer controls.
+    #[arg(long = "relay-account-id", env = "RELAY_ACCOUNT_ID")]
+    pub account_id: AccountId,
+    /// Comma-separated list of private keys to use to sign transactions for the account that the relayer controls.
+    #[arg(
+        long = "relay-secret-key",
+        env = "RELAY_SECRET_KEY",
+        value_delimiter = ','
+    )]
+    pub secret_key: Vec<SecretKey>,
+    /// Comma-separated list of allowed methods.
+    #[arg(long, env = "ALLOWED_METHODS", default_values_t = default_allowed_methods(), value_delimiter = ',')]
+    pub allowed_methods: Vec<String>,
+    /// Starting allowance in yoctoNEAR.
+    #[arg(long, env = "STARTING_ALLOWANCE_YOCTO", default_value_t = NearToken::from_millinear(250))]
+    pub starting_allowance_yocto: NearToken,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UniversalAccount {
+    /// Account ID of the NEAR account that the relayer controls for universal account creation.
+    #[arg(long = "ua-account-id", env = "UA_ACCOUNT_ID")]
+    pub account_id: AccountId,
+    /// Comma-separated list of private keys to use to sign universal account creation transactions.
+    #[arg(long = "ua-secret-key", env = "UA_SECRET_KEY", value_delimiter = ',')]
+    pub secret_key: Vec<SecretKey>,
+    /// How difficult should the proof-of-work for universal account creation be?
+    ///
+    /// iterations ~ 2^difficulty
+    #[arg(
+        long = "ua-pow-difficulty",
+        env = "UA_POW_DIFFICULTY",
+        default_value_t = 17
+    )]
+    pub pow_difficulty: usize,
+    /// How fresh must the universal account creation signature be?
+    ///
+    /// Based on the block hash referenced in the creation request.
+    #[arg(long = "ua-blockref-max-age-ms", env = "UA_BLOCKREF_MAX_AGE_MS", default_value_t = 1000 * 60 * 10 /* 10 minutes */)]
+    pub blockref_max_age_ms: u64,
+    /// Account ID of the registry from which to deploy universal accounts.
+    #[arg(long = "ua-registry-id", env = "UA_REGISTRY_ID")]
+    pub registry_id: AccountId,
+    /// Version key of the universal account contract to deploy from the registry.
+    #[arg(long = "ua-version-key", env = "UA_VERSION_KEY")]
+    pub version_key: String,
 }
 
 fn default_allowed_methods() -> Vec<String> {

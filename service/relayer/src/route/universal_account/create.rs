@@ -1,19 +1,32 @@
-use std::time::{Duration, SystemTime};
+use std::{
+    str::FromStr,
+    time::{Duration, SystemTime},
+};
 
 use axum::{extract::State, Json};
-use near_primitives::hash::CryptoHash;
-use near_sdk::serde::{Deserialize, Serialize};
+use near_jsonrpc_client::{
+    errors::{JsonRpcError, JsonRpcServerError},
+    methods::query::RpcQueryError,
+};
+use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
+use near_sdk::{
+    serde::{Deserialize, Serialize},
+    serde_json::{self, json},
+    AccountId,
+};
 
-use sha2::{Digest, Sha256};
 use templar_universal_account::{
     authentication::{
         passkey::{self, Passkey},
         ExecutionContextProvider, Key,
     },
-    Execute,
+    Execute, KeyId,
 };
 
-use crate::{app::App, route::SimpleResponse};
+use crate::{
+    app::App,
+    route::{universal_account::public_key_to_account_id_slug, SimpleResponse},
+};
 
 use super::pow::{Pow, PowTarget};
 
@@ -57,7 +70,7 @@ pub async fn create(
     let pow = message.payload();
 
     let actual_difficulty = pow.difficulty();
-    let expected_difficulty = app.args.ua_create_pow_difficulty;
+    let expected_difficulty = app.args.ua.pow_difficulty;
     if actual_difficulty < expected_difficulty {
         return SimpleResponse::Rejected { reason: format!("Difficulty requirement not reached: expected {expected_difficulty}, got {actual_difficulty}") };
     }
@@ -75,7 +88,7 @@ pub async fn create(
     // Check block timestamp (make sure signature is not too old)
 
     let block_hash = payload.block_hash;
-    let Ok(block_timestamp_ms) = app.near.fetch_block_timestamp_ms(block_hash).await else {
+    let Ok(block_timestamp_ms) = app.ua_near.fetch_block_timestamp_ms(block_hash).await else {
         return SimpleResponse::Failure {
             error: "Failed to fetch block timestamp".to_string(),
         };
@@ -89,9 +102,10 @@ pub async fn create(
         };
     };
 
-    if !block_timestamp.elapsed().is_ok_and(|duration| {
-        duration <= Duration::from_millis(app.args.ua_create_blockref_max_age_ms)
-    }) {
+    if !block_timestamp
+        .elapsed()
+        .is_ok_and(|duration| duration <= Duration::from_millis(app.args.ua.blockref_max_age_ms))
+    {
         return SimpleResponse::Rejected {
             reason: "Block reference is too old".to_string(),
         };
@@ -99,7 +113,51 @@ pub async fn create(
 
     // Check that account does not exist already
 
-    let account_slug = hex::encode(&Sha256::digest(payload.key.0.to_sec1_bytes())[0..12]);
+    let account_slug = public_key_to_account_id_slug(&payload.key.0.to_string());
+
+    let registry_id = &app.args.ua.registry_id;
+    let account_id = match AccountId::from_str(&format!("{account_slug}.{registry_id}")) {
+        Ok(account_id) => account_id,
+        Err(e) => {
+            tracing::error!("Failed to construct account ID: {e}");
+            return SimpleResponse::Failure {
+                error: "Failed to construct account ID".to_string(),
+            };
+        }
+    };
+
+    match app.ua_near.fetch_near_balance(account_id.clone()).await {
+        Err(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+            RpcQueryError::UnknownAccount { .. },
+        ))) => { /* Account does not exist already: continue. */ }
+        Ok(_) => {
+            return SimpleResponse::Rejected {
+                reason: "Account already exists".to_string(),
+            };
+        }
+        Err(e) => {
+            tracing::error!("Error detecting account existence: {e}");
+            return SimpleResponse::Failure {
+                error: "Failed to detect whether account exists".to_string(),
+            };
+        }
+    }
+
+    let signed_transaction = app
+        .ua_near
+        .construct_deploy_from_registry_transaction(
+            &app.cache,
+            app.args.ua.registry_id,
+            account_slug,
+            app.args.ua.version_key,
+            json!({
+                "key": KeyId::Passkey(payload.key),
+            }),
+            None,
+        )
+        .await;
+
+    // app.ua_near.send_transaction(signed_transaction, TxExecutionStatus::Final).await;
 
     todo!()
 }
