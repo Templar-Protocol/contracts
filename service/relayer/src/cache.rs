@@ -5,7 +5,10 @@ use std::{
 };
 
 use near_crypto::PublicKey;
-use near_jsonrpc_client::{errors::JsonRpcError, methods::query::RpcQueryError};
+use near_jsonrpc_client::{
+    errors::JsonRpcError,
+    methods::{query::RpcQueryError, EXPERIMENTAL_protocol_config::RpcProtocolConfigResponse},
+};
 use near_primitives::hash::CryptoHash;
 use near_sdk::{AccountId, NearToken};
 use tokio::{
@@ -82,14 +85,15 @@ pub struct Cache {
 async fn start(
     mut recv: mpsc::Receiver<CacheRequest>,
     near: Near,
-    gas_price_refresh: Duration,
-    nonce_refresh: Duration,
+    cache_config: crate::app::args::Cache,
     kill: watch::Sender<()>,
 ) {
+    let mut config = CacheRecord::empty();
     let mut gas_price = CacheRecord::empty();
     let mut nonce = HashMap::<(AccountId, PublicKey), CacheRecord<u64>>::new();
     let block_hash = Arc::new(RwLock::new(CryptoHash::new()));
 
+    let update_config = || async { near.fetch_protocol_configuration().await.map(Arc::new) };
     let update_gas = || async { near.fetch_gas_price().await };
     let update_nonce = |(account_id, public_key)| {
         || async {
@@ -120,8 +124,20 @@ async fn start(
                     break;
                 };
                 match request {
+                    CacheRequest::ProtocolConfig(sender) => {
+                        let fresh = config.fetch(update_config, cache_config.protocol_config_refresh).await;
+                        #[allow(clippy::unwrap_used)]
+                        if let Ok(value) = fresh {
+                            sender.send(Arc::clone(value)).unwrap();
+                        } else if let Some(value) = config.stale() {
+                            tracing::warn!("Failed to fetch protocol config, sending stale value.");
+                            sender.send(Arc::clone(value)).unwrap();
+                        } else {
+                            exec_kill("Failed to fetch protocol config, no stale value cached.");
+                        }
+                    }
                     CacheRequest::GasPrice(sender) => {
-                        let fresh = gas_price.fetch(update_gas, gas_price_refresh).await;
+                        let fresh = gas_price.fetch(update_gas, cache_config.gas_price_refresh).await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(price) = fresh {
                             sender.send(*price).unwrap();
@@ -136,7 +152,7 @@ async fn start(
                     CacheRequest::Nonce { key, sender } => {
                         let entry = nonce.entry(key.clone()).or_insert_with(CacheRecord::empty);
                         let fresh = entry
-                            .fetch_update(update_nonce(key.clone()), nonce_refresh, |n| *n += 1)
+                            .fetch_update(update_nonce(key.clone()), cache_config.nonce_refresh, |n| *n += 1)
                             .await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(nonce) = fresh {
@@ -159,15 +175,10 @@ async fn start(
 }
 
 impl Cache {
-    pub fn new(
-        near: Near,
-        gas_price_refresh: Duration,
-        nonce_refresh: Duration,
-        kill: watch::Sender<()>,
-    ) -> Self {
+    pub fn new(near: Near, config: crate::app::args::Cache, kill: watch::Sender<()>) -> Self {
         let (send, recv) = mpsc::channel::<CacheRequest>(64);
 
-        tokio::spawn(start(recv, near, gas_price_refresh, nonce_refresh, kill));
+        tokio::spawn(start(recv, near, config, kill));
 
         Self { request: send }
     }
@@ -179,6 +190,7 @@ enum CacheRequest {
         key: (AccountId, PublicKey),
         sender: oneshot::Sender<(u64, CryptoHash)>,
     },
+    ProtocolConfig(oneshot::Sender<Arc<RpcProtocolConfigResponse>>),
 }
 
 #[allow(clippy::unwrap_used)]

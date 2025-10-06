@@ -9,6 +9,7 @@ use near_jsonrpc_client::{
         gas_price::RpcGasPriceError,
         query::RpcQueryError,
         tx::{RpcTransactionError, RpcTransactionResponse},
+        EXPERIMENTAL_protocol_config::{RpcProtocolConfigError, RpcProtocolConfigResponse},
     },
     JsonRpcClient,
 };
@@ -68,6 +69,21 @@ impl Near {
             signers: Arc::new(signers),
             signer_ix: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn fetch_protocol_configuration(
+        &self,
+    ) -> Result<RpcProtocolConfigResponse, JsonRpcError<RpcProtocolConfigError>> {
+        self.client
+            .call(
+                methods::EXPERIMENTAL_protocol_config::RpcProtocolConfigRequest {
+                    block_reference: Finality::Final.into(),
+                },
+            )
+            .await
     }
 
     /// # Errors

@@ -225,8 +225,8 @@ WHERE
 
         let allowance_lock_total = allowance_lock_gas.saturating_add(allowance_lock_inner);
 
-        if account.allowance < Decimal::from(allowance_lock_total.as_yoctonear())
-            && account.mark != AccountMark::AlwaysApprove
+        if account.mark != AccountMark::AlwaysApprove
+            && account.allowance < Decimal::from(allowance_lock_total.as_yoctonear())
         {
             return Err(error::InsufficientAllowanceError {
                 account_id: account_id.to_owned(),

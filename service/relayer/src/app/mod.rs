@@ -34,7 +34,7 @@ use crate::{
     AccountData, AssetTransfer, ContractData,
 };
 
-mod args;
+pub mod args;
 pub use args::Configuration;
 
 #[derive(Debug, Clone)]
@@ -72,12 +72,7 @@ impl App {
         #[allow(clippy::unwrap_used)]
         let database = Database::new(&args.database_url, kill.clone()).unwrap();
 
-        let cache = Cache::new(
-            relay_near.clone(),
-            Duration::from_secs(args.cache_gas_price_secs),
-            Duration::from_secs(args.cache_nonce_secs),
-            kill.clone(),
-        );
+        let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
 
         tokio::spawn(broom::start(
             database.clone(),

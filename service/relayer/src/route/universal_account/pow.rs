@@ -8,9 +8,9 @@ use templar_universal_account::Execute;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Pow<T> {
-    pub pow_nonce: U64,
+    pow_nonce: U64,
     #[serde(flatten)]
-    pub payload: T,
+    payload: T,
 }
 
 pub trait PowTarget {
@@ -28,6 +28,13 @@ fn leading_zeros(array: &[u8]) -> usize {
         }
     }
     total
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Proof-of-work does not satisfy target difficulty: actual {actual} < target {target}")]
+pub struct FailsTargetDifficulty {
+    pub actual: usize,
+    pub target: usize,
 }
 
 impl<T: PowTarget> Pow<T> {
@@ -55,6 +62,20 @@ impl<T: PowTarget> Pow<T> {
         leading_zeros(&Sha256::digest(Sha256::digest(
             format!("{target_hash}{nonce}").as_bytes(),
         )))
+    }
+
+    /// Verifies that the PoW satisfies the target difficulty requirement.
+    ///
+    /// # Errors
+    ///
+    /// - If the payload does not satisfy the target difficulty.
+    pub fn verify_pow(&self, target: usize) -> Result<&T, FailsTargetDifficulty> {
+        let actual = self.difficulty();
+        if actual >= target {
+            Ok(&self.payload)
+        } else {
+            Err(FailsTargetDifficulty { actual, target })
+        }
     }
 }
 

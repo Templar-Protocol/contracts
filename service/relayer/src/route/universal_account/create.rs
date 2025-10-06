@@ -12,7 +12,7 @@ use near_primitives::hash::CryptoHash;
 use near_sdk::{
     serde::{Deserialize, Serialize},
     serde_json::json,
-    AccountId,
+    AccountId, NearToken,
 };
 
 use templar_universal_account::{
@@ -59,25 +59,34 @@ pub enum CreateRequest {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
-pub enum CreateResponse {}
+pub struct CreateResponse {
+    pub account_id: AccountId,
+    pub transaction_hash: CryptoHash,
+}
 
+#[allow(clippy::too_many_lines)]
 pub async fn create(
     State(app): State<App>,
     Json(request): Json<CreateRequest>,
 ) -> SimpleResponse<CreateResponse> {
     let CreateRequest::Passkey(message) = request;
 
-    let pow = message.payload();
+    // Verify PoW
 
-    let actual_difficulty = pow.difficulty();
-    let expected_difficulty = app.args.ua.pow_difficulty;
-    if actual_difficulty < expected_difficulty {
-        return SimpleResponse::Rejected { reason: format!("Difficulty requirement not reached: expected {expected_difficulty}, got {actual_difficulty}") };
-    }
+    let payload = match message.payload().verify_pow(app.args.ua.pow_difficulty) {
+        Ok(p) => p,
+        Err(e) => {
+            return SimpleResponse::Rejected {
+                reason: e.to_string(),
+            };
+        }
+    };
 
-    let passkey = &pow.payload.key;
+    // Verify signature
+
+    let passkey = &payload.key;
     let payload = match passkey.verify_signature(&message) {
-        Ok(payload) => payload,
+        Ok(p) => p,
         Err(e) => {
             return SimpleResponse::Rejected {
                 reason: format!("Invalid payload: {e}"),
@@ -104,7 +113,7 @@ pub async fn create(
 
     if !block_timestamp
         .elapsed()
-        .is_ok_and(|duration| duration <= Duration::from_millis(app.args.ua.blockref_max_age_ms))
+        .is_ok_and(|duration| duration <= app.args.ua.blockref_max_age)
     {
         return SimpleResponse::Rejected {
             reason: "Block reference is too old".to_string(),
@@ -126,6 +135,8 @@ pub async fn create(
         }
     };
 
+    // Check that account does not exist by fetching the balance and looking
+    // for "unknown account" error.
     match app.ua_near.fetch_near_balance(account_id.clone()).await {
         Err(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
             RpcQueryError::UnknownAccount { .. },
@@ -143,13 +154,14 @@ pub async fn create(
         }
     }
 
+    // Create transaction.
     let signed_transaction = app
         .ua_near
         .construct_deploy_from_registry_transaction(
             &app.cache,
-            app.args.ua.registry_id,
+            app.args.ua.registry_id.clone(),
             account_slug,
-            app.args.ua.version_key,
+            app.args.ua.version_key.clone(),
             json!({
                 "key": KeyId::Passkey(payload.key),
             }),
@@ -157,7 +169,51 @@ pub async fn create(
         )
         .await;
 
-    // app.ua_near.send_transaction(signed_transaction, TxExecutionStatus::Final).await;
+    // NOTE: This only counts gas from function calls, but this is OK, because
+    // the deploy-from-registy transaction is a function call.
+    let gas_estimate = signed_transaction
+        .transaction
+        .actions()
+        .iter()
+        .map(|a| a.get_prepaid_gas())
+        .sum();
 
-    todo!()
+    let Some(gas_cost_estimate) = app.estimate_cost_of_gas(gas_estimate).await else {
+        return SimpleResponse::Failure {
+            error: "Gas cost estimation failure".to_string(),
+        };
+    };
+
+    let transaction_hash = signed_transaction.get_hash();
+
+    let resolve = match app
+        .send_and_resolve_transaction(
+            account_id.clone(),
+            gas_cost_estimate,
+            NearToken::from_near(0),
+            signed_transaction,
+            near_primitives::views::TxExecutionStatus::Included,
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to send account contract deployment transaction: {e}");
+            return SimpleResponse::Failure {
+                error: "Failed to send account contract deployment transaction".to_string(),
+            };
+        }
+    };
+
+    // Resolve the transaction in our DB asynchronously.
+    tokio::spawn(async move {
+        if let Err(e) = resolve.await {
+            tracing::error!("Failed to resolve transaction: {e}");
+        }
+    });
+
+    SimpleResponse::success(CreateResponse {
+        account_id,
+        transaction_hash,
+    })
 }

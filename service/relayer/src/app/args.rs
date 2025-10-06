@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use clap::{Args, Parser};
 use near_crypto::SecretKey;
 use near_sdk::{AccountId, NearToken};
@@ -17,12 +19,8 @@ pub struct Configuration {
     pub monitor: Monitor,
     #[clap(flatten)]
     pub relay: Relay,
-    /// Refresh the cached gas price after X seconds.
-    #[arg(long, env = "CACHE_GAS_PRICE_SECS", default_value_t = 600)]
-    pub cache_gas_price_secs: u64,
-    /// Refresh a cached nonce after X seconds.
-    #[arg(long, env = "CACHE_NONCE_SECS", default_value_t = 60)]
-    pub cache_nonce_secs: u64,
+    #[clap(flatten)]
+    pub cache: Cache,
     /// Broom batch size.
     #[arg(long, env = "BROOM_BATCH_SIZE", default_value_t = 16)]
     pub broom_batch_size: u32,
@@ -32,6 +30,40 @@ pub struct Configuration {
 
     #[clap(flatten)]
     pub ua: UniversalAccount,
+}
+
+use std::str::FromStr;
+
+fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
+    Ok(Duration::from_secs(u64::from_str(s)?))
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct Cache {
+    /// Refresh the cached gas price after X seconds.
+    #[arg(
+        long = "cache-gase-price-secs",
+        env = "CACHE_GAS_PRICE_SECS",
+        value_parser = duration_from_secs,
+        default_value = "600"
+    )]
+    pub gas_price_refresh: Duration,
+    /// Refresh a cached nonce after X seconds.
+    #[arg(
+        long = "cache-nonce-secs",
+        env = "CACHE_NONCE_SECS",
+        value_parser = duration_from_secs,
+        default_value = "60"
+    )]
+    pub nonce_refresh: Duration,
+    /// Refresh the cached protocol configuration after X seconds.
+    #[arg(
+        long = "cache-protocol-config-secs",
+        env = "CACHE_PROTOCOL_CONFIG_SECS",
+        value_parser = duration_from_secs,
+        default_value = "3600"
+    )]
+    pub protocol_config_refresh: Duration,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -85,8 +117,13 @@ pub struct UniversalAccount {
     /// How fresh must the universal account creation signature be?
     ///
     /// Based on the block hash referenced in the creation request.
-    #[arg(long = "ua-blockref-max-age-ms", env = "UA_BLOCKREF_MAX_AGE_MS", default_value_t = 1000 * 60 * 10 /* 10 minutes */)]
-    pub blockref_max_age_ms: u64,
+    #[arg(
+        long = "ua-blockref-max-age-secs",
+        env = "UA_BLOCKREF_MAX_AGE_SECS",
+        value_parser = duration_from_secs,
+        default_value = "600"
+    )]
+    pub blockref_max_age: Duration,
     /// Account ID of the registry from which to deploy universal accounts.
     #[arg(long = "ua-registry-id", env = "UA_REGISTRY_ID")]
     pub registry_id: AccountId,
