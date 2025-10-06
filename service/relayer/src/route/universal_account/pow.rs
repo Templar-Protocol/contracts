@@ -64,7 +64,8 @@ impl<T: PowTarget> Pow<T> {
         )))
     }
 
-    /// Verifies that the PoW satisfies the target difficulty requirement.
+    /// Verifies that the proof-of-work satisfies the target difficulty
+    /// requirement.
     ///
     /// # Errors
     ///

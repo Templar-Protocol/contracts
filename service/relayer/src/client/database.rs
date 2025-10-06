@@ -231,6 +231,10 @@ WHERE
             return Err(error::InsufficientAllowanceError {
                 account_id: account_id.to_owned(),
                 required: allowance_lock_total,
+                #[allow(
+                    clippy::unwrap_used,
+                    reason = "guaranteed to be less than `allowance_lock_total`, which fits in u128"
+                )]
                 actual: NearToken::from_yoctonear(account.allowance.try_into().unwrap()),
             }
             .into());
@@ -304,6 +308,7 @@ RETURNING
         .await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn finalize_pending_transaction(
         &self,
         account_id: &AccountIdRef,
@@ -333,8 +338,12 @@ WHERE
             return Ok(());
         }
 
-        let allowance_spent_inner =
-            NearToken::from_yoctonear(transaction_record.allowance_spent_inner.try_into().unwrap());
+        let allowance_spent_inner = NearToken::from_yoctonear(
+            transaction_record
+                .allowance_spent_inner
+                .try_into()
+                .unwrap_or(u128::MAX),
+        );
 
         let allowance_spent = if succeeded {
             allowance_spent_gas.saturating_add(allowance_spent_inner)
