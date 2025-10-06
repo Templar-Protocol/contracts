@@ -37,6 +37,7 @@ pub const DEFAULT_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal
 
 pub mod controller;
 pub mod partial;
+pub mod pyth_price_id;
 
 pub fn to_price(price: f64) -> pyth::Price {
     pyth::Price {
