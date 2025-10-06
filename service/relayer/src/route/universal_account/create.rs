@@ -8,10 +8,10 @@ use near_jsonrpc_client::{
     errors::{JsonRpcError, JsonRpcServerError},
     methods::query::RpcQueryError,
 };
-use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
+use near_primitives::hash::CryptoHash;
 use near_sdk::{
     serde::{Deserialize, Serialize},
-    serde_json::{self, json},
+    serde_json::json,
     AccountId,
 };
 

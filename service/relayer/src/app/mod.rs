@@ -303,7 +303,8 @@ impl App {
     pub async fn send_and_resolve_transaction(
         &self,
         account_id: AccountId,
-        cost_of_gas: NearToken,
+        gas_cost_estimate: NearToken,
+        spend_within_transaction: NearToken,
         signed_transaction: SignedTransaction,
         wait_until: TxExecutionStatus,
     ) -> Result<
@@ -313,7 +314,12 @@ impl App {
         let transaction_hash = signed_transaction.get_hash();
 
         self.database
-            .set_pending_transaction(&account_id, cost_of_gas, transaction_hash)
+            .set_pending_transaction(
+                &account_id,
+                gas_cost_estimate,
+                spend_within_transaction,
+                transaction_hash,
+            )
             .await?;
 
         let result = self

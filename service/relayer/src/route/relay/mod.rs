@@ -1,5 +1,6 @@
 use axum::{extract::State, Json};
 use near_primitives::views::TxExecutionStatus;
+use near_sdk::NearToken;
 use tracing::error;
 
 use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
@@ -84,6 +85,7 @@ pub async fn relay(
             .send_and_resolve_transaction(
                 account_id.clone(),
                 cost_of_gas,
+                storage_balance_bounds.min,
                 signed_transaction,
                 TxExecutionStatus::Final,
             )
@@ -139,7 +141,13 @@ pub async fn relay(
     let transaction_hash = signed_transaction.get_hash();
 
     let resolve_transaction = match app
-        .send_and_resolve_transaction(account_id, cost_of_gas, signed_transaction, wait_until)
+        .send_and_resolve_transaction(
+            account_id,
+            cost_of_gas,
+            NearToken::from_near(0),
+            signed_transaction,
+            wait_until,
+        )
         .await
     {
         Ok(future) => future,
