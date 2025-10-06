@@ -56,5 +56,5 @@
     "static": { "revenue.tmplr.near": 1 }
   },
   "protocol_account_id": "revenue.tmplr.near",
-  "liquidation_maximum_spread": "0.05"
+  "liquidation_maximum_spread": "0.08"
 }
