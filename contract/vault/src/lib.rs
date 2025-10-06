@@ -17,11 +17,12 @@ use near_sdk_contract_tools::{
     Owner, Rbac,
 };
 use near_sdk_contract_tools::{owner::Owner, rbac};
+use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
-        ext_self, MarketConfiguration, PendingValue, TimestampNs, VaultConfiguration, GAS_CB,
-        GAS_XFER, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        ext_self, Error, MarketConfiguration, OpState, PendingValue, TimestampNs,
+        VaultConfiguration, GAS_CB, GAS_XFER, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
     },
 };
 pub use wad::*;
@@ -33,33 +34,6 @@ pub mod wad;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json, borsh])]
-/// Operation state machine for asynchronous allocation, withdrawal, and payout flows.
-pub enum OpState {
-    Idle,
-    Allocating {
-        op_id: u64,
-        index: u32,
-        remaining: u128,
-    },
-    Withdrawing {
-        op_id: u64,
-        index: u32,
-        remaining: u128,
-        collected: u128,
-        receiver: AccountId,
-        owner: AccountId,
-        escrow_shares: u128,
-    },
-    Payout {
-        op_id: u64,
-        receiver: AccountId,
-        amount: u128,
-        owner: AccountId,
-        escrow_shares: u128,
-    },
-}
-
-#[near]
 #[derive(BorshStorageKey)]
 /// Internal storage keys used by persistent collections.
 pub enum StorageKey {
@@ -83,31 +57,6 @@ pub enum Role {
     /// Operational role for queue maintenance.
     /// May set the supply/withdraw queues while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
-}
-
-type ExpectedIdx = u32;
-type ActualIdx = u32;
-
-#[derive(Debug)]
-#[near(serializers = [json])]
-pub enum Error {
-    // Invariant: Index drift or stale op_id results in a graceful stop
-    IndexDrifted(ExpectedIdx, ActualIdx),
-    // Invariant: Attempting to work on a market that is missing from the withdraw queue
-    MissingMarket(u32),
-    NotWithdrawing(OpState),
-    NotAllocating(OpState),
-    MarketTransferFailed,
-    MissingSupplyPosition,
-    PositionReadFailed,
-    // Invariant: Insufficient liquidity across all markets to satisfy withdrawal
-    InsufficientLiquidity,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
 }
 
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]

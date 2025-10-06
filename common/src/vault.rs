@@ -16,6 +16,9 @@ pub const MIN_TIMELOCK_NS: u64 = 86_400_000_000_000; // 1 day
 pub const MAX_TIMELOCK_NS: u64 = 30 * 86_400_000_000_000; // 30 days
 pub const MAX_QUEUE_LEN: usize = 64;
 
+pub type ExpectedIdx = u32;
+pub type ActualIdx = u32;
+
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
 #[near(serializers = [json])]
@@ -35,12 +38,13 @@ pub struct MarketConfiguration {
     pub removable_at: TimestampNs,
 }
 
+#[derive(Clone)]
 #[near(serializers = [json, borsh])]
 pub struct VaultConfiguration {
-    pub owner_id: AccountId,
-    pub curator_id: AccountId,
-    pub guardian_id: AccountId,
-    pub underlying_token_id: FungibleAsset<BorrowAsset>,
+    pub owner: AccountId,
+    pub curator: AccountId,
+    pub guardian: AccountId,
+    pub underlying_token: FungibleAsset<BorrowAsset>,
     pub initial_timelock_sec: u32,
     pub fee_recipient: AccountId,
     pub skim_recipient: AccountId,
@@ -76,4 +80,54 @@ pub struct PendingValue<T> {
     pub value: T,
     // Timestamp when this pending value can be finalized
     pub valid_at: TimestampNs,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [json, borsh])]
+/// Operation state machine for asynchronous allocation, withdrawal, and payout flows.
+pub enum OpState {
+    Idle,
+    Allocating {
+        op_id: u64,
+        index: u32,
+        remaining: u128,
+    },
+    Withdrawing {
+        op_id: u64,
+        index: u32,
+        remaining: u128,
+        collected: u128,
+        receiver: AccountId,
+        owner: AccountId,
+        escrow_shares: u128,
+    },
+    Payout {
+        op_id: u64,
+        receiver: AccountId,
+        amount: u128,
+        owner: AccountId,
+        escrow_shares: u128,
+    },
+}
+
+#[derive(Debug)]
+#[near(serializers = [json])]
+pub enum Error {
+    // Invariant: Index drift or stale op_id results in a graceful stop
+    IndexDrifted(ExpectedIdx, ActualIdx),
+    // Invariant: Attempting to work on a market that is missing from the withdraw queue
+    MissingMarket(u32),
+    NotWithdrawing(OpState),
+    NotAllocating(OpState),
+    MarketTransferFailed,
+    MissingSupplyPosition,
+    PositionReadFailed,
+    // Invariant: Insufficient liquidity across all markets to satisfy withdrawal
+    InsufficientLiquidity,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
