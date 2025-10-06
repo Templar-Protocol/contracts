@@ -72,6 +72,8 @@ impl Nep245Receiver for Contract {
             DepositMsg::Supply => {
                 let refund = self.execute_supply(
                     sender_id.clone(),
+                    // FIXME: this is incorrect, we should abstract this into the underlying to
+                    // determine the kind.
                     token_id
                         .parse()
                         .unwrap_or_else(|_| env::panic_str("Invalid token ID")),
