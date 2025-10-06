@@ -136,7 +136,7 @@ SELECT
     pending_transaction_hash
 FROM
     account
-JOIN transaction ON account.pending_transaction_hash = transaction.transaction_hash
+    JOIN transaction ON account.pending_transaction_hash = transaction.transaction_hash
 WHERE
     pending_transaction_hash IS NOT NULL
 ORDER BY
@@ -197,19 +197,20 @@ LIMIT
         allowance_lock_inner: NearToken,
         transaction_hash: CryptoHash,
     ) -> Result<(), error::SetPendingTransactionError> {
-        // let allowance_lock_gas = Decimal::from(allowance_lock_gas.as_yoctonear());
-        // let allowance_lock_inner = Decimal::from(allowance_lock_inner.as_yoctonear());
-        // let allowance_lock_total = allowance_lock_gas + allowance_lock_inner;
-
         let mut tx = self.connection.begin().await?;
 
         let account = sqlx::query!(
             r#"
-            SELECT pending_transaction_hash, allowance, mark as "mark: AccountMark"
-            FROM account
-            WHERE account_id = $1
-            AND mark <> 'always_deny'
-            "#,
+SELECT
+    pending_transaction_hash,
+    allowance,
+    mark AS "mark: AccountMark"
+FROM
+    account
+WHERE
+    account_id = $1
+    AND mark <> 'always_deny'
+"#,
             account_id.to_string(),
         )
         .fetch_optional(&mut *tx)
@@ -237,16 +238,34 @@ LIMIT
 
         sqlx::query!(
             r#"
-            WITH inserted AS (
-                INSERT INTO "transaction" (transaction_hash, account_id, status, allowance_spent_gas, allowance_spent_inner)
-                VALUES ($1, $2, 'pending'::transaction_status, $3, $4)
-                RETURNING transaction_hash
-            )
-            UPDATE account
-                SET pending_transaction_hash = (SELECT transaction_hash FROM inserted)
-            WHERE account_id = $2
-                AND pending_transaction_hash IS NULL
-            RETURNING pending_transaction_hash
+WITH inserted AS (
+    INSERT INTO
+        "transaction" (
+            transaction_hash,
+            account_id,
+            "status",
+            allowance_spent_gas,
+            allowance_spent_inner
+        )
+    VALUES
+        ($1, $2, 'pending'::transaction_status, $3, $4)
+    RETURNING
+        transaction_hash
+)
+UPDATE
+    account
+SET
+    pending_transaction_hash = (
+        SELECT
+            transaction_hash
+        FROM
+            inserted
+    )
+WHERE
+    account_id = $2
+    AND pending_transaction_hash IS NULL
+RETURNING
+    pending_transaction_hash
 "#,
             transaction_hash.to_string(),
             account_id.as_str(),
@@ -295,7 +314,8 @@ LIMIT
         let transaction_record = sqlx::query!(
             r#"
 SELECT
-    allowance_spent_inner, status as "status: TransactionStatus"
+    allowance_spent_inner,
+    "status" AS "status: TransactionStatus"
 FROM
     transaction
 WHERE
@@ -380,12 +400,14 @@ WHERE
 
         sqlx::query!(
             r#"
-            UPDATE "transaction"
-            SET
-                status = $1,
-                allowance_spent_gas = $2,
-                allowance_spent_inner = $3
-            WHERE transaction_hash = $4
+UPDATE
+    "transaction"
+SET
+    "status" = $1,
+    allowance_spent_gas = $2,
+    allowance_spent_inner = $3
+WHERE
+    transaction_hash = $4
 "#,
             status as TransactionStatus,
             Decimal::from(allowance_spent_gas.as_yoctonear()),
@@ -432,15 +454,15 @@ VALUES
         account_id: &AccountIdRef,
     ) -> Result<Option<NearToken>, sqlx::Error> {
         let result = sqlx::query!(
-            "
+            r#"
 SELECT
     allowance,
-    mark AS \"mark: AccountMark\"
+    mark AS "mark: AccountMark"
 FROM
     account
 WHERE
     account_id = $1
-",
+"#,
             account_id.as_str(),
         )
         .fetch_optional(&self.connection)
