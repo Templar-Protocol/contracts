@@ -49,11 +49,8 @@
     "behavior": "Fixed"
   },
   "yield_weights": {
-    "supply": 1,
-    "static": {
-      "revenue.tmplr.near": 1,
-      "rewards.tmplr.near": 1
-    }
+    "supply": 4,
+    "static": { "revenue.tmplr.near": 1 }
   },
   "protocol_account_id": "revenue.tmplr.near",
   "liquidation_maximum_spread": "0.1"
