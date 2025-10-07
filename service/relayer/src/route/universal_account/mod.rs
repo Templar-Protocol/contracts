@@ -2,6 +2,7 @@ use sha2::{Digest, Sha256};
 
 pub mod create;
 pub mod pow;
+pub mod relay;
 
 pub const ACCOUNT_SLUG_LEN: usize = 12;
 

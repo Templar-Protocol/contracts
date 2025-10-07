@@ -1,4 +1,5 @@
 use std::{
+    borrow::Borrow,
     collections::{hash_map::Entry, HashMap},
     future::Future,
     sync::Arc,
@@ -8,11 +9,11 @@ use std::{
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
 use near_primitives::{
-    action::{delegate::SignedDelegateAction, Action},
+    action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
     transaction::SignedTransaction,
     views::{FinalExecutionOutcomeView, TxExecutionStatus},
 };
-use near_sdk::{serde_json, AccountId, NearToken};
+use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
 use templar_common::market::DepositMsg;
 use tokio::{
     sync::{watch, RwLock},
@@ -189,6 +190,71 @@ impl App {
         handle.allowed_contract_data = allowed_contracts;
     }
 
+    fn actions_are_allowed<'a>(
+        &self,
+        receiver_id: &AccountIdRef,
+        accounts: &AccountData,
+        calls: impl IntoIterator<Item = &'a FunctionCallAction>,
+    ) -> Result<(), PreconditionError> {
+        if accounts.market_data.contains_key(receiver_id) {
+            // Calling a market contract directly.
+            for (index, call) in calls.into_iter().enumerate() {
+                if !self.args.relay.allowed_methods.contains(&call.method_name) {
+                    return Err(PreconditionError::UnknownFunctionName {
+                        name: call.method_name.clone(),
+                        index,
+                    });
+                }
+            }
+        } else {
+            // Token contract transfer call to market.
+            for (index, call) in calls.into_iter().enumerate() {
+                let transfer = AssetTransfer::parse(call, index, receiver_id.to_owned())?;
+                let market_id = transfer.token_receiver_id();
+
+                let Some(market_account_ids) = accounts.market_data.get(market_id) else {
+                    return Err(PreconditionError::UnknownTransferReceiverId {
+                        account_id: market_id.to_owned(),
+                        index,
+                    });
+                };
+
+                let msg = transfer.args.msg();
+                let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
+                    return Err(PreconditionError::MsgDeserializationFailure {
+                        index,
+                        msg: msg.to_string(),
+                    });
+                };
+
+                #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
+                if transfer.asset() == market_account_ids.borrow_asset {
+                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
+                        return Err(PreconditionError::InvalidMsgForAsset {
+                            index,
+                            expected: "\"Supply\" or \"Repay\"".to_string(),
+                            actual: serde_json::to_string(&msg).unwrap(),
+                        });
+                    }
+                } else if transfer.asset() == market_account_ids.collateral_asset {
+                    if !matches!(msg, DepositMsg::Collateralize) {
+                        return Err(PreconditionError::InvalidMsgForAsset {
+                            index,
+                            expected: "\"Collateralize\"".to_string(),
+                            actual: serde_json::to_string(&msg).unwrap(),
+                        });
+                    }
+                } else {
+                    return Err(PreconditionError::UnknownTransactionReceiverId {
+                        account_id: receiver_id.to_owned(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Check and calculate gas for a signed delegate action.
     ///
     /// # Errors
@@ -230,61 +296,7 @@ impl App {
             })
             .map_err(|(index, action)| PreconditionError::UnsupportedAction { index, action })?;
 
-        if accounts.market_data.contains_key(receiver_id) {
-            // Calling a market contract directly.
-            for (index, call) in calls.iter().enumerate() {
-                if !self.args.relay.allowed_methods.contains(&call.method_name) {
-                    return Err(PreconditionError::UnknownFunctionName {
-                        name: call.method_name.clone(),
-                        index,
-                    });
-                }
-            }
-        } else {
-            // Token contract transfer call to market.
-            for (index, call) in calls.iter().enumerate() {
-                let transfer = AssetTransfer::parse(call, index, receiver_id.clone())?;
-                let market_id = transfer.token_receiver_id();
-
-                let Some(market_account_ids) = accounts.market_data.get(market_id) else {
-                    return Err(PreconditionError::UnknownTransferReceiverId {
-                        account_id: market_id.to_owned(),
-                        index,
-                    });
-                };
-
-                let msg = transfer.args.msg();
-                let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
-                    return Err(PreconditionError::MsgDeserializationFailure {
-                        index,
-                        msg: msg.to_string(),
-                    });
-                };
-
-                #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
-                if transfer.asset() == market_account_ids.borrow_asset {
-                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
-                        return Err(PreconditionError::InvalidMsgForAsset {
-                            index,
-                            expected: "\"Supply\" or \"Repay\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
-                        });
-                    }
-                } else if transfer.asset() == market_account_ids.collateral_asset {
-                    if !matches!(msg, DepositMsg::Collateralize) {
-                        return Err(PreconditionError::InvalidMsgForAsset {
-                            index,
-                            expected: "\"Collateralize\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
-                        });
-                    }
-                } else {
-                    return Err(PreconditionError::UnknownTransactionReceiverId {
-                        account_id: receiver_id.clone(),
-                    });
-                }
-            }
-        }
+        self.actions_are_allowed(receiver_id, &accounts, calls.iter().map(Borrow::borrow))?;
 
         let gas_total = calls.iter().map(|call| call.gas).sum();
 
