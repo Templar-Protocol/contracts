@@ -6,6 +6,8 @@ ADD
 ADD
     COLUMN pending_transaction_issued_at timestamptz DEFAULT NULL;
 
+DROP INDEX uq__max_one_pending_tx_per_account;
+
 ALTER TABLE
     "transaction"
 ADD
