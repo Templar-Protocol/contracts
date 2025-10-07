@@ -123,6 +123,7 @@ pub async fn create(
     // Check that account does not exist already
 
     let account_slug = public_key_to_account_id_slug(&payload.key.0.to_string());
+    tracing::info!("Account slug: {account_slug}");
 
     let registry_id = &app.args.ua.registry_id;
     let account_id = match AccountId::from_str(&format!("{account_slug}.{registry_id}")) {
@@ -183,6 +184,17 @@ pub async fn create(
             error: "Gas cost estimation failure".to_string(),
         };
     };
+
+    if let Err(e) = app
+        .database
+        .create_account(&account_id, app.args.relay.starting_allowance_yocto)
+        .await
+    {
+        tracing::error!("Failed to create account in database: {e}");
+        return SimpleResponse::Failure {
+            error: "Failed to create account in database".to_string(),
+        };
+    }
 
     let transaction_hash = signed_transaction.get_hash();
 

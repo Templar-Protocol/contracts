@@ -33,7 +33,7 @@ use templar_common::market::MarketConfiguration;
 use crate::{cache::Cache, MarketData};
 
 pub const STORAGE_DEPOSIT_GAS: u64 = Gas::from_tgas(5).as_gas();
-pub const DEPLOY_GAS: u64 = Gas::from_tgas(10).as_gas();
+pub const DEPLOY_GAS: u64 = Gas::from_tgas(50).as_gas();
 
 #[derive(Debug, Clone)]
 pub struct Near {
@@ -57,6 +57,13 @@ pub enum ViewError {
     Rpc(#[from] JsonRpcError<RpcQueryError>),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchNonce {
+    pub nonce: u64,
+    pub block_height: u64,
+    pub block_hash: CryptoHash,
 }
 
 #[allow(clippy::unwrap_used)]
@@ -141,7 +148,7 @@ impl Near {
         &self,
         account_id: AccountId,
         public_key: PublicKey,
-    ) -> Result<(u64, CryptoHash), JsonRpcError<RpcQueryError>> {
+    ) -> Result<FetchNonce, JsonRpcError<RpcQueryError>> {
         let response = self
             .client
             .call(methods::query::RpcQueryRequest {
@@ -157,7 +164,11 @@ impl Near {
             unimplemented!("Invalid response kind");
         };
 
-        Ok((access_key.nonce, response.block_hash))
+        Ok(FetchNonce {
+            nonce: access_key.nonce,
+            block_hash: response.block_hash,
+            block_height: response.block_height,
+        })
     }
 
     /// # Errors

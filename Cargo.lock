@@ -2663,6 +2663,7 @@ dependencies = [
  "libc",
  "near-abi-client",
  "near-account-id",
+ "near-chain-configs",
  "near-crypto",
  "near-gas",
  "near-jsonrpc-client",
@@ -4426,10 +4427,13 @@ dependencies = [
  "near-primitives",
  "near-sdk",
  "near-sdk-contract-tools",
+ "near-workspaces",
+ "p256",
  "sha2",
  "sqlx",
  "templar-common",
  "templar-universal-account",
+ "test-utils",
  "thiserror 2.0.11",
  "tokio",
  "tracing",
@@ -4449,7 +4453,7 @@ dependencies = [
 
 [[package]]
 name = "templar-universal-account-contract"
-version = "1.1.0"
+version = "0.1.0"
 dependencies = [
  "getrandom 0.2.15",
  "near-sdk",

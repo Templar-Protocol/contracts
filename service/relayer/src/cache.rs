@@ -92,9 +92,9 @@ async fn start(
     let update_gas = || async { near.fetch_gas_price().await };
     let update_nonce = |(account_id, public_key)| {
         || async {
-            let (nonce, hash) = near.fetch_nonce(account_id, public_key).await?;
-            *block_hash.write().await = hash;
-            Ok::<_, JsonRpcError<RpcQueryError>>(nonce + 1)
+            let fetch_nonce = near.fetch_nonce(account_id, public_key).await?;
+            *block_hash.write().await = fetch_nonce.block_hash;
+            Ok::<_, JsonRpcError<RpcQueryError>>(fetch_nonce.nonce + 1)
         }
     };
 

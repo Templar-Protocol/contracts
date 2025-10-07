@@ -6,7 +6,7 @@ use tracing::error;
 use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 
 mod message;
-use message::{RelayRequest, RelayResponse};
+pub use message::{RelayRequest, RelayResponse};
 
 #[allow(clippy::too_many_lines)]
 pub async fn relay(

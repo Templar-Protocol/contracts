@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::time::Duration;
 
 use clap::{Args, Parser};
@@ -20,6 +21,8 @@ pub struct Configuration {
     #[clap(flatten)]
     pub relay: Relay,
     #[clap(flatten)]
+    pub ua: UniversalAccount,
+    #[clap(flatten)]
     pub cache: Cache,
     /// Broom batch size.
     #[arg(long, env = "BROOM_BATCH_SIZE", default_value_t = 16)]
@@ -27,12 +30,7 @@ pub struct Configuration {
     /// Broom interval in seconds.
     #[arg(long, env = "BROOM_INTERVAL_SECS", default_value_t = 300)]
     pub broom_interval_secs: u64,
-
-    #[clap(flatten)]
-    pub ua: UniversalAccount,
 }
-
-use std::str::FromStr;
 
 fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
     Ok(Duration::from_secs(u64::from_str(s)?))
@@ -42,6 +40,7 @@ fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
 pub struct Cache {
     /// Refresh the cached gas price after X seconds.
     #[arg(
+        id = "cache-gase-price-secs",
         long = "cache-gase-price-secs",
         env = "CACHE_GAS_PRICE_SECS",
         value_parser = duration_from_secs,
@@ -50,6 +49,7 @@ pub struct Cache {
     pub gas_price_refresh: Duration,
     /// Refresh a cached nonce after X seconds.
     #[arg(
+        id = "cache-nonce-secs",
         long = "cache-nonce-secs",
         env = "CACHE_NONCE_SECS",
         value_parser = duration_from_secs,
@@ -58,6 +58,7 @@ pub struct Cache {
     pub nonce_refresh: Duration,
     /// Refresh the cached protocol configuration after X seconds.
     #[arg(
+        id = "cache-protocol-config-secs",
         long = "cache-protocol-config-secs",
         env = "CACHE_PROTOCOL_CONFIG_SECS",
         value_parser = duration_from_secs,
@@ -70,20 +71,35 @@ pub struct Cache {
 #[group(required = true, multiple = true)]
 pub struct Monitor {
     /// Comma-separated list of registries to query for markets to monitor.
-    #[arg(long, env = "REGISTRY", value_delimiter = ',')]
+    #[arg(
+        id = "monitor-registry",
+        long = "monitor-registry",
+        env = "MONITOR_REGISTRY",
+        value_delimiter = ','
+    )]
     pub registry: Vec<AccountId>,
     /// Comma-separated list of markets to monitor.
-    #[arg(long, env = "MARKET", value_delimiter = ',')]
+    #[arg(
+        id = "monitor-market",
+        long = "monitor-market",
+        env = "MONITOR_MARKET",
+        value_delimiter = ','
+    )]
     pub market: Vec<AccountId>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct Relay {
     /// Account ID of the NEAR account that the relayer controls.
-    #[arg(long = "relay-account-id", env = "RELAY_ACCOUNT_ID")]
+    #[arg(
+        id = "relay-account-id",
+        long = "relay-account-id",
+        env = "RELAY_ACCOUNT_ID"
+    )]
     pub account_id: AccountId,
     /// Comma-separated list of private keys to use to sign transactions for the account that the relayer controls.
     #[arg(
+        id = "relay-secret-key",
         long = "relay-secret-key",
         env = "RELAY_SECRET_KEY",
         value_delimiter = ','
@@ -100,10 +116,15 @@ pub struct Relay {
 #[derive(Args, Debug, Clone)]
 pub struct UniversalAccount {
     /// Account ID of the NEAR account that the relayer controls for universal account creation.
-    #[arg(long = "ua-account-id", env = "UA_ACCOUNT_ID")]
+    #[arg(id = "ua-account-id", long = "ua-account-id", env = "UA_ACCOUNT_ID")]
     pub account_id: AccountId,
     /// Comma-separated list of private keys to use to sign universal account creation transactions.
-    #[arg(long = "ua-secret-key", env = "UA_SECRET_KEY", value_delimiter = ',')]
+    #[arg(
+        id = "ua-secret-key",
+        long = "ua-secret-key",
+        env = "UA_SECRET_KEY",
+        value_delimiter = ','
+    )]
     pub secret_key: Vec<SecretKey>,
     /// How difficult should the proof-of-work for universal account creation be?
     ///
@@ -125,7 +146,7 @@ pub struct UniversalAccount {
     )]
     pub blockref_max_age: Duration,
     /// Account ID of the registry from which to deploy universal accounts.
-    #[arg(long = "ua-registry-id", env = "UA_REGISTRY_ID")]
+    #[arg(id = "ua-registry-id", long = "ua-registry-id", env = "UA_REGISTRY_ID")]
     pub registry_id: AccountId,
     /// Version key of the universal account contract to deploy from the registry.
     #[arg(long = "ua-version-key", env = "UA_VERSION_KEY")]
