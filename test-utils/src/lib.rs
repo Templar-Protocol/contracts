@@ -87,7 +87,7 @@ macro_rules! setup_test {
         $crate::accounts!($w, $($n),*);
         let s = $crate::setup_everything(&$w, $f, |_| {}).await;
         ::tokio::join!(
-            $(s.c.init_account(&$n)),*
+            $(s.vault.init_account(&$n)),*
         );
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
@@ -95,7 +95,7 @@ macro_rules! setup_test {
         $crate::accounts!($w, $($n),*);
         let s = $crate::setup_everything(&$w, $f, $v).await;
         ::tokio::join!(
-            $(s.c.init_account(&$n)),*
+            $(s.vault.init_account(&$n)),*
         );
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
@@ -111,7 +111,7 @@ macro_rules! setup_test {
         $crate::accounts!(worker, $($n),*);
         let s = $crate::setup_everything(&worker, $f, |_| {}).await;
         ::tokio::join!(
-            $(s.c.init_account(&$n)),*
+            $(s.vault.init_account(&$n)),*
         );
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
@@ -120,7 +120,7 @@ macro_rules! setup_test {
         $crate::accounts!(worker, $($n),*);
         let s = $crate::setup_everything(&worker, $f, $v).await;
         ::tokio::join!(
-            $(s.c.init_account(&$n)),*
+            $(s.vault.init_account(&$n)),*
         );
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
@@ -183,7 +183,7 @@ pub fn vault_configuration(
         curator: curator_id,
         guardian: guardian_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
-        initial_timelock_sec: 0,
+        initial_timelock_sec: (templar_common::vault::MAX_TIMELOCK_NS / 1_000_000_000) as u32,
         fee_recipient: fee_recipient_id,
         skim_recipient: skim_recipient_id,
         name: "Vault".to_string(),
@@ -313,8 +313,8 @@ pub async fn setup_everything(
         c.init_account(&protocol_yield_user),
         c.init_account(&insurance_yield_user),
         v.storage_deposits(v.vault.contract().as_account()),
-        v.init_account(&skim_recipient),
-        v.init_account(&fee_recipient)
+        v.storage_deposits(&skim_recipient),
+        v.storage_deposits(&fee_recipient),
     );
 
     SetupEverything {

@@ -59,6 +59,7 @@ impl VaultController {
         #[view] pub fn get_fee_recipient() -> AccountId;
         #[view] pub fn get_last_total_assets() -> U128;
         #[view] pub fn get_total_assets() -> U128;
+        #[view] pub fn get_max_deposit() -> U128;
         #[view] pub fn get_total_supply() -> U128;
         #[view] pub fn get_idle_balance() -> U128;
         #[view] pub fn get_op_state() -> OpState;
@@ -66,6 +67,12 @@ impl VaultController {
         #[view] pub fn list_withdraw_queue(offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
         #[view] pub fn get_market_supply(market: &AccountId) -> U128;
         #[view] pub fn get_next_op_id() -> u64;
+        #[view] pub fn convert_to_shares(assets: U128) -> U128;
+        #[view] pub fn convert_to_assets(shares: U128) -> U128;
+        #[view] pub fn preview_mint(shares: U128) -> U128;
+        #[view] pub fn preview_deposit(assets: U128) -> U128;
+        #[view] pub fn preview_withdraw(assets: U128) -> U128;
+        #[view] pub fn preview_redeem(shares: U128) -> U128;
 
         /* -------- Calls (externals) -------- */
         // Owner/guardian-gated: mints fee shares when performance is positive.
@@ -79,6 +86,15 @@ impl VaultController {
         // User withdrawal path; expects escrowed shares already held by the contract.
         #[call(exec, tgas(300))]
         pub fn withdraw["start_withdraw"](amount: U128, receiver: AccountId, owner: AccountId, escrow_shares: U128);
+
+        // User redemption path; expects escrowed shares already held by the contract.
+        #[call(exec, tgas(300))]
+        pub fn redeem["start_redeem"](shares: U128, receiver: AccountId, owner: AccountId, escrow_shares: U128);
+
+        #[call(exec, tgas(50))]
+        pub fn skim["skim"](token: AccountId);
+
+        // TODO: caps?
 
         /* -------- Promise callbacks (must be #[private] on-chain) -------- */
         // After attempting to supply into a market during allocation.
@@ -161,9 +177,8 @@ impl UnifiedVaultController {
         let bounds = self.vault.storage_balance_bounds().await;
 
         self.vault.storage_deposit(account, bounds.min).await;
-        self.market
-            .storage_deposit(account, NearToken::from_near(1))
-            .await;
+        self.market.storage_deposits(account).await;
+        // FIXME: we should set the queue for this too!
     }
 
     pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
