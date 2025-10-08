@@ -30,8 +30,19 @@ impl Contract {
             _ => return self.stop_and_exit(Some(&Error::NotAllocating(self.op_state.clone()))),
         }
 
-        let Some(market) = self.supply_queue.get(market_index) else {
-            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+        // Resolve market by plan (if present) or supply_queue
+        let market: AccountId = if let Some(plan) = &self.plan {
+            if let Some((m, _)) = plan.get(market_index as usize) {
+                m.clone()
+            } else {
+                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+            }
+        } else {
+            if let Some(m) = self.supply_queue.get(market_index) {
+                m.clone()
+            } else {
+                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+            }
         };
 
         // If the transfer failed, do not attempt to reconcile; stop and leave remaining untouched
@@ -43,7 +54,7 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::MarketTransferFailed));
         }
 
-        let before = self.market_supply.get(market).unwrap_or(&0);
+        let before = self.market_supply.get(&market).unwrap_or(&0);
 
         let fetch_pos = ext_market::ext(market.clone())
             .with_static_gas(Self::GET_SUPPLY_POSITION_GAS)
@@ -89,8 +100,19 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
         }
 
-        let Some(market) = self.supply_queue.get(market_index) else {
-            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+        // Resolve market by plan (if present) or supply_queue
+        let market: AccountId = if let Some(plan) = &self.plan {
+            if let Some((m, _)) = plan.get(market_index as usize) {
+                m.clone()
+            } else {
+                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+            }
+        } else {
+            if let Some(m) = self.supply_queue.get(market_index) {
+                m.clone()
+            } else {
+                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+            }
         };
 
         let (new_principal, remaining_next) = match position {
@@ -118,7 +140,7 @@ impl Contract {
 
         self.market_supply.insert(market.clone(), new_principal);
         // Invariant: withdraw_queue gains any market with new_principal > 0
-        if new_principal > 0 && !self.withdraw_queue.iter().any(|m| m == market) {
+        if new_principal > 0 && !self.withdraw_queue.iter().any(|m| m == &market) {
             self.withdraw_queue.push(market.clone());
         }
 

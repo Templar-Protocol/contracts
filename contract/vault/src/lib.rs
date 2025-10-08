@@ -227,6 +227,7 @@ impl Contract {
             name: self.get_metadata().name,
             symbol: self.get_metadata().symbol,
             decimals: self.get_metadata().decimals,
+            mode: self.mode.clone(),
         }
     }
 
@@ -887,11 +888,12 @@ impl Contract {
         Self::assert_allocator();
         self.ensure_idle();
 
+        // If no weights provided, just push the requested or all idle via queue order.
         if weights.is_empty() {
             return self.start_allocation(amount.map(|x| x.0).unwrap_or(self.idle_balance));
         }
 
-        // Validate unique markets
+        // Validate unique markets and accumulate weight sum
         let mut seen = std::collections::HashSet::new();
         let mut sum_w: u128 = 0;
 
@@ -905,7 +907,7 @@ impl Contract {
             env::panic_str("Sum of weights is zero");
         }
 
-        // Compute total amount to allocate: clamp to idle and available room
+        // Clamp total allocation by idle balance and aggregate room
         let requested: u128 = amount.map(|x| x.0).unwrap_or(self.idle_balance);
         let max_room = self.get_max_deposit().0;
         let total = requested.min(self.idle_balance).min(max_room);
@@ -913,39 +915,14 @@ impl Contract {
             env::panic_str("No funds to allocate");
         }
 
-        // Build planned allocations, applying cap room
-        let mut plan: AllocationPlan = Vec::with_capacity(weights.len());
-        let mut total_planned: u128 = 0;
-
-        for (market, w) in weights {
-            let weight_u128 = u128::from(w);
-
-            // Room = cap - current
-            let cap = self.config.get(&market).map_or(0u128, |c| c.cap);
-            if cap == 0 {
-                plan.push((market, 0));
-                continue;
-            }
-            let cur = *self.market_supply.get(&market).unwrap_or(&0u128);
-            let room = cap.saturating_sub(cur);
-            if room == 0 {
-                plan.push((market, 0));
-                continue;
-            }
-
-            let alloc = crate::wad::mul_div_floor(total, weight_u128, sum_w);
-            let planned = alloc.min(room);
-
-            total_planned = total_planned.saturating_add(planned);
-            plan.push((market, planned));
-        }
-
-        if total_planned == 0 {
-            env::panic_str("No funds to allocate after cap");
-        }
+        // Store an ephemeral plan of (market, weight) to drive weighted allocation.
+        let plan: AllocationPlan = weights
+            .into_iter()
+            .map(|(m, w)| (m, u128::from(w)))
+            .collect();
 
         self.plan = Some(plan);
-        self.start_allocation(total_planned)
+        self.start_allocation(total)
     }
 
     fn start_allocation(&mut self, amount: u128) -> PromiseOrValue<()> {
@@ -977,16 +954,29 @@ impl Contract {
             return self.stop_and_exit::<Error>(None);
         }
 
-        // If a per-op allocation plan exists, use it; otherwise, fall back to supply_queue order.
+        // If a per-op allocation plan exists, use it as weighted priority; otherwise, fall back to supply_queue order.
         if let Some(plan) = &self.plan {
             let idx = index as usize;
-            if let Some((market, planned_amount)) = plan.get(idx) {
+            if let Some((market, weight)) = plan.get(idx) {
                 let market_id = market.clone();
+
+                // Sum weights of remaining markets in the plan (including current)
+                let mut sum_w: u128 = 0;
+                for (_, w) in plan.iter().skip(idx) {
+                    sum_w = sum_w.saturating_add(*w);
+                }
+
+                // Compute weighted target for this step. For the last market (or zero sum), take all remaining.
+                let target = if sum_w == 0 || idx + 1 == plan.len() {
+                    remaining
+                } else {
+                    crate::wad::mul_div_floor(remaining, *weight, sum_w)
+                };
 
                 let cap = self.config.get(&market_id).map_or(0, |c| c.cap);
                 let cur = *self.market_supply.get(&market_id).unwrap_or(&0);
                 let room = cap.saturating_sub(cur);
-                let to_supply = room.min(remaining).min(*planned_amount);
+                let to_supply = room.min(target);
 
                 if to_supply == 0 {
                     self.op_state = OpState::Allocating {
