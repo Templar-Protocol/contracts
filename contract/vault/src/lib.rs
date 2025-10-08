@@ -6,7 +6,8 @@ use near_sdk::{
     json_types::U128,
     near, serde_json,
     store::{IterableMap, LookupMap, Vector},
-    AccountId, BorshStorageKey, IntoStorageKey, NearToken, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, BorshStorageKey, Gas, IntoStorageKey, NearToken, PanicOnDefault, Promise,
+    PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
@@ -1253,9 +1254,8 @@ impl Contract {
             }
             // Nothing collected; refund escrowed shares
             let self_id = env::current_account_id();
-            self.withdraw_unchecked(&self_id, escrow_shares)
+            self.transfer_unchecked(&self_id, &owner, escrow_shares)
                 .expect("Failed to release escrowed shares");
-            self.deposit_unchecked(&owner, escrow_shares);
             return self.stop_and_exit::<Error>(None);
         }
         if let Some(market) = self.withdraw_queue.get(index) {
@@ -1275,9 +1275,8 @@ impl Contract {
             }
             PromiseOrValue::Promise(
                 templar_common::market::ext_market::ext(market.clone())
-                    .with_attached_deposit(NearToken::from_yoctonear(1))
                     // FIXME: incorrect
-                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                    .with_static_gas(Gas::from_tgas(10))
                     .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(*to_request)))
                     .then(
                         ext_self::ext(env::current_account_id())
