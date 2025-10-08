@@ -44,6 +44,7 @@ pub enum StorageKey {
     SupplyQueue,
     WithdrawQueue,
     MarketSupply,
+    PendingWithdrawals,
 }
 
 #[derive(BorshStorageKey)]
@@ -59,6 +60,16 @@ pub enum Role {
     /// Operational role for queue maintenance.
     /// May set the supply/withdraw queues while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
+}
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json, borsh])]
+pub struct PendingWithdrawal {
+    pub owner: AccountId,
+    pub receiver: AccountId,
+    pub escrow_shares: u128,
+    pub expected_assets: u128,
+    pub requested_at: u64,
 }
 
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
@@ -112,6 +123,11 @@ pub struct Contract {
     // Storage usage
     storage_usage_supply: u64,
     storage_usage_role: u64,
+
+    // Pending withdrawals queue (vault-level, FIFO by id)
+    pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
+    next_withdraw_id: u64,
+    next_withdraw_to_execute: u64,
 }
 
 #[near]
@@ -193,6 +209,11 @@ impl Contract {
             storage_usage_role,
             mode,
             plan: None,
+
+            // Pending withdrawals init
+            pending_withdrawals: IterableMap::new(key!(PendingWithdrawals)),
+            next_withdraw_id: 0,
+            next_withdraw_to_execute: 0,
         };
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals));
         Owner::init(&mut contract, &owner);
@@ -701,10 +722,37 @@ impl Contract {
             estimated_assets: U128(assets),
         }
         .emit();
-        self.start_withdraw(assets, receiver.clone(), owner, shares)
+
+        self.enqueue_pending_withdrawal(&owner, &receiver, shares, assets);
+        PromiseOrValue::Value(())
     }
 
-    /* ----- Skim (sends entire balance of `token` to `skim_recipient`) ----- */
+    /// Executes the next pending withdrawal request, if any, using the existing withdraw pipeline.
+    /// This defers creating market-side withdrawal requests until explicitly invoked.
+    pub fn execute_next_withdrawal_request(&mut self) -> PromiseOrValue<()> {
+        self.ensure_idle();
+        Self::assert_allocator();
+
+        // Find the next present pending withdrawal by id
+        let mut id = self.next_withdraw_to_execute;
+        while id < self.next_withdraw_id {
+            if let Some(pending) = self.pending_withdrawals.remove(&id) {
+                // Advance the head pointer and start processing
+                self.next_withdraw_to_execute = id.saturating_add(1);
+                return self.start_withdraw(
+                    pending.expected_assets,
+                    pending.receiver,
+                    pending.owner,
+                    pending.escrow_shares,
+                );
+            }
+            id = id.saturating_add(1);
+            self.next_withdraw_to_execute = id;
+        }
+
+        PromiseOrValue::Value(())
+    }
+
     /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
     pub fn skim(&mut self, token: AccountId) -> Promise {
         Self::require_owner();
@@ -728,7 +776,7 @@ impl Contract {
 
         // If no weights provided, use queue order; clamp total and emit request event.
         if weights.is_empty() {
-            let requested: u128 = amount.map(|x| x.0).unwrap_or(self.idle_balance);
+            let requested: u128 = amount.map_or(self.idle_balance, |x| x.0);
             let max_room = self.get_max_deposit().0;
             let total = requested.min(self.idle_balance).min(max_room);
             if total == 0 {
@@ -758,7 +806,7 @@ impl Contract {
         }
 
         // Clamp total allocation by idle balance and aggregate room
-        let requested: u128 = amount.map(|x| x.0).unwrap_or(self.idle_balance);
+        let requested: u128 = amount.map_or(self.idle_balance, |x| x.0);
         let max_room = self.get_max_deposit().0;
         let total = requested.min(self.idle_balance).min(max_room);
         if total == 0 {
@@ -932,6 +980,40 @@ impl Contract {
 
 /* ----- Private Helpers ----- */
 impl Contract {
+    /// Enqueue a vault-level pending withdrawal request (escrow already taken).
+    fn enqueue_pending_withdrawal(
+        &mut self,
+        owner: &AccountId,
+        receiver: &AccountId,
+        escrow_shares: u128,
+        expected_assets: u128,
+    ) {
+        let id = self.next_withdraw_id;
+        self.next_withdraw_id = self.next_withdraw_id.saturating_add(1);
+        let requested_at = env::block_timestamp();
+
+        self.pending_withdrawals.insert(
+            id,
+            PendingWithdrawal {
+                owner: owner.clone(),
+                receiver: receiver.clone(),
+                escrow_shares,
+                expected_assets,
+                requested_at,
+            },
+        );
+
+        Event::WithdrawalQueued {
+            id,
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: U128(escrow_shares),
+            expected_assets: U128(expected_assets),
+            requested_at,
+        }
+        .emit();
+    }
+
     /// Computes fee-aware effective totals for conversions, mimicking MetaMorpho:
     /// - Include fee shares that would be minted if fees accrued now.
     /// - Apply virtual offsets: +virtual_shares to supply and +virtual_assets to assets.
@@ -1212,51 +1294,46 @@ impl Contract {
     }
 
     fn step_withdraw(&mut self) -> PromiseOrValue<()> {
-        let (op_id, index, remaining, receiver, collected, owner, escrow_shares) =
-            match &self.op_state {
-                OpState::Withdrawing {
-                    op_id,
-                    index,
-                    remaining,
-                    receiver,
-                    collected,
-                    owner,
-                    escrow_shares,
-                } => (
-                    *op_id,
-                    *index,
-                    *remaining,
-                    receiver.clone(),
-                    *collected,
-                    owner.clone(),
-                    *escrow_shares,
-                ),
-                _ => return self.stop_and_exit(Some("Not withdrawing")),
-            };
+        let (op_id, index, remaining, receiver, collected, owner, escrow_shares) = match &self
+            .op_state
+        {
+            OpState::Withdrawing {
+                op_id,
+                index,
+                remaining,
+                receiver,
+                collected,
+                owner,
+                escrow_shares,
+            } => (
+                *op_id,
+                *index,
+                *remaining,
+                receiver.clone(),
+                *collected,
+                owner.clone(),
+                *escrow_shares,
+            ),
+            _ => return self.stop_and_exit(Some(&Error::NotWithdrawing(self.op_state.clone()))),
+        };
         if remaining == 0 {
-            if collected > 0 {
-                self.op_state = OpState::Payout {
-                    op_id,
-                    receiver: receiver.clone(),
-                    amount: collected,
-                    owner: owner.clone(),
-                    escrow_shares,
-                };
-                return PromiseOrValue::Promise(
-                    self.underlying_asset
-                        .transfer(receiver.clone(), U128(collected).into())
-                        .then(
-                            ext_self::ext(env::current_account_id())
-                                .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
-                                .after_send_to_user(op_id, receiver, U128(collected)),
-                        ),
-                );
-            }
-            // Nothing collected; refund escrowed shares
-            let self_id = env::current_account_id();
-            self.transfer_unchecked(&self_id, &owner, escrow_shares)
-                .expect("Failed to release escrowed shares");
-            return self.stop_and_exit::<Error>(None);
+            self.op_state = OpState::Payout {
+                op_id,
+                receiver: receiver.clone(),
+                amount: collected,
+                owner: owner.clone(),
+                escrow_shares,
+                burn_shares: escrow_shares,
+            };
+            return PromiseOrValue::Promise(
+                self.underlying_asset
+                    .transfer(receiver.clone(), U128(collected).into())
+                    .then(
+                        ext_self::ext(env::current_account_id())
+                            .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
+                            .after_send_to_user(op_id, receiver, U128(collected)),
+                    ),
+            );
         }
         if let Some(market) = self.withdraw_queue.get(index) {
             let have = self.market_supply.get(market).unwrap_or(&0);
@@ -1285,11 +1362,35 @@ impl Contract {
                     ),
             )
         } else {
-            // Insufficient liquidity across all markets: refund escrowed shares and stop
-            let self_id = env::current_account_id();
-            self.transfer_unchecked(&self_id, &owner, escrow_shares)
-                .expect("Failed to release escrowed shares");
-            self.stop_and_exit(Some(&Error::InsufficientLiquidity))
+            // End of withdraw queue. If we collected something, pay it out now and burn proportional shares.
+            if collected > 0 {
+                let requested = collected.saturating_add(remaining);
+                let burn_shares =
+                    crate::wad::mul_div_floor(escrow_shares, collected, requested.max(1));
+                self.op_state = OpState::Payout {
+                    op_id,
+                    receiver: receiver.clone(),
+                    amount: collected,
+                    owner: owner.clone(),
+                    escrow_shares,
+                    burn_shares,
+                };
+                return PromiseOrValue::Promise(
+                    self.underlying_asset
+                        .transfer(receiver.clone(), U128(collected).into())
+                        .then(
+                            ext_self::ext(env::current_account_id())
+                                .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
+                                .after_send_to_user(op_id, receiver, U128(collected)),
+                        ),
+                );
+            } else {
+                // Nothing collected at all; refund escrow and stop with InsufficientLiquidity
+                let self_id = env::current_account_id();
+                self.transfer_unchecked(&self_id, &owner, escrow_shares)
+                    .expect("Failed to release escrowed shares");
+                return self.stop_and_exit(Some(&Error::InsufficientLiquidity));
+            }
         }
     }
 }

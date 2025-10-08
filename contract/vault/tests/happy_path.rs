@@ -1,6 +1,9 @@
-use near_sdk::json_types::U128;
+use near_sdk::{json_types::U128, AccountId};
 use templar_common::{interest_rate_strategy::InterestRateStrategy, number::Decimal};
-use test_utils::{setup_test, setup_test_w, ContractController};
+use test_utils::{
+    controller::vault::UnifiedVaultController, setup_test, setup_test_w, ContractController,
+    MarketController, UnifiedMarketController,
+};
 
 #[tokio::test]
 async fn happy() {
@@ -12,8 +15,6 @@ async fn happy() {
                 InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
         })
     );
-
-    c.init_account(&supply_user).await;
     vault.init_account(&supply_user).await;
 
     let v = vault.contract().id();
@@ -52,19 +53,7 @@ async fn happy() {
         "Supply position should match amount of tokens supplied to contract",
     );
 
-    // Wait for activation.
-    while !c
-        .get_supply_position(v)
-        .await
-        .unwrap()
-        .get_deposit()
-        .incoming
-        .is_empty()
-    {
-        // TODO: should also do this in allocate
-        c.harvest_yield(vault.contract().as_account(), None, None)
-            .await;
-    }
+    harvest(&c, &vault).await;
 
     let supply_position = c.get_supply_position(v).await.unwrap();
 
@@ -77,6 +66,8 @@ async fn happy() {
     let user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
 
     vault.withdraw(&supply_user, amount, None).await;
+    // TODO: assert the user now escrowed their shares
+    vault.execute_next_withdrawal(&vault_curator).await;
 
     assert_eq!(
         c.borrow_asset.balance_of(supply_user.id()).await,
@@ -96,8 +87,27 @@ async fn happy() {
     vault.supply(&supply_user, amount.0).await;
     // FIXME:Storage issue:         Error: Error { repr: Custom { kind: Execution, error: ActionError(ActionError { index: Some(0), kind: FunctionCallError(ExecutionError("Smart contract panicked: Storage error: Account vault0251007104533-70674114756315 has insufficient balance: 0.005 NEAR available, but attempted to use 0.008 NEAR")) }) } }
     vault.allocate(&vault_curator, weights, Some(amount)).await;
+    harvest(&c, &vault).await;
+
+    println!(
+        "Balance of the market for the collateral asset: {}",
+        c.borrow_asset.balance_of(c.market.contract().id()).await
+    );
+
+    let borrowed = amount.0 / 2;
+
+    c.borrow(&borrow_user, borrowed).await;
+
+    vault
+        .withdraw(&supply_user, (amount.0 - borrowed).into(), None)
+        .await;
+}
+
+// FIXME: should also do this in allocate on behalf of the vault?
+pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
+    // Wait for activation.
     while !c
-        .get_supply_position(v)
+        .get_supply_position(vault.contract().id())
         .await
         .unwrap()
         .get_deposit()
@@ -108,15 +118,4 @@ async fn happy() {
         c.harvest_yield(vault.contract().as_account(), None, None)
             .await;
     }
-
-    println!(
-        "Balance of the market for the collateral asset: {}",
-        c.borrow_asset.balance_of(c.market.contract().id()).await
-    );
-
-    c.borrow(&borrow_user, 500).await;
-
-    // TODO: what happens if we try to withdraw now?
-    //
-    vault.withdraw(&supply_user, amount, None).await;
 }
