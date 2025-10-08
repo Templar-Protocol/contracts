@@ -1,7 +1,7 @@
 use crate::{aux::ReturnStyle, Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
-use templar_common::vault::DepositMsg;
+use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
@@ -116,7 +116,9 @@ impl Contract {
         self.idle_balance = self.idle_balance.saturating_add(accept);
         self.last_total_assets = self.last_total_assets.saturating_add(accept);
 
-        if matches!(self.op_state, OpState::Idle) {
+        if matches!(self.op_state, OpState::Idle)
+            && matches!(self.mode, AllocationMode::Eager { min_batch  } if self.idle_balance >= min_batch)
+        {
             // Invariant: no overlapping operations
             env::log_str("Starting allocation");
             self.start_allocation(self.idle_balance);
