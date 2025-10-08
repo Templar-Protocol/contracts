@@ -1,24 +1,18 @@
-use near_sdk::{json_types::U128, near, AccountId, Gas};
+use near_sdk::{json_types::U128, near, AccountId};
 
-use crate::{
-    asset::{BorrowAsset, FungibleAsset},
-    supply::SupplyPosition,
-};
+use crate::asset::{BorrowAsset, FungibleAsset};
 
 pub type TimestampNs = u64;
 
-// FIXME:
-pub const GAS_XFER: Gas = Gas::from_tgas(4);
-pub const GAS_CB: Gas = Gas::from_tgas(30);
 pub const ONE_YOCTO: u128 = 1;
 
-pub const MIN_TIMELOCK_NS: u64 = 86_400_000_000_000; // 1 day
+pub const MIN_TIMELOCK_NS: u64 = 0;
 pub const MAX_TIMELOCK_NS: u64 = 30 * 86_400_000_000_000; // 30 days
 pub const MAX_QUEUE_LEN: usize = 64;
 
 pub type ExpectedIdx = u32;
 pub type ActualIdx = u32;
-pub type AllocationWeights = Vec<(AccountId, u128)>;
+pub type AllocationWeights = Vec<(AccountId, U128)>;
 pub type AllocationPlan = Vec<(AccountId, u128)>;
 
 #[derive(Clone, Debug)]

@@ -1097,7 +1097,8 @@ impl Contract {
                         )
                         .then(
                             ext_self::ext(env::current_account_id())
-                                .with_static_gas(GAS_CB)
+                                .with_static_gas(Self::AFTER_SUPPLY_ENSURE_GAS)
+                                .with_unused_gas_weight(0)
                                 .after_supply_1_check(op_id, index, U128(to_supply)),
                         ),
                 );
@@ -1156,7 +1157,7 @@ impl Contract {
                     )
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(GAS_CB)
+                            .with_static_gas(Self::AFTER_SUPPLY_ENSURE_GAS)
                             .after_supply_1_check(op_id, index, U128(to_supply)),
                     ),
             )
@@ -1233,7 +1234,7 @@ impl Contract {
                         .transfer(receiver.clone(), U128(collected).into())
                         .then(
                             ext_self::ext(env::current_account_id())
-                                .with_static_gas(GAS_CB)
+                                .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
                                 .after_send_to_user(op_id, receiver, U128(collected)),
                         ),
                 );
@@ -1268,7 +1269,7 @@ impl Contract {
                     .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(*to_request)))
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(GAS_CB)
+                            .with_static_gas(Self::AFTER_CREATE_WITHDRAW_REQ_GAS)
                             .after_create_withdraw_req(op_id, index, U128(*to_request)),
                     ),
             )
