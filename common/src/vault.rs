@@ -85,11 +85,12 @@ pub trait Callbacks {
         market_index: u32,
         before: U128,
         attempted: U128,
-        refunded: U128,
+        accepted: U128,
     ) -> bool;
 
     fn after_create_withdraw_req(&mut self, op_id: u64, market_index: u32, need: U128) -> bool;
     fn after_exec_withdraw_req(&mut self, op_id: u64, market_index: u32, need: U128) -> bool;
+    fn after_exec_withdraw_read(&mut self, op_id: u64, market_index: u32, before: U128, need: U128);
 
     fn after_send_to_user(&mut self, op_id: u64, receiver: AccountId, amount: U128) -> bool;
 
@@ -297,7 +298,7 @@ pub enum Event {
         index: u32,
         market: AccountId,
         attempted: U128,
-        refunded: U128,
+        accepted: U128,
     },
     #[event_version("1.0.0")]
     AllocationPositionReadFailed {
@@ -305,7 +306,7 @@ pub enum Event {
         index: u32,
         market: AccountId,
         attempted: U128,
-        refunded: U128,
+        accepted: U128,
     },
 
     // Withdrawal read diagnostics
