@@ -459,6 +459,37 @@ impl Contract {
         }
     }
 
+    #[private]
+    pub fn after_skim_balance(
+        &mut self,
+        #[callback_result] balance: Result<U128, PromiseError>,
+        token: AccountId,
+        recipient: AccountId,
+    ) -> PromiseOrValue<()> {
+        let amount = match balance {
+            Ok(U128(v)) if v > 0 => v,
+            _ => {
+                // Invariant: Skim does nothing for zero balance
+                Event::SkimNoop {
+                    token: token.clone(),
+                    recipient: recipient.clone(),
+                }
+                .emit();
+                return PromiseOrValue::Value(());
+            }
+        };
+        if amount == 0 {
+            PromiseOrValue::Value(())
+        } else {
+            PromiseOrValue::Promise(
+                ext_ft_core::ext(token)
+                    .with_attached_deposit(NearToken::from_yoctonear(1))
+                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                    .ft_transfer(recipient, U128(amount), None),
+            )
+        }
+    }
+
     fn stop_and_exit_allocating<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
@@ -595,36 +626,5 @@ impl Contract {
             }
         }
         PromiseOrValue::Value(())
-    }
-
-    #[private]
-    pub fn after_skim_balance(
-        &mut self,
-        #[callback_result] balance: Result<U128, PromiseError>,
-        token: AccountId,
-        recipient: AccountId,
-    ) -> PromiseOrValue<()> {
-        let amount = match balance {
-            Ok(U128(v)) if v > 0 => v,
-            _ => {
-                // Invariant: Skim does nothing for zero balance (no-op cross-call avoided).
-                Event::SkimNoop {
-                    token: token.clone(),
-                    recipient: recipient.clone(),
-                }
-                .emit();
-                return PromiseOrValue::Value(());
-            }
-        };
-        if amount == 0 {
-            PromiseOrValue::Value(())
-        } else {
-            PromiseOrValue::Promise(
-                ext_ft_core::ext(token)
-                    .with_attached_deposit(NearToken::from_yoctonear(1))
-                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
-                    .ft_transfer(recipient, U128(amount), None),
-            )
-        }
     }
 }
