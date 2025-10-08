@@ -16,7 +16,9 @@ impl Contract {
     #[private]
     pub fn after_supply_1_check(
         &mut self,
-        #[callback_result] supply_refund: Result<U128, PromiseError>,
+        #[callback_result] accepted: Result<U128, PromiseError>, // NOTE: we probably can't rely on
+        // this as a `true` value of accepted, so we are taking a belt-and-braces approach of
+        // querying the supply position
         op_id: u64,
         market_index: u32,
         attempted: U128,
@@ -41,7 +43,7 @@ impl Contract {
         };
 
         // If the transfer failed, do not attempt to reconcile; stop and leave remaining untouched
-        if supply_refund.is_err() {
+        if accepted.is_err() {
             Event::AllocationTransferFailed {
                 op_id,
                 index: market_index,
@@ -67,7 +69,7 @@ impl Contract {
                             market_index,
                             U128(*before),
                             attempted,
-                            supply_refund.unwrap_or(U128(0)),
+                            accepted.unwrap_or(U128(0)),
                         ),
                 ),
         )
@@ -84,7 +86,7 @@ impl Contract {
         market_index: u32,
         before: U128,
         attempted: U128,
-        refunded: U128,
+        accepted: U128,
     ) -> PromiseOrValue<()> {
         let (idx, rem) = match &self.op_state {
             OpState::Allocating {
@@ -126,7 +128,7 @@ impl Contract {
                     index: market_index,
                     market: market.clone(),
                     attempted,
-                    refunded,
+                    accepted,
                 }
                 .emit();
                 return self.stop_and_exit(Some(&Error::MissingSupplyPosition));
@@ -137,7 +139,7 @@ impl Contract {
                     index: market_index,
                     market: market.clone(),
                     attempted,
-                    refunded,
+                    accepted,
                 }
                 .emit();
                 return self.stop_and_exit(Some(&Error::PositionReadFailed));
@@ -146,6 +148,8 @@ impl Contract {
 
         // Emit step settled event
         let accepted_event = new_principal.saturating_sub(before.0);
+        // Compute refund from ground truth (attempted - accepted), ignoring token-reported value
+        let refunded = attempted.0.saturating_sub(accepted_event);
         Event::AllocationStepSettled {
             op_id,
             index: market_index,
@@ -154,7 +158,7 @@ impl Contract {
             new_principal: U128(new_principal),
             accepted: U128(accepted_event),
             attempted,
-            refunded,
+            refunded: U128(refunded),
             remaining_after: U128(remaining_next),
         }
         .emit();
@@ -281,18 +285,9 @@ impl Contract {
                 .with_static_gas(Self::GET_SUPPLY_POSITION_GAS)
                 .get_supply_position(env::current_account_id())
                 .then(
-                    Promise::new(env::current_account_id()).function_call(
-                        "after_exec_withdraw_read".to_string(),
-                        serde_json::to_vec(&serde_json::json!({
-                            "op_id": op_id,
-                            "market_index": market_index,
-                            "before": U128(before),
-                            "need": need,
-                        }))
-                        .expect("json"),
-                        NearToken::from_yoctonear(0),
-                        Self::AFTER_CREATE_WITHDRAW_REQ_GAS, // FIXME:
-                    ),
+                    ext_self::ext(env::current_account_id())
+                        .with_static_gas(Self::AFTER_CREATE_WITHDRAW_REQ_GAS)
+                        .after_exec_withdraw_read(op_id, market_index, U128(before), need),
                 ),
         )
     }
