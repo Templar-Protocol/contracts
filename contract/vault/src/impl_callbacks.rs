@@ -220,6 +220,8 @@ impl Contract {
             PromiseOrValue::Promise(
                 ext_market::ext(market.clone())
                     .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                    // TODO: we can only do this if there is sufficient liquidity in the market, we
+                    // should check that there is first, but even so, we can be rugged
                     .execute_next_supply_withdrawal_request()
                     .then(
                         ext_self::ext(env::current_account_id())
