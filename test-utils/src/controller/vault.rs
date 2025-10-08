@@ -1,7 +1,7 @@
 use super::ContractController;
 use crate::{
     controller::storage_management::StorageManagementController, define, get_contract,
-    UnifiedMarketController,
+    print_execution, UnifiedMarketController,
 };
 use near_sdk::{
     json_types::U128,
@@ -175,6 +175,7 @@ pub struct UnifiedVaultController {
     pub vault: VaultController,
     pub configuration: VaultConfiguration,
     pub market: UnifiedMarketController,
+    pub debug: bool,
 }
 
 impl Deref for UnifiedVaultController {
@@ -204,6 +205,7 @@ impl UnifiedVaultController {
             vault,
             configuration,
             market,
+            debug: true,
         }
     }
 
@@ -216,6 +218,7 @@ impl UnifiedVaultController {
             vault,
             configuration,
             market,
+            debug: true,
         }
     }
 
@@ -238,7 +241,8 @@ impl UnifiedVaultController {
             "{} transferring {amount} tokens for supply...",
             supply_user.id()
         );
-        self.market
+        let e = self
+            .market
             .borrow_asset
             .transfer_call(
                 supply_user,
@@ -246,6 +250,47 @@ impl UnifiedVaultController {
                 amount,
                 serde_json::to_string(&DepositMsg::Supply).unwrap(),
             )
-            .await
+            .await;
+        if self.debug {
+            print_execution(&e);
+        }
+        e
+    }
+
+    pub async fn setup_caps(&self, owner: &Account, markets: &[AccountId], amount: u128) {
+        let mut submits = vec![];
+        let mut accepts = vec![];
+
+        for mkt in markets {
+            submits.push(self.submit_cap(owner, mkt.clone(), amount).await);
+            accepts.push(self.accept_cap(owner, mkt.clone()).await);
+        }
+
+        let set_queue = self.set_supply_queue(&owner, markets).await;
+
+        if self.debug {
+            for s in submits {
+                print_execution(&s);
+            }
+            for a in accepts {
+                print_execution(&a);
+            }
+            print_execution(&set_queue);
+        }
+    }
+
+    pub async fn allocate(
+        &self,
+        allocator: &Account,
+        weights: AllocationWeights,
+        amount: Option<U128>,
+    ) {
+        let e = self
+            .vault
+            .allocate(allocator, weights, amount.unwrap_or(1000.into()))
+            .await;
+        if self.debug {
+            print_execution(&e);
+        }
     }
 }

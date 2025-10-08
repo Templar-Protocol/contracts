@@ -22,8 +22,8 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
         ext_self, AllocationMode, AllocationPlan, AllocationWeights, Error, Event,
-        MarketConfiguration, OpState, PendingValue, TimestampNs, VaultConfiguration, GAS_CB,
-        GAS_XFER, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        MarketConfiguration, OpState, PendingValue, TimestampNs, VaultConfiguration, MAX_QUEUE_LEN,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
     },
 };
 pub use wad::*;
@@ -725,9 +725,21 @@ impl Contract {
         Self::assert_allocator();
         self.ensure_idle();
 
-        // If no weights provided, just push the requested or all idle via queue order.
+        // If no weights provided, use queue order; clamp total and emit request event.
         if weights.is_empty() {
-            return self.start_allocation(amount.map(|x| x.0).unwrap_or(self.idle_balance));
+            let requested: u128 = amount.map(|x| x.0).unwrap_or(self.idle_balance);
+            let max_room = self.get_max_deposit().0;
+            let total = requested.min(self.idle_balance).min(max_room);
+            if total == 0 {
+                return self.stop_and_exit(Some(&Error::ZeroAmount));
+            }
+            let op_id = self.next_op_id;
+            Event::AllocationRequestedQueue {
+                op_id,
+                total: U128(total),
+            }
+            .emit();
+            return self.start_allocation(total);
         }
 
         // Validate unique markets and accumulate weight sum
