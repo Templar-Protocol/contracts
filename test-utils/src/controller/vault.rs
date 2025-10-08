@@ -59,8 +59,8 @@ impl VaultController {
         #[view] pub fn get_fee_recipient() -> AccountId;
         #[view] pub fn get_last_total_assets() -> U128;
         #[view] pub fn get_total_assets() -> U128;
-        #[view] pub fn get_max_deposit() -> U128;
         #[view] pub fn get_total_supply() -> U128;
+        #[view] pub fn get_max_deposit() -> U128;
         #[view] pub fn get_idle_balance() -> U128;
         #[view] pub fn get_op_state() -> OpState;
         #[view] pub fn list_supply_queue(offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
@@ -94,19 +94,71 @@ impl VaultController {
         #[call(exec, tgas(50))]
         pub fn skim["skim"](token: AccountId);
 
-        // TODO: caps?
+        #[call(exec, tgas(5))]
+        pub fn submit_cap(market: AccountId, new_cap: U128);
 
-        /* -------- Promise callbacks (must be #[private] on-chain) -------- */
-        // After attempting to supply into a market during allocation.
+        #[call(exec, tgas(5))]
+        pub fn accept_cap(market: AccountId);
+
+        #[call(exec, tgas(5))]
+        pub fn revoke_pending_cap(market: AccountId);
+
         #[call(exec, tgas(50))]
+        pub fn submit_market_removal(market: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_market_removal(market: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn set_curator(account: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn set_is_allocator(account: AccountId, allowed: bool);
+
+        #[call(exec, tgas(50))]
+        pub fn submit_guardian(new_g: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn accept_guardian();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_guardian();
+
+        #[call(exec, tgas(50))]
+        pub fn set_skim_recipient(account: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn set_fee_recipient(account: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn set_performance_fee(fee: U128);
+
+        #[call(exec, tgas(50))]
+        pub fn submit_timelock(new_timelock_secs: u32);
+
+        #[call(exec, tgas(50))]
+        pub fn accept_timelock();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_timelock();
+
+        #[call(exec, tgas(50))]
+        pub fn set_supply_queue(markets: Vec<AccountId>);
+
+        #[call(exec, tgas(50))]
+        pub fn set_withdraw_queue(queue: Vec<AccountId>);
+
+
+        // After attempting to supply into a market during allocation.
+        #[call(exec, tgas(30))]
         pub fn after_supply_1_check(op_id: u64, index: u32, amount: U128);
 
         // After creating a withdrawal request on a market during withdrawal orchestration.
-        #[call(exec, tgas(50))]
+        #[call(exec, tgas(20))]
         pub fn after_create_withdraw_req(op_id: u64, index: u32, amount: U128);
 
         // After payout to the user completes.
-        #[call(exec, tgas(50))]
+        #[call(exec, tgas(5))]
         pub fn after_send_to_user(op_id: u64, receiver: AccountId, amount: U128);
     }
 }

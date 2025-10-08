@@ -30,43 +30,44 @@ impl Contract {
             _ => return self.stop_and_exit(Some(&Error::NotAllocating(self.op_state.clone()))),
         }
 
-        // Resolve market by plan (if present) or supply_queue
+        // Resolve market by plan  or supply_queue
         let market: AccountId = if let Some(plan) = &self.plan {
             if let Some((m, _)) = plan.get(market_index as usize) {
                 m.clone()
             } else {
                 return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
             }
+        } else if let Some(m) = self.supply_queue.get(market_index) {
+            m.clone()
         } else {
-            if let Some(m) = self.supply_queue.get(market_index) {
-                m.clone()
-            } else {
-                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
-            }
+            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
         };
 
         // If the transfer failed, do not attempt to reconcile; stop and leave remaining untouched
         if supply_refund.is_err() {
-            env::log_str(&format!(
-                "after_supply_1_check: transfer failed; stopping (op_id={}, market={}, index={}, attempted={})",
-                op_id, market, market_index, attempted.0
-            ));
+            Event::AllocationTransferFailed {
+                op_id,
+                index: market_index,
+                market: market.clone(),
+                attempted,
+            }
+            .emit();
             return self.stop_and_exit(Some(&Error::MarketTransferFailed));
         }
 
         let before = self.market_supply.get(&market).unwrap_or(&0);
 
-        let fetch_pos = ext_market::ext(market.clone())
-            .with_static_gas(Self::GET_SUPPLY_POSITION_GAS)
-            .get_supply_position(env::current_account_id());
-
         PromiseOrValue::Promise(
-            fetch_pos.then(
-                ext_self::ext(env::current_account_id())
-                    .with_static_gas(GAS_CB)
-                    .after_supply_2_read(
-                        op_id,
-                        market_index,
+            ext_market::ext(market.clone())
+                .with_static_gas(Self::GET_SUPPLY_POSITION_GAS)
+                .with_unused_gas_weight(0)
+                .get_supply_position(env::current_account_id())
+                .then(
+                    ext_self::ext(env::current_account_id())
+                        .with_static_gas(Self::AFTER_SUPPLY_POSITION_CHECK_GAS)
+                        .after_supply_2_read(
+                            op_id,
+                            market_index,
                         U128(*before),
                         attempted,
                         supply_refund.unwrap_or(U128(0)),
@@ -123,20 +124,43 @@ impl Contract {
                 (new_principal, remaining)
             }
             Ok(None) => {
-                env::log_str(&format!(
-                    "after_supply_2_read: position None; stopping (op_id={}, market={}, index={}, attempted={}, refunded={})",
-                    op_id, market, market_index, attempted.0, refunded.0
-                ));
+                Event::AllocationPositionMissing {
+                    op_id,
+                    index: market_index,
+                    market: market.clone(),
+                    attempted,
+                    refunded,
+                }
+                .emit();
                 return self.stop_and_exit(Some(&Error::MissingSupplyPosition));
             }
             Err(_) => {
-                env::log_str(&format!(
-                    "after_supply_2_read: position read failed; stopping (op_id={}, market={}, index={}, attempted={}, refunded={})",
-                    op_id, market, market_index, attempted.0, refunded.0
-                ));
+                Event::AllocationPositionReadFailed {
+                    op_id,
+                    index: market_index,
+                    market: market.clone(),
+                    attempted,
+                    refunded,
+                }
+                .emit();
                 return self.stop_and_exit(Some(&Error::PositionReadFailed));
             }
         };
+
+        // Emit step settled event
+        let accepted_event = new_principal.saturating_sub(before.0);
+        Event::AllocationStepSettled {
+            op_id,
+            index: market_index,
+            market: market.clone(),
+            before,
+            new_principal: U128(new_principal),
+            accepted: U128(accepted_event),
+            attempted,
+            refunded,
+            remaining_after: U128(remaining_next),
+        }
+        .emit();
 
         self.market_supply.insert(market.clone(), new_principal);
         // Invariant: withdraw_queue gains any market with new_principal > 0
@@ -149,9 +173,10 @@ impl Contract {
             index: market_index + 1,
             remaining: remaining_next,
         };
-        self.step_allocation();
-        PromiseOrValue::Value(())
+        self.step_allocation()
     }
+
+    pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(20);
 
     #[private]
     pub fn after_create_withdraw_req(
@@ -320,17 +345,25 @@ impl Contract {
             }
             Ok(None) => {
                 // No position => treat as principal = 0
-                env::log_str(&format!(
-                    "after_exec_withdraw_read: no position; treating principal as 0 (op_id={}, market={}, index={}, before={}, need={})",
-                    op_id, market, market_index, before_principal, need.0
-                ));
+                Event::WithdrawalPositionMissing {
+                    op_id,
+                    market: market.clone(),
+                    index: market_index,
+                    before: U128(before_principal),
+                    need,
+                }
+                .emit();
                 0
             }
             Err(_) => {
-                env::log_str(&format!(
-                    "after_exec_withdraw_read: get_supply_position failed; op_id={}, market={}, index={}, assuming no change (before={}, need={})",
-                    op_id, market, market_index, before_principal, need.0
-                ));
+                Event::WithdrawalPositionReadFailed {
+                    op_id,
+                    market: market.clone(),
+                    index: market_index,
+                    before: U128(before_principal),
+                    need,
+                }
+                .emit();
                 before_principal
             }
         };
@@ -405,7 +438,12 @@ impl Contract {
                 escrow_shares,
             } if *cur == op_id && *r == receiver => (owner.clone(), *escrow_shares, *a),
             _ => {
-                env::log_str("after_send_to_user: unexpected op_state; ignoring");
+                Event::PayoutUnexpectedState {
+                    op_id,
+                    receiver: receiver.clone(),
+                    amount,
+                }
+                .emit();
                 return false;
             }
         };
@@ -431,10 +469,29 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        if let Some(msg) = msg {
-            env::log_str(format!("Allocation stopped: {msg}").as_str());
-        }
-        if let OpState::Allocating { remaining, .. } = &self.op_state {
+        // replaced log with events elsewhere; no-op here
+        if let OpState::Allocating {
+            op_id,
+            index,
+            remaining,
+        } = &self.op_state
+        {
+            // Emit completion vs stop event before reconciling remaining
+            match msg {
+                None => {
+                    Event::AllocationCompleted { op_id: *op_id }.emit();
+                }
+                Some(m) => {
+                    Event::AllocationStopped {
+                        op_id: *op_id,
+                        index: *index,
+                        remaining: U128(*remaining),
+                        reason: Some(m.to_string()),
+                    }
+                    .emit();
+                }
+            }
+
             if *remaining > 0 {
                 self.idle_balance = self.idle_balance.saturating_add(*remaining);
             }
@@ -448,8 +505,25 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        if let Some(msg) = msg {
-            env::log_str(format!("Withdrawal stopped: {msg}").as_str());
+        {
+            let (op_id, index, remaining, collected) = match &self.op_state {
+                OpState::Withdrawing {
+                    op_id,
+                    index,
+                    remaining,
+                    collected,
+                    ..
+                } => (*op_id, *index, *remaining, *collected),
+                _ => (0, 0, 0, 0),
+            };
+            Event::WithdrawalStopped {
+                op_id,
+                index,
+                remaining: U128(remaining),
+                collected: U128(collected),
+                reason: msg.map(|m| m.to_string()),
+            }
+            .emit();
         }
         // Take copies to avoid holding immutable borrows across mutable self calls.
         let (owner_acc, escrow) = match &self.op_state {
@@ -473,8 +547,22 @@ impl Contract {
 
     /// Payout: refund escrowed shares to owner and go Idle.
     fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(&mut self, msg: Option<&T>) {
-        if let Some(msg) = msg {
-            env::log_str(format!("Payout stopped: {msg}").as_str());
+        {
+            if let OpState::Payout {
+                op_id,
+                receiver,
+                amount,
+                ..
+            } = &self.op_state
+            {
+                Event::PayoutStopped {
+                    op_id: *op_id,
+                    receiver: receiver.clone(),
+                    amount: U128(*amount),
+                    reason: msg.map(|m| m.to_string()),
+                }
+                .emit();
+            }
         }
         // Take copies to avoid holding immutable borrows across mutable self calls.
         let (owner_acc, escrow) = match &self.op_state {
@@ -505,9 +593,10 @@ impl Contract {
             OpState::Withdrawing { .. } => self.stop_and_exit_withdrawing(msg),
             OpState::Payout { .. } => self.stop_and_exit_payout(msg),
             OpState::Idle => {
-                if let Some(msg) = msg {
-                    env::log_str(format!("Operation stopped: {msg:?}").as_str());
+                Event::OperationStoppedWhileIdle {
+                    reason: msg.map(|m| format!("{m:?}")),
                 }
+                .emit();
                 self.op_state = OpState::Idle;
             }
         }
@@ -525,9 +614,11 @@ impl Contract {
             Ok(U128(v)) if v > 0 => v,
             _ => {
                 // Invariant: Skim does nothing for zero balance (no-op cross-call avoided).
-                env::log_str(&format!(
-                    "Tried to skim; token={token}, recipient={recipient}"
-                ));
+                Event::SkimNoop {
+                    token: token.clone(),
+                    recipient: recipient.clone(),
+                }
+                .emit();
                 return PromiseOrValue::Value(());
             }
         };
