@@ -21,8 +21,9 @@ use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
-        ext_self, Error, MarketConfiguration, OpState, PendingValue, TimestampNs,
-        VaultConfiguration, GAS_CB, GAS_XFER, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        ext_self, AllocationMode, AllocationPlan, AllocationWeights, Error, MarketConfiguration,
+        OpState, PendingValue, TimestampNs, VaultConfiguration, GAS_CB, GAS_XFER, MAX_QUEUE_LEN,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
     },
 };
 pub use wad::*;
@@ -66,6 +67,9 @@ pub enum Role {
 /// Vault contract that issues shares over an underlying fungible asset and allocates liquidity
 /// across configured markets. Implements 4626-like deposit/withdraw semantics.
 pub struct Contract {
+    mode: AllocationMode,
+    plan: Option<AllocationPlan>,
+
     underlying_asset: FungibleAsset<BorrowAsset>,
     /// configuration per market (market ID -> MarketConfig)
     config: IterableMap<AccountId, MarketConfiguration>,
@@ -135,6 +139,7 @@ impl Contract {
             name,
             symbol,
             decimals,
+            mode,
         } = configuration;
 
         let timelock_ns = u64::from(initial_timelock_sec) * 1_000_000_000;
@@ -185,6 +190,8 @@ impl Contract {
             next_op_id: 1,
             storage_usage_supply,
             storage_usage_role,
+            mode,
+            plan: None,
         };
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals));
         Owner::init(&mut contract, &owner);
@@ -872,6 +879,75 @@ impl Contract {
         }
     }
 
+    pub fn reallocate(
+        &mut self,
+        weights: AllocationWeights,
+        amount: Option<U128>,
+    ) -> PromiseOrValue<()> {
+        Self::assert_allocator();
+        self.ensure_idle();
+
+        if weights.is_empty() {
+            return self.start_allocation(amount.map(|x| x.0).unwrap_or(self.idle_balance));
+        }
+
+        // Validate unique markets
+        let mut seen = std::collections::HashSet::new();
+        let mut sum_w: u128 = 0;
+
+        for (m, w) in &weights {
+            if !seen.insert(m.clone()) {
+                env::panic_str(&format!("Duplicate market in weights: {m}"));
+            }
+            sum_w = sum_w.saturating_add(u128::from(*w));
+        }
+        if sum_w == 0 {
+            env::panic_str("Sum of weights is zero");
+        }
+
+        // Compute total amount to allocate: clamp to idle and available room
+        let requested: u128 = amount.map(|x| x.0).unwrap_or(self.idle_balance);
+        let max_room = self.get_max_deposit().0;
+        let total = requested.min(self.idle_balance).min(max_room);
+        if total == 0 {
+            env::panic_str("No funds to allocate");
+        }
+
+        // Build planned allocations, applying cap room
+        let mut plan: AllocationPlan = Vec::with_capacity(weights.len());
+        let mut total_planned: u128 = 0;
+
+        for (market, w) in weights {
+            let weight_u128 = u128::from(w);
+
+            // Room = cap - current
+            let cap = self.config.get(&market).map_or(0u128, |c| c.cap);
+            if cap == 0 {
+                plan.push((market, 0));
+                continue;
+            }
+            let cur = *self.market_supply.get(&market).unwrap_or(&0u128);
+            let room = cap.saturating_sub(cur);
+            if room == 0 {
+                plan.push((market, 0));
+                continue;
+            }
+
+            let alloc = crate::wad::mul_div_floor(total, weight_u128, sum_w);
+            let planned = alloc.min(room);
+
+            total_planned = total_planned.saturating_add(planned);
+            plan.push((market, planned));
+        }
+
+        if total_planned == 0 {
+            env::panic_str("No funds to allocate after cap");
+        }
+
+        self.plan = Some(plan);
+        self.start_allocation(total_planned)
+    }
+
     fn start_allocation(&mut self, amount: u128) -> PromiseOrValue<()> {
         if amount == 0 {
             return PromiseOrValue::Value(());
@@ -900,6 +976,50 @@ impl Contract {
         if remaining == 0 {
             return self.stop_and_exit::<Error>(None);
         }
+
+        // If a per-op allocation plan exists, use it; otherwise, fall back to supply_queue order.
+        if let Some(plan) = &self.plan {
+            let idx = index as usize;
+            if let Some((market, planned_amount)) = plan.get(idx) {
+                let market_id = market.clone();
+
+                let cap = self.config.get(&market_id).map_or(0, |c| c.cap);
+                let cur = *self.market_supply.get(&market_id).unwrap_or(&0);
+                let room = cap.saturating_sub(cur);
+                let to_supply = room.min(remaining).min(*planned_amount);
+
+                if to_supply == 0 {
+                    self.op_state = OpState::Allocating {
+                        op_id,
+                        index: index + 1,
+                        remaining,
+                    };
+                    return self.step_allocation();
+                }
+
+                return PromiseOrValue::Promise(
+                    self.underlying_asset
+                        .transfer_call(
+                            &market_id,
+                            U128(to_supply).into(),
+                            Some(
+                                #[allow(clippy::expect_used, reason = "Infallible")]
+                                serde_json::to_string(&templar_common::market::DepositMsg::Supply)
+                                    .expect("Infallible serialisation of supply enum")
+                                    .as_str(),
+                            ),
+                        )
+                        .then(
+                            ext_self::ext(env::current_account_id())
+                                .with_static_gas(GAS_CB)
+                                .after_supply_1_check(op_id, index, U128(to_supply)),
+                        ),
+                );
+            }
+            // Plan exhausted; stop and reconcile remaining in stop_and_exit
+            return self.stop_and_exit::<Error>(None);
+        }
+
         if let Some(market) = self.supply_queue.get(index) {
             let cap = self.config.get(market).map_or(0, |c| c.cap);
             let cur = self.market_supply.get(market).unwrap_or(&0);

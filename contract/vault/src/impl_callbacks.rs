@@ -1,6 +1,8 @@
 use std::fmt::Display;
 
-use crate::{Contract, ContractExt, Error, GAS_CB, GAS_XFER, Nep141Controller, OpState, ext_self, near};
+use crate::{
+    ext_self, near, Contract, ContractExt, Error, Nep141Controller, OpState, GAS_CB, GAS_XFER,
+};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env, json_types::U128, serde_json, AccountId, Gas, NearToken, Promise, PromiseError,
@@ -166,16 +168,18 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
         };
 
-        if let Ok(()) = did_create { PromiseOrValue::Promise(
-            ext_market::ext(market.clone())
-                .with_static_gas(GAS_XFER)
-                .execute_next_supply_withdrawal_request()
-                .then(
-                    ext_self::ext(env::current_account_id())
-                        .with_static_gas(GAS_CB)
-                        .after_exec_withdraw_req(op_id, market_index, need),
-                ),
-        ) } else {
+        if let Ok(()) = did_create {
+            PromiseOrValue::Promise(
+                ext_market::ext(market.clone())
+                    .with_static_gas(GAS_XFER)
+                    .execute_next_supply_withdrawal_request()
+                    .then(
+                        ext_self::ext(env::current_account_id())
+                            .with_static_gas(GAS_CB)
+                            .after_exec_withdraw_req(op_id, market_index, need),
+                    ),
+            )
+        } else {
             env::log_str("create_supply_withdrawal_request failed; moving to next market");
             self.op_state = OpState::Withdrawing {
                 op_id,
@@ -413,6 +417,7 @@ impl Contract {
                 self.idle_balance = self.idle_balance.saturating_add(*remaining);
             }
         }
+        self.plan = None;
         self.op_state = OpState::Idle;
     }
 

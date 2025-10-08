@@ -81,7 +81,7 @@ impl VaultController {
 
         // Allocator/curator/owner-gated: begins allocation across markets.
         #[call(exec, tgas(300))]
-        pub fn allocate["start_allocation"](amount: U128);
+        pub fn reallocate["start_allocation"](weights: AllocationPlan, amount: Option<U128>);
 
         // User withdrawal path; expects escrowed shares already held by the contract.
         #[call(exec, tgas(300))]
