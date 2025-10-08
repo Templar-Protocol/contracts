@@ -183,7 +183,7 @@ pub fn vault_configuration(
         curator: curator_id,
         guardian: guardian_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
-        initial_timelock_sec: (templar_common::vault::MAX_TIMELOCK_NS / 1_000_000_000) as u32,
+        initial_timelock_sec: templar_common::vault::MIN_TIMELOCK_NS as u32,
         fee_recipient: fee_recipient_id,
         skim_recipient: skim_recipient_id,
         name: "Vault".to_string(),
@@ -222,6 +222,11 @@ pub struct SetupEverything {
     pub protocol_yield_user: Account,
     pub insurance_yield_user: Account,
     pub vault: UnifiedVaultController,
+    pub vault_owner: Account,
+    pub vault_curator: Account,
+    pub vault_guardian: Account,
+    pub skim_recipient: Account,
+    pub fee_recipient: Account,
 }
 
 pub async fn setup_everything(
@@ -308,9 +313,10 @@ pub async fn setup_everything(
 
     let v = UnifiedVaultController::new(vault, vault_config, c.clone());
 
+    let mkt = c.market.contract().as_account();
     // Asset opt-ins.
     tokio::join!(
-        c.storage_deposits(c.market.contract().as_account()),
+        c.storage_deposits(mkt),
         c.init_account(&protocol_yield_user),
         c.init_account(&insurance_yield_user),
         v.storage_deposits(v.vault.contract().as_account()),
@@ -318,11 +324,18 @@ pub async fn setup_everything(
         v.storage_deposits(&fee_recipient),
     );
 
+    v.setup_caps(&vault_owner, &[mkt.id().clone()], 1000).await;
+
     SetupEverything {
         c,
         protocol_yield_user,
         insurance_yield_user,
         vault: v,
+        vault_owner,
+        vault_curator,
+        vault_guardian,
+        skim_recipient,
+        fee_recipient,
     }
 }
 
