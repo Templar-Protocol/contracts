@@ -1,20 +1,17 @@
 use std::fmt::Display;
 
-use crate::{
-    ext_self, near, Contract, ContractExt, Error, Nep141Controller, OpState, GAS_CB, GAS_XFER,
-};
+use crate::{ext_self, near, Contract, ContractExt, Error, Nep141Controller, OpState};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env, json_types::U128, serde_json, AccountId, Gas, NearToken, Promise, PromiseError,
     PromiseOrValue,
 };
 use near_sdk_contract_tools::ft::nep141::GAS_FOR_FT_TRANSFER_CALL;
-use templar_common::{market::ext_market, supply::SupplyPosition};
+use templar_common::{market::ext_market, supply::SupplyPosition, vault::Event};
 
 #[near]
 impl Contract {
-    const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(20);
-    const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(20);
+    pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
 
     #[private]
     pub fn after_supply_1_check(
@@ -68,14 +65,16 @@ impl Contract {
                         .after_supply_2_read(
                             op_id,
                             market_index,
-                        U128(*before),
-                        attempted,
-                        supply_refund.unwrap_or(U128(0)),
-                    ),
-            ),
+                            U128(*before),
+                            attempted,
+                            supply_refund.unwrap_or(U128(0)),
+                        ),
+                ),
         )
     }
 
+    pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(4);
+    pub const AFTER_SUPPLY_POSITION_CHECK_GAS: Gas = Gas::from_tgas(10);
     // FIXME: no panics in this function! This will cause to spin if the op changes
     #[private]
     pub fn after_supply_2_read(
@@ -108,12 +107,10 @@ impl Contract {
             } else {
                 return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
             }
+        } else if let Some(m) = self.supply_queue.get(market_index) {
+            m.clone()
         } else {
-            if let Some(m) = self.supply_queue.get(market_index) {
-                m.clone()
-            } else {
-                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
-            }
+            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
         };
 
         let (new_principal, remaining_next) = match position {
@@ -218,11 +215,11 @@ impl Contract {
         if let Ok(()) = did_create {
             PromiseOrValue::Promise(
                 ext_market::ext(market.clone())
-                    .with_static_gas(GAS_XFER)
+                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
                     .execute_next_supply_withdrawal_request()
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(GAS_CB)
+                            .with_static_gas(Self::AFTER_CREATE_WITHDRAW_REQ_GAS)
                             .after_exec_withdraw_req(op_id, market_index, need),
                     ),
             )
@@ -294,7 +291,7 @@ impl Contract {
                         }))
                         .expect("json"),
                         NearToken::from_yoctonear(0),
-                        GAS_CB,
+                        Self::AFTER_CREATE_WITHDRAW_REQ_GAS, // FIXME:
                     ),
                 ),
         )
@@ -394,7 +391,7 @@ impl Contract {
                         .transfer(recv.clone(), U128(collected).into())
                         .then(
                             ext_self::ext(env::current_account_id())
-                                .with_static_gas(GAS_CB)
+                                .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
                                 .after_send_to_user(op_id, recv, U128(collected)),
                         ),
                 )
@@ -420,6 +417,8 @@ impl Contract {
             self.step_withdraw()
         }
     }
+
+    pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(5);
 
     #[private]
     pub fn after_send_to_user(
