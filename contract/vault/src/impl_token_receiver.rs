@@ -1,7 +1,7 @@
 use crate::{aux::ReturnStyle, Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
-use templar_common::vault::{AllocationMode, DepositMsg};
+use templar_common::vault::{AllocationMode, DepositMsg, Event};
 
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
@@ -95,12 +95,12 @@ impl Contract {
     ) -> u128 {
         // Invariant: Only the underlying token is accepted; others are fully refunded
         if token_id != self.underlying_asset.contract_id() {
-            env::log_str("Only underlying asset is supported");
+            Event::DepositRejectedWrongAsset { token: token_id.clone() }.emit();
             return deposit;
         };
 
         if deposit == 0 {
-            env::log_str("Deposit is zero");
+            Event::DepositRejectedZeroAmount { sender: sender_id.clone() }.emit();
             return 0;
         }
 
@@ -112,16 +112,28 @@ impl Contract {
 
         let shares = self.preview_deposit(U128(accept)).0;
         self.mint_shares(&sender_id, shares);
+        Event::MintedShares {
+            amount: shares.into(),
+            receiver: sender_id.clone(),
+        }
+        .emit();
 
         self.idle_balance = self.idle_balance.saturating_add(accept);
         self.last_total_assets = self.last_total_assets.saturating_add(accept);
 
-        if matches!(self.op_state, OpState::Idle)
-            && matches!(self.mode, AllocationMode::Eager { min_batch  } if self.idle_balance >= min_batch)
-        {
-            // Invariant: no overlapping operations
-            env::log_str("Starting allocation");
-            self.start_allocation(self.idle_balance);
+        if let AllocationMode::Eager { min_batch } = self.mode {
+            if matches!(self.op_state, OpState::Idle) && self.idle_balance >= min_batch {
+                // Invariant: no overlapping operations
+                let op_id = self.next_op_id;
+                Event::AllocationEagerTriggered {
+                    op_id,
+                    idle_balance: U128(self.idle_balance),
+                    min_batch: U128(min_batch),
+                    deposit_accepted: U128(accept),
+                }
+                .emit();
+                self.start_allocation(self.idle_balance);
+            }
         }
 
         refund

@@ -21,9 +21,9 @@ use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
-        ext_self, AllocationMode, AllocationPlan, AllocationWeights, Error, MarketConfiguration,
-        OpState, PendingValue, TimestampNs, VaultConfiguration, GAS_CB, GAS_XFER, MAX_QUEUE_LEN,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        ext_self, AllocationMode, AllocationPlan, AllocationWeights, Error, Event,
+        MarketConfiguration, OpState, PendingValue, TimestampNs, VaultConfiguration, GAS_CB,
+        GAS_XFER, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
     },
 };
 pub use wad::*;
@@ -202,35 +202,6 @@ impl Contract {
         contract
     }
 
-    pub fn get_configuration(&self) -> VaultConfiguration {
-        let timelock_sec = self.timelock_ns / 1_000_000_000;
-        VaultConfiguration {
-            owner: self.own_get_owner().expect("Owner not set"),
-            curator: Self::with_members_of(&Role::Curator, |members| {
-                assert!(
-                    members.len() == 1,
-                    "Invariant violation: Cannot Have more than 1 Curator"
-                );
-                members.iter().next().expect("Curator not set").clone()
-            }),
-            guardian: Self::with_members_of(&Role::Guardian, |members| {
-                assert!(
-                    members.len() == 1,
-                    "Invariant violation: Cannot Have more than 1 Guardian"
-                );
-                members.iter().next().expect("Guardian not set").clone()
-            }),
-            underlying_token: self.underlying_asset.clone(),
-            initial_timelock_sec: timelock_sec as u32,
-            fee_recipient: self.fee_recipient.clone(),
-            skim_recipient: self.skim_recipient.clone(),
-            name: self.get_metadata().name,
-            symbol: self.get_metadata().symbol,
-            decimals: self.get_metadata().decimals,
-            mode: self.mode.clone(),
-        }
-    }
-
     /// Sets the Curator account. Also grants/removes the Allocator role accordingly.
     pub fn set_curator(&mut self, account: AccountId) {
         Self::require_owner();
@@ -250,8 +221,15 @@ impl Contract {
         });
         Self::add_role(self, &account, &Role::Curator);
         Self::add_role(self, &account, &Role::Allocator);
-        env::log_str(&format!("Curator set to {account}"));
-        env::log_str(&format!("Allocator role for {account}"));
+        Event::CuratorSet {
+            account: account.clone(),
+        }
+        .emit();
+        Event::AllocatorRoleSet {
+            account,
+            allowed: true,
+        }
+        .emit();
     }
 
     /// Grants or revokes the Allocator role for `account`.
@@ -262,7 +240,7 @@ impl Contract {
         } else {
             self.remove_role(&account, &Role::Allocator);
         }
-        env::log_str(&format!("Allocator role for {account} set to {allowed}"));
+        Event::AllocatorRoleSet { account, allowed }.emit();
     }
 
     /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
@@ -325,7 +303,10 @@ impl Contract {
             "Already set to this address"
         );
         self.skim_recipient = account.clone();
-        env::log_str(&format!("Skim recipient set to {account}"));
+        Event::SkimRecipientSet {
+            account: account.clone(),
+        }
+        .emit();
     }
 
     /// Sets the performance fee recipient. Accrues pending fees with the current recipient first.
@@ -337,7 +318,10 @@ impl Contract {
             // Accrue any pending fees to current recipient before changing (so current recipient gets up to now)
             self.internal_accrue_fee();
         }
-        env::log_str(&format!("Fee recipient set to {account}"));
+        Event::FeeRecipientSet {
+            account: account.clone(),
+        }
+        .emit();
         self.fee_recipient = account;
     }
 
@@ -354,7 +338,7 @@ impl Contract {
         // Accrue any pending fees with old rate before changing
         self.internal_accrue_fee();
         self.performance_fee = fee;
-        env::log_str(&format!("Performance fee set to {fee}"));
+        Event::PerformanceFeeSet { fee: U128(fee) }.emit();
     }
 
     /* ----- Timelocks / Pending ----- */
@@ -375,16 +359,21 @@ impl Contract {
         );
         if as_nanos > self.timelock_ns {
             self.timelock_ns = as_nanos;
-            env::log_str(&format!("Timelock set to {new_timelock_secs} seconds"));
+            Event::TimelockSet {
+                seconds: new_timelock_secs,
+            }
+            .emit();
         } else {
             let valid_at = env::block_timestamp() + self.timelock_ns;
             self.pending_timelock = Some(PendingValue {
                 value: as_nanos,
                 valid_at,
             });
-            env::log_str(&format!(
-                "Timelock change to {new_timelock_secs} seconds pending, will take effect at {valid_at}"
-            ));
+            Event::TimelockChangeSubmitted {
+                new_seconds: new_timelock_secs,
+                valid_at,
+            }
+            .emit();
         }
     }
 
@@ -407,7 +396,7 @@ impl Contract {
     pub fn revoke_pending_timelock(&mut self) {
         Self::assert_guardian_or_owner();
         self.pending_timelock = None;
-        env::log_str("Pending timelock change revoked");
+        Event::PendingTimelockRevoked {}.emit();
     }
 
     /* ----- Market config / queues ----- */
@@ -420,7 +409,10 @@ impl Contract {
             None => {
                 self.config
                     .insert(market.clone(), MarketConfiguration::default());
-                env::log_str(&format!("Market {market} created"));
+                Event::MarketCreated {
+                    market: market.clone(),
+                }
+                .emit();
                 #[allow(clippy::unwrap_used, reason = "No side effects")]
                 self.config.get_mut(&market).unwrap()
             }
@@ -455,11 +447,15 @@ impl Contract {
                     valid_at,
                 },
             );
-            env::log_str(&format!(
-                "Supply cap raise for {market} to {new_cap} pending, valid at {valid_at}",
-            ));
+            Event::SupplyCapRaiseSubmitted {
+                market: market.clone(),
+                new_cap: U128(new_cap),
+                valid_at,
+            }
+            .emit();
         }
     }
+
     /// Accepts a pending cap increase for `market` once the timelock has elapsed.
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
@@ -480,14 +476,24 @@ impl Contract {
                     cfg.enabled = true;
                     let mut added = false;
                     if self.withdraw_queue.iter().any(|m| m == &market) {
-                        env::log_str(&format!(
-                            "Market {market} enabled (cap set > 0); already in withdraw_queue"
-                        ));
+                        Event::MarketEnabled {
+                            market: market.clone(),
+                        }
+                        .emit();
+                        Event::MarketAlreadyInWithdrawQueue {
+                            market: market.clone(),
+                        }
+                        .emit();
                     } else {
                         self.withdraw_queue.push(market.clone());
-                        env::log_str(&format!(
-                            "Market {market} enabled (cap set > 0); added to withdraw_queue"
-                        ));
+                        Event::MarketEnabled {
+                            market: market.clone(),
+                        }
+                        .emit();
+                        Event::WithdrawQueueMarketAdded {
+                            market: market.clone(),
+                        }
+                        .emit();
                         added = true;
                     }
 
@@ -501,10 +507,11 @@ impl Contract {
             } else {
                 cfg.enabled = false;
             }
-            env::log_str(&format!(
-                "Supply cap for {} set to {}",
-                market, pending.value
-            ));
+            Event::SupplyCapSet {
+                market: market.clone(),
+                new_cap: U128(pending.value),
+            }
+            .emit();
             self.pending_cap.remove(&market);
         } else {
             env::panic_str("No pending cap change for this market");
@@ -546,10 +553,11 @@ impl Contract {
             "Cap change pending for this market"
         );
         cfg.removable_at = env::block_timestamp() + self.timelock_ns;
-        env::log_str(&format!(
-            "Market {} removal pending, will take effect at {}",
-            market, cfg.removable_at
-        ));
+        Event::MarketRemovalSubmitted {
+            market: market.clone(),
+            removable_at: cfg.removable_at,
+        }
+        .emit();
     }
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
@@ -557,7 +565,7 @@ impl Contract {
         if let Some(cfg) = self.config.get_mut(&market) {
             cfg.removable_at = 0;
         }
-        env::log_str(&format!("Market {market} removal revoked"));
+        Event::MarketRemovalRevoked { market }.emit();
     }
 
     /// Sets the ordered supply (allocation) queue.
@@ -657,12 +665,154 @@ impl Contract {
         for id in &queue {
             self.withdraw_queue.push(id.clone());
         }
-        env::log_str(&format!(
-            "Withdraw queue updated. Current markets: {queue:?}",
-        ));
+        Event::WithdrawQueueUpdated {
+            markets: queue.clone(),
+        }
+        .emit();
     }
 
-    /* ----- Views ----- */
+    /* ----- Withdraw / Redeem ----- */
+    /// Burns the necessary shares to withdraw `amount` of underlying to `receiver`.
+    /// Internally calls `redeem` after computing the share amount.
+    pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
+        let shares_needed = self.preview_withdraw(amount).0;
+        self.redeem(U128(shares_needed), receiver)
+    }
+
+    /// Redeems `shares` for underlying assets sent to `receiver`.
+    /// Shares are escrowed to the contract and only burned after successful payout.
+    pub fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()> {
+        let shares = shares.0;
+
+        let assets = self.convert_to_assets(U128(shares)).0;
+
+        let owner = env::predecessor_account_id();
+
+        // Move shares into vault escrow; do not burn yet
+        #[allow(clippy::expect_used, reason = "No side effects")]
+        self.transfer_unchecked(&owner, &env::current_account_id(), shares)
+            .expect("Redeem failed to move shares into escrow");
+
+        self.internal_accrue_fee();
+
+        Event::RedeemRequested {
+            shares: U128(shares),
+            estimated_assets: U128(assets),
+        }
+        .emit();
+        self.start_withdraw(assets, receiver.clone(), owner, shares)
+    }
+
+    /* ----- Skim (sends entire balance of `token` to `skim_recipient`) ----- */
+    /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
+    pub fn skim(&mut self, token: AccountId) -> Promise {
+        Self::require_owner();
+        ext_ft_core::ext(token.clone())
+            .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+            .ft_balance_of(env::current_account_id())
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                    .after_skim_balance(token, self.skim_recipient.clone()),
+            )
+    }
+
+    pub fn allocate(
+        &mut self,
+        weights: AllocationWeights,
+        amount: Option<U128>,
+    ) -> PromiseOrValue<()> {
+        Self::assert_allocator();
+        self.ensure_idle();
+
+        // If no weights provided, just push the requested or all idle via queue order.
+        if weights.is_empty() {
+            return self.start_allocation(amount.map(|x| x.0).unwrap_or(self.idle_balance));
+        }
+
+        // Validate unique markets and accumulate weight sum
+        let mut seen = std::collections::HashSet::new();
+        let mut sum_w: u128 = 0;
+
+        for (m, w) in &weights {
+            if !seen.insert(m.clone()) {
+                env::panic_str(&format!("Duplicate market in weights: {m}"));
+            }
+            sum_w = sum_w.saturating_add(u128::from(*w));
+        }
+        if sum_w == 0 {
+            env::panic_str("Sum of weights is zero");
+        }
+
+        // Clamp total allocation by idle balance and aggregate room
+        let requested: u128 = amount.map(|x| x.0).unwrap_or(self.idle_balance);
+        let max_room = self.get_max_deposit().0;
+        let total = requested.min(self.idle_balance).min(max_room);
+        if total == 0 {
+            env::panic_str("No funds to allocate");
+        }
+
+        // Emit request and plan events
+        let op_id = self.next_op_id;
+        let weights_for_event: Vec<(AccountId, U128)> = weights
+            .iter()
+            .map(|(m, w)| (m.clone(), U128((*w).into())))
+            .collect();
+        Event::AllocationRequestedWeighted {
+            op_id,
+            total: U128(total),
+            weights: weights_for_event.clone(),
+        }
+        .emit();
+        Event::AllocationPlanSet {
+            op_id,
+            plan: weights_for_event,
+        }
+        .emit();
+
+        // Store an ephemeral plan of (market, weight) to drive weighted allocation.
+        let plan: AllocationPlan = weights
+            .into_iter()
+            .map(|(m, w)| (m, u128::from(w)))
+            .collect();
+
+        self.plan = Some(plan);
+        self.start_allocation(total)
+    }
+}
+
+/* ----- Views ----- */
+#[near]
+impl Contract {
+    pub fn get_configuration(&self) -> VaultConfiguration {
+        let timelock_sec = self.timelock_ns / 1_000_000_000;
+        VaultConfiguration {
+            owner: self.own_get_owner().expect("Owner not set"),
+            curator: Self::with_members_of(&Role::Curator, |members| {
+                assert!(
+                    members.len() == 1,
+                    "Invariant violation: Cannot Have more than 1 Curator"
+                );
+                members.iter().next().expect("Curator not set").clone()
+            }),
+            guardian: Self::with_members_of(&Role::Guardian, |members| {
+                assert!(
+                    members.len() == 1,
+                    "Invariant violation: Cannot Have more than 1 Guardian"
+                );
+                members.iter().next().expect("Guardian not set").clone()
+            }),
+            underlying_token: self.underlying_asset.clone(),
+            initial_timelock_sec: timelock_sec as u32,
+            fee_recipient: self.fee_recipient.clone(),
+            skim_recipient: self.skim_recipient.clone(),
+            name: self.get_metadata().name,
+            symbol: self.get_metadata().symbol,
+            decimals: self.get_metadata().decimals,
+            mode: self.mode.clone(),
+        }
+    }
+
     /// Returns total assets under management = idle balance + sum of market principals.
     pub fn get_total_assets(&self) -> U128 {
         // TODO: join
@@ -671,6 +821,10 @@ impl Contract {
             sum += self.market_supply.get(m).unwrap_or(&0);
         });
         U128(sum)
+    }
+
+    pub fn get_total_supply(&self) -> U128 {
+        U128(self.total_supply())
     }
 
     /// Returns the maximum additional amount that can be deposited across all markets given current caps.
@@ -688,21 +842,6 @@ impl Contract {
             }
         });
         U128(total)
-    }
-
-    /// Computes fee-aware effective totals for conversions, mimicking MetaMorpho:
-    /// - Include fee shares that would be minted if fees accrued now.
-    /// - Apply virtual offsets: +virtual_shares to supply and +virtual_assets to assets.
-    fn effective_totals_fee_aware(&self) -> (u128, u128) {
-        let cur = self.get_total_assets().0;
-        let ts = self.total_supply();
-        let fee_shares =
-            crate::wad::compute_fee_shares(cur, self.last_total_assets, self.performance_fee, ts);
-        let new_total_supply = ts
-            .saturating_add(fee_shares)
-            .saturating_add(self.virtual_shares);
-        let new_total_assets = cur.saturating_add(self.virtual_assets);
-        (new_total_supply, new_total_assets)
     }
 
     /// Converts an amount of underlying assets to shares, flooring the result.
@@ -776,54 +915,25 @@ impl Contract {
     pub fn preview_redeem(&self, shares: U128) -> U128 {
         self.convert_to_assets(shares)
     }
-
-    /* ----- Withdraw / Redeem ----- */
-    /// Burns the necessary shares to withdraw `amount` of underlying to `receiver`.
-    /// Internally calls `redeem` after computing the share amount.
-    pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
-        let shares_needed = self.preview_withdraw(amount).0;
-        self.redeem(U128(shares_needed), receiver)
-    }
-
-    /// Redeems `shares` for underlying assets sent to `receiver`.
-    /// Shares are escrowed to the contract and only burned after successful payout.
-    pub fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()> {
-        let shares = shares.0;
-
-        let assets = self.convert_to_assets(U128(shares)).0;
-
-        let owner = env::predecessor_account_id();
-
-        // Move shares into vault escrow; do not burn yet
-        #[allow(clippy::expect_used, reason = "No side effects")]
-        self.transfer_unchecked(&owner, &env::current_account_id(), shares)
-            .expect("Redeem failed to move shares into escrow");
-
-        self.internal_accrue_fee();
-
-        env::log_str(&format!(
-            "Redeem requested: {shares} shares for ~{assets} assets"
-        ));
-        self.start_withdraw(assets, receiver.clone(), owner, shares)
-    }
-
-    /* ----- Skim (sends entire balance of `token` to `skim_recipient`) ----- */
-    /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
-    pub fn skim(&mut self, token: AccountId) -> Promise {
-        Self::require_owner();
-        ext_ft_core::ext(token.clone())
-            .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
-            .ft_balance_of(env::current_account_id())
-            .then(
-                ext_self::ext(env::current_account_id())
-                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
-                    .after_skim_balance(token, self.skim_recipient.clone()),
-            )
-    }
 }
 
 /* ----- Private Helpers ----- */
 impl Contract {
+    /// Computes fee-aware effective totals for conversions, mimicking MetaMorpho:
+    /// - Include fee shares that would be minted if fees accrued now.
+    /// - Apply virtual offsets: +virtual_shares to supply and +virtual_assets to assets.
+    fn effective_totals_fee_aware(&self) -> (u128, u128) {
+        let cur = self.get_total_assets().0;
+        let ts = self.total_supply();
+        let fee_shares =
+            crate::wad::compute_fee_shares(cur, self.last_total_assets, self.performance_fee, ts);
+        let new_total_supply = ts
+            .saturating_add(fee_shares)
+            .saturating_add(self.virtual_shares);
+        let new_total_assets = cur.saturating_add(self.virtual_assets);
+        (new_total_supply, new_total_assets)
+    }
+
     /* ----- Internal: fee, shares ----- */
     pub fn mint_shares(&mut self, to: &AccountId, amount: u128) {
         if amount == 0 {
@@ -880,54 +990,9 @@ impl Contract {
         }
     }
 
-    pub fn reallocate(
-        &mut self,
-        weights: AllocationWeights,
-        amount: Option<U128>,
-    ) -> PromiseOrValue<()> {
-        Self::assert_allocator();
-        self.ensure_idle();
-
-        // If no weights provided, just push the requested or all idle via queue order.
-        if weights.is_empty() {
-            return self.start_allocation(amount.map(|x| x.0).unwrap_or(self.idle_balance));
-        }
-
-        // Validate unique markets and accumulate weight sum
-        let mut seen = std::collections::HashSet::new();
-        let mut sum_w: u128 = 0;
-
-        for (m, w) in &weights {
-            if !seen.insert(m.clone()) {
-                env::panic_str(&format!("Duplicate market in weights: {m}"));
-            }
-            sum_w = sum_w.saturating_add(u128::from(*w));
-        }
-        if sum_w == 0 {
-            env::panic_str("Sum of weights is zero");
-        }
-
-        // Clamp total allocation by idle balance and aggregate room
-        let requested: u128 = amount.map(|x| x.0).unwrap_or(self.idle_balance);
-        let max_room = self.get_max_deposit().0;
-        let total = requested.min(self.idle_balance).min(max_room);
-        if total == 0 {
-            env::panic_str("No funds to allocate");
-        }
-
-        // Store an ephemeral plan of (market, weight) to drive weighted allocation.
-        let plan: AllocationPlan = weights
-            .into_iter()
-            .map(|(m, w)| (m, u128::from(w)))
-            .collect();
-
-        self.plan = Some(plan);
-        self.start_allocation(total)
-    }
-
     fn start_allocation(&mut self, amount: u128) -> PromiseOrValue<()> {
         if amount == 0 {
-            return PromiseOrValue::Value(());
+            return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
         self.ensure_idle();
         self.idle_balance = 0;
@@ -938,6 +1003,11 @@ impl Contract {
             index: 0,
             remaining: amount,
         };
+        Event::AllocationStarted {
+            op_id,
+            remaining: U128(amount),
+        }
+        .emit();
         self.step_allocation()
     }
 
@@ -978,7 +1048,33 @@ impl Contract {
                 let room = cap.saturating_sub(cur);
                 let to_supply = room.min(target);
 
+                // Emit planned step event
+                Event::AllocationStepPlanned {
+                    op_id,
+                    index,
+                    market: market_id.clone(),
+                    target: U128(target),
+                    room: U128(room),
+                    to_supply: U128(to_supply),
+                    remaining_before: U128(remaining),
+                    planned: true,
+                }
+                .emit();
+
                 if to_supply == 0 {
+                    Event::AllocationStepSkipped {
+                        op_id,
+                        index,
+                        market: market_id.clone(),
+                        reason: if room == 0 {
+                            "no-room".to_string()
+                        } else {
+                            "zero-target".to_string()
+                        },
+                        remaining: U128(remaining),
+                    }
+                    .emit();
+
                     self.op_state = OpState::Allocating {
                         op_id,
                         index: index + 1,
@@ -1015,7 +1111,30 @@ impl Contract {
             let cur = self.market_supply.get(market).unwrap_or(&0);
             let room = cap.saturating_sub(*cur);
             let to_supply = room.min(remaining);
+
+            // Emit planned step event (queue-based)
+            Event::AllocationStepPlanned {
+                op_id,
+                index,
+                market: market.clone(),
+                target: U128(remaining),
+                room: U128(room),
+                to_supply: U128(to_supply),
+                remaining_before: U128(remaining),
+                planned: false,
+            }
+            .emit();
+
             if to_supply == 0 {
+                Event::AllocationStepSkipped {
+                    op_id,
+                    index,
+                    market: market.clone(),
+                    reason: "no-room".to_string(),
+                    remaining: U128(remaining),
+                }
+                .emit();
+
                 self.op_state = OpState::Allocating {
                     op_id,
                     index: index + 1,
@@ -1055,7 +1174,7 @@ impl Contract {
         escrow_shares: u128,
     ) -> PromiseOrValue<()> {
         if amount == 0 {
-            env::panic_str("no assets to withdraw");
+            return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
         self.ensure_idle();
         let op_id = self.next_op_id;
