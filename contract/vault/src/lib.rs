@@ -656,7 +656,7 @@ impl Contract {
 
     /* ----- Views ----- */
     /// Returns total assets under management = idle balance + sum of market principals.
-    pub fn total_assets(&self) -> U128 {
+    pub fn get_total_assets(&self) -> U128 {
         // TODO: join
         let mut sum = self.idle_balance;
         self.withdraw_queue.iter().for_each(|m| {
@@ -666,7 +666,7 @@ impl Contract {
     }
 
     /// Returns the maximum additional amount that can be deposited across all markets given current caps.
-    pub fn max_deposit(&self) -> U128 {
+    pub fn get_max_deposit(&self) -> U128 {
         // TODO: join
         let mut total = 0u128;
         self.supply_queue.iter().for_each(|m| {
@@ -686,7 +686,7 @@ impl Contract {
     /// - Include fee shares that would be minted if fees accrued now.
     /// - Apply virtual offsets: +virtual_shares to supply and +virtual_assets to assets.
     fn effective_totals_fee_aware(&self) -> (u128, u128) {
-        let cur = self.total_assets().0;
+        let cur = self.get_total_assets().0;
         let ts = self.total_supply();
         let fee_shares =
             crate::wad::compute_fee_shares(cur, self.last_total_assets, self.performance_fee, ts);
@@ -828,7 +828,7 @@ impl Contract {
 
     pub fn internal_accrue_fee(&mut self) {
         // Invariant: Fees are minted only when total_assets() > last_total_assets (no fees on losses/flat).
-        let cur = self.total_assets().0;
+        let cur = self.get_total_assets().0;
         let fee_shares = crate::wad::compute_fee_shares(
             cur,
             self.last_total_assets,

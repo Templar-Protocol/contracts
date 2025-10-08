@@ -106,7 +106,7 @@ impl Contract {
 
         self.internal_accrue_fee();
 
-        let max = self.max_deposit().0;
+        let max = self.get_max_deposit().0;
         let accept = deposit.min(max);
         let refund = deposit - accept;
 
