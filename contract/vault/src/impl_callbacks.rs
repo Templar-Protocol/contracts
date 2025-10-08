@@ -381,6 +381,7 @@ impl Contract {
                     amount: collected,
                     owner: owner.clone(),
                     escrow_shares,
+                    burn_shares: escrow_shares,
                 };
                 PromiseOrValue::Promise(
                     self.underlying_asset
@@ -425,14 +426,15 @@ impl Contract {
         receiver: AccountId,
         amount: U128,
     ) -> bool {
-        let (owner, escrow_shares, payout_amount) = match &self.op_state {
+        let (owner, escrow_shares, payout_amount, burn_shares) = match &self.op_state {
             OpState::Payout {
                 op_id: cur,
                 receiver: r,
                 amount: a,
                 owner,
                 escrow_shares,
-            } if *cur == op_id && *r == receiver => (owner.clone(), *escrow_shares, *a),
+                burn_shares,
+            } if *cur == op_id && *r == receiver => (owner.clone(), *escrow_shares, *a, *burn_shares),
             _ => {
                 Event::PayoutUnexpectedState {
                     op_id,
@@ -445,14 +447,24 @@ impl Contract {
         };
 
         if let Ok(()) = result {
-            // Invariant: On payout success, idle_balance -= payout_amount and escrowed shares are burned
+            // Invariant: On payout success, idle_balance -= payout_amount.
+            // Burn only the proportional shares and refund the remainder to the owner.
             self.idle_balance = self.idle_balance.saturating_sub(payout_amount);
-            self.withdraw_unchecked(&env::current_account_id(), escrow_shares)
-                .expect("Failed to burn escrowed shares");
+            let to_burn = burn_shares.min(escrow_shares);
+            if to_burn > 0 {
+                self.withdraw_unchecked(&env::current_account_id(), to_burn)
+                    .expect("Failed to burn escrowed shares");
+            }
+            let refund_shares = escrow_shares.saturating_sub(to_burn);
+            if refund_shares > 0 {
+                #[allow(clippy::expect_used, reason = "No side effects")]
+                self.transfer_unchecked(&env::current_account_id(), &owner, refund_shares)
+                    .expect("Failed to refund remaining escrowed shares");
+            }
             self.op_state = OpState::Idle;
             true
         } else {
-            // Invariant: On payout failure, refund escrow to owner and leave idle_balance unchanged
+            // Invariant: On payout failure, refund full escrow to owner and leave idle_balance unchanged
             #[allow(clippy::expect_used, reason = "No side effects")]
             self.transfer_unchecked(&env::current_account_id(), &owner, escrow_shares)
                 .expect("Failed to release escrowed shares");

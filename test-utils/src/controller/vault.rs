@@ -83,8 +83,11 @@ impl VaultController {
         #[call(exec, tgas(300))]
         pub fn allocate(weights: AllocationWeights, amount: Option<U128>);
 
-        #[call(exec, tgas(300))]
+        #[call(exec, tgas(30))]
         pub fn withdraw(amount: U128, receiver: AccountId);
+
+        #[call(exec, tgas(300))]
+        pub fn execute_next_withdrawal_request();
 
         // User redemption path; expects escrowed shares already held by the contract.
         #[call(exec, tgas(300))]
@@ -302,6 +305,13 @@ impl UnifiedVaultController {
                 receiver.unwrap_or(withdrawer.id().clone()),
             )
             .await;
+        if self.debug {
+            print_execution(&e);
+        }
+    }
+
+    pub async fn execute_next_withdrawal(&self, allocator: &Account) {
+        let e = self.vault.execute_next_withdrawal_request(allocator).await;
         if self.debug {
             print_execution(&e);
         }

@@ -130,6 +130,7 @@ pub enum OpState {
         amount: u128,
         owner: AccountId,
         escrow_shares: u128,
+        burn_shares: u128,
     },
 }
 
@@ -289,6 +290,15 @@ pub enum Event {
     RedeemRequested {
         shares: U128,
         estimated_assets: U128,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalQueued {
+        id: u64,
+        owner: AccountId,
+        receiver: AccountId,
+        escrow_shares: U128,
+        expected_assets: U128,
+        requested_at: u64,
     },
 
     // Allocation read/settlement diagnostics

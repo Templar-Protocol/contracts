@@ -13,3 +13,4 @@
 
 # documentation site
 _site/
+.aider*
