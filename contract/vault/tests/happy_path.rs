@@ -62,4 +62,18 @@ async fn happy() {
         amount.0,
         "Supply position should match amount of tokens supplied to contract",
     );
+
+    let user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
+    vault.withdraw(&supply_user, amount, None).await;
+    assert_eq!(
+        c.borrow_asset.balance_of(supply_user.id()).await,
+        amount.0 + user_balance,
+        "Supply user should have received their tokens back"
+    );
+
+    let supply_position = c.get_supply_position(v).await;
+    assert!(
+        supply_position.is_none(),
+        "Supply position should be closed"
+    );
 }

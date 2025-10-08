@@ -83,13 +83,12 @@ impl VaultController {
         #[call(exec, tgas(300))]
         pub fn allocate(weights: AllocationWeights, amount: Option<U128>);
 
-        // User withdrawal path; expects escrowed shares already held by the contract.
         #[call(exec, tgas(300))]
-        pub fn withdraw["start_withdraw"](amount: U128, receiver: AccountId, owner: AccountId, escrow_shares: U128);
+        pub fn withdraw(amount: U128, receiver: AccountId);
 
         // User redemption path; expects escrowed shares already held by the contract.
         #[call(exec, tgas(300))]
-        pub fn redeem["start_redeem"](shares: U128, receiver: AccountId, owner: AccountId, escrow_shares: U128);
+        pub fn redeem(shares: U128, receiver: AccountId);
 
         #[call(exec, tgas(50))]
         pub fn skim["skim"](token: AccountId);
@@ -288,6 +287,20 @@ impl UnifiedVaultController {
         let e = self
             .vault
             .allocate(allocator, weights, amount.unwrap_or(1000.into()))
+            .await;
+        if self.debug {
+            print_execution(&e);
+        }
+    }
+
+    pub async fn withdraw(&self, withdrawer: &Account, amount: U128, receiver: Option<AccountId>) {
+        let e = self
+            .vault
+            .withdraw(
+                withdrawer,
+                amount,
+                receiver.unwrap_or(withdrawer.id().clone()),
+            )
             .await;
         if self.debug {
             print_execution(&e);
