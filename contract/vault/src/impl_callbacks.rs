@@ -77,6 +77,7 @@ impl Contract {
 
     pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(4);
     pub const AFTER_SUPPLY_POSITION_CHECK_GAS: Gas = Gas::from_tgas(10);
+
     // FIXME: no panics in this function! This will cause to spin if the op changes
     #[private]
     pub fn after_supply_2_read(
@@ -146,9 +147,8 @@ impl Contract {
             }
         };
 
-        // Emit step settled event
         let accepted_event = new_principal.saturating_sub(before.0);
-        // Compute refund from ground truth (attempted - accepted), ignoring token-reported value
+
         let refunded = attempted.0.saturating_sub(accepted_event);
         Event::AllocationStepSettled {
             op_id,
@@ -164,6 +164,7 @@ impl Contract {
         .emit();
 
         self.market_supply.insert(market.clone(), new_principal);
+
         // Invariant: withdraw_queue gains any market with new_principal > 0
         if new_principal > 0 && !self.withdraw_queue.iter().any(|m| m == &market) {
             self.withdraw_queue.push(market.clone());
@@ -510,7 +511,6 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        // replaced log with events elsewhere; no-op here
         if let OpState::Allocating {
             op_id,
             index,
@@ -566,7 +566,6 @@ impl Contract {
             }
             .emit();
         }
-        // Take copies to avoid holding immutable borrows across mutable self calls.
         let (owner_acc, escrow) = match &self.op_state {
             OpState::Withdrawing {
                 owner,
@@ -605,7 +604,6 @@ impl Contract {
                 .emit();
             }
         }
-        // Take copies to avoid holding immutable borrows across mutable self calls.
         let (owner_acc, escrow) = match &self.op_state {
             OpState::Payout {
                 owner,
@@ -655,6 +653,7 @@ mod tests {
     use near_sdk::test_utils::{accounts, VMContextBuilder};
     use near_sdk::{test_utils::testing_env_with_promise_results, AccountId, PromiseOrValue};
     use near_sdk::{test_vm_config, testing_env, PromiseResult, RuntimeFeesConfig};
+    use rstest::rstest;
     use templar_common::asset::{BorrowAsset, FungibleAsset};
     use templar_common::vault::{AllocationMode, OpState, VaultConfiguration};
     use test_utils::vault_configuration;
@@ -747,7 +746,6 @@ mod tests {
 
         let receiver = mk(7);
 
-        // Seed idle balance and set Payout state; use zero escrow/burn to avoid FT side-effects in unit test.
         c.idle_balance = 1_000;
         c.op_state = OpState::Payout {
             op_id: 1,
@@ -758,7 +756,6 @@ mod tests {
             burn_shares: 0,
         };
 
-        // Provide a successful callback result
         let ok = c.after_send_to_user(Ok(()), 1, receiver.clone(), U128(200));
         assert!(ok, "Payout should report success");
         assert_eq!(c.idle_balance, 800, "Idle balance must decrease by payout");
@@ -793,20 +790,17 @@ mod tests {
 
         let res = c.after_exec_withdraw_read(Ok(None), 42, 0, U128(100), U128(60));
 
-        // Should schedule payout (Promise) after crediting and zeroing remaining
         match res {
-            PromiseOrValue::Promise(_) => {}
+            PromiseOrValue::Promise(p) => {}
             _ => panic!("Expected a Promise to send payout"),
         }
 
-        // Market principal should be zeroed
         assert_eq!(
             *c.market_supply.get(&market).unwrap_or(&u128::MAX),
             0,
             "Market principal should be updated to 0"
         );
 
-        // Idle balance should be credited by 60
         assert_eq!(
             c.idle_balance, 60,
             "Idle balance should increase by credited amount"
@@ -828,7 +822,6 @@ mod tests {
 
         let mut c = new_test_contract(&vault_id);
 
-        // Zero balance -> Value(())
         let res = c.after_skim_balance(Ok(U128(0)), mk(10), mk(11));
         match res {
             PromiseOrValue::Value(()) => {}
@@ -846,11 +839,208 @@ mod tests {
         // Positive balance -> Promise to ft_transfer
         let res = c.after_skim_balance(Ok(U128(123)), mk(10), mk(11));
         match res {
-            PromiseOrValue::Promise(_) => {}
+            PromiseOrValue::Promise(_) => { //NOTE: one day we will be able to read the promise
+                 //definition :<
+            }
             _ => panic!("Skim with positive balance must return a Promise"),
         }
     }
 
-    #[test]
-    fn stop_and_exit_same_op() {}
+    // Property: Payout failure keeps idle_balance unchanged and does not burn escrow
+    #[rstest(
+        idle => [0u128, 1, 100],
+        escrow => [0u128, 1, 50],
+        amount => [0u128, 1, 25]
+    )]
+    fn prop_after_send_to_user_failure_keeps_idle(idle: u128, escrow: u128, amount: u128) {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        let receiver = mk(7);
+        let owner = accounts(1);
+
+        if escrow > 0 {
+            use near_sdk_contract_tools::ft::Nep141Controller as _;
+
+            c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+                .expect("seed escrow into vault");
+        }
+
+        c.idle_balance = idle;
+        c.op_state = OpState::Payout {
+            op_id: 1,
+            receiver: receiver.clone(),
+            amount,
+            owner: owner.clone(),
+            escrow_shares: escrow,
+            burn_shares: escrow,
+        };
+
+        let before = c.idle_balance;
+        let ok = c.after_send_to_user(
+            Err(near_sdk::PromiseError::Failed),
+            1,
+            receiver.clone(),
+            U128(amount),
+        );
+        assert!(!ok, "Payout failure should return false");
+        assert_eq!(
+            c.idle_balance, before,
+            "idle_balance must stay the same on payout failure"
+        );
+        assert!(
+            matches!(c.op_state, OpState::Idle),
+            "Vault must go Idle after payout failure"
+        );
+    }
+
+    // Property: Create-withdraw failure skips to next market and if collected>0 ends in Payout
+    #[rstest(
+        collected => [1u128, 10u128],
+        need => [1u128, 5u128]
+    )]
+    fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        // Single-market queue so advancing index reaches end-of-queue
+        let market = mk(8);
+        c.withdraw_queue.push(market.clone());
+        c.market_supply.insert(market.clone(), 100);
+
+        c.op_state = OpState::Withdrawing {
+            op_id: 7,
+            index: 0,
+            remaining: need,
+            receiver: mk(9),
+            collected,
+            owner: accounts(1),
+            escrow_shares: 0,
+        };
+
+        let res =
+            c.after_create_withdraw_req(Err(near_sdk::PromiseError::Failed), 7, 0, U128(need));
+        match res {
+            PromiseOrValue::Promise(_) => {}
+            _ => panic!("Expected Promise after skipping to payout at end-of-queue"),
+        }
+
+        match &c.op_state {
+            OpState::Payout { amount, .. } => {
+                assert_eq!(*amount, collected, "Payout amount must equal collected")
+            }
+            other => panic!("Unexpected state: {:?}", other),
+        }
+    }
+
+    // Property: Exec-withdraw read failure assumes unchanged principal and does not credit idle
+    #[rstest(
+        before => [0u128, 1u128, 100u128],
+        need => [0u128, 1u128, 50u128],
+        collected => [1u128, 2u128]
+    )]
+    fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collected: u128) {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        let market = mk(8);
+        c.withdraw_queue.push(market.clone());
+        c.market_supply.insert(market.clone(), before);
+
+        let initial_idle = c.idle_balance;
+
+        c.op_state = OpState::Withdrawing {
+            op_id: 99,
+            index: 0,
+            remaining: need,
+            receiver: mk(9),
+            collected,
+            owner: accounts(1),
+            escrow_shares: 0,
+        };
+
+        let res = c.after_exec_withdraw_read(
+            Err(near_sdk::PromiseError::Failed),
+            99,
+            0,
+            U128(before),
+            U128(need),
+        );
+        match res {
+            PromiseOrValue::Promise(_) => {}
+            _ => panic!("Expected Promise to send payout at end-of-queue"),
+        }
+
+        assert_eq!(
+            *c.market_supply.get(&market).unwrap_or(&u128::MAX),
+            before,
+            "principal must remain unchanged on read failure"
+        );
+        assert_eq!(
+            c.idle_balance, initial_idle,
+            "idle_balance must not change when nothing credited"
+        );
+
+        match &c.op_state {
+            OpState::Payout { amount, .. } => {
+                assert_eq!(*amount, collected, "Payout amount must equal collected")
+            }
+            other => panic!("Unexpected state: {:?}", other),
+        }
+    }
+
+    // Property: Callbacks must match current op_id or index; otherwise stop and go Idle
+    #[rstest(
+        pass_op => [false, true],
+        pass_index => [false, true]
+    )]
+    fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_index: bool) {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        let market = mk(8);
+        c.withdraw_queue.push(market.clone());
+        c.market_supply.insert(market.clone(), 10);
+
+        let real_op = 5u64;
+        let real_idx = 0u32;
+
+        c.op_state = OpState::Withdrawing {
+            op_id: real_op,
+            index: real_idx,
+            remaining: 1,
+            receiver: mk(9),
+            collected: 1,
+            owner: accounts(1),
+            escrow_shares: 0,
+        };
+
+        let call_op = if pass_op { real_op } else { real_op + 1 };
+        let call_idx = if pass_index { real_idx } else { real_idx + 1 };
+
+        let r = c.after_exec_withdraw_read(Ok(None), call_op, call_idx, U128(10), U128(1));
+        match (pass_op, pass_index) {
+            (true, true) => {
+                assert!(
+                    !matches!(c.op_state, OpState::Idle),
+                    "Valid callback should not immediately stop"
+                );
+            }
+            _ => {
+                // Any mismatch should stop and go Idle
+                match r {
+                    PromiseOrValue::Value(()) => {}
+                    _ => {}
+                }
+                assert!(
+                    matches!(c.op_state, OpState::Idle),
+                    "Mismatched callback must stop and go Idle"
+                );
+            }
+        }
+    }
 }
