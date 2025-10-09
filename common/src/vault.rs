@@ -15,7 +15,7 @@ pub type ActualIdx = u32;
 pub type AllocationWeights = Vec<(AccountId, U128)>;
 pub type AllocationPlan = Vec<(AccountId, u128)>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[near(serializers = [json, borsh])]
 pub enum AllocationMode {
     //     When eager makes sense
@@ -37,7 +37,10 @@ pub enum AllocationMode {
     // Behaviour
     // • On deposit: if Idle and idle_balance ≥ min_batch, start_allocation(idle_balance).
     // • Eager allocation can still honor a per-op plan if one is set (plan wins); otherwise fall back to supply_queue order.
-    Eager { min_batch: u128 },
+    Eager {
+        min_batch: u128,
+    },
+    #[default]
     Lazy,
 }
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
