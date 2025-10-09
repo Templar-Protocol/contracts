@@ -1,0 +1,14 @@
+; vim: set filetype=dosini:
+[Unit]
+Description=Templar Accumulator Bot
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/default/accumulator
+ExecStart="/usr/local/bin/accumulator"
+Restart=on-failure
+User=root
+WorkingDirectory=/usr/local/bin
+
+[Install]
+WantedBy=multi-user.target

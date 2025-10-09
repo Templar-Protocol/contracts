@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use base64::Engine;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{
     errors::JsonRpcError,
@@ -100,9 +99,7 @@ pub async fn get_access_key_data(
 
 #[allow(clippy::expect_used, reason = "We know the serialization will succeed")]
 pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
-    base64::engine::general_purpose::STANDARD
-        .encode(serde_json::to_string(&data).expect("Failed to serialize data"))
-        .into_bytes()
+    serde_json::to_vec(&data).expect("Failed to serialize data")
 }
 
 #[instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]
