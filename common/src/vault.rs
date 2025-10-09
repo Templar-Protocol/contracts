@@ -108,7 +108,7 @@ pub struct PendingValue<T> {
     pub valid_at: TimestampNs,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 /// Operation state machine for asynchronous allocation, withdrawal, and payout flows.
 pub enum OpState {

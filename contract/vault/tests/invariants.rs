@@ -10,7 +10,6 @@ use test_utils::{
 // TODO(prop): every callback must be for the current op and market index
 // TODO(prop): allocation accounting: Accepted amount = new_principal - before &never more than attempted
 // TODO(prop): allocation attempts: any market that is enabled (new_principal > 0) must be in the withdraw queue
-// TODO(prop): withdraw queue must never have duplicates
 // TODO(prop): enabling a market (cap > 0) must add it to the withdraw queue
 // TODO(prop): stop and exit: must never mutiny funds or escrow
 
