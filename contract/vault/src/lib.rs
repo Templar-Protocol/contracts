@@ -1375,7 +1375,7 @@ impl Contract {
                     escrow_shares,
                     burn_shares,
                 };
-                return PromiseOrValue::Promise(
+                PromiseOrValue::Promise(
                     self.underlying_asset
                         .transfer(receiver.clone(), U128(collected).into())
                         .then(
@@ -1383,13 +1383,13 @@ impl Contract {
                                 .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
                                 .after_send_to_user(op_id, receiver, U128(collected)),
                         ),
-                );
+                )
             } else {
                 // Nothing collected at all; refund escrow and stop with InsufficientLiquidity
                 let self_id = env::current_account_id();
                 self.transfer_unchecked(&self_id, &owner, escrow_shares)
                     .expect("Failed to release escrowed shares");
-                return self.stop_and_exit(Some(&Error::InsufficientLiquidity));
+                self.stop_and_exit(Some(&Error::InsufficientLiquidity))
             }
         }
     }
@@ -1429,7 +1429,6 @@ mod test_utils {
     }
 
     pub fn new_test_contract(vault_id: &AccountId) -> Contract {
-        // Ensure env is available before constructing the contract (uses env::storage_usage etc).
         setup_env(vault_id, vault_id, vec![]);
 
         // Basic accounts
