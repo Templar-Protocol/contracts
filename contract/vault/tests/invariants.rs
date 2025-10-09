@@ -12,6 +12,7 @@ use test_utils::{
 // TODO(prop): allocation attempts: any market that is enabled (new_principal > 0) must be in the withdraw queue
 // TODO(prop): withdraw queue must never have duplicates
 // TODO(prop): enabling a market (cap > 0) must add it to the withdraw queue
+// TODO(prop): stop and exit: must never mutiny funds or escrow
 
 // Withdraws
 // TODO(integration): try withdraw & idle first: idle balance can be utilised on a first-come-first-serve basis => it
@@ -27,17 +28,36 @@ use test_utils::{
 // TODO(integration): payout failure: idle doesnt change  & refund escrowed shares to original owner
 
 // TODO(integration): single-op state machine, all mutators must be idle
-// TODO(integration): stop and exit: must never mutiny funds or escrow
 
 // Note: happy path?: credit principal only after proper supply to marfket
 
 // TODO: Withdraw read only credits idle
 
 #[tokio::test]
-async fn supply_queue_mustnt_have_duplicates() {}
+#[should_panic = "Duplicate market"]
+async fn supply_queue_mustnt_have_duplicates() {
+    setup_test!(
+        extract(vault, c, vault_curator)
+        accounts(supply_user, borrow_user)
+    );
+    let m = c.market.contract().id().clone();
+
+    let queue = vec![m.clone(), m.clone()];
+    vault.set_supply_queue(&vault_curator, &queue).await;
+}
 
 #[tokio::test]
-async fn withdraw_queue_mustnt_have_duplicates() {}
+#[should_panic = "Duplicate market"]
+async fn withdraw_queue_mustnt_have_duplicates() {
+    setup_test!(
+        extract(vault, c, vault_curator)
+        accounts(supply_user, borrow_user)
+    );
+    let m = c.market.contract().id().clone();
+
+    let queue = vec![m.clone(), m.clone()];
+    vault.set_withdraw_queue(&vault_curator, &queue).await;
+}
 
 #[tokio::test]
 async fn fee_accrual_only_when_aum_grows() {}
