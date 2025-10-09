@@ -101,6 +101,8 @@ async fn happy() {
     vault
         .withdraw(&supply_user, (amount.0 - borrowed).into(), None)
         .await;
+
+    vault.execute_next_withdrawal(&vault_curator).await;
 }
 
 // FIXME: should also do this in allocate on behalf of the vault?
