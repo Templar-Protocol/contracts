@@ -190,7 +190,13 @@ impl App {
         handle.allowed_contract_data = allowed_contracts;
     }
 
-    fn actions_are_allowed<'a>(
+    /// Checks that the all of the function call actions are allowed for the specific receiver.
+    ///
+    /// # Errors
+    ///
+    /// - If the receiver is not known.
+    /// - If any of the function call actions are not allowed.
+    pub fn actions_are_allowed<'a>(
         &self,
         receiver_id: &AccountIdRef,
         accounts: &AccountData,

@@ -56,6 +56,6 @@ impl UniversalAccountController {
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
 
         #[call(exec, tgas(300))]
-        pub fn execute_passkey["execute"](key: KeyId, message: passkey::UncheckedMessage::<Vec<Transaction>>);
+        pub fn execute_passkey["execute"](key: KeyId, message: passkey::Message::<Vec<Transaction>>);
     }
 }

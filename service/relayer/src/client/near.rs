@@ -29,6 +29,7 @@ use near_sdk::{
 use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBounds};
 
 use templar_common::market::MarketConfiguration;
+use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
 
 use crate::{cache::Cache, MarketData};
 
@@ -307,6 +308,43 @@ impl Near {
         .sign(signer)
     }
 
+    #[must_use]
+    pub async fn construct_ua_execute_transaction(
+        &self,
+        cache: &Cache,
+        ua_account_id: AccountId,
+        args: ExecuteArgs,
+        gas: u64,
+    ) -> SignedTransaction {
+        let signer = self.next_signer();
+        let public_key = signer.public_key();
+
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
+
+        let action = FunctionCallAction {
+            method_name: "deploy".to_string(),
+            args: serde_json::to_vec(&json!({
+                "key": args.key(),
+                "message": args.message(),
+            }))
+            .unwrap(),
+            gas,
+            deposit: 0,
+        };
+
+        Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key,
+            nonce,
+            receiver_id: ua_account_id,
+            block_hash,
+            actions: vec![action.into()],
+        })
+        .sign(signer)
+    }
+
     /// # Errors
     ///
     /// - RPC errors
@@ -414,5 +452,17 @@ impl Near {
             borrow_asset: market_configuration.borrow_asset,
             collateral_asset: market_configuration.collateral_asset,
         })
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn load_ua_key(
+        &self,
+        ua_account_id: AccountId,
+        key: KeyId,
+    ) -> Result<Option<ExecutionParameters>, ViewError> {
+        self.view(ua_account_id, "get_key", json!({ "key": key }))
+            .await
     }
 }

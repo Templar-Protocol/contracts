@@ -6,6 +6,7 @@ use near_sdk::{
 use p256::elliptic_curve::rand_core::OsRng;
 use templar_universal_account::{
     authentication::passkey::{
+        self,
         data::{AuthenticatorData, ClientDataJson},
         with_raw_string::WithRawString,
         Passkey, Payload, UncheckedMessage,
@@ -85,7 +86,7 @@ pub async fn universal_account() {
 
     let challenge = payload.hash();
 
-    let message = UncheckedMessage::new_and_sign(
+    let message: passkey::Message<_> = UncheckedMessage::new_and_sign(
         &secret_key,
         payload,
         AuthenticatorData(Box::new([0xff_u8; 32])),
@@ -96,7 +97,9 @@ pub async fn universal_account() {
             cross_origin: None,
             top_origin: None,
         }),
-    );
+    )
+    .try_into()
+    .unwrap();
 
     // eprintln!("{message:#?}");
     eprintln!("{}", serde_json::to_string_pretty(&message).unwrap());

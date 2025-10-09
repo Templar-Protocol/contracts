@@ -130,6 +130,7 @@ pub struct UniversalAccount {
     ///
     /// iterations ~ 2^difficulty
     #[arg(
+        id = "ua-pow-difficulty",
         long = "ua-pow-difficulty",
         env = "UA_POW_DIFFICULTY",
         default_value_t = 17
@@ -139,6 +140,7 @@ pub struct UniversalAccount {
     ///
     /// Based on the block hash referenced in the creation request.
     #[arg(
+        id = "ua-blockref-max-age-secs",
         long = "ua-blockref-max-age-secs",
         env = "UA_BLOCKREF_MAX_AGE_SECS",
         value_parser = duration_from_secs,
@@ -149,8 +151,15 @@ pub struct UniversalAccount {
     #[arg(id = "ua-registry-id", long = "ua-registry-id", env = "UA_REGISTRY_ID")]
     pub registry_id: AccountId,
     /// Version key of the universal account contract to deploy from the registry.
-    #[arg(long = "ua-version-key", env = "UA_VERSION_KEY")]
+    #[arg(id = "ua-version-key", long = "ua-version-key", env = "UA_VERSION_KEY")]
     pub version_key: String,
+    #[arg(
+        id = "ua-execute-tgas",
+        long = "ua-execute-tgas",
+        env = "UA_EXECUTE_TGAS",
+        default_value_t = 35
+    )]
+    pub execute_tgas: u64,
 }
 
 fn default_allowed_methods() -> Vec<String> {
