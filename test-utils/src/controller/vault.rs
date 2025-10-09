@@ -260,25 +260,12 @@ impl UnifiedVaultController {
     }
 
     pub async fn setup_caps(&self, owner: &Account, markets: &[AccountId], amount: u128) {
-        let mut submits = vec![];
-        let mut accepts = vec![];
-
         for mkt in markets {
-            submits.push(self.submit_cap(owner, mkt.clone(), amount).await);
-            accepts.push(self.accept_cap(owner, mkt.clone()).await);
+            self.submit_cap(owner, mkt.clone(), amount.into()).await;
+            self.accept_cap(owner, mkt.clone()).await;
         }
 
-        let set_queue = self.set_supply_queue(&owner, markets).await;
-
-        if self.debug {
-            for s in submits {
-                print_execution(&s);
-            }
-            for a in accepts {
-                print_execution(&a);
-            }
-            print_execution(&set_queue);
-        }
+        self.set_supply_queue(owner, markets).await;
     }
 
     pub async fn allocate(
@@ -312,6 +299,34 @@ impl UnifiedVaultController {
 
     pub async fn execute_next_withdrawal(&self, allocator: &Account) {
         let e = self.vault.execute_next_withdrawal_request(allocator).await;
+        if self.debug {
+            print_execution(&e);
+        }
+    }
+
+    pub async fn submit_cap(&self, submitter: &Account, market: AccountId, amount: U128) {
+        let e = self.vault.submit_cap(submitter, market, amount).await;
+        if self.debug {
+            print_execution(&e);
+        }
+    }
+
+    pub async fn accept_cap(&self, acceptor: &Account, market: AccountId) {
+        let e = self.vault.accept_cap(acceptor, market).await;
+        if self.debug {
+            print_execution(&e);
+        }
+    }
+
+    pub async fn set_supply_queue(&self, allocator: &Account, markets: &[AccountId]) {
+        let e = self.vault.set_supply_queue(allocator, markets).await;
+        if self.debug {
+            print_execution(&e);
+        }
+    }
+
+    pub async fn set_withdraw_queue(&self, allocator: &Account, markets: &[AccountId]) {
+        let e = self.vault.set_withdraw_queue(allocator, markets).await;
         if self.debug {
             print_execution(&e);
         }
