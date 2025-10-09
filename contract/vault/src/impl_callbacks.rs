@@ -647,6 +647,9 @@ impl Contract {
 
 #[cfg(test)]
 mod tests {
+    use std::u128;
+
+    use crate::test_utils::*;
     use crate::Contract;
     use near_sdk::json_types::U128;
     use near_sdk::test_utils::{accounts, VMContextBuilder};
@@ -656,50 +659,83 @@ mod tests {
     use templar_common::vault::{AllocationMode, OpState, VaultConfiguration};
     use test_utils::vault_configuration;
 
-    fn mk(n: u32) -> AccountId {
-        format!("acc{n}.testnet").parse().expect("valid account id")
-    }
-
-    fn setup_env(
-        current: &AccountId,
-        predecessor: &AccountId,
-        promise_results: Vec<PromiseResult>,
-    ) {
-        let mut builder = VMContextBuilder::new();
-        builder.current_account_id(current.clone());
-        builder.predecessor_account_id(predecessor.clone());
-        builder.signer_account_id(predecessor.clone());
-        testing_env!(
-            builder.build(),
-            test_vm_config(),
-            RuntimeFeesConfig::test(),
-            Default::default(),
-            promise_results
-        );
-    }
-
-    fn new_test_contract(vault_id: &AccountId) -> Contract {
-        // Ensure env is available before constructing the contract (uses env::storage_usage etc).
-        setup_env(vault_id, vault_id, vec![]);
-
-        // Basic accounts
-        let owner = accounts(1);
-        let curator = accounts(2);
-        let guardian = accounts(3);
-        let fee_recipient = accounts(4);
-        let skim_recipient = accounts(5);
-        let underlying_token_id = mk(6);
-
-        let cfg = vault_configuration(
-            owner,
-            curator,
-            guardian,
-            underlying_token_id,
-            skim_recipient,
-            fee_recipient,
+    #[test]
+    fn after_supply_1_check_allocating_not_allocating() {
+        let vault_id = accounts(0);
+        setup_env(
+            &vault_id,
+            &vault_id,
+            vec![PromiseResult::Successful(
+                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap(),
+            )],
         );
 
-        Contract::new(cfg)
+        let mut c = new_test_contract(&vault_id);
+
+        let receiver = mk(7);
+
+        c.op_state = OpState::Idle;
+
+        c.after_supply_1_check(Ok(U128(1)), 0, 2, Default::default());
+
+        assert_eq!(c.op_state, OpState::Idle);
+        assert_eq!(c.plan, None);
+    }
+
+    #[test]
+    fn after_supply_1_check_allocating_not_allocating_index() {
+        let vault_id = accounts(0);
+        setup_env(
+            &vault_id,
+            &vault_id,
+            vec![PromiseResult::Successful(
+                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap(),
+            )],
+        );
+
+        let mut c = new_test_contract(&vault_id);
+
+        let op_id = 1;
+        let receiver = mk(7);
+
+        c.op_state = OpState::Allocating {
+            op_id,
+            index: 0u32,
+            remaining: 0u128,
+        };
+
+        c.after_supply_1_check(Ok(U128(1)), op_id + 1, 0, Default::default());
+
+        assert_eq!(c.op_state, OpState::Idle);
+        assert_eq!(c.plan, None);
+    }
+
+    #[test]
+    fn after_supply_1_check_allocating() {
+        let vault_id = accounts(0);
+        setup_env(
+            &vault_id,
+            &vault_id,
+            vec![PromiseResult::Successful(
+                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap(),
+            )],
+        );
+
+        let mut c = new_test_contract(&vault_id);
+
+        let op_id = 1;
+        let receiver = mk(7);
+
+        c.op_state = OpState::Allocating {
+            op_id,
+            index: 0u32,
+            remaining: 0u128,
+        };
+
+        c.after_supply_1_check(Ok(U128(1)), op_id, 0, Default::default());
+
+        assert_eq!(c.op_state, OpState::Idle);
+        assert_eq!(c.plan, None);
     }
 
     #[test]
@@ -814,4 +850,7 @@ mod tests {
             _ => panic!("Skim with positive balance must return a Promise"),
         }
     }
+
+    #[test]
+    fn stop_and_exit_same_op() {}
 }
