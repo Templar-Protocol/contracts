@@ -20,7 +20,7 @@ use templar_universal_account::{
         passkey::{self, Passkey},
         ExecutionContextProvider, Key,
     },
-    Execute, KeyId,
+    ExecutionParameters, KeyId,
 };
 
 use crate::{
@@ -40,14 +40,6 @@ pub struct CreatePasskeyAccount {
 impl PowTarget for CreatePasskeyAccount {
     fn pow_target(&self) -> String {
         format!("{},{}", &self.key.0, &self.block_hash)
-    }
-}
-
-impl Execute for CreatePasskeyAccount {
-    type Output = Self;
-
-    fn execute(&self) -> Self::Output {
-        self.clone()
     }
 }
 
@@ -71,25 +63,32 @@ pub async fn create(
 ) -> SimpleResponse<CreateResponse> {
     let CreateRequest::Passkey(message) = request;
 
-    // Verify PoW
+    let key = &message.payload_unchecked().payload_unchecked().key;
 
-    let payload = match message.payload().verify_pow(app.args.ua.pow_difficulty) {
+    let pow_payload = match key.check(
+        &message,
+        &app.args.ua.account_id,
+        &mut ExecutionParameters {
+            index: 0.into(),
+            nonce: 0.into(),
+        },
+    ) {
         Ok(p) => p,
         Err(e) => {
+            tracing::info!("Payload failed verification: {e}");
             return SimpleResponse::Rejected {
-                reason: e.to_string(),
+                reason: format!("Payload failed verification: {e}"),
             };
         }
     };
 
-    // Verify signature
+    // Verify PoW
 
-    let passkey = &payload.key;
-    let payload = match passkey.verify_signature(&message) {
+    let payload = match pow_payload.verify_pow(app.args.ua.pow_difficulty) {
         Ok(p) => p,
         Err(e) => {
             return SimpleResponse::Rejected {
-                reason: format!("Invalid payload: {e}"),
+                reason: e.to_string(),
             };
         }
     };
@@ -164,7 +163,7 @@ pub async fn create(
             account_slug,
             app.args.ua.version_key.clone(),
             json!({
-                "key": KeyId::Passkey(payload.key),
+                "key": KeyId::Passkey(key.clone()),
             }),
             None,
         )

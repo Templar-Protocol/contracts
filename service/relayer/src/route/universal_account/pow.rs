@@ -3,7 +3,6 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
 };
 use sha2::{Digest, Sha256};
-use templar_universal_account::Execute;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -78,12 +77,9 @@ impl<T: PowTarget> Pow<T> {
             Err(FailsTargetDifficulty { actual, target })
         }
     }
-}
 
-impl<T: Execute> Execute for Pow<T> {
-    type Output = <T as Execute>::Output;
-
-    fn execute(&self) -> Self::Output {
-        self.payload.execute()
+    /// Gets the payload without checking the proof-of-work.
+    pub fn payload_unchecked(&self) -> &T {
+        &self.payload
     }
 }

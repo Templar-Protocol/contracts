@@ -15,9 +15,9 @@ pub struct Transaction {
 }
 
 impl Execute for Transaction {
-    type Output = Promise;
+    type Output<'a> = Promise;
 
-    fn execute(&self) -> Self::Output {
+    fn execute(&self) -> Self::Output<'_> {
         let mut promise = Promise::new(self.receiver_id.clone());
 
         for action in &self.actions {
@@ -29,9 +29,9 @@ impl Execute for Transaction {
 }
 
 impl Execute for Vec<Transaction> {
-    type Output = Promise;
+    type Output<'a> = Promise;
 
-    fn execute(&self) -> Self::Output {
+    fn execute(&self) -> Self::Output<'_> {
         let mut promise = self
             .first()
             .unwrap_or_else(|| env::panic_str("empty"))

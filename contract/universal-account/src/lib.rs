@@ -7,9 +7,9 @@ use near_sdk::{
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    authentication::{passkey, ExecutionContextProvider, Key},
+    authentication::{passkey, Key},
     transaction::Transaction,
-    ExecutionParameters, KeyId,
+    Execute, ExecutionParameters, KeyId,
 };
 
 #[derive(PanicOnDefault)]
@@ -81,12 +81,9 @@ impl Contract {
 
         let current_account_id = env::current_account_id();
 
-        message
-            .verify_and_increment_nonce(&current_account_id, key_entry)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-        key.verify_signature(&message)
+        key.check(&message, &current_account_id, key_entry)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+            .execute()
     }
 }
 

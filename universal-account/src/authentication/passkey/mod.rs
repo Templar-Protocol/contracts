@@ -5,7 +5,6 @@ use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 
 use super::{ExecutionContextProvider, ExecutionParameters, Key};
-use crate::Execute;
 
 use data::{AuthenticatorData, ClientDataJson};
 use signature::Signature;
@@ -30,17 +29,13 @@ fn sig_base(
 #[near(serializers = [borsh, json])]
 pub struct Passkey(pub crate::encoding::p256::PublicKey);
 
-impl<T: Execute> Key<Message<T>> for Passkey {
+impl<T> Key<Message<T>> for Passkey {
     type Signature = Signature;
-    type Error = Error;
 
-    fn verify_signature(&self, message: &Message<T>) -> Result<T::Output, Error> {
-        // Check signature
+    fn is_signature_valid(&self, message: &Message<T>) -> bool {
         VerifyingKey::from(*self.0)
             .verify(&message.payload_prehash(), &**message.signature())
-            .map_err(|_| Error::InvalidSignature)?;
-
-        Ok(message.payload().execute())
+            .is_ok()
     }
 }
 
@@ -82,14 +77,6 @@ impl<T> UncheckedMessage<T> {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("Payload hash mismatch")]
-    PayloadHashMismatch,
-    #[error("Invalid signature")]
-    InvalidSignature,
-}
-
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Payload hash mismatch")]
 pub struct PayloadHashMismatchError;
@@ -112,7 +99,7 @@ impl<T> TryFrom<UncheckedMessage<T>> for Message<T> {
     }
 }
 
-impl<P: Execute> ExecutionContextProvider for Message<P> {
+impl<P> ExecutionContextProvider for Message<P> {
     type Payload = P;
     type Signature = Signature;
 
@@ -132,7 +119,7 @@ impl<P: Execute> ExecutionContextProvider for Message<P> {
         &self.0.signature
     }
 
-    fn payload(&self) -> &Self::Payload {
+    fn payload_unchecked(&self) -> &Self::Payload {
         &self.0.message.parsed.payload
     }
 }

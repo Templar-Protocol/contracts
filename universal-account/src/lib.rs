@@ -19,7 +19,9 @@ pub struct ExecutionParameters {
 }
 
 pub trait Execute {
-    type Output;
+    type Output<'a>
+    where
+        Self: 'a;
 
-    fn execute(&self) -> Self::Output;
+    fn execute(&self) -> Self::Output<'_>;
 }
