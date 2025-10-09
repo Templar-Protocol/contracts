@@ -434,7 +434,9 @@ impl Contract {
                 owner,
                 escrow_shares,
                 burn_shares,
-            } if *cur == op_id && *r == receiver => (owner.clone(), *escrow_shares, *a, *burn_shares),
+            } if *cur == op_id && *r == receiver => {
+                (owner.clone(), *escrow_shares, *a, *burn_shares)
+            }
             _ => {
                 Event::PayoutUnexpectedState {
                     op_id,
@@ -640,5 +642,176 @@ impl Contract {
             }
         }
         PromiseOrValue::Value(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Contract;
+    use near_sdk::json_types::U128;
+    use near_sdk::test_utils::{accounts, VMContextBuilder};
+    use near_sdk::{test_utils::testing_env_with_promise_results, AccountId, PromiseOrValue};
+    use near_sdk::{test_vm_config, testing_env, PromiseResult, RuntimeFeesConfig};
+    use templar_common::asset::{BorrowAsset, FungibleAsset};
+    use templar_common::vault::{AllocationMode, OpState, VaultConfiguration};
+    use test_utils::vault_configuration;
+
+    fn mk(n: u32) -> AccountId {
+        format!("acc{n}.testnet").parse().expect("valid account id")
+    }
+
+    fn setup_env(
+        current: &AccountId,
+        predecessor: &AccountId,
+        promise_results: Vec<PromiseResult>,
+    ) {
+        let mut builder = VMContextBuilder::new();
+        builder.current_account_id(current.clone());
+        builder.predecessor_account_id(predecessor.clone());
+        builder.signer_account_id(predecessor.clone());
+        testing_env!(
+            builder.build(),
+            test_vm_config(),
+            RuntimeFeesConfig::test(),
+            Default::default(),
+            promise_results
+        );
+    }
+
+    fn new_test_contract(vault_id: &AccountId) -> Contract {
+        // Ensure env is available before constructing the contract (uses env::storage_usage etc).
+        setup_env(vault_id, vault_id, vec![]);
+
+        // Basic accounts
+        let owner = accounts(1);
+        let curator = accounts(2);
+        let guardian = accounts(3);
+        let fee_recipient = accounts(4);
+        let skim_recipient = accounts(5);
+        let underlying_token_id = mk(6);
+
+        let cfg = vault_configuration(
+            owner,
+            curator,
+            guardian,
+            underlying_token_id,
+            skim_recipient,
+            fee_recipient,
+        );
+
+        Contract::new(cfg)
+    }
+
+    #[test]
+    fn after_send_to_user_success_no_escrow() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+
+        let mut c = new_test_contract(&vault_id);
+
+        let receiver = mk(7);
+
+        // Seed idle balance and set Payout state; use zero escrow/burn to avoid FT side-effects in unit test.
+        c.idle_balance = 1_000;
+        c.op_state = OpState::Payout {
+            op_id: 1,
+            receiver: receiver.clone(),
+            amount: 200,
+            owner: accounts(1),
+            escrow_shares: 0,
+            burn_shares: 0,
+        };
+
+        // Provide a successful callback result
+        let ok = c.after_send_to_user(Ok(()), 1, receiver.clone(), U128(200));
+        assert!(ok, "Payout should report success");
+        assert_eq!(c.idle_balance, 800, "Idle balance must decrease by payout");
+        assert!(
+            matches!(c.op_state, OpState::Idle),
+            "Vault must go Idle after successful payout"
+        );
+    }
+
+    #[test]
+    fn after_exec_withdraw_read_none_to_payout() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+
+        let mut c = new_test_contract(&vault_id);
+
+        // Prepare a single-market withdraw queue with non-zero principal
+        let market = mk(8);
+        c.withdraw_queue.push(market.clone());
+        c.market_supply.insert(market.clone(), 100);
+
+        // Withdrawing: need 60, already collected 10; expect position None => new_principal = 0, withdrawn = 100, credited = min(100, 60) = 60
+        c.op_state = OpState::Withdrawing {
+            op_id: 42,
+            index: 0,
+            remaining: 60,
+            receiver: mk(9),
+            collected: 10,
+            owner: accounts(1),
+            escrow_shares: 50,
+        };
+
+        let res = c.after_exec_withdraw_read(Ok(None), 42, 0, U128(100), U128(60));
+
+        // Should schedule payout (Promise) after crediting and zeroing remaining
+        match res {
+            PromiseOrValue::Promise(_) => {}
+            _ => panic!("Expected a Promise to send payout"),
+        }
+
+        // Market principal should be zeroed
+        assert_eq!(
+            *c.market_supply.get(&market).unwrap_or(&u128::MAX),
+            0,
+            "Market principal should be updated to 0"
+        );
+
+        // Idle balance should be credited by 60
+        assert_eq!(
+            c.idle_balance, 60,
+            "Idle balance should increase by credited amount"
+        );
+
+        // State should transition to Payout with amount = collected (10) + credited (60) = 70
+        match &c.op_state {
+            OpState::Payout { amount, .. } => {
+                assert_eq!(*amount, 70, "Payout amount must match collected + credited");
+            }
+            other => panic!("Unexpected state after read: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn after_skim_balance_zero_noop() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+
+        let mut c = new_test_contract(&vault_id);
+
+        // Zero balance -> Value(())
+        let res = c.after_skim_balance(Ok(U128(0)), mk(10), mk(11));
+        match res {
+            PromiseOrValue::Value(()) => {}
+            _ => panic!("Skim with zero balance must be a no-op"),
+        }
+    }
+
+    #[test]
+    fn after_skim_balance_positive_returns_promise() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+
+        let mut c = new_test_contract(&vault_id);
+
+        // Positive balance -> Promise to ft_transfer
+        let res = c.after_skim_balance(Ok(U128(123)), mk(10), mk(11));
+        match res {
+            PromiseOrValue::Promise(_) => {}
+            _ => panic!("Skim with positive balance must return a Promise"),
+        }
     }
 }
