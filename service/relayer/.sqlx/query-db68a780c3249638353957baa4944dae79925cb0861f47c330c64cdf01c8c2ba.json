@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nWITH inserted AS (\n    INSERT INTO\n        \"transaction\" (\n            transaction_hash,\n            account_id,\n            \"status\",\n            allowance_spent_gas,\n            allowance_spent_inner\n        )\n    VALUES\n        ($1, $2, 'pending'::transaction_status, $3, $4)\n    RETURNING\n        transaction_hash\n)\nUPDATE\n    account\nSET\n    pending_transaction_hash = (\n        SELECT\n            transaction_hash\n        FROM\n            inserted\n    )\nWHERE\n    account_id = $2\n    AND pending_transaction_hash IS NULL\nRETURNING\n    pending_transaction_hash\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pending_transaction_hash",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Numeric",
+        "Numeric"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "db68a780c3249638353957baa4944dae79925cb0861f47c330c64cdf01c8c2ba"
+}

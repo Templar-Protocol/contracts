@@ -1,5 +1,4 @@
 -- up
-
 ALTER TABLE
     call RENAME TO "transaction";
 
@@ -34,7 +33,9 @@ ADD
 ADD
     COLUMN allowance_spent_inner numeric(39, 0) NOT NULL DEFAULT 0;
 
-CREATE UNIQUE INDEX uq__max_one_pending_tx_per_account ON "transaction" (account_id) WHERE "status" = 'pending'::transaction_status;
+CREATE UNIQUE INDEX uq__max_one_pending_tx_per_account ON "transaction" (account_id)
+WHERE
+    "status" = 'pending'::transaction_status;
 
 ALTER TABLE
     account DROP COLUMN allowance_locked,
