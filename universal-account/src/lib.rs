@@ -11,19 +11,21 @@ pub enum KeyId {
     Passkey(Passkey),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 pub struct ExecutionParameters {
     pub index: U64,
     pub nonce: U64,
 }
 
-pub trait Execute {
-    type Output<'a>
-    where
-        Self: 'a;
-
-    fn execute(&self) -> Self::Output<'_>;
+impl ExecutionParameters {
+    #[must_use]
+    pub fn next(&self) -> Self {
+        Self {
+            index: self.index,
+            nonce: U64(self.nonce.0 + 1),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +33,7 @@ pub trait Execute {
 pub enum ExecuteArgs {
     Passkey {
         key: Passkey,
-        message: authentication::passkey::Message<Vec<transaction::Transaction>>,
+        message: authentication::passkey::Message<transaction::TransactionList>,
     },
 }
 

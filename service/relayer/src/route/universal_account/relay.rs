@@ -4,7 +4,11 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId, NearToken,
 };
-use templar_universal_account::{authentication::Key, transaction::Action, ExecuteArgs, KeyId};
+use templar_universal_account::{
+    authentication::{ExecutionContextProvider, Key},
+    transaction::Action,
+    ExecuteArgs, KeyId,
+};
 
 use crate::{app::App, route::SimpleResponse};
 
@@ -46,7 +50,7 @@ pub async fn relay(
         }
     };
 
-    let Some(mut parameters) = parameters else {
+    let Some(parameters) = parameters else {
         tracing::info!(
             "Key \"{}\" does not exist on account \"{account_id}\"",
             key.0
@@ -56,8 +60,8 @@ pub async fn relay(
         };
     };
 
-    let payload = match key.check(message, &account_id, &mut parameters) {
-        Ok(payload) => payload,
+    let valid_signature = match key.verify(message.clone()) {
+        Ok(p) => p,
         Err(e) => {
             tracing::info!("Signature verification failed: {e}");
             return SimpleResponse::Rejected {
@@ -66,10 +70,20 @@ pub async fn relay(
         }
     };
 
+    let payload = match valid_signature.verify(&account_id, &parameters.next()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::info!("Execution parameter verification failed: {e}");
+            return SimpleResponse::Rejected {
+                reason: "Execution parameter verification failed".to_string(),
+            };
+        }
+    };
+
     let accounts = app.accounts.read().await;
 
     let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
-    for transaction in payload {
+    for transaction in payload.iter() {
         let receiver_id = &transaction.receiver_id;
         if !accounts.allowed_contract_data.contains_key(receiver_id) {
             tracing::info!("Unknown receiver {receiver_id}");

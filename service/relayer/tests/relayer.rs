@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::str::FromStr;
 
 use axum::{extract::State, Json};
@@ -11,7 +13,9 @@ use near_primitives::{
     views::TxExecutionStatus,
 };
 use near_sdk::{json_types::U64, NearToken};
+use near_workspaces::{network::Sandbox, Account, Worker};
 use p256::elliptic_curve::rand_core::OsRng;
+use rstest::{fixture, rstest};
 use tokio::sync::watch;
 
 use templar_common::registry::DeployMode;
@@ -38,14 +42,23 @@ use templar_universal_account::{
 };
 use test_utils::{
     controller::universal_account::UniversalAccountController, setup_test_w, ContractController,
-    RegistryController,
+    RegistryController, UnifiedMarketController,
 };
 
-#[allow(clippy::too_many_lines)]
-#[tokio::test]
-pub async fn relayer() {
-    const POW_DIFFICULTY: usize = 6;
+const POW_DIFFICULTY: usize = 6;
 
+struct InitTest {
+    worker: Worker<Sandbox>,
+    app: App,
+    c: UnifiedMarketController,
+    ua_deployer: RegistryController,
+    supply_user: Account,
+    borrow_user: Account,
+    relay_user: Account,
+}
+
+#[fixture]
+async fn init_test() -> InitTest {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
@@ -56,10 +69,10 @@ pub async fn relayer() {
     setup_test_w!(worker extract(c) accounts(supply_user, borrow_user, relay_user, ua_deployer));
     let rpc_addr = worker.rpc_addr();
 
-    let ua_registry = RegistryController::new(ua_deployer).await;
-    ua_registry
+    let ua_deployer = RegistryController::new(ua_deployer).await;
+    ua_deployer
         .add_version(
-            ua_registry.contract().as_account(),
+            ua_deployer.contract().as_account(),
             NearToken::from_near(40),
             "v1",
             DeployMode::GlobalHash,
@@ -82,13 +95,13 @@ pub async fn relayer() {
             "--relay-secret-key",
             &relay_user.secret_key().to_string(),
             "--ua-account-id",
-            ua_registry.contract().id().as_ref(),
+            ua_deployer.contract().id().as_ref(),
             "--ua-secret-key",
-            &ua_registry.contract().as_account().secret_key().to_string(),
+            &ua_deployer.contract().as_account().secret_key().to_string(),
             "--ua-pow-difficulty",
             &POW_DIFFICULTY.to_string(),
             "--ua-registry-id",
-            ua_registry.contract().id().as_ref(),
+            ua_deployer.contract().id().as_ref(),
             "--ua-version-key",
             "v1",
         ]),
@@ -96,6 +109,29 @@ pub async fn relayer() {
     );
     app.database.migrate().await.unwrap();
     app.load_markets().await;
+
+    InitTest {
+        worker,
+        app,
+        c,
+        ua_deployer,
+        supply_user,
+        borrow_user,
+        relay_user,
+    }
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
+    let InitTest {
+        worker,
+        app,
+        c,
+        borrow_user,
+        relay_user,
+        ..
+    } = init_test;
 
     // Relay a signed delegate action.
 
@@ -163,6 +199,29 @@ pub async fn relayer() {
         .unwrap()
         .into_outcome()
         .assert_success();
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn universal_account(#[future(awt)] init_test: InitTest) {
+    let InitTest {
+        worker,
+        app,
+        ua_deployer,
+        borrow_user,
+        ..
+    } = init_test;
+
+    // Relay a signed delegate action.
+
+    let fetch_nonce = app
+        .relay_near
+        .fetch_nonce(
+            borrow_user.id().clone(),
+            borrow_user.secret_key().public_key().into(),
+        )
+        .await
+        .unwrap();
 
     // Deploy a universal account.
 
@@ -172,9 +231,9 @@ pub async fn relayer() {
     let payload = WithRawString::from_parsed(Payload {
         parameters: ExecutionParameters {
             index: U64(0),
-            nonce: U64(1),
+            nonce: U64(0),
         },
-        account_id: ua_registry.contract().id().clone(),
+        account_id: ua_deployer.contract().id().clone(),
         payload: Pow::mine(
             CreatePasskeyAccount {
                 key: passkey.clone(),
@@ -219,7 +278,7 @@ pub async fn relayer() {
         .tx_status(
             TransactionInfo::TransactionId {
                 tx_hash: response.transaction_hash,
-                sender_account_id: ua_registry.contract().id().clone(),
+                sender_account_id: ua_deployer.contract().id().clone(),
             },
             TxExecutionStatus::Final,
         )

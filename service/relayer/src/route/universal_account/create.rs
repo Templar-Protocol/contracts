@@ -63,24 +63,28 @@ pub async fn create(
 ) -> SimpleResponse<CreateResponse> {
     let CreateRequest::Passkey(message) = request;
 
-    let key = &message.payload_unchecked().payload_unchecked().key;
+    let key = message.payload_unchecked().payload_unchecked().key.clone();
 
-    let pow_payload = match key.check(
-        &message,
-        &app.args.ua.account_id,
-        &mut ExecutionParameters {
-            index: 0.into(),
-            nonce: 0.into(),
-        },
-    ) {
+    let verified_signature = match key.verify(message) {
         Ok(p) => p,
         Err(e) => {
-            tracing::info!("Payload failed verification: {e}");
+            tracing::info!("Failed signature verification: {e}");
             return SimpleResponse::Rejected {
-                reason: format!("Payload failed verification: {e}"),
+                reason: "Failed signature verification".to_string(),
             };
         }
     };
+
+    let pow_payload =
+        match verified_signature.verify(&app.args.ua.account_id, &ExecutionParameters::default()) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::info!("Failed execution parameter verification: {e}");
+                return SimpleResponse::Rejected {
+                    reason: "Failed execution parameter verification".to_string(),
+                };
+            }
+        };
 
     // Verify PoW
 

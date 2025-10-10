@@ -4,7 +4,7 @@ use near_sdk::{env, near};
 use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 
-use super::{ExecutionContextProvider, ExecutionParameters, Key};
+use super::{ExecutionContextProvider, ExecutionParameters, InvalidSignatureError, Key};
 
 use data::{AuthenticatorData, ClientDataJson};
 use signature::Signature;
@@ -29,13 +29,21 @@ fn sig_base(
 #[near(serializers = [borsh, json])]
 pub struct Passkey(pub crate::encoding::p256::PublicKey);
 
-impl<T> Key<Message<T>> for Passkey {
-    type Signature = Signature;
+pub struct MessageWithValidSignature<T>(Message<T>);
 
-    fn is_signature_valid(&self, message: &Message<T>) -> bool {
-        VerifyingKey::from(*self.0)
-            .verify(&message.payload_prehash(), &**message.signature())
+impl<T> Key<Message<T>> for Passkey {
+    type Validated = MessageWithValidSignature<T>;
+
+    fn verify(&self, message: Message<T>) -> Result<Self::Validated, InvalidSignatureError> {
+        let payload_prehash = sig_base(&message.0.authenticator_data, &message.0.client_data_json);
+        if VerifyingKey::from(*self.0)
+            .verify(&payload_prehash, &*message.0.signature)
             .is_ok()
+        {
+            Ok(MessageWithValidSignature(message))
+        } else {
+            Err(InvalidSignatureError)
+        }
     }
 }
 
@@ -86,6 +94,12 @@ pub struct PayloadHashMismatchError;
 #[serde(bound = "T: DeserializeOwned", try_from = "UncheckedMessage<T>")]
 pub struct Message<T>(UncheckedMessage<T>);
 
+impl<T> Message<T> {
+    pub fn payload_unchecked(&self) -> &T {
+        &self.0.message.parsed.payload
+    }
+}
+
 impl<T> TryFrom<UncheckedMessage<T>> for Message<T> {
     type Error = PayloadHashMismatchError;
 
@@ -99,27 +113,18 @@ impl<T> TryFrom<UncheckedMessage<T>> for Message<T> {
     }
 }
 
-impl<P> ExecutionContextProvider for Message<P> {
+impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
     type Payload = P;
-    type Signature = Signature;
 
     fn account_id(&self) -> &near_sdk::AccountIdRef {
-        &self.0.message.parsed.account_id
+        &self.0 .0.message.parsed.account_id
     }
 
     fn parameters(&self) -> &ExecutionParameters {
-        &self.0.message.parsed.parameters
-    }
-
-    fn payload_prehash(&self) -> Vec<u8> {
-        sig_base(&self.0.authenticator_data, &self.0.client_data_json)
-    }
-
-    fn signature(&self) -> &Signature {
-        &self.0.signature
+        &self.0 .0.message.parsed.parameters
     }
 
     fn payload_unchecked(&self) -> &Self::Payload {
-        &self.0.message.parsed.payload
+        &self.0 .0.message.parsed.payload
     }
 }

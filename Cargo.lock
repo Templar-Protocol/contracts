@@ -4429,6 +4429,7 @@ dependencies = [
  "near-sdk-contract-tools",
  "near-workspaces",
  "p256",
+ "rstest",
  "sha2",
  "sqlx",
  "templar-common",
