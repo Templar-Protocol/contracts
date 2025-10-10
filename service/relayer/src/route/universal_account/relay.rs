@@ -83,7 +83,7 @@ pub async fn relay(
     let accounts = app.accounts.read().await;
 
     let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
-    for transaction in payload.iter() {
+    for transaction in payload {
         let receiver_id = &transaction.receiver_id;
         if !accounts.allowed_contract_data.contains_key(receiver_id) {
             tracing::info!("Unknown receiver {receiver_id}");

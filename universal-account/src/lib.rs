@@ -33,7 +33,7 @@ impl ExecutionParameters {
 pub enum ExecuteArgs {
     Passkey {
         key: Passkey,
-        message: authentication::passkey::Message<transaction::TransactionList>,
+        message: authentication::passkey::Message<Box<[transaction::Transaction]>>,
     },
 }
 

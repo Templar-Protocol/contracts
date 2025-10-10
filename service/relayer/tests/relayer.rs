@@ -22,10 +22,11 @@ use templar_common::registry::DeployMode;
 use templar_relayer::{
     app::{App, Configuration},
     route::{
-        relay::RelayRequest,
+        relay::RelayRequest as SdaRelayRequest,
         universal_account::{
             create::{CreatePasskeyAccount, CreateRequest},
             pow::Pow,
+            relay::RelayRequest as UaRelayRequest,
         },
         SimpleResponse,
     },
@@ -35,10 +36,11 @@ use templar_universal_account::{
         self,
         data::{AuthenticatorData, ClientDataJson},
         with_raw_string::WithRawString,
-        Passkey, Payload,
+        Passkey, Payload, UncheckedMessage,
     },
     encoding::p256::PublicKey,
-    ExecutionParameters,
+    transaction::{self, Transaction},
+    ExecuteArgs, ExecutionParameters,
 };
 use test_utils::{
     controller::universal_account::UniversalAccountController, setup_test_w, ContractController,
@@ -171,7 +173,7 @@ pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::relay::relay(
         State(app.clone()),
-        Json(RelayRequest {
+        Json(SdaRelayRequest {
             signed_delegate_action,
             storage_deposit: false,
             wait_until: TxExecutionStatus::Final,
@@ -207,6 +209,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
     let InitTest {
         worker,
         app,
+        c,
         ua_deployer,
         borrow_user,
         ..
@@ -274,6 +277,8 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         panic!("Universal account deployment should succeed");
     };
 
+    let ua_account_id = response.account_id.clone();
+
     let status = worker
         .tx_status(
             TransactionInfo::TransactionId {
@@ -286,6 +291,81 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         .unwrap();
 
     eprintln!("UA deploy status: {status:?}");
+
+    status
+        .final_execution_outcome
+        .unwrap()
+        .into_outcome()
+        .assert_success();
+
+    // Send an action to the universal account contract
+
+    let payload = WithRawString::from_parsed(Payload {
+        parameters: ExecutionParameters {
+            index: 0.into(),
+            nonce: 1.into(),
+        },
+        account_id: ua_account_id.clone(),
+        payload: vec![Transaction {
+            receiver_id: c.contract().id().clone(),
+            actions: Box::new([transaction::Action::FunctionCall {
+                function_name: "apply_interest".to_string(),
+                arguments: b"{}".to_vec().into(),
+                amount: NearToken::from_near(0),
+                gas: near_sdk::Gas::from_tgas(250),
+            }]),
+        }]
+        .into(),
+    });
+    let challenge = payload.hash().into();
+    let message: passkey::Message<_> = UncheckedMessage::new_and_sign(
+        &secret_key,
+        payload,
+        AuthenticatorData(Box::new([0xff_u8; 32])),
+        WithRawString::from_parsed(ClientDataJson {
+            r#type: "type".to_string(),
+            challenge,
+            origin: "origin".to_string(),
+            cross_origin: None,
+            top_origin: None,
+        }),
+    )
+    .try_into()
+    .unwrap();
+
+    let response = templar_relayer::route::universal_account::relay::relay(
+        State(app.clone()),
+        Json(UaRelayRequest {
+            account_id: ua_account_id.clone(),
+            args: ExecuteArgs::Passkey {
+                key: passkey,
+                message,
+            },
+        }),
+    )
+    .await;
+
+    eprintln!("UA Relay response: {response:?}");
+
+    let response = match response {
+        SimpleResponse::Success(response) => response,
+        e => {
+            panic!("Should succeed: {e:?}");
+        }
+    };
+
+    let status = worker
+        .tx_status(
+            TransactionInfo::TransactionId {
+                tx_hash: response.transaction_hash,
+                sender_account_id: ua_account_id.clone(),
+            },
+            TxExecutionStatus::Final,
+        )
+        .await
+        .unwrap();
+
+    eprintln!("UA relay status: {status:?}");
 
     status
         .final_execution_outcome

@@ -324,12 +324,8 @@ impl Near {
             .await;
 
         let action = FunctionCallAction {
-            method_name: "deploy".to_string(),
-            args: serde_json::to_vec(&json!({
-                "key": args.key(),
-                "message": args.message(),
-            }))
-            .unwrap(),
+            method_name: "execute".to_string(),
+            args: serde_json::to_vec(&json!({ "args": args })).unwrap(),
             gas,
             deposit: 0,
         };

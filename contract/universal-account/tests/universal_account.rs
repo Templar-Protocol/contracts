@@ -78,8 +78,10 @@ pub async fn universal_account() {
                     amount: NearToken::from_near(0),
                     gas: near_sdk::Gas::from_tgas(30),
                 },
-            ],
-        }],
+            ]
+            .into(),
+        }]
+        .into(),
     });
 
     eprintln!("{}", serde_json::to_string_pretty(&payload.parsed).unwrap());

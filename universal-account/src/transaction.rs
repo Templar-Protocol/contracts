@@ -1,9 +1,8 @@
 use near_sdk::{
-    env,
     json_types::{Base64VecU8, U128, U64},
     near, AccountId, Allowance, Gas, GasWeight, NearToken, Promise,
 };
-use std::{num::NonZeroU128, ops::Deref};
+use std::num::NonZeroU128;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
@@ -18,34 +17,6 @@ impl Transaction {
 
         for action in &self.actions {
             promise = action.add(promise);
-        }
-
-        promise
-    }
-}
-
-#[derive(Debug, Clone)]
-#[near(serializers = [json])]
-pub struct TransactionList(Box<[Transaction]>);
-
-impl Deref for TransactionList {
-    type Target = [Transaction];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl TransactionList {
-    pub fn to_promise(&self) -> Promise {
-        let mut promise = self
-            .0
-            .first()
-            .unwrap_or_else(|| env::panic_str("empty"))
-            .to_promise();
-
-        for tx in &self.0[1..] {
-            promise = promise.then(tx.to_promise());
         }
 
         promise

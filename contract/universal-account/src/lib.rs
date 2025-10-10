@@ -76,11 +76,22 @@ impl Contract {
 
         let current_account_id = env::current_account_id();
 
-        key.verify(message)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+        let message = key
+            .verify(message)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let transactions = message
             .verify(&current_account_id, &key_entry.next())
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
-            .to_promise()
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+        require!(!transactions.is_empty(), "Transaction list is empty");
+
+        let mut promise = transactions[0].to_promise();
+
+        for transaction in &transactions[1..] {
+            promise = promise.then(transaction.to_promise());
+        }
+
+        promise
     }
 }
 

@@ -9,7 +9,7 @@ use templar_universal_account::{
 };
 
 pub fn main() {
-    let payload = Payload {
+    let payload: Payload<Box<[Transaction]>> = Payload {
         parameters: ExecutionParameters {
             index: U64(0),
             nonce: U64(1),
@@ -19,8 +19,10 @@ pub fn main() {
             receiver_id: "alice.testnet".parse().unwrap(),
             actions: vec![Action::Transfer {
                 amount: NearToken::from_near(1),
-            }],
-        }],
+            }]
+            .into(),
+        }]
+        .into(),
     };
 
     let s = serde_json::to_string(&payload).unwrap();
