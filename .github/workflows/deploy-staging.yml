@@ -122,7 +122,7 @@ jobs:
 
       - name: Deploy market from registry
         run: |
-          ./script/ci/deploy-market-from-registry.sh \
+          ./script/ci/deploy-from-registry.sh \
             --account               "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --registry              "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --version-key           "${{ env.MARKET_VERSION_ID }}" \

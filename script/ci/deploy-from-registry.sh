@@ -33,7 +33,7 @@ echo "Generated deployment args"
 echo "${ARGS}" | jq .
 
 near contract call-function as-transaction "${REGISTRY_ID}" \
-    deploy_market \
+    deploy \
         json-args "${ARGS}" \
         prepaid-gas '300.0 Tgas' \
         attached-deposit '6 NEAR' \
