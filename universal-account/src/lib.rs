@@ -1,9 +1,5 @@
 use authentication::passkey::Passkey;
-use near_sdk::{
-    json_types::U64,
-    near,
-    serde::{Deserialize, Serialize},
-};
+use near_sdk::{json_types::U64, near, serde::Serialize};
 
 pub mod authentication;
 pub mod encoding;
@@ -30,8 +26,8 @@ pub trait Execute {
     fn execute(&self) -> Self::Output<'_>;
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "near_sdk::serde")]
+#[derive(Debug, Clone)]
+#[near(serializers = [json])]
 pub enum ExecuteArgs {
     Passkey {
         key: Passkey,

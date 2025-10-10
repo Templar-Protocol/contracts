@@ -1,15 +1,13 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use near_sdk::{
-    borsh::BorshSerialize, env, json_types::U64, near, require, serde_json, store::IterableMap,
+    borsh::BorshSerialize, env, json_types::U64, near, require, store::IterableMap,
     BorshStorageKey, PanicOnDefault, Promise,
 };
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    authentication::{passkey, Key},
-    transaction::Transaction,
-    Execute, ExecutionParameters, KeyId,
+    authentication::Key, Execute, ExecuteArgs, ExecutionParameters, KeyId,
 };
 
 #[derive(PanicOnDefault)]
@@ -69,15 +67,11 @@ impl Contract {
         self.keys.remove(&key);
     }
 
-    pub fn execute(&mut self, key: KeyId, message: serde_json::Value) -> Promise {
-        let Some(key_entry) = self.keys.get_mut(&key) else {
+    pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
+        let ExecuteArgs::Passkey { key, message } = args;
+        let Some(key_entry) = self.keys.get_mut(&KeyId::Passkey(key.clone())) else {
             env::panic_str("Key does not exist")
         };
-
-        let KeyId::Passkey(key) = key;
-
-        let message: passkey::Message<Vec<Transaction>> =
-            serde_json::from_value(message).unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         let current_account_id = env::current_account_id();
 

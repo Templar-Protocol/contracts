@@ -13,7 +13,7 @@ use templar_universal_account::{
     },
     encoding::p256::PublicKey,
     transaction::{Action, Transaction},
-    ExecutionParameters, KeyId,
+    ExecuteArgs, ExecutionParameters, KeyId,
 };
 use test_utils::{
     controller::universal_account::UniversalAccountController, print_execution, ContractController,
@@ -101,11 +101,16 @@ pub async fn universal_account() {
     .try_into()
     .unwrap();
 
-    // eprintln!("{message:#?}");
     eprintln!("{}", serde_json::to_string_pretty(&message).unwrap());
 
     let e = uac
-        .execute_passkey(&third_party, key_id.clone(), message)
+        .execute(
+            &third_party,
+            ExecuteArgs::Passkey {
+                key: Passkey(public_key.clone()),
+                message,
+            },
+        )
         .await;
 
     print_execution(&e);
