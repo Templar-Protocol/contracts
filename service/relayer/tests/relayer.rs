@@ -54,7 +54,6 @@ struct InitTest {
     app: App,
     c: UnifiedMarketController,
     ua_deployer: RegistryController,
-    supply_user: Account,
     borrow_user: Account,
     relay_user: Account,
 }
@@ -68,7 +67,7 @@ async fn init_test() -> InitTest {
     let worker = near_workspaces::sandbox_with_version("2.7.0")
         .await
         .unwrap();
-    setup_test_w!(worker extract(c) accounts(supply_user, borrow_user, relay_user, ua_deployer));
+    setup_test_w!(worker extract(c) accounts(borrow_user, relay_user, ua_deployer));
     let rpc_addr = worker.rpc_addr();
 
     let ua_deployer = RegistryController::new(ua_deployer).await;
@@ -117,7 +116,6 @@ async fn init_test() -> InitTest {
         app,
         c,
         ua_deployer,
-        supply_user,
         borrow_user,
         relay_user,
     }
