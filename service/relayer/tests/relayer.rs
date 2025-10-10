@@ -89,7 +89,7 @@ async fn init_test() -> InitTest {
             &rpc_addr,
             "--database-url",
             "postgres://relayeruser:password@0.0.0.0:5432/relayer",
-            "--monitor-market",
+            "--monitor-market-id",
             c.market.contract().id().as_ref(),
             "--relay-account-id",
             relay_user.id().as_ref(),

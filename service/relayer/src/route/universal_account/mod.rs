@@ -12,7 +12,7 @@ use near_sdk::{
     AccountId,
 };
 use sha2::{Digest, Sha256};
-use templar_universal_account::KeyId;
+use templar_universal_account::authentication::passkey::Passkey;
 
 use crate::app::App;
 
@@ -57,17 +57,17 @@ pub async fn index(State(app): State<App>) -> impl IntoResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct KeyQuery {
-    pub key: KeyId,
+#[serde(crate = "near_sdk::serde", tag = "type")]
+pub enum KeyQuery {
+    Passkey { key: Passkey },
 }
 
 pub async fn account_id(
     State(app): State<App>,
     Query(key_query): Query<KeyQuery>,
 ) -> impl IntoResponse {
-    let KeyId::Passkey(passkey) = key_query.key;
-    let public_key_str = passkey.0.to_string();
+    let KeyQuery::Passkey { key } = key_query;
+    let public_key_str = key.0.to_string();
     let account_id_slug = public_key_to_account_id_slug(&public_key_str);
     let registry_id = app.args.ua.registry_id;
     match AccountId::from_str(&format!("{account_id_slug}.{registry_id}")) {

@@ -62,37 +62,130 @@ make sql-fmt # from project root
 ## Help
 
 ```text
-Usage: templar-relayer [OPTIONS] --database-url <DATABASE_URL> --account-id <ACCOUNT_ID> <--registry <REGISTRY>|--market <MARKET>>
+Usage: templar-relayer [OPTIONS] --database-url <DATABASE_URL> --relay-account-id <relay-account-id> --ua-account-id <ua-account-id> --ua-registry-id <ua-registry-id> --ua-version-key <ua-version-key> <--monitor-registry-id <monitor-registry-id>|--monitor-market-id <monitor-market-id>>
 
 Options:
   -p, --port <PORT>
-          Run the relayer on this port [env: PORT=] [default: 3000]
+          Run the relayer on this port
+
+          [env: PORT=]
+          [default: 3000]
+
       --database-url <DATABASE_URL>
-          Postgres database connection URL [env: DATABASE_URL=]
+          Postgres database connection URL
+
+          [env: DATABASE_URL=]
+
       --rpc-url <RPC_URL>
-          NEAR RPC connection URL [env: RPC_URL=] [default: https://rpc.testnet.near.org]
-      --registry <REGISTRY>
-          Comma-separated list of registries to query for markets to monitor [env: REGISTRY=]
-      --market <MARKET>
-          Comma-separated list of markets to monitor [env: MARKET=]
-  -a, --account-id <ACCOUNT_ID>
-          Account ID of the NEAR account that the relayer controls [env: ACCOUNT_ID=]
-  -k, --secret-key <SECRET_KEY>
-          Comma-separated list of private keys to use to sign transactions for the account that the relayer controls [env: SECRET_KEY=]
+          NEAR RPC connection URL
+
+          [env: RPC_URL=]
+          [default: https://rpc.testnet.near.org]
+
+      --monitor-registry-id <monitor-registry-id>
+          Comma-separated list of registries to query for markets to monitor
+
+          [env: MONITOR_REGISTRY_ID=]
+
+      --monitor-market-id <monitor-market-id>
+          Comma-separated list of markets to monitor
+
+          [env: MONITOR_MARKET_ID=]
+
+      --relay-account-id <relay-account-id>
+          Account ID of the NEAR account that the relayer controls
+
+          [env: RELAY_ACCOUNT_ID=]
+
+      --relay-secret-key <relay-secret-key>
+          Comma-separated list of private keys to use to sign transactions for the account that the relayer controls
+
+          [env: RELAY_SECRET_KEY=]
+
       --allowed-methods <ALLOWED_METHODS>
-          Comma-separated list of allowed methods [env: ALLOWED_METHODS=] [default: borrow apply_interest harvest_yield withdraw_static_yield withdraw_collateral create_supply_withdrawal_request cancel_supply_withdrawal_request execute_next_supply_withdrawal_request storage_deposit]
+          Comma-separated list of allowed methods
+
+          [env: ALLOWED_METHODS=]
+          [default: borrow apply_interest harvest_yield withdraw_static_yield withdraw_collateral create_supply_withdrawal_request cancel_supply_withdrawal_request execute_next_supply_withdrawal_request storage_deposit]
+
       --starting-allowance-yocto <STARTING_ALLOWANCE_YOCTO>
-          Starting allowance in yoctoNEAR [env: STARTING_ALLOWANCE_YOCTO=] [default: "0.25 NEAR"]
-      --cache-gas-price-secs <CACHE_GAS_PRICE_SECS>
-          Refresh the cached gas price after X seconds [env: CACHE_GAS_PRICE_SECS=] [default: 600]
-      --cache-nonce-secs <CACHE_NONCE_SECS>
-          Refresh a cached nonce after X seconds [env: CACHE_NONCE_SECS=] [default: 60]
+          Starting allowance in yoctoNEAR
+
+          [env: STARTING_ALLOWANCE_YOCTO=]
+          [default: "0.250 NEAR"]
+
+      --ua-account-id <ua-account-id>
+          Account ID of the NEAR account that the relayer controls for universal account creation
+
+          [env: UA_ACCOUNT_ID=]
+
+      --ua-secret-key <ua-secret-key>
+          Comma-separated list of private keys to use to sign universal account creation transactions
+
+          [env: UA_SECRET_KEY=]
+
+      --ua-pow-difficulty <ua-pow-difficulty>
+          How difficult should the proof-of-work for universal account creation be?
+
+          iterations ~ 2^difficulty
+
+          [env: UA_POW_DIFFICULTY=]
+          [default: 17]
+
+      --ua-blockref-max-age-secs <ua-blockref-max-age-secs>
+          How fresh must the universal account creation signature be?
+
+          Based on the block hash referenced in the creation request.
+
+          [env: UA_BLOCKREF_MAX_AGE_SECS=]
+          [default: 600]
+
+      --ua-registry-id <ua-registry-id>
+          Account ID of the registry from which to deploy universal accounts
+
+          [env: UA_REGISTRY_ID=]
+
+      --ua-version-key <ua-version-key>
+          Version key of the universal account contract to deploy from the registry
+
+          [env: UA_VERSION_KEY=]
+
+      --ua-execute-tgas <ua-execute-tgas>
+          [env: UA_EXECUTE_TGAS=]
+          [default: 35]
+
+      --cache-gase-price-secs <cache-gase-price-secs>
+          Refresh the cached gas price after X seconds
+
+          [env: CACHE_GAS_PRICE_SECS=]
+          [default: 600]
+
+      --cache-nonce-secs <cache-nonce-secs>
+          Refresh a cached nonce after X seconds
+
+          [env: CACHE_NONCE_SECS=]
+          [default: 60]
+
+      --cache-protocol-config-secs <cache-protocol-config-secs>
+          Refresh the cached protocol configuration after X seconds
+
+          [env: CACHE_PROTOCOL_CONFIG_SECS=]
+          [default: 3600]
+
       --broom-batch-size <BROOM_BATCH_SIZE>
-          Broom batch size [env: BROOM_BATCH_SIZE=] [default: 16]
+          Broom batch size
+
+          [env: BROOM_BATCH_SIZE=]
+          [default: 16]
+
       --broom-interval-secs <BROOM_INTERVAL_SECS>
-          Broom interval in seconds [env: BROOM_INTERVAL_SECS=] [default: 300]
+          Broom interval in seconds
+
+          [env: BROOM_INTERVAL_SECS=]
+          [default: 300]
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## Routes
@@ -114,3 +207,119 @@ In addition, there are two optional fields.
 ### `GET /get_allowance`
 
 This route will return the current allowance of the relayer for the given account.
+
+### `GET /universal_account`
+
+Returns the configuration of the universal account deployer.
+
+Example output:
+
+```json
+{
+  "executor_id": "templar-universal-service.testnet",
+  "registry_id": "templar-user.testnet",
+  "pow_difficulty": 17,
+  "blockref_max_age_secs": "600"
+}
+```
+
+- This means that the payload that is signed by the user must authorize `templar-universal-service.testnet` to perform the account creation action by including that account ID in the payload that it signs.
+- The user's account will be created as a subaccount of `templar-user.testnet`, e.g. `a8c80cd27e49.templar-user.testnet`.
+- The payload that accompanies the universal account creation request must solve a proof-of-work with difficulty of 17. This means that, when the SHA-256^2 of the proof-of-work payload is evaluated as a binary string, it begins with 17 zeros.
+- The universal account creation request must include the hash of a block on the NEAR blockchain that is less than 600 seconds (10 minutes) old.
+
+### `GET /universal_account/account_id?type=Passkey&key=p256:...`
+
+Calculates the account ID that the given key would be deployed to when it is created.
+
+Example output:
+
+```text
+a8c80cd27e49.templar-user.testnet
+```
+
+### `POST /universal_account/create`
+
+Creates a universal account for a public key.
+
+Example payload:
+
+```json
+{
+  "Passkey": {
+    "authenticator_data": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "message": "{\"parameters\":{\"index\":\"0\",\"nonce\":\"0\"},\"account_id\":\"templar-universal-service.testnet\",\"payload\":{\"pow_nonce\":\"2\",\"key\":\"p256:PxHzrVcBARoJQ2VoSWxZWc1aRdjag746M2JtrYTtmFUMwNQbnhFKKbacfVLCCKA6FCYDMBqPcs1u4HZJZKqjmnZC\",\"block_hash\":\"DLHG9rM3ebTT5K8GZQQ76Zb1nq52zV5z4u9n5CjUMSgi\"}}",
+    "client_data_json": "{\"type\":\"type\",\"challenge\":\"PwlNC6mRQtDdv7yMBTC4iINcj11TPUEXEGb-7mFyehA\",\"origin\":\"origin\",\"crossOrigin\":null,\"topOrigin\":null}",
+    "signature": "MEYCIQD3nf1Ud8aDeVXyobQSyCtP9LUpnC2FHUX3d7G16rJupgIhANEy68mGEJPYuI2x7c_WKmvu9hDn6TXqLI1J4cr-vI7N"
+  }
+}
+```
+
+These are mostly values that are returned from a Webauthn implementation.
+
+To break down the `"message"` string a little more:
+
+```json
+{
+  "parameters": {
+    "index": "0",
+    "nonce": "0"
+  },
+  "account_id": "templar-universal-service.testnet",
+  "payload": {
+    "pow_nonce": "2",
+    "key": "p256:PxHzrVcBARoJQ2VoSWxZWc1aRdjag746M2JtrYTtmFUMwNQbnhFKKbacfVLCCKA6FCYDMBqPcs1u4HZJZKqjmnZC",
+    "block_hash": "DLHG9rM3ebTT5K8GZQQ76Zb1nq52zV5z4u9n5CjUMSgi"
+  }
+}
+```
+
+### `POST /universal_account/relay`
+
+Relays a signed message from a user, paying for the gas costs of the `execute` call.
+
+Example payload:
+
+```json
+{
+  "account_id": "f92e7ab484da.templar-user.testnet",
+  "args": {
+    "Passkey": {
+      "key": "p256:QE4spgPCif6HrYkGhk2UadjYDogYXq8ARBFnB2RXCqj3JCfcL4EgW7CjfwSZsXAUcB6aGx4pTnrWRzKeuwzMg4kM",
+      "message": {
+        "authenticator_data": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "message": "{\"parameters\":{\"index\":\"0\",\"nonce\":\"1\"},\"account_id\":\"f92e7ab484da.templar-user.testnet\",\"payload\":[{\"receiver_id\":\"templar-market.testnet\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"apply_interest\",\"arguments\":\"e30=\",\"amount\":\"0\",\"gas\":\"250000000000000\"}}]}]}",
+        "client_data_json": "{\"type\":\"type\",\"challenge\":\"Aa-q6ZFal54g0lr6mSRhsvSovDQza8hIMbaCXbYfi5Y\",\"origin\":\"origin\",\"crossOrigin\":null,\"topOrigin\":null}",
+        "signature": "MEQCIGIUrXmGylCF2CLhqCDeGp7892z4gICxoba2ofswaEiOAiAe9Io4g3EaNdPKkOKI_c0ubyPqXWq1RwN06JsU06hHjw"
+      }
+    }
+  }
+}
+```
+
+Parsed `"message"`:
+
+```json
+{
+  "parameters": {
+    "index": "0",
+    "nonce": "1"
+  },
+  "account_id": "f92e7ab484da.templar-user.testnet",
+  "payload": [
+    {
+      "receiver_id": "templar-market.testnet",
+      "actions": [
+        {
+          "FunctionCall": {
+            "function_name": "apply_interest",
+            "arguments": "e30=",
+            "amount": "0",
+            "gas": "250000000000000"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
