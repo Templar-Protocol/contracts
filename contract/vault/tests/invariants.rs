@@ -59,9 +59,6 @@ async fn withdraw_queue_mustnt_have_duplicates() {
 }
 
 #[tokio::test]
-async fn fee_accrual_only_when_aum_grows() {}
-
-#[tokio::test]
 #[should_panic = "busy"]
 async fn state_machine_is_locked_when_another_op_is_running() {
     setup_test!(

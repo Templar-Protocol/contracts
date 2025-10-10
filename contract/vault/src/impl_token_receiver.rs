@@ -95,12 +95,18 @@ impl Contract {
     ) -> u128 {
         // Invariant: Only the underlying token is accepted; others are fully refunded
         if token_id != self.underlying_asset.contract_id() {
-            Event::DepositRejectedWrongAsset { token: token_id.clone() }.emit();
+            Event::DepositRejectedWrongAsset {
+                token: token_id.clone(),
+            }
+            .emit();
             return deposit;
         };
 
         if deposit == 0 {
-            Event::DepositRejectedZeroAmount { sender: sender_id.clone() }.emit();
+            Event::DepositRejectedZeroAmount {
+                sender: sender_id.clone(),
+            }
+            .emit();
             return 0;
         }
 
