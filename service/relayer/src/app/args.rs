@@ -72,17 +72,17 @@ pub struct Cache {
 pub struct Monitor {
     /// Comma-separated list of registries to query for markets to monitor.
     #[arg(
-        id = "monitor-registry",
-        long = "monitor-registry",
-        env = "MONITOR_REGISTRY",
+        id = "monitor-registry-id",
+        long = "monitor-registry-id",
+        env = "MONITOR_REGISTRY_ID",
         value_delimiter = ','
     )]
     pub registry: Vec<AccountId>,
     /// Comma-separated list of markets to monitor.
     #[arg(
-        id = "monitor-market",
-        long = "monitor-market",
-        env = "MONITOR_MARKET",
+        id = "monitor-market-id",
+        long = "monitor-market-id",
+        env = "MONITOR_MARKET_ID",
         value_delimiter = ','
     )]
     pub market: Vec<AccountId>,

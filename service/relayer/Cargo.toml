@@ -13,7 +13,7 @@ near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
 near-primitives.workspace = true
-near-sdk = { workspace = true, features = ["non-contract-usage"] }
+near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
 near-sdk-contract-tools.workspace = true
 sha2 = "0.10.9"
 sqlx = { version = "0.8", features = [
@@ -34,7 +34,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-near-sdk = { workspace = true, features = ["non-contract-usage"] }
 near-workspaces = { workspace = true, features = ["experimental"] }
 p256.workspace = true
 rstest.workspace = true
