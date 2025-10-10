@@ -34,6 +34,9 @@ pub mod impl_callbacks;
 pub mod impl_token_receiver;
 pub mod wad;
 
+#[cfg(test)]
+mod test_utils;
+
 #[derive(Debug, Clone)]
 #[near(serializers = [json, borsh])]
 #[derive(BorshStorageKey)]
@@ -1385,127 +1388,10 @@ impl Contract {
                         ),
                 )
             } else {
-                // Nothing collected at all; refund escrow and stop with InsufficientLiquidity
-                let self_id = env::current_account_id();
-                self.transfer_unchecked(&self_id, &owner, escrow_shares)
-                    .expect("Failed to release escrowed shares");
                 self.stop_and_exit(Some(&Error::InsufficientLiquidity))
             }
         }
     }
 }
-
 #[cfg(test)]
-mod test_utils {
-    use crate::Contract;
-    use near_sdk::{
-        test_utils::{accounts, VMContextBuilder},
-        test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
-    };
-    use rstest::rstest;
-    use templar_common::vault::{AllocationMode, OpState, VaultConfiguration};
-    use test_utils::vault_configuration;
-
-    pub fn mk(n: u32) -> AccountId {
-        format!("acc{n}.testnet").parse().expect("valid account id")
-    }
-
-    pub fn setup_env(
-        current: &AccountId,
-        predecessor: &AccountId,
-        promise_results: Vec<PromiseResult>,
-    ) {
-        let mut builder = VMContextBuilder::new();
-        builder.current_account_id(current.clone());
-        builder.predecessor_account_id(predecessor.clone());
-        builder.signer_account_id(predecessor.clone());
-        testing_env!(
-            builder.build(),
-            test_vm_config(),
-            RuntimeFeesConfig::test(),
-            Default::default(),
-            promise_results
-        );
-    }
-
-    pub fn new_test_contract(vault_id: &AccountId) -> Contract {
-        setup_env(vault_id, vault_id, vec![]);
-
-        // Basic accounts
-        let owner = accounts(1);
-        let curator = accounts(2);
-        let guardian = accounts(3);
-        let fee_recipient = accounts(4);
-        let skim_recipient = accounts(5);
-        let underlying_token_id = mk(6);
-
-        let cfg = vault_configuration(
-            owner,
-            curator,
-            guardian,
-            underlying_token_id,
-            skim_recipient,
-            fee_recipient,
-        );
-
-        Contract::new(cfg)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::test_utils::*;
-    use crate::Contract;
-    use near_sdk::test_utils::accounts;
-    use near_sdk::{json_types::U128, test_utils::VMContextBuilder, AccountId, RuntimeFeesConfig};
-    use near_sdk::{test_vm_config, testing_env};
-    use rstest::rstest;
-    use templar_common::asset::{BorrowAsset, FungibleAsset};
-    use templar_common::vault::{AllocationMode, VaultConfiguration};
-
-    #[rstest(len => [2usize, 3, 5])]
-    #[should_panic = "Duplicate market"]
-    fn prop_supply_queue_mustnt_have_duplicates(len: usize) {
-        let mut c = new_test_contract(&mk(0));
-        setup_env(&accounts(0), &accounts(1), vec![]);
-
-        // Build a queue with a duplicate market id
-        let base = 100u32;
-        let dup = mk(base);
-        let mut queue: Vec<AccountId> = Vec::with_capacity(len);
-        if len >= 1 {
-            queue.push(dup.clone());
-        }
-        for i in 1..len.saturating_sub(1) {
-            queue.push(mk(base + i as u32));
-        }
-        if len >= 2 {
-            queue.push(dup);
-        }
-
-        c.set_supply_queue(queue);
-    }
-
-    #[rstest(len => [2usize, 3, 5])]
-    #[should_panic = "Duplicate market"]
-    fn prop_withdraw_queue_mustnt_have_duplicates(len: usize) {
-        let mut c = new_test_contract(&mk(0));
-        setup_env(&accounts(0), &accounts(1), vec![]);
-
-        // Build a queue with a duplicate market id
-        let base = 200u32;
-        let dup = mk(base);
-        let mut queue: Vec<AccountId> = Vec::with_capacity(len);
-        if len >= 1 {
-            queue.push(dup.clone());
-        }
-        for i in 1..len.saturating_sub(1) {
-            queue.push(mk(base + i as u32));
-        }
-        if len >= 2 {
-            queue.push(dup);
-        }
-
-        c.set_withdraw_queue(queue);
-    }
-}
+mod tests;

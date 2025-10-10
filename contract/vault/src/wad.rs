@@ -78,6 +78,7 @@ mod tests {
         assert!(res <= W / 9);
         assert_eq!(res, (W / 9) - 1); // typical floor loss
     }
+
     #[test]
     fn convert_roundtrip_bounds() {
         // For any totals, redeem(convert_to_shares(a)) ≤ a and
@@ -94,5 +95,32 @@ mod tests {
         let to_a = mul_div_floor(s, ta + 1, ts + 1);
         let back_s = mul_div_ceil(to_a, ts + 1, ta + 1);
         assert!(back_s >= s);
+    }
+
+    #[test]
+    fn compute_fee_shares_no_profit_or_zero_fee_or_zero_supply() {
+        // no profit => 0
+        assert_eq!(compute_fee_shares(1_000, 1_000, W / 10, 1_000), 0);
+        // zero fee => 0
+        assert_eq!(compute_fee_shares(2_000, 1_000, 0, 1_000), 0);
+        // zero supply => 0
+        assert_eq!(compute_fee_shares(2_000, 1_000, W / 10, 0), 0);
+    }
+
+    #[test]
+    fn compute_fee_shares_mints_proportionally_on_profit() {
+        // cur=1500, last=1000, profit=500, fee=10% => fee_assets=50
+        // denom = 1500 - 50 = 1450; total_supply=1000 => fee_shares=floor(50*1000/1450)=34
+        let fee = W / 10;
+        let minted = compute_fee_shares(1_500, 1_000, fee, 1_000);
+        assert_eq!(minted, 34);
+    }
+
+    #[test]
+    fn compute_fee_shares_handles_extreme_fee() {
+        // 100% fee on positive profit: fee_assets=profit; denom=max(1) => finite result
+        let minted = compute_fee_shares(2_000, 1_000, W, 1_000);
+        // fee_assets=1000; denom=1_000 (2_000 - 1_000) => floor(1_000*1_000/1_000)=1_000
+        assert_eq!(minted, 1_000);
     }
 }
