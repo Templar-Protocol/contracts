@@ -1,4 +1,5 @@
 use std::{
+    borrow::Borrow,
     collections::{hash_map::Entry, HashMap},
     future::Future,
     sync::Arc,
@@ -8,11 +9,11 @@ use std::{
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
 use near_primitives::{
-    action::{delegate::SignedDelegateAction, Action},
+    action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
     transaction::SignedTransaction,
     views::{FinalExecutionOutcomeView, TxExecutionStatus},
 };
-use near_sdk::{serde_json, AccountId, NearToken};
+use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
 use templar_common::market::DepositMsg;
 use tokio::{
     sync::{watch, RwLock},
@@ -34,42 +35,49 @@ use crate::{
     AccountData, AssetTransfer, ContractData,
 };
 
-mod args;
+pub mod args;
 pub use args::Configuration;
 
 #[derive(Debug, Clone)]
 pub struct App {
     pub args: args::Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
-    pub near: Near,
+    pub relay_near: Near,
+    pub ua_near: Near,
     pub cache: Arc<Cache>,
     pub database: Database,
 }
 
 impl App {
     pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> Self {
-        let near = Near::new(
+        let relay_near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-            args.account_id.clone(),
-            args.secret_key
+            args.relay.account_id.clone(),
+            args.relay
+                .secret_key
                 .iter()
-                .map(|s| InMemorySigner::from_secret_key(args.account_id.clone(), s.clone()).into())
+                .map(|s| InMemorySigner::from_secret_key(args.relay.account_id.clone(), s.clone()))
+                .collect(),
+        );
+
+        let ua_near = Near::new(
+            near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
+            args.ua.account_id.clone(),
+            args.ua
+                .secret_key
+                .iter()
+                .map(|s| InMemorySigner::from_secret_key(args.ua.account_id.clone(), s.clone()))
                 .collect(),
         );
 
         #[allow(clippy::unwrap_used)]
         let database = Database::new(&args.database_url, kill.clone()).unwrap();
 
-        let cache = Cache::new(
-            near.clone(),
-            Duration::from_secs(args.cache_gas_price_secs),
-            Duration::from_secs(args.cache_nonce_secs),
-            kill.clone(),
-        );
+        let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
 
         tokio::spawn(broom::start(
             database.clone(),
-            near.clone(),
+            relay_near.clone(),
             args.broom_batch_size,
             Duration::from_secs(args.broom_interval_secs),
             kill,
@@ -78,7 +86,8 @@ impl App {
         Self {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
-            near,
+            relay_near,
+            ua_near,
             cache: Arc::new(cache),
             database,
         }
@@ -100,7 +109,7 @@ impl App {
         let mut set = JoinSet::new();
         for registry_id in &self.args.monitor.registry {
             set.spawn({
-                let near = self.near.clone();
+                let near = self.relay_near.clone();
                 let registry_id = registry_id.clone();
                 async move {
                     match near
@@ -122,7 +131,7 @@ impl App {
         let mut set = JoinSet::new();
         for market in markets {
             set.spawn({
-                let near = self.near.clone();
+                let near = self.relay_near.clone();
                 async move {
                     match near.load_market_accounts(market.clone()).await {
                         Ok(market_accounts) => Some(market_accounts),
@@ -154,7 +163,7 @@ impl App {
             ] {
                 if let Entry::Vacant(e) = allowed_contracts.entry(contract_id.clone()) {
                     let storage_balance_bounds = self
-                        .near
+                        .relay_near
                         .load_storage_balance_bounds(contract_id.clone())
                         .await
                         .ok();
@@ -179,6 +188,77 @@ impl App {
         let mut handle = self.accounts.write().await;
         handle.market_data = markets;
         handle.allowed_contract_data = allowed_contracts;
+    }
+
+    /// Checks that the all of the function call actions are allowed for the specific receiver.
+    ///
+    /// # Errors
+    ///
+    /// - If the receiver is not known.
+    /// - If any of the function call actions are not allowed.
+    pub fn actions_are_allowed<'a>(
+        &self,
+        receiver_id: &AccountIdRef,
+        accounts: &AccountData,
+        calls: impl IntoIterator<Item = &'a FunctionCallAction>,
+    ) -> Result<(), PreconditionError> {
+        if accounts.market_data.contains_key(receiver_id) {
+            // Calling a market contract directly.
+            for (index, call) in calls.into_iter().enumerate() {
+                if !self.args.relay.allowed_methods.contains(&call.method_name) {
+                    return Err(PreconditionError::UnknownFunctionName {
+                        name: call.method_name.clone(),
+                        index,
+                    });
+                }
+            }
+        } else {
+            // Token contract transfer call to market.
+            for (index, call) in calls.into_iter().enumerate() {
+                let transfer = AssetTransfer::parse(call, index, receiver_id.to_owned())?;
+                let market_id = transfer.token_receiver_id();
+
+                let Some(market_account_ids) = accounts.market_data.get(market_id) else {
+                    return Err(PreconditionError::UnknownTransferReceiverId {
+                        account_id: market_id.to_owned(),
+                        index,
+                    });
+                };
+
+                let msg = transfer.args.msg();
+                let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
+                    return Err(PreconditionError::MsgDeserializationFailure {
+                        index,
+                        msg: msg.to_string(),
+                    });
+                };
+
+                #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
+                if transfer.asset() == market_account_ids.borrow_asset {
+                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
+                        return Err(PreconditionError::InvalidMsgForAsset {
+                            index,
+                            expected: "\"Supply\" or \"Repay\"".to_string(),
+                            actual: serde_json::to_string(&msg).unwrap(),
+                        });
+                    }
+                } else if transfer.asset() == market_account_ids.collateral_asset {
+                    if !matches!(msg, DepositMsg::Collateralize) {
+                        return Err(PreconditionError::InvalidMsgForAsset {
+                            index,
+                            expected: "\"Collateralize\"".to_string(),
+                            actual: serde_json::to_string(&msg).unwrap(),
+                        });
+                    }
+                } else {
+                    return Err(PreconditionError::UnknownTransactionReceiverId {
+                        account_id: receiver_id.to_owned(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Check and calculate gas for a signed delegate action.
@@ -222,61 +302,7 @@ impl App {
             })
             .map_err(|(index, action)| PreconditionError::UnsupportedAction { index, action })?;
 
-        if accounts.market_data.contains_key(receiver_id) {
-            // Calling a market contract directly.
-            for (index, call) in calls.iter().enumerate() {
-                if !self.args.allowed_methods.contains(&call.method_name) {
-                    return Err(PreconditionError::UnknownFunctionName {
-                        name: call.method_name.clone(),
-                        index,
-                    });
-                }
-            }
-        } else {
-            // Token contract transfer call to market.
-            for (index, call) in calls.iter().enumerate() {
-                let transfer = AssetTransfer::parse(call, index, receiver_id.clone())?;
-                let market_id = transfer.token_receiver_id();
-
-                let Some(market_account_ids) = accounts.market_data.get(market_id) else {
-                    return Err(PreconditionError::UnknownTransferReceiverId {
-                        account_id: market_id.to_owned(),
-                        index,
-                    });
-                };
-
-                let msg = transfer.args.msg();
-                let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
-                    return Err(PreconditionError::MsgDeserializationFailure {
-                        index,
-                        msg: msg.to_string(),
-                    });
-                };
-
-                #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
-                if transfer.asset() == market_account_ids.borrow_asset {
-                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
-                        return Err(PreconditionError::InvalidMsgForAsset {
-                            index,
-                            expected: "\"Supply\" or \"Repay\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
-                        });
-                    }
-                } else if transfer.asset() == market_account_ids.collateral_asset {
-                    if !matches!(msg, DepositMsg::Collateralize) {
-                        return Err(PreconditionError::InvalidMsgForAsset {
-                            index,
-                            expected: "\"Collateralize\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
-                        });
-                    }
-                } else {
-                    return Err(PreconditionError::UnknownTransactionReceiverId {
-                        account_id: receiver_id.clone(),
-                    });
-                }
-            }
-        }
+        self.actions_are_allowed(receiver_id, &accounts, calls.iter().map(Borrow::borrow))?;
 
         let gas_total = calls.iter().map(|call| call.gas).sum();
 
@@ -290,7 +316,8 @@ impl App {
     pub async fn send_and_resolve_transaction(
         &self,
         account_id: AccountId,
-        cost_of_gas: NearToken,
+        gas_cost_estimate: NearToken,
+        spend_within_transaction: NearToken,
         signed_transaction: SignedTransaction,
         wait_until: TxExecutionStatus,
     ) -> Result<
@@ -300,15 +327,20 @@ impl App {
         let transaction_hash = signed_transaction.get_hash();
 
         self.database
-            .set_pending_transaction(&account_id, cost_of_gas, transaction_hash)
+            .set_pending_transaction(
+                &account_id,
+                gas_cost_estimate,
+                spend_within_transaction,
+                transaction_hash,
+            )
             .await?;
 
         let result = self
-            .near
+            .relay_near
             .send_transaction(signed_transaction, wait_until)
             .await?;
 
-        let near = self.near.clone();
+        let near = self.relay_near.clone();
         let database = self.database.clone();
 
         Ok(async move {

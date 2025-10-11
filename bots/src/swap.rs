@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use clap::ValueEnum;
-use near_crypto::InMemorySigner;
+use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     action::Action,
@@ -60,11 +60,11 @@ impl SwapType {
 pub struct RheaSwap {
     pub contract: AccountId,
     pub client: JsonRpcClient,
-    pub signer: Arc<InMemorySigner>,
+    pub signer: Arc<Signer>,
 }
 
 impl RheaSwap {
-    pub fn new(contract: AccountId, client: JsonRpcClient, signer: Arc<InMemorySigner>) -> Self {
+    pub fn new(contract: AccountId, client: JsonRpcClient, signer: Arc<Signer>) -> Self {
         Self {
             contract,
             client,
@@ -196,7 +196,7 @@ impl Swap for RheaSwap {
             nonce,
             receiver_id: from_asset.contract_id().into(),
             block_hash,
-            signer_id: self.signer.account_id.clone(),
+            signer_id: self.signer.get_account_id(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(
                 from_asset.transfer_call_action(&self.contract, amount.into(), &msg_string),

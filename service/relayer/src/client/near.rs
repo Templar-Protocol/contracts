@@ -5,6 +5,7 @@ use near_jsonrpc_client::{
     errors::JsonRpcError,
     methods::{
         self,
+        block::RpcBlockError,
         gas_price::RpcGasPriceError,
         query::RpcQueryError,
         tx::{RpcTransactionError, RpcTransactionResponse},
@@ -16,10 +17,11 @@ use near_primitives::{
     action::{delegate::SignedDelegateAction, FunctionCallAction},
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction, TransactionV0},
-    types::Finality,
+    types::{BlockId, Finality},
     views::{FinalExecutionOutcomeView, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
+    json_types::Base64VecU8,
     serde::{de::DeserializeOwned, Serialize},
     serde_json::{self, json},
     AccountId, AccountIdRef, Gas, NearToken,
@@ -27,10 +29,12 @@ use near_sdk::{
 use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBounds};
 
 use templar_common::market::MarketConfiguration;
+use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
 
 use crate::{cache::Cache, MarketData};
 
 pub const STORAGE_DEPOSIT_GAS: u64 = Gas::from_tgas(5).as_gas();
+pub const DEPLOY_GAS: u64 = Gas::from_tgas(50).as_gas();
 
 #[derive(Debug, Clone)]
 pub struct Near {
@@ -56,6 +60,13 @@ pub enum ViewError {
     Serialization(#[from] serde_json::Error),
 }
 
+#[derive(Debug, Clone)]
+pub struct FetchNonce {
+    pub nonce: u64,
+    pub block_height: u64,
+    pub block_hash: CryptoHash,
+}
+
 #[allow(clippy::unwrap_used)]
 impl Near {
     pub fn new(client: JsonRpcClient, account_id: AccountId, signers: Vec<Signer>) -> Self {
@@ -74,6 +85,23 @@ impl Near {
         let method = methods::gas_price::RpcGasPriceRequest { block_id: None };
         let response = self.client.call(method).await?;
         Ok(NearToken::from_yoctonear(response.gas_price))
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn fetch_block_timestamp_ms(
+        &self,
+        block_hash: CryptoHash,
+    ) -> Result<u64, JsonRpcError<RpcBlockError>> {
+        let response = self
+            .client
+            .call(methods::block::RpcBlockRequest {
+                block_reference: BlockId::Hash(block_hash).into(),
+            })
+            .await?;
+
+        Ok(response.header.timestamp_nanosec / 1_000_000)
     }
 
     /// # Errors
@@ -121,7 +149,7 @@ impl Near {
         &self,
         account_id: AccountId,
         public_key: PublicKey,
-    ) -> Result<(u64, CryptoHash), JsonRpcError<RpcQueryError>> {
+    ) -> Result<FetchNonce, JsonRpcError<RpcQueryError>> {
         let response = self
             .client
             .call(methods::query::RpcQueryRequest {
@@ -137,7 +165,11 @@ impl Near {
             unimplemented!("Invalid response kind");
         };
 
-        Ok((access_key.nonce, response.block_hash))
+        Ok(FetchNonce {
+            nonce: access_key.nonce,
+            block_hash: response.block_hash,
+            block_height: response.block_height,
+        })
     }
 
     /// # Errors
@@ -234,6 +266,81 @@ impl Near {
         .sign(signer)
     }
 
+    /// Deploy a version of a contract from a registry.
+    #[must_use]
+    pub async fn construct_deploy_from_registry_transaction(
+        &self,
+        cache: &Cache,
+        registry_id: AccountId,
+        name: String,
+        version_key: String,
+        init_args: impl Serialize,
+        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
+    ) -> SignedTransaction {
+        let signer = self.next_signer();
+        let public_key = signer.public_key();
+
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
+
+        let action = FunctionCallAction {
+            method_name: "deploy".to_string(),
+            args: serde_json::to_vec(&json!({
+                "name": name,
+                "version_key": version_key,
+                "init_args": Base64VecU8(serde_json::to_vec(&init_args).unwrap()),
+                "full_access_keys": full_access_keys,
+            }))
+            .unwrap(),
+            gas: DEPLOY_GAS,
+            deposit: 0,
+        };
+
+        Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key,
+            nonce,
+            receiver_id: registry_id,
+            block_hash,
+            actions: vec![action.into()],
+        })
+        .sign(signer)
+    }
+
+    #[must_use]
+    pub async fn construct_ua_execute_transaction(
+        &self,
+        cache: &Cache,
+        ua_account_id: AccountId,
+        args: ExecuteArgs,
+        gas: u64,
+    ) -> SignedTransaction {
+        let signer = self.next_signer();
+        let public_key = signer.public_key();
+
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
+
+        let action = FunctionCallAction {
+            method_name: "execute".to_string(),
+            args: serde_json::to_vec(&json!({ "args": args })).unwrap(),
+            gas,
+            deposit: 0,
+        };
+
+        Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key,
+            nonce,
+            receiver_id: ua_account_id,
+            block_hash,
+            actions: vec![action.into()],
+        })
+        .sign(signer)
+    }
+
     /// # Errors
     ///
     /// - RPC errors
@@ -288,6 +395,17 @@ impl Near {
 
     /// # Errors
     ///
+    /// - Serialization/deserialization errors
+    /// - RPC errors
+    pub async fn load_versions_from_registry(
+        &self,
+        registry_id: AccountId,
+    ) -> Result<Vec<String>, ViewError> {
+        self.view(registry_id, "list_versions", json!({})).await
+    }
+
+    /// # Errors
+    ///
     /// - RPC errors
     pub async fn load_storage_balance_bounds(
         &self,
@@ -330,5 +448,17 @@ impl Near {
             borrow_asset: market_configuration.borrow_asset,
             collateral_asset: market_configuration.collateral_asset,
         })
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    pub async fn load_ua_key(
+        &self,
+        ua_account_id: AccountId,
+        key: KeyId,
+    ) -> Result<Option<ExecutionParameters>, ViewError> {
+        self.view(ua_account_id, "get_key", json!({ "key": key }))
+            .await
     }
 }

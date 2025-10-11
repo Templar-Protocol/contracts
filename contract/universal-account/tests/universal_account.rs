@@ -6,13 +6,14 @@ use near_sdk::{
 use p256::elliptic_curve::rand_core::OsRng;
 use templar_universal_account::{
     authentication::passkey::{
+        self,
         data::{AuthenticatorData, ClientDataJson},
         with_raw_string::WithRawString,
-        Message, Passkey, Payload,
+        Passkey, Payload, UncheckedMessage,
     },
-    key::p256::PublicKey,
+    encoding::p256::PublicKey,
     transaction::{Action, Transaction},
-    ExecutionParameters, KeyId,
+    ExecuteArgs, ExecutionParameters, KeyId,
 };
 use test_utils::{
     controller::universal_account::UniversalAccountController, print_execution, ContractController,
@@ -58,7 +59,7 @@ pub async fn universal_account() {
             nonce: U64(1),
         },
         account_id: uac.contract().id().clone(),
-        transactions: vec![Transaction {
+        payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![
                 Action::FunctionCall {
@@ -77,15 +78,17 @@ pub async fn universal_account() {
                     amount: NearToken::from_near(0),
                     gas: near_sdk::Gas::from_tgas(30),
                 },
-            ],
-        }],
+            ]
+            .into(),
+        }]
+        .into(),
     });
 
     eprintln!("{}", serde_json::to_string_pretty(&payload.parsed).unwrap());
 
     let challenge = payload.hash();
 
-    let message = Message::new_and_sign(
+    let message: passkey::Message<_> = UncheckedMessage::new_and_sign(
         &secret_key,
         payload,
         AuthenticatorData(Box::new([0xff_u8; 32])),
@@ -96,13 +99,20 @@ pub async fn universal_account() {
             cross_origin: None,
             top_origin: None,
         }),
-    );
+    )
+    .try_into()
+    .unwrap();
 
-    // eprintln!("{message:#?}");
     eprintln!("{}", serde_json::to_string_pretty(&message).unwrap());
 
     let e = uac
-        .execute_passkey(&third_party, key_id.clone(), message)
+        .execute(
+            &third_party,
+            ExecuteArgs::Passkey {
+                key: Passkey(public_key.clone()),
+                message,
+            },
+        )
         .await;
 
     print_execution(&e);

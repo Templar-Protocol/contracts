@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use templar_common::registry::DeployMode;
+
 pub fn main() {
     let name = "templar_market_contract";
 
@@ -10,8 +12,14 @@ pub fn main() {
 
     let wasm = fs::read(path).unwrap();
 
-    let version_key = std::env::args().collect::<Vec<_>>()[1].clone();
+    let args = std::env::args().collect::<Vec<_>>();
+    let version_key = args[1].clone();
+    let mode = match args[2].as_str() {
+        "normal" => DeployMode::Normal,
+        "global_hash" => DeployMode::GlobalHash,
+        _ => panic!("Must specify mode: (normal|global_hash)"),
+    };
 
-    let args = (version_key, wasm);
+    let args = (version_key, mode, wasm);
     near_sdk::borsh::to_writer(std::io::stdout(), &args).unwrap();
 }
