@@ -8,11 +8,11 @@ use std::num::NonZeroU128;
 #[near(serializers = [json])]
 pub struct Transaction {
     pub receiver_id: AccountId,
-    pub actions: Vec<Action>,
+    pub actions: Box<[Action]>,
 }
 
 impl Transaction {
-    pub fn construct_promise(&self) -> Promise {
+    pub fn to_promise(&self) -> Promise {
         let mut promise = Promise::new(self.receiver_id.clone());
 
         for action in &self.actions {

@@ -12,7 +12,9 @@ use crate::{
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
     price::{Convert, PricePair},
+    snapshot::Snapshot,
     time_chunk::TimeChunkConfiguration,
+    YEAR_PER_MS,
 };
 
 use super::{PriceOracleConfiguration, YieldWeights};
@@ -306,6 +308,24 @@ impl MarketConfiguration {
         ((1u32 - self.liquidation_maximum_spread) * price_pair.convert(amount))
             .to_u128_ceil()
             .map(BorrowAssetAmount::new)
+    }
+
+    pub fn single_snapshot_maximum_interest(&self) -> Decimal {
+        self.borrow_interest_rate_strategy.at(Decimal::ONE)
+            * self.time_chunk_configuration.duration_ms.0
+            * YEAR_PER_MS
+    }
+
+    pub fn supply_yield_rate_from_interest(&self, snapshot: &Snapshot) -> Decimal {
+        if snapshot.borrow_asset_deposited_active.is_zero() {
+            return Decimal::ZERO;
+        }
+        let deposited: Decimal = snapshot.borrow_asset_deposited_active.into();
+        let borrowed: Decimal = snapshot.borrow_asset_borrowed.into();
+        let supply_weight: Decimal = self.yield_weights.supply.get().into();
+        let total_weight: Decimal = self.yield_weights.total_weight().get().into();
+
+        snapshot.interest_rate * borrowed * supply_weight / deposited / total_weight
     }
 }
 

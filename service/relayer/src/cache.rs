@@ -82,8 +82,7 @@ pub struct Cache {
 async fn start(
     mut recv: mpsc::Receiver<CacheRequest>,
     near: Near,
-    gas_price_refresh: Duration,
-    nonce_refresh: Duration,
+    cache_config: crate::app::args::Cache,
     kill: watch::Sender<()>,
 ) {
     let mut gas_price = CacheRecord::empty();
@@ -93,9 +92,9 @@ async fn start(
     let update_gas = || async { near.fetch_gas_price().await };
     let update_nonce = |(account_id, public_key)| {
         || async {
-            let (nonce, hash) = near.fetch_nonce(account_id, public_key).await?;
-            *block_hash.write().await = hash;
-            Ok::<_, JsonRpcError<RpcQueryError>>(nonce + 1)
+            let fetch_nonce = near.fetch_nonce(account_id, public_key).await?;
+            *block_hash.write().await = fetch_nonce.block_hash;
+            Ok::<_, JsonRpcError<RpcQueryError>>(fetch_nonce.nonce + 1)
         }
     };
 
@@ -121,7 +120,7 @@ async fn start(
                 };
                 match request {
                     CacheRequest::GasPrice(sender) => {
-                        let fresh = gas_price.fetch(update_gas, gas_price_refresh).await;
+                        let fresh = gas_price.fetch(update_gas, cache_config.gas_price_refresh).await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(price) = fresh {
                             sender.send(*price).unwrap();
@@ -136,7 +135,7 @@ async fn start(
                     CacheRequest::Nonce { key, sender } => {
                         let entry = nonce.entry(key.clone()).or_insert_with(CacheRecord::empty);
                         let fresh = entry
-                            .fetch_update(update_nonce(key.clone()), nonce_refresh, |n| *n += 1)
+                            .fetch_update(update_nonce(key.clone()), cache_config.nonce_refresh, |n| *n += 1)
                             .await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(nonce) = fresh {
@@ -159,15 +158,10 @@ async fn start(
 }
 
 impl Cache {
-    pub fn new(
-        near: Near,
-        gas_price_refresh: Duration,
-        nonce_refresh: Duration,
-        kill: watch::Sender<()>,
-    ) -> Self {
+    pub fn new(near: Near, config: crate::app::args::Cache, kill: watch::Sender<()>) -> Self {
         let (send, recv) = mpsc::channel::<CacheRequest>(64);
 
-        tokio::spawn(start(recv, near, gas_price_refresh, nonce_refresh, kill));
+        tokio::spawn(start(recv, near, config, kill));
 
         Self { request: send }
     }

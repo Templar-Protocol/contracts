@@ -54,7 +54,7 @@ impl<T: DeserializeOwned> TryFrom<String> for WithRawString<T> {
     }
 }
 
-impl<'de, T: for<'a> Deserialize<'a>> Deserialize<'de> for WithRawString<T> {
+impl<'de, T: DeserializeOwned> Deserialize<'de> for WithRawString<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,

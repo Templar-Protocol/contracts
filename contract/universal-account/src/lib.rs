@@ -1,14 +1,14 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use near_sdk::{
-    borsh::BorshSerialize, env, json_types::U64, near, require, serde_json, store::IterableMap,
+    borsh::BorshSerialize, env, json_types::U64, near, require, store::IterableMap,
     BorshStorageKey, PanicOnDefault, Promise,
 };
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    authentication::{passkey, Key, SignedMessage},
-    ExecutionParameters, KeyId,
+    authentication::{ExecutionContextProvider, Key},
+    ExecuteArgs, ExecutionParameters, KeyId,
 };
 
 #[derive(PanicOnDefault)]
@@ -68,29 +68,30 @@ impl Contract {
         self.keys.remove(&key);
     }
 
-    pub fn execute(&mut self, key: KeyId, message: serde_json::Value) -> Promise {
-        let Some(key_entry) = self.keys.get_mut(&key) else {
+    pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
+        let ExecuteArgs::Passkey { key, message } = args;
+        let Some(key_entry) = self.keys.get_mut(&KeyId::Passkey(key.clone())) else {
             env::panic_str("Key does not exist")
         };
 
-        let KeyId::Passkey(key) = key;
-
-        let message: passkey::Message =
-            serde_json::from_value(message).unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
         let current_account_id = env::current_account_id();
 
-        require!(
-            message.account_id() == current_account_id,
-            "Account mismatch"
-        );
-        let p = message.parameters();
-        require!(p.index == key_entry.index, "Key index mismatch");
-        require!(p.nonce.0 == key_entry.nonce.0 + 1, "Nonce mismatch");
-        key_entry.nonce.0 += 1;
+        let message = key
+            .verify(message)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let transactions = message
+            .verify(&current_account_id, &key_entry.next())
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-        key.verify_and_execute(&message)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+        require!(!transactions.is_empty(), "Transaction list is empty");
+
+        let mut promise = transactions[0].to_promise();
+
+        for transaction in &transactions[1..] {
+            promise = promise.then(transaction.to_promise());
+        }
+
+        promise
     }
 }
 

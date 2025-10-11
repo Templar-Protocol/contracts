@@ -61,8 +61,15 @@ pub trait ContractController {
         deposit: NearToken,
         gas: Gas,
     ) -> ExecutionSuccess {
+        let args_s = serde_json::to_string(&args).unwrap();
+        const TARGET_LEN: usize = 128;
+        let args_s = if args_s.len() > TARGET_LEN {
+            format!("{}...", &args_s[0..(TARGET_LEN - 3)])
+        } else {
+            args_s
+        };
         eprintln!(
-            "{} calls {}->{function_name}(...)",
+            "{} calls {}->{function_name}({args_s})",
             &account.id().as_str()[0..16],
             &self.contract().id().as_str()[0..16],
         );

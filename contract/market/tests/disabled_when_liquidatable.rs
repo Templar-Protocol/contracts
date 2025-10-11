@@ -1,7 +1,36 @@
 use test_utils::*;
 
 #[tokio::test]
-async fn collateralization() {
+async fn disable_collateralize_if_still_liquidatable() {
+    setup_test!(extract(c) accounts(borrow_user, supply_user));
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 2_000_000),
+        c.collateralize(&borrow_user, 2_000_000),
+    );
+
+    c.borrow(&borrow_user, 1_000_000).await;
+    c.set_collateral_asset_price(0.5).await;
+    let collateral_before = c
+        .get_borrow_position(borrow_user.id())
+        .await
+        .unwrap()
+        .collateral_asset_deposit;
+    c.collateralize(&borrow_user, 2_000).await;
+    let collateral_after = c
+        .get_borrow_position(borrow_user.id())
+        .await
+        .unwrap()
+        .collateral_asset_deposit;
+
+    assert_eq!(
+        collateral_before, collateral_after,
+        "Must disallow adding collateral if position would still be in liquidation",
+    );
+}
+
+#[tokio::test]
+async fn allow_sufficient_collateralization_during_liquidation() {
     setup_test!(extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
@@ -24,8 +53,9 @@ async fn collateralization() {
         .collateral_asset_deposit;
 
     assert_eq!(
-        collateral_before, collateral_after,
-        "Must disallow adding collateral if position is in liquidation",
+        u128::from(collateral_before) + 2_000_000,
+        collateral_after.into(),
+        "Collateralization should be allowed if it brings the position out of liquidation",
     );
 }
 

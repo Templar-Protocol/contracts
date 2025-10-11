@@ -10,6 +10,7 @@ use crate::{
     incoming_deposit::IncomingDeposit,
     market::{Market, WithdrawalResolution},
     number::Decimal,
+    YEAR_PER_MS,
 };
 
 /// This struct can only be constructed after accumulating yield on a
@@ -133,6 +134,18 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
         let mut accumulated = Decimal::ZERO;
         let mut next_incoming = 0;
 
+        #[allow(clippy::unwrap_used, reason = "Guaranteed previous snapshot exists")]
+        let mut prev_end_timestamp_ms = self
+            .market
+            .finalized_snapshots
+            .get(next_snapshot_index.checked_sub(1).unwrap())
+            .unwrap()
+            .end_timestamp_ms
+            .0;
+
+        let weight_numerator = self.market.configuration.yield_weights.supply.get();
+        let weight_denominator = self.market.configuration.yield_weights.total_weight().get();
+
         #[allow(
             clippy::cast_possible_truncation,
             reason = "Assume # of snapshots is never >u32::MAX"
@@ -157,16 +170,20 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             }
 
             if !snapshot.borrow_asset_deposited_active.is_zero() {
-                // TODO: Remove, this is just for testing.
-                require!(
-                    amount <= u128::from(snapshot.borrow_asset_deposited_active),
-                    "Amount is greater than active",
-                );
-                accumulated += amount * Decimal::from(snapshot.yield_distribution)
-                    / Decimal::from(snapshot.borrow_asset_deposited_active);
+                let snapshot_duration_ms = snapshot.end_timestamp_ms.0 - prev_end_timestamp_ms;
+                let interest_paid_by_borrowers = Decimal::from(snapshot.borrow_asset_borrowed)
+                    * snapshot.interest_rate
+                    * snapshot_duration_ms
+                    * YEAR_PER_MS;
+                let other_yield = Decimal::from(snapshot.yield_distribution);
+                accumulated +=
+                    (interest_paid_by_borrowers + other_yield) * amount * weight_numerator
+                        / u128::from(snapshot.borrow_asset_deposited_active)
+                        / weight_denominator;
             }
 
             next_snapshot_index = i as u32 + 1;
+            prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
         }
 
         AccumulationRecord {
@@ -210,7 +227,7 @@ impl<'a> SupplyPositionGuard<'a> {
         Self(SupplyPositionRef::new(market, account_id, position))
     }
 
-    fn activate_incoming(&mut self, until_snapshot_index: u32) {
+    fn activate_incoming(&mut self, through_snapshot_index: u32) {
         let mut incoming = self
             .position
             .borrow_asset_deposit
@@ -219,7 +236,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .into_iter()
             .peekable();
         while let Some(deposit) =
-            incoming.next_if(|d| d.activate_at_snapshot_index < until_snapshot_index)
+            incoming.next_if(|d| d.activate_at_snapshot_index <= through_snapshot_index)
         {
             asset_op!(self.position.borrow_asset_deposit.active += deposit.amount);
         }

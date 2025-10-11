@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use near_sdk::{near, AccountId, Promise, PromiseOrValue};
 
 use crate::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    accumulator::Accumulator,
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
     number::Decimal,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
-    static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
@@ -160,15 +160,21 @@ pub trait MarketExternalInterface {
     /// Retrieves the amount of yield earned by an account statically
     /// configured to earn yield (e.g. [`MarketConfiguration::yield_weights`]
     /// or [`MarketConfiguration::protocol_account_id`]).
-    fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord>;
+    fn get_static_yield(&self, account_id: AccountId) -> Option<Accumulator<BorrowAsset>>;
+
+    /// Accumulates yield for an account that earns static yield.
+    fn accumulate_static_yield(
+        &mut self,
+        account_id: Option<AccountId>,
+        snapshot_limit: Option<u32>,
+    );
 
     /// Attempts to withdraw the amount of yield earned by an account
     /// statically configured to earn yield (e.g.
     /// [`MarketConfiguration::yield_weights`] or
     /// [`MarketConfiguration::protocol_account_id`]).
-    fn withdraw_static_yield(
-        &mut self,
-        borrow_asset_amount: Option<BorrowAssetAmount>,
-        collateral_asset_amount: Option<CollateralAssetAmount>,
-    ) -> Promise;
+    ///
+    /// Calls to this function should be preceded by calls to
+    /// [`MarketExternalInterface::accumulate_static_yield`].
+    fn withdraw_static_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise;
 }

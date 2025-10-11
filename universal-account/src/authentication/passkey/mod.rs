@@ -1,13 +1,10 @@
+use near_sdk::serde::de::DeserializeOwned;
 use near_sdk::AccountId;
-use near_sdk::{env, near, Promise};
-use p256::ecdsa::signature::SignerMut;
-use p256::ecdsa::signature::Verifier;
+use near_sdk::{env, near};
+use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 
-use super::ExecutionParameters;
-use super::Key;
-use super::SignedMessage;
-use crate::transaction::Transaction;
+use super::{ExecutionContextProvider, ExecutionParameters, InvalidSignatureError, Key};
 
 use data::{AuthenticatorData, ClientDataJson};
 use signature::Signature;
@@ -30,51 +27,48 @@ fn sig_base(
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
-pub struct Passkey(pub crate::key::p256::PublicKey);
+pub struct Passkey(pub crate::encoding::p256::PublicKey);
 
-impl Key for Passkey {
-    type Message = Message;
-    type Error = Error;
+pub struct MessageWithValidSignature<T>(Message<T>);
 
-    fn verify_and_execute(&self, message: &Message) -> Result<Promise, Error> {
-        // Check signature
-        VerifyingKey::from(*self.0)
-            .verify(
-                &sig_base(&message.authenticator_data, &message.client_data_json),
-                &*message.signature,
-            )
-            .map_err(|_| Error::InvalidSignature)?;
+impl<T> Key<Message<T>> for Passkey {
+    type Validated = MessageWithValidSignature<T>;
 
-        // Check that the payload actually hashes to the signed challenge
-        if message.payload.hash() != message.client_data_json.parsed.challenge.as_slice() {
-            return Err(Error::PayloadHashMismatch);
+    fn verify(&self, message: Message<T>) -> Result<Self::Validated, InvalidSignatureError> {
+        let payload_prehash = sig_base(&message.0.authenticator_data, &message.0.client_data_json);
+        if VerifyingKey::from(*self.0)
+            .verify(&payload_prehash, &*message.0.signature)
+            .is_ok()
+        {
+            Ok(MessageWithValidSignature(message))
+        } else {
+            Err(InvalidSignatureError)
         }
-
-        Ok(message.execute())
     }
 }
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-pub struct Payload {
+pub struct Payload<T> {
     pub parameters: ExecutionParameters,
     pub account_id: AccountId,
-    pub transactions: Vec<Transaction>,
+    pub payload: T,
 }
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-pub struct Message {
+#[serde(bound = "T: DeserializeOwned")]
+pub struct UncheckedMessage<T> {
     pub authenticator_data: AuthenticatorData,
-    pub payload: WithRawString<Payload>,
+    pub message: WithRawString<Payload<T>>,
     pub client_data_json: WithRawString<ClientDataJson>,
     pub signature: Signature,
 }
 
-impl Message {
+impl<T> UncheckedMessage<T> {
     pub fn new_and_sign(
         key: &p256::SecretKey,
-        payload: WithRawString<Payload>,
+        message: WithRawString<Payload<T>>,
         authenticator_data: AuthenticatorData,
         client_data_json: WithRawString<ClientDataJson>,
     ) -> Self {
@@ -84,45 +78,53 @@ impl Message {
 
         Self {
             authenticator_data,
-            payload,
+            message,
             client_data_json,
             signature,
         }
     }
 }
 
-impl SignedMessage for Message {
-    type Output = Promise;
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Payload hash mismatch")]
+pub struct PayloadHashMismatchError;
 
-    fn account_id(&self) -> &near_sdk::AccountIdRef {
-        &self.payload.parsed.account_id
-    }
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+#[serde(bound = "T: DeserializeOwned", try_from = "UncheckedMessage<T>")]
+pub struct Message<T>(UncheckedMessage<T>);
 
-    fn parameters(&self) -> &ExecutionParameters {
-        &self.payload.parsed.parameters
-    }
-
-    fn execute(&self) -> Self::Output {
-        let mut promise = self
-            .payload
-            .parsed
-            .transactions
-            .first()
-            .unwrap_or_else(|| env::panic_str("empty"))
-            .construct_promise();
-
-        for tx in &self.payload.parsed.transactions[1..] {
-            promise = promise.then(tx.construct_promise());
-        }
-
-        promise
+impl<T> Message<T> {
+    pub fn payload_unchecked(&self) -> &T {
+        &self.0.message.parsed.payload
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("Payload hash mismatch")]
-    PayloadHashMismatch,
-    #[error("Invalid signature")]
-    InvalidSignature,
+impl<T> TryFrom<UncheckedMessage<T>> for Message<T> {
+    type Error = PayloadHashMismatchError;
+
+    fn try_from(value: UncheckedMessage<T>) -> Result<Self, Self::Error> {
+        // Check that the payload actually hashes to the signed challenge
+        if value.message.hash() != value.client_data_json.parsed.challenge.as_slice() {
+            return Err(PayloadHashMismatchError);
+        }
+
+        Ok(Self(value))
+    }
+}
+
+impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
+    type Payload = P;
+
+    fn account_id(&self) -> &near_sdk::AccountIdRef {
+        &self.0 .0.message.parsed.account_id
+    }
+
+    fn parameters(&self) -> &ExecutionParameters {
+        &self.0 .0.message.parsed.parameters
+    }
+
+    fn payload_unchecked(&self) -> &Self::Payload {
+        &self.0 .0.message.parsed.payload
+    }
 }

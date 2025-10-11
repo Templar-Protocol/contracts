@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 hex-literal.workspace = true
-near-sdk.workspace = true
+near-sdk = { workspace = true, features = ["unit-testing"] }
 near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true
 templar-common.workspace = true
