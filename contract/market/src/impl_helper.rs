@@ -384,7 +384,7 @@ impl Contract {
         };
 
         let proof = borrow_position.accumulate_interest();
-        borrow_position.record_collateral_asset_withdrawal(proof, amount);
+        borrow_position.record_collateral_asset_withdrawal_initial(proof, amount);
 
         require!(
             borrow_position
@@ -413,23 +413,23 @@ impl Contract {
         account_id: AccountId,
         amount: CollateralAssetAmount,
     ) {
-        let transfer_was_successful =
-            matches!(env::promise_result(0), PromiseResult::Successful(_));
+        let succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        if transfer_was_successful {
+        let snapshot = self.snapshot();
+        let Some(mut position) = self.borrow_position_guard(snapshot, account_id.clone()) else {
+            env::panic_str(
+                "Invariant violation: Borrow position must exist after collateral withdrawal.",
+            );
+        };
+
+        let proof = position.accumulate_interest();
+        position.record_collateral_asset_withdrawal_final(proof, amount, succeeded);
+
+        if succeeded {
+            drop(position);
             if self.cleanup_borrow_position(&account_id) {
                 self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
             }
-        } else {
-            let snapshot = self.snapshot();
-            let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
-                env::panic_str(
-                    "Invariant violation: Borrow position must exist after collateral withdrawal.",
-                );
-            };
-
-            let proof = borrow_position.accumulate_interest();
-            borrow_position.record_collateral_asset_deposit(proof, amount);
         }
     }
 
