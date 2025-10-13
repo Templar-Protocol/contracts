@@ -35,18 +35,18 @@ pub struct Args {
     #[arg(short, long, env = "TIMEOUT", default_value_t = 60)]
     pub timeout: u64,
     /// Interval between accumulations in seconds
-    #[arg(short, long, default_value = "600", env = "INTERVAL")]
+    #[arg(short, long, default_value_t = 600, env = "INTERVAL")]
     pub interval: u64,
     /// Registry refresh interval in seconds
     #[arg(
         short = 'r',
         long,
-        default_value = "3600",
+        default_value_t = 3600,
         env = "REGISTRY_REFRESH_INTERVAL"
     )]
     pub registry_refresh_interval: u64,
     /// Concurrency for accumulation tasks
-    #[arg(short, long, default_value = "4", env = "CONCURRENCY")]
+    #[arg(short, long, default_value_t = 4, env = "CONCURRENCY")]
     pub concurrency: usize,
 }
 

@@ -7,7 +7,7 @@ After=network.target
 EnvironmentFile=/etc/default/accumulator
 ExecStart="/usr/local/bin/accumulator"
 Restart=on-failure
-User=root
+User=accumulator
 WorkingDirectory=/usr/local/bin
 
 [Install]
