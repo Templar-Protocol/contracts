@@ -75,16 +75,19 @@ pub async fn create(
         }
     };
 
-    let pow_payload =
-        match verified_signature.verify(&app.args.ua.account_id, &ExecutionParameters::default()) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::info!("Failed execution parameter verification: {e}");
-                return SimpleResponse::Rejected {
-                    reason: "Failed execution parameter verification".to_string(),
-                };
-            }
-        };
+    let pow_payload = match verified_signature.verify(
+        &app.args.ua.account_id,
+        &ExecutionParameters::default(),
+        |o| app.args.ua.is_origin_allowed(o),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::info!("Failed execution parameter verification: {e}");
+            return SimpleResponse::Rejected {
+                reason: "Failed execution parameter verification".to_string(),
+            };
+        }
+    };
 
     // Verify PoW
 

@@ -70,7 +70,9 @@ pub async fn relay(
         }
     };
 
-    let payload = match valid_signature.verify(&account_id, &parameters.next()) {
+    let payload = match valid_signature.verify(&account_id, &parameters.next(), |o| {
+        app.args.ua.is_origin_allowed(o)
+    }) {
         Ok(p) => p,
         Err(e) => {
             tracing::info!("Execution parameter verification failed: {e}");

@@ -147,12 +147,24 @@ pub struct UniversalAccount {
         default_value = "600"
     )]
     pub blockref_max_age: Duration,
+    #[allow(clippy::doc_markdown)]
+    /// From which origins are the payloads allowed to come?
+    ///
+    /// This is checked in the `clientDataJSON` field provided by WebAuthn.
+    #[arg(
+        id = "ua-allowed-origin",
+        long = "ua-allowed-origin",
+        env = "UA_ALLOWED_ORIGIN",
+        value_delimiter = ','
+    )]
+    pub allowed_origin: Vec<String>,
     /// Account ID of the registry from which to deploy universal accounts.
     #[arg(id = "ua-registry-id", long = "ua-registry-id", env = "UA_REGISTRY_ID")]
     pub registry_id: AccountId,
     /// Version key of the universal account contract to deploy from the registry.
     #[arg(id = "ua-version-key", long = "ua-version-key", env = "UA_VERSION_KEY")]
     pub version_key: String,
+    /// How much gas does it take to execute the `execute` receipt on the universal account contract?
     #[arg(
         id = "ua-execute-tgas",
         long = "ua-execute-tgas",
@@ -160,6 +172,16 @@ pub struct UniversalAccount {
         default_value_t = 35
     )]
     pub execute_tgas: u64,
+}
+
+impl UniversalAccount {
+    pub fn is_origin_allowed(&self, origin: Option<&str>) -> bool {
+        if self.allowed_origin.is_empty() {
+            true
+        } else {
+            origin.is_some_and(|o| self.allowed_origin.iter().any(|s| s == o))
+        }
+    }
 }
 
 fn default_allowed_methods() -> Vec<String> {

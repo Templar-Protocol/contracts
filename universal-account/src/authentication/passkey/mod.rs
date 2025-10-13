@@ -127,4 +127,8 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
     fn payload_unchecked(&self) -> &Self::Payload {
         &self.0 .0.message.parsed.payload
     }
+
+    fn origin(&self) -> Option<&str> {
+        Some(self.0 .0.client_data_json.parsed.origin.as_str())
+    }
 }

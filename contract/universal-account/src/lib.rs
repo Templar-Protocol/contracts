@@ -80,7 +80,7 @@ impl Contract {
             .verify(message)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
         let transactions = message
-            .verify(&current_account_id, &key_entry.next())
+            .verify(&current_account_id, &key_entry.next(), |_| true)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         require!(!transactions.is_empty(), "Transaction list is empty");

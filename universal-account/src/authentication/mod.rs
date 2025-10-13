@@ -25,6 +25,8 @@ pub enum ExecutionError {
     KeyIndexMismatch,
     #[error("Nonce mismatch")]
     NonceMismatch,
+    #[error("Origin unknown")]
+    OriginUnknown,
 }
 
 pub trait ExecutionContextProvider {
@@ -33,6 +35,7 @@ pub trait ExecutionContextProvider {
     fn account_id(&self) -> &AccountIdRef;
     fn parameters(&self) -> &ExecutionParameters;
     fn payload_unchecked(&self) -> &Self::Payload;
+    fn origin(&self) -> Option<&str>;
 
     /// # Errors
     ///
@@ -42,6 +45,7 @@ pub trait ExecutionContextProvider {
         &self,
         executor_account_id: &AccountIdRef,
         parameters: &ExecutionParameters,
+        allowed_origin: impl FnOnce(Option<&str>) -> bool,
     ) -> Result<&Self::Payload, ExecutionError> {
         if self.account_id() != executor_account_id {
             return Err(ExecutionError::ExecutorAccountIdMismatch);
@@ -54,6 +58,10 @@ pub trait ExecutionContextProvider {
 
         if p.nonce.0 != parameters.nonce.0 {
             return Err(ExecutionError::NonceMismatch);
+        }
+
+        if !allowed_origin(self.origin()) {
+            return Err(ExecutionError::OriginUnknown);
         }
 
         Ok(self.payload_unchecked())
