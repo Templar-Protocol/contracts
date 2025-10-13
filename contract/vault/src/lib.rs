@@ -632,7 +632,6 @@ impl Contract {
             "Withdraw queue length exceeds max"
         );
 
-        // Ensure no duplicates in the new queue
         let mut seen = std::collections::HashSet::new();
         for id in &queue {
             if !seen.insert(id.clone()) {
@@ -792,57 +791,57 @@ impl Contract {
             }
             .emit();
             self.plan = None;
-            return self.start_allocation(total);
-        }
+            self.start_allocation(total)
+        } else {
+            // Validate unique markets and accumulate weight sum
+            let mut seen = std::collections::HashSet::new();
+            let mut sum_w: u128 = 0;
 
-        // Validate unique markets and accumulate weight sum
-        let mut seen = std::collections::HashSet::new();
-        let mut sum_w: u128 = 0;
-
-        for (m, w) in &weights {
-            if !seen.insert(m.clone()) {
-                env::panic_str(&format!("Duplicate market in weights: {m}"));
+            for (m, w) in &weights {
+                if !seen.insert(m.clone()) {
+                    env::panic_str(&format!("Duplicate market in weights: {m}"));
+                }
+                sum_w = sum_w.saturating_add(u128::from(*w));
             }
-            sum_w = sum_w.saturating_add(u128::from(*w));
-        }
-        if sum_w == 0 {
-            env::panic_str("Sum of weights is zero");
-        }
+            if sum_w == 0 {
+                env::panic_str("Sum of weights is zero");
+            }
 
-        // Clamp total allocation by idle balance and aggregate room
-        let requested: u128 = amount.map_or(self.idle_balance, |x| x.0);
-        let max_room = self.get_max_deposit().0;
-        let total = requested.min(self.idle_balance).min(max_room);
-        if total == 0 {
-            env::panic_str("No funds to allocate");
-        }
+            // Clamp total allocation by idle balance and aggregate room
+            let requested: u128 = amount.map_or(self.idle_balance, |x| x.0);
+            let max_room = self.get_max_deposit().0;
+            let total = requested.min(self.idle_balance).min(max_room);
+            if total == 0 {
+                env::panic_str("No funds to allocate");
+            }
 
-        // Emit request and plan events
-        let op_id = self.next_op_id;
-        let weights_for_event: Vec<(AccountId, U128)> = weights
-            .iter()
-            .map(|(m, w)| (m.clone(), U128((*w).into())))
-            .collect();
-        Event::AllocationRequestedWeighted {
-            op_id,
-            total: U128(total),
-            weights: weights_for_event.clone(),
-        }
-        .emit();
-        Event::AllocationPlanSet {
-            op_id,
-            plan: weights_for_event,
-        }
-        .emit();
+            // Emit request and plan events
+            let op_id = self.next_op_id;
+            let weights_for_event: Vec<(AccountId, U128)> = weights
+                .iter()
+                .map(|(m, w)| (m.clone(), U128((*w).into())))
+                .collect();
+            Event::AllocationRequestedWeighted {
+                op_id,
+                total: U128(total),
+                weights: weights_for_event.clone(),
+            }
+            .emit();
+            Event::AllocationPlanSet {
+                op_id,
+                plan: weights_for_event,
+            }
+            .emit();
 
-        // Store an ephemeral plan of (market, weight) to drive weighted allocation.
-        let plan: AllocationPlan = weights
-            .into_iter()
-            .map(|(m, w)| (m, u128::from(w)))
-            .collect();
+            // Store an ephemeral plan of (market, weight) to drive weighted allocation.
+            let plan: AllocationPlan = weights
+                .into_iter()
+                .map(|(m, w)| (m, u128::from(w)))
+                .collect();
 
-        self.plan = Some(plan);
-        self.start_allocation(total)
+            self.plan = Some(plan);
+            self.start_allocation(total)
+        }
     }
 }
 
@@ -917,11 +916,7 @@ impl Contract {
             return U128(0);
         }
         let (new_total_supply, new_total_assets) = self.effective_totals_fee_aware();
-        U128(crate::wad::mul_div_floor(
-            a,
-            new_total_supply,
-            new_total_assets,
-        ))
+        U128(mul_div_floor(a, new_total_supply, new_total_assets))
     }
 
     /// Converts an amount of shares to underlying assets, flooring the result.
@@ -932,11 +927,7 @@ impl Contract {
             return U128(0);
         }
         let (new_total_supply, new_total_assets) = self.effective_totals_fee_aware();
-        U128(crate::wad::mul_div_floor(
-            s,
-            new_total_assets,
-            new_total_supply,
-        ))
+        U128(mul_div_floor(s, new_total_assets, new_total_supply))
     }
 
     /// Preview the number of shares minted for a deposit of `assets` (floored).
@@ -1094,7 +1085,13 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
         self.ensure_idle();
-        self.idle_balance = 0;
+
+        assert!(
+            amount <= self.idle_balance,
+            "Invariant Violation: reserve amount must be <= idle_balance"
+        );
+        self.idle_balance -= amount;
+
         let op_id = self.next_op_id;
         self.next_op_id += 1;
         self.op_state = OpState::Allocating {
@@ -1119,6 +1116,7 @@ impl Contract {
             } => (*op_id, *index, *remaining),
             _ => return self.stop_and_exit(Some(&Error::NotAllocating(self.op_state.clone()))),
         };
+
         if remaining == 0 {
             return self.stop_and_exit::<Error>(None);
         }
@@ -1139,7 +1137,7 @@ impl Contract {
                 let target = if sum_w == 0 || idx + 1 == plan.len() {
                     remaining
                 } else {
-                    crate::wad::mul_div_floor(remaining, *weight, sum_w)
+                    mul_div_floor(remaining, *weight, sum_w)
                 };
 
                 let cap = self.config.get(&market_id).map_or(0, |c| c.cap);
@@ -1261,7 +1259,6 @@ impl Contract {
                     ),
             )
         } else {
-            // Shouldn't happen if max_deposit used; stop and reconcile remaining in stop_and_exit
             self.stop_and_exit(Some("Market not found"))
         }
     }
@@ -1387,7 +1384,7 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         if collected > 0 {
             let requested = collected.saturating_add(remaining);
-            let burn_shares = crate::wad::mul_div_floor(escrow_shares, collected, requested.max(1));
+            let burn_shares = mul_div_floor(escrow_shares, collected, requested.max(1));
             self.op_state = OpState::Payout {
                 op_id,
                 receiver: receiver.clone(),
