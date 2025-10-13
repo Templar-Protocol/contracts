@@ -457,12 +457,7 @@ impl Contract {
 
         if new_cap < config.cap {
             // If lowering the cap, we can apply the delta immediately
-
             config.cap = new_cap;
-            // Disable market if cap is zero
-            if new_cap == 0 {
-                config.enabled = false;
-            }
         } else {
             let valid_at = env::block_timestamp() + self.timelock_ns;
             self.pending_cap.insert(
@@ -529,8 +524,6 @@ impl Contract {
                     }
                 }
                 cfg.removable_at = 0;
-            } else {
-                cfg.enabled = false;
             }
             Event::SupplyCapSet {
                 market: market.clone(),
@@ -643,48 +636,54 @@ impl Contract {
         let current: std::collections::HashSet<AccountId> =
             self.withdraw_queue.iter().cloned().collect();
 
-        // Each id in the new queue must correspond to a known market
         for id in &queue {
-            assert!(self.config.get(id).is_some(), "Unknown market in new queue");
+            assert!(
+                self.config.get(id).is_some(),
+                "Invariant violation: Unknown market in new queue"
+            );
         }
 
-        // Enforce invariant: withdraw_queue must include all enabled or holding markets
         for (id, cfg) in self.config.iter() {
             let has_supply = *self.market_supply.get(id).unwrap_or(&0) > 0;
-            if cfg.enabled || has_supply {
-                assert!(
-                    seen.contains(id),
-                    "Withdraw queue must include all enabled or holding markets"
-                );
+            println!(
+                "ID: {}, Enabled: {}, Has Supply: {}, Removable At: {}",
+                id, cfg.enabled, has_supply, cfg.removable_at
+            );
+
+            if (cfg.enabled || has_supply) && !seen.contains(id) {
+                if current.contains(id) {
+                    // Omission is allowed only when removing an existing queued market AND all safety preconditions hold.
+                    assert!(
+                        cfg.cap == 0,
+                        "Invariant violation: Cannot remove market with non-zero cap"
+                    );
+                    assert!(
+                        self.pending_cap.get(id).is_none(),
+                        "Invariant violation: Cannot remove market with pending cap change"
+                    );
+                    if has_supply {
+                        assert!(
+                            cfg.removable_at > 0,
+                            "Invariant violation: Market still has supply but no removal scheduled"
+                        );
+                        assert!(
+                            env::block_timestamp() >= cfg.removable_at,
+                            "Invariant violation: Removal timelock not elapsed for market"
+                        );
+                    }
+                } else {
+                    // Not in current queue: must be included if enabled or holding.
+                    env::panic_str(
+                        "Invariant violation: Withdraw queue must include all enabled or holding markets",
+                    );
+                }
             }
         }
 
-        // For every market being removed, enforce safety invariants before removal
         for id in current.difference(&seen).cloned().collect::<Vec<_>>() {
-            #[allow(clippy::expect_used, reason = "No side effects")]
-            let config = self.config.get_mut(&id).expect("Market not found");
-
-            assert!(config.cap == 0, "Cannot remove market with non-zero cap");
-            assert!(
-                self.pending_cap.get(&id).is_none(),
-                "Cannot remove market with pending cap change"
-            );
-            let position = *self.market_supply.get(&id).unwrap_or(&0);
-            if position > 0 {
-                assert!(
-                    config.removable_at > 0,
-                    "Market still has supply but no removal scheduled"
-                );
-                assert!(
-                    env::block_timestamp() >= config.removable_at,
-                    "Removal timelock not elapsed for market"
-                );
-            }
-            // Remove market configuration
             self.config.remove(&id);
         }
 
-        // Replace withdraw_queue atomically
         self.withdraw_queue.clear();
         for id in &queue {
             self.withdraw_queue.push(id.clone());
@@ -710,11 +709,11 @@ impl Contract {
 
         let assets = self.convert_to_assets(U128(shares)).0;
 
-        let owner = env::predecessor_account_id();
+        let sender = env::predecessor_account_id();
 
-        // Move shares into vault escrow; do not burn yet
+        // Move shares into escrow
         #[allow(clippy::expect_used, reason = "No side effects")]
-        self.transfer_unchecked(&owner, &env::current_account_id(), shares)
+        self.transfer_unchecked(&sender, &env::current_account_id(), shares)
             .expect("Redeem failed to move shares into escrow");
 
         self.internal_accrue_fee();
@@ -725,7 +724,7 @@ impl Contract {
         }
         .emit();
 
-        self.enqueue_pending_withdrawal(&owner, &receiver, shares, assets);
+        self.enqueue_pending_withdrawal(&sender, &receiver, shares, assets);
         PromiseOrValue::Value(())
     }
 
@@ -778,9 +777,7 @@ impl Contract {
 
         // If no weights provided, use queue order; clamp total and emit request event.
         if weights.is_empty() {
-            let requested: u128 = amount.map_or(self.idle_balance, |x| x.0);
-            let max_room = self.get_max_deposit().0;
-            let total = requested.min(self.idle_balance).min(max_room);
+            let total = self.clamp_allocation_total(amount.map(|x| x.0));
             if total == 0 {
                 return self.stop_and_exit(Some(&Error::ZeroAmount));
             }
@@ -808,9 +805,7 @@ impl Contract {
             }
 
             // Clamp total allocation by idle balance and aggregate room
-            let requested: u128 = amount.map_or(self.idle_balance, |x| x.0);
-            let max_room = self.get_max_deposit().0;
-            let total = requested.min(self.idle_balance).min(max_room);
+            let total = self.clamp_allocation_total(amount.map(|x| x.0));
             if total == 0 {
                 env::panic_str("No funds to allocate");
             }
@@ -848,6 +843,7 @@ impl Contract {
 /* ----- Views ----- */
 #[near]
 impl Contract {
+    #[allow(clippy::expect_used, reason = "No side effects")]
     pub fn get_configuration(&self) -> VaultConfiguration {
         let timelock_sec = self.timelock_ns / 1_000_000_000;
         VaultConfiguration {
@@ -1015,13 +1011,60 @@ impl Contract {
     fn effective_totals_fee_aware(&self) -> (u128, u128) {
         let cur = self.get_total_assets().0;
         let ts = self.total_supply();
-        let fee_shares =
-            crate::wad::compute_fee_shares(cur, self.last_total_assets, self.performance_fee, ts);
-        let new_total_supply = ts
+        Self::compute_effective_totals(
+            cur,
+            self.last_total_assets,
+            self.performance_fee,
+            ts,
+            self.virtual_shares,
+            self.virtual_assets,
+        )
+    }
+
+    // Pure helper to compute how many escrowed shares to burn on partial payout
+    fn compute_burn_shares(
+        &self,
+        escrow_shares: u128,
+        collected: u128,
+        requested_total: u128,
+    ) -> u128 {
+        mul_div_floor(escrow_shares, collected, requested_total.max(1))
+    }
+
+    pub(crate) fn compute_effective_totals(
+        cur_assets: u128,
+        last_total_assets: u128,
+        performance_fee: u128,
+        total_supply: u128,
+        virtual_shares: u128,
+        virtual_assets: u128,
+    ) -> (u128, u128) {
+        let fee_shares = crate::wad::compute_fee_shares(
+            cur_assets,
+            last_total_assets,
+            performance_fee,
+            total_supply,
+        );
+        let new_total_supply = total_supply
             .saturating_add(fee_shares)
-            .saturating_add(self.virtual_shares);
-        let new_total_assets = cur.saturating_add(self.virtual_assets);
+            .saturating_add(virtual_shares);
+        let new_total_assets = cur_assets.saturating_add(virtual_assets);
         (new_total_supply, new_total_assets)
+    }
+
+    pub(crate) fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
+        let requested = requested.unwrap_or(self.idle_balance);
+        let max_room = self.get_max_deposit().0;
+        requested.min(self.idle_balance).min(max_room)
+    }
+
+    pub(crate) fn compute_escrow_settlement(
+        escrow_shares: u128,
+        burn_shares: u128,
+    ) -> (u128 /* to_burn */, u128 /* refund */) {
+        let to_burn = burn_shares.min(escrow_shares);
+        let refund = escrow_shares.saturating_sub(to_burn);
+        (to_burn, refund)
     }
 
     /* ----- Internal: fee, shares ----- */
@@ -1384,7 +1427,7 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         if collected > 0 {
             let requested = collected.saturating_add(remaining);
-            let burn_shares = mul_div_floor(escrow_shares, collected, requested.max(1));
+            let burn_shares = self.compute_burn_shares(escrow_shares, collected, requested);
             self.op_state = OpState::Payout {
                 op_id,
                 receiver: receiver.clone(),

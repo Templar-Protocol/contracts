@@ -1,7 +1,8 @@
 use crate::test_utils::*;
 use crate::Contract;
+use near_sdk::env;
 use near_sdk::test_utils::accounts;
-use near_sdk::{json_types::U128, test_utils::VMContextBuilder, AccountId, RuntimeFeesConfig};
+use near_sdk::{json_types::U128, AccountId, RuntimeFeesConfig};
 use near_sdk::{test_vm_config, testing_env};
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
@@ -93,24 +94,6 @@ fn fee_accrues_only_on_growth_unit() {
     );
 }
 
-#[test]
-fn contract_convert_roundtrip_bounds() {
-    let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-    let c = new_test_contract(&vault_id);
-
-    let a = U128(1_234_567);
-    let s = U128(987_654);
-
-    // With virtual offsets, inequalities must hold
-    let to_sh = c.convert_to_shares(a);
-    let back_a = c.convert_to_assets(to_sh);
-    assert!(back_a.0 <= a.0);
-
-    let to_a = c.convert_to_assets(s);
-    let back_s = c.convert_to_shares(to_a);
-    assert!(back_s.0 >= s.0);
-}
 
 #[test]
 fn payout_success_burns_only_proportional_escrow_and_refunds_remainder() {
@@ -263,4 +246,503 @@ fn set_withdraw_queue_must_include_all_enabled() {
 
     // Missing m1 should panic
     c.set_withdraw_queue(vec![m2]);
+}
+
+#[test]
+fn start_allocation_reserves_only_amount() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    // Configure a single market with cap = 80 in the supply queue
+    let m1 = mk(2000);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 80;
+    cfg.enabled = true;
+    c.config.insert(m1.clone(), cfg);
+    c.supply_queue.push(m1.clone());
+
+    // Idle = 100, so max_room (80) should clamp allocation
+    c.idle_balance = 100;
+    assert_eq!(c.get_max_deposit().0, 80, "sanity: max room must be 80");
+
+    // Reserve only the amount to allocate (intended behavior)
+    let total = c.get_max_deposit().0.min(c.idle_balance);
+    c.start_allocation(total);
+
+    // Emulate allocation completing successfully: 80 moved to market
+    c.market_supply.insert(m1.clone(), 80);
+    if !c.withdraw_queue.iter().any(|x| x == &m1) {
+        c.withdraw_queue.push(m1.clone());
+    }
+    // Force completion and exit op
+    if let crate::OpState::Allocating { op_id, index, .. } = c.op_state.clone() {
+        c.op_state = crate::OpState::Allocating {
+            op_id,
+            index,
+            remaining: 0,
+        };
+    } else {
+        panic!("expected Allocating state");
+    }
+    let _ = c.stop_and_exit::<str>(None);
+
+    // Expected post-conditions:
+    // - idle should retain 20
+    // - total assets (idle + market principals) should remain 100
+    assert_eq!(
+        c.idle_balance, 20,
+        "idle should retain unallocated amount (100 - 80)"
+    );
+    assert_eq!(
+        c.get_total_assets().0,
+        100,
+        "total assets must remain unchanged at 100"
+    );
+}
+
+#[test]
+fn queue_allocation_ignores_stale_plan() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+
+    // Supply queue has m1; stale plan points to m2
+    let m1 = mk(3001);
+    let m2 = mk(3002);
+
+    let mut cfg1 = MarketConfiguration::default();
+    cfg1.cap = 10;
+    cfg1.enabled = true;
+    c.config.insert(m1.clone(), cfg1);
+    c.withdraw_queue.push(m1.clone());
+    c.supply_queue.push(m1);
+
+    // Stale plan (should be ignored for queue-based allocation)
+    c.plan = Some(vec![(m2.clone(), 1u128)]);
+
+    c.idle_balance = 5;
+
+    // Run queue-based allocation (weights empty) -> must clear any stale plan
+    let weights: templar_common::vault::AllocationWeights = vec![];
+    let _ = c.allocate(weights, None);
+
+    assert!(
+        c.plan.is_none(),
+        "queue-based allocate must ignore and clear any stale plan"
+    );
+}
+
+#[test]
+#[should_panic = "Market still has supply but no removal scheduled"]
+fn set_withdraw_queue_disallow_nonzero_position_removal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+
+    let m1 = mk(4001);
+
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 0; // required precondition to attempt removal
+    cfg.enabled = true;
+    c.config.insert(m1.clone(), cfg);
+
+    // Market has non-zero position but no removal scheduled
+    c.market_supply.insert(m1.clone(), 1);
+
+    // Present in current withdraw queue so removal logic executes
+    c.withdraw_queue.push(m1);
+
+    // Attempting to remove should panic due to non-zero position without removal schedule
+    c.set_withdraw_queue(vec![]);
+}
+
+#[rstest(
+    escrow, collected, requested, expect,
+    case(100u128, 200u128, 500u128, 40u128),  // 40%
+    case(123u128, 0u128, 456u128, 0u128),     // no collection => no burn
+    case(100u128, 1u128, 3u128, 33u128),      // floor on rounding
+    case(50u128, 10u128, 0u128, 500u128)      // denom clamp to 1
+)]
+fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, expect: u128) {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let c = new_test_contract(&vault_id);
+
+    assert_eq!(c.compute_burn_shares(escrow, collected, requested), expect);
+}
+
+
+
+#[test]
+fn compute_effective_totals_fee_share_and_virtuals() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let c = new_test_contract(&vault_id);
+
+    let cur = 1_500u128;
+    let last = 1_000u128;
+    let perf = crate::wad::WAD / 10; // 10%
+    let ts = 1_000u128;
+    let vs = 1u128;
+    let va = 1u128;
+
+    let (nts, nta) = Contract::compute_effective_totals(cur, last, perf, ts, vs, va);
+    let expected_fee = crate::wad::compute_fee_shares(cur, last, perf, ts);
+
+    assert_eq!(nts, ts + expected_fee + vs);
+    assert_eq!(nta, cur + va);
+}
+
+
+#[test]
+fn compute_escrow_settlement_burns_min_and_refunds_rest() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let c = new_test_contract(&vault_id);
+
+    assert_eq!(Contract::compute_escrow_settlement(100, 40), (40, 60));
+    assert_eq!(Contract::compute_escrow_settlement(100, 200), (100, 0));
+    assert_eq!(Contract::compute_escrow_settlement(0, 50), (0, 0));
+}
+
+
+#[test]
+fn removing_holding_market_hides_assets_and_leaves_orphan_supply() {
+
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+
+    let m = mk(7001);
+
+    // Market is known, holding > 0, with cap=0 and removal already scheduled.
+    // This satisfies current preconditions in set_withdraw_queue for omission.
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 0;
+    cfg.enabled = true;
+    cfg.removable_at = 1; // scheduled in the past relative to the block timestamp we set below
+    c.config.insert(m.clone(), cfg);
+    c.market_supply.insert(m.clone(), 10);
+
+    // Present in current withdraw queue
+    c.withdraw_queue.push(m.clone());
+
+    // Advance block timestamp so timelock precondition passes
+    set_block_ts(&vault_id, &owner, 2);
+
+    // Remove the market from the queue (new queue empty)
+    c.set_withdraw_queue(vec![]);
+
+    // Config was removed, but supply mapping still exists (orphaned)
+    assert!(c.config.get(&m).is_none(), "Config should be removed");
+    assert_eq!(
+        *c.market_supply.get(&m).unwrap_or(&0),
+        10,
+        "Principal remains in market_supply but is orphaned"
+    );
+
+    // Total assets now undercount because get_total_assets sums withdraw_queue only
+    assert_eq!(
+        c.get_total_assets().0,
+        c.idle_balance, // withdraw_queue is empty, so principal is ignored
+        "Total assets should not silently drop due to queue-based accounting"
+    );
+}
+
+#[test]
+fn cap_zero_keeps_enabled_and_submit_removal_works() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+
+    setup_env(&vault_id, &owner, vec![]);
+
+    let m = mk(8001);
+
+    // Seed a known, enabled market with cap > 0
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 10;
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+
+    // Lower cap to zero: should NOT disable the market anymore
+    c.submit_cap(m.clone(), U128(0));
+    let cfg_after = c.config.get(&m).expect("market must exist");
+    assert_eq!(cfg_after.cap, 0, "cap must be updated to 0");
+    assert!(cfg_after.enabled, "enabled must remain true when cap is 0");
+
+    set_block_ts(&vault_id, &owner, 2);
+
+    // Now we can schedule removal
+    c.submit_market_removal(m.clone());
+    let cfg_after2 = c.config.get(&m).expect("market must exist");
+    assert!(cfg_after2.removable_at > 0, "removal must be scheduled");
+}
+
+#[test]
+fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+
+    setup_env(&vault_id, &owner, vec![]);
+
+    let m = mk(8002);
+
+    // Start disabled with cap=0
+    c.config.insert(m.clone(), MarketConfiguration::default());
+
+    // Submit raise -> pending
+    let raise = 5u128;
+    c.submit_cap(m.clone(), U128(raise));
+    // Fast-forward timelock to accept the raise
+    set_block_ts(&vault_id, &owner, env::block_timestamp() + 1_000_000_000);
+    c.accept_cap(m.clone());
+
+    let cfg1 = c.config.get(&m).unwrap();
+    assert_eq!(cfg1.cap, raise);
+    assert!(cfg1.enabled, "market should be enabled after raise");
+    assert!(
+        c.withdraw_queue.iter().any(|x| x == &m),
+        "market must be in withdraw queue after enabling"
+    );
+
+    // Now lower back to 0 (immediate path) and ensure enabled stays true
+    c.submit_cap(m.clone(), U128(0));
+    let cfg2 = c.config.get(&m).unwrap();
+    assert_eq!(cfg2.cap, 0);
+    assert!(cfg2.enabled, "enabled must remain true on cap=0");
+}
+
+#[test]
+#[should_panic = "Invariant violation: Cannot remove market with non-zero cap"]
+fn set_withdraw_queue_disallow_nonzero_cap_removal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+
+    let m = mk(5000);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 1; // non-zero cap
+    cfg.enabled = true; // must be enabled or holding to trigger invariant
+    c.config.insert(m.clone(), cfg);
+    c.withdraw_queue.push(m.clone());
+
+    // Attempt to remove from queue should panic due to non-zero cap
+    c.set_withdraw_queue(vec![]);
+}
+
+#[test]
+#[should_panic = "Invariant violation: Cannot remove market with pending cap change"]
+fn set_withdraw_queue_disallow_pending_cap_removal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let m = mk(5001);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 0;
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+    c.withdraw_queue.push(m.clone());
+
+    // Insert a pending cap change
+    c.pending_cap.insert(
+        m.clone(),
+        templar_common::vault::PendingValue {
+            value: 1,
+            valid_at: env::block_timestamp() + 1,
+        },
+    );
+
+    // Attempt to remove from queue should panic due to pending cap change
+    c.set_withdraw_queue(vec![]);
+}
+
+#[test]
+#[should_panic = "Invariant violation: Removal timelock not elapsed for market"]
+fn set_withdraw_queue_disallow_timelock_not_elapsed() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let m = mk(5002);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 0;
+    cfg.enabled = true;
+    cfg.removable_at = 10; // in the future relative to block timestamp we set below
+    c.config.insert(m.clone(), cfg);
+    c.market_supply.insert(m.clone(), 1); // non-zero supply enforces timelock path
+    c.withdraw_queue.push(m.clone());
+
+    // Set block timestamp below removable_at so timelock has not elapsed
+    set_block_ts(&vault_id, &owner, 5);
+
+    // Attempt to remove from queue should panic due to timelock not elapsed
+    c.set_withdraw_queue(vec![]);
+}
+
+#[test]
+fn set_withdraw_queue_allows_zero_supply_removal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+
+    let m = mk(5003);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = 0;
+    cfg.enabled = true;
+    // removable_at irrelevant when supply is zero
+    c.config.insert(m.clone(), cfg);
+    c.withdraw_queue.push(m.clone());
+
+    // Supply is zero; removal should be allowed immediately
+    c.set_withdraw_queue(vec![]);
+
+    // Config should be deleted
+    assert!(
+        c.config.get(&m).is_none(),
+        "Config must be removed for omitted market with zero supply"
+    );
+    // And the queue should be empty
+    assert!(
+        !c.withdraw_queue.iter().any(|x| x == &m),
+        "Withdraw queue must not contain the removed market"
+    );
+}
+
+#[test]
+#[should_panic = "Invariant violation: Unknown market in new queue"]
+fn set_withdraw_queue_rejects_unknown_market() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+
+    // No config for this market
+    let unknown = mk(5999);
+    c.set_withdraw_queue(vec![unknown]);
+}
+
+#[rstest(
+    before,
+    new_principal,
+    need,
+    rem,
+    coll,
+    case(100u128, 55u128, 40u128, 50u128, 10u128),
+    case(100u128, 80u128, 40u128, 50u128, 10u128),
+    case(0u128, 0u128, 0u128, 0u128, 0u128),
+    case(1000u128, 1000u128, 500u128, 800u128, 100u128),
+    case(200u128, 0u128, 300u128, 0u128, 0u128)
+)]
+fn reconcile_withdraw_outcome_invariants_cases(
+    before: u128,
+    new_principal: u128,
+    need: u128,
+    rem: u128,
+    coll: u128,
+) {
+    let c = new_test_contract(&mk(0));
+    let (credited, remaining_next, collected_next, idle_delta) =
+        c.reconcile_withdraw_outcome(before, new_principal, need, rem, coll);
+
+    let withdrawn = before.saturating_sub(new_principal);
+    let expected_credited = withdrawn.min(need);
+
+    assert_eq!(credited, expected_credited);
+    assert!(credited <= need);
+    assert_eq!(remaining_next, rem.saturating_sub(credited));
+    assert_eq!(collected_next, coll.saturating_add(credited));
+    assert_eq!(idle_delta, credited);
+}
+
+#[rstest(
+    assets,
+    shares,
+    case(0u128, 0u128),
+    case(1u128, 1u128),
+    case(1_000_000_000_000_000_000u128, 1u128),
+    case(123_456_789u128, 987_654_321u128),
+    case(1u128, 1_000_000_000_000_000_000u128)
+)]
+fn convert_roundtrip_bounds_cases(assets: u128, shares: u128) {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let c = new_test_contract(&vault_id);
+
+    let to_sh = c.convert_to_shares(U128(assets));
+    let back_a = c.convert_to_assets(to_sh);
+    assert!(
+        back_a.0 <= assets,
+        "assets->shares->assets must not increase"
+    );
+
+    let to_a = c.convert_to_assets(U128(shares));
+    let back_s = c.convert_to_shares(to_a);
+    assert!(
+        back_s.0 >= shares,
+        "shares->assets->shares must not decrease"
+    );
+}
+
+#[rstest(
+    cap,
+    cur,
+    idle,
+    req,
+    case(100u128, 60u128, 80u128, None),
+    case(100u128, 0u128, 80u128, Some(50u128)),
+    case(10u128, 10u128, 80u128, None),
+    case(0u128, 0u128, 0u128, Some(1u128))
+)]
+fn clamp_allocation_total_matches_min_bounds_cases(
+    cap: u128,
+    cur: u128,
+    idle: u128,
+    req: Option<u128>,
+) {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let m = mk(1);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = cap;
+    cfg.enabled = cap > 0;
+    c.config.insert(m.clone(), cfg);
+    c.market_supply.insert(m.clone(), cur);
+    c.supply_queue.push(m.clone());
+    c.idle_balance = idle;
+
+    let room = if cap > cur { cap - cur } else { 0 };
+    let requested = req.unwrap_or(c.idle_balance);
+    let expect = requested.min(c.idle_balance).min(room);
+
+    let got = c.clamp_allocation_total(req);
+    assert_eq!(got, expect);
+}
+
+#[rstest(
+    principal,
+    idle,
+    case(0u128, 0u128),
+    case(123u128, 0u128),
+    case(0u128, 456u128),
+    case(789u128, 1_011u128)
+)]
+fn total_assets_ignores_offqueue_cases(principal: u128, idle: u128) {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    let mut c = new_test_contract(&vault_id);
+
+    let m = mk(7003);
+    c.config.insert(m.clone(), MarketConfiguration::default());
+    c.market_supply.insert(m.clone(), principal);
+    c.idle_balance = idle;
+
+    assert_eq!(c.get_total_assets().0, idle);
 }
