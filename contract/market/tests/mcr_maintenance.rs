@@ -1,4 +1,6 @@
+use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
+
 use templar_common::{dec, fee::Fee, number::Decimal};
 use test_utils::*;
 
@@ -8,8 +10,13 @@ use test_utils::*;
 #[case(dec!("1.00000001"), dec!("1.1"))]
 #[case(dec!("1.00000000000000000000000000000000001"), dec!("5"))]
 #[tokio::test]
-async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] maintenance: Decimal) {
+async fn success_above_mcr_maintenance(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] liquidation: Decimal,
+    #[case] maintenance: Decimal,
+) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
@@ -57,8 +64,13 @@ async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] mai
 #[case(dec!("1.001"), dec!("5"))]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Borrow position must be healthy after borrow"]
-async fn fail_below_mcr_maintenance(#[case] liquidation: Decimal, #[case] maintenance: Decimal) {
+async fn fail_below_mcr_maintenance(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] liquidation: Decimal,
+    #[case] maintenance: Decimal,
+) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
@@ -86,10 +98,12 @@ async fn fail_below_mcr_maintenance(#[case] liquidation: Decimal, #[case] mainte
 #[case(dec!("1.5"), dec!("5"))]
 #[tokio::test]
 async fn not_in_liquidation_if_below_mcr_maintenance(
+    #[future(awt)] worker: Worker<Sandbox>,
     #[case] liquidation: Decimal,
     #[case] maintenance: Decimal,
 ) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
@@ -124,10 +138,12 @@ async fn not_in_liquidation_if_below_mcr_maintenance(
     assert!(!borrow_status.is_liquidation(), "Borrow should not be in liquidation when collateralization ratio is below minimum INITIAL if it is still above the minimum for liquidation.");
 }
 
+#[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Borrow position must be healthy after collateral withdrawal"]
-async fn withdraw_collateral_below_mcr_maintenance() {
+async fn withdraw_collateral_below_mcr_maintenance(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {

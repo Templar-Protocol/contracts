@@ -1,3 +1,4 @@
+use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use tokio::join;
 
@@ -14,8 +15,13 @@ use test_utils::*;
 #[case(true, true)]
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn test_happy(#[case] borrow_mt: bool, #[case] collateral_mt: bool) {
+async fn test_happy(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] borrow_mt: bool,
+    #[case] collateral_mt: bool,
+) {
     setup_test!(
+        worker
         extract(c, protocol_yield_user, insurance_yield_user)
         accounts(borrow_user, supply_user)
         config(|c| {

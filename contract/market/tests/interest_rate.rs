@@ -1,12 +1,14 @@
 use std::time::Duration;
 
+use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
+use tokio::time::Instant;
+
 use templar_common::{
     asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
     market::HarvestYieldMode, number::Decimal, YEAR_PER_MS,
 };
 use test_utils::*;
-use tokio::time::Instant;
 
 #[rstest]
 #[case(10_000_000, InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap())]
@@ -18,8 +20,13 @@ use tokio::time::Instant;
     InterestRateStrategy::exponential2(dec!("5"), dec!("800"), dec!("6")).unwrap()
 )]
 #[tokio::test]
-async fn interest_rate(#[case] principal: u128, #[case] strategy: InterestRateStrategy) {
+async fn interest_rate(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] principal: u128,
+    #[case] strategy: InterestRateStrategy,
+) {
     setup_test!(
+        worker
         extract(c)
         accounts(
             borrow_user,

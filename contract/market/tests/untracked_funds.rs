@@ -1,9 +1,12 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Insufficient borrow asset available"]
-async fn cannot_borrow_untracked_funds() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user));
+async fn cannot_borrow_untracked_funds(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
         async {
@@ -19,10 +22,11 @@ async fn cannot_borrow_untracked_funds() {
     c.borrow(&borrow_user, 12_000).await;
 }
 
+#[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Insufficient liquidity to fulfill the request at this time"]
-async fn cannot_withdraw_untracked_funds() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user));
+async fn cannot_withdraw_untracked_funds(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
         async {

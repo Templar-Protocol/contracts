@@ -1,5 +1,5 @@
 use controller::lst_oracle::LstOracleController;
-use near_workspaces::Account;
+use near_workspaces::{network::Sandbox, Account, Worker};
 use rstest::rstest;
 use templar_common::{
     dec,
@@ -79,10 +79,8 @@ async fn setup_lst_oracle(
 
 #[rstest]
 #[tokio::test]
-async fn lst_oracle() {
-    let worker = near_workspaces::sandbox().await.unwrap();
-
-    setup_test_w!(
+async fn lst_oracle(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
         worker
         extract(c, protocol_yield_user)
         accounts(supply_user, borrow_user, lst_oracle, lst_market)

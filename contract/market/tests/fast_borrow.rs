@@ -1,12 +1,16 @@
-use test_utils::*;
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 
 use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
 };
+use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn fast_borrow_is_not_free() {
+async fn fast_borrow_is_not_free(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {

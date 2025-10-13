@@ -1,12 +1,17 @@
 use std::time::Duration;
 
 use near_sdk::json_types::U64;
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
+
 use templar_common::borrow::{BorrowStatus, LiquidationReason};
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn liquidation_after_expiration() {
+async fn liquidation_after_expiration(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {

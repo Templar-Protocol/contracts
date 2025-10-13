@@ -1,8 +1,12 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
+
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn disable_collateralize_if_still_liquidatable() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user));
+async fn disable_collateralize_if_still_liquidatable(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 2_000_000),
@@ -29,9 +33,12 @@ async fn disable_collateralize_if_still_liquidatable() {
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn allow_sufficient_collateralization_during_liquidation() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user));
+async fn allow_sufficient_collateralization_during_liquidation(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 2_000_000),
@@ -59,9 +66,10 @@ async fn allow_sufficient_collateralization_during_liquidation() {
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn repayment() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user));
+async fn repayment(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 2_000_000),

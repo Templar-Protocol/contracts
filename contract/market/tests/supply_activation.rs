@@ -1,11 +1,16 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
+
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
 };
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn activates_in_next_snapshot() {
+async fn activates_in_next_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(supply_user, borrow_user)
         config(|c| {
