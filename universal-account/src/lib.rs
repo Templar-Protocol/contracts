@@ -7,6 +7,12 @@ pub mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
+pub struct InitArgs {
+    pub key: KeyId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [borsh, json])]
 pub enum KeyId {
     Passkey(Passkey),
 }

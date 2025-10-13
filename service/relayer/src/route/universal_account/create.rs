@@ -11,7 +11,6 @@ use near_jsonrpc_client::{
 use near_primitives::hash::CryptoHash;
 use near_sdk::{
     serde::{Deserialize, Serialize},
-    serde_json::json,
     AccountId, NearToken,
 };
 
@@ -25,6 +24,7 @@ use templar_universal_account::{
 
 use crate::{
     app::App,
+    client::near::DeployArgs,
     route::{universal_account::public_key_to_account_id_slug, SimpleResponse},
 };
 
@@ -164,12 +164,14 @@ pub async fn create(
         .construct_deploy_from_registry_transaction(
             &app.cache,
             app.args.ua.registry_id.clone(),
-            account_slug,
-            app.args.ua.version_key.clone(),
-            json!({
-                "key": KeyId::Passkey(key.clone()),
-            }),
-            None,
+            &DeployArgs::new(
+                account_slug,
+                app.args.ua.version_key.clone(),
+                &templar_universal_account::InitArgs {
+                    key: KeyId::Passkey(key.clone()),
+                },
+                None,
+            ),
         )
         .await;
 

@@ -22,7 +22,7 @@ use near_primitives::{
 };
 use near_sdk::{
     json_types::Base64VecU8,
-    serde::{de::DeserializeOwned, Serialize},
+    serde::{de::DeserializeOwned, Deserialize, Serialize},
     serde_json::{self, json},
     AccountId, AccountIdRef, Gas, NearToken,
 };
@@ -35,6 +35,36 @@ use crate::{cache::Cache, MarketData};
 
 pub const STORAGE_DEPOSIT_GAS: u64 = Gas::from_tgas(5).as_gas();
 pub const DEPLOY_GAS: u64 = Gas::from_tgas(50).as_gas();
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct DeployArgs {
+    name: String,
+    version_key: String,
+    init_args: Base64VecU8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full_access_keys: Option<Vec<near_sdk::PublicKey>>,
+}
+
+impl DeployArgs {
+    /// # Panics
+    ///
+    /// - On `init_args` serialization error.
+    #[allow(clippy::unwrap_used)]
+    pub fn new(
+        name: String,
+        version_key: String,
+        init_args: &impl Serialize,
+        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
+    ) -> Self {
+        Self {
+            name,
+            version_key,
+            init_args: Base64VecU8(near_sdk::serde_json::to_vec(init_args).unwrap()),
+            full_access_keys,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Near {
@@ -272,10 +302,7 @@ impl Near {
         &self,
         cache: &Cache,
         registry_id: AccountId,
-        name: String,
-        version_key: String,
-        init_args: impl Serialize,
-        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
+        args: &DeployArgs,
     ) -> SignedTransaction {
         let signer = self.next_signer();
         let public_key = signer.public_key();
@@ -286,13 +313,7 @@ impl Near {
 
         let action = FunctionCallAction {
             method_name: "deploy".to_string(),
-            args: serde_json::to_vec(&json!({
-                "name": name,
-                "version_key": version_key,
-                "init_args": Base64VecU8(serde_json::to_vec(&init_args).unwrap()),
-                "full_access_keys": full_access_keys,
-            }))
-            .unwrap(),
+            args: serde_json::to_vec(args).unwrap(),
             gas: DEPLOY_GAS,
             deposit: 0,
         };
