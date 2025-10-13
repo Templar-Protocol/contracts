@@ -1,8 +1,9 @@
 use crate::Contract;
-use near_sdk::{
+pub use near_sdk::{
     test_utils::{accounts, VMContextBuilder},
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
 };
+use near_sdk_contract_tools::ft::Nep141Controller as _;
 use rstest::rstest;
 use templar_common::vault::{AllocationMode, OpState, VaultConfiguration};
 use test_utils::vault_configuration;
@@ -50,4 +51,47 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     );
 
     Contract::new(cfg)
+}
+// Set the block timestamp and keep caller/predecessor consistent for tests
+pub fn set_block_ts(vault_id: &AccountId, signer: &AccountId, ts: u64) {
+    let mut ctx = VMContextBuilder::new();
+    ctx.current_account_id(vault_id.clone());
+    ctx.signer_account_id(signer.clone());
+    ctx.predecessor_account_id(signer.clone());
+    ctx.block_timestamp(ts);
+    testing_env!(ctx.build());
+}
+
+// Ensure a market exists with given configuration and optionally adds to queues and supply
+pub fn ensure_market(
+    c: &mut crate::Contract,
+    id: AccountId,
+    cap: u128,
+    enabled: bool,
+    supply: u128,
+    in_withdraw: bool,
+    in_supply: bool,
+    removable_at: u64,
+) {
+    let mut cfg = templar_common::vault::MarketConfiguration::default();
+    cfg.cap = cap;
+    cfg.enabled = enabled;
+    cfg.removable_at = removable_at;
+    c.config.insert(id.clone(), cfg);
+    if supply > 0 {
+        c.market_supply.insert(id.clone(), supply);
+    }
+    if in_withdraw && !c.withdraw_queue.iter().any(|m| m == &id) {
+        c.withdraw_queue.push(id.clone());
+    }
+    if in_supply && !c.supply_queue.iter().any(|m| m == &id) {
+        c.supply_queue.push(id.clone());
+    }
+}
+
+// Seed shares into the vault's own account (used for escrow/burn tests)
+pub fn seed_vault_shares(c: &mut crate::Contract, shares: u128) {
+    #[allow(clippy::expect_used, reason = "test helper")]
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), shares)
+        .expect("seed escrow into vault");
 }

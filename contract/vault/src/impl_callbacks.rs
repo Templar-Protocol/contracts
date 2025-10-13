@@ -24,22 +24,15 @@ impl Contract {
         attempted: U128,
     ) -> PromiseOrValue<()> {
         // Invariant: Index drift or stale op_id results in a graceful stop
-        match &self.op_state {
-            OpState::Allocating { op_id: cur, .. } if *cur == op_id => {}
-            _ => return self.stop_and_exit(Some(&Error::NotAllocating(self.op_state.clone()))),
-        }
+        let _ = match self.ctx_allocating(op_id) {
+            Ok(_) => (),
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
 
         // Resolve market by plan  or supply_queue
-        let market: AccountId = if let Some(plan) = &self.plan {
-            if let Some((m, _)) = plan.get(market_index as usize) {
-                m.clone()
-            } else {
-                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
-            }
-        } else if let Some(m) = self.supply_queue.get(market_index) {
-            m.clone()
-        } else {
-            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+        let market = match self.resolve_supply_market(market_index) {
+            Ok(m) => m,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         // If the transfer failed, do not attempt to reconcile; stop and leave remaining untouched
@@ -89,13 +82,9 @@ impl Contract {
         attempted: U128,
         accepted: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, rem) = match &self.op_state {
-            OpState::Allocating {
-                op_id: cur,
-                index,
-                remaining,
-            } if *cur == op_id => (*index, *remaining),
-            _ => return self.stop_and_exit(Some(&Error::NotAllocating(self.op_state.clone()))),
+        let (idx, rem) = match self.ctx_allocating(op_id) {
+            Ok(v) => v,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         // Invariant: Index drift or stale op_id results in a graceful stop
@@ -104,24 +93,17 @@ impl Contract {
         }
 
         // Resolve market by plan (if present) or supply_queue
-        let market: AccountId = if let Some(plan) = &self.plan {
-            if let Some((m, _)) = plan.get(market_index as usize) {
-                m.clone()
-            } else {
-                return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
-            }
-        } else if let Some(m) = self.supply_queue.get(market_index) {
-            m.clone()
-        } else {
-            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+        let market = match self.resolve_supply_market(market_index) {
+            Ok(m) => m,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        let (new_principal, remaining_next) = match position {
+        let (new_principal, accepted_event, remaining_next) = match position {
             Ok(Some(position)) => {
                 let new_principal: u128 = position.get_deposit().total().into();
-                let accepted = new_principal.saturating_sub(before.0);
-                let remaining = rem.saturating_sub(accepted);
-                (new_principal, remaining)
+                let accepted_event = new_principal.saturating_sub(before.0);
+                let remaining = rem.saturating_sub(accepted_event);
+                (new_principal, accepted_event, remaining)
             }
             Ok(None) => {
                 Event::AllocationPositionMissing {
@@ -147,8 +129,6 @@ impl Contract {
             }
         };
 
-        let accepted_event = new_principal.saturating_sub(before.0);
-
         let refunded = attempted.0.saturating_sub(accepted_event);
         Event::AllocationStepSettled {
             op_id,
@@ -167,6 +147,11 @@ impl Contract {
 
         // Invariant: withdraw_queue gains any market with new_principal > 0
         if new_principal > 0 && !self.withdraw_queue.iter().any(|m| m == &market) {
+            // If the market had pre-existing principal but wasn't in the withdraw_queue,
+            // bump last_total_assets by that pre-existing amount to avoid fee accrual on re-inclusion.
+            if before.0 > 0 {
+                self.last_total_assets = self.last_total_assets.saturating_add(before.0);
+            }
             self.withdraw_queue.push(market.clone());
         }
 
@@ -188,24 +173,9 @@ impl Contract {
         market_index: u32,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, rem, recv, coll, owner, escrow_shares) = match &self.op_state {
-            OpState::Withdrawing {
-                op_id: cur,
-                index,
-                remaining,
-                receiver,
-                collected,
-                owner,
-                escrow_shares,
-            } if *cur == op_id => (
-                *index,
-                *remaining,
-                receiver.clone(),
-                *collected,
-                owner.clone(),
-                *escrow_shares,
-            ),
-            _ => return self.stop_and_exit(Some(&Error::NotWithdrawing(self.op_state.clone()))),
+        let (idx, rem, recv, coll, owner, escrow_shares) = match self.ctx_withdrawing(op_id) {
+            Ok(v) => v,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         // Invariant: Index drift or stale op_id results in a graceful stop
@@ -213,8 +183,9 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
         }
 
-        let Some(market) = self.withdraw_queue.get(market_index) else {
-            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+        let market = match self.resolve_withdraw_market(market_index) {
+            Ok(m) => m,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         if let Ok(()) = did_create {
@@ -252,24 +223,9 @@ impl Contract {
         market_index: u32,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, _rem, _recv, _coll, _owner, _escrow_shares) = match &self.op_state {
-            OpState::Withdrawing {
-                op_id: cur,
-                index,
-                remaining,
-                receiver,
-                collected,
-                owner,
-                escrow_shares,
-            } if *cur == op_id => (
-                *index,
-                *remaining,
-                receiver.clone(),
-                *collected,
-                owner.clone(),
-                *escrow_shares,
-            ),
-            _ => return self.stop_and_exit(Some(&Error::NotWithdrawing(self.op_state.clone()))),
+        let (idx, _rem, _recv, _coll, _owner, _escrow_shares) = match self.ctx_withdrawing(op_id) {
+            Ok(v) => v,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         // Invariant: Index drift or stale op_id results in a graceful stop
@@ -277,12 +233,13 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
         }
 
-        let Some(market) = self.withdraw_queue.get(market_index) else {
-            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+        let market = match self.resolve_withdraw_market(market_index) {
+            Ok(m) => m,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         // Verify actual withdrawal by reading market position after execution
-        let before = *self.market_supply.get(market).unwrap_or(&0);
+        let before = *self.market_supply.get(&market).unwrap_or(&0);
         PromiseOrValue::Promise(
             ext_market::ext(market.clone())
                 .with_static_gas(Self::GET_SUPPLY_POSITION_GAS)
@@ -304,32 +261,18 @@ impl Contract {
         before: U128,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, rem, recv, coll, owner, escrow_shares) = match &self.op_state {
-            OpState::Withdrawing {
-                op_id: cur,
-                index,
-                remaining,
-                receiver,
-                collected,
-                owner,
-                escrow_shares,
-            } if *cur == op_id => (
-                *index,
-                *remaining,
-                receiver.clone(),
-                *collected,
-                owner.clone(),
-                *escrow_shares,
-            ),
-            _ => return self.stop_and_exit(Some(&Error::NotWithdrawing(self.op_state.clone()))),
+        let (idx, rem, recv, coll, owner, escrow_shares) = match self.ctx_withdrawing(op_id) {
+            Ok(v) => v,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         if idx != market_index {
             return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
         }
 
-        let Some(market) = self.withdraw_queue.get(market_index) else {
-            return self.stop_and_exit(Some(&Error::MissingMarket(market_index)));
+        let market = match self.resolve_withdraw_market(market_index) {
+            Ok(m) => m,
+            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         let before_principal = before.0;
@@ -363,15 +306,13 @@ impl Contract {
             }
         };
 
-        let withdrawn = before_principal.saturating_sub(new_principal);
-        let credited = withdrawn.min(need.0);
+        let (credited, remaining, collected, idle_delta) =
+            self.reconcile_withdraw_outcome(before_principal, new_principal, need.0, rem, coll);
 
         // Update accounting to match market state
         self.market_supply.insert(market.clone(), new_principal);
-        let remaining = rem.saturating_sub(credited);
-        let collected = coll.saturating_add(credited);
-        if credited > 0 {
-            self.idle_balance = self.idle_balance.saturating_add(credited);
+        if idle_delta > 0 {
+            self.idle_balance = self.idle_balance.saturating_add(idle_delta);
         }
 
         if remaining == 0 {
@@ -452,12 +393,12 @@ impl Contract {
             // Invariant: On payout success, idle_balance -= payout_amount.
             // Burn only the proportional shares and refund the remainder to the owner.
             self.idle_balance = self.idle_balance.saturating_sub(payout_amount);
-            let to_burn = burn_shares.min(escrow_shares);
+            let (to_burn, refund_shares) =
+                Self::compute_escrow_settlement(escrow_shares, burn_shares);
             if to_burn > 0 {
                 self.withdraw_unchecked(&env::current_account_id(), to_burn)
                     .expect("Failed to burn escrowed shares");
             }
-            let refund_shares = escrow_shares.saturating_sub(to_burn);
             if refund_shares > 0 {
                 #[allow(clippy::expect_used, reason = "No side effects")]
                 self.transfer_unchecked(&env::current_account_id(), &owner, refund_shares)
@@ -642,6 +583,90 @@ impl Contract {
     }
 }
 
+impl Contract {
+    // Validate current op is Allocating and return (index, remaining)
+    pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<(u32, u128), Error> {
+        match &self.op_state {
+            OpState::Allocating {
+                op_id: cur,
+                index,
+                remaining,
+            } if *cur == op_id => Ok((*index, *remaining)),
+            _ => Err(Error::NotAllocating(self.op_state.clone())),
+        }
+    }
+
+    // Validate current op is Withdrawing and return context tuple
+    pub(crate) fn ctx_withdrawing(
+        &self,
+        op_id: u64,
+    ) -> Result<(u32, u128, AccountId, u128, AccountId, u128), Error> {
+        match &self.op_state {
+            OpState::Withdrawing {
+                op_id: cur,
+                index,
+                remaining,
+                receiver,
+                collected,
+                owner,
+                escrow_shares,
+            } if *cur == op_id => Ok((
+                *index,
+                *remaining,
+                receiver.clone(),
+                *collected,
+                owner.clone(),
+                *escrow_shares,
+            )),
+            _ => Err(Error::NotWithdrawing(self.op_state.clone())),
+        }
+    }
+
+    // Resolve a market for allocation by plan (if present) or supply_queue
+    pub(crate) fn resolve_supply_market(&self, market_index: u32) -> Result<AccountId, Error> {
+        if let Some(plan) = &self.plan {
+            if let Some((m, _)) = plan.get(market_index as usize) {
+                return Ok(m.clone());
+            }
+            return Err(Error::MissingMarket(market_index));
+        }
+        self.supply_queue
+            .get(market_index)
+            .cloned()
+            .ok_or(Error::MissingMarket(market_index))
+    }
+
+    // Resolve a market for withdraw by withdraw_queue
+    pub(crate) fn resolve_withdraw_market(&self, market_index: u32) -> Result<AccountId, Error> {
+        self.withdraw_queue
+            .get(market_index)
+            .cloned()
+            .ok_or(Error::MissingMarket(market_index))
+    }
+
+    // Pure reconciliation for withdraw read outcome to enable unit tests
+    pub(crate) fn reconcile_withdraw_outcome(
+        &self,
+        before_principal: u128,
+        new_principal: u128,
+        need: u128,
+        rem: u128,
+        coll: u128,
+    ) -> (
+        u128, /* credited */
+        u128, /* remaining_next */
+        u128, /* collected_next */
+        u128, /* idle_delta */
+    ) {
+        let withdrawn = before_principal.saturating_sub(new_principal);
+        let credited = withdrawn.min(need);
+        let remaining_next = rem.saturating_sub(credited);
+        let collected_next = coll.saturating_add(credited);
+        let idle_delta = credited;
+        (credited, remaining_next, collected_next, idle_delta)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::u128;
@@ -654,6 +679,7 @@ mod tests {
     use near_sdk::{test_vm_config, testing_env, PromiseResult, RuntimeFeesConfig};
     use rstest::rstest;
     use templar_common::asset::{BorrowAsset, FungibleAsset};
+    use templar_common::vault::Error;
     use templar_common::vault::{AllocationMode, OpState, VaultConfiguration};
     use test_utils::vault_configuration;
 
@@ -1042,4 +1068,161 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn refund_path_consistency() {
+        use near_sdk_contract_tools::ft::Nep141Controller as _;
+
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        // Seed escrowed shares into the vault's own account
+        let owner = accounts(1);
+        c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
+            .expect("seed escrow into vault");
+
+        // Single-market withdraw queue (not used functionally here, just to satisfy path)
+        let market = mk(12);
+        c.withdraw_queue.push(market);
+
+        // Withdrawing state with remaining=0 and collected=0 forces refund path
+        c.op_state = OpState::Withdrawing {
+            op_id: 77,
+            index: 0,
+            remaining: 0,
+            receiver: mk(9),
+            collected: 0,
+            owner: owner.clone(),
+            escrow_shares: 10,
+        };
+
+        let supply_before = c.total_supply();
+        let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+        let owner_before = c.balance_of(&owner);
+
+        // Read result with need=0 ensures credited=0; triggers refund branch
+        let res = c.after_exec_withdraw_read(Ok(None), 77, 0, U128(0), U128(0));
+        match res {
+            PromiseOrValue::Value(()) => {}
+            _ => panic!("Expected Value(()) on immediate escrow refund"),
+        }
+
+        // No burn/mint => total supply unchanged
+        assert_eq!(
+            c.total_supply(),
+            supply_before,
+            "no supply change on refund"
+        );
+        // Escrow shares transferred back to owner
+        assert_eq!(
+            c.balance_of(&near_sdk::env::current_account_id()),
+            vault_before.saturating_sub(10),
+            "vault should lose refunded escrow"
+        );
+        assert_eq!(
+            c.balance_of(&owner),
+            owner_before.saturating_add(10),
+            "owner should receive refunded escrow"
+        );
+        // Vault returns to Idle
+        assert!(
+            matches!(c.op_state, OpState::Idle),
+            "Vault must go Idle after refund"
+        );
+    }
+
+    #[test]
+    fn ctx_allocating_ok_and_err() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        c.op_state = OpState::Allocating {
+            op_id: 42,
+            index: 3,
+            remaining: 77,
+        };
+
+        let ok = c.ctx_allocating(42).expect("ctx_allocating should succeed");
+        assert_eq!(ok, (3, 77));
+
+        // Wrong op_id => error
+        assert!(c.ctx_allocating(43).is_err());
+    }
+
+    #[test]
+    fn ctx_withdrawing_ok_and_err() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        let recv = mk(1);
+        let owner = accounts(1);
+
+        c.op_state = OpState::Withdrawing {
+            op_id: 7,
+            index: 1,
+            remaining: 50,
+            receiver: recv.clone(),
+            collected: 5,
+            owner: owner.clone(),
+            escrow_shares: 10,
+        };
+
+        let (idx, rem, r, coll, o, escrow) = c
+            .ctx_withdrawing(7)
+            .expect("ctx_withdrawing should succeed");
+        assert_eq!(idx, 1);
+        assert_eq!(rem, 50);
+        assert_eq!(r, recv);
+        assert_eq!(coll, 5);
+        assert_eq!(o, owner);
+        assert_eq!(escrow, 10);
+
+        // Wrong op_id => error
+        assert!(c.ctx_withdrawing(8).is_err());
+    }
+
+    #[test]
+    fn resolve_market_helpers_supply_and_withdraw() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        // Prepare markets
+        let m1 = mk(1001);
+        let m2 = mk(1002);
+
+        // Supply: plan takes precedence
+        c.plan = Some(vec![(m2.clone(), 1u128)]);
+        c.supply_queue.push(m1.clone());
+        c.supply_queue.push(m2.clone());
+
+        assert_eq!(c.resolve_supply_market(0).unwrap(), m2);
+        assert!(matches!(
+            c.resolve_supply_market(1),
+            Err(Error::MissingMarket(1))
+        ));
+
+        // Without plan, use queue
+        c.plan = None;
+        assert_eq!(c.resolve_supply_market(0).unwrap(), m1);
+        assert_eq!(c.resolve_supply_market(1).unwrap(), m2);
+        assert!(matches!(
+            c.resolve_supply_market(2),
+            Err(Error::MissingMarket(2))
+        ));
+
+        // Withdraw resolver uses withdraw_queue
+        c.withdraw_queue.push(m1.clone());
+        c.withdraw_queue.push(m2.clone());
+        assert_eq!(c.resolve_withdraw_market(0).unwrap(), m1);
+        assert_eq!(c.resolve_withdraw_market(1).unwrap(), m2);
+        assert!(matches!(
+            c.resolve_withdraw_market(2),
+            Err(Error::MissingMarket(2))
+        ));
+    }
+
 }
