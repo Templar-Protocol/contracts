@@ -791,6 +791,7 @@ impl Contract {
                 total: U128(total),
             }
             .emit();
+            self.plan = None;
             return self.start_allocation(total);
         }
 
@@ -1351,6 +1352,9 @@ impl Contract {
                     owner,
                     escrow_shares,
                 };
+                env::log_str(&format!(
+                    "Skipping withdrawal for market {market} (have {have}, remaining {remaining})"
+                ));
                 return self.step_withdraw();
             }
             PromiseOrValue::Promise(
@@ -1365,31 +1369,44 @@ impl Contract {
                     ),
             )
         } else {
-            // End of withdraw queue. If we collected something, pay it out now and burn proportional shares.
-            if collected > 0 {
-                let requested = collected.saturating_add(remaining);
-                let burn_shares =
-                    crate::wad::mul_div_floor(escrow_shares, collected, requested.max(1));
-                self.op_state = OpState::Payout {
-                    op_id,
-                    receiver: receiver.clone(),
-                    amount: collected,
-                    owner: owner.clone(),
-                    escrow_shares,
-                    burn_shares,
-                };
-                PromiseOrValue::Promise(
-                    self.underlying_asset
-                        .transfer(receiver.clone(), U128(collected).into())
-                        .then(
-                            ext_self::ext(env::current_account_id())
-                                .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
-                                .after_send_to_user(op_id, receiver, U128(collected)),
-                        ),
-                )
-            } else {
-                self.stop_and_exit(Some(&Error::InsufficientLiquidity))
-            }
+            self.pay_collected(op_id, remaining, receiver, collected, owner, escrow_shares)
+        }
+    }
+
+    //  If we collected something, pay it out now and burn proportional shares or pay directly from idle balance
+    //  TODO: should directly check idle balance first?
+    //  TODO: unit test me
+    fn pay_collected(
+        &mut self,
+        op_id: u64,
+        remaining: u128,
+        receiver: AccountId,
+        collected: u128,
+        owner: AccountId,
+        escrow_shares: u128,
+    ) -> PromiseOrValue<()> {
+        if collected > 0 {
+            let requested = collected.saturating_add(remaining);
+            let burn_shares = crate::wad::mul_div_floor(escrow_shares, collected, requested.max(1));
+            self.op_state = OpState::Payout {
+                op_id,
+                receiver: receiver.clone(),
+                amount: collected,
+                owner: owner.clone(),
+                escrow_shares,
+                burn_shares,
+            };
+            PromiseOrValue::Promise(
+                self.underlying_asset
+                    .transfer(receiver.clone(), U128(collected).into())
+                    .then(
+                        ext_self::ext(env::current_account_id())
+                            .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
+                            .after_send_to_user(op_id, receiver, U128(collected)),
+                    ),
+            )
+        } else {
+            self.stop_and_exit(Some(&Error::InsufficientLiquidity))
         }
     }
 }

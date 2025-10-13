@@ -397,9 +397,8 @@ impl Contract {
             } else {
                 // Nothing collected; refund escrowed shares
                 let self_id = env::current_account_id();
-                self.withdraw_unchecked(&self_id, escrow_shares)
-                    .expect("Failed to release escrowed shares");
-                self.deposit_unchecked(&owner, escrow_shares);
+                self.transfer_unchecked(&self_id, &owner, escrow_shares)
+                    .expect("Failed to refund escrowed shares");
                 self.op_state = OpState::Idle;
                 PromiseOrValue::Value(())
             }
