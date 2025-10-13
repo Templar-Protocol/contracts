@@ -4,7 +4,7 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     asset_op,
-    borrow::InitialLiquidation,
+    borrow::{InitialBorrow, InitialLiquidation},
     market::{LiquidateMsg, WithdrawalResolution},
     oracle::pyth::OracleResponse,
     price::PricePair,
@@ -66,13 +66,13 @@ impl Contract {
             env::panic_str("Cannot add collateral while liquidation locked");
         }
         let proof = borrow_position.accumulate_interest();
+        borrow_position.record_collateral_asset_deposit(proof, amount);
         require!(
             !borrow_position
                 .status(price_pair, env::block_timestamp_ms())
                 .is_liquidation(),
-            "Cannot add collateral when eligible for liquidation",
+            "Position is eligible for liquidation after collateralization",
         );
-        borrow_position.record_collateral_asset_deposit(proof, amount);
     }
 
     /// Returns the amount that should be returned to the account.
@@ -119,36 +119,22 @@ impl Contract {
         let price_pair = self.price_pair(oracle_response);
         let snapshot = self.snapshot();
 
-        // Ensure we have enough funds to dispense.
-        let available_to_borrow = self.get_borrow_asset_available_to_borrow();
-        require!(
-            amount <= available_to_borrow,
-            "Insufficient borrow asset available",
-        );
-
-        let fees = self
-            .configuration
-            .borrow_origination_fee
-            .of(amount)
-            .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
-
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
         else {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
-        // accumulate_interest() creates a snapshot, which activates funds to
-        // ensure that we have the maximum amount available to borrow.
-        let proof = borrow_position.accumulate_interest();
+        let interest = borrow_position.accumulate_interest();
 
-        borrow_position.record_borrow_asset_in_flight_start(proof, amount, fees);
-
-        require!(
-            borrow_position
-                .status(&price_pair, env::block_timestamp_ms())
-                .is_healthy(),
-            "Borrow position must be healthy after borrow",
-        );
+        let initial_borrow = borrow_position
+            .record_borrow_initial(
+                snapshot,
+                interest,
+                amount,
+                &price_pair,
+                env::block_timestamp_ms(),
+            )
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         drop(borrow_position);
 
@@ -157,7 +143,7 @@ impl Contract {
             .transfer(account_id.clone(), amount)
             .then(
                 self_ext!(Self::GAS_BORROW_02_FINALIZE)
-                    .borrow_02_finalize(account_id, amount, fees),
+                    .borrow_02_finalize(account_id, initial_borrow),
             )
     }
 
@@ -165,52 +151,21 @@ impl Contract {
     pub const GAS_BORROW_02_FINALIZE: Gas = Gas::from_tgas(6);
 
     #[private]
-    pub fn borrow_02_finalize(
-        &mut self,
-        account_id: AccountId,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
+    pub fn borrow_02_finalize(&mut self, account_id: AccountId, initial_borrow: InitialBorrow) {
         let snapshot = self.snapshot();
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
             env::panic_str("Invariant violation: borrow position does not exist after transfer.");
         };
 
         let proof = borrow_position.accumulate_interest();
-        borrow_position.record_borrow_asset_in_flight_end(proof, amount, fees);
-
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                // GREAT SUCCESS
-                //
-                // Borrow position has already been created: finalize
-                // withdrawal record.
-                borrow_position.record_borrow_asset_withdrawal(proof, amount, fees);
-            }
-            PromiseResult::Failed => {
-                // Likely reasons for failure:
-                //
-                // 1. Price oracle is out-of-date. This is kind of bad, but
-                //  not necessarily catastrophic nor unrecoverable. Probably,
-                //  the oracle is just lagging and will be fine if the user
-                //  tries again later.
-                //
-                // Mitigation strategy: Revert locks & state changes (i.e. do
-                // nothing else).
-                //
-                // 2. MPC signing failed or took too long. Need to do a bit
-                //  more research to see if it is possible for the signature to
-                //  still show up on chain after the promise expires.
-                //
-                // Mitigation strategy: Retain locks until we know the
-                // signature will not be issued. Note that we can't implement
-                // this strategy until we implement asset transfer for MPC
-                // assets, so we IGNORE THIS CASE FOR NOW.
-                //
-                // TODO: Implement case 2 mitigation.
-                // NOTE: Not needed for chain-local (NEP-141-only) tokens.
-            }
-        }
+        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        borrow_position.record_borrow_final(
+            snapshot,
+            proof,
+            &initial_borrow,
+            success,
+            env::block_timestamp_ms(),
+        );
     }
 
     // ~5.8 Tgas

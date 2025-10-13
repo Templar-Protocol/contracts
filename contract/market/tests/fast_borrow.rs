@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use test_utils::*;
 
 use templar_common::{
@@ -15,9 +13,7 @@ async fn fast_borrow_is_not_free() {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: (60 * 1000).into(), // 60 seconds
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(60 * 1000); // 1 minute
         })
     );
 
@@ -27,9 +23,6 @@ async fn fast_borrow_is_not_free() {
     let snapshot_len_before = c.get_finalized_snapshots_len().await;
     c.collateralize(&borrow_user, 2_000_000).await;
     c.borrow(&borrow_user, 1_000_000).await;
-
-    // Accrue a little bit of interest, but should still be within 60s snapshot window.
-    tokio::time::sleep(Duration::from_secs(10)).await;
 
     // Repay exact amount that was borrowed
     c.repay(&borrow_user, 1_000_000).await;

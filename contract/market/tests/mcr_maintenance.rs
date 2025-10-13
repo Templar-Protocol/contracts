@@ -19,14 +19,18 @@ async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] mai
         })
     );
 
+    let collateral_amount = ((1000u32
+        * (1u32 + c.configuration.single_snapshot_maximum_interest()))
+    .to_u128_ceil()
+    .unwrap()
+        * maintenance
+        + 1u32)
+        .to_u128_ceil()
+        .unwrap();
+
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
-        c.collateralize(
-            &borrow_user,
-            (1000u32 * maintenance + Decimal::ONE)
-                .to_u128_ceil()
-                .unwrap(),
-        ),
+        c.collateralize(&borrow_user, collateral_amount),
     );
 
     let balance_before = c.borrow_asset.balance_of(borrow_user.id()).await;
@@ -39,9 +43,9 @@ async fn success_above_mcr_maintenance(#[case] liquidation: Decimal, #[case] mai
             c.get_borrow_position(borrow_user.id())
                 .await
                 .unwrap()
-                .get_borrow_asset_principal()
+                .get_borrow_asset_principal(),
         ),
-        1000
+        1000,
     );
 }
 
@@ -95,14 +99,17 @@ async fn not_in_liquidation_if_below_mcr_maintenance(
         })
     );
 
+    let collateral_amount = ((1000u32
+        * (1u32 + c.configuration.single_snapshot_maximum_interest()))
+    .to_u128_ceil()
+    .unwrap()
+        * maintenance)
+        .to_u128_ceil()
+        .unwrap();
+
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
-        c.collateralize(
-            &borrow_user,
-            (1000u32 * maintenance + Decimal::ONE)
-                .to_u128_ceil()
-                .unwrap(),
-        ),
+        c.collateralize(&borrow_user, collateral_amount),
     );
 
     c.borrow(&borrow_user, 1000).await;
@@ -130,9 +137,17 @@ async fn withdraw_collateral_below_mcr_maintenance() {
         })
     );
 
+    let collateral_amount = ((1000u32
+        * (1u32 + c.configuration.single_snapshot_maximum_interest()))
+    .to_u128_ceil()
+    .unwrap()
+        * dec!("1.5"))
+    .to_u128_ceil()
+    .unwrap();
+
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
-        c.collateralize(&borrow_user, 1500),
+        c.collateralize(&borrow_user, collateral_amount),
     );
 
     c.borrow(&borrow_user, 1000).await;

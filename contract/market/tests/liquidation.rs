@@ -561,9 +561,14 @@ async fn partial_liquidation() {
         })
     );
 
+    let compensate_initial_fee = (100_000u128 * c.configuration.single_snapshot_maximum_interest())
+        .to_u128_ceil()
+        .unwrap()
+        * 2;
+
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 1_000_000),
-        c.collateralize(&borrow_user, 200_000),
+        c.collateralize(&borrow_user, 200_000 + compensate_initial_fee),
     );
     c.borrow(&borrow_user, 100_000).await;
 
