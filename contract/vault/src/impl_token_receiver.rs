@@ -48,10 +48,6 @@ impl Nep245Receiver for Contract {
     ) -> PromiseOrValue<Vec<U128>> {
         const RETURN_STYLE: ReturnStyle = ReturnStyle::Nep245MtTransferCall;
 
-        // NEP-245: This could be an authorized account ID. We only care about
-        // the actual previous owner.
-        let _ = sender_id;
-
         let msg = near_sdk::serde_json::from_str::<DepositMsg>(&msg)
             .unwrap_or_else(|_| env::panic_str("Invalid deposit msg"));
 
@@ -70,15 +66,14 @@ impl Nep245Receiver for Contract {
 
         match msg {
             DepositMsg::Supply => {
-                let refund = self.execute_supply(
-                    sender_id.clone(),
-                    // FIXME: this is incorrect, we should abstract this into the underlying to
-                    // determine the kind.
-                    token_id
-                        .parse()
-                        .unwrap_or_else(|_| env::panic_str("Invalid token ID")),
-                    amount.into(),
-                );
+                let mt = env::predecessor_account_id();
+
+                if !self.underlying_asset.is_nep245(&mt, token_id) {
+                    Event::DepositRejectedWrongAsset { token: mt }.emit();
+                    return PromiseOrValue::Value(vec![amount]);
+                }
+
+                let refund = self.execute_supply(sender_id.clone(), mt, amount.into());
 
                 PromiseOrValue::Value(vec![U128(refund)])
             }
