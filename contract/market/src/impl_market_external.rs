@@ -120,7 +120,7 @@ impl MarketExternalInterface for Contract {
         {
             // No need to retrieve prices, since there is zero liability.
             let proof = borrow_position.accumulate_interest();
-            borrow_position.record_collateral_asset_withdrawal(proof, amount);
+            borrow_position.record_collateral_asset_withdrawal_initial(proof, amount);
             drop(borrow_position);
 
             self.configuration

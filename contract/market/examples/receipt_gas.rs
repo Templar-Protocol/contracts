@@ -5,7 +5,9 @@ use test_utils::*;
 
 #[tokio::main]
 async fn main() {
+    let worker = worker().await;
     setup_test!(
+        worker
         extract(c, insurance_yield_user)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {

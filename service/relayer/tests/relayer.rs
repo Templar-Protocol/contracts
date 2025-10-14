@@ -42,10 +42,7 @@ use templar_universal_account::{
     transaction::{self, Transaction},
     ExecuteArgs, ExecutionParameters,
 };
-use test_utils::{
-    controller::universal_account::UniversalAccountController, setup_test_w, ContractController,
-    RegistryController, UnifiedMarketController,
-};
+use test_utils::*;
 
 const POW_DIFFICULTY: usize = 6;
 
@@ -59,15 +56,12 @@ struct InitTest {
 }
 
 #[fixture]
-async fn init_test() -> InitTest {
+async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let worker = near_workspaces::sandbox_with_version("2.7.0")
-        .await
-        .unwrap();
-    setup_test_w!(worker extract(c) accounts(borrow_user, relay_user, ua_deployer));
+    setup_test!(worker extract(c) accounts(borrow_user, relay_user, ua_deployer));
     let rpc_addr = worker.rpc_addr();
 
     let ua_deployer = RegistryController::new(ua_deployer).await;

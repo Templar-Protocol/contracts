@@ -6,6 +6,7 @@ pub use controller::{
     oracle::OracleController,
     registry::RegistryController,
     storage_management::StorageManagementController,
+    universal_account::UniversalAccountController,
     ContractController,
 };
 use controller::{mt::MtController, token::TokenController};
@@ -40,6 +41,13 @@ pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
 
+#[rstest::fixture]
+pub async fn worker() -> Worker<Sandbox> {
+    near_workspaces::sandbox_with_version("2.8.0")
+        .await
+        .unwrap()
+}
+
 pub fn to_price(price: f64) -> pyth::Price {
     pyth::Price {
         price: I64((price * 10000.0) as i64),
@@ -51,7 +59,7 @@ pub fn to_price(price: f64) -> pyth::Price {
 
 pub async fn create_prefixed_account(
     prefix: &str,
-    worker: &near_workspaces::Worker<impl DevNetwork + 'static>,
+    worker: &Worker<impl DevNetwork + 'static>,
 ) -> Account {
     let (genid, sk) = worker.generate_dev_account_credentials();
     let new_id: AccountId = format!("{prefix}{}", &genid.as_str()[prefix.len()..])
@@ -72,7 +80,7 @@ macro_rules! accounts {
 }
 
 #[macro_export]
-macro_rules! setup_test_w {
+macro_rules! setup_test {
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
         $crate::accounts!($w, $($n),*);
         let s = $crate::setup_everything(&$w, $f).await;
@@ -82,23 +90,7 @@ macro_rules! setup_test_w {
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}))
-    };
-}
-
-#[macro_export]
-macro_rules! setup_test {
-    (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
-        let worker = near_workspaces::sandbox().await.unwrap();
-        $crate::accounts!(worker, $($n),*);
-        let s = $crate::setup_everything(&worker, $f).await;
-        ::tokio::join!(
-            $(s.c.init_account(&$n)),*
-        );
-        let $crate::SetupEverything { $($e,)* .. } = s;
-    };
-    (extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test!(extract($($e),*) accounts($($n),*) config(|_| {}))
+        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config(|_| {}))
     };
 }
 

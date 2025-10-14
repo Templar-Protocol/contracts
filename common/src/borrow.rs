@@ -64,7 +64,8 @@ pub struct BorrowPosition {
     borrow_asset_principal: BorrowAssetAmount,
     pub interest: Accumulator<BorrowAsset>,
     pub fees: BorrowAssetAmount,
-    in_flight: BorrowAssetAmount,
+    borrow_asset_in_flight: BorrowAssetAmount,
+    collateral_asset_in_flight: CollateralAssetAmount,
     pub liquidation_lock: CollateralAssetAmount,
 }
 
@@ -80,7 +81,8 @@ impl BorrowPosition {
             // borrowing if they create the borrow 1 hour into the epoch.
             interest: Accumulator::new(current_snapshot_index),
             fees: 0.into(),
-            in_flight: 0.into(),
+            borrow_asset_in_flight: 0.into(),
+            collateral_asset_in_flight: 0.into(),
             liquidation_lock: 0.into(),
         }
     }
@@ -89,7 +91,7 @@ impl BorrowPosition {
         let mut total = BorrowAssetAmount::zero();
         asset_op! {
             total += self.borrow_asset_principal;
-            total += self.in_flight;
+            total += self.borrow_asset_in_flight;
         };
         total
     }
@@ -98,7 +100,7 @@ impl BorrowPosition {
         let mut total = BorrowAssetAmount::zero();
         asset_op! {
             total += self.borrow_asset_principal;
-            total += self.in_flight;
+            total += self.borrow_asset_in_flight;
             total += self.interest.get_total();
             total += self.fees;
         };
@@ -117,6 +119,7 @@ impl BorrowPosition {
     pub fn exists(&self) -> bool {
         !self.get_total_collateral_amount().is_zero()
             || !self.get_total_borrow_asset_liability().is_zero()
+            || !self.collateral_asset_in_flight.is_zero()
     }
 
     /// Returns `None` if liability is zero.
@@ -501,7 +504,44 @@ impl<'a> BorrowPositionGuard<'a> {
         .emit();
     }
 
-    pub fn record_collateral_asset_withdrawal(
+    pub fn record_collateral_asset_withdrawal_initial(
+        &mut self,
+        _proof: InterestAccumulationProof,
+        amount: CollateralAssetAmount,
+    ) {
+        asset_op! {
+            self.position.collateral_asset_in_flight += amount;
+            self.position.collateral_asset_deposit -= amount;
+            self.market.collateral_asset_deposited -= amount;
+        };
+    }
+
+    pub fn record_collateral_asset_withdrawal_final(
+        &mut self,
+        _proof: InterestAccumulationProof,
+        amount: CollateralAssetAmount,
+        success: bool,
+    ) {
+        asset_op! {
+            @msg("Invariant violation: attempt to unlock more than locked as in-flight")
+            self.position.collateral_asset_in_flight -= amount;
+        };
+
+        if success {
+            MarketEvent::CollateralWithdrawn {
+                account_id: self.account_id.clone(),
+                collateral_asset_amount: amount,
+            }
+            .emit();
+        } else {
+            asset_op! {
+                self.position.collateral_asset_deposit += amount;
+                self.market.collateral_asset_deposited += amount;
+            };
+        }
+    }
+
+    pub(crate) fn record_collateral_asset_withdrawal(
         &mut self,
         _proof: InterestAccumulationProof,
         amount: CollateralAssetAmount,
@@ -510,12 +550,6 @@ impl<'a> BorrowPositionGuard<'a> {
             self.position.collateral_asset_deposit -= amount;
             self.market.collateral_asset_deposited -= amount;
         };
-
-        MarketEvent::CollateralWithdrawn {
-            account_id: self.account_id.clone(),
-            collateral_asset_amount: amount,
-        }
-        .emit();
     }
 
     /// # Errors
@@ -557,14 +591,14 @@ impl<'a> BorrowPositionGuard<'a> {
 
         asset_op! {
             self.market.borrow_asset_borrowed_in_flight += amount;
-            self.position.in_flight += amount;
+            self.position.borrow_asset_in_flight += amount;
             self.position.fees += fees;
         };
 
         if !self.status(price_pair, block_timestamp_ms).is_healthy() {
             asset_op! {
                 self.market.borrow_asset_borrowed_in_flight -= amount;
-                self.position.in_flight -= amount;
+                self.position.borrow_asset_in_flight -= amount;
                 self.position.fees -= fees;
             };
             return Err(error::InitialBorrowError::Undercollateralization);
@@ -573,7 +607,7 @@ impl<'a> BorrowPositionGuard<'a> {
         if !self.within_allowable_borrow_range() {
             asset_op! {
                 self.market.borrow_asset_borrowed_in_flight -= amount;
-                self.position.in_flight -= amount;
+                self.position.borrow_asset_in_flight -= amount;
                 self.position.fees -= fees;
             };
             return Err(error::InitialBorrowError::OutsideAllowableRange);
@@ -596,7 +630,7 @@ impl<'a> BorrowPositionGuard<'a> {
         // asset should always be added before it is removed.
         asset_op! {
             self.market.borrow_asset_borrowed_in_flight -= borrow.amount;
-            self.position.in_flight -= borrow.amount;
+            self.position.borrow_asset_in_flight -= borrow.amount;
         };
 
         if success {

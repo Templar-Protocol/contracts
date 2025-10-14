@@ -18,7 +18,10 @@ use test_utils::*;
 async fn main() {
     const ITERATIONS: usize = 128;
 
+    let worker = worker().await;
+
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, borrow_user_2, supply_user)
         config(|c| {

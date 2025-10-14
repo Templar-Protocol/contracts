@@ -1,10 +1,12 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
 #[should_panic = "is not registered"]
-async fn registration_is_required() {
-    let worker = near_workspaces::sandbox().await.unwrap();
-    setup_test_w!(worker extract(c) accounts(supply_user));
+async fn registration_is_required(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user));
 
     let unregistered_account = worker.dev_create_account().await.unwrap();
     c.borrow_asset

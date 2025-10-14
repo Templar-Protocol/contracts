@@ -1,10 +1,13 @@
+use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
+
 use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn empty_positions_are_removed() {
+async fn empty_positions_are_removed(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
     );

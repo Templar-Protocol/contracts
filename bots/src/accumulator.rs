@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
 use futures::{StreamExt, TryStreamExt};
-use near_crypto::{InMemorySigner, SecretKey, Signer};
+use near_crypto::{SecretKey, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     action::{Action, FunctionCallAction},
@@ -19,9 +19,9 @@ use crate::{
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
-    /// Market to run accumulator for
-    #[arg(short, long, env = "MARKET_ACCOUNT_ID")]
-    pub markets: Vec<AccountId>,
+    /// Registries to run accumulator for
+    #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS")]
+    pub registries: Vec<AccountId>,
     /// Signer key to use for signing transactions
     #[arg(short = 'k', long, env = "SIGNER_KEY")]
     pub signer_key: SecretKey,
@@ -35,23 +35,52 @@ pub struct Args {
     #[arg(short, long, env = "TIMEOUT", default_value_t = 60)]
     pub timeout: u64,
     /// Interval between accumulations in seconds
-    #[arg(short, long, default_value = "60", env = "INTERVAL")]
+    #[arg(short, long, default_value_t = 600, env = "INTERVAL")]
     pub interval: u64,
+    /// Registry refresh interval in seconds
+    #[arg(
+        short = 'r',
+        long,
+        default_value_t = 3600,
+        env = "REGISTRY_REFRESH_INTERVAL"
+    )]
+    pub registry_refresh_interval: u64,
     /// Concurrency for accumulation tasks
-    #[arg(short, long, default_value = "10", env = "CONCURRENCY")]
+    #[arg(short, long, default_value_t = 4, env = "CONCURRENCY")]
     pub concurrency: usize,
+}
+
+impl std::fmt::Display for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "registries: {:?}\nsigner_account: {}\nnetwork: {}\ntimeout: {}\ninterval: {}\nregistry_refresh_interval: {}\nconcurrency: {}",
+            self.registries,
+            self.signer_account,
+            self.network,
+            self.timeout,
+            self.interval,
+            self.registry_refresh_interval,
+            self.concurrency
+        )
+    }
 }
 
 pub struct Accumulator {
     client: JsonRpcClient,
-    signer: Signer,
+    signer: Arc<Signer>,
     pub market: AccountId,
     timeout: u64,
 }
 
 impl Accumulator {
     #[must_use]
-    pub fn new(client: JsonRpcClient, signer: Signer, market: AccountId, timeout: u64) -> Self {
+    pub fn new(
+        client: JsonRpcClient,
+        signer: Arc<Signer>,
+        market: AccountId,
+        timeout: u64,
+    ) -> Self {
         Self {
             client,
             signer,
@@ -150,18 +179,5 @@ impl Accumulator {
             .await?;
 
         Ok(())
-    }
-
-    #[instrument(level = "debug")]
-    pub fn setup_accumulators(args: &Args) -> anyhow::Result<Vec<Self>> {
-        let client = JsonRpcClient::connect(args.network.rpc_url());
-        let signer =
-            InMemorySigner::from_secret_key(args.signer_account.clone(), args.signer_key.clone());
-
-        Ok(args
-            .markets
-            .iter()
-            .map(|market| Self::new(client.clone(), signer.clone(), market.clone(), args.timeout))
-            .collect())
     }
 }
