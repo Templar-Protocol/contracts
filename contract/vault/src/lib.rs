@@ -31,7 +31,8 @@ pub use wad::*;
 
 use crate::storage_management::{
     require_attached_at_least, require_attached_for_pending_withdrawal,
-    storage_bytes_for_queue_item, yocto_for_bytes, yocto_for_new_market, yocto_for_pending_cap,
+    storage_bytes_for_account_id, storage_bytes_for_queue_account_id, yocto_for_bytes,
+    yocto_for_new_market, yocto_for_pending_cap,
 };
 
 pub mod aux;
@@ -81,12 +82,24 @@ pub struct PendingWithdrawal {
     pub requested_at: u64,
 }
 
+impl PendingWithdrawal {
+    pub const fn encoded_size() -> u64 {
+        storage_bytes_for_account_id()
+            + storage_bytes_for_account_id()
+            + 16  // escrow_shares: u128
+            + 16  // expected_assets: u128
+            + 8   // requested_at: u64
+            + 16 // deposit_yocto: u128
+    }
+}
+
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
 // FIXME: #[nep145(force_unregister_hook = "Self")]
 #[rbac(roles = "Role", crate = "crate")]
 #[near(contract_state)]
 /// Vault contract that issues shares over an underlying fungible asset and allocates liquidity
 /// across configured markets. Implements 4626-like deposit/withdraw semantics.
+/// Note: RBAC storage (role membership) is paid by the contract; callers are not charged deposits for RBAC changes.
 pub struct Contract {
     mode: AllocationMode,
     plan: Option<AllocationPlan>,
@@ -440,11 +453,11 @@ impl Contract {
 
         let mut required_deposit: u128 = 0;
         if self.config.get(&market).is_none() {
-            required_deposit = required_deposit.saturating_add(yocto_for_new_market(&market));
+            required_deposit = required_deposit.saturating_add(yocto_for_new_market());
         }
         let current_cap = self.config.get(&market).map_or(0, |c| c.cap);
         if new_cap.0 > current_cap {
-            required_deposit = required_deposit.saturating_add(yocto_for_pending_cap(&market));
+            required_deposit = required_deposit.saturating_add(yocto_for_pending_cap());
         }
         require_attached_at_least(required_deposit, "submit_cap");
 
@@ -527,7 +540,7 @@ impl Contract {
                         .emit();
                     } else {
                         require_attached_at_least(
-                            yocto_for_bytes(storage_bytes_for_queue_item(&market)),
+                            yocto_for_bytes(storage_bytes_for_queue_account_id()),
                             "withdraw queue entry",
                         );
                         self.withdraw_queue.push(market.clone());
@@ -752,7 +765,7 @@ impl Contract {
         let sender = env::predecessor_account_id();
 
         // Require storage deposit for the pending withdrawal entry
-        let req_yocto = require_attached_for_pending_withdrawal(&sender, &receiver);
+        let req_yocto = require_attached_for_pending_withdrawal();
 
         // Move shares into escrow
         #[allow(clippy::expect_used, reason = "No side effects")]
@@ -767,7 +780,7 @@ impl Contract {
         }
         .emit();
 
-        self.enqueue_pending_withdrawal(&sender, &receiver, shares, assets, req_yocto);
+        self.enqueue_pending_withdrawal(&sender, &receiver, shares, assets);
         PromiseOrValue::Value(())
     }
 
@@ -1033,7 +1046,6 @@ impl Contract {
         receiver: &AccountId,
         escrow_shares: u128,
         expected_assets: u128,
-        deposit_yocto: u128,
     ) {
         let id = self.next_withdraw_id;
         self.next_withdraw_id = self.next_withdraw_id.saturating_add(1);
@@ -1354,6 +1366,7 @@ impl Contract {
                     .then(
                         ext_self::ext(env::current_account_id())
                             .with_static_gas(Self::AFTER_SUPPLY_ENSURE_GAS)
+                            .with_unused_gas_weight(0)
                             .after_supply_1_check(op_id, index, U128(to_supply)),
                     ),
             )
@@ -1456,7 +1469,7 @@ impl Contract {
             PromiseOrValue::Promise(
                 templar_common::market::ext_market::ext(market.clone())
                     // FIXME: incorrect
-                    .with_static_gas(Gas::from_tgas(10))
+                    .with_static_gas(Self::CREATE_WITHDRAW_REQ_GAS)
                     .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(*to_request)))
                     .then(
                         ext_self::ext(env::current_account_id())

@@ -62,6 +62,12 @@ pub struct MarketConfiguration {
     pub removable_at: TimestampNs,
 }
 
+impl MarketConfiguration {
+    pub const fn encoded_size() -> usize {
+        32 + 1 + 8
+    }
+}
+
 #[derive(Clone)]
 #[near(serializers = [json, borsh])]
 pub struct VaultConfiguration {

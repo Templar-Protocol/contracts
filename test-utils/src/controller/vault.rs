@@ -83,22 +83,22 @@ impl VaultController {
         #[call(exec, tgas(300))]
         pub fn allocate(weights: AllocationWeights, amount: Option<U128>);
 
-        #[call(exec, tgas(30), deposit(NearToken::from_yoctonear(2020000000000000000000)))]
+        #[call(exec, tgas(30), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn withdraw(amount: U128, receiver: AccountId);
 
         #[call(exec, tgas(300))]
         pub fn execute_next_withdrawal_request();
 
-        #[call(exec, tgas(300), deposit(NearToken::from_yoctonear(2020000000000000000000)))]
+        #[call(exec, tgas(300), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn redeem(shares: U128, receiver: AccountId);
 
         #[call(exec, tgas(50))]
         pub fn skim["skim"](token: AccountId);
 
-        #[call(exec, tgas(5), deposit(NearToken::from_yoctonear(3680000000000000000000)))]
+        #[call(exec, tgas(5), deposit(NearToken::from_yoctonear(4650000000000000000000)))]
         pub fn submit_cap(market: AccountId, new_cap: U128);
 
-        #[call(exec, tgas(5), deposit(NearToken::from_yoctonear(530000000000000000000)))]
+        #[call(exec, tgas(5), deposit(NearToken::from_yoctonear(800000000000000000000)))]
         pub fn accept_cap(market: AccountId);
 
         #[call(exec, tgas(5))]
@@ -143,7 +143,7 @@ impl VaultController {
         #[call(exec, tgas(50))]
         pub fn revoke_pending_timelock();
 
-        #[call(exec, tgas(50), deposit(NearToken::from_yoctonear(530000000000000000000)))]
+        #[call(exec, tgas(50), deposit(NearToken::from_yoctonear(800000000000000000000)))]
         pub fn set_supply_queue(markets: Vec<AccountId>);
 
         #[call(exec, tgas(50))]
