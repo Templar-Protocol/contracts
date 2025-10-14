@@ -332,7 +332,18 @@ impl Contract {
         initial_liquidation: InitialLiquidation,
         return_style: ReturnStyle,
     ) -> serde_json::Value {
-        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        // let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        // If the transfer of collateral failed, it could mean:
+        //
+        // 1. The liquidator has opted-out of storage management for the
+        //  collateral token. This can be due to negligence or malice, but
+        //  we cannot be sure, so we cannot refund the tokens, because
+        //  that would allow a borrow position in liquidation to
+        //  indefinitely lock their collateral from being liquidated.
+        //
+        // 2. Somehow the contract does not have enough collateral
+        //  available. This would be indicative of a *fundamental flaw*
+        //  in the contract (i.e. this should never happen).
 
         let snapshot = self.snapshot();
         let mut borrow_position = self
@@ -341,26 +352,9 @@ impl Contract {
                 env::panic_str("Invariant violation: Liquidation of nonexistent position.")
             });
 
-        if success {
-            let proof = borrow_position.accumulate_interest();
-            borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
-            return_style.serialize(initial_liquidation.refund)
-        } else {
-            // Somehow transfer of collateral failed. This could mean:
-            //
-            // 1. Somehow the contract does not have enough collateral
-            //  available. This would be indicative of a *fundamental flaw*
-            //  in the contract (i.e. this should never happen).
-            //
-            // 2. More likely, in a multichain context, communication
-            //  broke down somewhere between the signer and the remote RPC.
-            //  Could be as simple as a nonce sync issue. Should just wait
-            //  and try again later.
-            borrow_position.liquidation_unlock(initial_liquidation.liquidated);
-            let mut return_amount = initial_liquidation.recovered;
-            asset_op!(return_amount += initial_liquidation.refund);
-            return_style.serialize(return_amount)
-        }
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
+        return_style.serialize(initial_liquidation.refund)
     }
 
     // ~5.0 Tgas

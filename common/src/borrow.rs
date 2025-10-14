@@ -722,7 +722,7 @@ impl<'a> BorrowPositionGuard<'a> {
         InterestAccumulationProof(())
     }
 
-    pub fn liquidation_lock(&mut self, amount: CollateralAssetAmount) {
+    pub(crate) fn liquidation_lock(&mut self, amount: CollateralAssetAmount) {
         asset_op!(
             @msg("Attempt to liquidate more collateral than position has deposited")
             self.position.collateral_asset_deposit -= amount;
@@ -730,7 +730,7 @@ impl<'a> BorrowPositionGuard<'a> {
         );
     }
 
-    pub fn liquidation_unlock(&mut self, amount: CollateralAssetAmount) {
+    pub(crate) fn liquidation_unlock(&mut self, amount: CollateralAssetAmount) {
         asset_op!(
             @msg("Invariant violation: Liquidation unlock of more collateral that was locked")
             self.position.liquidation_lock -= amount;
