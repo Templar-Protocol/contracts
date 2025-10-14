@@ -1,3 +1,8 @@
+use crate::storage_management;
+use crate::storage_management::storage_bytes_for_pending_cap_entry;
+use crate::storage_management::storage_bytes_for_queue_item;
+use crate::storage_management::yocto_for_bytes;
+use crate::storage_management::yocto_for_new_market;
 use crate::test_utils::*;
 use crate::Contract;
 use near_sdk::env;
@@ -93,7 +98,6 @@ fn fee_accrues_only_on_growth_unit() {
         "fee shares minted must match compute_fee_shares"
     );
 }
-
 
 #[test]
 fn payout_success_burns_only_proportional_escrow_and_refunds_remainder() {
@@ -372,8 +376,6 @@ fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, exp
     assert_eq!(c.compute_burn_shares(escrow, collected, requested), expect);
 }
 
-
-
 #[test]
 fn compute_effective_totals_fee_share_and_virtuals() {
     let vault_id = accounts(0);
@@ -394,7 +396,6 @@ fn compute_effective_totals_fee_share_and_virtuals() {
     assert_eq!(nta, cur + va);
 }
 
-
 #[test]
 fn compute_escrow_settlement_burns_min_and_refunds_rest() {
     let vault_id = accounts(0);
@@ -406,10 +407,8 @@ fn compute_escrow_settlement_burns_min_and_refunds_rest() {
     assert_eq!(Contract::compute_escrow_settlement(0, 50), (0, 0));
 }
 
-
 #[test]
 fn removing_holding_market_hides_assets_and_leaves_orphan_supply() {
-
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
@@ -479,7 +478,6 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
     let cfg_after2 = c.config.get(&m).expect("market must exist");
     assert!(cfg_after2.removable_at > 0, "removal must be scheduled");
 }
-
 #[test]
 fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     let vault_id = accounts(0);
@@ -495,9 +493,16 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
 
     // Submit raise -> pending
     let raise = 5u128;
+    set_ctx(&vault_id, &owner, None, Some(yocto_for_new_market(&m)));
     c.submit_cap(m.clone(), U128(raise));
+
     // Fast-forward timelock to accept the raise
-    set_block_ts(&vault_id, &owner, env::block_timestamp() + 1_000_000_000);
+    set_ctx(
+        &vault_id,
+        &owner,
+        Some(env::block_timestamp() + 1_000_000_000),
+        Some(yocto_for_bytes(storage_bytes_for_queue_item(&m))),
+    );
     c.accept_cap(m.clone());
 
     let cfg1 = c.config.get(&m).unwrap();

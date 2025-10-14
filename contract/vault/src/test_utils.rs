@@ -1,4 +1,5 @@
 use crate::Contract;
+use near_sdk::NearToken;
 pub use near_sdk::{
     test_utils::{accounts, VMContextBuilder},
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
@@ -54,11 +55,20 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
 }
 // Set the block timestamp and keep caller/predecessor consistent for tests
 pub fn set_block_ts(vault_id: &AccountId, signer: &AccountId, ts: u64) {
+    set_ctx(vault_id, signer, Some(ts), None);
+}
+
+pub fn set_ctx(vault_id: &AccountId, signer: &AccountId, ts: Option<u64>, deposit: Option<u128>) {
     let mut ctx = VMContextBuilder::new();
     ctx.current_account_id(vault_id.clone());
     ctx.signer_account_id(signer.clone());
     ctx.predecessor_account_id(signer.clone());
-    ctx.block_timestamp(ts);
+    if let Some(ts) = ts {
+        ctx.block_timestamp(ts);
+    }
+    if let Some(amount) = deposit {
+        ctx.attached_deposit(NearToken::from_yoctonear(amount));
+    }
     testing_env!(ctx.build());
 }
 
