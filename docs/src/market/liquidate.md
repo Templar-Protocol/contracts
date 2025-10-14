@@ -4,6 +4,13 @@ Liquidation is the process by which the asset collateralizing certain positions 
 
 A liquidator is a third party willing to send a quantity of a market's borrow asset (usually a stablecoin) to the market in exchange for the amount of collateral asset supporting a specific account's position. As compensation for this service, the liquidator receives an exchange rate that is slightly better than the current rate. This difference in rates is called the "liquidator spread," and the maximum liquidator spread is configurable on a per-market basis.
 
+<div class="warning">
+
+- The liquidator _**MUST**_ ensure that its account is able to receive the collateral tokens. Usually this means opting-in to [storage management](https://github.com/near/NEPs/blob/master/neps/nep-0145.md) (if the collateral token in question implements that standard). If the collateral transfer fails, the liquidator _will not be refunded!_
+- It is the responsibility of the liquidator to calculate the optimal amount of tokens to attach to a liquidation call. The market will either completely accept or completely reject the liquidation attempt&mdash;no refunds!
+
+</div>
+
 A liquidator will follow this high-level workflow:
 
 1. The liquidator obtains a list of accounts borrowing from the market by calling [`list_borrow_positions`](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.list_borrow_positions).
@@ -24,12 +31,6 @@ Thus, the arguments to a liquidation call might look something like this:
   "receiver_id": "<market-id>"
 }
 ```
-
-<div class="warning">
-
-It is the responsibility of the liquidator to calculate the optimal amount of tokens to attach to a liquidation call. The market will either completely accept or completely reject the liquidation attempt&mdash;no refunds!
-
-</div>
 
 ## Example
 
