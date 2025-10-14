@@ -4,7 +4,9 @@ use near_sdk::{env, near};
 use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 
-use super::{ExecutionContextProvider, ExecutionParameters, InvalidSignatureError, Key};
+use super::{
+    ExecutionContextProvider, ExecutionParameters, InvalidSignatureError, Key, MagicNumber,
+};
 
 use data::{AuthenticatorData, ClientDataJson};
 use signature::Signature;
@@ -49,15 +51,20 @@ impl<T> Key<Message<T>> for Passkey {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
+#[serde(deny_unknown_fields)]
 pub struct Payload<T> {
     pub parameters: ExecutionParameters,
     pub account_id: AccountId,
     pub payload: T,
 }
 
+impl<T> MagicNumber for Payload<T> {
+    const MAGIC_NUMBER: &'static [u8] = b"\x19UAccount Signed Message:\n";
+}
+
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-#[serde(bound = "T: DeserializeOwned")]
+#[serde(bound = "T: DeserializeOwned", deny_unknown_fields)]
 pub struct UncheckedMessage<T> {
     pub authenticator_data: AuthenticatorData,
     pub message: WithRawString<Payload<T>>,

@@ -77,7 +77,7 @@ impl schemars::JsonSchema for Challenge {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientDataJson {
     pub r#type: String,
     pub challenge: Challenge,

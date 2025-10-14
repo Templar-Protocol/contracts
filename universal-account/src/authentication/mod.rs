@@ -67,3 +67,7 @@ pub trait ExecutionContextProvider {
         Ok(self.payload_unchecked())
     }
 }
+
+pub trait MagicNumber {
+    const MAGIC_NUMBER: &'static [u8];
+}

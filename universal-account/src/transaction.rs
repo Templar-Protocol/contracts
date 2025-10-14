@@ -6,6 +6,7 @@ use std::num::NonZeroU128;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
+#[serde(deny_unknown_fields)]
 pub struct Transaction {
     pub receiver_id: AccountId,
     pub actions: Box<[Action]>,
@@ -26,6 +27,7 @@ impl Transaction {
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
 #[non_exhaustive]
+#[serde(deny_unknown_fields)]
 pub enum Action {
     CreateAccount,
     DeployContract {

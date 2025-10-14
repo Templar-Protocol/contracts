@@ -3,7 +3,7 @@
 use near_sdk::serde_json;
 
 use templar_universal_account::{
-    authentication::passkey::Passkey, encoding::p256::PublicKey, KeyId,
+    authentication::passkey::Passkey, encoding::p256::PublicKey, InitArgs, KeyId,
 };
 
 pub fn main() {
@@ -11,9 +11,9 @@ pub fn main() {
     // let public_key: PublicKey = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng).public_key().into();
     let public_key: PublicKey = "p256:S8avjv5zYFYhViXo7giqwynnMdox3RAytXQ7FG9a2tj8WxZnU6KUr36MSuUvgrwk4uGNMdiXt6vwtL9yBvj6VAUL".parse().unwrap();
 
-    let init = serde_json::json!({
-        "key": KeyId::Passkey(Passkey(public_key)),
-    });
+    let init = InitArgs {
+        key: KeyId::Passkey(Passkey(public_key)),
+    };
 
     println!("{}", serde_json::to_string(&init).unwrap());
 }

@@ -40,7 +40,7 @@ use templar_universal_account::{
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
-    ExecuteArgs, ExecutionParameters,
+    ExecuteArgs, ExecutionParameters, KeyId,
 };
 use test_utils::*;
 
@@ -225,6 +225,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let payload = WithRawString::from_parsed(Payload {
         parameters: ExecutionParameters {
+            block_height: U64(0),
             index: U64(0),
             nonce: U64(0),
         },
@@ -292,11 +293,15 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     // Send an action to the universal account contract
 
+    let parameters = app
+        .ua_near
+        .load_ua_key(ua_account_id.clone(), KeyId::Passkey(passkey.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            index: 0.into(),
-            nonce: 1.into(),
-        },
+        parameters: parameters.next(),
         account_id: ua_account_id.clone(),
         payload: vec![Transaction {
             receiver_id: c.contract().id().clone(),

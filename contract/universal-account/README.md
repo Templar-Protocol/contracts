@@ -39,13 +39,14 @@ cargo near deploy build-non-reproducible-wasm <account-id> \
    Example output:
 
    ```text
-   Payload:
-   {"parameters":{"index":"0","nonce":"1"},"account_id":"my-universal-account.testnet","payload":[{"receiver_id":"alice.testnet","actions":[{"Transfer":{"amount":"1000000000000000000000000"}}]}]}
+   Payload (stringified):
+   UAccount Signed Message:
+   {"parameters":{"block_height":"123456","index":"0","nonce":"1"},"account_id":"my-universal-account.testnet","payload":[{"receiver_id":"alice.testnet","actions":[{"Transfer":{"amount":"1000000000000000000000000"}}]}]}
    SHA-256 (base64):
-   Nsm/L7iUz7ciUCi3lAZfb0HmFitGAMyfciU9Kf+3ZrI
+   h29fWbM+x7bKkByAm9rQ4AsjH+1BbLjIR3BZQRRlYwQ
    ```
 
-   Despite the fact that the payload is valid JSON, it is treated as a plain string when calculating the SHA-256 hash.
+   Note that the payload begins with `"\x19UAccount Signed Message\n"`, and it is treated as a plain bytestring when calculating the SHA-256 hash.
 
 1. Sign the payload using your passkey. As a part of this process, it should generate the following fields, which we will need for the next step:
 
@@ -62,14 +63,14 @@ cargo near deploy build-non-reproducible-wasm <account-id> \
    Example output:
 
    ```json
-   {"key":{"Passkey":"p256:S8avjv5zYFYhViXo7giqwynnMdox3RAytXQ7FG9a2tj8WxZnU6KUr36MSuUvgrwk4uGNMdiXt6vwtL9yBvj6VAUL"},"message":{"authenticator_data":"49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97631d00000000","client_data_json":"{\"type\":\"webauthn.get\",\"challenge\":\"85VxczPqag4d7XrZFvpPZBBuac_cLiQZGONVSkdl9LE\",\"origin\":\"http://localhost:3000\",\"crossOrigin\":false}","message":"{\"parameters\":{\"index\":\"0\",\"nonce\":\"1\"},\"account_id\":\"my-universal-account.testnet\",\"payload\":[{\"receiver_id\":\"alice.testnet\",\"actions\":[{\"Transfer\":{\"amount\":\"1000000000000000000000000\"}}]}]}","signature":"MEUCICy0TG2AuV8mOv-HEsTayGBiA4huWNJ5sUKzsQWt1xwnAiEA5_lulYfwRnf9dPSHBNciq63jrIFx0LAB519gQuJGxU8"}}
+   {"key":{"Passkey":"p256:S8avjv5zYFYhViXo7giqwynnMdox3RAytXQ7FG9a2tj8WxZnU6KUr36MSuUvgrwk4uGNMdiXt6vwtL9yBvj6VAUL"},"message":{"authenticator_data":"49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97631d00000000","client_data_json":"{\"type\":\"webauthn.get\",\"challenge\":\"85VxczPqag4d7XrZFvpPZBBuac_cLiQZGONVSkdl9LE\",\"origin\":\"http://localhost:3000\",\"crossOrigin\":false}","message":"{\"parameters\":{\"block_height\":\"123456\",\"index\":\"0\",\"nonce\":\"1\"},\"account_id\":\"my-universal-account.testnet\",\"payload\":[{\"receiver_id\":\"alice.testnet\",\"actions\":[{\"Transfer\":{\"amount\":\"1000000000000000000000000\"}}]}]}","signature":"MEUCICy0TG2AuV8mOv-HEsTayGBiA4huWNJ5sUKzsQWt1xwnAiEA5_lulYfwRnf9dPSHBNciq63jrIFx0LAB519gQuJGxU8"}}
    ```
 
 1. Send this message to the deployed contract:
 
    ```bash
    near contract call-function as-transaction <account-id> execute \
-     json-args '<message>' \
+     json-args '{"args":<message>}' \
      prepaid-gas '100.0 Tgas' \
      attached-deposit '0 NEAR' \
      sign-as <any-account>

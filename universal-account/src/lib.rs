@@ -19,6 +19,7 @@ pub enum KeyId {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionParameters {
     /// Static. If a universal account is deleted and recreated with the same
     /// keys, this ensures that old signatures are not replayable.
