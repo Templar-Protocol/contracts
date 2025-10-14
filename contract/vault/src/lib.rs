@@ -29,9 +29,15 @@ use templar_common::{
 };
 pub use wad::*;
 
+use crate::storage_management::{
+    require_attached_at_least, require_attached_for_pending_withdrawal,
+    storage_bytes_for_queue_item, yocto_for_bytes, yocto_for_new_market, yocto_for_pending_cap,
+};
+
 pub mod aux;
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
+pub mod storage_management;
 pub mod wad;
 
 #[cfg(test)]
@@ -427,9 +433,21 @@ impl Contract {
     /* ----- Market config / queues ----- */
     /// Submits a change to a market's supply cap.
     /// Decreases apply immediately; increases are subject to the governance timelock.
+    #[payable]
     pub fn submit_cap(&mut self, market: AccountId, new_cap: U128) {
         Self::assert_curator_or_owner();
         self.ensure_idle();
+
+        let mut required_deposit: u128 = 0;
+        if self.config.get(&market).is_none() {
+            required_deposit = required_deposit.saturating_add(yocto_for_new_market(&market));
+        }
+        let current_cap = self.config.get(&market).map_or(0, |c| c.cap);
+        if new_cap.0 > current_cap {
+            required_deposit = required_deposit.saturating_add(yocto_for_pending_cap(&market));
+        }
+        require_attached_at_least(required_deposit, "submit_cap");
+
         let config = match self.config.get_mut(&market) {
             None => {
                 self.config
@@ -438,6 +456,8 @@ impl Contract {
                     market: market.clone(),
                 }
                 .emit();
+                // Pre-allocate a market_supply record (principal=0) so allocations don't create storage later
+                self.market_supply.insert(market.clone(), 0);
                 #[allow(clippy::unwrap_used, reason = "No side effects")]
                 self.config.get_mut(&market).unwrap()
             }
@@ -477,6 +497,7 @@ impl Contract {
     }
 
     /// Accepts a pending cap increase for `market` once the timelock has elapsed.
+    #[payable]
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
         self.ensure_idle();
@@ -505,6 +526,10 @@ impl Contract {
                         }
                         .emit();
                     } else {
+                        require_attached_at_least(
+                            yocto_for_bytes(storage_bytes_for_queue_item(&market)),
+                            "withdraw queue entry",
+                        );
                         self.withdraw_queue.push(market.clone());
                         Event::MarketEnabled {
                             market: market.clone(),
@@ -588,6 +613,7 @@ impl Contract {
 
     /// Sets the ordered supply (allocation) queue.
     /// Rejects duplicates and markets without a positive cap. Requires the vault to be idle.
+    #[payable]
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
         self.ensure_idle();
@@ -600,11 +626,20 @@ impl Contract {
                 env::panic_str(&format!("Duplicate market {m}"));
             }
         }
-
-        self.supply_queue.clear();
+        // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
             let cap = self.config.get(m).map_or(0, |c| c.cap);
             assert!(cap > 0, "unauthorized market");
+        }
+
+        // Compute and require storage for additions (no refunds for removals in this pass)
+        let current: std::collections::HashSet<AccountId> =
+            self.supply_queue.iter().cloned().collect();
+        let required_yocto = storage_management::yocto_for_queue_additions(&current, &markets);
+        require_attached_at_least(required_yocto, "supply queue update");
+
+        self.supply_queue.clear();
+        for m in &markets {
             self.supply_queue.push(m.clone());
         }
     }
@@ -617,6 +652,7 @@ impl Contract {
     /// If the vault still has a supply in that market (vault_shares_in_market > 0), the market must have had submit_market_removal called (removable_at set) and the timelock must have passed.
     /// Sets the ordered withdraw queue.
     /// Enforces safety invariants and the policy that all enabled/holding markets must be present.
+    #[payable]
     pub fn set_withdraw_queue(&mut self, queue: Vec<AccountId>) {
         Self::assert_allocator();
         self.ensure_idle();
@@ -680,6 +716,8 @@ impl Contract {
             }
         }
 
+        let required_yocto = storage_management::yocto_for_queue_additions(&current, &queue);
+        require_attached_at_least(required_yocto, "withdraw queue update");
         for id in current.difference(&seen).cloned().collect::<Vec<_>>() {
             self.config.remove(&id);
         }
@@ -697,6 +735,7 @@ impl Contract {
     /* ----- Withdraw / Redeem ----- */
     /// Burns the necessary shares to withdraw `amount` of underlying to `receiver`.
     /// Internally calls `redeem` after computing the share amount.
+    #[payable]
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
         let shares_needed = self.preview_withdraw(amount).0;
         self.redeem(U128(shares_needed), receiver)
@@ -704,12 +743,16 @@ impl Contract {
 
     /// Redeems `shares` for underlying assets sent to `receiver`.
     /// Shares are escrowed to the contract and only burned after successful payout.
+    #[payable]
     pub fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()> {
         let shares = shares.0;
 
         let assets = self.convert_to_assets(U128(shares)).0;
 
         let sender = env::predecessor_account_id();
+
+        // Require storage deposit for the pending withdrawal entry
+        let req_yocto = require_attached_for_pending_withdrawal(&sender, &receiver);
 
         // Move shares into escrow
         #[allow(clippy::expect_used, reason = "No side effects")]
@@ -724,7 +767,7 @@ impl Contract {
         }
         .emit();
 
-        self.enqueue_pending_withdrawal(&sender, &receiver, shares, assets);
+        self.enqueue_pending_withdrawal(&sender, &receiver, shares, assets, req_yocto);
         PromiseOrValue::Value(())
     }
 
@@ -767,6 +810,7 @@ impl Contract {
             )
     }
 
+    #[payable]
     pub fn allocate(
         &mut self,
         weights: AllocationWeights,
@@ -774,6 +818,17 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         Self::assert_allocator();
         self.ensure_idle();
+
+        // Require storage deposit up-front for any markets that may be added to withdraw_queue
+        let existing: std::collections::HashSet<AccountId> =
+            self.withdraw_queue.iter().cloned().collect();
+        let candidates: Vec<AccountId> = if weights.is_empty() {
+            self.supply_queue.iter().cloned().collect()
+        } else {
+            weights.iter().map(|(m, _)| m.clone()).collect()
+        };
+        let required_yocto = storage_management::yocto_for_queue_additions(&existing, &candidates);
+        require_attached_at_least(required_yocto, "potential queue additions");
 
         // If no weights provided, use queue order; clamp total and emit request event.
         if weights.is_empty() {
@@ -978,6 +1033,7 @@ impl Contract {
         receiver: &AccountId,
         escrow_shares: u128,
         expected_assets: u128,
+        deposit_yocto: u128,
     ) {
         let id = self.next_withdraw_id;
         self.next_withdraw_id = self.next_withdraw_id.saturating_add(1);
