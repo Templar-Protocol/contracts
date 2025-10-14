@@ -56,7 +56,7 @@ pub trait ExecutionContextProvider {
             return Err(ExecutionError::KeyIndexMismatch);
         }
 
-        if p.nonce.0 != parameters.nonce.0 {
+        if p.nonce != parameters.nonce {
             return Err(ExecutionError::NonceMismatch);
         }
 

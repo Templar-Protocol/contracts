@@ -1,5 +1,4 @@
 use near_sdk::{
-    json_types::U64,
     serde_json::{self, json},
     NearToken,
 };
@@ -13,7 +12,7 @@ use templar_universal_account::{
     },
     encoding::p256::PublicKey,
     transaction::{Action, Transaction},
-    ExecuteArgs, ExecutionParameters, KeyId,
+    ExecuteArgs, KeyId,
 };
 use test_utils::{
     controller::universal_account::UniversalAccountController, print_execution, ContractController,
@@ -44,20 +43,11 @@ pub async fn universal_account() {
 
     let key_entry = uac.get_key(key_id.clone()).await.unwrap();
 
-    assert_eq!(
-        key_entry,
-        ExecutionParameters {
-            index: U64(0),
-            nonce: U64(0),
-        },
-        "Nonce and index should be zero immediately after deployment",
-    );
+    assert_eq!(key_entry.index.0, 0);
+    assert_eq!(key_entry.nonce.0, 0);
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            index: U64(0),
-            nonce: U64(1),
-        },
+        parameters: key_entry.next(),
         account_id: uac.contract().id().clone(),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),

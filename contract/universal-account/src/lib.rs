@@ -53,6 +53,7 @@ impl Contract {
         self.keys.insert(
             key,
             ExecutionParameters {
+                block_height: U64(env::block_height()),
                 index: U64(index),
                 nonce: U64(0),
             },

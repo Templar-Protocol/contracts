@@ -20,7 +20,13 @@ pub enum KeyId {
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 pub struct ExecutionParameters {
+    /// Static. If a universal account is deleted and recreated with the same
+    /// keys, this ensures that old signatures are not replayable.
+    pub block_height: U64,
+    /// Static. If a key is deleted and re-added to the same account, this
+    /// ensures that that old signatures are not replayable.
     pub index: U64,
+    /// Increments for each message executed by this key.
     pub nonce: U64,
 }
 
@@ -28,8 +34,8 @@ impl ExecutionParameters {
     #[must_use]
     pub fn next(&self) -> Self {
         Self {
-            index: self.index,
             nonce: U64(self.nonce.0 + 1),
+            ..self.clone()
         }
     }
 }
