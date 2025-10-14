@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nSELECT\n    allowance,\n    mark AS \"mark: AccountMark\"\nFROM\n    account\nWHERE\n    account_id = $1\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allowance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 1,
+        "name": "mark: AccountMark",
+        "type_info": {
+          "Custom": {
+            "name": "account_mark",
+            "kind": {
+              "Enum": [
+                "default",
+                "always_deny",
+                "always_approve"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ebb470551b7a11f320fbf358d842c0ebbe3177f7e1c5d523612cd156c5399b7e"
+}

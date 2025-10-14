@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use near_primitives::{
     hash::CryptoHash,
-    views::{ActionView, FinalExecutionOutcomeView, FinalExecutionStatus},
+    views::{FinalExecutionOutcomeView, FinalExecutionStatus},
 };
 use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
@@ -20,6 +20,14 @@ pub enum AccountMark {
     Default,
     AlwaysApprove,
     AlwaysDeny,
+}
+
+#[derive(Debug, sqlx::Type, PartialEq, Eq)]
+#[sqlx(type_name = "transaction_status", rename_all = "lowercase")]
+pub enum TransactionStatus {
+    Pending,
+    Succeeded,
+    Failed,
 }
 
 pub mod error {
@@ -124,14 +132,15 @@ impl Database {
         let results = sqlx::query!(
             "
 SELECT
-    account_id,
+    account.account_id,
     pending_transaction_hash
 FROM
     account
+    JOIN transaction ON account.pending_transaction_hash = transaction.transaction_hash
 WHERE
     pending_transaction_hash IS NOT NULL
 ORDER BY
-    pending_transaction_issued_at ASC
+    transaction.created_at ASC
 LIMIT
     $1
 ",
@@ -184,88 +193,93 @@ LIMIT
     pub async fn set_pending_transaction(
         &self,
         account_id: &AccountIdRef,
-        allowance_lock_amount: NearToken,
+        allowance_lock_gas: NearToken,
+        allowance_lock_inner: NearToken,
         transaction_hash: CryptoHash,
     ) -> Result<(), error::SetPendingTransactionError> {
-        let affected = sqlx::query!(
-            r#"
-UPDATE
-    account
-SET
-    allowance_locked = $1,
-    pending_transaction_hash = $2,
-    pending_transaction_issued_at = NOW()
-WHERE
-    account_id = $3
-    AND (
-        (
-            allowance_locked = 0
-            AND allowance >= $1
-            AND mark != 'always_deny'
-        )
-        OR mark = 'always_approve'
-    )
-"#,
-            Decimal::from(allowance_lock_amount.as_yoctonear()),
-            transaction_hash.to_string(),
-            account_id.as_str(),
-        )
-        .execute(&self.connection)
-        .await?;
+        let mut tx = self.connection.begin().await?;
 
-        if affected.rows_affected() != 0 {
-            return Ok(());
-        }
-
-        // Update failed, let's see why
         let account = sqlx::query!(
-            "
+            r#"
 SELECT
+    pending_transaction_hash,
     allowance,
-    allowance_locked,
-    pending_transaction_hash
+    mark AS "mark: AccountMark"
 FROM
     account
 WHERE
     account_id = $1
-",
-            account_id.as_str(),
+    AND mark <> 'always_deny'
+"#,
+            account_id.to_string(),
         )
-        .fetch_optional(&self.connection)
+        .fetch_optional(&mut *tx)
         .await?;
 
-        let record = account.ok_or_else(|| error::AccountDoesNotExistError {
-            account_id: account_id.to_owned(),
-        })?;
+        let Some(account) = account else {
+            return Err(error::AccountDoesNotExistError {
+                account_id: account_id.to_owned(),
+            }
+            .into());
+        };
 
-        if let Some(pending_transaction_hash) = record.pending_transaction_hash {
-            let pending_transaction_hash =
-                Some(CryptoHash::from_str(&pending_transaction_hash).unwrap_or_default());
-            Err(error::PendingTransactionError {
+        let allowance_lock_total = allowance_lock_gas.saturating_add(allowance_lock_inner);
+
+        if account.mark != AccountMark::AlwaysApprove
+            && account.allowance < Decimal::from(allowance_lock_total.as_yoctonear())
+        {
+            return Err(error::InsufficientAllowanceError {
                 account_id: account_id.to_owned(),
-                pending_transaction_hash,
+                required: allowance_lock_total,
+                #[allow(
+                    clippy::unwrap_used,
+                    reason = "guaranteed to be less than `allowance_lock_total`, which fits in u128"
+                )]
+                actual: NearToken::from_yoctonear(account.allowance.try_into().unwrap()),
             }
-            .into())
-        } else if !record.allowance_locked.is_zero() {
-            Err(error::PendingTransactionError {
-                account_id: account_id.to_owned(),
-                pending_transaction_hash: None,
-            }
-            .into())
-        } else if Decimal::from(allowance_lock_amount.as_yoctonear()) > record.allowance {
-            Err(error::InsufficientAllowanceError {
-                account_id: account_id.to_owned(),
-                actual: NearToken::from_yoctonear(
-                    u128::try_from(record.allowance).unwrap_or(u128::MAX),
-                ),
-                required: allowance_lock_amount,
-            }
-            .into())
-        } else {
-            Err(error::SetPendingTransactionError::UnknownError(
-                account_id.to_owned(),
-            ))
+            .into());
         }
+
+        sqlx::query!(
+            r#"
+WITH inserted AS (
+    INSERT INTO
+        "transaction" (
+            transaction_hash,
+            account_id,
+            "status",
+            allowance_spent_gas,
+            allowance_spent_inner
+        )
+    VALUES
+        ($1, $2, 'pending'::transaction_status, $3, $4)
+    RETURNING
+        transaction_hash
+)
+UPDATE
+    account
+SET
+    pending_transaction_hash = (
+        SELECT
+            transaction_hash
+        FROM
+            inserted
+    )
+WHERE
+    account_id = $2
+    AND pending_transaction_hash IS NULL
+RETURNING
+    pending_transaction_hash
+"#,
+            transaction_hash.to_string(),
+            account_id.as_str(),
+            Decimal::from(allowance_lock_gas.as_yoctonear()),
+            Decimal::from(allowance_lock_inner.as_yoctonear()),
+        )
+        .fetch_one(&self.connection)
+        .await?;
+
+        Ok(tx.commit().await?)
     }
 
     /// # Errors
@@ -278,64 +292,64 @@ WHERE
         account_id: &AccountIdRef,
         status: &FinalExecutionOutcomeView,
     ) -> Result<(), error::RecordTransactionError> {
-        let allowance_spent_gas = NearToken::from_yoctonear(status.tokens_burnt());
+        let allowance_spent_gas =
+            NearToken::from_yoctonear(status.transaction_outcome.outcome.tokens_burnt);
 
         let success = matches!(status.status, FinalExecutionStatus::SuccessValue(_));
 
-        let allowance_spent = if success {
-            let allowance_spent_storage_deposit = NearToken::from_yoctonear(
-                status
-                    .transaction
-                    .actions
-                    .iter()
-                    .filter_map(|a| match a {
-                        ActionView::FunctionCall {
-                            method_name,
-                            deposit,
-                            ..
-                        } if method_name == "storage_deposit" => Some(*deposit),
-                        _ => None,
-                    })
-                    .sum(),
-            );
-
-            allowance_spent_gas.saturating_add(allowance_spent_storage_deposit)
-        } else {
-            allowance_spent_gas
-        };
-
         let transaction_hash = status.transaction.hash;
 
-        self.insert_into_call(account_id, transaction_hash, allowance_spent, success)
-            .await
+        self.finalize_pending_transaction(
+            account_id,
+            transaction_hash,
+            allowance_spent_gas,
+            success,
+        )
+        .await
     }
 
-    async fn insert_into_call(
+    #[allow(clippy::too_many_lines)]
+    async fn finalize_pending_transaction(
         &self,
         account_id: &AccountIdRef,
         transaction_hash: CryptoHash,
-        allowance_spent: NearToken,
+        allowance_spent_gas: NearToken,
         succeeded: bool,
     ) -> Result<(), error::RecordTransactionError> {
-        let already_inserted = sqlx::query!(
-            "
+        let transaction_record = sqlx::query!(
+            r#"
 SELECT
-    1 AS inserted
+    allowance_spent_inner,
+    "status" AS "status: TransactionStatus"
 FROM
-    call
+    transaction
 WHERE
     account_id = $1
     AND transaction_hash = $2
-",
+"#,
             account_id.as_str(),
             transaction_hash.to_string(),
         )
-        .fetch_optional(&self.connection)
+        .fetch_one(&self.connection)
         .await?;
 
-        if already_inserted.is_some() {
+        if transaction_record.status != TransactionStatus::Pending {
+            // Final status already inserted; do nothing.
             return Ok(());
         }
+
+        let allowance_spent_inner = NearToken::from_yoctonear(
+            transaction_record
+                .allowance_spent_inner
+                .try_into()
+                .unwrap_or(u128::MAX),
+        );
+
+        let allowance_spent = if succeeded {
+            allowance_spent_gas.saturating_add(allowance_spent_inner)
+        } else {
+            allowance_spent_gas
+        };
 
         let mut tx = self.connection.begin().await?;
         let result = sqlx::query!(
@@ -344,9 +358,7 @@ UPDATE
     account
 SET
     allowance = greatest(allowance - $1, 0),
-    allowance_locked = 0,
-    pending_transaction_hash = NULL,
-    pending_transaction_issued_at = NULL
+    pending_transaction_hash = NULL
 WHERE
     account_id = $2
     AND pending_transaction_hash = $3
@@ -389,22 +401,27 @@ WHERE
             ));
         }
 
+        let (status, allowance_spent_inner) = if succeeded {
+            (TransactionStatus::Succeeded, allowance_spent_inner)
+        } else {
+            (TransactionStatus::Failed, NearToken::from_near(0))
+        };
+
         sqlx::query!(
-            "
-INSERT INTO
-    call (
-        account_id,
-        transaction_hash,
-        allowance_spent,
-        succeeded
-    )
-VALUES
-    ($1, $2, $3, $4)
-",
-            account_id.as_str(),
+            r#"
+UPDATE
+    "transaction"
+SET
+    "status" = $1,
+    allowance_spent_gas = $2,
+    allowance_spent_inner = $3
+WHERE
+    transaction_hash = $4
+"#,
+            status as TransactionStatus,
+            Decimal::from(allowance_spent_gas.as_yoctonear()),
+            Decimal::from(allowance_spent_inner.as_yoctonear()),
             transaction_hash.to_string(),
-            Decimal::from(allowance_spent.as_yoctonear()),
-            succeeded,
         )
         .execute(&mut *tx)
         .await?;
@@ -446,16 +463,15 @@ VALUES
         account_id: &AccountIdRef,
     ) -> Result<Option<NearToken>, sqlx::Error> {
         let result = sqlx::query!(
-            "
+            r#"
 SELECT
     allowance,
-    allowance_locked,
-    mark AS \"mark: AccountMark\"
+    mark AS "mark: AccountMark"
 FROM
     account
 WHERE
     account_id = $1
-",
+"#,
             account_id.as_str(),
         )
         .fetch_optional(&self.connection)
@@ -466,7 +482,7 @@ WHERE
                 if r.mark == AccountMark::AlwaysDeny {
                     Some(0)
                 } else {
-                    u128::try_from(r.allowance.saturating_sub(r.allowance_locked)).ok()
+                    u128::try_from(r.allowance).ok()
                 }
             })
             .map(NearToken::from_yoctonear))

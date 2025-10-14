@@ -8,12 +8,14 @@ license.workspace = true
 axum = "0.8.4"
 clap.workspace = true
 dotenvy = "0.15.7"
+hex.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
 near-primitives.workspace = true
-near-sdk.workspace = true
+near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
 near-sdk-contract-tools.workspace = true
+sha2 = "0.10.9"
 sqlx = { version = "0.8", features = [
     "runtime-tokio",
     "tls-native-tls",
@@ -24,13 +26,20 @@ sqlx = { version = "0.8", features = [
     "rust_decimal",
     "uuid",
 ] }
-templar-common = { path = "../../common" }
+templar-common.workspace = true
+templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+near-workspaces = { workspace = true, features = ["experimental"] }
+p256.workspace = true
+rstest.workspace = true
+test-utils.workspace = true
 
 [lints]
 workspace = true

@@ -5,7 +5,7 @@ SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 
 source "$SCRIPT_DIR/utils.sh"
 
-parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--version-key:VERSION_KEY,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
+parse_args "--account:ACCOUNT_ID,--registry:REGISTRY_ID,--version-key:VERSION_KEY,--deploy-mode:DEPLOY_MODE,--network:NETWORK,--private-key:PRIVATE_KEY" "$@"
 
 if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
@@ -23,7 +23,7 @@ echo "Generating Borsh arguments"
 ARGS_FILE=$(mktemp "/tmp/args-XXXXXX")
 trap "rm -f $ARGS_FILE" EXIT
 
-cargo run --package test-utils --example registry_add_version_args -- "${VERSION_KEY}" > $ARGS_FILE
+cargo run --package test-utils --example registry_add_version_args -- "${VERSION_KEY}" "${DEPLOY_MODE}" > $ARGS_FILE
 
 
 echo "Creating new version on registry"

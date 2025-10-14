@@ -6,12 +6,13 @@ pub use controller::{
     oracle::OracleController,
     registry::RegistryController,
     storage_management::StorageManagementController,
+    universal_account::UniversalAccountController,
     ContractController,
 };
 use controller::{mt::MtController, token::TokenController};
 use near_sdk::{
     json_types::{I64, U64},
-    serde_json, AccountId,
+    serde_json, AccountId, NearToken,
 };
 use near_workspaces::{
     network::Sandbox,
@@ -26,6 +27,7 @@ use templar_common::{
     market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
+    registry::DeployMode,
 };
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
@@ -244,12 +246,19 @@ pub async fn setup_everything(
 pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
     accounts!(worker, registry);
 
-    let r = RegistryController::deploy(registry).await;
+    let r = RegistryController::new(registry).await;
+
+    let wasm = controller::market::load_wasm().await;
+
+    let cost_per_byte = NearToken::from_near(1).saturating_div(10 * 1_000);
+    let deployment_cost = cost_per_byte.saturating_mul(wasm.len() as u128);
 
     r.add_version(
         r.contract.as_account(),
+        deployment_cost,
         "market@0.0.0",
-        controller::market::load_wasm().await,
+        DeployMode::GlobalHash,
+        wasm,
     )
     .await;
 

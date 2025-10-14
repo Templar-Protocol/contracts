@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
 use futures::{StreamExt, TryStreamExt};
-use near_crypto::{InMemorySigner, SecretKey};
+use near_crypto::{SecretKey, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     action::{Action, FunctionCallAction},
@@ -68,7 +68,7 @@ impl std::fmt::Display for Args {
 
 pub struct Accumulator {
     client: JsonRpcClient,
-    signer: Arc<InMemorySigner>,
+    signer: Arc<Signer>,
     pub market: AccountId,
     timeout: u64,
 }
@@ -77,7 +77,7 @@ impl Accumulator {
     #[must_use]
     pub fn new(
         client: JsonRpcClient,
-        signer: Arc<InMemorySigner>,
+        signer: Arc<Signer>,
         market: AccountId,
         timeout: u64,
     ) -> Self {
@@ -99,7 +99,7 @@ impl Accumulator {
             nonce,
             receiver_id: self.market.clone(),
             block_hash,
-            signer_id: self.signer.account_id.clone(),
+            signer_id: self.signer.get_account_id(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: "apply_interest".to_string(),
