@@ -1,3 +1,5 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use templar_common::{
     dec,
     fee::Fee,
@@ -8,9 +10,11 @@ use templar_common::{
 };
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn funds_activation() {
+async fn funds_activation(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(supply_user)
         config(|c| {
@@ -109,9 +113,11 @@ async fn funds_activation() {
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn partial_snapshot_no_earnings() {
+async fn partial_snapshot_no_earnings(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, supply_user_2)
         config(|c| {
@@ -159,7 +165,7 @@ async fn partial_snapshot_no_earnings() {
     let snapshot_supply_start = c.get_finalized_snapshots_len().await;
     while c.get_finalized_snapshots_len().await <= funds_activate_at {
         // Interest rate is high enough that this all goes to interest.
-        c.repay(&borrow_user, 10_000).await;
+        c.repay(&borrow_user, 10).await;
         c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
             .await;
         c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default))
@@ -207,6 +213,11 @@ async fn partial_snapshot_no_earnings() {
     let expected_both_active_interest_amount =
         10_000_000_u128 * interest_rate * both_active_duration_ms * YEAR_PER_MS / 2_u128;
 
+    eprintln!(
+        "Expected amount 1: {}",
+        expected_first_only_interest_amount + expected_both_active_interest_amount,
+    );
+    eprintln!("Expected amount 2: {expected_both_active_interest_amount}");
     eprintln!("Amount 1 end: {amount_1_end}");
     eprintln!("Amount 2 end: {amount_2_end}");
     assert!(

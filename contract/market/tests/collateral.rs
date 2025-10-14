@@ -1,13 +1,16 @@
 use near_sdk::{serde_json::json, NearToken};
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use tokio::task::JoinSet;
 
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn collateral_withdrawal() {
+async fn collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
     let amounts = [10u128; 30];
 
-    setup_test!(extract(c) accounts(borrow_user));
+    setup_test!(worker extract(c) accounts(borrow_user));
 
     let total = amounts.iter().copied().sum::<u128>();
 

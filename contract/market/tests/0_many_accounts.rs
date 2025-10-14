@@ -4,6 +4,8 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use near_sdk::NearToken;
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use test_utils::*;
 use tokio::{
     sync::{mpsc, oneshot, Mutex},
@@ -13,10 +15,10 @@ use tokio::{
 const COUNT: usize = 100;
 
 #[allow(clippy::too_many_lines)]
+#[rstest]
 #[tokio::test]
-async fn many_accounts() {
-    let worker = near_workspaces::sandbox().await.unwrap();
-    setup_test_w!(worker extract(c) accounts(first_supply));
+async fn many_accounts(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(first_supply));
 
     c.supply_and_harvest_until_activation(&first_supply, 100_000)
         .await;
