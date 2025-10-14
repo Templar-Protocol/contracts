@@ -338,3 +338,41 @@ Stop behavior:
   - cargo test -p templar-vault
 - Tips:
   - When integrating a new market, first wire get_supply_position and dry-run the withdraw path to validate reconciliation.
+
+## Storage management
+
+This vault uses a per-entry storage charging model. Callers attach deposits only when their action may
+create new storage entries. We size entries conservatively using AccountId::MAX_LEN and fixed field sizes,
+to avoid relying on runtime storage usage “diffs”.
+
+What the contract pays for
+- RBAC storage: role membership (Owner/RBAC lists) is paid by the contract. Callers are not charged
+storage deposits for set_curator, set_is_allocator, or guardian role changes.
+
+Conservative sizing
+- AccountId bytes are charged at MAX_LEN to keep pricing simple and deterministic.
+- Map/queue overheads are charged with fixed constants.
+- PendingWithdrawal size is a fixed upper bound of its fields.
+
+When a deposit is required
+- submit_cap(market, new_cap)
+  - If market is new: config entry + market_supply entry.
+  - If raising cap above current: pending_cap entry.
+- accept_cap(market)
+  - If enabling (cap > 0) and the market is not in withdraw_queue: 1 queue slot.
+- set_supply_queue(markets)
+  - Storage for markets added that were not previously in the queue.
+- set_withdraw_queue(queue)
+  - Storage for markets added that were not previously in the queue.
+- allocate(weights, amount)
+  - Up-front deposit to cover potential withdraw_queue insertions for any candidate market in the
+allocation run (supply_queue for queue mode; weighted plan markets for weighted mode).
+- withdraw/redeem
+  - PendingWithdrawal queue entry per request (escrowed shares are held until payout/refund).
+
+Refund policy
+- For simplicity and in line with many Ethereum contracts, we do not refund storage on removals (e.g.,
+queue removals, consumed pending withdrawals, deleted configs). This avoids complexity and edge cases
+around attribution. 
+
+

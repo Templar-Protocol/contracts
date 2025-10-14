@@ -1,6 +1,6 @@
 use crate::storage_management;
 use crate::storage_management::storage_bytes_for_pending_cap_entry;
-use crate::storage_management::storage_bytes_for_queue_item;
+use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::storage_management::yocto_for_new_market;
 use crate::test_utils::*;
@@ -493,7 +493,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
 
     // Submit raise -> pending
     let raise = 5u128;
-    set_ctx(&vault_id, &owner, None, Some(yocto_for_new_market(&m)));
+    set_ctx(&vault_id, &owner, None, Some(yocto_for_new_market()));
     c.submit_cap(m.clone(), U128(raise));
 
     // Fast-forward timelock to accept the raise
@@ -501,7 +501,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
         &vault_id,
         &owner,
         Some(env::block_timestamp() + 1_000_000_000),
-        Some(yocto_for_bytes(storage_bytes_for_queue_item(&m))),
+        Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
     );
     c.accept_cap(m.clone());
 
