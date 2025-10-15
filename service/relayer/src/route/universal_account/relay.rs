@@ -243,7 +243,7 @@ pub async fn relay(
             cost_of_gas,
             NearToken::from_near(0),
             signed_transaction,
-            TxExecutionStatus::Included,
+            TxExecutionStatus::Final,
         )
         .await
     {
