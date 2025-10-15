@@ -6,14 +6,14 @@ pub const WAD: u128 = 1e18 as u128;
 
 /// Multiplies two WAD-scaled values and floors the result: floor(x * y / WAD).
 #[inline]
-pub fn mul_wad_floor(x: u128, y: u128) -> u128 {
+#[must_use] pub fn mul_wad_floor(x: u128, y: u128) -> u128 {
     mul_div_floor(x, y, WAD)
 }
 
 /// Multiplies and divides with flooring: floor(x * y / denom).
 /// Uses 256-bit intermediate to avoid overflow; returns 0 if denom is 0.
 #[inline]
-pub fn mul_div_floor(x: u128, y: u128, denom: u128) -> u128 {
+#[must_use] pub fn mul_div_floor(x: u128, y: u128, denom: u128) -> u128 {
     if denom == 0 {
         return 0;
     }
@@ -25,7 +25,7 @@ pub fn mul_div_floor(x: u128, y: u128, denom: u128) -> u128 {
 /// Multiplies and divides with ceiling: ceil(x * y / denom).
 /// Uses 256-bit intermediate to avoid overflow; returns 0 if denom is 0.
 #[inline]
-pub fn mul_div_ceil(x: u128, y: u128, denom: u128) -> u128 {
+#[must_use] pub fn mul_div_ceil(x: u128, y: u128, denom: u128) -> u128 {
     if denom == 0 {
         return 0;
     }
@@ -43,7 +43,7 @@ pub fn mul_div_ceil(x: u128, y: u128, denom: u128) -> u128 {
 ///
 /// Floors intermediate divisions; returns 0 when no profit, zero fee, or zero supply.
 #[inline]
-pub fn compute_fee_shares(
+#[must_use] pub fn compute_fee_shares(
     cur_total_assets: u128,
     last_total_assets: u128,
     performance_fee: u128,

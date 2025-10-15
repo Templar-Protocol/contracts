@@ -3,7 +3,7 @@ use std::fmt::Display;
 use crate::{ext_self, near, Contract, ContractExt, Error, Nep141Controller, OpState};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
-    env, json_types::U128, serde_json, AccountId, Gas, NearToken, Promise, PromiseError,
+    env, json_types::U128, AccountId, NearToken, PromiseError,
     PromiseOrValue,
 };
 use near_sdk_contract_tools::ft::nep141::GAS_FOR_FT_TRANSFER_CALL;
@@ -30,7 +30,7 @@ impl Contract {
         attempted: U128,
     ) -> PromiseOrValue<()> {
         // Invariant: Index drift or stale op_id results in a graceful stop
-        let _ = if let Err(e) = self.ctx_allocating(op_id) {
+        let () = if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
         };
 
@@ -503,7 +503,7 @@ impl Contract {
                 index,
                 remaining: U128(remaining),
                 collected: U128(collected),
-                reason: msg.map(|m| m.to_string()),
+                reason: msg.map(std::string::ToString::to_string),
             }
             .emit();
         }
@@ -540,7 +540,7 @@ impl Contract {
                     op_id: *op_id,
                     receiver: receiver.clone(),
                     amount: U128(*amount),
-                    reason: msg.map(|m| m.to_string()),
+                    reason: msg.map(std::string::ToString::to_string),
                 }
                 .emit();
             }
@@ -670,16 +670,16 @@ mod tests {
     use std::u128;
 
     use crate::test_utils::*;
-    use crate::Contract;
+    
     use near_sdk::json_types::U128;
-    use near_sdk::test_utils::{accounts, VMContextBuilder};
-    use near_sdk::{test_utils::testing_env_with_promise_results, AccountId, PromiseOrValue};
-    use near_sdk::{test_vm_config, testing_env, PromiseResult, RuntimeFeesConfig};
+    use near_sdk::test_utils::accounts;
+    use near_sdk::PromiseOrValue;
+    use near_sdk::PromiseResult;
     use rstest::rstest;
-    use templar_common::asset::{BorrowAsset, FungibleAsset};
+    
     use templar_common::vault::Error;
-    use templar_common::vault::{AllocationMode, OpState, VaultConfiguration};
-    use test_utils::vault_configuration;
+    use templar_common::vault::OpState;
+    
 
     #[test]
     fn after_supply_1_check_allocating_not_allocating() {
@@ -834,7 +834,7 @@ mod tests {
             OpState::Payout { amount, .. } => {
                 assert_eq!(*amount, 70, "Payout amount must match collected + credited");
             }
-            other => panic!("Unexpected state after read: {:?}", other),
+            other => panic!("Unexpected state after read: {other:?}"),
         }
     }
 
@@ -952,9 +952,9 @@ mod tests {
 
         match &c.op_state {
             OpState::Payout { amount, .. } => {
-                assert_eq!(*amount, collected, "Payout amount must equal collected")
+                assert_eq!(*amount, collected, "Payout amount must equal collected");
             }
-            other => panic!("Unexpected state: {:?}", other),
+            other => panic!("Unexpected state: {other:?}"),
         }
     }
 
@@ -1009,9 +1009,9 @@ mod tests {
 
         match &c.op_state {
             OpState::Payout { amount, .. } => {
-                assert_eq!(*amount, collected, "Payout amount must equal collected")
+                assert_eq!(*amount, collected, "Payout amount must equal collected");
             }
-            other => panic!("Unexpected state: {:?}", other),
+            other => panic!("Unexpected state: {other:?}"),
         }
     }
 
@@ -1046,24 +1046,18 @@ mod tests {
         let call_idx = if pass_index { real_idx } else { real_idx + 1 };
 
         let r = c.after_exec_withdraw_read(Ok(None), call_op, call_idx, U128(10), U128(1));
-        match (pass_op, pass_index) {
-            (true, true) => {
-                assert!(
-                    !matches!(c.op_state, OpState::Idle),
-                    "Valid callback should not immediately stop"
-                );
-            }
-            _ => {
-                // Any mismatch should stop and go Idle
-                match r {
-                    PromiseOrValue::Value(()) => {}
-                    _ => {}
-                }
-                assert!(
-                    matches!(c.op_state, OpState::Idle),
-                    "Mismatched callback must stop and go Idle"
-                );
-            }
+        if let (true, true) = (pass_op, pass_index) {
+            assert!(
+                !matches!(c.op_state, OpState::Idle),
+                "Valid callback should not immediately stop"
+            );
+        } else {
+            // Any mismatch should stop and go Idle
+            if let PromiseOrValue::Value(()) = r {}
+            assert!(
+                matches!(c.op_state, OpState::Idle),
+                "Mismatched callback must stop and go Idle"
+            );
         }
     }
 

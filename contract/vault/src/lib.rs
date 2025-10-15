@@ -4,7 +4,7 @@ use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env,
     json_types::U128,
-    near, require, serde_json,
+    near, serde_json,
     store::{IterableMap, LookupMap, Vector},
     AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
@@ -146,7 +146,7 @@ impl Contract {
     /// - `fee_recipient`: account to receive performance fees.
     /// - `skim_recipient`: account to receive skimmed tokens.
     /// - `name`/`symbol`/`decimals`: metadata for the share token.
-    pub fn new(configuration: VaultConfiguration) -> Self {
+    #[must_use] pub fn new(configuration: VaultConfiguration) -> Self {
         let VaultConfiguration {
             owner,
             curator,
@@ -1054,9 +1054,9 @@ impl Contract {
         .emit();
     }
 
-    /// Computes fee-aware effective totals for conversions, mimicking MetaMorpho:
+    /// Computes fee-aware effective totals for conversions, mimicking `MetaMorpho`:
     /// - Include fee shares that would be minted if fees accrued now.
-    /// - Apply virtual offsets: +virtual_shares to supply and +virtual_assets to assets.
+    /// - Apply virtual offsets: +`virtual_shares` to supply and +`virtual_assets` to assets.
     fn effective_totals_fee_aware(&self) -> (u128, u128) {
         let cur = self.get_total_assets().0;
         let ts = self.total_supply();
