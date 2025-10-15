@@ -338,6 +338,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
                 key: passkey,
                 message,
             },
+            storage_deposit: Default::default(),
         }),
     )
     .await;
