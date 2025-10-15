@@ -1,6 +1,16 @@
+DO
+$$
+BEGIN
 CREATE TYPE account_mark AS enum ('default', 'always_deny', 'always_approve');
 
-CREATE TABLE account (
+EXCEPTION
+WHEN duplicate_object THEN NULL;
+
+END
+$$
+;
+
+CREATE TABLE IF NOT EXISTS account (
     account_id varchar(64) NOT NULL,
     allowance numeric(39, 0) NOT NULL,
     allowance_locked numeric(39, 0) NOT NULL DEFAULT 0,
@@ -13,7 +23,7 @@ CREATE TABLE account (
 );
 
 CREATE
-OR REPLACE FUNCTION updated_at() RETURNS trigger AS
+OR REPLACE FUNCTION updated_at() RETURNS TRIGGER AS
 $$
 BEGIN
 NEW.updated_at = NOW();
@@ -25,11 +35,12 @@ END;
 $$
 language 'plpgsql';
 
-CREATE trigger updated_at_trigger before
+CREATE
+OR REPLACE TRIGGER updated_at_trigger BEFORE
 UPDATE
-    ON account FOR each ROW EXECUTE PROCEDURE updated_at();
+    ON account FOR EACH ROW EXECUTE PROCEDURE updated_at();
 
-CREATE TABLE call (
+CREATE TABLE IF NOT EXISTS call (
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     account_id varchar(64) NOT NULL,
     transaction_hash varchar(45) UNIQUE NOT NULL,
@@ -40,4 +51,4 @@ CREATE TABLE call (
     FOREIGN KEY (account_id) REFERENCES account (account_id)
 );
 
-CREATE INDEX idx__call__account_id ON call (account_id);
+CREATE INDEX IF NOT EXISTS idx__call__account_id ON call (account_id);

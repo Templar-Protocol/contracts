@@ -2,12 +2,22 @@
 ALTER TABLE
     call RENAME TO "transaction";
 
+DO
+$$
+BEGIN
 CREATE TYPE transaction_status AS enum ('pending', 'succeeded', 'failed');
+
+EXCEPTION
+WHEN duplicate_object THEN NULL;
+
+END
+$$
+;
 
 ALTER TABLE
     "transaction"
 ADD
-    COLUMN "status" transaction_status;
+    COLUMN IF NOT EXISTS "status" transaction_status;
 
 UPDATE
     "transaction"
@@ -26,19 +36,19 @@ ALTER COLUMN
     "status"
 SET
     NOT NULL,
-    DROP COLUMN id,
+    DROP COLUMN IF EXISTS id,
 ADD
     CONSTRAINT pk__transaction PRIMARY KEY (transaction_hash),
-    DROP COLUMN succeeded,
+    DROP COLUMN IF EXISTS succeeded,
 ADD
-    COLUMN allowance_spent_inner numeric(39, 0) NOT NULL DEFAULT 0;
+    COLUMN IF NOT EXISTS allowance_spent_inner numeric(39, 0) NOT NULL DEFAULT 0;
 
-CREATE UNIQUE INDEX uq__max_one_pending_tx_per_account ON "transaction" (account_id)
+CREATE UNIQUE INDEX IF NOT EXISTS uq__max_one_pending_tx_per_account ON "transaction" (account_id)
 WHERE
     "status" = 'pending'::transaction_status;
 
 ALTER TABLE
-    account DROP COLUMN allowance_locked,
-    DROP COLUMN pending_transaction_issued_at,
+    account DROP COLUMN IF EXISTS allowance_locked,
+    DROP COLUMN IF EXISTS pending_transaction_issued_at,
 ADD
     CONSTRAINT fk__account__transaction FOREIGN KEY (pending_transaction_hash) REFERENCES "transaction" (transaction_hash);

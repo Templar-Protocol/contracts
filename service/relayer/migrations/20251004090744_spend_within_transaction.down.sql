@@ -1,17 +1,17 @@
 -- down
 ALTER TABLE
-    account DROP CONSTRAINT fk__account__transaction,
+    account DROP CONSTRAINT IF EXISTS fk__account__transaction,
 ADD
-    COLUMN allowance_locked numeric(39, 0) NOT NULL DEFAULT 0,
+    COLUMN IF NOT EXISTS allowance_locked numeric(39, 0) NOT NULL DEFAULT 0,
 ADD
-    COLUMN pending_transaction_issued_at timestamptz DEFAULT NULL;
+    COLUMN IF NOT EXISTS pending_transaction_issued_at timestamptz DEFAULT NULL;
 
-DROP INDEX uq__max_one_pending_tx_per_account;
+DROP INDEX IF EXISTS uq__max_one_pending_tx_per_account;
 
 ALTER TABLE
     "transaction"
 ADD
-    COLUMN succeeded bool;
+    COLUMN IF NOT EXISTS succeeded bool;
 
 UPDATE
     "transaction"
@@ -31,15 +31,15 @@ ALTER COLUMN
     succeeded
 SET
     NOT NULL,
-    DROP COLUMN allowance_spent_inner,
+    DROP COLUMN IF EXISTS allowance_spent_inner,
 ADD
-    COLUMN id uuid NOT NULL DEFAULT gen_random_uuid(),
+    COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid(),
     DROP CONSTRAINT pk__transaction,
 ADD
     CONSTRAINT pk__call PRIMARY KEY (id),
-    DROP COLUMN STATUS;
+    DROP COLUMN "status";
 
-DROP TYPE transaction_status;
+DROP TYPE IF EXISTS transaction_status;
 
 ALTER TABLE
     "transaction" RENAME TO call;
