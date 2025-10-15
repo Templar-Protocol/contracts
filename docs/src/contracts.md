@@ -9,11 +9,6 @@ This page provides information about Templar Protocol smart contracts and how to
 - **Pyth Oracle**: `pyth-oracle.near` with asset ids from: `https://insights.pyth.network/price-feeds`
 - **LST Oracle Adapter**: `lst.oracle.tmplr.near`
 
-### NEAR Testnet
-- **Registry**: `<TBD>`
-- **Pyth Oracle**: `<TBD>`
-- **LST Oracle Adapter**: `<TBD>`
-
 ## Contract Architecture
 
 ### Registry Contract
