@@ -65,7 +65,7 @@ pub struct MarketConfiguration {
 
 impl MarketConfiguration {
     pub const fn encoded_size() -> usize {
-        32 + 1 + 8
+        16 + 1 + 8
     }
 }
 

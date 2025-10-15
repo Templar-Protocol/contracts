@@ -59,7 +59,7 @@ async fn withdraw_queue_mustnt_have_duplicates() {
 }
 
 #[tokio::test]
-#[should_panic = "busy"]
+#[should_panic = "Invariant: Only one op in flight"]
 async fn state_machine_is_locked_when_another_op_is_running() {
     setup_test!(
         extract(vault, c, vault_curator)
