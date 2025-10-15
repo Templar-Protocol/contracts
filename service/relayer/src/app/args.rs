@@ -108,6 +108,9 @@ pub struct Relay {
     /// Comma-separated list of allowed methods.
     #[arg(long, env = "ALLOWED_METHODS", default_values_t = default_allowed_methods(), value_delimiter = ',')]
     pub allowed_methods: Vec<String>,
+    /// Comma-separated list of allowed methods.
+    #[arg(long, env = "ORACLE_ALLOWED_METHODS", default_values_t = vec!["update_price_feeds".to_string()], value_delimiter = ',')]
+    pub oracle_allowed_methods: Vec<String>,
     /// Starting allowance in yoctoNEAR.
     #[arg(long, env = "STARTING_ALLOWANCE_YOCTO", default_value_t = NearToken::from_millinear(250))]
     pub starting_allowance_yocto: NearToken,

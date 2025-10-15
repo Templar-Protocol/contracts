@@ -466,6 +466,7 @@ impl Near {
 
         Ok(MarketData {
             account_id: market_id.clone(),
+            oracle_id: market_configuration.price_oracle_configuration.account_id,
             borrow_asset: market_configuration.borrow_asset,
             collateral_asset: market_configuration.collateral_asset,
         })

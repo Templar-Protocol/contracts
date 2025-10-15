@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use near_primitives::{action::FunctionCallAction, types::AccountId};
 use near_sdk::{
@@ -20,6 +20,7 @@ pub mod route;
 #[derive(Debug, Clone, Default)]
 pub struct AccountData {
     pub market_data: HashMap<AccountId, MarketData>,
+    pub oracles: HashSet<AccountId>,
     pub allowed_contract_data: HashMap<AccountId, ContractData>,
 }
 
@@ -31,6 +32,7 @@ pub struct ContractData {
 #[derive(Debug, Clone)]
 pub struct MarketData {
     pub account_id: AccountId,
+    pub oracle_id: AccountId,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub borrow_asset: FungibleAsset<BorrowAsset>,
 }

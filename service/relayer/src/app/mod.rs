@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     future::Future,
     sync::Arc,
     time::Duration,
@@ -147,14 +147,17 @@ impl App {
 
         let mut markets = HashMap::new();
         let mut allowed_contracts = HashMap::new();
+        let mut oracles = HashSet::new();
 
         for market_accounts in market_accounts_vec.into_iter().flatten() {
             let market_id = market_accounts.account_id.clone();
 
             info!(
-                "Loaded market {market_id} with borrow asset {} and collateral asset {}",
-                market_accounts.borrow_asset, market_accounts.collateral_asset,
+                "Loaded market {market_id} with borrow asset {} and collateral asset {}, querying oracle {}",
+                market_accounts.borrow_asset, market_accounts.collateral_asset, market_accounts.oracle_id,
             );
+
+            oracles.insert(market_accounts.oracle_id.clone());
 
             for contract_id in [
                 market_id,
@@ -188,6 +191,7 @@ impl App {
         let mut handle = self.accounts.write().await;
         handle.market_data = markets;
         handle.allowed_contract_data = allowed_contracts;
+        handle.oracles = oracles;
     }
 
     /// Checks that the all of the function call actions are allowed for the specific receiver.
@@ -211,6 +215,21 @@ impl App {
             for (index, call) in calls.into_iter().enumerate() {
                 if !self.args.relay.allowed_methods.contains(&call.method_name) {
                     return Err(PreconditionError::UnknownFunctionName { index });
+                }
+            }
+        } else if accounts.oracles.contains(receiver_id) {
+            // Pushing price updates to Pyth oracle
+            for (index, call) in calls.into_iter().enumerate() {
+                if !self
+                    .args
+                    .relay
+                    .oracle_allowed_methods
+                    .contains(&call.method_name)
+                {
+                    return Err(PreconditionError::UnknownFunctionName {
+                        name: call.method_name.clone(),
+                        index,
+                    });
                 }
             }
         } else {
