@@ -11,7 +11,7 @@ use near_sdk::{
 use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
-use std::ops::Deref;
+use std::{env, ops::Deref};
 use templar_common::vault::*;
 use tokio::sync::OnceCell;
 
@@ -206,7 +206,7 @@ impl UnifiedVaultController {
             vault,
             configuration,
             market,
-            debug: true,
+            debug: is_debug(),
         }
     }
 
@@ -219,7 +219,7 @@ impl UnifiedVaultController {
             vault,
             configuration,
             market,
-            debug: true,
+            debug: is_debug(),
         }
     }
 
@@ -272,7 +272,7 @@ impl UnifiedVaultController {
         allocator: &Account,
         weights: AllocationWeights,
         amount: Option<U128>,
-    ) {
+    ) -> ExecutionSuccess {
         let e = self
             .vault
             .allocate(allocator, weights, amount.unwrap_or(1000.into()))
@@ -280,6 +280,7 @@ impl UnifiedVaultController {
         if self.debug {
             print_execution(&e);
         }
+        e
     }
 
     pub async fn withdraw(&self, withdrawer: &Account, amount: U128, receiver: Option<AccountId>) {
@@ -330,4 +331,11 @@ impl UnifiedVaultController {
             print_execution(&e);
         }
     }
+}
+
+fn is_debug() -> bool {
+    env::var("RUST_LOG")
+        .map(|s| s.contains("debug"))
+        .unwrap_or_default()
+        || env::var("DEBUG").is_ok()
 }

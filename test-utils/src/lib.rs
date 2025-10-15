@@ -324,7 +324,8 @@ pub async fn setup_everything(
         v.storage_deposits(&fee_recipient),
     );
 
-    v.setup_caps(&vault_owner, &[mkt.id().clone()], 1000).await;
+    v.setup_caps(&vault_owner, &[mkt.id().clone()], u128::MAX)
+        .await;
 
     SetupEverything {
         c,
