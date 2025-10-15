@@ -1,5 +1,6 @@
 use std::{path::Path, str::FromStr};
 
+use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
     ft::FtController,
     market::{MarketController, UnifiedMarketController},
@@ -30,7 +31,6 @@ use templar_common::{
     registry::DeployMode,
     vault::VaultConfiguration,
 };
-use crate::controller::vault::{UnifiedVaultController, VaultController};
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cccccccc232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
@@ -82,7 +82,7 @@ macro_rules! accounts {
 }
 
 #[macro_export]
-macro_rules! setup_test {
+macro_rules! setup_test_w {
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
         $crate::accounts!($w, $($n),*);
         let s = $crate::setup_everything(&$w, $f, |_| {}).await;
