@@ -226,10 +226,7 @@ impl App {
                     .oracle_allowed_methods
                     .contains(&call.method_name)
                 {
-                    return Err(PreconditionError::UnknownFunctionName {
-                        name: call.method_name.clone(),
-                        index,
-                    });
+                    return Err(PreconditionError::UnknownFunctionName { index });
                 }
             }
         } else {
