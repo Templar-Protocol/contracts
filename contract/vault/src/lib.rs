@@ -741,13 +741,10 @@ impl Contract {
     #[payable]
     pub fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()> {
         let shares = shares.0;
-
         let assets = self.convert_to_assets(U128(shares)).0;
-
         let sender = env::predecessor_account_id();
 
-        // Require storage deposit for the pending withdrawal entry
-        let req_yocto = require_attached_for_pending_withdrawal();
+        require_attached_for_pending_withdrawal();
 
         // Move shares into escrow
         #[allow(clippy::expect_used, reason = "No side effects")]
@@ -1171,7 +1168,7 @@ impl Contract {
     fn ensure_idle(&self) {
         // Invariant: Only one op in flight; ensure_idle() guards all mutating ops.
         if !matches!(self.op_state, OpState::Idle) {
-            env::panic_str("busy");
+            env::panic_str("Invariant: Only one op in flight");
         }
     }
 
