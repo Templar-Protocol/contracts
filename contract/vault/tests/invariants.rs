@@ -1,6 +1,4 @@
-use test_utils::{
-    setup_test, ContractController,
-};
+use test_utils::{setup_test, ContractController};
 
 // TODO(unit?): on allocation-failure, reconcile to idle
 
