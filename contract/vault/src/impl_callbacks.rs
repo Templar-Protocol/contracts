@@ -2,10 +2,7 @@ use std::fmt::Display;
 
 use crate::{ext_self, near, Contract, ContractExt, Error, Nep141Controller, OpState};
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{
-    env, json_types::U128, AccountId, NearToken, PromiseError,
-    PromiseOrValue,
-};
+use near_sdk::{env, json_types::U128, AccountId, NearToken, PromiseError, PromiseOrValue};
 use near_sdk_contract_tools::ft::nep141::GAS_FOR_FT_TRANSFER_CALL;
 use templar_common::{
     market::ext_market,
@@ -670,16 +667,15 @@ mod tests {
     use std::u128;
 
     use crate::test_utils::*;
-    
+
     use near_sdk::json_types::U128;
     use near_sdk::test_utils::accounts;
     use near_sdk::PromiseOrValue;
     use near_sdk::PromiseResult;
     use rstest::rstest;
-    
+
     use templar_common::vault::Error;
     use templar_common::vault::OpState;
-    
 
     #[test]
     fn after_supply_1_check_allocating_not_allocating() {

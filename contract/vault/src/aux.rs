@@ -1,4 +1,4 @@
-use crate::{AccountId, Contract, Nep145Controller, Nep145ForceUnregister, env, near, serde_json};
+use crate::{env, near, serde_json, AccountId, Contract, Nep145Controller, Nep145ForceUnregister};
 
 impl Contract {
     /* ----- Storage ----- */
@@ -33,7 +33,8 @@ pub enum ReturnStyle {
 
 // TODO: use this
 impl ReturnStyle {
-    #[must_use] pub fn serialize(
+    #[must_use]
+    pub fn serialize(
         &self,
         amount: templar_common::asset::FungibleAssetAmount<impl templar_common::asset::AssetClass>,
     ) -> serde_json::Value {

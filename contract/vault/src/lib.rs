@@ -146,7 +146,8 @@ impl Contract {
     /// - `fee_recipient`: account to receive performance fees.
     /// - `skim_recipient`: account to receive skimmed tokens.
     /// - `name`/`symbol`/`decimals`: metadata for the share token.
-    #[must_use] pub fn new(configuration: VaultConfiguration) -> Self {
+    #[must_use]
+    pub fn new(configuration: VaultConfiguration) -> Self {
         let VaultConfiguration {
             owner,
             curator,
