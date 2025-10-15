@@ -283,7 +283,12 @@ impl UnifiedVaultController {
         e
     }
 
-    pub async fn withdraw(&self, withdrawer: &Account, amount: U128, receiver: Option<AccountId>) {
+    pub async fn withdraw(
+        &self,
+        withdrawer: &Account,
+        amount: U128,
+        receiver: Option<AccountId>,
+    ) -> ExecutionSuccess {
         let e = self
             .vault
             .withdraw(
@@ -295,41 +300,60 @@ impl UnifiedVaultController {
         if self.debug {
             print_execution(&e);
         }
+        e
     }
 
-    pub async fn execute_next_withdrawal(&self, allocator: &Account) {
+    pub async fn execute_next_withdrawal(&self, allocator: &Account) -> ExecutionSuccess {
         let e = self.vault.execute_next_withdrawal_request(allocator).await;
         if self.debug {
             print_execution(&e);
         }
+        e
     }
 
-    pub async fn submit_cap(&self, submitter: &Account, market: AccountId, amount: U128) {
+    pub async fn submit_cap(
+        &self,
+        submitter: &Account,
+        market: AccountId,
+        amount: U128,
+    ) -> ExecutionSuccess {
         let e = self.vault.submit_cap(submitter, market, amount).await;
         if self.debug {
             print_execution(&e);
         }
+        e
     }
 
-    pub async fn accept_cap(&self, acceptor: &Account, market: AccountId) {
+    pub async fn accept_cap(&self, acceptor: &Account, market: AccountId) -> ExecutionSuccess {
         let e = self.vault.accept_cap(acceptor, market).await;
         if self.debug {
             print_execution(&e);
         }
+        e
     }
 
-    pub async fn set_supply_queue(&self, allocator: &Account, markets: &[AccountId]) {
+    pub async fn set_supply_queue(
+        &self,
+        allocator: &Account,
+        markets: &[AccountId],
+    ) -> ExecutionSuccess {
         let e = self.vault.set_supply_queue(allocator, markets).await;
         if self.debug {
             print_execution(&e);
         }
+        e
     }
 
-    pub async fn set_withdraw_queue(&self, allocator: &Account, markets: &[AccountId]) {
+    pub async fn set_withdraw_queue(
+        &self,
+        allocator: &Account,
+        markets: &[AccountId],
+    ) -> ExecutionSuccess {
         let e = self.vault.set_withdraw_queue(allocator, markets).await;
         if self.debug {
             print_execution(&e);
         }
+        e
     }
 }
 

@@ -1,4 +1,4 @@
-use near_sdk::{json_types::U128, near, AccountId};
+use near_sdk::{json_types::U128, near, AccountId, Gas, Promise, PromiseOrValue};
 
 use crate::asset::{BorrowAsset, FungibleAsset};
 
@@ -43,6 +43,7 @@ pub enum AllocationMode {
     #[default]
     Lazy,
 }
+
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
 #[near(serializers = [json])]
@@ -85,6 +86,74 @@ pub struct VaultConfiguration {
     pub decimals: u8,
 }
 
+#[near_sdk::ext_contract(ext_vault)]
+pub trait VaultExt {
+    // Role and admin
+    fn set_curator(account: AccountId);
+    fn set_is_allocator(account: AccountId, allowed: bool);
+    fn submit_guardian(new_g: AccountId);
+    fn accept_guardian();
+    fn revoke_pending_guardian();
+    fn set_skim_recipient(account: AccountId);
+    fn set_fee_recipient(account: AccountId);
+    fn set_performance_fee(fee: U128);
+    fn submit_timelock(new_timelock_secs: u32);
+    fn accept_timelock();
+    fn revoke_pending_timelock();
+
+    // Market config and queues
+    fn submit_cap(market: AccountId, new_cap: U128);
+    fn accept_cap(market: AccountId);
+    fn revoke_pending_cap(market: AccountId);
+    fn submit_market_removal(market: AccountId);
+    fn revoke_pending_market_removal(market: AccountId);
+    fn set_supply_queue(markets: Vec<AccountId>);
+    fn set_withdraw_queue(queue: Vec<AccountId>);
+
+    // User flows
+    fn withdraw(amount: U128, receiver: AccountId) -> PromiseOrValue<()>;
+    fn redeem(shares: U128, receiver: AccountId) -> PromiseOrValue<()>;
+    fn execute_next_withdrawal_request() -> PromiseOrValue<()>;
+    fn skim(token: AccountId) -> Promise;
+    fn allocate(weights: AllocationWeights, amount: Option<U128>) -> PromiseOrValue<()>;
+
+    // Views
+    fn get_configuration() -> VaultConfiguration;
+    fn get_total_assets() -> U128;
+    fn get_total_supply() -> U128;
+    fn get_max_deposit() -> U128;
+    fn convert_to_shares(assets: U128) -> U128;
+    fn convert_to_assets(shares: U128) -> U128;
+    fn preview_deposit(assets: U128) -> U128;
+    fn preview_mint(shares: U128) -> U128;
+    fn preview_withdraw(assets: U128) -> U128;
+    fn preview_redeem(shares: U128) -> U128;
+}
+
+// FIXME: move to market
+pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(4);
+// FIXME: move to market
+pub const CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(10);
+// FIXME: move to market
+pub const EXECUTE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(10);
+
+pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
+pub const AFTER_SUPPLY_POSITION_CHECK_GAS: Gas = Gas::from_tgas(10);
+pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(20);
+pub const AFTER_EXEC_WITHDRAW_READ_GAS: Gas = Gas::from_tgas(10);
+pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(5);
+
+// Add a 20% buffer to a gas estimate
+pub const fn buffer(size: usize) -> Gas {
+    Gas::from_tgas(size as u64 * 2 / 5)
+}
+
+// NOTE: these are taken after running the contract with the gas report
+pub const SUPPLY_GAS: Gas = buffer(8);
+pub const ALLOCATE_GAS: Gas = buffer(21);
+pub const WITHDRAW_GAS: Gas = buffer(4);
+pub const EXECUTE_WITHDRAW_GAS: Gas = buffer(9);
+
 #[near_sdk::ext_contract(ext_self)]
 pub trait Callbacks {
     fn after_supply_1_check(&mut self, op_id: u64, market_index: u32, attempted: U128) -> bool;
@@ -96,13 +165,10 @@ pub trait Callbacks {
         attempted: U128,
         accepted: U128,
     ) -> bool;
-
     fn after_create_withdraw_req(&mut self, op_id: u64, market_index: u32, need: U128) -> bool;
     fn after_exec_withdraw_req(&mut self, op_id: u64, market_index: u32, need: U128) -> bool;
     fn after_exec_withdraw_read(&mut self, op_id: u64, market_index: u32, before: U128, need: U128);
-
     fn after_send_to_user(&mut self, op_id: u64, receiver: AccountId, amount: U128) -> bool;
-
     fn after_skim_balance(&mut self, token: AccountId, recipient: AccountId) -> bool;
 }
 
@@ -164,6 +230,32 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{self:?}")
     }
+}
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json, borsh])]
+pub struct PendingWithdrawal {
+    pub owner: AccountId,
+    pub receiver: AccountId,
+    pub escrow_shares: u128,
+    pub expected_assets: u128,
+    pub requested_at: u64,
+}
+
+impl PendingWithdrawal {
+    pub const fn encoded_size() -> u64 {
+        storage_bytes_for_account_id()
+            + storage_bytes_for_account_id()
+            + 16  // escrow_shares: u128
+            + 16  // expected_assets: u128
+            + 8   // requested_at: u64
+            + 16 // deposit_yocto: u128
+    }
+}
+
+// Worst case size encoded for AccountId
+pub const fn storage_bytes_for_account_id() -> u64 {
+    AccountId::MAX_LEN as u64
 }
 
 #[near(event_json(standard = "templar-vault"))]

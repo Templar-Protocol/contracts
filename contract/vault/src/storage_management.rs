@@ -2,7 +2,7 @@ use crate::PendingWithdrawal;
 use near_sdk::borsh::{self, BorshSerialize};
 use near_sdk::{env, AccountId};
 use std::collections::HashSet;
-use templar_common::vault::MarketConfiguration;
+use templar_common::vault::{storage_bytes_for_account_id, MarketConfiguration};
 
 /// Set of hacks because near-sdk does not support borshschema and its overkill to implement
 /// We do not implement refunds for storage management ops, to avoid any potential issues with
@@ -10,11 +10,6 @@ use templar_common::vault::MarketConfiguration;
 
 // Conservative per-entry overheads to cover collection metadata, prefixes, etc.
 pub const MAP_ENTRY_OVERHEAD: u64 = 64;
-
-// Worst case size encoded for AccountId
-pub const fn storage_bytes_for_account_id() -> u64 {
-    AccountId::MAX_LEN as u64
-}
 
 pub const VEC_ITEM_OVERHEAD: u64 = 16;
 pub fn storage_bytes_for_queue_account_id() -> u64 {

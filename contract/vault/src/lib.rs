@@ -6,8 +6,7 @@ use near_sdk::{
     json_types::U128,
     near, serde_json,
     store::{IterableMap, LookupMap, Vector},
-    AccountId, BorshStorageKey, Gas, IntoStorageKey, NearToken, PanicOnDefault, Promise,
-    PromiseOrValue,
+    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
@@ -23,16 +22,18 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
         ext_self, AllocationMode, AllocationPlan, AllocationWeights, Error, Event,
-        MarketConfiguration, OpState, PendingValue, TimestampNs, VaultConfiguration, MAX_QUEUE_LEN,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
+        VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
+        AFTER_SUPPLY_ENSURE_GAS, CREATE_WITHDRAW_REQ_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS,
     },
 };
 pub use wad::*;
 
 use crate::storage_management::{
     require_attached_at_least, require_attached_for_pending_withdrawal,
-    storage_bytes_for_account_id, storage_bytes_for_queue_account_id, yocto_for_bytes,
-    yocto_for_new_market, yocto_for_pending_cap,
+    storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
+    yocto_for_pending_cap,
 };
 
 pub mod aux;
@@ -70,27 +71,6 @@ pub enum Role {
     /// Operational role for queue maintenance.
     /// May set the supply/withdraw queues while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
-}
-
-#[derive(Clone, Debug)]
-#[near(serializers = [json, borsh])]
-pub struct PendingWithdrawal {
-    pub owner: AccountId,
-    pub receiver: AccountId,
-    pub escrow_shares: u128,
-    pub expected_assets: u128,
-    pub requested_at: u64,
-}
-
-impl PendingWithdrawal {
-    pub const fn encoded_size() -> u64 {
-        storage_bytes_for_account_id()
-            + storage_bytes_for_account_id()
-            + 16  // escrow_shares: u128
-            + 16  // expected_assets: u128
-            + 8   // requested_at: u64
-            + 16 // deposit_yocto: u128
-    }
 }
 
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
@@ -652,6 +632,7 @@ impl Contract {
         require_attached_at_least(required_yocto, "supply queue update");
 
         self.supply_queue.clear();
+
         for m in &markets {
             self.supply_queue.push(m.clone());
         }
@@ -1305,7 +1286,7 @@ impl Contract {
                         )
                         .then(
                             ext_self::ext(env::current_account_id())
-                                .with_static_gas(Self::AFTER_SUPPLY_ENSURE_GAS)
+                                .with_static_gas(AFTER_SUPPLY_ENSURE_GAS)
                                 .with_unused_gas_weight(0)
                                 .after_supply_1_check(op_id, index, U128(to_supply)),
                         ),
@@ -1365,7 +1346,7 @@ impl Contract {
                     )
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(Self::AFTER_SUPPLY_ENSURE_GAS)
+                            .with_static_gas(AFTER_SUPPLY_ENSURE_GAS)
                             .with_unused_gas_weight(0)
                             .after_supply_1_check(op_id, index, U128(to_supply)),
                     ),
@@ -1443,7 +1424,7 @@ impl Contract {
                     .transfer(receiver.clone(), U128(collected).into())
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
+                            .with_static_gas(AFTER_SEND_TO_USER_GAS)
                             .after_send_to_user(op_id, receiver, U128(collected)),
                     ),
             );
@@ -1469,11 +1450,11 @@ impl Contract {
             PromiseOrValue::Promise(
                 templar_common::market::ext_market::ext(market.clone())
                     // FIXME: incorrect
-                    .with_static_gas(Self::CREATE_WITHDRAW_REQ_GAS)
+                    .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
                     .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(*to_request)))
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(Self::AFTER_CREATE_WITHDRAW_REQ_GAS)
+                            .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
                             .after_create_withdraw_req(op_id, index, U128(*to_request)),
                     ),
             )
@@ -1510,7 +1491,7 @@ impl Contract {
                     .transfer(receiver.clone(), U128(collected).into())
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
+                            .with_static_gas(AFTER_SEND_TO_USER_GAS)
                             .after_send_to_user(op_id, receiver, U128(collected)),
                     ),
             )
@@ -1519,5 +1500,6 @@ impl Contract {
         }
     }
 }
+
 #[cfg(test)]
 mod tests;
