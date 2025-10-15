@@ -276,10 +276,82 @@ RETURNING
             Decimal::from(allowance_lock_gas.as_yoctonear()),
             Decimal::from(allowance_lock_inner.as_yoctonear()),
         )
-        .fetch_one(&self.connection)
+        .fetch_one(&mut *tx)
         .await?;
 
         Ok(tx.commit().await?)
+    }
+
+    /// # Errors
+    ///
+    /// - Query errors
+    pub async fn remove_pending_transaction(
+        &self,
+        account_id: &AccountIdRef,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.connection.begin().await?;
+
+        let result = sqlx::query!(
+            r#"
+SELECT
+    transaction_hash,
+    allowance_spent_gas,
+    allowance_spent_inner
+FROM
+    transaction
+WHERE
+    account_id = $1
+    AND "status" = 'pending'::transaction_status
+"#,
+            account_id.to_string(),
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(result) = result else {
+            // Pending tx does not exist
+            return Ok(());
+        };
+
+        let allowance_lock_total = result
+            .allowance_spent_gas
+            .saturating_add(result.allowance_spent_inner);
+
+        let update_account = sqlx::query!(
+            r#"
+UPDATE
+    account
+SET
+    pending_transaction_hash = NULL,
+    allowance = allowance + $1
+WHERE
+    account_id = $2
+    AND pending_transaction_hash = $3
+"#,
+            allowance_lock_total,
+            account_id.as_str(),
+            result.transaction_hash,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if update_account.rows_affected() != 0 {
+            sqlx::query!(
+                r#"
+DELETE FROM
+    transaction
+WHERE
+    transaction_hash = $1
+    AND account_id = $2
+"#,
+                result.transaction_hash,
+                account_id.as_str(),
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await
     }
 
     /// # Errors

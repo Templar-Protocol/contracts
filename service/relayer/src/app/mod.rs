@@ -338,7 +338,18 @@ impl App {
         let result = self
             .relay_near
             .send_transaction(signed_transaction, wait_until)
-            .await?;
+            .await;
+
+        let result = match result {
+            Ok(result) => result,
+            Err(e) => {
+                // Some sort of RPC error: remove the pending transaction record.
+                self.database
+                    .remove_pending_transaction(&account_id)
+                    .await?;
+                return Err(e.into());
+            }
+        };
 
         let near = self.relay_near.clone();
         let database = self.database.clone();
@@ -364,6 +375,8 @@ pub enum SendTransactionError {
     Rpc(#[from] JsonRpcError<RpcTransactionError>),
     #[error("Set pending transaction error: {0}")]
     SetPendingTransaction(#[from] SetPendingTransactionError),
+    #[error("Remove pending transaction error: {0}")]
+    RemovePendingTransaction(#[from] sqlx::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
