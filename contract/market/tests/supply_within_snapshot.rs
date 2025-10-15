@@ -1,15 +1,20 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use templar_common::{
     dec,
     fee::Fee,
     interest_rate_strategy::InterestRateStrategy,
     market::{HarvestYieldMode, YieldWeights},
     time_chunk::TimeChunkConfiguration,
+    YEAR_PER_MS,
 };
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn funds_activation() {
+async fn funds_activation(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(supply_user)
         config(|c| {
@@ -108,9 +113,11 @@ async fn funds_activation() {
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn partial_snapshot_no_earnings() {
+async fn partial_snapshot_no_earnings(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, supply_user_2)
         config(|c| {
@@ -144,6 +151,8 @@ async fn partial_snapshot_no_earnings() {
     c.collateralize(&borrow_user, 100_000_000).await;
     c.borrow(&borrow_user, 10_000_000).await;
 
+    let borrow_started_at_snapshot_index = c.get_finalized_snapshots_len().await;
+
     c.supply(&supply_user_2, 100_000_000).await;
     let funds_activate_at = c
         .get_supply_position(supply_user_2.id())
@@ -156,7 +165,7 @@ async fn partial_snapshot_no_earnings() {
     let snapshot_supply_start = c.get_finalized_snapshots_len().await;
     while c.get_finalized_snapshots_len().await <= funds_activate_at {
         // Interest rate is high enough that this all goes to interest.
-        c.repay(&borrow_user, 10_000).await;
+        c.repay(&borrow_user, 10).await;
         c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
             .await;
         c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default))
@@ -186,19 +195,44 @@ async fn partial_snapshot_no_earnings() {
     eprintln!("Current snapshot:");
     eprintln!("{:#?}", c.get_current_snapshot().await);
 
+    let interest_rate = dec!("10000");
+
+    let borrow_started_at = &snapshots[borrow_started_at_snapshot_index as usize - 1]
+        .end_timestamp_ms
+        .0;
     let first_supply_only_active = &snapshots[snapshots.len() - 2];
     let both_supply_active = &snapshots[snapshots.len() - 1];
 
+    let first_only_duration_ms = first_supply_only_active.end_timestamp_ms.0 - borrow_started_at;
+    let expected_first_only_interest_amount = 10_000_000_u128
+        * (interest_rate * first_only_duration_ms * YEAR_PER_MS
+            + c.configuration.single_snapshot_maximum_interest());
+
+    let both_active_duration_ms =
+        both_supply_active.end_timestamp_ms.0 - first_supply_only_active.end_timestamp_ms.0;
+    let expected_both_active_interest_amount =
+        10_000_000_u128 * interest_rate * both_active_duration_ms * YEAR_PER_MS / 2_u128;
+
+    eprintln!(
+        "Expected amount 1: {}",
+        expected_first_only_interest_amount + expected_both_active_interest_amount,
+    );
+    eprintln!("Expected amount 2: {expected_both_active_interest_amount}");
     eprintln!("Amount 1 end: {amount_1_end}");
     eprintln!("Amount 2 end: {amount_2_end}");
-    assert_eq!(
-        u128::from(amount_1_end),
-        u128::from(first_supply_only_active.yield_distribution)
-            + u128::from(both_supply_active.yield_distribution) / 2,
+    assert!(
+        u128::from(amount_1_end).abs_diff(
+            (expected_first_only_interest_amount + expected_both_active_interest_amount)
+                .to_u128_floor()
+                .unwrap(),
+        ) <= 1
     );
-    assert_eq!(
-        u128::from(amount_2_end),
-        u128::from(both_supply_active.yield_distribution) / 2,
+    assert!(
+        u128::from(amount_2_end).abs_diff(
+            expected_both_active_interest_amount
+                .to_u128_floor()
+                .unwrap(),
+        ) <= 1
     );
     assert_eq!(
         position_1_end.borrow_asset_yield.pending_estimate,

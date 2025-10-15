@@ -1,4 +1,3 @@
-use axum::{http::StatusCode, response::IntoResponse, Json};
 use near_primitives::{
     action::delegate::SignedDelegateAction, hash::CryptoHash, views::TxExecutionStatus,
 };
@@ -43,21 +42,8 @@ mod with_borsh_base64 {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
-pub enum RelayResponse {
-    Success { transaction_hash: CryptoHash },
-    Failure { error: String },
-    Rejected { reason: String },
-}
-
-impl IntoResponse for RelayResponse {
-    fn into_response(self) -> axum::response::Response {
-        let status_code = match self {
-            Self::Success { .. } => StatusCode::OK,
-            Self::Failure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::Rejected { .. } => StatusCode::BAD_REQUEST,
-        };
-        (status_code, Json(self)).into_response()
-    }
+pub struct RelayResponse {
+    pub transaction_hash: CryptoHash,
 }
 
 #[cfg(test)]

@@ -29,14 +29,14 @@ container_build_command = [
 
 [dependencies]
 getrandom.workspace = true
-near-sdk.workspace = true
+near-sdk = { workspace = true, features = ["global-contracts"] }
 near-sdk-contract-tools.workspace = true
+templar-common.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-workspaces.workspace = true
 rstest.workspace = true
-templar-common.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
 

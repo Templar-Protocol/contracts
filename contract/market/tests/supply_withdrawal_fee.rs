@@ -1,11 +1,15 @@
 use std::time::Duration;
 
 use near_sdk::json_types::U64;
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
+
 use templar_common::fee::{Fee, TimeBasedFee, TimeBasedFeeFunction};
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn supply_withdrawal_fee_flat() {
+async fn supply_withdrawal_fee_flat(#[future(awt)] worker: Worker<Sandbox>) {
     let fee = TimeBasedFee {
         fee: Fee::Flat(100.into()),
         duration: U64(1000 * 60 * 60 * 24 * 30),
@@ -13,6 +17,7 @@ async fn supply_withdrawal_fee_flat() {
     };
 
     setup_test!(
+        worker
         extract(c, protocol_yield_user)
         accounts(supply_user)
         config(|c| {
@@ -27,21 +32,25 @@ async fn supply_withdrawal_fee_flat() {
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     let supply_user_balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
+    c.accumulate_static_yield(&protocol_yield_user, None, None)
+        .await;
     let yield_before = c
         .get_static_yield(protocol_yield_user.id())
         .await
-        .map_or(0, |r| u128::from(r.borrow_asset));
+        .map_or(0, |r| u128::from(r.get_total()));
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
 
     let supply_user_balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
-    let yield_after = u128::from(
-        c.get_static_yield(protocol_yield_user.id())
-            .await
-            .unwrap()
-            .borrow_asset,
-    );
+    c.accumulate_static_yield(&protocol_yield_user, None, None)
+        .await;
+    let yield_after: u128 = c
+        .get_static_yield(protocol_yield_user.id())
+        .await
+        .unwrap()
+        .get_total()
+        .into();
 
     assert_eq!(
         supply_user_balance_after,
@@ -56,8 +65,9 @@ async fn supply_withdrawal_fee_flat() {
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn supply_withdrawal_fee_expired() {
+async fn supply_withdrawal_fee_expired(#[future(awt)] worker: Worker<Sandbox>) {
     let fee = TimeBasedFee {
         fee: Fee::Flat(100.into()),
         duration: U64(1000), // 1 second
@@ -65,6 +75,7 @@ async fn supply_withdrawal_fee_expired() {
     };
 
     setup_test!(
+        worker
         extract(c, protocol_yield_user)
         accounts(supply_user)
         config(|c| {
@@ -79,10 +90,12 @@ async fn supply_withdrawal_fee_expired() {
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     let supply_user_balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
+    c.accumulate_static_yield(&protocol_yield_user, None, None)
+        .await;
     let yield_before = c
         .get_static_yield(protocol_yield_user.id())
         .await
-        .map_or(0, |r| u128::from(r.borrow_asset));
+        .map_or(0, |r| u128::from(r.get_total()));
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
@@ -92,7 +105,7 @@ async fn supply_withdrawal_fee_expired() {
         c.get_static_yield(protocol_yield_user.id())
             .await
             .unwrap()
-            .borrow_asset,
+            .get_total(),
     );
 
     assert_eq!(

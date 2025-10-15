@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use near_sdk::{serde_json::json, NearToken};
+use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 
 use templar_common::withdrawal_queue::WithdrawalQueueStatus;
@@ -8,8 +9,8 @@ use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn successful_withdrawal() {
-    setup_test!(extract(c) accounts(supply_user));
+async fn successful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user));
 
     c.supply_and_harvest_until_activation(&supply_user, 10_000)
         .await;
@@ -36,8 +37,9 @@ async fn successful_withdrawal() {
 
 #[rstest]
 #[tokio::test]
-async fn unsuccessful_withdrawal() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user));
+#[should_panic = "Smart contract panicked: Insufficient liquidity to fulfill the request at this time"]
+async fn unsuccessful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
@@ -45,7 +47,6 @@ async fn unsuccessful_withdrawal() {
     );
     c.borrow(&borrow_user, 5_000).await;
 
-    let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
     let status = c.get_supply_withdrawal_queue_status().await;
@@ -57,28 +58,13 @@ async fn unsuccessful_withdrawal() {
         },
     );
     c.execute_next_supply_withdrawal_request(&supply_user).await;
-    let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
-    assert_eq!(
-        balance_before, balance_after,
-        "Supply user does not receive anything"
-    );
-
-    let status = c.get_supply_withdrawal_queue_status().await;
-    assert_eq!(
-        status,
-        WithdrawalQueueStatus {
-            depth: 10_000.into(),
-            length: 1
-        },
-        "Status of queue remains unchanged",
-    );
 }
 
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
-async fn attempt_to_withdraw_more_than_deposit_incoming() {
-    setup_test!(extract(c) accounts(supply_user));
+async fn attempt_to_withdraw_more_than_deposit_incoming(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
     c.create_supply_withdrawal_request(&supply_user, 12_000)
@@ -88,8 +74,8 @@ async fn attempt_to_withdraw_more_than_deposit_incoming() {
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
-async fn attempt_to_withdraw_more_than_deposit() {
-    setup_test!(extract(c) accounts(supply_user));
+async fn attempt_to_withdraw_more_than_deposit(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user));
 
     c.supply_and_harvest_until_activation(&supply_user, 10_000)
         .await;
@@ -102,8 +88,12 @@ async fn attempt_to_withdraw_more_than_deposit() {
 #[case(2_500)]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Withdrawal amount is outside of allowable range"]
-async fn attempt_to_withdraw_outside_configured_range(#[case] amount: u128) {
+async fn attempt_to_withdraw_outside_configured_range(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] amount: u128,
+) {
     setup_test!(
+        worker
         extract(c)
         accounts(supply_user)
         config(|c| {
@@ -118,9 +108,10 @@ async fn attempt_to_withdraw_outside_configured_range(#[case] amount: u128) {
         .await;
 }
 
+#[rstest]
 #[tokio::test]
-async fn supply_withdrawal_after_storage_unregister() {
-    setup_test!(extract(c) accounts(supply_user, supply_user_2));
+async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user, supply_user_2));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
@@ -175,9 +166,10 @@ async fn supply_withdrawal_after_storage_unregister() {
     assert_eq!(status.length, 0);
 }
 
+#[rstest]
 #[tokio::test]
-async fn deposit_during_withdrawal() {
-    setup_test!(extract(c) accounts(supply_user, borrow_user));
+async fn deposit_during_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user, borrow_user));
 
     c.supply(&supply_user, 10_000).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)

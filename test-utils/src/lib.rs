@@ -6,12 +6,13 @@ pub use controller::{
     oracle::OracleController,
     registry::RegistryController,
     storage_management::StorageManagementController,
+    universal_account::UniversalAccountController,
     ContractController,
 };
 use controller::{mt::MtController, token::TokenController};
 use near_sdk::{
     json_types::{I64, U64},
-    serde_json, AccountId,
+    serde_json, AccountId, NearToken,
 };
 use near_workspaces::{
     network::Sandbox,
@@ -26,6 +27,7 @@ use templar_common::{
     market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
+    registry::DeployMode,
 };
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
@@ -37,6 +39,14 @@ pub const DEFAULT_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal
 
 pub mod controller;
 pub mod partial;
+pub mod pyth_price_id;
+
+#[rstest::fixture]
+pub async fn worker() -> Worker<Sandbox> {
+    near_workspaces::sandbox_with_version("2.8.0")
+        .await
+        .unwrap()
+}
 
 pub fn to_price(price: f64) -> pyth::Price {
     pyth::Price {
@@ -49,13 +59,17 @@ pub fn to_price(price: f64) -> pyth::Price {
 
 pub async fn create_prefixed_account(
     prefix: &str,
-    worker: &near_workspaces::Worker<impl DevNetwork + 'static>,
+    worker: &Worker<impl DevNetwork + 'static>,
 ) -> Account {
-    let (genid, sk) = worker.dev_generate().await;
+    let (genid, sk) = worker.generate_dev_account_credentials();
     let new_id: AccountId = format!("{prefix}{}", &genid.as_str()[prefix.len()..])
         .parse()
         .unwrap();
-    worker.create_tla(new_id, sk).await.unwrap().unwrap()
+    worker
+        .create_root_account_subaccount(new_id, sk)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 #[macro_export]
@@ -66,7 +80,7 @@ macro_rules! accounts {
 }
 
 #[macro_export]
-macro_rules! setup_test_w {
+macro_rules! setup_test {
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
         $crate::accounts!($w, $($n),*);
         let s = $crate::setup_everything(&$w, $f).await;
@@ -76,23 +90,7 @@ macro_rules! setup_test_w {
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}))
-    };
-}
-
-#[macro_export]
-macro_rules! setup_test {
-    (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
-        let worker = near_workspaces::sandbox().await.unwrap();
-        $crate::accounts!(worker, $($n),*);
-        let s = $crate::setup_everything(&worker, $f).await;
-        ::tokio::join!(
-            $(s.c.init_account(&$n)),*
-        );
-        let $crate::SetupEverything { $($e,)* .. } = s;
-    };
-    (extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test!(extract($($e),*) accounts($($n),*) config(|_| {}))
+        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config(|_| {}))
     };
 }
 
@@ -248,12 +246,19 @@ pub async fn setup_everything(
 pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
     accounts!(worker, registry);
 
-    let r = RegistryController::deploy(registry).await;
+    let r = RegistryController::new(registry).await;
+
+    let wasm = controller::market::load_wasm().await;
+
+    let cost_per_byte = NearToken::from_near(1).saturating_div(10 * 1_000);
+    let deployment_cost = cost_per_byte.saturating_mul(wasm.len() as u128);
 
     r.add_version(
         r.contract.as_account(),
+        deployment_cost,
         "market@0.0.0",
-        controller::market::load_wasm().await,
+        DeployMode::GlobalHash,
+        wasm,
     )
     .await;
 

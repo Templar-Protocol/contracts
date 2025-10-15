@@ -5,73 +5,17 @@ use std::{
 };
 
 use clap::Parser;
-use futures::{StreamExt, TryStreamExt};
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
-use near_sdk::{serde_json::json, AccountId};
+use near_sdk::AccountId;
 use templar_bots::{
     liquidator::{Args, Liquidator, LiquidatorError, LiquidatorResult},
-    near::{view, RpcResult},
+    list_all_deployments,
     swap::{RheaSwap, SwapType},
 };
 use tokio::time::sleep;
-use tracing::{info, instrument};
+use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-
-#[instrument(skip(client), level = "debug")]
-pub async fn list_deployments(
-    client: &JsonRpcClient,
-    registry: AccountId,
-    count: Option<u32>,
-    offset: Option<u32>,
-) -> RpcResult<Vec<AccountId>> {
-    let mut all_deployments = Vec::new();
-    let page_size = 500;
-    let mut current_offset = 0;
-
-    loop {
-        let params = json!({
-            "offset": current_offset,
-            "count": page_size,
-        });
-
-        let page =
-            view::<Vec<AccountId>>(client, registry.clone(), "list_deployments", params).await?;
-
-        let fetched = page.len();
-
-        if fetched == 0 {
-            break;
-        }
-
-        all_deployments.extend(page);
-        current_offset += fetched;
-
-        if fetched < page_size {
-            break;
-        }
-    }
-
-    Ok(all_deployments)
-}
-
-#[instrument(skip(client), level = "debug")]
-pub async fn list_all_deployments(
-    client: JsonRpcClient,
-    registries: Vec<AccountId>,
-    concurrency: usize,
-) -> RpcResult<Vec<AccountId>> {
-    let all_markets: Vec<AccountId> = futures::stream::iter(registries)
-        .map(|registry| {
-            let client = client.clone();
-            async move { list_deployments(&client, registry, None, None).await }
-        })
-        .buffer_unordered(concurrency)
-        .try_concat()
-        .await?;
-
-    Ok(all_markets)
-}
 
 #[tokio::main]
 async fn main() -> LiquidatorResult {

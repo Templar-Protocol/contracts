@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 use axum::{routing, Router};
 use clap::Parser;
 use tokio::{signal, sync::watch, task::JoinSet};
+use tower::ServiceBuilder;
+use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use templar_relayer::{
@@ -37,6 +39,8 @@ async fn main() {
             "/get_allowance",
             routing::get(route::get_allowance::get_allowance),
         )
+        .nest("/universal_account", route::universal_account::router())
+        .layer(ServiceBuilder::new().layer(CorsLayer::permissive()))
         .with_state(app);
 
     tracing::info!("Listening on {}", listener.local_addr().unwrap());

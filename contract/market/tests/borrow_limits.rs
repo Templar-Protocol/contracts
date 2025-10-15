@@ -1,6 +1,8 @@
+use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal};
 use test_utils::*;
+use tokio::task::JoinSet;
 
 #[rstest]
 #[case(0, &[1], u128::MAX)]
@@ -9,11 +11,13 @@ use test_utils::*;
 #[case(0, &[20, 20, 20, 20, 20], 100)]
 #[tokio::test]
 async fn borrow_within_bounds(
+    #[future(awt)] worker: Worker<Sandbox>,
     #[case] minimum: u128,
     #[case] amounts: &[u128],
     #[case] maximum: u128,
 ) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
@@ -44,8 +48,14 @@ async fn borrow_within_bounds(
 #[case(1000, 738, u128::MAX)]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
-async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[case] maximum: u128) {
+async fn borrow_below_minimum(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] minimum: u128,
+    #[case] amount: u128,
+    #[case] maximum: u128,
+) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
@@ -73,11 +83,13 @@ async fn borrow_below_minimum(#[case] minimum: u128, #[case] amount: u128, #[cas
 #[tokio::test]
 #[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
 async fn borrow_above_maximum(
+    #[future(awt)] worker: Worker<Sandbox>,
     #[case] minimum: u128,
     #[case] amounts: &[u128],
     #[case] maximum: u128,
 ) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {
@@ -90,15 +102,21 @@ async fn borrow_above_maximum(
         c.collateralize(&borrow_user, 2000),
     );
 
+    let mut set = JoinSet::new();
     for amount in amounts {
-        c.borrow(&borrow_user, *amount).await;
+        let amount = *amount;
+        let borrow_user = borrow_user.clone();
+        let c = c.clone();
+        set.spawn(async move { c.borrow(&borrow_user, amount).await });
     }
+    set.join_all().await;
 }
 
 #[rstest]
 #[tokio::test]
-async fn withdraw_below_minimum() {
+async fn withdraw_below_minimum(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {

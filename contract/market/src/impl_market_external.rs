@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    accumulator::Accumulator,
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     asset_op,
     borrow::{BorrowPosition, BorrowStatus},
     contract::list,
@@ -11,7 +12,6 @@ use templar_common::{
     oracle::pyth::OracleResponse,
     self_ext,
     snapshot::Snapshot,
-    static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
@@ -41,7 +41,7 @@ impl MarketExternalInterface for Contract {
                 .iter()
                 .map(|incoming| (incoming.activate_at_snapshot_index, incoming.amount))
                 .collect(),
-            borrowed: self.borrow_asset_borrowed,
+            borrowed: self.borrowed(),
         }
     }
 
@@ -89,21 +89,10 @@ impl MarketExternalInterface for Contract {
 
     fn borrow(&mut self, amount: BorrowAssetAmount) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
-
         let account_id = env::predecessor_account_id();
-
-        let proposed_amount =
-            if let Some(borrow_position) = self.borrow_position_ref(account_id.clone()) {
-                let mut borrow_principal = borrow_position.inner().get_borrow_asset_principal();
-                asset_op!(borrow_principal += amount);
-                borrow_principal
-            } else {
-                amount
-            };
-
         require!(
-            self.configuration.borrow_range.contains(proposed_amount),
-            "New borrow position is outside of allowable range",
+            self.borrow_position_ref(account_id.clone()).is_some(),
+            "Borrow position does not exist",
         );
 
         self.configuration
@@ -131,7 +120,7 @@ impl MarketExternalInterface for Contract {
         {
             // No need to retrieve prices, since there is zero liability.
             let proof = borrow_position.accumulate_interest();
-            borrow_position.record_collateral_asset_withdrawal(proof, amount);
+            borrow_position.record_collateral_asset_withdrawal_initial(proof, amount);
             drop(borrow_position);
 
             self.configuration
@@ -214,15 +203,19 @@ impl MarketExternalInterface for Contract {
 
         // There may be loose/untracked funds that the contract controls but
         // does not account for in internal accounting.
-        let expect_success = u128::from(self.borrow_asset_deposited_active)
+        let has_sufficient_liquidity = u128::from(self.borrow_asset_deposited_active)
             .saturating_add(u128::from(self.total_incoming()))
-            .checked_sub(
-                u128::from(self.borrow_asset_borrowed)
-                    .saturating_add(self.borrow_asset_in_flight.into()),
-            )
+            .checked_sub(u128::from(self.borrowed()))
             .is_some();
 
-        asset_op!(self.borrow_asset_in_flight += withdrawal_resolution.amount_to_account);
+        require!(
+            has_sufficient_liquidity,
+            "Insufficient liquidity to fulfill the request at this time",
+        );
+
+        asset_op!(
+            self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account
+        );
 
         PromiseOrValue::Promise(
             self.configuration
@@ -233,10 +226,7 @@ impl MarketExternalInterface for Contract {
                 )
                 .then(
                     self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
-                        .execute_next_supply_withdrawal_request_01_finalize(
-                            withdrawal_resolution,
-                            expect_success,
-                        ),
+                        .execute_next_supply_withdrawal_request_01_finalize(withdrawal_resolution),
                 ),
         )
     }
@@ -296,76 +286,47 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_last_yield_rate(&self) -> Decimal {
-        let deposited: Decimal = self.borrow_asset_deposited_active.into();
-        if deposited.is_zero() {
-            return Decimal::ZERO;
-        }
-        let borrowed: Decimal = self.borrow_asset_borrowed.into();
-        let supply_weight: Decimal = self.configuration.yield_weights.supply.get().into();
-        let total_weight: Decimal = self.configuration.yield_weights.total_weight().get().into();
-
-        self.interest_rate() * borrowed * supply_weight / deposited / total_weight
+        self.configuration
+            .supply_yield_rate_from_interest(&self.current_snapshot())
     }
 
-    fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {
+    fn get_static_yield(&self, account_id: AccountId) -> Option<Accumulator<BorrowAsset>> {
         self.static_yield.get(&account_id)
     }
 
-    fn withdraw_static_yield(
+    fn accumulate_static_yield(
         &mut self,
-        borrow_asset_amount: Option<BorrowAssetAmount>,
-        collateral_asset_amount: Option<CollateralAssetAmount>,
-    ) -> Promise {
+        account_id: Option<AccountId>,
+        snapshot_limit: Option<u32>,
+    ) {
+        self.market
+            .accumulate_static_yield(
+                &account_id.unwrap_or_else(env::predecessor_account_id),
+                snapshot_limit.unwrap_or(u32::MAX),
+            )
+            .unwrap_or_else(|_| env::panic_str("This account does not earn static yield"));
+    }
+
+    fn withdraw_static_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
         let predecessor = env::predecessor_account_id();
-        let Some(mut static_yield_record) = self.static_yield.get(&predecessor) else {
+        let Some(mut yield_record) = self.static_yield.get(&predecessor) else {
             env::panic_str("Yield record does not exist");
         };
 
-        let (borrow_asset_amount, collateral_asset_amount) =
-            if borrow_asset_amount.is_none() && collateral_asset_amount.is_none() {
-                // no arguments = withdraw all
-                (
-                    static_yield_record.borrow_asset,
-                    static_yield_record.collateral_asset,
-                )
-            } else {
-                (
-                    borrow_asset_amount.unwrap_or_default(),
-                    collateral_asset_amount.unwrap_or_default(),
-                )
-            };
+        let amount = amount.unwrap_or_else(|| yield_record.get_total());
 
-        asset_op! {
-            static_yield_record.borrow_asset -= borrow_asset_amount;
-            static_yield_record.collateral_asset -= collateral_asset_amount;
-        };
+        yield_record
+            .remove(amount)
+            .unwrap_or_else(|| env::panic_str("Attempt to overdraw"));
 
-        self.static_yield.insert(&predecessor, &static_yield_record);
+        self.static_yield.insert(&predecessor, &yield_record);
 
-        let borrow_promise = (!borrow_asset_amount.is_zero()).then(|| {
-            self.configuration
-                .borrow_asset
-                .transfer(predecessor.clone(), borrow_asset_amount)
-        });
-
-        let collateral_promise = (!collateral_asset_amount.is_zero()).then(|| {
-            self.configuration
-                .collateral_asset
-                .transfer(predecessor.clone(), collateral_asset_amount)
-        });
-
-        match (borrow_promise, collateral_promise) {
-            (Some(b), Some(c)) => b.and(c),
-            (Some(p), _) | (_, Some(p)) => p,
-            _ => env::panic_str("No yield to withdraw"),
-        }
-        .then(
-            self_ext!(Self::GAS_WITHDRAW_STATIC_YIELD_01_FINALIZE)
-                .withdraw_static_yield_01_finalize(
-                    predecessor,
-                    borrow_asset_amount,
-                    collateral_asset_amount,
-                ),
-        )
+        self.configuration
+            .borrow_asset
+            .transfer(predecessor.clone(), amount)
+            .then(
+                self_ext!(Self::GAS_WITHDRAW_STATIC_YIELD_01_FINALIZE)
+                    .withdraw_static_yield_01_finalize(predecessor, amount),
+            )
     }
 }

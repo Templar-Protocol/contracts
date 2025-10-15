@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 
 use templar_common::{
@@ -14,9 +15,11 @@ use templar_common::{
 use test_utils::*;
 use tokio::time::Instant;
 
+#[rstest]
 #[tokio::test]
-async fn successful_liquidation_totally_underwater() {
+async fn successful_liquidation_totally_underwater(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
     );
@@ -69,6 +72,7 @@ async fn successful_liquidation_totally_underwater() {
 #[case(120, 1250, 1000, 88, dec!(".95"))]
 #[tokio::test]
 async fn successful_liquidation_good_debt_under_mcr(
+    #[future(awt)] worker: Worker<Sandbox>,
     #[case] mcr: u16,
     #[case] collateral_amount: u128,
     #[case] borrow_amount: u128,
@@ -76,6 +80,7 @@ async fn successful_liquidation_good_debt_under_mcr(
     #[case] fmv_frac: Decimal,
 ) {
     setup_test!(
+        worker
         extract(c, protocol_yield_user, insurance_yield_user)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
@@ -93,7 +98,7 @@ async fn successful_liquidation_good_debt_under_mcr(
     c.borrow(&borrow_user, borrow_amount).await;
 
     let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    assert_eq!(position.borrow_asset_fees.get_total(), 10.into());
+    assert_eq!(position.fees, 10.into());
 
     let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -126,6 +131,9 @@ async fn successful_liquidation_good_debt_under_mcr(
 
     let yield_amount = u128::from(price).saturating_sub(borrow_amount).max(10);
 
+    // finalize a snapshot
+    c.apply_interest(&borrow_user, None, None).await;
+
     tokio::join!(
         async {
             c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
@@ -137,12 +145,16 @@ async fn successful_liquidation_good_debt_under_mcr(
             );
         },
         async {
+            c.accumulate_static_yield(&protocol_yield_user, None, None)
+                .await;
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert_eq!(u128::from(protocol_yield.borrow_asset), yield_amount / 10);
+            assert_eq!(u128::from(protocol_yield.get_total()), yield_amount / 10);
         },
         async {
+            c.accumulate_static_yield(&insurance_yield_user, None, None)
+                .await;
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(u128::from(insurance_yield.borrow_asset), yield_amount / 10);
+            assert_eq!(u128::from(insurance_yield.get_total()), yield_amount / 10);
         },
         async {
             let prices = c.get_prices().await;
@@ -160,6 +172,7 @@ async fn successful_liquidation_good_debt_under_mcr(
 #[case(150, 33, 32)]
 #[tokio::test]
 async fn successful_liquidation_with_spread(
+    #[future(awt)] worker: Worker<Sandbox>,
     #[case] mcr: u16,
     #[case] maximum_spread_pct: u16,
     #[case] spread_pct: u16,
@@ -171,6 +184,7 @@ async fn successful_liquidation_with_spread(
     let mcr: Decimal = Decimal::from(mcr) / 100u32;
 
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
@@ -218,9 +232,11 @@ async fn successful_liquidation_with_spread(
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn fail_liquidation_too_little_attached() {
+async fn fail_liquidation_too_little_attached(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
     );
@@ -263,9 +279,11 @@ async fn fail_liquidation_too_little_attached() {
     assert!(status.is_liquidation());
 }
 
+#[rstest]
 #[tokio::test]
-async fn fail_liquidation_healthy_borrow() {
+async fn fail_liquidation_healthy_borrow(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
     );
@@ -307,10 +325,12 @@ async fn fail_liquidation_healthy_borrow() {
     assert!(status.is_healthy());
 }
 
+#[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to liquidate more collateral than is currently eligible"]
-async fn liquidators_race() {
+async fn liquidators_race(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
     );
@@ -352,8 +372,9 @@ async fn liquidators_race() {
 
 #[rstest]
 #[tokio::test]
-async fn successful_liquidation_only_from_interest() {
+async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
@@ -421,12 +442,14 @@ async fn successful_liquidation_only_from_interest() {
 #[case((10, 1000), (10, 1000), (10, -1000), (10, 1000))]
 #[tokio::test]
 async fn extreme_prices(
+    #[future(awt)] worker: Worker<Sandbox>,
     #[case] (collateral_price, collateral_exponent): (i64, i32),
     #[case] (borrow_price, borrow_exponent): (i64, i32),
     #[case] (new_collateral_price, new_collateral_exponent): (i64, i32),
     #[case] (new_borrow_price, new_borrow_exponent): (i64, i32),
 ) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
@@ -545,10 +568,12 @@ async fn extreme_prices(
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn partial_liquidation() {
+async fn partial_liquidation(#[future(awt)] worker: Worker<Sandbox>) {
     let spread = dec!("0.05");
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_alice, liquidator_bob)
         config(|c| {
@@ -657,10 +682,12 @@ async fn partial_liquidation() {
     );
 }
 
+#[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Liquidation offer too low"]
-async fn partial_liquidation_fail_offer_too_little() {
+async fn partial_liquidation_fail_offer_too_little(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
@@ -718,8 +745,12 @@ async fn partial_liquidation_fail_offer_too_little() {
 #[case(&[dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1")])]
 #[case(&[dec!("0.5"), dec!("0.25"), dec!("0.125"), dec!("0.0625"), dec!("0.0625")])]
 #[tokio::test]
-async fn many_little_partial_liquidations(#[case] pattern: &[Decimal]) {
+async fn many_little_partial_liquidations(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] pattern: &[Decimal],
+) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {

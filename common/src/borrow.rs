@@ -10,7 +10,7 @@ use crate::{
     market::{Market, SnapshotProof},
     number::Decimal,
     price::{Appraise, Convert, PricePair, Valuation},
-    MS_PER_YEAR,
+    YEAR_PER_MS,
 };
 
 /// This struct can only be constructed after accumulating interest on a
@@ -62,8 +62,10 @@ pub struct BorrowPosition {
     pub started_at_block_timestamp_ms: Option<U64>,
     pub collateral_asset_deposit: CollateralAssetAmount,
     borrow_asset_principal: BorrowAssetAmount,
-    pub borrow_asset_fees: Accumulator<BorrowAsset>,
-    pub in_flight: BorrowAssetAmount,
+    pub interest: Accumulator<BorrowAsset>,
+    pub fees: BorrowAssetAmount,
+    borrow_asset_in_flight: BorrowAssetAmount,
+    collateral_asset_in_flight: CollateralAssetAmount,
     pub liquidation_lock: CollateralAssetAmount,
 }
 
@@ -77,22 +79,30 @@ impl BorrowPosition {
             // of borrowing "for free". e.g. if TimeChunk units are epochs (12
             // hours), this prevents someone from getting 11 hours of free
             // borrowing if they create the borrow 1 hour into the epoch.
-            borrow_asset_fees: Accumulator::new(current_snapshot_index),
-            in_flight: 0.into(),
+            interest: Accumulator::new(current_snapshot_index),
+            fees: 0.into(),
+            borrow_asset_in_flight: 0.into(),
+            collateral_asset_in_flight: 0.into(),
             liquidation_lock: 0.into(),
         }
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
-        self.borrow_asset_principal
+        let mut total = BorrowAssetAmount::zero();
+        asset_op! {
+            total += self.borrow_asset_principal;
+            total += self.borrow_asset_in_flight;
+        };
+        total
     }
 
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         asset_op! {
             total += self.borrow_asset_principal;
-            total += self.borrow_asset_fees.get_total();
-            total += self.in_flight;
+            total += self.borrow_asset_in_flight;
+            total += self.interest.get_total();
+            total += self.fees;
         };
         total
     }
@@ -106,16 +116,10 @@ impl BorrowPosition {
         total
     }
 
-    pub fn can_be_removed(&self) -> bool {
-        self.collateral_asset_deposit.is_zero()
-            && self.get_total_borrow_asset_liability().is_zero()
-            && self.in_flight.is_zero()
-            && self.liquidation_lock.is_zero()
-    }
-
     pub fn exists(&self) -> bool {
-        !self.collateral_asset_deposit.is_zero()
+        !self.get_total_collateral_amount().is_zero()
             || !self.get_total_borrow_asset_liability().is_zero()
+            || !self.collateral_asset_in_flight.is_zero()
     }
 
     /// Returns `None` if liability is zero.
@@ -173,14 +177,16 @@ impl BorrowPosition {
         // l_a * c_p = (m * b_a * b_p - c_a * c_p * (1 - d)) / (m - 1)
         // l_a = m * (b_a * b_p / c_p - c_a * (1 - d) / m) / (m - 1)
 
-        let collateral_amount = Decimal::from(self.collateral_asset_deposit);
+        let collateral_amount = self.get_total_collateral_amount();
+        let collateral_amount_dec = Decimal::from(collateral_amount);
         let liability_valuation = price_pair.valuation(self.get_total_borrow_asset_liability());
 
         #[allow(clippy::unwrap_used, reason = "not div0")]
         let scaled_liability = liability_valuation
             .ratio(price_pair.valuation(CollateralAssetAmount::new(1)))
             .unwrap();
-        let scaled_collateral_amount = collateral_amount * (Decimal::ONE - liquidator_spread) / mcr;
+        let scaled_collateral_amount =
+            collateral_amount_dec * (Decimal::ONE - liquidator_spread) / mcr;
 
         if scaled_liability <= scaled_collateral_amount {
             CollateralAssetAmount::zero()
@@ -188,14 +194,20 @@ impl BorrowPosition {
             // Multiplication by mcr here could cause overflow
             let unscaled_amount =
                 (scaled_liability - scaled_collateral_amount) / (mcr - Decimal::ONE);
-            if unscaled_amount >= collateral_amount / mcr {
-                self.collateral_asset_deposit
+
+            let mut available = if unscaled_amount >= collateral_amount_dec / mcr {
+                collateral_amount
             } else {
                 let amount = mcr * unscaled_amount;
                 amount
                     .to_u128_ceil()
-                    .map_or(self.collateral_asset_deposit, CollateralAssetAmount::new)
-            }
+                    .map_or(collateral_amount, CollateralAssetAmount::new)
+            };
+            asset_op! {
+                @msg("Invariant violation: get_total_collateral_amount() >= liquidation_lock should hold")
+                available -= self.liquidation_lock;
+            };
+            available
         }
     }
 }
@@ -204,6 +216,7 @@ impl BorrowPosition {
 #[derive(Debug, Clone)]
 pub struct LiabilityReduction {
     pub to_fees: BorrowAssetAmount,
+    pub to_interest: BorrowAssetAmount,
     pub to_principal: BorrowAssetAmount,
     pub remaining: BorrowAssetAmount,
 }
@@ -260,6 +273,8 @@ pub mod error {
         FeeCalculationFailure,
         #[error("Borrow position must be healthy after borrow")]
         Undercollateralization,
+        #[error("New borrow position is outside of allowable range")]
+        OutsideAllowableRange,
     }
 }
 
@@ -293,7 +308,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         let interest_in_current_snapshot = self.market.interest_rate()
             * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
             * Decimal::from(self.position.get_borrow_asset_principal())
-            / MS_PER_YEAR;
+            * YEAR_PER_MS;
         #[allow(clippy::unwrap_used, reason = "Interest rate guaranteed <= APY_LIMIT")]
         interest_in_current_snapshot.to_u128_ceil().unwrap().into()
     }
@@ -302,7 +317,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         let mut pending_estimate = self.calculate_interest(u32::MAX).get_amount();
         asset_op!(pending_estimate += self.estimate_current_snapshot_interest());
 
-        self.position.borrow_asset_fees.pending_estimate = pending_estimate;
+        self.position.interest.pending_estimate = pending_estimate;
     }
 
     pub(crate) fn calculate_interest(
@@ -310,7 +325,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
         snapshot_limit: u32,
     ) -> AccumulationRecord<BorrowAsset> {
         let principal: Decimal = self.position.get_borrow_asset_principal().into();
-        let mut next_snapshot_index = self.position.borrow_asset_fees.get_next_snapshot_index();
+        let mut next_snapshot_index = self.position.interest.get_next_snapshot_index();
 
         let mut accumulated = Decimal::ZERO;
         #[allow(clippy::unwrap_used, reason = "1 finalized snapshot guaranteed")]
@@ -346,7 +361,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                         ))
                     }),
             );
-            accumulated += principal * snapshot.interest_rate * duration_ms / MS_PER_YEAR;
+            accumulated += principal * snapshot.interest_rate * duration_ms * YEAR_PER_MS;
 
             prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
             next_snapshot_index = i as u32 + 1;
@@ -370,6 +385,13 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
             self.position.started_at_block_timestamp_ms,
             block_timestamp_ms,
         )
+    }
+
+    pub fn within_allowable_borrow_range(&self) -> bool {
+        self.market
+            .configuration
+            .borrow_range
+            .contains(self.position.get_borrow_asset_principal())
     }
 
     pub fn liquidatable_collateral(&self, price_pair: &PricePair) -> CollateralAssetAmount {
@@ -417,12 +439,19 @@ impl<'a> BorrowPositionGuard<'a> {
         mut amount: BorrowAssetAmount,
     ) -> LiabilityReduction {
         // No bounds checks necessary here: the min() call prevents underflow.
-        let to_fees = self.position.borrow_asset_fees.get_total().min(amount);
+        let to_fees = self.position.fees.min(amount);
         asset_op! {
             @msg("Invariant violation: min() precludes underflow")
             amount -= to_fees;
+            self.position.fees -= to_fees;
         };
-        self.position.borrow_asset_fees.remove(to_fees);
+
+        let to_interest = self.position.interest.get_total().min(amount);
+        asset_op! {
+            @msg("Invariant violation: min() precludes underflow")
+            amount -= to_interest;
+        };
+        self.position.interest.remove(to_interest);
 
         let to_principal = {
             let minimum_amount = u128::from(self.market.configuration.borrow_range.minimum);
@@ -450,10 +479,9 @@ impl<'a> BorrowPositionGuard<'a> {
             self.position.started_at_block_timestamp_ms = None;
         }
 
-        self.market.record_borrow_asset_yield_distribution(to_fees);
-
         LiabilityReduction {
             to_fees,
+            to_interest,
             to_principal,
             remaining: amount,
         }
@@ -476,7 +504,44 @@ impl<'a> BorrowPositionGuard<'a> {
         .emit();
     }
 
-    pub fn record_collateral_asset_withdrawal(
+    pub fn record_collateral_asset_withdrawal_initial(
+        &mut self,
+        _proof: InterestAccumulationProof,
+        amount: CollateralAssetAmount,
+    ) {
+        asset_op! {
+            self.position.collateral_asset_in_flight += amount;
+            self.position.collateral_asset_deposit -= amount;
+            self.market.collateral_asset_deposited -= amount;
+        };
+    }
+
+    pub fn record_collateral_asset_withdrawal_final(
+        &mut self,
+        _proof: InterestAccumulationProof,
+        amount: CollateralAssetAmount,
+        success: bool,
+    ) {
+        asset_op! {
+            @msg("Invariant violation: attempt to unlock more than locked as in-flight")
+            self.position.collateral_asset_in_flight -= amount;
+        };
+
+        if success {
+            MarketEvent::CollateralWithdrawn {
+                account_id: self.account_id.clone(),
+                collateral_asset_amount: amount,
+            }
+            .emit();
+        } else {
+            asset_op! {
+                self.position.collateral_asset_deposit += amount;
+                self.market.collateral_asset_deposited += amount;
+            };
+        }
+    }
+
+    pub(crate) fn record_collateral_asset_withdrawal(
         &mut self,
         _proof: InterestAccumulationProof,
         amount: CollateralAssetAmount,
@@ -485,12 +550,6 @@ impl<'a> BorrowPositionGuard<'a> {
             self.position.collateral_asset_deposit -= amount;
             self.market.collateral_asset_deposited -= amount;
         };
-
-        MarketEvent::CollateralWithdrawn {
-            account_id: self.account_id.clone(),
-            collateral_asset_amount: amount,
-        }
-        .emit();
     }
 
     /// # Errors
@@ -531,19 +590,30 @@ impl<'a> BorrowPositionGuard<'a> {
             .ok_or(error::InitialBorrowError::FeeCalculationFailure)?;
 
         asset_op! {
-            self.market.borrow_asset_in_flight += amount;
-            self.position.in_flight += amount;
-            self.position.in_flight += fees;
+            self.market.borrow_asset_borrowed_in_flight += amount;
+            self.position.borrow_asset_in_flight += amount;
+            self.position.fees += fees;
         };
 
         if !self.status(price_pair, block_timestamp_ms).is_healthy() {
             asset_op! {
-                self.market.borrow_asset_in_flight -= amount;
-                self.position.in_flight -= amount;
-                self.position.in_flight -= fees;
+                self.market.borrow_asset_borrowed_in_flight -= amount;
+                self.position.borrow_asset_in_flight -= amount;
+                self.position.fees -= fees;
             };
             return Err(error::InitialBorrowError::Undercollateralization);
         }
+
+        if !self.within_allowable_borrow_range() {
+            asset_op! {
+                self.market.borrow_asset_borrowed_in_flight -= amount;
+                self.position.borrow_asset_in_flight -= amount;
+                self.position.fees -= fees;
+            };
+            return Err(error::InitialBorrowError::OutsideAllowableRange);
+        }
+
+        self.market.record_borrow_asset_yield_distribution(fees);
 
         Ok(InitialBorrow { amount, fees })
     }
@@ -559,9 +629,8 @@ impl<'a> BorrowPositionGuard<'a> {
         // This should never panic, because a given amount of in-flight borrow
         // asset should always be added before it is removed.
         asset_op! {
-            self.market.borrow_asset_in_flight -= borrow.amount;
-            self.position.in_flight -= borrow.amount;
-            self.position.in_flight -= borrow.fees;
+            self.market.borrow_asset_borrowed_in_flight -= borrow.amount;
+            self.position.borrow_asset_in_flight -= borrow.amount;
         };
 
         if success {
@@ -569,7 +638,6 @@ impl<'a> BorrowPositionGuard<'a> {
             //
             // Borrow position has already been created: finalize
             // withdrawal record.
-            self.position.borrow_asset_fees.add_once(borrow.fees);
             self.position
                 .increase_borrow_asset_principal(interest, borrow.amount, block_timestamp_ms)
                 .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
@@ -646,9 +714,7 @@ impl<'a> BorrowPositionGuard<'a> {
             .emit();
         }
 
-        self.position
-            .borrow_asset_fees
-            .accumulate(accumulation_record);
+        self.position.interest.accumulate(accumulation_record);
     }
 
     pub fn accumulate_interest(&mut self) -> InterestAccumulationProof {
@@ -656,7 +722,7 @@ impl<'a> BorrowPositionGuard<'a> {
         InterestAccumulationProof(())
     }
 
-    pub fn liquidation_lock(&mut self, amount: CollateralAssetAmount) {
+    pub(crate) fn liquidation_lock(&mut self, amount: CollateralAssetAmount) {
         asset_op!(
             @msg("Attempt to liquidate more collateral than position has deposited")
             self.position.collateral_asset_deposit -= amount;
@@ -664,7 +730,7 @@ impl<'a> BorrowPositionGuard<'a> {
         );
     }
 
-    pub fn liquidation_unlock(&mut self, amount: CollateralAssetAmount) {
+    pub(crate) fn liquidation_unlock(&mut self, amount: CollateralAssetAmount) {
         asset_op!(
             @msg("Invariant violation: Liquidation unlock of more collateral that was locked")
             self.position.liquidation_lock -= amount;

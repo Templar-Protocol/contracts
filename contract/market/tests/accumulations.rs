@@ -1,9 +1,12 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use templar_common::market::HarvestYieldMode;
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn third_party_accumulation_executor() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user, third_party));
+async fn third_party_accumulation_executor(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user, third_party));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),
@@ -57,10 +60,11 @@ async fn third_party_accumulation_executor() {
     .await;
 }
 
+#[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Only the position holder can compound yield"]
-async fn third_party_cannot_compound_yield() {
-    setup_test!(extract(c) accounts(borrow_user, supply_user, third_party));
+async fn third_party_cannot_compound_yield(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user, supply_user, third_party));
 
     tokio::join!(
         c.supply_and_harvest_until_activation(&supply_user, 10_000),

@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use base64::Engine;
-use near_crypto::InMemorySigner;
+use near_crypto::Signer;
 use near_jsonrpc_client::{
     errors::JsonRpcError,
     methods::{
@@ -71,13 +70,13 @@ pub type AppResult<T = ()> = Result<T, AppError>;
 #[instrument(skip(client), level = "debug")]
 pub async fn get_access_key_data(
     client: &JsonRpcClient,
-    signer: &InMemorySigner,
+    signer: &Signer,
 ) -> RpcResult<(u64, CryptoHash)> {
     let access_key_query_response = client
         .call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
             request: QueryRequest::ViewAccessKey {
-                account_id: signer.account_id.clone(),
+                account_id: signer.get_account_id(),
                 public_key: signer.public_key().clone(),
             },
         })
@@ -100,9 +99,7 @@ pub async fn get_access_key_data(
 
 #[allow(clippy::expect_used, reason = "We know the serialization will succeed")]
 pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
-    base64::engine::general_purpose::STANDARD
-        .encode(serde_json::to_string(&data).expect("Failed to serialize data"))
-        .into_bytes()
+    serde_json::to_vec(&data).expect("Failed to serialize data")
 }
 
 #[instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]
@@ -138,7 +135,7 @@ const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 #[instrument(skip(client, signer), level = "debug")]
 pub async fn send_tx(
     client: &JsonRpcClient,
-    signer: &InMemorySigner,
+    signer: &Signer,
     timeout: u64,
     tx: Transaction,
 ) -> RpcResult<FinalExecutionStatus> {
@@ -180,7 +177,7 @@ pub async fn send_tx(
                     let status = client
                         .call(RpcTransactionStatusRequest {
                             transaction_info: TransactionInfo::TransactionId {
-                                sender_account_id: signer.account_id.clone(),
+                                sender_account_id: signer.get_account_id(),
                                 tx_hash,
                             },
                             wait_until: TxExecutionStatus::Final,

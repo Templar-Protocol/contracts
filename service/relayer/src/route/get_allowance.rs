@@ -26,5 +26,5 @@ pub async fn get_allowance(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
 
-    Json(allowance.unwrap_or(app.args.starting_allowance_yocto)).into_response()
+    Json(allowance.unwrap_or(app.args.relay.starting_allowance_yocto)).into_response()
 }

@@ -1,18 +1,23 @@
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
+
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
 };
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn activates_in_next_snapshot() {
+async fn activates_in_next_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(supply_user, borrow_user)
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy = InterestRateStrategy::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::BlockTimestampMs {
-                divisor: 1.into(),
+            c.time_chunk_configuration = TimeChunkConfiguration {
+                duration_ms: 1.into(),
             };
         })
     );

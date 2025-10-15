@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nSELECT\n    allowance,\n    allowance_locked,\n    mark AS \"mark: AccountMark\"\nFROM\n    account\nWHERE\n    account_id = $1\n",
+  "query": "\nSELECT\n    pending_transaction_hash,\n    allowance,\n    mark AS \"mark: AccountMark\"\nFROM\n    account\nWHERE\n    account_id = $1\n    AND mark <> 'always_deny'\n",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "allowance",
-        "type_info": "Numeric"
+        "name": "pending_transaction_hash",
+        "type_info": "Varchar"
       },
       {
         "ordinal": 1,
-        "name": "allowance_locked",
+        "name": "allowance",
         "type_info": "Numeric"
       },
       {
@@ -36,10 +36,10 @@
       ]
     },
     "nullable": [
-      false,
+      true,
       false,
       false
     ]
   },
-  "hash": "28779103b77e647fa296102a5ec3ed11870d1edf1eef299a7eb095070fe54f7c"
+  "hash": "09967f63f099e31aba439eb358775f58b443183ee7a945ed169fbacfc32b32c6"
 }

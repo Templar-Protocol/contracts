@@ -1,6 +1,8 @@
 // This test is particularly long-running. Since tests are run in lexographical
 // order, this test is named 0_... to start it running sooner.
 
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use templar_common::time_chunk::TimeChunkConfiguration;
 use test_utils::*;
 
@@ -22,9 +24,11 @@ fn linear_regression_slope(data: &[(f64, f64)]) -> f64 {
     (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x)
 }
 
+#[rstest]
 #[tokio::test]
-async fn many_snapshots() {
+async fn many_snapshots(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(c)
         accounts(borrow_user, supply_user)
         config(|c| {

@@ -175,9 +175,10 @@ impl Contract {
     pub fn execute_next_supply_withdrawal_request_01_finalize(
         &mut self,
         withdrawal_resolution: WithdrawalResolution,
-        expected_success: bool,
     ) {
-        asset_op!(self.borrow_asset_in_flight -= withdrawal_resolution.amount_to_account);
+        asset_op!(
+            self.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account
+        );
 
         // Withdrawal succeeded: remove the withdrawal request from the queue.
         // Withdrawal failed but should have succeeded: remove request but still refund.
@@ -192,22 +193,20 @@ impl Contract {
             supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
         }
 
-        if withdrawal_succeeded || expected_success {
-            // TODO: If this panics, this is BIG BAD, as it means there is
-            // some way to unlock the queue while a withdrawal is in-flight.
-            // So, maybe we should not *actually* panic here, but do some sort of recovery?
-            let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
-                env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
-            });
+        // TODO: If this panics, this is BIG BAD, as it means there is
+        // some way to unlock the queue while a withdrawal is in-flight.
+        // So, maybe we should not *actually* panic here, but do some sort of recovery?
+        let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
+            env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
+        });
 
-            // This is another consistency check: that the account at the
-            // head of the queue cannot change while transfers are
-            // in-flight. This should be maintained by the queue itself.
-            require!(
-                popped_account == withdrawal_resolution.account_id,
-                "Invariant violation: Queue shifted while locked/in-flight.",
-            );
-        }
+        // This is another consistency check: that the account at the
+        // head of the queue cannot change while transfers are
+        // in-flight. This should be maintained by the queue itself.
+        require!(
+            popped_account == withdrawal_resolution.account_id,
+            "Invariant violation: Queue shifted while locked/in-flight.",
+        );
 
         if withdrawal_succeeded {
             self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
@@ -221,9 +220,6 @@ impl Contract {
         } else {
             // Possible reasons for failure:
             // - MPC signer failure (multichain; TODO).
-            // - The contract does not control enough of the borrow asset to
-            //   fulfill the withdrawal request. That is to say, it has
-            //   distributed all of the funds to current borrows.
             // - If we expected success but it still failed, this means the
             //   receiving account cannot receive tokens for some reason. For
             //   NEP-141 tokens, this usually means that the user opted out of
@@ -336,7 +332,18 @@ impl Contract {
         initial_liquidation: InitialLiquidation,
         return_style: ReturnStyle,
     ) -> serde_json::Value {
-        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        // let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        // If the transfer of collateral failed, it could mean:
+        //
+        // 1. The liquidator has opted-out of storage management for the
+        //  collateral token. This can be due to negligence or malice, but
+        //  we cannot be sure, so we cannot refund the tokens, because
+        //  that would allow a borrow position in liquidation to
+        //  indefinitely lock their collateral from being liquidated.
+        //
+        // 2. Somehow the contract does not have enough collateral
+        //  available. This would be indicative of a *fundamental flaw*
+        //  in the contract (i.e. this should never happen).
 
         let snapshot = self.snapshot();
         let mut borrow_position = self
@@ -345,26 +352,9 @@ impl Contract {
                 env::panic_str("Invariant violation: Liquidation of nonexistent position.")
             });
 
-        if success {
-            let proof = borrow_position.accumulate_interest();
-            borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
-            return_style.serialize(initial_liquidation.refund)
-        } else {
-            // Somehow transfer of collateral failed. This could mean:
-            //
-            // 1. Somehow the contract does not have enough collateral
-            //  available. This would be indicative of a *fundamental flaw*
-            //  in the contract (i.e. this should never happen).
-            //
-            // 2. More likely, in a multichain context, communication
-            //  broke down somewhere between the signer and the remote RPC.
-            //  Could be as simple as a nonce sync issue. Should just wait
-            //  and try again later.
-            borrow_position.liquidation_unlock(initial_liquidation.liquidated);
-            let mut return_amount = initial_liquidation.recovered;
-            asset_op!(return_amount += initial_liquidation.refund);
-            return_style.serialize(return_amount)
-        }
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
+        return_style.serialize(initial_liquidation.refund)
     }
 
     // ~5.0 Tgas
@@ -388,7 +378,7 @@ impl Contract {
         };
 
         let proof = borrow_position.accumulate_interest();
-        borrow_position.record_collateral_asset_withdrawal(proof, amount);
+        borrow_position.record_collateral_asset_withdrawal_initial(proof, amount);
 
         require!(
             borrow_position
@@ -417,23 +407,23 @@ impl Contract {
         account_id: AccountId,
         amount: CollateralAssetAmount,
     ) {
-        let transfer_was_successful =
-            matches!(env::promise_result(0), PromiseResult::Successful(_));
+        let succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
-        if transfer_was_successful {
+        let snapshot = self.snapshot();
+        let Some(mut position) = self.borrow_position_guard(snapshot, account_id.clone()) else {
+            env::panic_str(
+                "Invariant violation: Borrow position must exist after collateral withdrawal.",
+            );
+        };
+
+        let proof = position.accumulate_interest();
+        position.record_collateral_asset_withdrawal_final(proof, amount, succeeded);
+
+        if succeeded {
+            drop(position);
             if self.cleanup_borrow_position(&account_id) {
                 self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
             }
-        } else {
-            let snapshot = self.snapshot();
-            let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
-                env::panic_str(
-                    "Invariant violation: Borrow position must exist after collateral withdrawal.",
-                );
-            };
-
-            let proof = borrow_position.accumulate_interest();
-            borrow_position.record_collateral_asset_deposit(proof, amount);
         }
     }
 
@@ -444,25 +434,14 @@ impl Contract {
     pub fn withdraw_static_yield_01_finalize(
         &mut self,
         account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
-        collateral_asset_amount: CollateralAssetAmount,
+        amount: BorrowAssetAmount,
     ) {
-        let mut static_yield = self.static_yield.get(&account_id).unwrap_or_else(|| {
+        let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
             env::panic_str("Invariant violation: static yield entry must exist during callback")
         });
-        let mut i = 0;
 
-        if !borrow_asset_amount.is_zero() {
-            if matches!(env::promise_result(i), PromiseResult::Failed) {
-                asset_op!(static_yield.borrow_asset += borrow_asset_amount);
-            }
-            i += 1;
-        }
-
-        if !collateral_asset_amount.is_zero()
-            && matches!(env::promise_result(i), PromiseResult::Failed)
-        {
-            asset_op!(static_yield.collateral_asset += collateral_asset_amount);
+        if matches!(env::promise_result(0), PromiseResult::Failed) {
+            yield_record.add_once(amount);
         }
     }
 }

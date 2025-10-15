@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
 use futures::{StreamExt, TryStreamExt};
-use near_crypto::{InMemorySigner, SecretKey};
+use near_crypto::{SecretKey, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     hash::CryptoHash,
@@ -115,7 +115,7 @@ pub struct Args {
 
 pub struct Liquidator<S: Swap> {
     client: JsonRpcClient,
-    signer: Arc<InMemorySigner>,
+    signer: Arc<Signer>,
     asset: Arc<FungibleAsset<BorrowAsset>>,
     pub market: AccountId,
     timeout: u64,
@@ -126,7 +126,7 @@ impl<S: Swap> Liquidator<S> {
     #[must_use]
     pub fn new(
         client: JsonRpcClient,
-        signer: Arc<InMemorySigner>,
+        signer: Arc<Signer>,
         asset: Arc<FungibleAsset<BorrowAsset>>,
         market: AccountId,
         swap: Arc<S>,
@@ -203,7 +203,7 @@ impl<S: Swap> Liquidator<S> {
             nonce,
             receiver_id: borrow_asset.contract_id().into(),
             block_hash,
-            signer_id: self.signer.account_id.clone(),
+            signer_id: self.signer.get_account_id(),
             public_key: self.signer.public_key().clone(),
             actions: vec![function_call.into()],
         }))
@@ -382,7 +382,7 @@ impl<S: Swap> Liquidator<S> {
         &self,
         asset: &FungibleAsset<A>,
     ) -> LiquidatorResult<U128> {
-        let balance_action = asset.balance_of_action(&self.signer.account_id);
+        let balance_action = asset.balance_of_action(&self.signer.get_account_id());
 
         let args: serde_json::Value = serde_json::from_slice(&balance_action.args)
             .map_err(LiquidatorError::SerializeError)?;
