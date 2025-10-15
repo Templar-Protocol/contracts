@@ -37,7 +37,7 @@ ADD
     DROP CONSTRAINT pk__transaction,
 ADD
     CONSTRAINT pk__call PRIMARY KEY (id),
-    DROP COLUMN STATUS;
+    DROP COLUMN "status";
 
 DROP TYPE IF EXISTS transaction_status;
 
