@@ -73,9 +73,8 @@ impl<T: AssetClass> TimeBasedFee<T> {
                 }
             }
             TimeBasedFeeFunction::Linear => {
-                (Decimal::from(self.duration.0.saturating_sub(duration))
-                    / Decimal::from(self.duration.0)
-                    * u128::from(base_fee))
+                (Decimal::from(self.duration.0.saturating_sub(duration)) * u128::from(base_fee)
+                    / Decimal::from(self.duration.0))
                 .to_u128_ceil()
                 .map(FungibleAssetAmount::new)
             }
