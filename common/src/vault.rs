@@ -1,4 +1,4 @@
-use near_sdk::{json_types::U128, near, AccountId, Gas, Promise, PromiseOrValue};
+use near_sdk::{env, json_types::U128, near, require, AccountId, Gas, Promise, PromiseOrValue};
 
 use crate::asset::{BorrowAsset, FungibleAsset};
 
@@ -153,6 +153,14 @@ pub const SUPPLY_GAS: Gas = buffer(8);
 pub const ALLOCATE_GAS: Gas = buffer(21);
 pub const WITHDRAW_GAS: Gas = buffer(4);
 pub const EXECUTE_WITHDRAW_GAS: Gas = buffer(9);
+
+pub fn require_at_least(needed: Gas) {
+    let gas = env::prepaid_gas();
+    require!(
+        gas >= needed,
+        format!("Insufficient gas: {}, needed: {needed}", gas)
+    );
+}
 
 #[near_sdk::ext_contract(ext_self)]
 pub trait Callbacks {

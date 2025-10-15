@@ -38,10 +38,7 @@ async fn main() {
 
         (supply_gas, allocation_gas)
     });
-    let results = futures::future::join_all(futures)
-        .await
-        .expect("All futures failed")
-        .into_iter();
+    let results = futures::future::join_all(futures).await.into_iter();
 
     let mut supply_gas_average = 0f64;
     let mut allocation_gas_average = 0f64;
