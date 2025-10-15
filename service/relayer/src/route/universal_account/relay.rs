@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use axum::{extract::State, Json};
-use near_primitives::{action::FunctionCallAction, hash::CryptoHash, views::TxExecutionStatus};
+use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
 use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId, NearToken,
@@ -93,7 +93,7 @@ pub async fn relay(
     let accounts = app.accounts.read().await;
 
     let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
-    let mut receivers = HashSet::with_capacity(payload.len());
+    let mut eligible_for_storage_deposit = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
         if !accounts.allowed_contract_data.contains_key(receiver_id) {
@@ -106,24 +106,9 @@ pub async fn relay(
             .actions
             .iter()
             .map(|action| match action {
-                Action::FunctionCall {
-                    function_name,
-                    arguments,
-                    amount,
-                    gas,
+                Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
+                    Ok((**call).clone().into())
                 }
-                | Action::FunctionCallWeight {
-                    function_name,
-                    arguments,
-                    amount,
-                    gas,
-                    ..
-                } => Ok(FunctionCallAction {
-                    method_name: function_name.clone(),
-                    args: arguments.0.clone(),
-                    gas: gas.as_gas(),
-                    deposit: amount.as_yoctonear(),
-                }),
                 a => Err(a),
             })
             .collect::<Result<Vec<_>, _>>()
@@ -136,17 +121,22 @@ pub async fn relay(
                 };
             }
         };
-        if let Err(e) = app.actions_are_allowed(receiver_id, &accounts, calls.iter()) {
-            tracing::info!("Disallowed action: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Disallowed action".to_string(),
+        let additional_interactions =
+            match app.actions_are_allowed(receiver_id, &accounts, calls.iter()) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::info!("Disallowed action: {e}");
+                    return SimpleResponse::Rejected {
+                        reason: "Disallowed action".to_string(),
+                    };
+                }
             };
-        }
-        receivers.insert(receiver_id.clone());
+        eligible_for_storage_deposit.insert(receiver_id.clone());
+        eligible_for_storage_deposit.extend(additional_interactions.into_iter());
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
 
-    let storage_deposit = receivers.intersection(&storage_deposit);
+    let storage_deposit = eligible_for_storage_deposit.intersection(&storage_deposit);
 
     // Deposit for storage before sending the user's transaction.
     for contract_id in storage_deposit {

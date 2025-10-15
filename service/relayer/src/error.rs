@@ -11,8 +11,8 @@ pub enum PreconditionError {
         index: usize,
         action: near_primitives::action::Action,
     },
-    #[error("Argument deserialization failure at index {index}: {}", String::from_utf8(args.clone()).unwrap_or("[binary data]".to_string()))]
-    ArgumentDeserializationFailure { index: usize, args: Vec<u8> },
+    #[error("Argument deserialization failure at index {index}")]
+    ArgumentDeserializationFailure { index: usize },
     #[error("Msg deserialization failure at index {index}: {msg}")]
     MsgDeserializationFailure { index: usize, msg: String },
     #[error("Unknown token transfer receiver account ID {account_id} at index {index}")]
@@ -25,6 +25,6 @@ pub enum PreconditionError {
         expected: String,
         actual: String,
     },
-    #[error("Unknown function name `{name}` at index {index}")]
-    UnknownFunctionName { name: String, index: usize },
+    #[error("Unknown function name at index {index}")]
+    UnknownFunctionName { index: usize },
 }

@@ -10,8 +10,6 @@ use near_sdk::{
 use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
 
-use error::PreconditionError;
-
 pub mod app;
 pub mod broom;
 pub mod cache;
@@ -42,25 +40,33 @@ pub struct AssetTransfer {
     pub receiver_id: AccountId,
 }
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum AssetTransferParseError {
+    #[error("Unknown function name")]
+    UnknownFunctionName,
+    #[error("Failed to deserialize arguments")]
+    ArgumentDeserialization,
+}
+
 impl AssetTransfer {
     /// # Errors
     ///
     /// - Argument deserialization
     /// - Unknown function name
     pub fn parse(
-        call: &FunctionCallAction,
-        index: usize,
         receiver_id: AccountId,
-    ) -> Result<Self, PreconditionError> {
+        call: &FunctionCallAction,
+    ) -> Result<Self, AssetTransferParseError> {
         let args = match &call.method_name[..] {
-            "ft_transfer_call" => TransferCallArgs::Nep141(deserialize_args(&call.args, index)?),
-            "mt_transfer_call" => TransferCallArgs::Nep245(deserialize_args(&call.args, index)?),
-            name => {
-                return Err(PreconditionError::UnknownFunctionName {
-                    name: name.to_owned(),
-                    index,
-                })
-            }
+            "ft_transfer_call" => TransferCallArgs::Nep141(
+                serde_json::from_slice(&call.args)
+                    .map_err(|_| AssetTransferParseError::ArgumentDeserialization)?,
+            ),
+            "mt_transfer_call" => TransferCallArgs::Nep245(
+                serde_json::from_slice(&call.args)
+                    .map_err(|_| AssetTransferParseError::ArgumentDeserialization)?,
+            ),
+            _ => return Err(AssetTransferParseError::UnknownFunctionName),
         };
 
         Ok(Self { args, receiver_id })
@@ -103,18 +109,6 @@ impl TransferCallArgs {
             TransferCallArgs::Nep245(args) => &args.msg,
         }
     }
-}
-
-fn deserialize_args<'de, T: Deserialize<'de>>(
-    slice: &'de [u8],
-    index: usize,
-) -> Result<T, PreconditionError> {
-    serde_json::from_slice::<T>(slice).map_err(|_| {
-        PreconditionError::ArgumentDeserializationFailure {
-            index,
-            args: slice.to_vec(),
-        }
-    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
