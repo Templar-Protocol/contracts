@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::{extract::State, Json};
 use near_primitives::{action::FunctionCallAction, hash::CryptoHash, views::TxExecutionStatus};
 use near_sdk::{
@@ -10,13 +12,15 @@ use templar_universal_account::{
     ExecuteArgs, KeyId,
 };
 
-use crate::{app::App, route::SimpleResponse};
+use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayRequest {
     pub account_id: AccountId,
     pub args: ExecuteArgs,
+    #[serde(default)]
+    pub storage_deposit: HashSet<AccountId>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -28,7 +32,11 @@ pub struct RelayResponse {
 #[allow(clippy::too_many_lines)]
 pub async fn relay(
     State(app): State<App>,
-    Json(RelayRequest { account_id, args }): Json<RelayRequest>,
+    Json(RelayRequest {
+        account_id,
+        args,
+        storage_deposit,
+    }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     let ExecuteArgs::Passkey {
         ref key,
@@ -85,6 +93,7 @@ pub async fn relay(
     let accounts = app.accounts.read().await;
 
     let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
+    let mut receivers = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
         if !accounts.allowed_contract_data.contains_key(receiver_id) {
@@ -133,7 +142,86 @@ pub async fn relay(
                 reason: "Disallowed action".to_string(),
             };
         }
+        receivers.insert(receiver_id.clone());
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
+    }
+
+    let storage_deposit = receivers.intersection(&storage_deposit);
+
+    // Deposit for storage before sending the user's transaction.
+    for contract_id in storage_deposit {
+        let Some(storage_balance_bounds) = accounts
+            .allowed_contract_data
+            .get(contract_id)
+            .and_then(|c| {
+                c.storage_balance_bounds
+                    .as_ref()
+                    .filter(|b| !b.min.is_zero())
+            })
+        else {
+            continue;
+        };
+
+        let storage_balance = match app
+            .relay_near
+            .load_storage_balance_of(contract_id.clone(), &account_id)
+            .await
+        {
+            Ok(storage_balance) => storage_balance,
+            Err(e) => {
+                return SimpleResponse::Failure {
+                    error: e.to_string(),
+                };
+            }
+        };
+
+        if storage_balance.is_some() {
+            continue;
+        }
+
+        let Some(cost_of_gas) = app
+            .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
+            .await
+            .map(|amount| amount.saturating_add(storage_balance_bounds.min))
+        else {
+            return SimpleResponse::Failure {
+                error: "Failed to estimate gas cost".to_string(),
+            };
+        };
+
+        let signed_transaction = app
+            .relay_near
+            .construct_storage_deposit_transaction(
+                &app.cache,
+                account_id.clone(),
+                contract_id.clone(),
+                storage_balance_bounds.min,
+            )
+            .await;
+
+        let resolve_transaction = match app
+            .send_and_resolve_transaction(
+                account_id.clone(),
+                cost_of_gas,
+                storage_balance_bounds.min,
+                signed_transaction,
+                TxExecutionStatus::Final,
+            )
+            .await
+        {
+            Ok(future) => future,
+            Err(e) => {
+                tracing::error!("Send transaction failure: {e}");
+                return SimpleResponse::Failure {
+                    error: e.to_string(),
+                };
+            }
+        };
+
+        // Resolve synchronously.
+        if let Err(e) = resolve_transaction.await {
+            tracing::error!("Resolve transaction failure: {e}");
+        }
     }
 
     let signed_transaction = app
@@ -155,7 +243,7 @@ pub async fn relay(
             cost_of_gas,
             NearToken::from_near(0),
             signed_transaction,
-            TxExecutionStatus::Included,
+            TxExecutionStatus::Final,
         )
         .await
     {
