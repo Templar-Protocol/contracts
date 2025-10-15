@@ -4,7 +4,7 @@ use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env,
     json_types::U128,
-    near, serde_json,
+    near, require, serde_json,
     store::{IterableMap, LookupMap, Vector},
     AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
@@ -21,11 +21,11 @@ use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
-        ext_self, AllocationMode, AllocationPlan, AllocationWeights, Error, Event,
-        MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
+        ext_self, require_at_least, AllocationMode, AllocationPlan, AllocationWeights, Error,
+        Event, MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
         VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_ENSURE_GAS, CREATE_WITHDRAW_REQ_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS,
-        MIN_TIMELOCK_NS,
+        AFTER_SUPPLY_ENSURE_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
+        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -731,6 +731,7 @@ impl Contract {
     /// Internally calls `redeem` after computing the share amount.
     #[payable]
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
+        require_at_least(WITHDRAW_GAS);
         let shares_needed = self.preview_withdraw(amount).0;
         self.redeem(U128(shares_needed), receiver)
     }
@@ -768,6 +769,7 @@ impl Contract {
     /// Executes the next pending withdrawal request, if any, using the existing withdraw pipeline.
     /// This defers creating market-side withdrawal requests until explicitly invoked.
     pub fn execute_next_withdrawal_request(&mut self) -> PromiseOrValue<()> {
+        require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
 
@@ -810,6 +812,7 @@ impl Contract {
         weights: AllocationWeights,
         amount: Option<U128>,
     ) -> PromiseOrValue<()> {
+        require_at_least(ALLOCATE_GAS);
         Self::assert_allocator();
         self.ensure_idle();
 
