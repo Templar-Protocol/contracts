@@ -23,61 +23,72 @@ async fn main() {
     let weights = vec![(c.market.contract().id().clone(), U128(1))];
     let user1_amount = max / ITERATIONS as u128;
 
-    let futures = (0..ITERATIONS).map(|_| async {
-        let supply_gas = vault
+    // Run supplies concurrently.
+    let supply_futures = (0..ITERATIONS).map(|_| async {
+        vault
             .supply(&user1, user1_amount)
             .await
             .total_gas_burnt
-            .as_gas() as f64;
+            .as_gas() as f64
+    });
+    let supply_results = futures::future::join_all(supply_futures).await;
 
+    let mut supply_gas_average = 0f64;
+    for s in supply_results {
+        supply_gas_average += s / ITERATIONS as f64;
+    }
+
+    let mut allocation_gas_average = 0f64;
+    for _ in 0..ITERATIONS {
         let allocation_gas = vault
             .allocate(&vault_curator, weights.clone(), Some(U128(user1_amount)))
             .await
             .total_gas_burnt
             .as_gas() as f64;
-
-        (supply_gas, allocation_gas)
-    });
-    let results = futures::future::join_all(futures).await.into_iter();
-
-    let mut supply_gas_average = 0f64;
-    let mut allocation_gas_average = 0f64;
-    // Aggregate and compute averages.
-    for (s, a) in results {
-        supply_gas_average += s / ITERATIONS as f64;
-        allocation_gas_average += a / ITERATIONS as f64;
+        allocation_gas_average += allocation_gas / ITERATIONS as f64;
     }
 
     // Supply to vault
     let user2_amount = g();
-    let user3_amount = g();
-    tokio::join!(
-        vault.supply(&user2, user2_amount),
-        vault.supply(&user3, user3_amount)
-    );
+    vault.supply(&user2, user2_amount).await;
 
-    // Create all futures first so they can be awaited concurrently.
-    let futures = (0..ITERATIONS).map(|_| async {
-        let withdraw_gas = vault
+    let user3_amount = g();
+
+    // Submitting a smaller gas limit will not require a timelock
+    let submit_cap_gas = vault
+        .submit_cap(
+            &vault_curator,
+            c.market.contract().id().clone(),
+            U128(user3_amount),
+        )
+        .await
+        .total_gas_burnt
+        .as_gas() as f64;
+
+    vault.supply(&user3, user3_amount).await;
+
+    let withdraw_futures = (0..ITERATIONS).map(|_| async {
+        vault
             .withdraw(&user2, U128(1), None)
             .await
             .total_gas_burnt
-            .as_gas() as f64;
+            .as_gas() as f64
+    });
+    let withdraw_results = futures::future::join_all(withdraw_futures).await;
+
+    let mut withdraw_gas_average = 0f64;
+    for w in withdraw_results {
+        withdraw_gas_average += w / ITERATIONS as f64;
+    }
+
+    let mut execute_withdraw_gas_average = 0f64;
+    for _ in 0..ITERATIONS {
         let execute_gas = vault
             .execute_next_withdrawal(&vault_curator)
             .await
             .total_gas_burnt
             .as_gas() as f64;
-        (withdraw_gas, execute_gas)
-    });
-
-    let results = futures::future::join_all(futures).await;
-
-    let mut withdraw_gas_average = 0f64;
-    let mut execute_withdraw_gas_average = 0f64;
-    for (w, e) in results {
-        withdraw_gas_average += w / ITERATIONS as f64;
-        execute_withdraw_gas_average += e / ITERATIONS as f64;
+        execute_withdraw_gas_average += execute_gas / ITERATIONS as f64;
     }
 
     println!("## Gas Report");
@@ -96,6 +107,7 @@ async fn main() {
             "execute withdraw",
             Gas::from_gas(execute_withdraw_gas_average as u64),
         ),
+        ("submit_cap", Gas::from_gas(submit_cap_gas as u64)),
     ];
     for (action_label, gas) in list {
         println!("| `{action_label}` | {gas} |");

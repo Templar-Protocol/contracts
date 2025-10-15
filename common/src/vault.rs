@@ -145,7 +145,10 @@ pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(5);
 
 // Add a 20% buffer to a gas estimate
 pub const fn buffer(size: usize) -> Gas {
-    Gas::from_tgas(size as u64 * 2 / 5)
+    // 20% buffer => multiply by 6/5 (≈1.2x)
+    Gas::from_tgas(size as u64)
+        .saturating_mul(6)
+        .saturating_div(5)
 }
 
 // NOTE: these are taken after running the contract with the gas report
@@ -153,6 +156,7 @@ pub const SUPPLY_GAS: Gas = buffer(8);
 pub const ALLOCATE_GAS: Gas = buffer(21);
 pub const WITHDRAW_GAS: Gas = buffer(4);
 pub const EXECUTE_WITHDRAW_GAS: Gas = buffer(9);
+pub const SUBMIT_CAP_GAS: Gas = buffer(4);
 
 pub fn require_at_least(needed: Gas) {
     let gas = env::prepaid_gas();
