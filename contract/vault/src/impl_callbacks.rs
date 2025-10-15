@@ -7,12 +7,18 @@ use near_sdk::{
     PromiseOrValue,
 };
 use near_sdk_contract_tools::ft::nep141::GAS_FOR_FT_TRANSFER_CALL;
-use templar_common::{market::ext_market, supply::SupplyPosition, vault::Event};
+use templar_common::{
+    market::ext_market,
+    supply::SupplyPosition,
+    vault::{
+        Callbacks, Event, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_EXEC_WITHDRAW_READ_GAS,
+        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_POSITION_CHECK_GAS, EXECUTE_WITHDRAW_REQ_GAS,
+        GET_SUPPLY_POSITION_GAS,
+    },
+};
 
 #[near]
 impl Contract {
-    pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
-
     #[private]
     pub fn after_supply_1_check(
         &mut self,
@@ -24,9 +30,8 @@ impl Contract {
         attempted: U128,
     ) -> PromiseOrValue<()> {
         // Invariant: Index drift or stale op_id results in a graceful stop
-        let _ = match self.ctx_allocating(op_id) {
-            Ok(_) => (),
-            Err(e) => return self.stop_and_exit(Some(&e)),
+        let _ = if let Err(e) = self.ctx_allocating(op_id) {
+            return self.stop_and_exit(Some(&e));
         };
 
         // Resolve market by plan  or supply_queue
@@ -51,12 +56,12 @@ impl Contract {
 
         PromiseOrValue::Promise(
             ext_market::ext(market.clone())
-                .with_static_gas(Self::GET_SUPPLY_POSITION_GAS)
+                .with_static_gas(GET_SUPPLY_POSITION_GAS)
                 .with_unused_gas_weight(0)
                 .get_supply_position(env::current_account_id())
                 .then(
                     ext_self::ext(env::current_account_id())
-                        .with_static_gas(Self::AFTER_SUPPLY_POSITION_CHECK_GAS)
+                        .with_static_gas(AFTER_SUPPLY_POSITION_CHECK_GAS)
                         .after_supply_2_read(
                             op_id,
                             market_index,
@@ -68,10 +73,6 @@ impl Contract {
         )
     }
 
-    pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(4);
-    pub const AFTER_SUPPLY_POSITION_CHECK_GAS: Gas = Gas::from_tgas(10);
-
-    // FIXME: no panics in this function! This will cause to spin if the op changes
     #[private]
     pub fn after_supply_2_read(
         &mut self,
@@ -163,8 +164,6 @@ impl Contract {
         self.step_allocation()
     }
 
-    pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(20);
-
     #[private]
     pub fn after_create_withdraw_req(
         &mut self,
@@ -191,13 +190,13 @@ impl Contract {
         if let Ok(()) = did_create {
             PromiseOrValue::Promise(
                 ext_market::ext(market.clone())
-                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                    .with_static_gas(EXECUTE_WITHDRAW_REQ_GAS)
                     // TODO: we can only do this if there is sufficient liquidity in the market, we
                     // should check that there is first, but even so, we can be rugged
                     .execute_next_supply_withdrawal_request()
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(Self::AFTER_CREATE_WITHDRAW_REQ_GAS)
+                            .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
                             .after_exec_withdraw_req(op_id, market_index, need),
                     ),
             )
@@ -242,11 +241,12 @@ impl Contract {
         let before = *self.market_supply.get(&market).unwrap_or(&0);
         PromiseOrValue::Promise(
             ext_market::ext(market.clone())
-                .with_static_gas(Self::GET_SUPPLY_POSITION_GAS)
+                .with_static_gas(GET_SUPPLY_POSITION_GAS)
+                .with_unused_gas_weight(0)
                 .get_supply_position(env::current_account_id())
                 .then(
                     ext_self::ext(env::current_account_id())
-                        .with_static_gas(Self::AFTER_CREATE_WITHDRAW_REQ_GAS)
+                        .with_static_gas(AFTER_EXEC_WITHDRAW_READ_GAS)
                         .after_exec_withdraw_read(op_id, market_index, U128(before), need),
                 ),
         )
@@ -283,6 +283,7 @@ impl Contract {
             }
             Ok(None) => {
                 // No position => treat as principal = 0
+                // NOTE: this is a successful withdraw
                 Event::WithdrawalPositionMissing {
                     op_id,
                     market: market.clone(),
@@ -331,7 +332,7 @@ impl Contract {
                         .transfer(recv.clone(), U128(collected).into())
                         .then(
                             ext_self::ext(env::current_account_id())
-                                .with_static_gas(Self::AFTER_SEND_TO_USER_GAS)
+                                .with_static_gas(AFTER_SEND_TO_USER_GAS)
                                 .after_send_to_user(op_id, recv, U128(collected)),
                         ),
                 )
@@ -356,8 +357,6 @@ impl Contract {
             self.step_withdraw()
         }
     }
-
-    pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(5);
 
     #[private]
     pub fn after_send_to_user(
@@ -446,7 +445,9 @@ impl Contract {
             )
         }
     }
+}
 
+impl Contract {
     fn stop_and_exit_allocating<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
@@ -581,9 +582,6 @@ impl Contract {
         }
         PromiseOrValue::Value(())
     }
-}
-
-impl Contract {
     // Validate current op is Allocating and return (index, remaining)
     pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<(u32, u128), Error> {
         match &self.op_state {
@@ -1224,5 +1222,4 @@ mod tests {
             Err(Error::MissingMarket(2))
         ));
     }
-
 }

@@ -100,7 +100,7 @@ macro_rules! setup_test {
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}), vconfig(|_| {}))
+        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}))
     };
 }
 

@@ -1,7 +1,7 @@
 use crate::{aux::ReturnStyle, Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
-use templar_common::vault::{AllocationMode, DepositMsg, Event};
+use templar_common::vault::{AllocationMode, DepositMsg, Event, SUPPLY_GAS};
 
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
@@ -26,6 +26,11 @@ impl FungibleTokenReceiver for Contract {
 
         match msg {
             DepositMsg::Supply => {
+                require!(
+                    env::prepaid_gas() > SUPPLY_GAS,
+                    format!("Not enough gas, required {SUPPLY_GAS}")
+                );
+
                 let refund = self.execute_supply(sender_id, asset_id, amount.into());
                 PromiseOrValue::Value(refund.into())
             }
@@ -66,6 +71,11 @@ impl Nep245Receiver for Contract {
 
         match msg {
             DepositMsg::Supply => {
+                require!(
+                    env::prepaid_gas() > SUPPLY_GAS,
+                    format!("Not enough gas, required {SUPPLY_GAS}")
+                );
+
                 let mt = env::predecessor_account_id();
 
                 if !self.underlying_asset.is_nep245(&mt, token_id) {
