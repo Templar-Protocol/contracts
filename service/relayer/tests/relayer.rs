@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 
 use axum::{extract::State, Json};
 use clap::Parser;
@@ -338,7 +338,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
                 key: passkey,
                 message,
             },
-            storage_deposit: Default::default(),
+            storage_deposit: HashSet::default(),
         }),
     )
     .await;
