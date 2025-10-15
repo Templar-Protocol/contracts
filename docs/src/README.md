@@ -6,7 +6,7 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 
 ## Quick Navigation
 
-- **[Smart Contract Addresses](./contracts.md)** - Official contract addresses and verification
+- **[Smart Contract Addresses](./deployments.md)** - Official contract addresses and verification
 - **[Protocol Governance](./governance.md)** - Administrative controls and upgrade mechanisms
 - **[Oracle System](./oracles.md)** - Price feed infrastructure and monitoring
 - **[Security Reporting](./security.md)** - Security practices and vulnerability reporting
@@ -23,10 +23,3 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 ## Additional Resources
 
 - **[Implementation Notes](./notes.md)** - Technical implementation details
-
-## Getting Started
-
-1. **Review Security**: Start with our [Security documentation](./security.md) to understand the protocol's security model
-2. **Check Contract Addresses**: Get the latest deployed contracts from [Contract Addresses](./contracts.md)
-3. **Understand Market Operations**: Learn about [Market Operations](./market/README.md)
-4. **Explore Oracle System**: Understand price feeds in [Oracle Documentation](./oracles.md)

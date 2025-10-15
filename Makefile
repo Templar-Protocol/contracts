@@ -1,4 +1,4 @@
-.PHONY: fmt sql-fmt
+.PHONY: fmt sql-fmt docs
 
 RUST_FILES := $(shell find . -name '*.rs' -not -path './target/*')
 SQL_FILES := $(shell find . -name '*.sql' -not -path './target/*')
@@ -11,3 +11,6 @@ sql-fmt:
 
 fmt: sql-fmt
 	cargo fmt
+
+docs:
+	./script/build-docs.sh
