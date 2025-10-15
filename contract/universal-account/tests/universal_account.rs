@@ -11,7 +11,7 @@ use templar_universal_account::{
         Passkey, Payload, UncheckedMessage,
     },
     encoding::p256::PublicKey,
-    transaction::{Action, Transaction},
+    transaction::{FunctionCallAction, Transaction},
     ExecuteArgs, KeyId,
 };
 use test_utils::{
@@ -52,13 +52,14 @@ pub async fn universal_account() {
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![
-                Action::FunctionCall {
+                FunctionCallAction {
                     function_name: "storage_deposit".to_string(),
                     arguments: serde_json::to_vec(&json!({})).unwrap().into(),
                     amount: NearToken::from_near(1).saturating_div(4),
                     gas: near_sdk::Gas::from_tgas(30),
-                },
-                Action::FunctionCall {
+                }
+                .into(),
+                FunctionCallAction {
                     function_name: "mint".to_string(),
                     arguments: serde_json::to_vec(&json!({
                         "amount": "100",
@@ -67,7 +68,8 @@ pub async fn universal_account() {
                     .into(),
                     amount: NearToken::from_near(0),
                     gas: near_sdk::Gas::from_tgas(30),
-                },
+                }
+                .into(),
             ]
             .into(),
         }]

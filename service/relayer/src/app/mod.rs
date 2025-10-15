@@ -32,7 +32,7 @@ use crate::{
         near::Near,
     },
     error::PreconditionError,
-    AccountData, AssetTransfer, ContractData,
+    AccountData, AssetTransfer, AssetTransferParseError, ContractData,
 };
 
 pub mod args;
@@ -192,6 +192,8 @@ impl App {
 
     /// Checks that the all of the function call actions are allowed for the specific receiver.
     ///
+    /// Returns a list of other accounts that this action will probably interact with in addition to the receiver.
+    ///
     /// # Errors
     ///
     /// - If the receiver is not known.
@@ -201,22 +203,30 @@ impl App {
         receiver_id: &AccountIdRef,
         accounts: &AccountData,
         calls: impl IntoIterator<Item = &'a FunctionCallAction>,
-    ) -> Result<(), PreconditionError> {
+    ) -> Result<Vec<AccountId>, PreconditionError> {
+        let mut other_interactions = Vec::new();
+
         if accounts.market_data.contains_key(receiver_id) {
             // Calling a market contract directly.
             for (index, call) in calls.into_iter().enumerate() {
                 if !self.args.relay.allowed_methods.contains(&call.method_name) {
-                    return Err(PreconditionError::UnknownFunctionName {
-                        name: call.method_name.clone(),
-                        index,
-                    });
+                    return Err(PreconditionError::UnknownFunctionName { index });
                 }
             }
         } else {
             // Token contract transfer call to market.
             for (index, call) in calls.into_iter().enumerate() {
-                let transfer = AssetTransfer::parse(call, index, receiver_id.to_owned())?;
+                let transfer =
+                    AssetTransfer::parse(receiver_id.to_owned(), call).map_err(|e| match e {
+                        AssetTransferParseError::UnknownFunctionName => {
+                            PreconditionError::UnknownFunctionName { index }
+                        }
+                        AssetTransferParseError::ArgumentDeserialization => {
+                            PreconditionError::ArgumentDeserializationFailure { index }
+                        }
+                    })?;
                 let market_id = transfer.token_receiver_id();
+                other_interactions.push(market_id.to_owned());
 
                 let Some(market_account_ids) = accounts.market_data.get(market_id) else {
                     return Err(PreconditionError::UnknownTransferReceiverId {
@@ -258,7 +268,7 @@ impl App {
             }
         }
 
-        Ok(())
+        Ok(other_interactions)
     }
 
     /// Check and calculate gas for a signed delegate action.

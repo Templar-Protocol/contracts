@@ -305,12 +305,14 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         account_id: ua_account_id.clone(),
         payload: vec![Transaction {
             receiver_id: c.contract().id().clone(),
-            actions: Box::new([transaction::Action::FunctionCall {
+            actions: vec![transaction::FunctionCallAction {
                 function_name: "apply_interest".to_string(),
                 arguments: b"{}".to_vec().into(),
                 amount: NearToken::from_near(0),
                 gas: near_sdk::Gas::from_tgas(250),
-            }]),
+            }
+            .into()]
+            .into(),
         }]
         .into(),
     });

@@ -4543,6 +4543,7 @@ name = "templar-universal-account"
 version = "1.1.0"
 dependencies = [
  "hex",
+ "near-primitives",
  "near-sdk",
  "p256",
  "schemars",

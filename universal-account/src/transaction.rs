@@ -26,6 +26,34 @@ impl Transaction {
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
+#[serde(deny_unknown_fields)]
+pub struct FunctionCallAction {
+    pub function_name: String,
+    pub arguments: Base64VecU8,
+    pub amount: NearToken,
+    pub gas: Gas,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<FunctionCallAction> for near_primitives::action::FunctionCallAction {
+    fn from(value: FunctionCallAction) -> Self {
+        Self {
+            method_name: value.function_name,
+            args: value.arguments.0,
+            gas: value.gas.as_gas(),
+            deposit: value.amount.as_yoctonear(),
+        }
+    }
+}
+
+impl From<FunctionCallAction> for Action {
+    fn from(value: FunctionCallAction) -> Self {
+        Action::FunctionCall(Box::new(value))
+    }
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [json])]
 #[non_exhaustive]
 #[serde(deny_unknown_fields)]
 pub enum Action {
@@ -33,17 +61,10 @@ pub enum Action {
     DeployContract {
         code: Base64VecU8,
     },
-    FunctionCall {
-        function_name: String,
-        arguments: Base64VecU8,
-        amount: NearToken,
-        gas: Gas,
-    },
+    FunctionCall(Box<FunctionCallAction>),
     FunctionCallWeight {
-        function_name: String,
-        arguments: Base64VecU8,
-        amount: NearToken,
-        gas: Gas,
+        #[serde(flatten)]
+        call: Box<FunctionCallAction>,
         weight: U64,
     },
     Transfer {
@@ -89,28 +110,17 @@ impl Action {
         match self {
             Action::CreateAccount => promise.create_account(),
             Action::DeployContract { code } => promise.deploy_contract(code.0.clone()),
-            Action::FunctionCall {
-                function_name,
-                arguments,
-                amount,
-                gas,
-            } => promise.function_call(
-                function_name.to_string(),
-                arguments.0.clone(),
-                *amount,
-                *gas,
+            Action::FunctionCall(ref call) => promise.function_call(
+                call.function_name.to_string(),
+                call.arguments.0.clone(),
+                call.amount,
+                call.gas,
             ),
-            Action::FunctionCallWeight {
-                function_name,
-                arguments,
-                amount,
-                gas,
-                weight,
-            } => promise.function_call_weight(
-                function_name.to_string(),
-                arguments.0.clone(),
-                *amount,
-                *gas,
+            Action::FunctionCallWeight { call, weight } => promise.function_call_weight(
+                call.function_name.to_string(),
+                call.arguments.0.clone(),
+                call.amount,
+                call.gas,
                 GasWeight(weight.0),
             ),
             Action::Transfer { amount } => promise.transfer(*amount),
