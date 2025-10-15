@@ -1,5 +1,3 @@
-use crate::storage_management;
-use crate::storage_management::storage_bytes_for_pending_cap_entry;
 use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::storage_management::yocto_for_new_market;
@@ -7,15 +5,12 @@ use crate::test_utils::*;
 use crate::Contract;
 use near_sdk::env;
 use near_sdk::test_utils::accounts;
-use near_sdk::{json_types::U128, AccountId, RuntimeFeesConfig};
-use near_sdk::{test_vm_config, testing_env};
+use near_sdk::{json_types::U128, AccountId};
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
 use rstest::rstest;
-use templar_common::asset::{BorrowAsset, FungibleAsset};
 use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
-use templar_common::vault::{AllocationMode, VaultConfiguration};
 
 #[rstest(len => [2usize, 3, 5])]
 #[should_panic = "Duplicate market"]
@@ -142,8 +137,8 @@ fn execute_next_withdrawal_request_skips_holes() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    println!("vault_id: {}", vault_id);
-    println!("owner: {}", owner);
+    println!("vault_id: {vault_id}");
+    println!("owner: {owner}");
 
     // Bob gets 20 shares
     c.deposit_unchecked(&owner, 20).unwrap();
@@ -722,7 +717,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     c.supply_queue.push(m.clone());
     c.idle_balance = idle;
 
-    let room = if cap > cur { cap - cur } else { 0 };
+    let room = cap.saturating_sub(cur);
     let requested = req.unwrap_or(c.idle_balance);
     let expect = requested.min(c.idle_balance).min(room);
 

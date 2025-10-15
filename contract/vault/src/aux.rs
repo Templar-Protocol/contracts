@@ -33,7 +33,7 @@ pub enum ReturnStyle {
 
 // TODO: use this
 impl ReturnStyle {
-    pub fn serialize(
+    #[must_use] pub fn serialize(
         &self,
         amount: templar_common::asset::FungibleAssetAmount<impl templar_common::asset::AssetClass>,
     ) -> serde_json::Value {

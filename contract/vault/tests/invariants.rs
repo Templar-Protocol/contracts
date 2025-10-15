@@ -1,8 +1,5 @@
-use near_sdk::{json_types::U128, AccountId};
-use templar_common::{interest_rate_strategy::InterestRateStrategy, number::Decimal};
 use test_utils::{
-    controller::vault::UnifiedVaultController, setup_test, ContractController, MarketController,
-    UnifiedMarketController,
+    setup_test, ContractController,
 };
 
 // TODO(unit?): on allocation-failure, reconcile to idle
