@@ -316,6 +316,7 @@ pub async fn setup_everything(
         c.init_account(&protocol_yield_user),
         c.init_account(&insurance_yield_user),
         v.storage_deposits(v.vault.contract().as_account()),
+        v.storage_deposits(&vault_curator),
         v.storage_deposits(&skim_recipient),
         v.storage_deposits(&fee_recipient),
     );

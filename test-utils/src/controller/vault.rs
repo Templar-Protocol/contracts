@@ -259,6 +259,8 @@ impl UnifiedVaultController {
     }
 
     pub async fn setup_caps(&self, owner: &Account, markets: &[AccountId], amount: u128) {
+        self.storage_deposits(owner).await;
+
         for mkt in markets {
             self.submit_cap(owner, mkt.clone(), amount.into()).await;
             self.accept_cap(owner, mkt.clone()).await;

@@ -1,5 +1,5 @@
 use crate::PendingWithdrawal;
-use near_sdk::{env, AccountId};
+use crate::{env, AccountId, Contract, Nep145Controller, Nep145ForceUnregister};
 use std::collections::HashSet;
 use templar_common::vault::{storage_bytes_for_account_id, MarketConfiguration};
 
@@ -95,4 +95,31 @@ pub fn require_attached_for_bytes(bytes: u64, ctx: &str) -> u128 {
 pub fn require_attached_for_pending_withdrawal() -> u128 {
     let bytes = storage_bytes_for_pending_withdrawal();
     require_attached_for_bytes(bytes, "withdrawal request")
+}
+
+impl Contract {
+    /* ----- Storage ----- */
+    pub(crate) fn charge_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
+        // Invariant: Storage charging saturates and panics on failure to avoid negative balances.
+        self.lock_storage(
+            account_id,
+            env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
+        )
+        .unwrap_or_else(|e| env::panic_str(&format!("Storage error: {e}")));
+    }
+
+    pub(crate) fn refund_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
+        // Invariant: Storage refunds saturate and panic on failure to preserve accounting integrity.
+        self.unlock_storage(
+            account_id,
+            env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
+        )
+        .unwrap_or_else(|e| env::panic_str(&format!("Storage error: {e}")));
+    }
+}
+impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {
+    fn hook<R>(_: &mut Self, _: &Nep145ForceUnregister, _: impl FnOnce(&mut Self) -> R) -> R {
+        // Invariant: Force unregister must fail to preserve FT ledger integrity.
+        env::panic_str("force unregistration is not supported")
+    }
 }

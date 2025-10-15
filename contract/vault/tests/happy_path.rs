@@ -85,7 +85,6 @@ async fn happy() {
 
     // Resupply and wait
     vault.supply(&supply_user, amount.0).await;
-    // FIXME:Storage issue:         Error: Error { repr: Custom { kind: Execution, error: ActionError(ActionError { index: Some(0), kind: FunctionCallError(ExecutionError("Smart contract panicked: Storage error: Account vault0251007104533-70674114756315 has insufficient balance: 0.005 NEAR available, but attempted to use 0.008 NEAR")) }) } }
     vault.allocate(&vault_curator, weights, Some(amount)).await;
     harvest(&c, &vault).await;
 
@@ -108,14 +107,15 @@ async fn happy() {
 // FIXME: should also do this in allocate on behalf of the vault?
 pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
     // Wait for activation.
-    while !c
-        .get_supply_position(vault.contract().id())
-        .await
-        .unwrap()
-        .get_deposit()
-        .incoming
-        .is_empty()
-    {
+    loop {
+        let still_incoming = c
+            .get_supply_position(vault.contract().id())
+            .await
+            .map(|p| !p.get_deposit().incoming.is_empty())
+            .unwrap_or(false);
+        if !still_incoming {
+            break;
+        }
         // TODO: should also do this in allocate
         c.harvest_yield(vault.contract().as_account(), None, None)
             .await;

@@ -4,7 +4,7 @@ pub use near_sdk::{
     test_utils::{accounts, VMContextBuilder},
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
 };
-use near_sdk_contract_tools::ft::Nep141Controller as _;
+use near_sdk_contract_tools::ft::{Nep141Controller as _, Nep145};
 use test_utils::vault_configuration;
 
 pub fn mk(n: u32) -> AccountId {
@@ -20,6 +20,7 @@ pub fn setup_env(
     builder.current_account_id(current.clone());
     builder.predecessor_account_id(predecessor.clone());
     builder.signer_account_id(predecessor.clone());
+
     testing_env!(
         builder.build(),
         test_vm_config(),
@@ -41,15 +42,41 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     let underlying_token_id = mk(6);
 
     let cfg = vault_configuration(
-        owner,
-        curator,
-        guardian,
+        owner.clone(),
+        curator.clone(),
+        guardian.clone(),
         underlying_token_id,
-        skim_recipient,
-        fee_recipient,
+        skim_recipient.clone(),
+        fee_recipient.clone(),
     );
 
-    Contract::new(cfg)
+    let mut c = Contract::new(cfg);
+    for i in 0..10 {
+        let id = mk(i);
+        let mut builder = VMContextBuilder::new();
+        builder.current_account_id(vault_id.clone());
+        builder.predecessor_account_id(vault_id.clone());
+        builder.signer_account_id(vault_id.clone());
+        builder.attached_deposit(NearToken::from_near(1));
+
+        testing_env!(
+            builder.build(),
+            test_vm_config(),
+            RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![]
+        );
+        c.storage_deposit(Some(id), None);
+    }
+    c.storage_deposit(Some(owner), None);
+    c.storage_deposit(Some(curator), None);
+    c.storage_deposit(Some(guardian), None);
+    c.storage_deposit(Some(fee_recipient), None);
+    c.storage_deposit(Some(skim_recipient), None);
+
+    setup_env(vault_id, vault_id, vec![]);
+
+    c
 }
 // Set the block timestamp and keep caller/predecessor consistent for tests
 pub fn set_block_ts(vault_id: &AccountId, signer: &AccountId, ts: u64) {

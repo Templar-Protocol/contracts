@@ -6,7 +6,7 @@ use near_sdk::{
     json_types::U128,
     near, serde_json,
     store::{IterableMap, LookupMap, Vector},
-    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, BorshStorageKey, IntoStorageKey, NearToken, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
@@ -33,7 +33,7 @@ pub use wad::*;
 use crate::storage_management::{
     require_attached_at_least, require_attached_for_pending_withdrawal,
     storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
-    yocto_for_pending_cap,
+    yocto_for_pending_cap, yocto_for_queue_additions,
 };
 
 pub mod aux;
@@ -74,7 +74,7 @@ pub enum Role {
 }
 
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
-// FIXME: #[nep145(force_unregister_hook = "Self")]
+#[fungible_token(force_unregister_hook = "Self")]
 #[rbac(roles = "Role", crate = "crate")]
 #[near(contract_state)]
 /// Vault contract that issues shares over an underlying fungible asset and allocates liquidity
@@ -440,6 +440,8 @@ impl Contract {
         if new_cap.0 > current_cap {
             required_deposit = required_deposit.saturating_add(yocto_for_pending_cap());
         }
+
+        #[allow(unused_must_use, reason = "protocol pays for cap")]
         require_attached_at_least(required_deposit, "submit_cap");
 
         let config = match self.config.get_mut(&market) {
@@ -520,6 +522,7 @@ impl Contract {
                         }
                         .emit();
                     } else {
+                        #[allow(unused_must_use, reason = "protocol pays for queue")]
                         require_attached_at_least(
                             yocto_for_bytes(storage_bytes_for_queue_account_id()),
                             "withdraw queue entry",
@@ -629,7 +632,8 @@ impl Contract {
         // Compute and require storage for additions (no refunds for removals in this pass)
         let current: std::collections::HashSet<AccountId> =
             self.supply_queue.iter().cloned().collect();
-        let required_yocto = storage_management::yocto_for_queue_additions(&current, &markets);
+        let required_yocto = yocto_for_queue_additions(&current, &markets);
+        #[allow(unused_must_use, reason = "protocol pays for queue")]
         require_attached_at_least(required_yocto, "supply queue update");
 
         self.supply_queue.clear();
@@ -711,8 +715,15 @@ impl Contract {
             }
         }
 
-        let required_yocto = storage_management::yocto_for_queue_additions(&current, &queue);
-        require_attached_at_least(required_yocto, "withdraw queue update");
+        let required_yocto = yocto_for_queue_additions(&current, &queue);
+        self.lock_storage(
+            &env::predecessor_account_id(),
+            NearToken::from_yoctonear(require_attached_at_least(
+                required_yocto,
+                "withdraw queue update",
+            )),
+        )
+        .expect("Storage lock failed");
         for id in current.difference(&seen).cloned().collect::<Vec<_>>() {
             self.config.remove(&id);
         }
@@ -745,7 +756,11 @@ impl Contract {
         let assets = self.convert_to_assets(U128(shares)).0;
         let sender = env::predecessor_account_id();
 
-        require_attached_for_pending_withdrawal();
+        self.lock_storage(
+            &env::predecessor_account_id(),
+            NearToken::from_yoctonear(require_attached_for_pending_withdrawal()),
+        )
+        .expect("Storage lock failed");
 
         // Move shares into escrow
         #[allow(clippy::expect_used, reason = "No side effects")]
@@ -822,8 +837,15 @@ impl Contract {
         } else {
             weights.iter().map(|(m, _)| m.clone()).collect()
         };
-        let required_yocto = storage_management::yocto_for_queue_additions(&existing, &candidates);
-        require_attached_at_least(required_yocto, "potential queue additions");
+        let required_yocto = yocto_for_queue_additions(&existing, &candidates);
+        self.lock_storage(
+            &env::predecessor_account_id(),
+            NearToken::from_yoctonear(require_attached_at_least(
+                required_yocto,
+                "potential queue additions",
+            )),
+        )
+        .expect("Storage lock failed");
 
         // If no weights provided, use queue order; clamp total and emit request event.
         if weights.is_empty() {
@@ -1072,12 +1094,7 @@ impl Contract {
     }
 
     // Pure helper to compute how many escrowed shares to burn on partial payout
-    fn compute_burn_shares(
-        &self,
-        escrow_shares: u128,
-        collected: u128,
-        requested_total: u128,
-    ) -> u128 {
+    fn compute_burn_shares(escrow_shares: u128, collected: u128, requested_total: u128) -> u128 {
         mul_div_floor(escrow_shares, collected, requested_total.max(1))
     }
 
@@ -1478,7 +1495,7 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         if collected > 0 {
             let requested = collected.saturating_add(remaining);
-            let burn_shares = self.compute_burn_shares(escrow_shares, collected, requested);
+            let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);
             self.op_state = OpState::Payout {
                 op_id,
                 receiver: receiver.clone(),
