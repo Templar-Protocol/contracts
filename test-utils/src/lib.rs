@@ -82,7 +82,7 @@ macro_rules! accounts {
 }
 
 #[macro_export]
-macro_rules! setup_test_w {
+macro_rules! setup_test {
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
         $crate::accounts!($w, $($n),*);
         let s = $crate::setup_everything(&$w, $f, |_| {}).await;
@@ -100,12 +100,8 @@ macro_rules! setup_test_w {
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test_w!($w extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}))
+        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}))
     };
-}
-
-#[macro_export]
-macro_rules! setup_test {
     (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
         let worker = near_workspaces::sandbox().await.unwrap();
         $crate::accounts!(worker, $($n),*);
