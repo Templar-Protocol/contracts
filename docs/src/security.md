@@ -14,7 +14,7 @@ Important security notices will be posted on the official Discord server, Telegr
 
 ## Audit Information
 
-- **Current Status**: `<TBD>`
+- **Current Status**: Audit reports available in the [audits directory](https://github.com/Templar-Protocol/contracts/tree/dev/audits)
 
 ## Current Security Measures
 

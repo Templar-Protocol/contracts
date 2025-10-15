@@ -6,13 +6,13 @@ Templar Protocol relies on external price oracles to determine asset values for 
 
 ### Primary Oracle Provider
 - **Pyth Network**: Primary price feed provider
-- **Oracle Contract**: <TBD> (mainnet) / `pyth-oracle.testnet` (testnet)
+- **Oracle Contract**: `pyth-oracle.near` (mainnet) / `pyth-oracle.testnet` (testnet)
 - **Documentation**: [Pyth Network Documentation](https://docs.pyth.network/)
 
 ### LST Oracle Adapter
 For Liquid Staking Tokens (LSTs), Templar uses a custom oracle adapter:
 - **Purpose**: Transforms underlying asset prices using redemption rates
-- **Contract**: <TBD>
+- **Contract**: `lst.oracle.tmplr.near`
 - **Functionality**: Applies LST redemption rates to base asset prices
 
 ## Price Feed Configuration
@@ -90,10 +90,6 @@ The protocol provides tools for monitoring:
    - Confidence interval validation from Pyth
    - Manual cross-validation with external sources
 
-### Manual Monitoring Procedures
-
-<TBD>
-
 ### Emergency Response
 
 #### Oracle Failure Scenarios
@@ -161,15 +157,7 @@ A mock oracle contract exists at `mock/oracle/` providing:
 
 ## Gas Optimization
 
-### Oracle Call Costs
-
-<TBD>
-
 ### Optimization Strategies
 - **Batch Price Queries**: Retrieve multiple prices in single call
 - **Caching**: Store recent prices to reduce oracle calls
 - **Gas Estimation**: Dynamic gas allocation based on oracle complexity
-
-## Compliance and Auditing
-
-<TBD>

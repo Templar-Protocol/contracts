@@ -5,9 +5,9 @@ This page provides information about Templar Protocol smart contracts and how to
 ## Deployed Addresses
 
 ### NEAR Mainnet
-- **Registry**: `<TBD>`
-- **Pyth Oracle**: `<TBD>`
-- **LST Oracle Adapter**: `<TBD>`
+- **Registry**: `v1.tmplr.near`
+- **Pyth Oracle**: `pyth-oracle.near` with asset ids from: `https://insights.pyth.network/price-feeds`
+- **LST Oracle Adapter**: `lst.oracle.tmplr.near`
 
 ### NEAR Testnet
 - **Registry**: `<TBD>`
@@ -73,7 +73,13 @@ After building, contract WASMs are available in `target/near/`:
 
 ## Getting Current Addresses
 
-For deployed contract addresses, check:
+To list all deployed markets (subaccounts of `v1.tmplr.near`):
+```bash
+# Query all deployed markets from registry
+near view v1.tmplr.near list_deployments '{"offset": 0, "count": 100}'
+```
+
+For additional protocol information, visit:
 - **Official Website**: [templarfi.org](https://templarfi.org/)
 - **Discord**: [Templar Protocol Discord](https://discord.gg/KAvMtYpbep)
 - **Telegram**: [Templar Protocol Telegram](https://t.me/templarprotocol)
