@@ -1,6 +1,12 @@
 name: Test
 on:
   workflow_call:
+    inputs:
+      skip_coverage:
+        description: 'Skip coverage job'
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main, dev]
   pull_request:
@@ -58,8 +64,8 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    # Only run coverage on direct triggers, not when called from other workflows
-    if: github.event_name != 'workflow_call'
+    # Skip coverage when called from other workflows with skip_coverage=true
+    if: ${{ !inputs.skip_coverage }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

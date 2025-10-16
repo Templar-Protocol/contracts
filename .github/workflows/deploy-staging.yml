@@ -35,6 +35,8 @@ jobs:
     needs: check-changes
     if: needs.check-changes.outputs.should-run-contracts == 'true'
     uses: ./.github/workflows/test.yml
+    with:
+      skip_coverage: true
 
   gas-report:
     needs: check-changes
