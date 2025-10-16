@@ -32,7 +32,7 @@ pub enum BorrowStatus {
     /// The position is in good standing.
     Healthy,
     /// Collateralization ratio is below
-    /// [`market::MarketConfiguration::borrow_mcr_maintenance`]. More
+    /// [`crate::market::MarketConfiguration::borrow_mcr_maintenance`]. More
     /// collateral should be deposited or repayment should occur.
     MaintenanceRequired,
     /// The position can be liquidated.
