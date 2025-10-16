@@ -58,6 +58,8 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    # Only run coverage on direct triggers, not when called from other workflows
+    if: github.event_name != 'workflow_call'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -102,6 +104,7 @@ jobs:
           name: templar-protocol-coverage
           fail_ci_if_error: true
           verbose: true
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Cleanup
         if: always()
