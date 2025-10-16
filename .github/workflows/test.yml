@@ -90,6 +90,9 @@ jobs:
           # Prebuild test contracts
           ./script/prebuild-test-contracts.sh
           
+          # Create empty .env file if it doesn't exist (for compose)
+          touch service/relayer/.env
+          
           # Start database for relayer tests
           docker compose --file service/relayer/compose.dev.yaml up postgres --detach
 

@@ -11,7 +11,12 @@ echo "🏗️ Preparing test environment..."
 ./script/prebuild-test-contracts.sh
 
 # Start database for tests
-docker compose --file service/relayer/compose.dev.yaml up postgres --detach
+docker compose --file service/relayer/compose.dev.yaml up postgres --detach 2>/dev/null || {
+    echo "⚠️  Warning: Could not start postgres (may be missing .env file)"
+    echo "📝 Creating minimal .env file for testing..."
+    touch service/relayer/.env
+    docker compose --file service/relayer/compose.dev.yaml up postgres --detach
+}
 
 echo "🧪 Running tests with coverage..."
 export SQLX_OFFLINE=true
@@ -37,6 +42,6 @@ case "${1:-html}" in
 esac
 
 echo "🧹 Cleaning up..."
-docker compose --file service/relayer/compose.dev.yaml down postgres
+docker compose --file service/relayer/compose.dev.yaml down postgres 2>/dev/null || true
 
 echo "✅ Coverage complete!"
