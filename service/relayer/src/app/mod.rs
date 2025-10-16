@@ -147,6 +147,14 @@ impl App {
 
         let mut markets = HashMap::new();
         let mut allowed_contracts = HashMap::new();
+        if let Some(intents_id) = self.args.relay.intents_id.clone() {
+            allowed_contracts.insert(
+                intents_id,
+                ContractData {
+                    storage_balance_bounds: None,
+                },
+            );
+        }
         let mut oracles = HashSet::new();
 
         for market_accounts in market_accounts_vec.into_iter().flatten() {
@@ -210,7 +218,18 @@ impl App {
     ) -> Result<Vec<AccountId>, PreconditionError> {
         let mut other_interactions = Vec::new();
 
-        if accounts.market_data.contains_key(receiver_id) {
+        if self.args.relay.intents_id.as_deref() == Some(receiver_id) {
+            for (index, call) in calls.into_iter().enumerate() {
+                if !self
+                    .args
+                    .relay
+                    .intents_allowed_methods
+                    .contains(&call.method_name)
+                {
+                    return Err(PreconditionError::UnknownFunctionName { index });
+                }
+            }
+        } else if accounts.market_data.contains_key(receiver_id) {
             // Calling a market contract directly.
             for (index, call) in calls.into_iter().enumerate() {
                 if !self.args.relay.allowed_methods.contains(&call.method_name) {
