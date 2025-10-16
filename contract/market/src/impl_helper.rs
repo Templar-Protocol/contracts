@@ -176,10 +176,6 @@ impl Contract {
         &mut self,
         withdrawal_resolution: WithdrawalResolution,
     ) {
-        asset_op!(
-            self.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account
-        );
-
         // Withdrawal succeeded: remove the withdrawal request from the queue.
         // Withdrawal failed but should have succeeded: remove request but still refund.
         // Withdrawal failed: unlock the queue so they can try again.
@@ -187,11 +183,11 @@ impl Contract {
         let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
         let snapshot = self.snapshot();
-        if let Some(mut supply_position) =
-            self.supply_position_guard(snapshot, withdrawal_resolution.account_id.clone())
-        {
-            supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
-        }
+        let mut supply_position = self
+            .supply_position_guard(snapshot, withdrawal_resolution.account_id.clone())
+            .unwrap_or_else(|| env::panic_str("Invariant violation: Nonexistent supply position"));
+        supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
+        drop(supply_position);
 
         // TODO: If this panics, this is BIG BAD, as it means there is
         // some way to unlock the queue while a withdrawal is in-flight.

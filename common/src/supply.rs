@@ -385,6 +385,8 @@ impl<'a> SupplyPositionGuard<'a> {
             amount = FungibleAssetAmount::zero();
         }
 
+        asset_op!(self.market.borrow_asset_withdrawal_in_flight += amount);
+
         WithdrawalResolution {
             account_id: self.account_id.clone(),
             amount_to_account: amount,
@@ -402,6 +404,7 @@ impl<'a> SupplyPositionGuard<'a> {
         asset_op! {
             amount += withdrawal_resolution.amount_to_fees;
             self.position.borrow_asset_deposit.outgoing -= amount;
+            self.market.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account
         };
 
         if success {

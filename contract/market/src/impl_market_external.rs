@@ -193,40 +193,58 @@ impl MarketExternalInterface for Contract {
     }
 
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
-        let Some(withdrawal_resolution) = self
-            .try_lock_next_withdrawal_request()
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
-        else {
+        let (account_id, amount) = self
+            .withdrawal_queue
+            .try_lock()
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+        let market_borrow_asset_deposited_active = self.borrow_asset_deposited_active;
+        let market_borrowed = self.borrowed();
+        let proof = self.snapshot();
+        let Some(mut supply_position) = self.supply_position_guard(proof, account_id) else {
+            self.withdrawal_queue
+                .try_pop()
+                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
             env::log_str("Supply position does not exist: skipping.");
             return PromiseOrValue::Value(());
         };
 
-        // There may be loose/untracked funds that the contract controls but
-        // does not account for in internal accounting.
-        let has_sufficient_liquidity = u128::from(self.borrow_asset_deposited_active)
-            .saturating_add(u128::from(self.total_incoming()))
-            .checked_sub(u128::from(self.borrowed()))
-            .is_some();
+        let requested_amount = amount.min(supply_position.total_deposit());
 
-        require!(
-            has_sufficient_liquidity,
-            "Insufficient liquidity to fulfill the request at this time",
-        );
+        if requested_amount.is_zero() {
+            drop(supply_position);
+            self.withdrawal_queue
+                .try_pop()
+                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+            env::log_str("Requested amount is zero");
+            return PromiseOrValue::Value(());
+        }
 
-        asset_op!(
-            self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account
+        let amount_available: BorrowAssetAmount = u128::from(market_borrow_asset_deposited_active)
+            .saturating_add(u128::from(supply_position.inner().total_incoming()))
+            .saturating_sub(u128::from(market_borrowed))
+            .into();
+
+        let withdraw_amount = requested_amount.min(amount_available);
+
+        if withdraw_amount.is_zero() {
+            env::panic_str("Unable to fulfill withdrawal request at this time");
+        }
+
+        let proof = supply_position.accumulate_yield();
+        let resolution = supply_position.record_withdrawal_initial(
+            proof,
+            withdraw_amount,
+            env::block_timestamp_ms(),
         );
 
         PromiseOrValue::Promise(
             self.configuration
                 .borrow_asset
-                .transfer(
-                    withdrawal_resolution.account_id.clone(),
-                    withdrawal_resolution.amount_to_account,
-                )
+                .transfer(resolution.account_id.clone(), resolution.amount_to_account)
                 .then(
                     self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
-                        .execute_next_supply_withdrawal_request_01_finalize(withdrawal_resolution),
+                        .execute_next_supply_withdrawal_request_01_finalize(resolution),
                 ),
         )
     }
