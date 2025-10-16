@@ -1,4 +1,4 @@
-.PHONY: fmt sql-fmt test coverage
+.PHONY: fmt sql-fmt test coverage docs
 
 RUST_FILES := $(shell find . -name '*.rs' -not -path './target/*')
 SQL_FILES := $(shell find . -name '*.sql' -not -path './target/*')
@@ -18,3 +18,6 @@ test:
 # Simple coverage target
 coverage:
 	./script/coverage.sh html
+
+docs:
+	./script/build-docs.sh
