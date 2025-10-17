@@ -516,7 +516,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
 }
 
 #[test]
-#[should_panic = "Invariant violation: Cannot remove market with non-zero cap"]
+#[should_panic = "Policy violation: Cannot remove market with non-zero cap"]
 fn set_withdraw_queue_disallow_nonzero_cap_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -534,7 +534,7 @@ fn set_withdraw_queue_disallow_nonzero_cap_removal() {
 }
 
 #[test]
-#[should_panic = "Invariant violation: Cannot remove market with pending cap change"]
+#[should_panic = "Policy violation: Cannot remove market with pending cap change"]
 fn set_withdraw_queue_disallow_pending_cap_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -562,7 +562,7 @@ fn set_withdraw_queue_disallow_pending_cap_removal() {
 }
 
 #[test]
-#[should_panic = "Invariant violation: Removal timelock not elapsed for market"]
+#[should_panic = "Policy violation: Removal timelock not elapsed for market"]
 fn set_withdraw_queue_disallow_timelock_not_elapsed() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -615,7 +615,7 @@ fn set_withdraw_queue_allows_zero_supply_removal() {
 }
 
 #[test]
-#[should_panic = "Invariant violation: Unknown market in new queue"]
+#[should_panic = "Policy violation: Unknown market in new queue"]
 fn set_withdraw_queue_rejects_unknown_market() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
