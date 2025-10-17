@@ -50,37 +50,50 @@ pub enum DepositMsg {
     Supply,
 }
 
+/// Confrete configuration for a market.
 #[derive(Clone, Default)]
 #[near]
 pub struct MarketConfiguration {
-    // Supply cap for this market (in underlying asset units)
+    /// Supply cap for this market (in underlying asset units)
     pub cap: u128,
-    // Whether market is enabled for deposits/withdrawals
+    /// Whether market is enabled for deposits/withdrawals
     pub enabled: bool,
-    // Timestamp (ns) after which market can be removed (if pending removal)
+    /// Timestamp (ns) after which market can be removed (if pending removal)
     pub removable_at: TimestampNs,
 }
 
 impl MarketConfiguration {
+    /// Size of the market configuration in borsh encoded bytes.
     pub const fn encoded_size() -> usize {
         16 + 1 + 8
     }
 }
 
+/// Configuration for the setup of a metavault.
 #[derive(Clone)]
 #[near(serializers = [json, borsh])]
 pub struct VaultConfiguration {
+    /// The allocation mode for this vault.
     pub mode: AllocationMode,
+    /// The account that owns this vault.
     pub owner: AccountId,
+    /// The account that can submit allocation plans. See [AllocationMode].
     pub curator: AccountId,
+    /// The account that can set guardianship. See [AllocationMode].
     pub guardian: AccountId,
+    /// The underlying asset for this vault.
     pub underlying_token: FungibleAsset<BorrowAsset>,
+    /// The initial timelock for this vault used for modifying the configuration.
     pub initial_timelock_sec: u32,
+    /// The account that receives fees for this vault.
     pub fee_recipient: AccountId,
+    /// The skim account that can unorphan any assets erroneously sent to this vault.
     pub skim_recipient: AccountId,
+    /// The name of the share token.
     pub name: String,
+    /// The symbol of the share token.
     pub symbol: String,
-    // TODO: decide if should assert decimals as underlying
+    /// The number of decimals for the share token, usually would be the same as the underlying asset.
     pub decimals: u8,
 }
 
