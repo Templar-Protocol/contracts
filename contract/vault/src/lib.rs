@@ -358,7 +358,6 @@ impl Contract {
         let fee: u128 = fee.into();
 
         require!(fee != self.performance_fee, "Fee already set to this value");
-        // FIXME: dynamic based on underlying
         require!(fee <= (wad::WAD / 10), "fee too high");
 
         // Accrue any pending fees with old rate before changing
@@ -582,7 +581,7 @@ impl Contract {
             .config
             .get_mut(&market)
             .unwrap_or_else(|| env::panic_str("unknown market"));
-        assert!(
+        require!(
             cfg.removable_at == 0,
             "Removal already pending for this market"
         );
@@ -591,7 +590,7 @@ impl Contract {
             "Cannot remove market with non-zero cap (disable deposits first)"
         );
         require!(cfg.enabled, "Market not enabled or already removed");
-        assert!(
+        require!(
             self.pending_cap.get(&market).is_none(),
             "Cap change pending for this market"
         );
@@ -803,6 +802,9 @@ impl Contract {
             )
     }
 
+    /// Allocates assets across markets according to the provided weights.
+    /// If `amount` is provided, it is used as the target amount for each market.
+    /// Otherwise, the vault will attempt to allocate as much as possible.
     #[payable]
     pub fn allocate(
         &mut self,
@@ -813,20 +815,20 @@ impl Contract {
         Self::assert_allocator();
         self.ensure_idle();
 
-        // Require storage deposit up-front for any markets that may be added to withdraw_queue
-        let existing: std::collections::HashSet<AccountId> =
-            self.withdraw_queue.iter().cloned().collect();
+        let existing: HashSet<AccountId> = self.withdraw_queue.iter().cloned().collect();
+
         let candidates: Vec<AccountId> = if weights.is_empty() {
             self.supply_queue.iter().cloned().collect()
         } else {
             weights.iter().map(|(m, _)| m.clone()).collect()
         };
+
         let required_yocto = storage_management::yocto_for_queue_additions(&existing, &candidates);
         require_attached_at_least(required_yocto, "potential queue additions");
 
-        // If no weights provided, use queue order; clamp total and emit request event.
+        let total = self.clamp_allocation_total(amount.map(|x| x.0));
+
         if weights.is_empty() {
-            let total = self.clamp_allocation_total(amount.map(|x| x.0));
             if total == 0 {
                 return self.stop_and_exit(Some(&Error::ZeroAmount));
             }
@@ -837,55 +839,35 @@ impl Contract {
             }
             .emit();
             self.plan = None;
-            self.start_allocation(total)
-        } else {
-            // Validate unique markets and accumulate weight sum
-            let mut seen = std::collections::HashSet::new();
-            let mut sum_w: u128 = 0;
-
-            for (m, w) in &weights {
-                if !seen.insert(m.clone()) {
-                    env::panic_str(&format!("Duplicate market in weights: {m}"));
-                }
-                sum_w = sum_w.saturating_add(u128::from(*w));
-            }
-            if sum_w == 0 {
-                env::panic_str("Sum of weights is zero");
-            }
-
-            // Clamp total allocation by idle balance and aggregate room
-            let total = self.clamp_allocation_total(amount.map(|x| x.0));
-            if total == 0 {
-                env::panic_str("No funds to allocate");
-            }
-
-            // Emit request and plan events
-            let op_id = self.next_op_id;
-            let weights_for_event: Vec<(AccountId, U128)> = weights
-                .iter()
-                .map(|(m, w)| (m.clone(), U128((*w).into())))
-                .collect();
-            Event::AllocationRequestedWeighted {
-                op_id,
-                total: U128(total),
-                weights: weights_for_event.clone(),
-            }
-            .emit();
-            Event::AllocationPlanSet {
-                op_id,
-                plan: weights_for_event,
-            }
-            .emit();
-
-            // Store an ephemeral plan of (market, weight) to drive weighted allocation.
-            let plan: AllocationPlan = weights
-                .into_iter()
-                .map(|(m, w)| (m, u128::from(w)))
-                .collect();
-
-            self.plan = Some(plan);
-            self.start_allocation(total)
+            return self.start_allocation(total);
         }
+
+        // Non-empty weights: validate and build plan.
+        let weights = weights
+            .into_iter()
+            .map(|(m, w)| (m, u128::from(w)))
+            .collect::<HashMap<_, _>>();
+
+        let sum_weights: u128 = weights.values().sum();
+        if sum_weights == 0 {
+            env::panic_str("Sum of weights is zero");
+        }
+        if total == 0 {
+            env::panic_str("No funds to allocate");
+        }
+
+        let op_id = self.next_op_id;
+        let weights_for_event: Vec<(AccountId, U128)> =
+            weights.iter().map(|(m, w)| (m.clone(), U128(*w))).collect();
+        Event::AllocationPlanSet {
+            op_id,
+            total: U128(total),
+            plan: weights_for_event,
+        }
+        .emit();
+        self.plan = Some(weights.into_iter().collect());
+
+        self.start_allocation(total)
     }
 }
 
