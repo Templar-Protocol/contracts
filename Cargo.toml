@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["bots", "common", "contract/*", "mock/*", "service/*", "test-utils", "universal-account"]
+members = [
+    "bots",
+    "common",
+    "contract/*",
+    "mock/*",
+    "service/*",
+    "test-utils",
+    "universal-account",
+]
 
 [workspace.package]
 license = "MIT"
@@ -33,7 +41,7 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
-template-vault-contract = { path = "./contract/vault" }
+templar-vault-contract = { path = "./contract/vault" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }
