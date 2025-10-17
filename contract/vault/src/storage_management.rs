@@ -1,5 +1,5 @@
 use crate::PendingWithdrawal;
-use near_sdk::{env, AccountId};
+use near_sdk::{env, require, AccountId};
 use std::collections::HashSet;
 use templar_common::vault::{storage_bytes_for_account_id, MarketConfiguration};
 
@@ -78,9 +78,9 @@ pub fn yocto_for_queue_additions(current: &HashSet<AccountId>, new: &[AccountId]
 #[must_use]
 pub fn require_attached_at_least(required_yocto: u128, ctx: &str) -> u128 {
     let attached = env::attached_deposit().as_yoctonear();
-    near_sdk::require!(
+    require!(
         attached >= required_yocto,
-        "Insufficient storage deposit for {ctx}: required {required_yocto}, attached {attached}"
+        format!("Insufficient storage deposit for {ctx}: required {required_yocto}, attached {attached}")
     );
     required_yocto
 }

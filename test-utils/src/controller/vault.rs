@@ -98,7 +98,7 @@ impl VaultController {
         #[call(exec, tgas(5), deposit(NearToken::from_yoctonear(4650000000000000000000)))]
         pub fn submit_cap(market: AccountId, new_cap: U128);
 
-        #[call(exec, tgas(5), deposit(NearToken::from_yoctonear(800000000000000000000)))]
+        #[call(exec, tgas(5), deposit(NearToken::from_yoctonear(840000000000000000000)))]
         pub fn accept_cap(market: AccountId);
 
         #[call(exec, tgas(5))]
@@ -143,7 +143,7 @@ impl VaultController {
         #[call(exec, tgas(50))]
         pub fn revoke_pending_timelock();
 
-        #[call(exec, tgas(50), deposit(NearToken::from_yoctonear(800000000000000000000)))]
+        #[call(exec, tgas(50), deposit(NearToken::from_yoctonear(840000000000000000000)))]
         pub fn set_supply_queue(markets: Vec<AccountId>);
 
         #[call(exec, tgas(50))]
