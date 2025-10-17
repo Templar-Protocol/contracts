@@ -46,7 +46,7 @@ pub mod wad;
 mod test_utils;
 
 #[derive(Debug, Clone)]
-#[near(serializers = [json, borsh])]
+#[near(serializers = [borsh])]
 #[derive(BorshStorageKey)]
 /// Internal storage keys used by persistent collections.
 pub enum StorageKey {
@@ -135,7 +135,6 @@ pub struct Contract {
 #[near]
 impl Contract {
     #[allow(clippy::unwrap_used, reason = "Infallible")]
-    #[allow(clippy::too_many_arguments, reason = "Constructor")]
     #[init]
     /// Initializes a new vault.
     /// - `owner_id`: account that controls Owner-only actions.
@@ -453,14 +452,16 @@ impl Contract {
                 // Pre-allocate a market_supply record (principal=0) so allocations don't create storage later
                 self.market_supply.insert(market.clone(), 0);
                 #[allow(clippy::unwrap_used, reason = "No side effects")]
-                self.config.get_mut(&market).unwrap_or_else(|| env::panic_str(&"Config not found after insert".to_string()))
+                self.config
+                    .get_mut(&market)
+                    .unwrap_or_else(|| env::panic_str(&"Config not found after insert".to_string()))
             }
             Some(config) => config,
         };
 
         near_sdk::require!(
             self.pending_cap.get(&market).is.none(),
-            "Invariant violation: A cap change is already pending for this market"
+            "Policy violation: A cap change is already pending for this market"
         );
         near_sdk::require!(
             config.removable_at == 0,
@@ -502,7 +503,10 @@ impl Contract {
             );
 
             #[allow(clippy::expect_used, reason = "No side effects")]
-            let cfg = self.config.get_mut(&market).unwrap_or_else(|| env::panic_str(&"Market not found".to_string()));
+            let cfg = self
+                .config
+                .get_mut(&market)
+                .unwrap_or_else(|| env::panic_str(&"Market not found".to_string()));
 
             cfg.cap = pending.value;
             if pending.value > 0 {
@@ -670,17 +674,12 @@ impl Contract {
         for id in &queue {
             near_sdk::require!(
                 self.config.get(id).is_some(),
-                "Invariant violation: Unknown market in new queue"
+                "Policy violation: Unknown market in new queue"
             );
         }
 
         for (id, cfg) in self.config.iter() {
             let has_supply = *self.market_supply.get(id).unwrap_or(&0) > 0;
-            println!(
-                "ID: {}, Enabled: {}, Has Supply: {}, Removable At: {}",
-                id, cfg.enabled, has_supply, cfg.removable_at
-            );
-
             if (cfg.enabled || has_supply) && !seen.contains(id) {
                 if current.contains(id) {
                     // Omission is allowed only when removing an existing queued market AND all safety preconditions hold.
@@ -690,16 +689,16 @@ impl Contract {
                     );
                     near_sdk::require!(
                         self.pending_cap.get(id).is_none(),
-                        "Invariant violation: Cannot remove market with pending cap change"
+                        "Policy violation: Cannot remove market with pending cap change"
                     );
                     if has_supply {
                         near_sdk::require!(
                             cfg.removable_at > 0,
-                            "Invariant violation: Market still has supply but no removal scheduled"
+                            "Policy violation: Market still has supply but no removal scheduled"
                         );
                         near_sdk::require!(
                             env::block_timestamp() >= cfg.removable_at,
-                            "Invariant violation: Removal timelock not elapsed for market"
+                            "Policy violation: Removal timelock not elapsed for market"
                         );
                     }
                 } else {
@@ -897,7 +896,9 @@ impl Contract {
     pub fn get_configuration(&self) -> VaultConfiguration {
         let timelock_sec = self.timelock_ns / 1_000_000_000;
         VaultConfiguration {
-            owner: self.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+            owner: self
+                .own_get_owner()
+                .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
             curator: Self::with_members_of(&Role::Curator, |members| {
                 near_sdk::require!(
                     members.len() == 1,
@@ -1181,7 +1182,7 @@ impl Contract {
 
         near_sdk::require!(
             amount <= self.idle_balance,
-            "Invariant Violation: reserve amount must be <= idle_balance"
+            "Policy violation: reserve amount must be <= idle_balance"
         );
         self.idle_balance -= amount;
 
