@@ -7,7 +7,7 @@ use templar_common::vault::{storage_bytes_for_account_id, MarketConfiguration};
 /// We do not implement refunds for storage management ops, to avoid any potential issues with
 /// accounting.
 
-// Conservative per-entry overheads to cover collection metadata, prefixes, etc.
+/// Conservative per-entry overheads to cover collection metadata, prefixes, etc.
 pub const MAP_ENTRY_OVERHEAD: u64 = 64;
 
 pub const VEC_ITEM_OVERHEAD: u64 = 16;
@@ -78,7 +78,7 @@ pub fn yocto_for_queue_additions(current: &HashSet<AccountId>, new: &[AccountId]
 #[must_use]
 pub fn require_attached_at_least(required_yocto: u128, ctx: &str) -> u128 {
     let attached = env::attached_deposit().as_yoctonear();
-    assert!(
+    near_sdk::require!(
         attached >= required_yocto,
         "Insufficient storage deposit for {ctx}: required {required_yocto}, attached {attached}"
     );

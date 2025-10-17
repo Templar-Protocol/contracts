@@ -66,7 +66,7 @@ fn fee_accrues_only_on_growth_unit() {
 
     // Seed total supply so fees can mint
     let user = accounts(1);
-    c.deposit_unchecked(&user, 1_000).expect("seed shares");
+    c.deposit_unchecked(&user, 1_000).unwrap_or_else(|e| env::panic_str(&e.to_string()));
     c.idle_balance = 1_000;
 
     // Set fee to 10%
@@ -105,7 +105,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder() {
 
     // Seed escrow into vault account (shares held by vault)
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
-        .expect("seed escrow");
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
     // Seed idle to cover payout
     c.idle_balance = 1_000;
 
@@ -134,17 +134,17 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder() {
 fn execute_next_withdrawal_request_skips_holes() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
+    let owner = c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
     setup_env(&vault_id, &owner, vec![]);
 
     println!("vault_id: {vault_id}");
     println!("owner: {owner}");
 
     // Bob gets 20 shares
-    c.deposit_unchecked(&owner, 20).unwrap();
+    c.deposit_unchecked(&owner, 20).unwrap_or_else(|e| env::panic_str(&e.to_string()));
     // We fake by adding idle to the vault
-    c.transfer_unchecked(&owner, &vault_id, 10).unwrap();
-    c.transfer_unchecked(&owner, &vault_id, 10).unwrap();
+    c.transfer_unchecked(&owner, &vault_id, 10).unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.transfer_unchecked(&owner, &vault_id, 10).unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Vault now has 20
     assert_eq!(c.balance_of(&vault_id), 20);
@@ -232,7 +232,7 @@ fn execute_supply_wrong_token_refunds_full() {
 fn set_withdraw_queue_must_include_all_enabled() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
 
     let m1 = mk(101);
     let m2 = mk(102);
@@ -304,7 +304,7 @@ fn start_allocation_reserves_only_amount() {
 fn queue_allocation_ignores_stale_plan() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
 
     // Supply queue has m1; stale plan points to m2
     let m1 = mk(3001);
@@ -337,7 +337,7 @@ fn queue_allocation_ignores_stale_plan() {
 fn set_withdraw_queue_disallow_nonzero_position_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
 
     let m1 = mk(4001);
 
@@ -520,7 +520,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
 fn set_withdraw_queue_disallow_nonzero_cap_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
 
     let m = mk(5000);
     let mut cfg = MarketConfiguration::default();
@@ -589,7 +589,7 @@ fn set_withdraw_queue_disallow_timelock_not_elapsed() {
 fn set_withdraw_queue_allows_zero_supply_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
+    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
 
     let m = mk(5003);
     let mut cfg = MarketConfiguration::default();

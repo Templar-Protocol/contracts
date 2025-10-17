@@ -1,7 +1,7 @@
 use crate::{env, near, serde_json, AccountId, Contract, Nep145Controller, Nep145ForceUnregister};
 
 impl Contract {
-    /* ----- Storage ----- */
+    /// ----- Storage -----
     fn charge_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
         // Invariant: Storage charging saturates and panics on failure to avoid negative balances.
         self.lock_storage(
@@ -31,7 +31,7 @@ pub enum ReturnStyle {
     Nep245MtTransferCall,
 }
 
-// TODO: use this
+/// TODO: use this
 impl ReturnStyle {
     #[must_use]
     pub fn serialize(

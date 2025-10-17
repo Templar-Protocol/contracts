@@ -74,7 +74,7 @@ pub enum Role {
 }
 
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
-// FIXME: #[nep145(force_unregister_hook = "Self")]
+/// FIXME: #[nep145(force_unregister_hook = "Self")]
 #[rbac(roles = "Role", crate = "crate")]
 #[near(contract_state)]
 /// Vault contract that issues shares over an underlying fungible asset and allocates liquidity
@@ -88,7 +88,7 @@ pub struct Contract {
     /// configuration per market (market ID -> MarketConfig)
     config: IterableMap<AccountId, MarketConfiguration>,
 
-    // TODO: decimal offset for virtual shares
+    /// TODO: decimal offset for virtual shares
     /// Performance fee (as WAD fraction)
     performance_fee: wad::WADFraction,
     fee_recipient: AccountId,
@@ -109,24 +109,24 @@ pub struct Contract {
     /// Current timelock duration for governance actions (ns)
     timelock_ns: TimestampNs,
 
-    // Ordered list of market IDs for deposit allocation
+    /// Ordered list of market IDs for deposit allocation
     supply_queue: Vector<AccountId>,
-    // Ordered list of market IDs for withdrawal prioritytr
+    /// Ordered list of market IDs for withdrawal prioritytr
     withdraw_queue: Vector<AccountId>,
 
-    // vault's supplied principal per market (borrow-asset units)
+    /// vault's supplied principal per market (borrow-asset units)
     market_supply: LookupMap<AccountId, u128>,
 
-    // underlying held by vault
+    /// underlying held by vault
     idle_balance: u128,
     op_state: OpState,
     next_op_id: u64,
 
-    // Storage usage
+    /// Storage usage
     storage_usage_supply: u64,
     storage_usage_role: u64,
 
-    // Pending withdrawals queue (vault-level, FIFO by id)
+    /// Pending withdrawals queue (vault-level, FIFO by id)
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_id: u64,
     next_withdraw_to_execute: u64,
@@ -163,7 +163,7 @@ impl Contract {
         } = configuration;
 
         let timelock_ns = u64::from(initial_timelock_sec) * 1_000_000_000;
-        assert!(
+        near_sdk::require!(
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&timelock_ns),
             "timelock bounds"
         );
@@ -231,11 +231,11 @@ impl Contract {
     pub fn set_curator(&mut self, account: AccountId) {
         Self::require_owner();
         Self::with_members_of(&Role::Curator, |members| {
-            assert!(
+            near_sdk::require!(
                 members.len() < 2,
                 "Invariant violation: Cannot Have more than 1 Curator"
             );
-            assert!(
+            near_sdk::require!(
                 !members.contains(&account),
                 "Curator already set to this account"
             );
@@ -274,14 +274,14 @@ impl Contract {
         let mut guardian_occupied = false;
 
         Self::with_members_of(&Role::Guardian, |members| {
-            assert!(
+            near_sdk::require!(
                 members.len() < 2,
                 "Invariant violation: Cannot Have more than 1 Guardian"
             );
-            assert!(!members.contains(&new_g), "Already set to this address");
+            near_sdk::require!(!members.contains(&new_g), "Already set to this address");
             guardian_occupied = !members.is_empty();
         });
-        assert!(
+        near_sdk::require!(
             self.pending_guardian.is_none(),
             "Guardian change already pending"
         );
@@ -303,7 +303,7 @@ impl Contract {
         let p = self.pending_guardian.clone();
 
         if let Some(p) = &p {
-            assert!(env::block_timestamp() >= p.valid_at, "not yet");
+            near_sdk::require!(env::block_timestamp() >= p.valid_at, "not yet");
             Self::with_members_of(&Role::Guardian, |members| {
                 members.iter().for_each(|m| {
                     self.remove_role(&m, &Role::Guardian);
@@ -323,7 +323,7 @@ impl Contract {
     /// Sets the recipient account for skimmed tokens.
     pub fn set_skim_recipient(&mut self, account: AccountId) {
         Self::require_owner();
-        assert!(
+        near_sdk::require!(
             account != self.skim_recipient,
             "Already set to this address"
         );
@@ -337,7 +337,7 @@ impl Contract {
     /// Sets the performance fee recipient. Accrues pending fees with the current recipient first.
     pub fn set_fee_recipient(&mut self, account: AccountId) {
         Self::require_owner();
-        assert!(account != self.fee_recipient, "Already set to this address");
+        near_sdk::require!(account != self.fee_recipient, "Already set to this address");
 
         if self.performance_fee != 0 {
             // Accrue any pending fees to current recipient before changing (so current recipient gets up to now)
@@ -356,9 +356,9 @@ impl Contract {
 
         let fee: u128 = fee.into();
 
-        assert!(fee != self.performance_fee, "Fee already set to this value");
+        near_sdk::require!(fee != self.performance_fee, "Fee already set to this value");
         // FIXME: dynamic based on underlying
-        assert!(fee <= (wad::WAD / 10), "fee too high");
+        near_sdk::require!(fee <= (wad::WAD / 10), "fee too high");
 
         // Accrue any pending fees with old rate before changing
         self.internal_accrue_fee();
@@ -373,12 +373,12 @@ impl Contract {
         Self::require_owner();
         let as_nanos = u64::from(new_timelock_secs) * 1_000_000_000;
 
-        assert!(as_nanos != self.timelock_ns, "Already set to this value");
-        assert!(
+        near_sdk::require!(as_nanos != self.timelock_ns, "Already set to this value");
+        near_sdk::require!(
             self.pending_timelock.is_none(),
             "Timelock change already pending"
         );
-        assert!(
+        near_sdk::require!(
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&as_nanos),
             "Timelock out of bounds"
         );
@@ -406,7 +406,7 @@ impl Contract {
     pub fn accept_timelock(&mut self) {
         Self::require_owner();
         if let Some(p) = &self.pending_timelock {
-            assert!(
+            near_sdk::require!(
                 env::block_timestamp() >= p.valid_at,
                 "Timelock not elapsed yet"
             );
@@ -453,21 +453,21 @@ impl Contract {
                 // Pre-allocate a market_supply record (principal=0) so allocations don't create storage later
                 self.market_supply.insert(market.clone(), 0);
                 #[allow(clippy::unwrap_used, reason = "No side effects")]
-                self.config.get_mut(&market).unwrap()
+                self.config.get_mut(&market).unwrap_or_else(|| env::panic_str(&"Config not found after insert".to_string()))
             }
             Some(config) => config,
         };
 
-        assert!(
-            self.pending_cap.get(&market).is_none(),
+        near_sdk::require!(
+            self.pending_cap.get(&market).is.none(),
             "Invariant violation: A cap change is already pending for this market"
         );
-        assert!(
+        near_sdk::require!(
             config.removable_at == 0,
             "Market removal pending, cannot change cap"
         );
         let new_cap = new_cap.0;
-        assert!(new_cap != config.cap, "New cap is same as current");
+        near_sdk::require!(new_cap != config.cap, "New cap is same as current");
 
         if new_cap < config.cap {
             // If lowering the cap, we can apply the delta immediately
@@ -496,13 +496,13 @@ impl Contract {
         Self::assert_curator_or_owner();
         self.ensure_idle();
         if let Some(pending) = self.pending_cap.get(&market) {
-            assert!(
+            near_sdk::require!(
                 env::block_timestamp() >= pending.valid_at,
                 "Timelock not elapsed for cap change"
             );
 
             #[allow(clippy::expect_used, reason = "No side effects")]
-            let cfg = self.config.get_mut(&market).expect("Market not found");
+            let cfg = self.config.get_mut(&market).unwrap_or_else(|| env::panic_str(&"Market not found".to_string()));
 
             cfg.cap = pending.value;
             if pending.value > 0 {
@@ -563,11 +563,11 @@ impl Contract {
         }
     }
 
-    // To remove a market entirely, the curator:
-    //- first sets its cap to 0 (disabling new deposits)
-    //- then calls submit_market_removal.
-    // > This starts a timelock (using the vault’s timelock)
-    // - after which the market can be removed from the withdraw_queue (assuming any funds have been withdrawn)
+    /// To remove a market entirely, the curator:
+    ///- first sets its cap to 0 (disabling new deposits)
+    ///- then calls submit_market_removal.
+    /// > This starts a timelock (using the vault’s timelock)
+    /// - after which the market can be removed from the withdraw_queue (assuming any funds have been withdrawn)
     /// Begins the process to remove `market` from the withdraw queue.
     /// Requires cap == 0 and no pending cap changes; starts a timelock.
     pub fn submit_market_removal(&mut self, market: AccountId) {
@@ -611,7 +611,7 @@ impl Contract {
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
         self.ensure_idle();
-        assert!(markets.len() <= MAX_QUEUE_LEN, "too long");
+        near_sdk::require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
         // Invariant: supply_queue has no duplicates; allocation order remains meaningful
         let mut seen = std::collections::HashSet::new();
@@ -623,7 +623,7 @@ impl Contract {
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
             let cap = self.config.get(m).map_or(0, |c| c.cap);
-            assert!(cap > 0, "unauthorized market");
+            near_sdk::require!(cap > 0, "unauthorized market");
         }
 
         // Compute and require storage for additions (no refunds for removals in this pass)
@@ -651,7 +651,7 @@ impl Contract {
     pub fn set_withdraw_queue(&mut self, queue: Vec<AccountId>) {
         Self::assert_allocator();
         self.ensure_idle();
-        assert!(
+        near_sdk::require!(
             queue.len() <= MAX_QUEUE_LEN,
             "Withdraw queue length exceeds max"
         );
@@ -668,7 +668,7 @@ impl Contract {
             self.withdraw_queue.iter().cloned().collect();
 
         for id in &queue {
-            assert!(
+            near_sdk::require!(
                 self.config.get(id).is_some(),
                 "Invariant violation: Unknown market in new queue"
             );
@@ -684,20 +684,20 @@ impl Contract {
             if (cfg.enabled || has_supply) && !seen.contains(id) {
                 if current.contains(id) {
                     // Omission is allowed only when removing an existing queued market AND all safety preconditions hold.
-                    assert!(
+                    near_sdk::require!(
                         cfg.cap == 0,
                         "Invariant violation: Cannot remove market with non-zero cap"
                     );
-                    assert!(
+                    near_sdk::require!(
                         self.pending_cap.get(id).is_none(),
                         "Invariant violation: Cannot remove market with pending cap change"
                     );
                     if has_supply {
-                        assert!(
+                        near_sdk::require!(
                             cfg.removable_at > 0,
                             "Invariant violation: Market still has supply but no removal scheduled"
                         );
-                        assert!(
+                        near_sdk::require!(
                             env::block_timestamp() >= cfg.removable_at,
                             "Invariant violation: Removal timelock not elapsed for market"
                         );
@@ -750,7 +750,7 @@ impl Contract {
         // Move shares into escrow
         #[allow(clippy::expect_used, reason = "No side effects")]
         self.transfer_unchecked(&sender, &env::current_account_id(), shares)
-            .expect("Redeem failed to move shares into escrow");
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         self.internal_accrue_fee();
 
@@ -897,16 +897,16 @@ impl Contract {
     pub fn get_configuration(&self) -> VaultConfiguration {
         let timelock_sec = self.timelock_ns / 1_000_000_000;
         VaultConfiguration {
-            owner: self.own_get_owner().expect("Owner not set"),
+            owner: self.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
             curator: Self::with_members_of(&Role::Curator, |members| {
-                assert!(
+                near_sdk::require!(
                     members.len() == 1,
                     "Invariant violation: Cannot Have more than 1 Curator"
                 );
                 members.iter().next().expect("Curator not set").clone()
             }),
             guardian: Self::with_members_of(&Role::Guardian, |members| {
-                assert!(
+                near_sdk::require!(
                     members.len() == 1,
                     "Invariant violation: Cannot Have more than 1 Guardian"
                 );
@@ -1124,7 +1124,7 @@ impl Contract {
         }
         #[allow(clippy::expect_used, reason = "No side effects")]
         self.deposit_unchecked(to, amount)
-            .expect("Failed to mint shares");
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
     }
 
     pub fn internal_accrue_fee(&mut self) {
@@ -1179,7 +1179,7 @@ impl Contract {
         }
         self.ensure_idle();
 
-        assert!(
+        near_sdk::require!(
             amount <= self.idle_balance,
             "Invariant Violation: reserve amount must be <= idle_balance"
         );
@@ -1281,7 +1281,7 @@ impl Contract {
                             Some(
                                 #[allow(clippy::expect_used, reason = "Infallible")]
                                 serde_json::to_string(&templar_common::market::DepositMsg::Supply)
-                                    .expect("Infallible serialisation of supply enum")
+                                    .unwrap_or_else(|e| env::panic_str(&e.to_string()))
                                     .as_str(),
                             ),
                         )
@@ -1341,7 +1341,7 @@ impl Contract {
                         Some(
                             #[allow(clippy::expect_used, reason = "Infallible")]
                             serde_json::to_string(&templar_common::market::DepositMsg::Supply)
-                                .expect("Infallible serialisation of supply enum")
+                                .unwrap_or_else(|e| env::panic_str(&e.to_string()))
                                 .as_str(),
                         ),
                     )
@@ -1464,9 +1464,9 @@ impl Contract {
         }
     }
 
-    //  If we collected something, pay it out now and burn proportional shares or pay directly from idle balance
-    //  TODO: should directly check idle balance first?
-    //  TODO: unit test me
+    ///  If we collected something, pay it out now and burn proportional shares or pay directly from idle balance
+    ///  TODO: should directly check idle balance first?
+    ///  TODO: unit test me
     fn pay_collected(
         &mut self,
         op_id: u64,
