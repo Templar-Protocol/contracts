@@ -1,6 +1,9 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    num::NonZeroU8,
+};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -219,7 +222,7 @@ impl Contract {
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
         };
-        contract.set_metadata(&ContractMetadata::new(name, symbol, decimals));
+        contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
         Owner::init(&mut contract, &owner);
         Rbac::add_role(&mut contract, &curator, &Role::Curator);
         Rbac::add_role(&mut contract, &curator, &Role::Allocator);
@@ -436,7 +439,7 @@ impl Contract {
         if self.config.get(&market).is_none() {
             required_deposit = required_deposit.saturating_add(yocto_for_new_market());
         }
-        let current_cap = self.config.get(&market).map_or(0, |c| c.cap);
+        let current_cap = self.config.get(&market).map_or(0, |c| c.cap.0);
         if new_cap.0 > current_cap {
             required_deposit = required_deposit.saturating_add(yocto_for_pending_cap());
         }
@@ -468,7 +471,6 @@ impl Contract {
             config.removable_at == 0,
             "Market removal pending, cannot change cap"
         );
-        let new_cap = new_cap.0;
         require!(new_cap != config.cap, "New cap is same as current");
 
         if new_cap < config.cap {
@@ -479,13 +481,13 @@ impl Contract {
             self.pending_cap.insert(
                 market.clone(),
                 PendingValue {
-                    value: new_cap,
+                    value: new_cap.0,
                     valid_at,
                 },
             );
             Event::SupplyCapRaiseSubmitted {
                 market: market.clone(),
-                new_cap: U128(new_cap),
+                new_cap: new_cap,
                 valid_at,
             }
             .emit();
@@ -509,7 +511,7 @@ impl Contract {
                 .get_mut(&market)
                 .unwrap_or_else(|| env::panic_str(&"Market not found".to_string()));
 
-            cfg.cap = pending.value;
+            cfg.cap = pending.value.into();
             if pending.value > 0 {
                 // If enabling or raising cap above 0, mark enabled and add to withdraw_queue if not already present
                 if !cfg.enabled {
@@ -586,7 +588,7 @@ impl Contract {
             "Removal already pending for this market"
         );
         require!(
-            cfg.cap == 0,
+            cfg.cap.0 == 0,
             "Cannot remove market with non-zero cap (disable deposits first)"
         );
         require!(cfg.enabled, "Market not enabled or already removed");
@@ -627,7 +629,7 @@ impl Contract {
         }
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
-            let cap = self.config.get(m).map_or(0, |c| c.cap);
+            let cap = self.config.get(m).map_or(0, |c| c.cap.into());
             require!(cap > 0, "unauthorized market");
         }
 
@@ -683,7 +685,7 @@ impl Contract {
                 if current.contains(id) {
                     // Omission is allowed only when removing an existing queued market AND all safety preconditions hold.
                     require!(
-                        cfg.cap == 0,
+                        cfg.cap.0 == 0,
                         "Policy violation: Cannot remove market with non-zero cap"
                     );
                     require!(
@@ -901,7 +903,7 @@ impl Contract {
             skim_recipient: self.skim_recipient.clone(),
             name: self.get_metadata().name,
             symbol: self.get_metadata().symbol,
-            decimals: self.get_metadata().decimals,
+            decimals: NonZeroU8::new(self.get_metadata().decimals).unwrap(),
             mode: self.mode.clone(),
         }
     }
@@ -926,10 +928,10 @@ impl Contract {
         let mut total = 0u128;
         self.supply_queue.iter().for_each(|m| {
             if let Some(cfg) = self.config.get(m) {
-                if cfg.cap > 0 {
+                if cfg.cap.0 > 0 {
                     let cur = self.market_supply.get(m).unwrap_or(&0);
-                    if cfg.cap > *cur {
-                        total += cfg.cap - cur;
+                    if cfg.cap.0 > *cur {
+                        total += cfg.cap.0 - cur;
                     }
                 }
             }
@@ -1216,7 +1218,7 @@ impl Contract {
                     mul_div_floor(remaining, *weight, sum_w)
                 };
 
-                let cap = self.config.get(&market_id).map_or(0, |c| c.cap);
+                let cap = self.config.get(&market_id).map_or(0, |c| c.cap.0);
                 let cur = *self.market_supply.get(&market_id).unwrap_or(&0);
                 let room = cap.saturating_sub(cur);
                 let to_supply = room.min(target);
@@ -1281,7 +1283,7 @@ impl Contract {
         }
 
         if let Some(market) = self.supply_queue.get(index) {
-            let cap = self.config.get(market).map_or(0, |c| c.cap);
+            let cap = self.config.get(market).map_or(0, |c| c.cap.0);
             let cur = self.market_supply.get(market).unwrap_or(&0);
             let room = cap.saturating_sub(*cur);
             let to_supply = room.min(remaining);
