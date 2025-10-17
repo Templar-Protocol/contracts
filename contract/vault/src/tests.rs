@@ -66,7 +66,8 @@ fn fee_accrues_only_on_growth_unit() {
 
     // Seed total supply so fees can mint
     let user = accounts(1);
-    c.deposit_unchecked(&user, 1_000).unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.deposit_unchecked(&user, 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
     c.idle_balance = 1_000;
 
     // Set fee to 10%
@@ -134,17 +135,22 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder() {
 fn execute_next_withdrawal_request_skips_holes() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+    let owner = c
+        .own_get_owner()
+        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
     setup_env(&vault_id, &owner, vec![]);
 
     println!("vault_id: {vault_id}");
     println!("owner: {owner}");
 
     // Bob gets 20 shares
-    c.deposit_unchecked(&owner, 20).unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.deposit_unchecked(&owner, 20)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
     // We fake by adding idle to the vault
-    c.transfer_unchecked(&owner, &vault_id, 10).unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    c.transfer_unchecked(&owner, &vault_id, 10).unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.transfer_unchecked(&owner, &vault_id, 10)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.transfer_unchecked(&owner, &vault_id, 10)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Vault now has 20
     assert_eq!(c.balance_of(&vault_id), 20);
@@ -232,7 +238,12 @@ fn execute_supply_wrong_token_refunds_full() {
 fn set_withdraw_queue_must_include_all_enabled() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
+    setup_env(
+        &vault_id,
+        &c.own_get_owner()
+            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+        vec![],
+    );
 
     let m1 = mk(101);
     let m2 = mk(102);
@@ -256,7 +267,7 @@ fn start_allocation_reserves_only_amount() {
     // Configure a single market with cap = 80 in the supply queue
     let m1 = mk(2000);
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 80;
+    cfg.cap = U128(80);
     cfg.enabled = true;
     c.config.insert(m1.clone(), cfg);
     c.supply_queue.push(m1.clone());
@@ -304,14 +315,19 @@ fn start_allocation_reserves_only_amount() {
 fn queue_allocation_ignores_stale_plan() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
+    setup_env(
+        &vault_id,
+        &c.own_get_owner()
+            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+        vec![],
+    );
 
     // Supply queue has m1; stale plan points to m2
     let m1 = mk(3001);
     let m2 = mk(3002);
 
     let mut cfg1 = MarketConfiguration::default();
-    cfg1.cap = 10;
+    cfg1.cap = U128(10);
     cfg1.enabled = true;
     c.config.insert(m1.clone(), cfg1);
     c.withdraw_queue.push(m1.clone());
@@ -337,12 +353,17 @@ fn queue_allocation_ignores_stale_plan() {
 fn set_withdraw_queue_disallow_nonzero_position_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
+    setup_env(
+        &vault_id,
+        &c.own_get_owner()
+            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+        vec![],
+    );
 
     let m1 = mk(4001);
 
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 0; // required precondition to attempt removal
+    cfg.cap = U128(0); // required precondition to attempt removal
     cfg.enabled = true;
     c.config.insert(m1.clone(), cfg);
 
@@ -413,7 +434,7 @@ fn removing_holding_market_hides_assets_and_leaves_orphan_supply() {
     // Market is known, holding > 0, with cap=0 and removal already scheduled.
     // This satisfies current preconditions in set_withdraw_queue for omission.
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 0;
+    cfg.cap = U128(0);
     cfg.enabled = true;
     cfg.removable_at = 1; // scheduled in the past relative to the block timestamp we set below
     c.config.insert(m.clone(), cfg);
@@ -456,14 +477,14 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
 
     // Seed a known, enabled market with cap > 0
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 10;
+    cfg.cap = U128(10);
     cfg.enabled = true;
     c.config.insert(m.clone(), cfg);
 
     // Lower cap to zero: should NOT disable the market anymore
     c.submit_cap(m.clone(), U128(0));
     let cfg_after = c.config.get(&m).expect("market must exist");
-    assert_eq!(cfg_after.cap, 0, "cap must be updated to 0");
+    assert_eq!(cfg_after.cap.0, 0, "cap must be updated to 0");
     assert!(cfg_after.enabled, "enabled must remain true when cap is 0");
 
     set_block_ts(&vault_id, &owner, 2);
@@ -501,7 +522,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     c.accept_cap(m.clone());
 
     let cfg1 = c.config.get(&m).unwrap();
-    assert_eq!(cfg1.cap, raise);
+    assert_eq!(cfg1.cap.0, raise);
     assert!(cfg1.enabled, "market should be enabled after raise");
     assert!(
         c.withdraw_queue.iter().any(|x| x == &m),
@@ -511,7 +532,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     // Now lower back to 0 (immediate path) and ensure enabled stays true
     c.submit_cap(m.clone(), U128(0));
     let cfg2 = c.config.get(&m).unwrap();
-    assert_eq!(cfg2.cap, 0);
+    assert_eq!(cfg2.cap.0, 0);
     assert!(cfg2.enabled, "enabled must remain true on cap=0");
 }
 
@@ -520,11 +541,16 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
 fn set_withdraw_queue_disallow_nonzero_cap_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
+    setup_env(
+        &vault_id,
+        &c.own_get_owner()
+            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+        vec![],
+    );
 
     let m = mk(5000);
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 1; // non-zero cap
+    cfg.cap = U128(1); // non-zero cap
     cfg.enabled = true; // must be enabled or holding to trigger invariant
     c.config.insert(m.clone(), cfg);
     c.withdraw_queue.push(m.clone());
@@ -543,7 +569,7 @@ fn set_withdraw_queue_disallow_pending_cap_removal() {
 
     let m = mk(5001);
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 0;
+    cfg.cap = U128(0);
     cfg.enabled = true;
     c.config.insert(m.clone(), cfg);
     c.withdraw_queue.push(m.clone());
@@ -571,7 +597,7 @@ fn set_withdraw_queue_disallow_timelock_not_elapsed() {
 
     let m = mk(5002);
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 0;
+    cfg.cap = U128(0);
     cfg.enabled = true;
     cfg.removable_at = 10; // in the future relative to block timestamp we set below
     c.config.insert(m.clone(), cfg);
@@ -589,11 +615,16 @@ fn set_withdraw_queue_disallow_timelock_not_elapsed() {
 fn set_withdraw_queue_allows_zero_supply_removal() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())), vec![]);
+    setup_env(
+        &vault_id,
+        &c.own_get_owner()
+            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+        vec![],
+    );
 
     let m = mk(5003);
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = 0;
+    cfg.cap = U128(0);
     cfg.enabled = true;
     // removable_at irrelevant when supply is zero
     c.config.insert(m.clone(), cfg);
@@ -710,7 +741,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
 
     let m = mk(1);
     let mut cfg = MarketConfiguration::default();
-    cfg.cap = cap;
+    cfg.cap = U128(cap);
     cfg.enabled = cap > 0;
     c.config.insert(m.clone(), cfg);
     c.market_supply.insert(m.clone(), cur);

@@ -6,6 +6,7 @@ pub use near_sdk::{
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
 };
 use near_sdk_contract_tools::ft::Nep141Controller as _;
+use templar_common::primitive_types::U128;
 use test_utils::vault_configuration;
 
 pub fn mk(n: u32) -> AccountId {
@@ -83,7 +84,7 @@ pub fn ensure_market(
     removable_at: u64,
 ) {
     let mut cfg = templar_common::vault::MarketConfiguration::default();
-    cfg.cap = cap;
+    cfg.cap = near_sdk::json_types::U128(cap);
     cfg.enabled = enabled;
     cfg.removable_at = removable_at;
     c.config.insert(id.clone(), cfg);

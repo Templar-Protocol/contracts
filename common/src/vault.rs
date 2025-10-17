@@ -1,3 +1,5 @@
+use std::num::NonZeroU8;
+
 use near_sdk::{env, json_types::U128, near, require, AccountId, Gas, Promise, PromiseOrValue};
 
 use crate::asset::{BorrowAsset, FungibleAsset};
@@ -37,7 +39,7 @@ pub enum AllocationMode {
     /// Behaviour
     /// • On deposit: if Idle and idle_balance ≥ min_batch, start_allocation(idle_balance).
     /// • Eager allocation can still honor a per-op plan if one is set (plan wins); otherwise fall back to supply_queue order.
-    Eager { min_batch: u128 },
+    Eager { min_batch: U128 },
     #[default]
     Lazy,
 }
@@ -55,7 +57,7 @@ pub enum DepositMsg {
 #[near]
 pub struct MarketConfiguration {
     /// Supply cap for this market (in underlying asset units)
-    pub cap: u128,
+    pub cap: U128,
     /// Whether market is enabled for deposits/withdrawals
     pub enabled: bool,
     /// Timestamp (ns) after which market can be removed (if pending removal)
@@ -94,7 +96,7 @@ pub struct VaultConfiguration {
     /// The symbol of the share token.
     pub symbol: String,
     /// The number of decimals for the share token, usually would be the same as the underlying asset.
-    pub decimals: u8,
+    pub decimals: NonZeroU8,
 }
 
 #[near_sdk::ext_contract(ext_vault)]

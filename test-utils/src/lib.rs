@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::{num::NonZero, path::Path, str::FromStr};
 
 use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
@@ -184,7 +184,7 @@ pub fn vault_configuration(
         skim_recipient: skim_recipient_id,
         name: "Vault".to_string(),
         symbol: "VAULT".to_string(),
-        decimals: 24,
+        decimals: NonZero::new(24).unwrap(),
         mode: templar_common::vault::AllocationMode::Lazy,
     }
 }
