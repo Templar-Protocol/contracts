@@ -253,19 +253,19 @@ pub struct PendingWithdrawal {
 }
 
 impl PendingWithdrawal {
-    pub const fn encoded_size() -> u64 {
-        storage_bytes_for_account_id()
-            + storage_bytes_for_account_id()
+    pub const fn encoded_size() -> usize {
+        storage_bytes_for_account_id() as usize
+            + storage_bytes_for_account_id() as usize
             + 16  // escrow_shares: u128
             + 16  // expected_assets: u128
-            + 8   // requested_at: u64
-            + 16 // deposit_yocto: u128
+            + 8 // requested_at: u64
     }
 }
 
 // Worst case size encoded for AccountId
 pub const fn storage_bytes_for_account_id() -> u64 {
-    AccountId::MAX_LEN as u64
+    // 4 bytes for length prefix + worst case size encoded for AccountId
+    4 + AccountId::MAX_LEN as u64
 }
 
 #[near(event_json(standard = "templar-vault"))]
@@ -483,4 +483,56 @@ pub enum Event {
     DepositRejectedWrongAsset { token: AccountId },
     #[event_version("1.0.0")]
     DepositRejectedZeroAmount { sender: AccountId },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use borsh::BorshDeserialize;
+    use near_sdk::test_utils::accounts;
+
+    use super::*;
+
+    // Compile time checks
+    const _: [(); MarketConfiguration::encoded_size()] = [(); 25];
+    const EXPECTED_FROM_TYPES: usize =
+        core::mem::size_of::<u128>() + core::mem::size_of::<bool>() + core::mem::size_of::<u64>();
+    const _: [(); MarketConfiguration::encoded_size()] = [(); EXPECTED_FROM_TYPES];
+
+    #[test]
+    fn encoded_size_is_25() {
+        assert_eq!(MarketConfiguration::encoded_size(), 25);
+    }
+
+    #[test]
+    fn encoded_size_market_matches_field_sizes() {
+        assert_eq!(
+            MarketConfiguration::encoded_size(),
+            borsh::to_vec(&MarketConfiguration::default())
+                .unwrap()
+                .len(),
+        );
+    }
+
+    #[test]
+    fn encoded_size_pending_withdrawal_matches_field_sizes() {
+        // let 64 byte account id
+        let s = "abc1abc2abc3abc4abc5abc6abc7abc8abc9abc0abc1abc2abc3abc4abc5abc6";
+        assert_eq!(s.len(), 64);
+        let account = AccountId::from_str(s).unwrap();
+        assert_eq!(account.len(), 64);
+        assert_eq!(
+            borsh::to_vec(&PendingWithdrawal {
+                owner: account.clone(),
+                receiver: account.clone(),
+                escrow_shares: 3,
+                expected_assets: 4,
+                requested_at: 5
+            })
+            .unwrap()
+            .len(),
+            PendingWithdrawal::encoded_size()
+        );
+    }
 }
