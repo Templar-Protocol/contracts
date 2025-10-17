@@ -393,12 +393,12 @@ impl Contract {
                 Self::compute_escrow_settlement(escrow_shares, burn_shares);
             if to_burn > 0 {
                 self.withdraw_unchecked(&env::current_account_id(), to_burn)
-                    .expect("Failed to burn escrowed shares");
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             }
             if refund_shares > 0 {
                 #[allow(clippy::expect_used, reason = "No side effects")]
                 self.transfer_unchecked(&env::current_account_id(), &owner, refund_shares)
-                    .expect("Failed to refund remaining escrowed shares");
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             }
             self.op_state = OpState::Idle;
             true
@@ -406,7 +406,7 @@ impl Contract {
             // Invariant: On payout failure, refund full escrow to owner and leave idle_balance unchanged
             #[allow(clippy::expect_used, reason = "No side effects")]
             self.transfer_unchecked(&env::current_account_id(), &owner, escrow_shares)
-                .expect("Failed to release escrowed shares");
+                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             self.op_state = OpState::Idle;
             false
         }
@@ -517,7 +517,7 @@ impl Contract {
                 let self_id = env::current_account_id();
                 #[allow(clippy::expect_used, reason = "No side effects")]
                 self.transfer_unchecked(&self_id, &owner_acc, escrow)
-                    .expect("Failed to release escrowed shares");
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             }
         }
         self.op_state = OpState::Idle;
@@ -555,7 +555,7 @@ impl Contract {
                 let self_id = env::current_account_id();
                 #[allow(clippy::expect_used, reason = "No side effects")]
                 self.transfer_unchecked(&self_id, &owner_acc, escrow)
-                    .expect("Failed to release escrowed shares");
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             }
         }
         self.op_state = OpState::Idle;
@@ -579,7 +579,7 @@ impl Contract {
         }
         PromiseOrValue::Value(())
     }
-    // Validate current op is Allocating and return (index, remaining)
+    /// Validate current op is Allocating and return (index, remaining)
     pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<(u32, u128), Error> {
         match &self.op_state {
             OpState::Allocating {
@@ -591,7 +591,7 @@ impl Contract {
         }
     }
 
-    // Validate current op is Withdrawing and return context tuple
+    /// Validate current op is Withdrawing and return context tuple
     pub(crate) fn ctx_withdrawing(
         &self,
         op_id: u64,
@@ -617,7 +617,7 @@ impl Contract {
         }
     }
 
-    // Resolve a market for allocation by plan (if present) or supply_queue
+    /// Resolve a market for allocation by plan (if present) or supply_queue
     pub(crate) fn resolve_supply_market(&self, market_index: u32) -> Result<AccountId, Error> {
         if let Some(plan) = &self.plan {
             if let Some((m, _)) = plan.get(market_index as usize) {
@@ -631,7 +631,7 @@ impl Contract {
             .ok_or(Error::MissingMarket(market_index))
     }
 
-    // Resolve a market for withdraw by withdraw_queue
+    /// Resolve a market for withdraw by withdraw_queue
     pub(crate) fn resolve_withdraw_market(&self, market_index: u32) -> Result<AccountId, Error> {
         self.withdraw_queue
             .get(market_index)
@@ -639,7 +639,7 @@ impl Contract {
             .ok_or(Error::MissingMarket(market_index))
     }
 
-    // Pure reconciliation for withdraw read outcome to enable unit tests
+    /// Pure reconciliation for withdraw read outcome to enable unit tests
     pub(crate) fn reconcile_withdraw_outcome(
         &self,
         before_principal: u128,
@@ -684,7 +684,7 @@ mod tests {
             &vault_id,
             &vault_id,
             vec![PromiseResult::Successful(
-                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap(),
+                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
             )],
         );
 
@@ -707,7 +707,7 @@ mod tests {
             &vault_id,
             &vault_id,
             vec![PromiseResult::Successful(
-                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap(),
+                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
             )],
         );
 
@@ -735,7 +735,7 @@ mod tests {
             &vault_id,
             &vault_id,
             vec![PromiseResult::Successful(
-                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap(),
+                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
             )],
         );
 
@@ -865,7 +865,7 @@ mod tests {
         }
     }
 
-    // Property: Payout failure keeps idle_balance unchanged and does not burn escrow
+    /// Property: Payout failure keeps idle_balance unchanged and does not burn escrow
     #[rstest(
         idle => [0u128, 1, 100],
         escrow => [0u128, 1, 50],
@@ -883,7 +883,7 @@ mod tests {
             use near_sdk_contract_tools::ft::Nep141Controller as _;
 
             c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
-                .expect("seed escrow into vault");
+                .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
         }
 
         c.idle_balance = idle;
@@ -914,7 +914,7 @@ mod tests {
         );
     }
 
-    // Property: Create-withdraw failure skips to next market and if collected>0 ends in Payout
+    /// Property: Create-withdraw failure skips to next market and if collected>0 ends in Payout
     #[rstest(
         collected => [1u128, 10u128],
         need => [1u128, 5u128]
@@ -954,7 +954,7 @@ mod tests {
         }
     }
 
-    // Property: Exec-withdraw read failure assumes unchanged principal and does not credit idle
+    /// Property: Exec-withdraw read failure assumes unchanged principal and does not credit idle
     #[rstest(
         before => [0u128, 1u128, 100u128],
         need => [0u128, 1u128, 50u128],
@@ -1011,7 +1011,7 @@ mod tests {
         }
     }
 
-    // Property: Callbacks must match current op_id or index; otherwise stop and go Idle
+    /// Property: Callbacks must match current op_id or index; otherwise stop and go Idle
     #[rstest(
         pass_op => [false, true],
         pass_index => [false, true]
@@ -1068,7 +1068,7 @@ mod tests {
         // Seed escrowed shares into the vault's own account
         let owner = accounts(1);
         c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
-            .expect("seed escrow into vault");
+            .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
 
         // Single-market withdraw queue (not used functionally here, just to satisfy path)
         let market = mk(12);
