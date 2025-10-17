@@ -1,6 +1,8 @@
 use std::fmt::Display;
 
-use crate::{ext_self, near, Contract, ContractExt, Error, Nep141Controller, OpState};
+use crate::{
+    ext_self, near, Contract, ContractExt, Error, EscrowSettlement, Nep141Controller, OpState,
+};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{env, json_types::U128, AccountId, NearToken, PromiseError, PromiseOrValue};
 use near_sdk_contract_tools::ft::nep141::GAS_FOR_FT_TRANSFER_CALL;
@@ -389,15 +391,15 @@ impl Contract {
             // Invariant: On payout success, idle_balance -= payout_amount.
             // Burn only the proportional shares and refund the remainder to the owner.
             self.idle_balance = self.idle_balance.saturating_sub(payout_amount);
-            let (to_burn, refund_shares) =
+            let EscrowSettlement { to_burn, refund } =
                 Self::compute_escrow_settlement(escrow_shares, burn_shares);
             if to_burn > 0 {
                 self.withdraw_unchecked(&env::current_account_id(), to_burn)
                     .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             }
-            if refund_shares > 0 {
+            if refund > 0 {
                 #[allow(clippy::expect_used, reason = "No side effects")]
-                self.transfer_unchecked(&env::current_account_id(), &owner, refund_shares)
+                self.transfer_unchecked(&env::current_account_id(), &owner, refund)
                     .unwrap_or_else(|e| env::panic_str(&e.to_string()));
             }
             self.op_state = OpState::Idle;
@@ -684,7 +686,8 @@ mod tests {
             &vault_id,
             &vault_id,
             vec![PromiseResult::Successful(
-                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
+                near_sdk::serde_json::to_vec(&U128(u128::MAX))
+                    .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
             )],
         );
 
@@ -707,7 +710,8 @@ mod tests {
             &vault_id,
             &vault_id,
             vec![PromiseResult::Successful(
-                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
+                near_sdk::serde_json::to_vec(&U128(u128::MAX))
+                    .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
             )],
         );
 
@@ -735,7 +739,8 @@ mod tests {
             &vault_id,
             &vault_id,
             vec![PromiseResult::Successful(
-                near_sdk::serde_json::to_vec(&U128(u128::MAX)).unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
+                near_sdk::serde_json::to_vec(&U128(u128::MAX))
+                    .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
             )],
         );
 

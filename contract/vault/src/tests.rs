@@ -413,14 +413,20 @@ fn compute_effective_totals_fee_share_and_virtuals() {
 }
 
 #[test]
+#[test]
 fn compute_escrow_settlement_burns_min_and_refunds_rest() {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let c = new_test_contract(&vault_id);
 
-    assert_eq!(Contract::compute_escrow_settlement(100, 40), (40, 60));
-    assert_eq!(Contract::compute_escrow_settlement(100, 200), (100, 0));
-    assert_eq!(Contract::compute_escrow_settlement(0, 50), (0, 0));
+    let s1: (u128, u128) = Contract::compute_escrow_settlement(100, 40).into();
+    assert_eq!(s1, (40u128, 60u128));
+
+    let s2: (u128, u128) = Contract::compute_escrow_settlement(100, 200).into();
+    assert_eq!(s2, (100u128, 0u128));
+
+    let s3: (u128, u128) = Contract::compute_escrow_settlement(0, 50).into();
+    assert_eq!(s3, (0u128, 0u128));
 }
 
 #[test]
