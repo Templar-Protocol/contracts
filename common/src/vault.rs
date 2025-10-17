@@ -279,14 +279,9 @@ pub enum Event {
     #[event_version("1.0.0")]
     AllocationRequestedQueue { op_id: u64, total: U128 },
     #[event_version("1.0.0")]
-    AllocationRequestedWeighted {
-        op_id: u64,
-        total: U128,
-        weights: Vec<(AccountId, U128)>,
-    },
-    #[event_version("1.0.0")]
     AllocationPlanSet {
         op_id: u64,
+        total: U128,
         plan: Vec<(AccountId, U128)>,
     },
 

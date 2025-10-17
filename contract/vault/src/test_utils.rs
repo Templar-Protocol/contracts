@@ -1,6 +1,6 @@
 use crate::Contract;
-use near_sdk::NearToken;
 use near_sdk::env;
+use near_sdk::NearToken;
 pub use near_sdk::{
     test_utils::{accounts, VMContextBuilder},
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
@@ -9,7 +9,7 @@ use near_sdk_contract_tools::ft::Nep141Controller as _;
 use test_utils::vault_configuration;
 
 pub fn mk(n: u32) -> AccountId {
-    format!("acc{n}.testnet").parse().unwrap_or_else(|e| env::panic_str(&e.to_string()))
+    format!("acc{n}.testnet").parse().unwrap()
 }
 
 pub fn setup_env(

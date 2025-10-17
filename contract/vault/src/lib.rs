@@ -1,10 +1,12 @@
 #![allow(clippy::needless_pass_by_value)]
 
+use std::collections::{HashMap, HashSet};
+
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env,
     json_types::U128,
-    near, serde_json,
+    near, require, serde_json,
     store::{IterableMap, LookupMap, Vector},
     AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
@@ -162,7 +164,7 @@ impl Contract {
         } = configuration;
 
         let timelock_ns = u64::from(initial_timelock_sec) * 1_000_000_000;
-        near_sdk::require!(
+        require!(
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&timelock_ns),
             "timelock bounds"
         );
@@ -230,11 +232,11 @@ impl Contract {
     pub fn set_curator(&mut self, account: AccountId) {
         Self::require_owner();
         Self::with_members_of(&Role::Curator, |members| {
-            near_sdk::require!(
+            require!(
                 members.len() < 2,
                 "Invariant violation: Cannot Have more than 1 Curator"
             );
-            near_sdk::require!(
+            require!(
                 !members.contains(&account),
                 "Curator already set to this account"
             );
@@ -273,14 +275,14 @@ impl Contract {
         let mut guardian_occupied = false;
 
         Self::with_members_of(&Role::Guardian, |members| {
-            near_sdk::require!(
+            require!(
                 members.len() < 2,
                 "Invariant violation: Cannot Have more than 1 Guardian"
             );
-            near_sdk::require!(!members.contains(&new_g), "Already set to this address");
+            require!(!members.contains(&new_g), "Already set to this address");
             guardian_occupied = !members.is_empty();
         });
-        near_sdk::require!(
+        require!(
             self.pending_guardian.is_none(),
             "Guardian change already pending"
         );
@@ -302,7 +304,7 @@ impl Contract {
         let p = self.pending_guardian.clone();
 
         if let Some(p) = &p {
-            near_sdk::require!(env::block_timestamp() >= p.valid_at, "not yet");
+            require!(env::block_timestamp() >= p.valid_at, "not yet");
             Self::with_members_of(&Role::Guardian, |members| {
                 members.iter().for_each(|m| {
                     self.remove_role(&m, &Role::Guardian);
@@ -322,7 +324,7 @@ impl Contract {
     /// Sets the recipient account for skimmed tokens.
     pub fn set_skim_recipient(&mut self, account: AccountId) {
         Self::require_owner();
-        near_sdk::require!(
+        require!(
             account != self.skim_recipient,
             "Already set to this address"
         );
@@ -336,7 +338,7 @@ impl Contract {
     /// Sets the performance fee recipient. Accrues pending fees with the current recipient first.
     pub fn set_fee_recipient(&mut self, account: AccountId) {
         Self::require_owner();
-        near_sdk::require!(account != self.fee_recipient, "Already set to this address");
+        require!(account != self.fee_recipient, "Already set to this address");
 
         if self.performance_fee != 0 {
             // Accrue any pending fees to current recipient before changing (so current recipient gets up to now)
@@ -355,9 +357,9 @@ impl Contract {
 
         let fee: u128 = fee.into();
 
-        near_sdk::require!(fee != self.performance_fee, "Fee already set to this value");
+        require!(fee != self.performance_fee, "Fee already set to this value");
         // FIXME: dynamic based on underlying
-        near_sdk::require!(fee <= (wad::WAD / 10), "fee too high");
+        require!(fee <= (wad::WAD / 10), "fee too high");
 
         // Accrue any pending fees with old rate before changing
         self.internal_accrue_fee();
@@ -372,12 +374,12 @@ impl Contract {
         Self::require_owner();
         let as_nanos = u64::from(new_timelock_secs) * 1_000_000_000;
 
-        near_sdk::require!(as_nanos != self.timelock_ns, "Already set to this value");
-        near_sdk::require!(
+        require!(as_nanos != self.timelock_ns, "Already set to this value");
+        require!(
             self.pending_timelock.is_none(),
             "Timelock change already pending"
         );
-        near_sdk::require!(
+        require!(
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&as_nanos),
             "Timelock out of bounds"
         );
@@ -405,7 +407,7 @@ impl Contract {
     pub fn accept_timelock(&mut self) {
         Self::require_owner();
         if let Some(p) = &self.pending_timelock {
-            near_sdk::require!(
+            require!(
                 env::block_timestamp() >= p.valid_at,
                 "Timelock not elapsed yet"
             );
@@ -459,16 +461,16 @@ impl Contract {
             Some(config) => config,
         };
 
-        near_sdk::require!(
-            self.pending_cap.get(&market).is.none(),
+        require!(
+            self.pending_cap.get(&market).is_none(),
             "Policy violation: A cap change is already pending for this market"
         );
-        near_sdk::require!(
+        require!(
             config.removable_at == 0,
             "Market removal pending, cannot change cap"
         );
         let new_cap = new_cap.0;
-        near_sdk::require!(new_cap != config.cap, "New cap is same as current");
+        require!(new_cap != config.cap, "New cap is same as current");
 
         if new_cap < config.cap {
             // If lowering the cap, we can apply the delta immediately
@@ -497,7 +499,7 @@ impl Contract {
         Self::assert_curator_or_owner();
         self.ensure_idle();
         if let Some(pending) = self.pending_cap.get(&market) {
-            near_sdk::require!(
+            require!(
                 env::block_timestamp() >= pending.valid_at,
                 "Timelock not elapsed for cap change"
             );
@@ -584,11 +586,11 @@ impl Contract {
             cfg.removable_at == 0,
             "Removal already pending for this market"
         );
-        assert!(
+        require!(
             cfg.cap == 0,
             "Cannot remove market with non-zero cap (disable deposits first)"
         );
-        assert!(cfg.enabled, "Market not enabled or already removed");
+        require!(cfg.enabled, "Market not enabled or already removed");
         assert!(
             self.pending_cap.get(&market).is_none(),
             "Cap change pending for this market"
@@ -615,10 +617,10 @@ impl Contract {
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
         self.ensure_idle();
-        near_sdk::require!(markets.len() <= MAX_QUEUE_LEN, "too long");
+        require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
         // Invariant: supply_queue has no duplicates; allocation order remains meaningful
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         for m in &markets {
             if !seen.insert(m.clone()) {
                 env::panic_str(&format!("Duplicate market {m}"));
@@ -627,12 +629,11 @@ impl Contract {
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
             let cap = self.config.get(m).map_or(0, |c| c.cap);
-            near_sdk::require!(cap > 0, "unauthorized market");
+            require!(cap > 0, "unauthorized market");
         }
 
         // Compute and require storage for additions (no refunds for removals in this pass)
-        let current: std::collections::HashSet<AccountId> =
-            self.supply_queue.iter().cloned().collect();
+        let current: HashSet<AccountId> = self.supply_queue.iter().cloned().collect();
         let required_yocto = storage_management::yocto_for_queue_additions(&current, &markets);
         require_attached_at_least(required_yocto, "supply queue update");
 
@@ -655,12 +656,12 @@ impl Contract {
     pub fn set_withdraw_queue(&mut self, queue: Vec<AccountId>) {
         Self::assert_allocator();
         self.ensure_idle();
-        near_sdk::require!(
+        require!(
             queue.len() <= MAX_QUEUE_LEN,
             "Withdraw queue length exceeds max"
         );
 
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         for id in &queue {
             if !seen.insert(id.clone()) {
                 env::panic_str(&format!("Duplicate market {id}"));
@@ -668,11 +669,10 @@ impl Contract {
         }
 
         // Snapshot current withdraw queue into a set for membership checks
-        let current: std::collections::HashSet<AccountId> =
-            self.withdraw_queue.iter().cloned().collect();
+        let current: HashSet<AccountId> = self.withdraw_queue.iter().cloned().collect();
 
         for id in &queue {
-            near_sdk::require!(
+            require!(
                 self.config.get(id).is_some(),
                 "Policy violation: Unknown market in new queue"
             );
@@ -683,20 +683,20 @@ impl Contract {
             if (cfg.enabled || has_supply) && !seen.contains(id) {
                 if current.contains(id) {
                     // Omission is allowed only when removing an existing queued market AND all safety preconditions hold.
-                    near_sdk::require!(
+                    require!(
                         cfg.cap == 0,
-                        "Invariant violation: Cannot remove market with non-zero cap"
+                        "Policy violation: Cannot remove market with non-zero cap"
                     );
-                    near_sdk::require!(
+                    require!(
                         self.pending_cap.get(id).is_none(),
                         "Policy violation: Cannot remove market with pending cap change"
                     );
                     if has_supply {
-                        near_sdk::require!(
+                        require!(
                             cfg.removable_at > 0,
                             "Policy violation: Market still has supply but no removal scheduled"
                         );
-                        near_sdk::require!(
+                        require!(
                             env::block_timestamp() >= cfg.removable_at,
                             "Policy violation: Removal timelock not elapsed for market"
                         );
@@ -900,14 +900,14 @@ impl Contract {
                 .own_get_owner()
                 .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
             curator: Self::with_members_of(&Role::Curator, |members| {
-                near_sdk::require!(
+                require!(
                     members.len() == 1,
                     "Invariant violation: Cannot Have more than 1 Curator"
                 );
                 members.iter().next().expect("Curator not set").clone()
             }),
             guardian: Self::with_members_of(&Role::Guardian, |members| {
-                near_sdk::require!(
+                require!(
                     members.len() == 1,
                     "Invariant violation: Cannot Have more than 1 Guardian"
                 );
@@ -1180,7 +1180,7 @@ impl Contract {
         }
         self.ensure_idle();
 
-        near_sdk::require!(
+        require!(
             amount <= self.idle_balance,
             "Policy violation: reserve amount must be <= idle_balance"
         );
