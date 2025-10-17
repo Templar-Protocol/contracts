@@ -1004,6 +1004,11 @@ impl Contract {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EscrowSettlement {
+    pub to_burn: u128,
+    pub refund: u128,
+}
 /* ----- Private Helpers ----- */
 impl Contract {
     /// Enqueue a vault-level pending withdrawal request (escrow already taken).
@@ -1096,10 +1101,10 @@ impl Contract {
     pub(crate) fn compute_escrow_settlement(
         escrow_shares: u128,
         burn_shares: u128,
-    ) -> (u128 /* to_burn */, u128 /* refund */) {
+    ) -> EscrowSettlement {
         let to_burn = burn_shares.min(escrow_shares);
         let refund = escrow_shares.saturating_sub(to_burn);
-        (to_burn, refund)
+        EscrowSettlement { to_burn, refund }
     }
 
     /* ----- Internal: fee, shares ----- */
