@@ -42,7 +42,7 @@ pub fn storage_bytes_for_pending_cap_entry() -> u64 {
 pub fn storage_bytes_for_pending_withdrawal() -> u64 {
     // Key is u64 id -> 8 bytes
     let key = 8u64;
-    let val = PendingWithdrawal::encoded_size();
+    let val = PendingWithdrawal::encoded_size() as u64;
     MAP_ENTRY_OVERHEAD + key + val
 }
 
