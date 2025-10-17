@@ -169,6 +169,7 @@ impl App {
 
             for contract_id in [
                 market_id,
+                market_accounts.oracle_id.clone(),
                 market_accounts.borrow_asset.contract_id().to_owned(),
                 market_accounts.collateral_asset.contract_id().to_owned(),
             ] {
