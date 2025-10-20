@@ -7,8 +7,10 @@ use test_utils::*;
 #[tokio::main]
 async fn main() {
     const ITERATIONS: usize = 128;
+    let worker = near_workspaces::sandbox().await.unwrap();
 
     setup_test!(
+        worker
         extract(vault, c, vault_curator)
         accounts(user1, user2, user3)
     );
