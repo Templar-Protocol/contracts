@@ -3,12 +3,12 @@ use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset::{BorrowAssetAmount, CollateralAssetAmount, ReturnStyle},
     market::DepositMsg,
     self_ext,
 };
 
-use crate::{Contract, ContractExt, ReturnStyle};
+use crate::{Contract, ContractExt};
 
 #[near]
 impl FungibleTokenReceiver for Contract {
