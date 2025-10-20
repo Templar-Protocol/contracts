@@ -5,6 +5,11 @@ use std::{
     num::NonZeroU8,
 };
 
+use crate::storage_management::{
+    require_attached_at_least, require_attached_for_pending_withdrawal,
+    storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
+    yocto_for_pending_cap,
+};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env,
@@ -18,7 +23,6 @@ use near_sdk_contract_tools::{
         nep141::GAS_FOR_FT_TRANSFER_CALL, ContractMetadata, FungibleToken, Nep141Controller,
         Nep148Controller,
     },
-    standard::nep145::{Nep145Controller, Nep145ForceUnregister},
     Owner, Rbac,
 };
 use near_sdk_contract_tools::{owner::Owner, rbac};
@@ -35,13 +39,6 @@ use templar_common::{
 };
 pub use wad::*;
 
-use crate::storage_management::{
-    require_attached_at_least, require_attached_for_pending_withdrawal,
-    storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
-    yocto_for_pending_cap,
-};
-
-pub mod aux;
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
 pub mod storage_management;
@@ -185,11 +182,6 @@ impl Contract {
             };
         }
 
-        // TODO: this but with roles and other storage we set
-        // let storage_usage_1 = env::storage_usage();
-        // market.finalized_snapshots.flush();
-        // let storage_usage_2 = env::storage_usage();
-        // let storage_usage_snapshot = storage_usage_2.saturating_sub(storage_usage_1);
         let storage_usage_supply = env::storage_usage();
         let storage_usage_role = env::storage_usage();
 
@@ -354,7 +346,7 @@ impl Contract {
         self.fee_recipient = account;
     }
 
-    /// Sets the performance fee as a WAD fraction (1e18 = 100%). Accrues fees at the old rate first.
+    /// Sets the performance fee as a WAD fraction (1e24 = 100%). Accrues fees at the old rate first.
     pub fn set_performance_fee(&mut self, fee: U128) {
         Self::require_owner();
 
@@ -924,23 +916,21 @@ impl Contract {
 
     /// Returns the maximum additional amount that can be deposited across all markets given current caps.
     pub fn get_max_deposit(&self) -> U128 {
-        // TODO: join
-        let mut total = 0u128;
-        self.supply_queue.iter().for_each(|m| {
-            if let Some(cfg) = self.config.get(m) {
-                if cfg.cap.0 > 0 {
-                    let cur = self.market_supply.get(m).unwrap_or(&0);
-                    if cfg.cap.0 > *cur {
-                        total += cfg.cap.0 - cur;
-                    }
+        let total = self
+            .supply_queue
+            .iter()
+            .fold(0u128, |acc, m| match self.config.get(m) {
+                Some(cfg) if cfg.cap.0 > 0 => {
+                    let cur = *self.market_supply.get(m).unwrap_or(&0);
+                    acc + cfg.cap.0.saturating_sub(cur)
                 }
-            }
-        });
+                _ => acc,
+            });
         U128(total)
     }
 
     /// Converts an amount of underlying assets to shares, flooring the result.
-    /// Uses virtual offsets and fee-aware totals (pre-accrual simulation) like MetaMorpho.
+    /// Uses virtual offsets and fee-aware totals (pre-accrual simulation).
     pub fn convert_to_shares(&self, assets: U128) -> U128 {
         let a: u128 = assets.0;
         if a == 0 {
@@ -951,7 +941,7 @@ impl Contract {
     }
 
     /// Converts an amount of shares to underlying assets, flooring the result.
-    /// Uses virtual offsets and fee-aware totals (pre-accrual simulation) like MetaMorpho.
+    /// Uses virtual offsets and fee-aware totals (pre-accrual simulation).
     pub fn convert_to_assets(&self, shares: U128) -> U128 {
         let s: u128 = shares.0;
         if s == 0 {
@@ -1009,6 +999,13 @@ pub(crate) struct EscrowSettlement {
     pub to_burn: u128,
     pub refund: u128,
 }
+
+impl From<EscrowSettlement> for (u128, u128) {
+    fn from(tuple: EscrowSettlement) -> Self {
+        (tuple.to_burn, tuple.refund)
+    }
+}
+
 /* ----- Private Helpers ----- */
 impl Contract {
     /// Enqueue a vault-level pending withdrawal request (escrow already taken).
@@ -1384,17 +1381,17 @@ impl Contract {
                 OpState::Withdrawing {
                     op_id,
                     index,
-                remaining,
-                receiver,
-                collected,
-                owner,
-                escrow_shares,
-            } => (
-                *op_id,
-                *index,
-                *remaining,
-                receiver.clone(),
-                *collected,
+                    remaining,
+                    receiver,
+                    collected,
+                    owner,
+                    escrow_shares,
+                } => (
+                    *op_id,
+                    *index,
+                    *remaining,
+                    receiver.clone(),
+                    *collected,
                     owner.clone(),
                     *escrow_shares,
                 ),
