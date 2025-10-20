@@ -12,7 +12,7 @@ use templar_common::{
     self_ext,
 };
 
-use crate::{Contract, ContractExt, ReturnStyle};
+use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {

@@ -589,7 +589,7 @@ impl Contract {
                 index,
                 remaining,
             } if *cur == op_id => Ok((*index, *remaining)),
-            _ => Err(Error::NotAllocating(self.op_state.clone())),
+            _ => Err(Error::NotAllocating),
         }
     }
 
@@ -615,7 +615,7 @@ impl Contract {
                 owner.clone(),
                 *escrow_shares,
             )),
-            _ => Err(Error::NotWithdrawing(self.op_state.clone())),
+            _ => Err(Error::NotWithdrawing),
         }
     }
 
