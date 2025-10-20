@@ -1,9 +1,9 @@
 /// Fixed-point helpers and fee-accrual math using 24-decimal WAD precision.
 use templar_common::primitive_types::{U256, U512};
 
-// TODO: possibly change to u256 for more precision
 pub const WAD: u128 = 1_000_000_000_000_000_000_000_000u128;
 
+// ! FIXME: wrap this in a newtype so we don't mix them around WadFraction(U256)
 pub type WADFraction = u128;
 pub type WIDE = U512;
 
