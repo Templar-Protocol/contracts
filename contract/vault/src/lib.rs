@@ -5,13 +5,10 @@ use std::{
     num::NonZeroU8,
 };
 
-use crate::{
-    storage_management::{
-        require_attached_at_least, require_attached_for_pending_withdrawal,
-        storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
-        yocto_for_pending_cap,
-    },
-    wad::compute_fee_shares,
+use crate::storage_management::{
+    require_attached_at_least, require_attached_for_pending_withdrawal,
+    storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
+    yocto_for_pending_cap,
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -95,7 +92,7 @@ pub struct Contract {
 
     /// TODO: decimal offset for virtual shares
     /// Performance fee (as WAD fraction)
-    performance_fee: wad::WADFraction,
+    performance_fee: wad::Wad,
     fee_recipient: AccountId,
     skim_recipient: AccountId,
     /// Last recorded total assets (for fee accrual)
@@ -338,7 +335,7 @@ impl Contract {
         Self::require_owner();
         require!(account != self.fee_recipient, "Already set to this address");
 
-        if self.performance_fee != 0 {
+        if self.performance_fee != wad::Wad::zero() {
             // Accrue any pending fees to current recipient before changing (so current recipient gets up to now)
             self.internal_accrue_fee();
         }
@@ -353,15 +350,21 @@ impl Contract {
     pub fn set_performance_fee(&mut self, fee: U128) {
         Self::require_owner();
 
-        let fee: u128 = fee.into();
+        let fee_wad = wad::Wad::from(fee.0);
 
-        require!(fee != self.performance_fee, "Fee already set to this value");
-        require!(fee <= (wad::WAD / 10), "fee too high");
+        require!(
+            fee_wad != self.performance_fee,
+            "Fee already set to this value"
+        );
+        require!(fee_wad <= (wad::Wad::one() / 10), "fee too high");
 
         // Accrue any pending fees with old rate before changing
         self.internal_accrue_fee();
-        self.performance_fee = fee;
-        Event::PerformanceFeeSet { fee: U128(fee) }.emit();
+        self.performance_fee = fee_wad;
+        Event::PerformanceFeeSet {
+            fee: U128(u128::from(fee_wad)),
+        }
+        .emit();
     }
 
     /* ----- Timelocks / Pending ----- */
@@ -440,6 +443,11 @@ impl Contract {
         }
         require_attached_at_least(required_deposit, "submit_cap");
 
+        require!(
+            self.pending_cap.get(&market).is_none(),
+            "Policy violation: A cap change is already pending for this market"
+        );
+
         let config = match self.config.get_mut(&market) {
             None => {
                 self.config
@@ -450,18 +458,11 @@ impl Contract {
                 .emit();
                 // Pre-allocate a market_supply record (principal=0) so allocations don't create storage later
                 self.market_supply.insert(market.clone(), 0);
-                #[allow(clippy::unwrap_used, reason = "No side effects")]
-                self.config
-                    .get_mut(&market)
-                    .unwrap_or_else(|| env::panic_str(&"Config not found after insert".to_string()))
+                self.cfg_mut(&market)
             }
             Some(config) => config,
         };
 
-        require!(
-            self.pending_cap.get(&market).is_none(),
-            "Policy violation: A cap change is already pending for this market"
-        );
         require!(
             config.removable_at == 0,
             "Market removal pending, cannot change cap"
@@ -494,67 +495,59 @@ impl Contract {
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
         self.ensure_idle();
-        if let Some(pending) = self.pending_cap.get(&market) {
-            require!(
-                env::block_timestamp() >= pending.valid_at,
-                "Timelock not elapsed for cap change"
-            );
 
-            #[allow(clippy::expect_used, reason = "No side effects")]
-            let cfg = self
-                .config
-                .get_mut(&market)
-                .unwrap_or_else(|| env::panic_str(&"Market not found".to_string()));
+        let (pending_value, pending_valid_at) = match self.pending_cap.get(&market) {
+            Some(p) => (p.value, p.valid_at),
+            None => env::panic_str("No pending cap change for this market"),
+        };
 
-            cfg.cap = pending.value.into();
-            if pending.value > 0 {
-                // If enabling or raising cap above 0, mark enabled and add to withdraw_queue if not already present
-                if !cfg.enabled {
-                    cfg.enabled = true;
-                    let mut added = false;
-                    if self.withdraw_queue.iter().any(|m| m == &market) {
-                        Event::MarketEnabled {
-                            market: market.clone(),
-                        }
-                        .emit();
-                        Event::MarketAlreadyInWithdrawQueue {
-                            market: market.clone(),
-                        }
-                        .emit();
-                    } else {
-                        require_attached_at_least(
-                            yocto_for_bytes(storage_bytes_for_queue_account_id()),
-                            "withdraw queue entry",
-                        );
-                        self.withdraw_queue.push(market.clone());
-                        Event::MarketEnabled {
-                            market: market.clone(),
-                        }
-                        .emit();
-                        Event::WithdrawQueueMarketAdded {
-                            market: market.clone(),
-                        }
-                        .emit();
-                        added = true;
-                    }
+        require!(
+            env::block_timestamp() >= pending_valid_at,
+            "Timelock not elapsed for cap change"
+        );
 
-                    // Only adjust last_total_assets if we just re-added the market to the withdraw queue
-                    if added {
-                        let current = self.market_supply.get(&market).unwrap_or(&0);
-                        self.last_total_assets = self.last_total_assets.saturating_add(*current);
-                    }
-                }
-                cfg.removable_at = 0;
+        let was_enabled = self.cfg(&market).enabled;
+        let in_queue = self.in_withdraw_queue(&market);
+        let before_principal = self.principal_of(&market);
+
+        let cfg = self.cfg_mut(&market);
+        cfg.cap = pending_value.into();
+        if pending_value > 0 {
+            if !cfg.enabled {
+                cfg.enabled = true;
             }
-            Event::SupplyCapSet {
+            cfg.removable_at = 0;
+        }
+
+        // If we just enabled the market, ensure it's in the withdraw queue
+        if pending_value > 0 && !was_enabled {
+            Event::MarketEnabled {
                 market: market.clone(),
-                new_cap: U128(pending.value),
             }
             .emit();
-            self.pending_cap.remove(&market);
-        } else {
-            env::panic_str("No pending cap change for this market");
+
+            if in_queue {
+                Event::MarketAlreadyInWithdrawQueue {
+                    market: market.clone(),
+                }
+                .emit();
+            } else {
+                let _ = require_attached_at_least(
+                    yocto_for_bytes(storage_bytes_for_queue_account_id()),
+                    "withdraw queue entry",
+                );
+                self.add_market_to_withdraw_queue(&market, before_principal);
+            }
         }
+
+        Event::SupplyCapSet {
+            market: market.clone(),
+            new_cap: U128(pending_value),
+        }
+        .emit();
+
+        // Finally, clear the pending cap record
+        self.pending_cap.remove(&market);
     }
 
     /// Revokes any pending cap change for `market`.
@@ -807,7 +800,8 @@ impl Contract {
     /// So in one allocation cycle, we should do at most ~12 market allocations.
     /// This is a conservative estimate, and may need to be tweaked.
     ///
-    /// NOTE: here we should use a delta based approach for allocation plans when we rewrite this for `reallocate`
+    ///
+    /// NOTE: When we rewrite this we should use a delta based approach
     #[payable]
     pub fn allocate(
         &mut self,
@@ -914,7 +908,7 @@ impl Contract {
         // TODO: join
         let mut sum = self.idle_balance;
         self.withdraw_queue.iter().for_each(|m| {
-            sum += self.market_supply.get(m).unwrap_or(&0);
+            sum = sum.saturating_add(self.principal_of(m));
         });
         U128(sum)
     }
@@ -946,7 +940,7 @@ impl Contract {
             return U128(0);
         }
         let (new_total_supply, new_total_assets) = self.effective_totals_fee_aware();
-        U128(mul_div_floor(a, new_total_supply, new_total_assets))
+        U128(mul_div_floor(a.into(), new_total_supply.into(), new_total_assets.into()).into())
     }
 
     /// Converts an amount of shares to underlying assets, flooring the result.
@@ -957,7 +951,7 @@ impl Contract {
             return U128(0);
         }
         let (new_total_supply, new_total_assets) = self.effective_totals_fee_aware();
-        U128(mul_div_floor(s, new_total_assets, new_total_supply))
+        U128(mul_div_floor(s.into(), new_total_assets.into(), new_total_supply.into()).into())
     }
 
     /// Preview the number of shares minted for a deposit of `assets` (floored).
@@ -974,11 +968,7 @@ impl Contract {
             return U128(0);
         }
         let (new_total_supply, new_total_assets) = self.effective_totals_fee_aware();
-        U128(crate::wad::mul_div_ceil(
-            s,
-            new_total_assets,
-            new_total_supply,
-        ))
+        U128(mul_div_ceil(s.into(), new_total_assets.into(), new_total_supply.into()).into())
     }
 
     /// Preview the number of shares required to withdraw `assets` (ceiled).
@@ -989,11 +979,7 @@ impl Contract {
             return U128(0);
         }
         let (new_total_supply, new_total_assets) = self.effective_totals_fee_aware();
-        U128(crate::wad::mul_div_ceil(
-            a,
-            new_total_supply,
-            new_total_assets,
-        ))
+        U128(mul_div_ceil(a.into(), new_total_supply.into(), new_total_assets.into()).into())
     }
 
     /// Preview the amount of assets received by redeeming `shares` (floored).
@@ -1017,6 +1003,63 @@ impl From<EscrowSettlement> for (u128, u128) {
 
 /* ----- Private Helpers ----- */
 impl Contract {
+    fn cfg_mut(&mut self, id: &AccountId) -> &mut MarketConfiguration {
+        self.config
+            .get_mut(id)
+            .unwrap_or_else(|| env::panic_str("Config not found"))
+    }
+
+    // Read-only config accessor with consistent panic
+    fn cfg(&self, id: &AccountId) -> &MarketConfiguration {
+        self.config
+            .get(id)
+            .unwrap_or_else(|| env::panic_str("Config not found"))
+    }
+
+    // Principal (vault-supplied) units currently recorded for a market
+    fn principal_of(&self, market: &AccountId) -> u128 {
+        *self.market_supply.get(market).unwrap_or(&0)
+    }
+
+    // Current cap value for a market (0 if unknown)
+    fn cap_of(&self, market: &AccountId) -> u128 {
+        self.config.get(market).map_or(0, |c| c.cap.0)
+    }
+
+    // Remaining room until cap for a market
+    fn room_of(&self, market: &AccountId) -> u128 {
+        self.cap_of(market)
+            .saturating_sub(self.principal_of(market))
+    }
+
+    // Membership check: is market in withdraw_queue?
+    fn in_withdraw_queue(&self, market: &AccountId) -> bool {
+        self.withdraw_queue.iter().any(|m| m == market)
+    }
+
+    // Add market to withdraw_queue and adjust last_total_assets if re-adding with existing principal
+    pub(crate) fn add_market_to_withdraw_queue(
+        &mut self,
+        market: &AccountId,
+        before_principal: u128,
+    ) {
+        if self.in_withdraw_queue(market) {
+            Event::MarketAlreadyInWithdrawQueue {
+                market: market.clone(),
+            }
+            .emit();
+            return;
+        }
+        self.withdraw_queue.push(market.clone());
+        Event::WithdrawQueueMarketAdded {
+            market: market.clone(),
+        }
+        .emit();
+        if before_principal > 0 {
+            self.last_total_assets = self.last_total_assets.saturating_add(before_principal);
+        }
+    }
+
     /// Enqueue a vault-level pending withdrawal request (escrow already taken).
     fn enqueue_pending_withdrawal(
         &mut self,
@@ -1057,14 +1100,15 @@ impl Contract {
     fn effective_totals_fee_aware(&self) -> (u128, u128) {
         let cur = self.get_total_assets().0;
         let ts = self.total_supply();
-        Self::compute_effective_totals(
-            cur,
-            self.last_total_assets,
+        let (new_total_supply, new_total_assets) = Self::compute_effective_totals(
+            cur.into(),
+            self.last_total_assets.into(),
             self.performance_fee,
-            ts,
-            self.virtual_shares,
-            self.virtual_assets,
-        )
+            ts.into(),
+            self.virtual_shares.into(),
+            self.virtual_assets.into(),
+        );
+        (new_total_supply.into(), new_total_assets.into())
     }
 
     // Pure helper to compute how many escrowed shares to burn on partial payout
@@ -1074,17 +1118,22 @@ impl Contract {
         collected: u128,
         requested_total: u128,
     ) -> u128 {
-        mul_div_floor(escrow_shares, collected, requested_total.max(1))
+        mul_div_floor(
+            escrow_shares.into(),
+            collected.into(),
+            requested_total.max(1).into(),
+        )
+        .into()
     }
 
     pub(crate) fn compute_effective_totals(
-        cur_assets: u128,
-        last_total_assets: u128,
-        performance_fee: u128,
-        total_supply: u128,
-        virtual_shares: u128,
-        virtual_assets: u128,
-    ) -> (u128, u128) {
+        cur_assets: Number,
+        last_total_assets: Number,
+        performance_fee: wad::Wad,
+        total_supply: Number,
+        virtual_shares: Number,
+        virtual_assets: Number,
+    ) -> (Number, Number) {
         let fee_shares =
             compute_fee_shares(cur_assets, last_total_assets, performance_fee, total_supply);
         let new_total_supply = total_supply
@@ -1123,13 +1172,13 @@ impl Contract {
         // Invariant: Fees are minted only when total_assets() > last_total_assets (no fees on losses/flat).
         let cur = self.get_total_assets().0;
         let fee_shares = compute_fee_shares(
-            cur,
-            self.last_total_assets,
+            cur.into(),
+            self.last_total_assets.into(),
             self.performance_fee,
-            self.total_supply(),
+            self.total_supply().into(),
         );
-        if fee_shares > 0 {
-            self.mint_shares(&self.fee_recipient.clone(), fee_shares);
+        if fee_shares > Number::zero() {
+            self.mint_shares(&self.fee_recipient.clone(), fee_shares.into());
         }
         self.last_total_assets = cur;
     }
@@ -1192,21 +1241,34 @@ impl Contract {
         self.step_allocation()
     }
 
-    fn step_allocation(&mut self) -> PromiseOrValue<()> {
-        let (op_id, index, remaining) = match &self.op_state {
-            OpState::Allocating {
-                op_id,
-                index,
-                remaining,
-            } => (*op_id, *index, *remaining),
-            _ => return self.stop_and_exit(Some(&Error::NotAllocating)),
-        };
+    // Helper: build a supply transfer_call and chain after_supply_1_check
+    fn supply_and_then(&self, market: &AccountId, amount: u128, op_id: u64, index: u32) -> Promise {
+        self.underlying_asset
+            .transfer_call(
+                market,
+                U128(amount).into(),
+                Some(
+                    #[allow(clippy::expect_used, reason = "Infallible")]
+                    serde_json::to_string(&templar_common::market::DepositMsg::Supply)
+                        .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+                        .as_str(),
+                ),
+            )
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(AFTER_SUPPLY_ENSURE_GAS)
+                    .with_unused_gas_weight(0)
+                    .after_supply_1_check(op_id, index, U128(amount)),
+            )
+    }
 
-        if remaining == 0 {
-            return self.stop_and_exit::<Error>(None);
-        }
-
-        // If a per-op allocation plan exists, use it as weighted priority; otherwise, fall back to supply_queue order.
+    // Step allocation when a weighted plan is present.
+    fn step_allocation_with_plan(
+        &mut self,
+        op_id: u64,
+        index: u32,
+        remaining: u128,
+    ) -> PromiseOrValue<()> {
         if let Some(plan) = &self.plan {
             let idx = index as usize;
             if let Some((market, weight)) = plan.get(idx) {
@@ -1222,12 +1284,10 @@ impl Contract {
                 let target = if sum_w == 0 || idx + 1 == plan.len() {
                     remaining
                 } else {
-                    mul_div_floor(remaining, *weight, sum_w)
+                    mul_div_floor(remaining.into(), (*weight).into(), sum_w.into()).into()
                 };
 
-                let cap = self.config.get(&market_id).map_or(0, |c| c.cap.0);
-                let cur = *self.market_supply.get(&market_id).unwrap_or(&0);
-                let room = cap.saturating_sub(cur);
+                let room = self.room_of(&market_id);
                 let to_supply = room.min(target);
 
                 Event::AllocationStepPlanned {
@@ -1264,34 +1324,25 @@ impl Contract {
                     return self.step_allocation();
                 }
 
-                return PromiseOrValue::Promise(
-                    self.underlying_asset
-                        .transfer_call(
-                            &market_id,
-                            U128(to_supply).into(),
-                            Some(
-                                #[allow(clippy::expect_used, reason = "Infallible")]
-                                serde_json::to_string(&templar_common::market::DepositMsg::Supply)
-                                    .unwrap_or_else(|e| env::panic_str(&e.to_string()))
-                                    .as_str(),
-                            ),
-                        )
-                        .then(
-                            ext_self::ext(env::current_account_id())
-                                .with_static_gas(AFTER_SUPPLY_ENSURE_GAS)
-                                .with_unused_gas_weight(0)
-                                .after_supply_1_check(op_id, index, U128(to_supply)),
-                        ),
-                );
+                PromiseOrValue::Promise(self.supply_and_then(&market_id, to_supply, op_id, index))
+            } else {
+                // Plan exhausted; stop and reconcile remaining in stop_and_exit
+                self.stop_and_exit::<Error>(None)
             }
-            // Plan exhausted; stop and reconcile remaining in stop_and_exit
-            return self.stop_and_exit::<Error>(None);
+        } else {
+            self.stop_and_exit(Some(&Error::NotAllocating))
         }
+    }
 
+    // Step allocation using the supply_queue order.
+    fn step_allocation_from_queue(
+        &mut self,
+        op_id: u64,
+        index: u32,
+        remaining: u128,
+    ) -> PromiseOrValue<()> {
         if let Some(market) = self.supply_queue.get(index) {
-            let cap = self.config.get(market).map_or(0, |c| c.cap.0);
-            let cur = self.market_supply.get(market).unwrap_or(&0);
-            let room = cap.saturating_sub(*cur);
+            let room = self.room_of(market);
             let to_supply = room.min(remaining);
 
             // Emit planned step event (queue-based)
@@ -1324,27 +1375,31 @@ impl Contract {
                 };
                 return self.step_allocation();
             }
-            PromiseOrValue::Promise(
-                self.underlying_asset
-                    .transfer_call(
-                        market,
-                        U128(to_supply).into(),
-                        Some(
-                            #[allow(clippy::expect_used, reason = "Infallible")]
-                            serde_json::to_string(&templar_common::market::DepositMsg::Supply)
-                                .unwrap_or_else(|e| env::panic_str(&e.to_string()))
-                                .as_str(),
-                        ),
-                    )
-                    .then(
-                        ext_self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_SUPPLY_ENSURE_GAS)
-                            .with_unused_gas_weight(0)
-                            .after_supply_1_check(op_id, index, U128(to_supply)),
-                    ),
-            )
+
+            PromiseOrValue::Promise(self.supply_and_then(&market, to_supply, op_id, index))
         } else {
             self.stop_and_exit(Some("Market not found"))
+        }
+    }
+
+    fn step_allocation(&mut self) -> PromiseOrValue<()> {
+        let (op_id, index, remaining) = match &self.op_state {
+            OpState::Allocating {
+                op_id,
+                index,
+                remaining,
+            } => (*op_id, *index, *remaining),
+            _ => return self.stop_and_exit(Some(&Error::NotAllocating)),
+        };
+
+        if remaining == 0 {
+            return self.stop_and_exit::<Error>(None);
+        }
+
+        if self.plan.is_some() {
+            self.step_allocation_with_plan(op_id, index, remaining)
+        } else {
+            self.step_allocation_from_queue(op_id, index, remaining)
         }
     }
 

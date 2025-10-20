@@ -1,16 +1,25 @@
+use std::u64;
+
 use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::storage_management::yocto_for_new_market;
+use crate::storage_management::yocto_for_pending_cap;
 use crate::test_utils::*;
+use crate::wad::compute_fee_shares;
 use crate::Contract;
+use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
+use near_sdk::serde_json;
 use near_sdk::test_utils::accounts;
+use near_sdk::PromiseOrValue;
 use near_sdk::{json_types::U128, AccountId};
 use near_sdk_contract_tools::ft::Nep141Controller as _;
+use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
 use rstest::rstest;
 use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
+use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[rstest(len => [2usize, 3, 5])]
 #[should_panic = "Duplicate market"]
@@ -71,7 +80,7 @@ fn fee_accrues_only_on_growth_unit() {
     c.idle_balance = 1_000;
 
     // Set fee to 10%
-    c.performance_fee = crate::wad::WAD / 10;
+    c.performance_fee = crate::wad::Wad::one() / 10;
 
     // Baseline: last_total_assets = current, so no profit => no fee
     c.last_total_assets = c.get_total_assets().0;
@@ -81,16 +90,16 @@ fn fee_accrues_only_on_growth_unit() {
 
     // Simulate profit: increase idle_balance; now fees should mint
     c.idle_balance = 1_500;
-    let expect = crate::wad::compute_fee_shares(
-        c.get_total_assets().0,
-        c.last_total_assets,
+    let expect = compute_fee_shares(
+        c.get_total_assets().0.into(),
+        c.last_total_assets.into(),
         c.performance_fee,
-        c.total_supply(),
+        c.total_supply().into(),
     );
     c.internal_accrue_fee();
     assert_eq!(
         c.total_supply(),
-        ts_before + expect,
+        ts_before + expect.as_u128_trunc(),
         "fee shares minted must match compute_fee_shares"
     );
 }
@@ -396,28 +405,25 @@ fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, exp
 fn compute_effective_totals_fee_share_and_virtuals() {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);
-    let c = new_test_contract(&vault_id);
 
-    let cur = 1_500u128;
-    let last = 1_000u128;
-    let perf = crate::wad::WAD / 10; // 10%
-    let ts = 1_000u128;
-    let vs = 1u128;
-    let va = 1u128;
+    let cur = 1_500u128.into();
+    let last = 1_000u128.into();
+    let perf = crate::wad::Wad::one() / 10; // 10%
+    let ts = 1_000u128.into();
+    let vs = 1u128.into();
+    let va = 1u128.into();
 
     let (nts, nta) = Contract::compute_effective_totals(cur, last, perf, ts, vs, va);
-    let expected_fee = crate::wad::compute_fee_shares(cur, last, perf, ts);
+    let expected_fee = compute_fee_shares(cur, last, perf, ts);
 
     assert_eq!(nts, ts + expected_fee + vs);
     assert_eq!(nta, cur + va);
 }
 
 #[test]
-#[test]
 fn compute_escrow_settlement_burns_min_and_refunds_rest() {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);
-    let c = new_test_contract(&vault_id);
 
     let s1: (u128, u128) = Contract::compute_escrow_settlement(100, 40).into();
     assert_eq!(s1, (40u128, 60u128));
@@ -797,11 +803,16 @@ fn set_fee_recipient_accrues_before_switch() {
     // Simulate profit: last=1000, current=1500
     c.idle_balance = 1_500;
     c.last_total_assets = 1_000;
-    c.performance_fee = crate::wad::WAD / 10;
+    c.performance_fee = crate::wad::Wad::one() / 10;
 
     let cur = c.get_total_assets().0;
     let ts_before = c.total_supply();
-    let expect = crate::wad::compute_fee_shares(cur, 1_000, c.performance_fee, ts_before);
+    let expect = compute_fee_shares(
+        cur.into(),
+        1_000.into(),
+        c.performance_fee,
+        ts_before.into(),
+    );
 
     let old_recipient = c.fee_recipient.clone();
     let old_balance = c.balance_of(&old_recipient);
@@ -812,12 +823,12 @@ fn set_fee_recipient_accrues_before_switch() {
 
     assert_eq!(
         c.balance_of(&old_recipient),
-        old_balance + expect,
+        old_balance + expect.as_u128_trunc(),
         "fees must accrue to the old recipient before switching"
     );
     assert_eq!(
         c.total_supply(),
-        ts_before + expect,
+        ts_before + expect.as_u128_trunc(),
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
@@ -843,11 +854,16 @@ fn set_fee_recipient_accrues_before_switch_variant() {
     // Simulate profit: last=2000, current=2400
     c.idle_balance = 2_400;
     c.last_total_assets = 2_000;
-    c.performance_fee = crate::wad::WAD / 20; // 5%
+    c.performance_fee = crate::wad::Wad::one() / 20; // 5%
 
     let cur = c.get_total_assets().0;
     let ts_before = c.total_supply();
-    let expect = crate::wad::compute_fee_shares(cur, 2_000, c.performance_fee, ts_before);
+    let expect = compute_fee_shares(
+        cur.into(),
+        2_000.into(),
+        c.performance_fee,
+        ts_before.into(),
+    );
 
     let old_recipient = c.fee_recipient.clone();
     let old_balance = c.balance_of(&old_recipient);
@@ -858,12 +874,12 @@ fn set_fee_recipient_accrues_before_switch_variant() {
 
     assert_eq!(
         c.balance_of(&old_recipient),
-        old_balance + expect,
+        old_balance + expect.as_u128_trunc(),
         "fees must accrue to the old recipient before switching"
     );
     assert_eq!(
         c.total_supply(),
-        ts_before + expect,
+        ts_before + expect.as_u128_trunc(),
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
@@ -893,29 +909,34 @@ fn set_performance_fee_accrues_with_old_rate_then_updates() {
     c.last_total_assets = 1_000;
 
     // Old rate = 10%, new rate = 1%
-    c.performance_fee = crate::wad::WAD / 10;
+    c.performance_fee = crate::wad::Wad::one() / 10;
     let cur = c.get_total_assets().0;
     let ts_before = c.total_supply();
-    let expect_old = crate::wad::compute_fee_shares(cur, 1_000, c.performance_fee, ts_before);
+    let expect_old = compute_fee_shares(
+        cur.into(),
+        1_000.into(),
+        c.performance_fee,
+        ts_before.into(),
+    );
 
     let recipient = c.fee_recipient.clone();
     let bal_before = c.balance_of(&recipient);
 
-    c.set_performance_fee(U128(crate::wad::WAD / 100));
+    c.set_performance_fee(U128(u128::from(crate::wad::Wad::one() / 100)));
 
     assert_eq!(
         c.balance_of(&recipient),
-        bal_before + expect_old,
+        bal_before + expect_old.as_u128_trunc(),
         "accrual must use the old fee rate before updating"
     );
     assert_eq!(
         c.total_supply(),
-        ts_before + expect_old,
+        ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
         c.performance_fee,
-        crate::wad::WAD / 100,
+        crate::wad::Wad::one() / 100,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
@@ -941,29 +962,34 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
     c.last_total_assets = 2_000;
 
     // Old rate = 5%, new rate = 0.5%
-    c.performance_fee = crate::wad::WAD / 20; // 5%
+    c.performance_fee = crate::wad::Wad::one() / 20; // 5%
     let cur = c.get_total_assets().0;
     let ts_before = c.total_supply();
-    let expect_old = crate::wad::compute_fee_shares(cur, 2_000, c.performance_fee, ts_before);
+    let expect_old = compute_fee_shares(
+        cur.into(),
+        2_000.into(),
+        c.performance_fee,
+        ts_before.into(),
+    );
 
     let recipient = c.fee_recipient.clone();
     let bal_before = c.balance_of(&recipient);
 
-    c.set_performance_fee(U128(crate::wad::WAD / 200)); // 0.5%
+    c.set_performance_fee(U128(u128::from(crate::wad::Wad::one() / 200))); // 0.5%
 
     assert_eq!(
         c.balance_of(&recipient),
-        bal_before + expect_old,
+        bal_before + expect_old.as_u128_trunc(),
         "accrual must use the old fee rate before updating"
     );
     assert_eq!(
         c.total_supply(),
-        ts_before + expect_old,
+        ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
         c.performance_fee,
-        crate::wad::WAD / 200,
+        crate::wad::Wad::one() / 200,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
@@ -984,7 +1010,7 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
     // Loss scenario: last=1000, current=800
     c.idle_balance = 800;
     c.last_total_assets = 1_000;
-    c.performance_fee = crate::wad::WAD / 10;
+    c.performance_fee = crate::wad::Wad::one() / 10;
 
     let ts_before = c.total_supply();
     let fr = c.fee_recipient.clone();
@@ -1007,4 +1033,691 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
         c.last_total_assets, cur,
         "last_total_assets must update to current even on loss"
     );
+}
+
+#[test]
+fn ft_on_transfer_supply_accepts_full_and_mints_shares() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let asset = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id, &asset, vec![]);
+
+    // Prevent eager allocation from firing in this test
+    c.mode = AllocationMode::Eager {
+        min_batch: U128(u128::MAX),
+    };
+
+    // Setup a market so max_deposit > 0
+    let m = mk(9001);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(100);
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+    c.supply_queue.push(m);
+
+    let sender = accounts(1);
+    let deposit = 50u128;
+    let expect_shares = c.preview_deposit(U128(deposit)).0;
+
+    let res = c.ft_on_transfer(
+        sender.clone(),
+        U128(deposit),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 0, "no refund expected"),
+        _ => panic!("expected Value refund"),
+    }
+
+    assert_eq!(
+        c.balance_of(&sender),
+        expect_shares,
+        "sender must receive expected shares"
+    );
+    assert_eq!(
+        c.idle_balance, deposit,
+        "idle must increase by accepted deposit"
+    );
+    assert_eq!(
+        c.last_total_assets, deposit,
+        "last_total_assets must increase by accepted deposit"
+    );
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "must remain idle when min_batch not reached"
+    );
+}
+
+#[test]
+fn ft_on_transfer_supply_partial_refund_when_capped() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let asset = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id, &asset, vec![]);
+
+    c.mode = AllocationMode::Eager {
+        min_batch: U128(u128::MAX),
+    };
+
+    let m = mk(9002);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(50); // cap < deposit
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+    c.supply_queue.push(m);
+
+    let sender = accounts(2);
+    let deposit = 80u128;
+    let accept = 50u128;
+    let expect_shares = c.preview_deposit(U128(accept)).0;
+
+    let res = c.ft_on_transfer(
+        sender.clone(),
+        U128(deposit),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, deposit - accept),
+        _ => panic!("expected Value refund"),
+    }
+
+    assert_eq!(
+        c.balance_of(&sender),
+        expect_shares,
+        "shares minted must equal accepted amount preview"
+    );
+    assert_eq!(
+        c.idle_balance, accept,
+        "idle increases by accepted amount only"
+    );
+    assert_eq!(
+        c.last_total_assets, accept,
+        "last_total_assets increases by accepted amount only"
+    );
+}
+
+#[test]
+fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
+    // Underlying token id != predecessor => full refund
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&mk(42)); // underlying differs from predecessor
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    c.mode = AllocationMode::Eager {
+        min_batch: U128(u128::MAX),
+    };
+
+    // Provide a market (not used due to wrong token)
+    let m = mk(9003);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(100);
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+    c.supply_queue.push(m);
+
+    let sender = accounts(3);
+    let deposit = 70u128;
+
+    let res = c.ft_on_transfer(
+        sender.clone(),
+        U128(deposit),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, deposit, "full refund expected"),
+        _ => panic!("expected Value refund"),
+    }
+    assert_eq!(c.balance_of(&sender), 0, "no shares should be minted");
+    assert_eq!(c.idle_balance, 0, "idle must remain unchanged");
+}
+
+#[test]
+#[should_panic = "Invalid deposit msg"]
+fn ft_on_transfer_invalid_msg_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    let _ = c.ft_on_transfer(accounts(4), U128(10), "not-json".into());
+}
+
+#[test]
+fn ft_on_transfer_zero_amount_returns_zero_refund() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    // Setup a valid market
+    let m = mk(9004);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(100);
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+    c.supply_queue.push(m);
+
+    let sender = accounts(5);
+    let bal_before = c.balance_of(&sender);
+
+    let res = c.ft_on_transfer(
+        sender.clone(),
+        U128(0),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 0),
+        _ => panic!("expected Value refund"),
+    }
+    assert_eq!(
+        c.balance_of(&sender),
+        bal_before,
+        "no shares should be minted"
+    );
+}
+
+#[test]
+fn ft_on_transfer_eager_mode_triggers_allocation() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let asset = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id, &asset, vec![]);
+
+    // Trigger eager allocation with any positive deposit
+    c.mode = AllocationMode::Eager { min_batch: U128(1) };
+
+    // Valid market/cap
+    let m = mk(9005);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(100);
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+    c.supply_queue.push(m);
+
+    let deposit = 5u128;
+
+    let res = c.ft_on_transfer(
+        c.underlying_asset.contract_id().into(),
+        U128(deposit),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 0),
+        _ => panic!("expected Value refund"),
+    }
+
+    assert!(
+        matches!(c.op_state, OpState::Allocating { .. }),
+        "Eager mode must trigger allocation"
+    );
+    assert_eq!(
+        c.idle_balance, 0,
+        "idle should be reserved by start_allocation"
+    );
+}
+
+#[test]
+#[should_panic = "Invalid deposit msg"]
+fn mt_on_transfer_invalid_msg_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    let _ = c.mt_on_transfer(
+        accounts(1),
+        vec![accounts(1)],
+        vec!["t".to_string()],
+        vec![U128(1)],
+        "bad".into(),
+    );
+}
+
+#[test]
+#[should_panic = "This contract only accepts one token at a time."]
+fn mt_on_transfer_rejects_multiple_tokens() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    let _ = c.mt_on_transfer(
+        accounts(2),
+        vec![accounts(2)],
+        vec!["a".to_string(), "b".to_string()], // len != 1
+        vec![U128(1)],
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+}
+
+#[test]
+#[should_panic = "Invalid input length"]
+fn mt_on_transfer_rejects_invalid_input_lengths() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    let _ = c.mt_on_transfer(
+        accounts(3),
+        vec![accounts(3), accounts(4)], // len != 1
+        vec!["t".to_string()],
+        vec![U128(1)],
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+}
+
+#[test]
+fn mt_on_transfer_wrong_asset_refunds_full() {
+    // With default test underlying (NEP-141), is_nep245 should fail; expect full refund
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    let sender = accounts(5);
+    let amount = 25u128;
+
+    let res = c.mt_on_transfer(
+        accounts(3),                 // sender_id (ignored in logic)
+        vec![sender.clone()],        // previous_owner_ids
+        vec!["token-1".to_string()], // token_ids
+        vec![U128(amount)],          // amounts
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(refunds) => {
+            assert_eq!(refunds.len(), 1);
+            assert_eq!(refunds[0].0, amount, "full refund expected for wrong asset");
+        }
+        _ => panic!("expected Value refund"),
+    }
+    assert_eq!(c.balance_of(&sender), 0, "no shares should be minted");
+    assert_eq!(c.idle_balance, 0, "idle must remain unchanged");
+}
+
+#[test]
+fn execute_supply_zero_amount_rejected() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    let sender = accounts(4);
+    let refund = c.execute_supply(sender.clone(), vault_id.clone(), 0);
+    assert_eq!(refund, 0, "zero deposit returns zero refund");
+    assert_eq!(c.balance_of(&sender), 0, "no shares should be minted");
+}
+
+#[test]
+fn governance_set_curator_grants_allocator() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Prepare a market to exercise allocator permission
+    let m1 = mk(9101);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(1);
+    cfg.enabled = true;
+    c.config.insert(m1.clone(), cfg);
+
+    let new_cur = accounts(3);
+    c.set_curator(new_cur.clone());
+
+    // New curator can set supply queue
+    set_ctx(
+        &vault_id,
+        &new_cur,
+        None,
+        Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
+    );
+    c.set_supply_queue(vec![m1.clone()]);
+    assert_eq!(c.supply_queue.len(), 1);
+    assert_eq!(c.supply_queue.get(0), Some(&m1));
+}
+
+#[test]
+fn governance_set_is_allocator_grant_allows_queue_ops() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let grantee = accounts(4);
+
+    // Market to operate on
+    let m1 = mk(9102);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(1);
+    cfg.enabled = true;
+    c.config.insert(m1.clone(), cfg);
+
+    // Grant Allocator role
+    c.set_is_allocator(grantee.clone(), true);
+
+    // Grantee can set supply queue
+    set_ctx(
+        &vault_id,
+        &grantee,
+        None,
+        Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
+    );
+    c.set_supply_queue(vec![m1.clone()]);
+    assert_eq!(c.supply_queue.len(), 1);
+    assert_eq!(c.supply_queue.get(0), Some(&m1));
+}
+
+#[test]
+#[should_panic]
+fn governance_set_is_allocator_revoke_disallows_queue_ops() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let grantee = accounts(12);
+    c.set_is_allocator(grantee.clone(), true);
+
+    // Market to attempt on
+    let m1 = mk(9103);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(1);
+    cfg.enabled = true;
+    c.config.insert(m1.clone(), cfg);
+
+    // Revoke Allocator role; subsequent queue op by grantee should panic due to lack of rights
+    c.set_is_allocator(grantee.clone(), false);
+    set_ctx(
+        &vault_id,
+        &grantee,
+        None,
+        Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
+    );
+    c.set_supply_queue(vec![m1]);
+}
+
+#[test]
+#[should_panic = "not yet"]
+fn governance_accept_guardian_not_yet_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.timelock_ns = u64::MAX;
+
+    let new_g = accounts(5);
+    c.submit_guardian(new_g);
+    // Timelock not advanced -> should panic
+    c.accept_guardian();
+}
+
+#[test]
+fn governance_submit_accept_and_revoke_guardian() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let new_g = accounts(4);
+    c.submit_guardian(new_g.clone());
+
+    // Advance time beyond timelock and accept
+    set_ctx(
+        &vault_id,
+        &owner,
+        Some(env::block_timestamp() + 1_000_000_000),
+        None,
+    );
+    c.accept_guardian();
+
+    // Stage another pending and then revoke it
+    let another = accounts(3);
+    set_ctx(&vault_id, &owner, None, None);
+    c.submit_guardian(another);
+    c.revoke_pending_guardian();
+
+    // No pending now; accept should no-op (but must not panic)
+    c.accept_guardian();
+}
+
+#[test]
+fn governance_submit_accept_timelock_increase_then_decrease() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let cur = c.get_configuration().initial_timelock_sec;
+
+    // Increase applies immediately
+    c.submit_timelock(cur + 1);
+    assert_eq!(
+        c.get_configuration().initial_timelock_sec,
+        cur + 1,
+        "timelock should increase immediately"
+    );
+
+    // Decrease schedules a pending change
+    c.submit_timelock(cur);
+    set_ctx(
+        &vault_id,
+        &owner,
+        Some(env::block_timestamp() + 1_000_000_000),
+        None,
+    );
+    c.accept_timelock();
+    assert_eq!(
+        c.get_configuration().initial_timelock_sec,
+        cur,
+        "timelock should decrease after accept"
+    );
+}
+
+#[test]
+#[should_panic = "No pending timelock change"]
+fn governance_accept_timelock_without_pending_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // No pending change -> accept should panic
+    c.accept_timelock();
+}
+
+#[test]
+#[should_panic = "No pending timelock change"]
+fn governance_revoke_pending_timelock_then_accept_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let cur = c.get_configuration().initial_timelock_sec;
+
+    // Force a pending by first increasing then decreasing
+    c.submit_timelock(cur + 1);
+    c.submit_timelock(cur);
+
+    // Revoke the pending change; accept must now panic
+    c.revoke_pending_timelock();
+    c.accept_timelock();
+}
+
+#[test]
+fn governance_submit_cap_immediate_decrease() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let m = mk(9104);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(10);
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+
+    c.submit_cap(m.clone(), U128(3));
+    let after = c.config.get(&m).unwrap();
+    assert_eq!(after.cap, U128(3));
+}
+
+#[test]
+fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let m = mk(9105);
+
+    // Submit raise for a brand-new market
+    set_ctx(
+        &vault_id,
+        &owner,
+        None,
+        Some(yocto_for_new_market() + yocto_for_pending_cap()),
+    );
+    c.submit_cap(m.clone(), U128(5));
+
+    // Advance timelock and accept; attach storage for withdraw queue addition
+    set_ctx(
+        &vault_id,
+        &owner,
+        Some(env::block_timestamp() + 1_000_000_000),
+        Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
+    );
+    c.accept_cap(m.clone());
+
+    let cfg = c.config.get(&m).unwrap();
+    assert_eq!(cfg.cap.0, 5);
+    assert!(
+        cfg.enabled,
+        "market should be enabled after accepting raise"
+    );
+    assert!(
+        c.withdraw_queue.iter().any(|x| x == &m),
+        "market must be in withdraw queue after enabling"
+    );
+}
+
+#[test]
+#[should_panic = "No pending cap change for this market"]
+fn governance_revoke_pending_cap_then_accept_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let m = mk(9106);
+
+    // Create pending cap raise for a new market
+    set_ctx(
+        &vault_id,
+        &owner,
+        None,
+        Some(yocto_for_new_market() + yocto_for_pending_cap()),
+    );
+    c.submit_cap(m.clone(), U128(7));
+
+    // Revoke, then accepting should panic
+    set_ctx(&vault_id, &owner, None, None);
+    c.revoke_pending_cap(m.clone());
+    c.accept_cap(m);
+}
+
+#[test]
+fn governance_submit_and_revoke_market_removal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.timelock_ns = 1;
+    let m = mk(9107);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(0);
+    cfg.enabled = true;
+    c.config.insert(m.clone(), cfg);
+
+    // Submit removal (schedules timelock)
+    c.submit_market_removal(m.clone());
+    let after = c.config.get(&m).unwrap();
+    assert!(after.removable_at > 0, "removal must be scheduled");
+
+    // Revoke pending removal
+    c.revoke_pending_market_removal(m.clone());
+    let after2 = c.config.get(&m).unwrap();
+    assert_eq!(after2.removable_at, 0, "removal must be revoked");
+}
+
+#[test]
+fn governance_set_skim_recipient_updates_field() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = accounts(1);
+    setup_env(&vault_id, &owner, vec![]);
+
+    let new_recipient = accounts(4);
+    c.set_skim_recipient(new_recipient.clone());
+    assert_eq!(c.skim_recipient, new_recipient);
+}
+
+#[test]
+fn governance_set_fee_recipient_no_fee_does_not_accrue() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = accounts(1);
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Seed supply and simulate profit, but fee = 0
+    c.deposit_unchecked(&owner, 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.idle_balance = 1_500;
+    c.last_total_assets = 1_000;
+    c.performance_fee = crate::wad::Wad::zero();
+
+    let ts_before = c.total_supply();
+    let last_before = c.last_total_assets;
+
+    let new_recipient = accounts(5);
+    c.set_fee_recipient(new_recipient.clone());
+
+    assert_eq!(
+        c.total_supply(),
+        ts_before,
+        "no fee shares minted when fee=0"
+    );
+    assert_eq!(
+        c.last_total_assets, last_before,
+        "last_total_assets should not change when fee=0"
+    );
+    assert_eq!(c.fee_recipient, new_recipient);
+}
+
+#[test]
+fn governance_set_withdraw_queue_happy_path() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Two enabled markets
+    let m1 = mk(9201);
+    let m2 = mk(9202);
+    for m in [&m1, &m2] {
+        let mut cfg = MarketConfiguration::default();
+        cfg.cap = U128(1);
+        cfg.enabled = true;
+        c.config.insert(m.clone(), cfg);
+    }
+
+    set_ctx(
+        &vault_id,
+        &owner,
+        None,
+        Some(2 * yocto_for_bytes(storage_bytes_for_queue_account_id())),
+    );
+    c.set_withdraw_queue(vec![m1.clone(), m2.clone()]);
+
+    assert_eq!(c.withdraw_queue.len(), 2);
+    assert_eq!(c.withdraw_queue.get(0), Some(&m1));
+    assert_eq!(c.withdraw_queue.get(1), Some(&m2));
 }
