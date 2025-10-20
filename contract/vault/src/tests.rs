@@ -783,3 +783,228 @@ fn total_assets_ignores_offqueue_cases(principal: u128, idle: u128) {
 
     assert_eq!(c.get_total_assets().0, idle);
 }
+
+#[test]
+fn set_fee_recipient_accrues_before_switch() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = accounts(1);
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Seed supply so fee shares can mint
+    c.deposit_unchecked(&accounts(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    // Simulate profit: last=1000, current=1500
+    c.idle_balance = 1_500;
+    c.last_total_assets = 1_000;
+    c.performance_fee = crate::wad::WAD / 10;
+
+    let cur = c.get_total_assets().0;
+    let ts_before = c.total_supply();
+    let expect = crate::wad::compute_fee_shares(cur, 1_000, c.performance_fee, ts_before);
+
+    let old_recipient = c.fee_recipient.clone();
+    let old_balance = c.balance_of(&old_recipient);
+
+    // Switch fee recipient; should accrue to old recipient first
+    let new_recipient = accounts(3);
+    c.set_fee_recipient(new_recipient.clone());
+
+    assert_eq!(
+        c.balance_of(&old_recipient),
+        old_balance + expect,
+        "fees must accrue to the old recipient before switching"
+    );
+    assert_eq!(
+        c.total_supply(),
+        ts_before + expect,
+        "total supply must increase by minted fee shares"
+    );
+    assert_eq!(
+        c.fee_recipient, new_recipient,
+        "recipient should be updated"
+    );
+    assert_eq!(
+        c.last_total_assets, cur,
+        "last_total_assets must update to current after accrual"
+    );
+}
+
+#[test]
+fn set_fee_recipient_accrues_before_switch_variant() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = accounts(1);
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Seed supply so fee shares can mint
+    c.deposit_unchecked(&accounts(2), 2_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    // Simulate profit: last=2000, current=2400
+    c.idle_balance = 2_400;
+    c.last_total_assets = 2_000;
+    c.performance_fee = crate::wad::WAD / 20; // 5%
+
+    let cur = c.get_total_assets().0;
+    let ts_before = c.total_supply();
+    let expect = crate::wad::compute_fee_shares(cur, 2_000, c.performance_fee, ts_before);
+
+    let old_recipient = c.fee_recipient.clone();
+    let old_balance = c.balance_of(&old_recipient);
+
+    // Switch fee recipient; should accrue to old recipient first
+    let new_recipient = accounts(3);
+    c.set_fee_recipient(new_recipient.clone());
+
+    assert_eq!(
+        c.balance_of(&old_recipient),
+        old_balance + expect,
+        "fees must accrue to the old recipient before switching"
+    );
+    assert_eq!(
+        c.total_supply(),
+        ts_before + expect,
+        "total supply must increase by minted fee shares"
+    );
+    assert_eq!(
+        c.fee_recipient, new_recipient,
+        "recipient should be updated"
+    );
+    assert_eq!(
+        c.last_total_assets, cur,
+        "last_total_assets must update to current after accrual"
+    );
+}
+
+#[test]
+fn set_performance_fee_accrues_with_old_rate_then_updates() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c
+        .own_get_owner()
+        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Seed supply so fee shares can mint
+    c.deposit_unchecked(&accounts(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    // Simulate profit: last=1000, current=1500
+    c.idle_balance = 1_500;
+    c.last_total_assets = 1_000;
+
+    // Old rate = 10%, new rate = 1%
+    c.performance_fee = crate::wad::WAD / 10;
+    let cur = c.get_total_assets().0;
+    let ts_before = c.total_supply();
+    let expect_old = crate::wad::compute_fee_shares(cur, 1_000, c.performance_fee, ts_before);
+
+    let recipient = c.fee_recipient.clone();
+    let bal_before = c.balance_of(&recipient);
+
+    c.set_performance_fee(U128(crate::wad::WAD / 100));
+
+    assert_eq!(
+        c.balance_of(&recipient),
+        bal_before + expect_old,
+        "accrual must use the old fee rate before updating"
+    );
+    assert_eq!(
+        c.total_supply(),
+        ts_before + expect_old,
+        "total supply must reflect fee shares minted at old rate"
+    );
+    assert_eq!(
+        c.performance_fee,
+        crate::wad::WAD / 100,
+        "performance fee must be updated to the new rate"
+    );
+    assert_eq!(
+        c.last_total_assets, cur,
+        "last_total_assets must update to current after accrual"
+    );
+}
+
+#[test]
+fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c
+        .own_get_owner()
+        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Seed supply so fee shares can mint
+    c.deposit_unchecked(&accounts(2), 2_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    // Simulate profit: last=2000, current=2400
+    c.idle_balance = 2_400;
+    c.last_total_assets = 2_000;
+
+    // Old rate = 5%, new rate = 0.5%
+    c.performance_fee = crate::wad::WAD / 20; // 5%
+    let cur = c.get_total_assets().0;
+    let ts_before = c.total_supply();
+    let expect_old = crate::wad::compute_fee_shares(cur, 2_000, c.performance_fee, ts_before);
+
+    let recipient = c.fee_recipient.clone();
+    let bal_before = c.balance_of(&recipient);
+
+    c.set_performance_fee(U128(crate::wad::WAD / 200)); // 0.5%
+
+    assert_eq!(
+        c.balance_of(&recipient),
+        bal_before + expect_old,
+        "accrual must use the old fee rate before updating"
+    );
+    assert_eq!(
+        c.total_supply(),
+        ts_before + expect_old,
+        "total supply must reflect fee shares minted at old rate"
+    );
+    assert_eq!(
+        c.performance_fee,
+        crate::wad::WAD / 200,
+        "performance fee must be updated to the new rate"
+    );
+    assert_eq!(
+        c.last_total_assets, cur,
+        "last_total_assets must update to current after accrual"
+    );
+}
+
+#[test]
+fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    // Seed supply so total_supply > 0
+    c.deposit_unchecked(&accounts(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    // Loss scenario: last=1000, current=800
+    c.idle_balance = 800;
+    c.last_total_assets = 1_000;
+    c.performance_fee = crate::wad::WAD / 10;
+
+    let ts_before = c.total_supply();
+    let fr = c.fee_recipient.clone();
+    let bal_before = c.balance_of(&fr);
+    let cur = c.get_total_assets().0;
+
+    c.internal_accrue_fee();
+
+    assert_eq!(
+        c.total_supply(),
+        ts_before,
+        "no shares should be minted when cur < last_total_assets"
+    );
+    assert_eq!(
+        c.balance_of(&fr),
+        bal_before,
+        "fee recipient balance must remain unchanged on loss"
+    );
+    assert_eq!(
+        c.last_total_assets, cur,
+        "last_total_assets must update to current even on loss"
+    );
+}
