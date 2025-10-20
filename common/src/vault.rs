@@ -6,8 +6,6 @@ use crate::asset::{BorrowAsset, FungibleAsset};
 
 pub type TimestampNs = u64;
 
-pub const ONE_YOCTO: u128 = 1;
-
 pub const MIN_TIMELOCK_NS: u64 = 0;
 pub const MAX_TIMELOCK_NS: u64 = 30 * 86_400_000_000_000; // 30 days
 pub const MAX_QUEUE_LEN: usize = 64;
@@ -206,7 +204,7 @@ pub struct PendingValue<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
+#[near(serializers = [borsh])]
 /// Operation state machine for asynchronous allocation, withdrawal, and payout flows.
 pub enum OpState {
     Idle,
@@ -241,12 +239,12 @@ pub enum Error {
     IndexDrifted(ExpectedIdx, ActualIdx),
     // Invariant: Attempting to work on a market that is missing from the withdraw queue
     MissingMarket(u32),
-    NotWithdrawing(OpState),
-    NotAllocating(OpState),
+    NotWithdrawing,
+    NotAllocating,
     MarketTransferFailed,
     MissingSupplyPosition,
     PositionReadFailed,
-    // Invariant: Insufficient liquidity across all markets to satisfy withdrawal
+    // Insufficient liquidity across all markets to satisfy withdrawal
     InsufficientLiquidity,
     ZeroAmount,
 }
@@ -258,7 +256,7 @@ impl std::fmt::Display for Error {
 }
 
 #[derive(Clone, Debug)]
-#[near(serializers = [json, borsh])]
+#[near(serializers = [borsh])]
 pub struct PendingWithdrawal {
     pub owner: AccountId,
     pub receiver: AccountId,

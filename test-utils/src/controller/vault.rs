@@ -62,7 +62,6 @@ impl VaultController {
         #[view] pub fn get_total_supply() -> U128;
         #[view] pub fn get_max_deposit() -> U128;
         #[view] pub fn get_idle_balance() -> U128;
-        #[view] pub fn get_op_state() -> OpState;
         #[view] pub fn list_supply_queue(offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
         #[view] pub fn list_withdraw_queue(offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
         #[view] pub fn get_market_supply(market: &AccountId) -> U128;

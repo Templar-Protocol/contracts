@@ -1197,7 +1197,7 @@ impl Contract {
                 index,
                 remaining,
             } => (*op_id, *index, *remaining),
-            _ => return self.stop_and_exit(Some(&Error::NotAllocating(self.op_state.clone()))),
+            _ => return self.stop_and_exit(Some(&Error::NotAllocating)),
         };
 
         if remaining == 0 {
@@ -1379,12 +1379,11 @@ impl Contract {
     }
 
     fn step_withdraw(&mut self) -> PromiseOrValue<()> {
-        let (op_id, index, remaining, receiver, collected, owner, escrow_shares) = match &self
-            .op_state
-        {
-            OpState::Withdrawing {
-                op_id,
-                index,
+        let (op_id, index, remaining, receiver, collected, owner, escrow_shares) =
+            match &self.op_state {
+                OpState::Withdrawing {
+                    op_id,
+                    index,
                 remaining,
                 receiver,
                 collected,
@@ -1396,11 +1395,11 @@ impl Contract {
                 *remaining,
                 receiver.clone(),
                 *collected,
-                owner.clone(),
-                *escrow_shares,
-            ),
-            _ => return self.stop_and_exit(Some(&Error::NotWithdrawing(self.op_state.clone()))),
-        };
+                    owner.clone(),
+                    *escrow_shares,
+                ),
+                _ => return self.stop_and_exit(Some(&Error::NotWithdrawing)),
+            };
         if remaining == 0 {
             self.op_state = OpState::Payout {
                 op_id,

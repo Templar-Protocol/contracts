@@ -12,7 +12,7 @@ use templar_common::{
     withdrawal_queue::WithdrawalQueueExecutionResult,
 };
 
-use crate::{Contract, ContractExt, ReturnStyle};
+use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {
