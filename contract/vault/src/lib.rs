@@ -806,6 +806,8 @@ impl Contract {
     /// NOTE: Each allocation takes roughly [common::vault::ALLOCATE_GAS] gas. (~21 TGAS)
     /// So in one allocation cycle, we should do at most ~12 market allocations.
     /// This is a conservative estimate, and may need to be tweaked.
+    ///
+    /// NOTE: here we should use a delta based approach for allocation plans when we rewrite this for `reallocate`
     #[payable]
     pub fn allocate(
         &mut self,

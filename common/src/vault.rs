@@ -213,6 +213,7 @@ pub struct PendingValue<T> {
 pub enum OpState {
     Idle,
     Allocating {
+        // FIXME: docs pls
         op_id: u64,
         index: u32,
         remaining: u128,
