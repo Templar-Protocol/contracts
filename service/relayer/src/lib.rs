@@ -20,13 +20,13 @@ pub mod route;
 #[derive(Debug, Clone, Default)]
 pub struct AccountData {
     pub market_data: HashMap<AccountId, MarketData>,
-    pub oracles: HashSet<AccountId>,
     pub allowed_contract_data: HashMap<AccountId, ContractData>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ContractData {
     pub storage_balance_bounds: Option<StorageBalanceBounds>,
+    pub allowed_methods: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
