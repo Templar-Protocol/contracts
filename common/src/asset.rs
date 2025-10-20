@@ -87,6 +87,13 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    pub fn transfer_call_method_name(&self) -> &str {
+        match self.kind {
+            FungibleAssetKind::Nep141(_) => "ft_transfer_call",
+            FungibleAssetKind::Nep245 { .. } => "mt_transfer_call",
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn transfer_call_action(
         &self,
@@ -94,9 +101,8 @@ impl<T: AssetClass> FungibleAsset<T> {
         amount: FungibleAssetAmount<T>,
         msg: &str,
     ) -> FunctionCallAction {
-        let (method_name, args, gas) = match self.kind {
+        let (args, gas) = match self.kind {
             FungibleAssetKind::Nep141(_) => (
-                "ft_transfer_call",
                 json!({
                     "receiver_id": receiver_id,
                     "amount": u128::from(amount),
@@ -105,7 +111,6 @@ impl<T: AssetClass> FungibleAsset<T> {
                 Self::GAS_FT_TRANSFER,
             ),
             FungibleAssetKind::Nep245 { ref token_id, .. } => (
-                "mt_transfer_call",
                 json!({
                     "receiver_id": receiver_id,
                     "token_id": token_id,
@@ -117,7 +122,7 @@ impl<T: AssetClass> FungibleAsset<T> {
         };
 
         FunctionCallAction {
-            method_name: method_name.to_string(),
+            method_name: self.transfer_call_method_name().to_string(),
             #[allow(
                 clippy::unwrap_used,
                 reason = "All of the types have infallible serialization"
