@@ -10,6 +10,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
+    panic_str,
     registry::{DeployMode, Deployment},
     self_ext,
 };
@@ -126,9 +127,7 @@ impl Contract {
                 self.versions.insert(version_key.clone(), version_entry);
                 let dummy_id: AccountId = format!("deploy.{}", env::current_account_id())
                     .parse()
-                    .unwrap_or_else(|_| {
-                        env::panic_str("Failed to construct deployment account ID.")
-                    });
+                    .unwrap_or_else(|_| panic_str("Failed to construct deployment account ID."));
                 PromiseOrValue::Promise(
                     Promise::new(dummy_id)
                         .create_account()
@@ -163,7 +162,7 @@ impl Contract {
             VersionEntry::Code { code, .. } => {
                 *code = None;
             }
-            VersionEntry::GlobalHash(_) => env::panic_str("Global contract cannot be removed"),
+            VersionEntry::GlobalHash(_) => panic_str("Global contract cannot be removed"),
         });
     }
 
@@ -179,7 +178,7 @@ impl Contract {
         self.assert_owner();
 
         let Some(version) = self.versions.get(&version_key) else {
-            env::panic_str("Version key does not exist");
+            panic_str("Version key does not exist");
         };
 
         let attached_deposit = env::attached_deposit();
@@ -189,7 +188,7 @@ impl Contract {
 
         let market_id: AccountId = market_id
             .parse()
-            .unwrap_or_else(|_| env::panic_str("New market ID is not a valid account ID"));
+            .unwrap_or_else(|_| panic_str("New market ID is not a valid account ID"));
 
         require!(
             market_id.is_sub_account_of(&current_account_id),
@@ -214,7 +213,7 @@ impl Contract {
             VersionEntry::Code { code, .. } => {
                 let code = code
                     .as_ref()
-                    .unwrap_or_else(|| env::panic_str("Version code has been deleted"));
+                    .unwrap_or_else(|| panic_str("Version code has been deleted"));
 
                 let minimum_deposit = env::storage_byte_cost().saturating_mul(code.len() as u128);
 
@@ -283,7 +282,7 @@ impl Contract {
 
     #[private]
     pub fn fail(&self, message: String) {
-        env::panic_str(&message);
+        panic_str(&message);
     }
 }
 

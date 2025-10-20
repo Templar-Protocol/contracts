@@ -4,7 +4,7 @@ use std::{
 };
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
 use near_primitives::action::FunctionCallAction;
 use near_sdk::{
     env,
@@ -87,7 +87,7 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     pub fn transfer_call_action(
         &self,
         receiver_id: &AccountId,
@@ -128,7 +128,7 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     pub fn balance_of_action(&self, account_id: &AccountId) -> FunctionCallAction {
         let (method_name, args) = match self.kind {
             FungibleAssetKind::Nep141(_) => (
@@ -393,7 +393,7 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
 macro_rules! asset_op {
     (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* += $b:expr $(;)*) => {
         $crate::asset::FungibleAssetAmount::join(&mut $a_head $(.$a_tail)*, $b).unwrap_or_else(|| {
-            ::near_sdk::env::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " + ", stringify!($b), " overflow"));
+            $crate::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " + ", stringify!($b), " overflow"));
         });
     };
     ($a_head:ident $(. $a_tail:ident)* += $b:expr $(;)*) => {
@@ -410,7 +410,7 @@ macro_rules! asset_op {
 
     (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* -= $b:expr $(;)*) => {
         $crate::asset::FungibleAssetAmount::split(&mut $a_head $(.$a_tail)*, $b).unwrap_or_else(|| {
-            ::near_sdk::env::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " - ", stringify!($b), " underflow"));
+            $crate::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " - ", stringify!($b), " underflow"));
         });
     };
     ($a_head:ident $(. $a_tail:ident)* -= $b:expr $(;)*) => {

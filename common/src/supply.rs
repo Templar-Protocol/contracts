@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, json_types::U64, near, require, AccountId};
+use near_sdk::{json_types::U64, near, require, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -10,7 +10,7 @@ use crate::{
     incoming_deposit::IncomingDeposit,
     market::{Market, WithdrawalResolution},
     number::Decimal,
-    YEAR_PER_MS,
+    panic_str, YEAR_PER_MS,
 };
 
 /// This struct can only be constructed after accumulating yield on a
@@ -302,7 +302,7 @@ impl<'a> SupplyPositionGuard<'a> {
                     incoming.activate_at_snapshot_index == newest.activate_at_snapshot_index
                 })
             else {
-                env::panic_str("Invariant violation: Market incoming entry should exist if position incoming entry exists");
+                panic_str("Invariant violation: Market incoming entry should exist if position incoming entry exists");
             };
             asset_op!(
                 @msg("Invariant violation: Market incoming >= position incoming should hold for all snapshot indices")
@@ -379,7 +379,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .configuration
             .supply_withdrawal_fee
             .of(amount, supply_duration)
-            .unwrap_or_else(|| env::panic_str("Fee calculation overflow"));
+            .unwrap_or_else(|| panic_str("Fee calculation overflow"));
 
         if amount.split(amount_to_fees).is_none() {
             amount = FungibleAssetAmount::zero();

@@ -13,6 +13,7 @@ use crate::{
     incoming_deposit::IncomingDeposit,
     market::{MarketConfiguration, WithdrawalResolution},
     number::Decimal,
+    panic_str,
     snapshot::Snapshot,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
@@ -65,7 +66,7 @@ pub struct Market {
 impl Market {
     pub fn new(prefix: impl IntoStorageKey, configuration: MarketConfiguration) -> Self {
         if let Err(e) = configuration.validate() {
-            env::panic_str(&e.to_string());
+            panic_str(&e.to_string());
         }
 
         let prefix = prefix.into_storage_key();
@@ -339,7 +340,7 @@ impl Market {
             // The amount that the entry is eligible to withdraw is zero, so skip it.
             self.withdrawal_queue
                 .try_pop()
-                .unwrap_or_else(|| env::panic_str("Inconsistent state")); // we just locked the queue
+                .unwrap_or_else(|| panic_str("Inconsistent state")); // we just locked the queue
             return Ok(None);
         };
 

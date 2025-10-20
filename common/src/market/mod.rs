@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::num::NonZeroU16;
 
-use near_sdk::{env, near, AccountId};
+use near_sdk::{near, AccountId};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     number::Decimal,
+    panic_str,
 };
 mod configuration;
-pub use configuration::{MarketConfiguration, APY_LIMIT};
+pub use configuration::{MarketConfiguration, ValidAmountRange, APY_LIMIT};
 mod external;
 pub use external::*;
 mod r#impl;
@@ -58,7 +59,7 @@ impl YieldWeights {
         self.r#static
             .values()
             .try_fold(self.supply, |a, b| a.checked_add(*b))
-            .unwrap_or_else(|| env::panic_str("Total weight overflow"))
+            .unwrap_or_else(|| panic_str("Total weight overflow"))
     }
 
     pub fn static_share(&self, account_id: &AccountId) -> Decimal {

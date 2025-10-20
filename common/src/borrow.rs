@@ -9,6 +9,7 @@ use crate::{
     event::MarketEvent,
     market::{Market, SnapshotProof},
     number::Decimal,
+    panic_str,
     price::{Appraise, Convert, PricePair, Valuation},
     YEAR_PER_MS,
 };
@@ -61,11 +62,11 @@ pub enum LiquidationReason {
 pub struct BorrowPosition {
     pub started_at_block_timestamp_ms: Option<U64>,
     pub collateral_asset_deposit: CollateralAssetAmount,
-    borrow_asset_principal: BorrowAssetAmount,
+    pub borrow_asset_principal: BorrowAssetAmount,
     pub interest: Accumulator<BorrowAsset>,
     pub fees: BorrowAssetAmount,
-    borrow_asset_in_flight: BorrowAssetAmount,
-    collateral_asset_in_flight: CollateralAssetAmount,
+    pub borrow_asset_in_flight: BorrowAssetAmount,
+    pub collateral_asset_in_flight: CollateralAssetAmount,
     pub liquidation_lock: CollateralAssetAmount,
 }
 
@@ -355,7 +356,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                     .0
                     .checked_sub(prev_end_timestamp_ms)
                     .unwrap_or_else(|| {
-                        env::panic_str(&format!(
+                        panic_str(&format!(
                             "Invariant violation: Snapshot timestamp decrease at time chunk #{}.",
                             u64::from(snapshot.time_chunk.0),
                         ))
@@ -640,7 +641,7 @@ impl<'a> BorrowPositionGuard<'a> {
             // withdrawal record.
             self.position
                 .increase_borrow_asset_principal(interest, borrow.amount, block_timestamp_ms)
-                .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
+                .unwrap_or_else(|| panic_str("Increase borrow asset principal overflow"));
 
             asset_op!(self.market.borrow_asset_borrowed += borrow.amount);
 

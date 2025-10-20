@@ -13,7 +13,7 @@ use templar_common::{
         price_transformer::PriceTransformer,
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
     },
-    self_ext,
+    panic_str, self_ext,
 };
 
 #[derive(BorshSerialize, BorshStorageKey)]
@@ -73,7 +73,7 @@ impl Contract {
             .insert(&price_identifier, &entry)
             .is_some()
         {
-            env::panic_str("Price identifier collision");
+            panic_str("Price identifier collision");
         }
     }
 
@@ -148,9 +148,9 @@ impl Contract {
         fn callback_result<T: DeserializeOwned>(index: u64) -> T {
             match env::promise_result(index) {
                 PromiseResult::Successful(vec) => {
-                    serde_json::from_slice(&vec).unwrap_or_else(|e| env::panic_str(&e.to_string()))
+                    serde_json::from_slice(&vec).unwrap_or_else(|e| panic_str(&e.to_string()))
                 }
-                PromiseResult::Failed => env::panic_str(&format!("Promise index {index} failed")),
+                PromiseResult::Failed => panic_str(&format!("Promise index {index} failed")),
             }
         }
 
@@ -163,12 +163,12 @@ impl Contract {
                 result.insert(price_id, price.clone());
             } else {
                 let Some(entry) = self.transformers.get(&price_id) else {
-                    env::panic_str(&format!(
+                    panic_str(&format!(
                         "No transformer associated with price ID: {price_id}",
                     ));
                 };
                 let Some(price) = oracle_result.get(&entry.price_id) else {
-                    env::panic_str(&format!(
+                    panic_str(&format!(
                         "Mapped price ID is not in oracle result: {price_id}",
                     ));
                 };

@@ -5,7 +5,7 @@ use near_sdk::{
     BorshStorageKey, PanicOnDefault, Promise,
 };
 
-use templar_common::contract::list;
+use templar_common::{contract::list, panic_str};
 use templar_universal_account::{
     authentication::{ExecutionContextProvider, Key},
     ExecuteArgs, ExecutionParameters, KeyId,
@@ -72,17 +72,17 @@ impl Contract {
     pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
         let ExecuteArgs::Passkey { key, message } = args;
         let Some(key_entry) = self.keys.get_mut(&KeyId::Passkey(key.clone())) else {
-            env::panic_str("Key does not exist")
+            panic_str("Key does not exist")
         };
 
         let current_account_id = env::current_account_id();
 
         let message = key
             .verify(message)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            .unwrap_or_else(|e| panic_str(&e.to_string()));
         let transactions = message
             .verify(&current_account_id, &key_entry.next(), |_| true)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            .unwrap_or_else(|e| panic_str(&e.to_string()));
 
         require!(!transactions.is_empty(), "Transaction list is empty");
 

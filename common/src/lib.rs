@@ -43,3 +43,11 @@ pub mod contract {
         };
     }
 }
+
+/// Helper to switch panic function based on context.
+pub fn panic_str(msg: &str) -> ! {
+    #[cfg(feature = "non-contract-usage")]
+    panic!("{msg}");
+    #[cfg(not(feature = "non-contract-usage"))]
+    near_sdk::env::panic_str(msg);
+}

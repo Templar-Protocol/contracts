@@ -1,5 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use near_sdk::{env, near, store::Vector, BorshStorageKey, IntoStorageKey};
+use near_sdk::{near, store::Vector, BorshStorageKey, IntoStorageKey};
+
+use crate::panic_str;
 
 #[derive(Debug, Clone, Copy, BorshSerialize, BorshStorageKey, PartialEq, Eq, PartialOrd, Ord)]
 enum StorageKey {
@@ -56,11 +58,11 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32>
                 .inner
                 .len()
                 .checked_sub(1)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state: len == 0"));
+                .unwrap_or_else(|| panic_str("Inconsistent state: len == 0"));
             let v = self
                 .inner
                 .get_mut(last_inner)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state: tail dne"));
+                .unwrap_or_else(|| panic_str("Inconsistent state: tail dne"));
             v.push(item);
         }
         self.last_chunk_next_index = (self.last_chunk_next_index + 1) % CHUNK_SIZE;
@@ -80,7 +82,7 @@ impl<T: BorshSerialize + BorshDeserialize, const CHUNK_SIZE: u32>
             .and_then(|last_index| self.inner.get_mut(last_index))
             .and_then(|v| v.last_mut())
         else {
-            env::panic_str("Cannot replace_last in empty list");
+            panic_str("Cannot replace_last in empty list");
         };
         *entry = item;
     }
