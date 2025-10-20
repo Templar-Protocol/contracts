@@ -1,6 +1,10 @@
 use std::num::NonZeroU8;
 
-use near_sdk::{env, json_types::U128, near, require, AccountId, Gas, Promise, PromiseOrValue};
+use near_sdk::{
+    env,
+    json_types::{U128, U64},
+    near, require, AccountId, Gas, Promise, PromiseOrValue,
+};
 
 use crate::asset::{BorrowAsset, FungibleAsset};
 
@@ -286,14 +290,14 @@ pub enum Event {
     #[event_version("1.0.0")]
     MintedShares { amount: U128, receiver: AccountId },
     #[event_version("1.0.0")]
-    AllocationStarted { op_id: u64, remaining: U128 },
+    AllocationStarted { op_id: U64, remaining: U128 },
 
     // Allocation lifecycle (plan/request)
     #[event_version("1.0.0")]
-    AllocationRequestedQueue { op_id: u64, total: U128 },
+    AllocationRequestedQueue { op_id: U64, total: U128 },
     #[event_version("1.0.0")]
     AllocationPlanSet {
-        op_id: u64,
+        op_id: U64,
         total: U128,
         plan: Vec<(AccountId, U128)>,
     },
@@ -301,7 +305,7 @@ pub enum Event {
     // Per-step planning and outcomes
     #[event_version("1.0.0")]
     AllocationStepPlanned {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         market: AccountId,
         target: U128,
@@ -312,7 +316,7 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     AllocationStepSkipped {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         market: AccountId,
         reason: String,
@@ -320,14 +324,14 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     AllocationTransferFailed {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         market: AccountId,
         attempted: U128,
     },
     #[event_version("1.0.0")]
     AllocationStepSettled {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         market: AccountId,
         before: U128,
@@ -343,7 +347,7 @@ pub enum Event {
     AllocationCompleted { op_id: u64 },
     #[event_version("1.0.0")]
     AllocationStopped {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         remaining: U128,
         reason: Option<String>,
@@ -352,7 +356,7 @@ pub enum Event {
     // Eager
     #[event_version("1.0.0")]
     AllocationEagerTriggered {
-        op_id: u64,
+        op_id: U64,
         idle_balance: U128,
         min_batch: U128,
         deposit_accepted: U128,
@@ -373,9 +377,9 @@ pub enum Event {
     #[event_version("1.0.0")]
     TimelockSet { seconds: u32 },
     #[event_version("1.0.0")]
-    TimelockChangeSubmitted { new_seconds: u32, valid_at: u64 },
+    TimelockChangeSubmitted { new_seconds: u32, valid_at: U64 },
     #[event_version("1.0.0")]
-    PendingTimelockRevoked {},
+    PendingTimelockRevoked,
 
     // Market and queue management
     #[event_version("1.0.0")]
@@ -397,7 +401,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     MarketRemovalSubmitted {
         market: AccountId,
-        removable_at: u64,
+        removable_at: U64,
     },
     #[event_version("1.0.0")]
     MarketRemovalRevoked { market: AccountId },
@@ -412,18 +416,18 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     WithdrawalQueued {
-        id: u64,
+        id: U64,
         owner: AccountId,
         receiver: AccountId,
         escrow_shares: U128,
         expected_assets: U128,
-        requested_at: u64,
+        requested_at: U64,
     },
 
     // Allocation read/settlement diagnostics
     #[event_version("1.0.0")]
     AllocationPositionMissing {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         market: AccountId,
         attempted: U128,
@@ -431,7 +435,7 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     AllocationPositionReadFailed {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         market: AccountId,
         attempted: U128,
@@ -441,7 +445,7 @@ pub enum Event {
     // Withdrawal read diagnostics
     #[event_version("1.0.0")]
     WithdrawalPositionMissing {
-        op_id: u64,
+        op_id: U64,
         market: AccountId,
         index: u32,
         before: U128,
@@ -449,7 +453,7 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     WithdrawalPositionReadFailed {
-        op_id: u64,
+        op_id: U64,
         market: AccountId,
         index: u32,
         before: U128,
@@ -459,13 +463,13 @@ pub enum Event {
     // Payout and stop diagnostics
     #[event_version("1.0.0")]
     PayoutUnexpectedState {
-        op_id: u64,
+        op_id: U64,
         receiver: AccountId,
         amount: U128,
     },
     #[event_version("1.0.0")]
     WithdrawalStopped {
-        op_id: u64,
+        op_id: U64,
         index: u32,
         remaining: U128,
         collected: U128,
@@ -473,7 +477,7 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     PayoutStopped {
-        op_id: u64,
+        op_id: U64,
         receiver: AccountId,
         amount: U128,
         reason: Option<String>,
@@ -495,18 +499,13 @@ pub enum Event {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::str::FromStr;
 
-    use borsh::BorshDeserialize;
-    use near_sdk::test_utils::accounts;
-
-    use super::*;
-
-    // Compile time checks
     const _: [(); MarketConfiguration::encoded_size()] = [(); 25];
-    const EXPECTED_FROM_TYPES: usize =
+    const _EXPECTED_FROM_TYPES: usize =
         core::mem::size_of::<u128>() + core::mem::size_of::<bool>() + core::mem::size_of::<u64>();
-    const _: [(); MarketConfiguration::encoded_size()] = [(); EXPECTED_FROM_TYPES];
+    const _: [(); MarketConfiguration::encoded_size()] = [(); _EXPECTED_FROM_TYPES];
 
     #[test]
     fn encoded_size_is_25() {

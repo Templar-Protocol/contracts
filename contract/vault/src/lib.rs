@@ -391,7 +391,7 @@ impl Contract {
             });
             Event::TimelockChangeSubmitted {
                 new_seconds: new_timelock_secs,
-                valid_at,
+                valid_at: valid_at.into(),
             }
             .emit();
         }
@@ -591,7 +591,7 @@ impl Contract {
         cfg.removable_at = env::block_timestamp() + self.timelock_ns;
         Event::MarketRemovalSubmitted {
             market: market.clone(),
-            removable_at: cfg.removable_at,
+            removable_at: cfg.removable_at.into(),
         }
         .emit();
     }
@@ -828,7 +828,7 @@ impl Contract {
             }
             let op_id = self.next_op_id;
             Event::AllocationRequestedQueue {
-                op_id,
+                op_id: op_id.into(),
                 total: U128(total),
             }
             .emit();
@@ -854,7 +854,7 @@ impl Contract {
         let weights_for_event: Vec<(AccountId, U128)> =
             weights.iter().map(|(m, w)| (m.clone(), U128(*w))).collect();
         Event::AllocationPlanSet {
-            op_id,
+            op_id: op_id.into(),
             total: U128(total),
             plan: weights_for_event,
         }
@@ -1032,12 +1032,12 @@ impl Contract {
         );
 
         Event::WithdrawalQueued {
-            id,
+            id: id.into(),
             owner: owner.clone(),
             receiver: receiver.clone(),
             escrow_shares: U128(escrow_shares),
             expected_assets: U128(expected_assets),
-            requested_at,
+            requested_at: requested_at.into(),
         }
         .emit();
     }
@@ -1180,7 +1180,7 @@ impl Contract {
             remaining: amount,
         };
         Event::AllocationStarted {
-            op_id,
+            op_id: op_id.into(),
             remaining: U128(amount),
         }
         .emit();
@@ -1227,7 +1227,7 @@ impl Contract {
 
                 // Emit planned step event
                 Event::AllocationStepPlanned {
-                    op_id,
+                    op_id: op_id.into(),
                     index,
                     market: market_id.clone(),
                     target: U128(target),
@@ -1240,7 +1240,7 @@ impl Contract {
 
                 if to_supply == 0 {
                     Event::AllocationStepSkipped {
-                        op_id,
+                        op_id: op_id.into(),
                         index,
                         market: market_id.clone(),
                         reason: if room == 0 {
@@ -1292,7 +1292,7 @@ impl Contract {
 
             // Emit planned step event (queue-based)
             Event::AllocationStepPlanned {
-                op_id,
+                op_id: op_id.into(),
                 index,
                 market: market.clone(),
                 target: U128(remaining),
@@ -1305,7 +1305,7 @@ impl Contract {
 
             if to_supply == 0 {
                 Event::AllocationStepSkipped {
-                    op_id,
+                    op_id: op_id.into(),
                     index,
                     market: market.clone(),
                     reason: "no-room".to_string(),
