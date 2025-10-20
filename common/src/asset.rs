@@ -521,3 +521,19 @@ mod tests {
         };
     }
 }
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub enum ReturnStyle {
+    Nep141FtTransferCall,
+    Nep245MtTransferCall,
+}
+
+impl ReturnStyle {
+    pub fn serialize(&self, amount: FungibleAssetAmount<impl AssetClass>) -> serde_json::Value {
+        match self {
+            Self::Nep141FtTransferCall => serde_json::json!(amount),
+            Self::Nep245MtTransferCall => serde_json::json!([amount]),
+        }
+    }
+}

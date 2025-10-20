@@ -2,6 +2,7 @@ use near_sdk::{env, near, require, serde_json, AccountId, Gas, Promise, PromiseR
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+        ReturnStyle,
     },
     asset_op,
     borrow::{InitialBorrow, InitialLiquidation},
