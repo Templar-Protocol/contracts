@@ -166,12 +166,12 @@ pub const fn buffer(size: usize) -> Gas {
         .saturating_div(5)
 }
 
-// NOTE: these are taken after running the contract with the gas report
+// NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);
 pub const ALLOCATE_GAS: Gas = buffer(21);
 pub const WITHDRAW_GAS: Gas = buffer(4);
 pub const EXECUTE_WITHDRAW_GAS: Gas = buffer(9);
-pub const SUBMIT_CAP_GAS: Gas = buffer(4);
+pub const SUBMIT_CAP_GAS: Gas = buffer(3);
 
 pub fn require_at_least(needed: Gas) {
     let gas = env::prepaid_gas();

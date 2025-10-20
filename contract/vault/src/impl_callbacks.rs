@@ -581,6 +581,7 @@ impl Contract {
         }
         PromiseOrValue::Value(())
     }
+
     /// Validate current op is Allocating and return (index, remaining)
     pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<(u32, u128), Error> {
         match &self.op_state {

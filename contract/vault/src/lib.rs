@@ -5,10 +5,13 @@ use std::{
     num::NonZeroU8,
 };
 
-use crate::storage_management::{
-    require_attached_at_least, require_attached_for_pending_withdrawal,
-    storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
-    yocto_for_pending_cap,
+use crate::{
+    storage_management::{
+        require_attached_at_least, require_attached_for_pending_withdrawal,
+        storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
+        yocto_for_pending_cap,
+    },
+    wad::compute_fee_shares,
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -799,6 +802,10 @@ impl Contract {
     /// Allocates assets across markets according to the provided weights.
     /// If `amount` is provided, it is used as the target amount for each market.
     /// Otherwise, the vault will attempt to allocate as much as possible.
+    ///
+    /// NOTE: Each allocation takes roughly [common::vault::ALLOCATE_GAS] gas. (~21 TGAS)
+    /// So in one allocation cycle, we should do at most ~12 market allocations.
+    /// This is a conservative estimate, and may need to be tweaked.
     #[payable]
     pub fn allocate(
         &mut self,
@@ -818,7 +825,7 @@ impl Contract {
         };
 
         let required_yocto = storage_management::yocto_for_queue_additions(&existing, &candidates);
-        require_attached_at_least(required_yocto, "potential queue additions");
+        let _ = require_attached_at_least(required_yocto, "potential queue additions");
 
         let total = self.clamp_allocation_total(amount.map(|x| x.0));
 
@@ -1076,12 +1083,8 @@ impl Contract {
         virtual_shares: u128,
         virtual_assets: u128,
     ) -> (u128, u128) {
-        let fee_shares = crate::wad::compute_fee_shares(
-            cur_assets,
-            last_total_assets,
-            performance_fee,
-            total_supply,
-        );
+        let fee_shares =
+            compute_fee_shares(cur_assets, last_total_assets, performance_fee, total_supply);
         let new_total_supply = total_supply
             .saturating_add(fee_shares)
             .saturating_add(virtual_shares);
@@ -1117,7 +1120,7 @@ impl Contract {
     pub fn internal_accrue_fee(&mut self) {
         // Invariant: Fees are minted only when total_assets() > last_total_assets (no fees on losses/flat).
         let cur = self.get_total_assets().0;
-        let fee_shares = crate::wad::compute_fee_shares(
+        let fee_shares = compute_fee_shares(
             cur,
             self.last_total_assets,
             self.performance_fee,
@@ -1225,7 +1228,6 @@ impl Contract {
                 let room = cap.saturating_sub(cur);
                 let to_supply = room.min(target);
 
-                // Emit planned step event
                 Event::AllocationStepPlanned {
                     op_id: op_id.into(),
                     index,

@@ -1,5 +1,5 @@
 use rstest::rstest;
-use templar_vault_contract::*;
+use templar_vault_contract::{wad::compute_fee_shares, *};
 
 const W: u128 = WAD;
 
