@@ -6,7 +6,6 @@ pub use near_sdk::{
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
 };
 use near_sdk_contract_tools::ft::Nep141Controller as _;
-use templar_common::primitive_types::U128;
 use test_utils::vault_configuration;
 
 pub fn mk(n: u32) -> AccountId {

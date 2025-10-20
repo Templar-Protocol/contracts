@@ -83,14 +83,6 @@ macro_rules! accounts {
 
 #[macro_export]
 macro_rules! setup_test {
-    ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
-        $crate::accounts!($w, $($n),*);
-        let s = $crate::setup_everything(&$w, $f, |_| {}).await;
-        ::tokio::join!(
-            $(s.vault.init_account(&$n)),*
-        );
-        let $crate::SetupEverything { $($e,)* .. } = s;
-    };
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr) vconfig($v:expr)) => {
         $crate::accounts!($w, $($n),*);
         let s = $crate::setup_everything(&$w, $f, $v).await;
@@ -99,29 +91,11 @@ macro_rules! setup_test {
         );
         let $crate::SetupEverything { $($e,)* .. } = s;
     };
+    ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
+        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config($f) vconfig(|_| {}));
+    };
     ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}))
-    };
-    (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
-        let worker = near_workspaces::sandbox().await.unwrap();
-        $crate::accounts!(worker, $($n),*);
-        let s = $crate::setup_everything(&worker, $f, |_| {}).await;
-        ::tokio::join!(
-            $(s.vault.init_account(&$n)),*
-        );
-        let $crate::SetupEverything { $($e,)* .. } = s;
-    };
-    (extract($($e:ident),*) accounts($($n:ident),*) config($f:expr) vconfig($v:expr)) => {
-        let worker = near_workspaces::sandbox().await.unwrap();
-        $crate::accounts!(worker, $($n),*);
-        let s = $crate::setup_everything(&worker, $f, $v).await;
-        ::tokio::join!(
-            $(s.vault.init_account(&$n)),*
-        );
-        let $crate::SetupEverything { $($e,)* .. } = s;
-    };
-    (extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test!(extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}))
+        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}));
     };
 }
 

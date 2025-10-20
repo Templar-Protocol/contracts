@@ -1,13 +1,17 @@
 use near_sdk::json_types::U128;
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
 use templar_common::{interest_rate_strategy::InterestRateStrategy, number::Decimal};
 use test_utils::{
-    controller::vault::UnifiedVaultController, setup_test, ContractController,
+    controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
     UnifiedMarketController,
 };
 
+#[rstest]
 #[tokio::test]
-async fn happy() {
+async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
+        worker
         extract(vault, c, vault_curator)
         accounts(supply_user, borrow_user)
         config(|c| {
