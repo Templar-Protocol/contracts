@@ -1,10 +1,14 @@
-/// Fixed-point helpers and fee-accrual math using 18-decimal WAD precision.
-use templar_common::primitive_types::U256;
+/// Fixed-point helpers and fee-accrual math using 24-decimal WAD precision.
+use templar_common::primitive_types::{U256, U512};
+
+// TODO: possibly change to u256 for more precision
+pub const WAD: u128 = 1_000_000_000_000_000_000_000_000u128;
 
 pub type WADFraction = u128;
-pub const WAD: u128 = 1e18 as u128;
+pub type WIDE = U512;
 
-/// Multiplies two WAD-scaled values and floors the result: floor(x * y / WAD).
+/// Multiplies x by y/WAD and floors: floor(x * y / WAD).
+/// Typically, y is a WAD-scaled fraction (1e24 = 100%), and x is an unscaled amount.
 #[inline]
 #[must_use]
 pub fn mul_wad_floor(x: u128, y: u128) -> u128 {
@@ -12,39 +16,43 @@ pub fn mul_wad_floor(x: u128, y: u128) -> u128 {
 }
 
 /// Multiplies and divides with flooring: floor(x * y / denom).
-/// Uses 256-bit intermediate to avoid overflow; returns 0 if denom is 0.
+/// Uses 512-bit intermediate (U512) to avoid overflow; returns 0 if denom is 0.
 #[inline]
 #[must_use]
 pub fn mul_div_floor(x: u128, y: u128, denom: u128) -> u128 {
     if denom == 0 {
         return 0;
     }
-    let num = U256::from(x) * U256::from(y);
-    let q = num / U256::from(denom);
+    let num = WIDE::from(x) * WIDE::from(y);
+    let q = num / WIDE::from(denom);
     q.as_u128()
 }
 
 /// Multiplies and divides with ceiling: ceil(x * y / denom).
-/// Uses 256-bit intermediate to avoid overflow; returns 0 if denom is 0.
+/// Uses 512-bit intermediate (U512) to avoid overflow; returns 0 if denom is 0.
+/// Implemented via quotient/remainder to avoid relying on addition overflow behavior.
 #[inline]
 #[must_use]
 pub fn mul_div_ceil(x: u128, y: u128, denom: u128) -> u128 {
     if denom == 0 {
         return 0;
     }
-    let num = U256::from(x) * U256::from(y);
-    let d = U256::from(denom);
-    let q = (num + d - U256::from(1)) / d;
-    q.as_u128()
+    let num = WIDE::from(x) * WIDE::from(y);
+    let d = WIDE::from(denom);
+    let q = num / d;
+    let r = num % d;
+    let base = q.as_u128();
+    base.saturating_add((!r.is_zero()) as u128)
 }
 
 /// Computes fee shares to mint given:
 /// - `cur_total_assets`: current total assets under management
 /// - `last_total_assets`: previous total assets snapshot
-/// - `performance_fee`: WAD fraction (1e18 = 100%)
+/// - `performance_fee`: WAD fraction (1e24 = 100%)
 /// - `total_supply`: current total share supply
 ///
-/// Floors intermediate divisions; returns 0 when no profit, zero fee, or zero supply.
+/// Floors intermediate divisions; returns 0 when no profit, zero fee, zero supply,
+/// or when the fee consumes all assets (cur_total_assets == fee_assets).
 #[inline]
 #[must_use]
 pub fn compute_fee_shares(
@@ -58,12 +66,18 @@ pub fn compute_fee_shares(
     }
     let profit = cur_total_assets - last_total_assets;
     let fee_assets = mul_wad_floor(profit, performance_fee);
+    let denom = cur_total_assets.saturating_sub(fee_assets);
+
+    if denom == 0 {
+        return 0;
+    }
+
     if fee_assets == 0 {
         return 0;
     }
+
     // ERC-4626-like: mint shares so that fee_shares / (total_supply + fee_shares) = fee_assets / cur_total_assets
     // Rearranged and floored:
-    let denom = cur_total_assets.saturating_sub(fee_assets).max(1);
     mul_div_floor(fee_assets, total_supply, denom)
 }
 
@@ -78,7 +92,7 @@ mod tests {
         // 0.3333... * 0.3333... ~= 0.1111...
         let third = W / 3;
         let res = mul_wad_floor(third, third);
-        // floor(1/9 * W) = floor(0.111... * 1e18)
+        // floor(1/9 * W) = floor(0.111... * 1e24)
         assert!(res <= W / 9);
         assert_eq!(res, (W / 9) - 1); // typical floor loss
     }
@@ -122,7 +136,7 @@ mod tests {
 
     #[test]
     fn compute_fee_shares_handles_extreme_fee() {
-        // 100% fee on positive profit: fee_assets=profit; denom=max(1) => finite result
+        // 100% fee on positive profit: fee_assets=profit; denom=cur_total_assets - fee_assets
         let minted = compute_fee_shares(2_000, 1_000, W, 1_000);
         // fee_assets=1000; denom=1_000 (2_000 - 1_000) => floor(1_000*1_000/1_000)=1_000
         assert_eq!(minted, 1_000);

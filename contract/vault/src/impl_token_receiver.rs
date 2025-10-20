@@ -1,7 +1,10 @@
-use crate::{aux::ReturnStyle, Contract, ContractExt, OpState};
+use crate::{Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
-use templar_common::vault::{require_at_least, AllocationMode, DepositMsg, Event, SUPPLY_GAS};
+use templar_common::{
+    asset::ReturnStyle,
+    vault::{require_at_least, AllocationMode, DepositMsg, Event, SUPPLY_GAS},
+};
 
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
