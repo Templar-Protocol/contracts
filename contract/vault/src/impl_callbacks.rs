@@ -42,7 +42,7 @@ impl Contract {
         // If the transfer failed, do not attempt to reconcile; stop and leave remaining untouched
         if accepted.is_err() {
             Event::AllocationTransferFailed {
-                op_id,
+                op_id: op_id.into(),
                 index: market_index,
                 market: market.clone(),
                 attempted,
@@ -107,7 +107,7 @@ impl Contract {
             }
             Ok(None) => {
                 Event::AllocationPositionMissing {
-                    op_id,
+                    op_id: op_id.into(),
                     index: market_index,
                     market: market.clone(),
                     attempted,
@@ -118,7 +118,7 @@ impl Contract {
             }
             Err(_) => {
                 Event::AllocationPositionReadFailed {
-                    op_id,
+                    op_id: op_id.into(),
                     index: market_index,
                     market: market.clone(),
                     attempted,
@@ -131,7 +131,7 @@ impl Contract {
 
         let refunded = attempted.0.saturating_sub(accepted_event);
         Event::AllocationStepSettled {
-            op_id,
+            op_id: op_id.into(),
             index: market_index,
             market: market.clone(),
             before,
@@ -284,7 +284,7 @@ impl Contract {
                 // No position => treat as principal = 0
                 // NOTE: this is a successful withdraw
                 Event::WithdrawalPositionMissing {
-                    op_id,
+                    op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
                     before: U128(before_principal),
@@ -295,7 +295,7 @@ impl Contract {
             }
             Err(_) => {
                 Event::WithdrawalPositionReadFailed {
-                    op_id,
+                    op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
                     before: U128(before_principal),
@@ -378,7 +378,7 @@ impl Contract {
             }
             _ => {
                 Event::PayoutUnexpectedState {
-                    op_id,
+                    op_id: op_id.into(),
                     receiver: receiver.clone(),
                     amount,
                 }
@@ -464,7 +464,7 @@ impl Contract {
                 }
                 Some(m) => {
                     Event::AllocationStopped {
-                        op_id: *op_id,
+                        op_id: (*op_id).into(),
                         index: *index,
                         remaining: U128(*remaining),
                         reason: Some(m.to_string()),
@@ -498,7 +498,7 @@ impl Contract {
                 _ => (0, 0, 0, 0),
             };
             Event::WithdrawalStopped {
-                op_id,
+                op_id: op_id.into(),
                 index,
                 remaining: U128(remaining),
                 collected: U128(collected),
@@ -536,7 +536,7 @@ impl Contract {
             } = &self.op_state
             {
                 Event::PayoutStopped {
-                    op_id: *op_id,
+                    op_id: (*op_id).into(),
                     receiver: receiver.clone(),
                     amount: U128(*amount),
                     reason: msg.map(std::string::ToString::to_string),

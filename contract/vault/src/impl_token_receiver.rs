@@ -132,7 +132,7 @@ impl Contract {
                 // Invariant: no overlapping operations
                 let op_id = self.next_op_id;
                 Event::AllocationEagerTriggered {
-                    op_id,
+                    op_id: op_id.into(),
                     idle_balance: U128(self.idle_balance),
                     min_batch,
                     deposit_accepted: U128(accept),
