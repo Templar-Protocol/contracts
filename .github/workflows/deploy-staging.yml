@@ -2,6 +2,11 @@ name: Deploy to staging
 on:
   pull_request:
 
+permissions:
+  contents: read
+  id-token: write  # Required for workflows that call test.yml (Codecov OIDC)
+  pull-requests: write  # Required for deployment comments
+
 jobs:
   # Check if we need to run contract-related jobs
   check-changes:
@@ -27,7 +32,11 @@ jobs:
               - 'script/**'
 
   test:
+    needs: check-changes
+    if: needs.check-changes.outputs.should-run-contracts == 'true'
     uses: ./.github/workflows/test.yml
+    with:
+      skip_coverage: true
 
   gas-report:
     needs: check-changes
@@ -36,8 +45,6 @@ jobs:
 
   deploy-staging:
     name: Deploy to staging subaccount
-    permissions:
-      pull-requests: write
     needs: [test, gas-report, check-changes]
     # Run if contracts changed OR if gas-report was skipped
     if: always() && needs.test.result == 'success' && (needs.gas-report.result == 'success' || needs.gas-report.result == 'skipped')

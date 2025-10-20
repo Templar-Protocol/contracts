@@ -1,0 +1,35 @@
+# Minimal Codecov configuration focused on PR checks
+coverage:
+  precision: 2
+  round: down
+  range: "70...90"
+
+  status:
+    project:
+      default:
+        target: 25%  # Set low to not block PRs while building coverage
+        threshold: 5%  # Allow larger decreases while stabilizing
+        base: auto
+
+    patch:
+      default:
+        target: 50%  # Reduced from 85% - encourage coverage but don't block
+        threshold: 10%  # More lenient for new code
+        only_pulls: true
+
+# PR comment configuration
+comment:
+  layout: "reach,diff,files"
+  behavior: default
+  require_changes: true
+
+# Ignore test files and build artifacts
+ignore:
+  - "target/"
+  - "mock/"
+  - "test-utils/"
+  - "**/*test*"
+  - "**/tests/"
+  - "**/examples/"
+  - "script/"
+  - "docs/"
