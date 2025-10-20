@@ -36,7 +36,7 @@ use templar_universal_account::{
         self,
         data::{AuthenticatorData, ClientDataJson},
         with_raw_string::WithRawString,
-        Passkey, Payload, UncheckedMessage,
+        Passkey, Payload,
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
@@ -148,6 +148,8 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
             ua_deployer.contract().id().as_ref(),
             "--ua-version-key",
             "v1",
+            "--intents-id",
+            "intents.near",
         ]),
         kill,
     );
@@ -326,12 +328,15 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     // Send an action to the universal account contract
 
-    let parameters = app
-        .ua_near
-        .load_ua_key(ua_account_id.clone(), KeyId::Passkey(passkey.clone()))
-        .await
-        .unwrap()
-        .unwrap();
+    let load_parameters = async |account_id: AccountId, key: KeyId| {
+        app.ua_near
+            .load_ua_key(account_id, key)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+
+    let parameters = load_parameters(ua_account_id.clone(), KeyId::Passkey(passkey.clone())).await;
 
     let message = create_execute_message(
         &secret_key,
@@ -352,7 +357,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
-                key: passkey,
+                key: passkey.clone(),
                 message,
             },
             storage_deposit: HashSet::default(),
@@ -387,4 +392,54 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         .unwrap()
         .into_outcome()
         .assert_success();
+
+    // Test intents.near contract intraction
+    // The actual transaction should fail, because `intents.near` does not
+    // exist on the sandbox blockchain, but the relayer should still send the
+    // transaction.
+
+    let parameters = load_parameters(ua_account_id.clone(), KeyId::Passkey(passkey.clone())).await;
+
+    let message = create_execute_message(
+        &secret_key,
+        ua_account_id.clone(),
+        parameters.next(),
+        "intents.near".parse().unwrap(),
+        vec![transaction::FunctionCallAction {
+            function_name: "add_public_key".to_string(),
+            arguments: b"{}".to_vec().into(),
+            amount: NearToken::from_near(0),
+            gas: near_sdk::Gas::from_tgas(20),
+        }
+        .into()],
+    );
+
+    let response = templar_relayer::route::universal_account::relay::relay(
+        State(app.clone()),
+        Json(UaRelayRequest {
+            account_id: ua_account_id.clone(),
+            args: ExecuteArgs::Passkey {
+                key: passkey.clone(),
+                message,
+            },
+            storage_deposit: HashSet::default(),
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Success(result) = response else {
+        panic!("Should have succeeded: {response:?}");
+    };
+
+    let status = worker
+        .tx_status(
+            TransactionInfo::TransactionId {
+                tx_hash: result.transaction_hash,
+                sender_account_id: ua_account_id.clone(),
+            },
+            TxExecutionStatus::Final,
+        )
+        .await;
+
+    eprintln!("Status: {status:?}");
 }
