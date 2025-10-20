@@ -9,6 +9,31 @@ use templar_common::{
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
 
+// Parses JSON-encoded DepositMsg or panics with a consistent message.
+fn parse_deposit_msg(msg: &str) -> DepositMsg {
+    near_sdk::serde_json::from_str(msg).unwrap_or_else(|_| env::panic_str("Invalid deposit msg"))
+}
+
+// Validates NEP-245 transfer inputs and returns (depositor, token_id, amount).
+fn validate_single_mt_input<'a>(
+    previous_owner_ids: &'a [AccountId],
+    token_ids: &'a [TokenId],
+    amounts: &'a [U128],
+) -> (AccountId, &'a TokenId, U128) {
+    require!(
+        token_ids.len() == 1,
+        "This contract only accepts one token at a time."
+    );
+    require!(
+        previous_owner_ids.len() == 1 && amounts.len() == 1,
+        "Invalid input length"
+    );
+    let depositor = previous_owner_ids[0].clone();
+    let token_id = &token_ids[0];
+    let amount = amounts[0];
+    (depositor, token_id, amount)
+}
+
 #[near]
 impl FungibleTokenReceiver for Contract {
     /// NEP-141 token receiver for deposits.
@@ -20,10 +45,7 @@ impl FungibleTokenReceiver for Contract {
         amount: U128,
         msg: String,
     ) -> PromiseOrValue<U128> {
-        const RETURN_STYLE: ReturnStyle = ReturnStyle::Nep141FtTransferCall;
-
-        let msg = near_sdk::serde_json::from_str::<DepositMsg>(&msg)
-            .unwrap_or_else(|_| env::panic_str("Invalid deposit msg"));
+        let msg = parse_deposit_msg(&msg);
 
         let asset_id = env::predecessor_account_id();
 
@@ -44,41 +66,31 @@ impl Nep245Receiver for Contract {
     /// Returns a one-element vector with the unused amount to refund to the sender.
     fn mt_on_transfer(
         &mut self,
-        sender_id: AccountId,
+        _sender_id: AccountId,
         previous_owner_ids: Vec<AccountId>,
         token_ids: Vec<TokenId>,
         amounts: Vec<U128>,
         msg: String,
     ) -> PromiseOrValue<Vec<U128>> {
-        const RETURN_STYLE: ReturnStyle = ReturnStyle::Nep245MtTransferCall;
+        let msg = parse_deposit_msg(&msg);
 
-        let msg = near_sdk::serde_json::from_str::<DepositMsg>(&msg)
-            .unwrap_or_else(|_| env::panic_str("Invalid deposit msg"));
-
-        require!(
-            token_ids.len() == 1,
-            "This contract only accepts one token at a time."
-        );
-        require!(
-            previous_owner_ids.len() == 1 && amounts.len() == 1,
-            "Invalid input length"
-        );
-
-        let token_id = &token_ids[0];
-        let sender_id = previous_owner_ids[0].clone();
-        let amount = amounts[0];
+        let (depositor, token_id, amount) =
+            validate_single_mt_input(&previous_owner_ids, &token_ids, &amounts);
 
         match msg {
             DepositMsg::Supply => {
                 require_at_least(SUPPLY_GAS);
-                let mt = env::predecessor_account_id();
+                let token_contract = env::predecessor_account_id();
 
-                if !self.underlying_asset.is_nep245(&mt, token_id) {
-                    Event::DepositRejectedWrongAsset { token: mt }.emit();
+                if !self.underlying_asset.is_nep245(&token_contract, token_id) {
+                    Event::DepositRejectedWrongAsset {
+                        token: token_contract,
+                    }
+                    .emit();
                     return PromiseOrValue::Value(vec![amount]);
                 }
 
-                let refund = self.execute_supply(sender_id.clone(), mt, amount.into());
+                let refund = self.execute_supply(depositor.clone(), token_contract, amount.into());
 
                 PromiseOrValue::Value(vec![U128(refund)])
             }
@@ -90,13 +102,13 @@ impl Contract {
     pub(crate) fn execute_supply(
         &mut self,
         sender_id: AccountId,
-        token_id: AccountId,
+        asset_id: AccountId,
         deposit: u128,
     ) -> u128 {
         // Invariant: Only the underlying token is accepted; others are fully refunded
-        if token_id != self.underlying_asset.contract_id() {
+        if asset_id != self.underlying_asset.contract_id() {
             Event::DepositRejectedWrongAsset {
-                token: token_id.clone(),
+                token: asset_id.clone(),
             }
             .emit();
             return deposit;

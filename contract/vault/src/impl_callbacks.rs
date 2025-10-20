@@ -146,13 +146,8 @@ impl Contract {
         self.market_supply.insert(market.clone(), new_principal);
 
         // Invariant: withdraw_queue gains any market with new_principal > 0
-        if new_principal > 0 && !self.withdraw_queue.iter().any(|m| m == &market) {
-            // If the market had pre-existing principal but wasn't in the withdraw_queue,
-            // bump last_total_assets by that pre-existing amount to avoid fee accrual on re-inclusion.
-            if before.0 > 0 {
-                self.last_total_assets = self.last_total_assets.saturating_add(before.0);
-            }
-            self.withdraw_queue.push(market.clone());
+        if new_principal > 0 {
+            self.add_market_to_withdraw_queue(&market, before.0);
         }
 
         self.op_state = OpState::Allocating {
