@@ -1,8 +1,10 @@
 use core::ops::Div;
+use std::collections::BTreeMap;
 use std::ops::{Add, Sub};
 
+use near_sdk::borsh::schema::{add_definition, Declaration, Definition, Fields};
 use near_sdk::{
-    borsh::{BorshDeserialize, BorshSerialize},
+    borsh::{BorshDeserialize, BorshSchema, BorshSerialize},
     near,
 };
 use templar_common::primitive_types::{U256, U512};
@@ -251,6 +253,29 @@ impl BorshDeserialize for Wad {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let inner = <Number as BorshDeserialize>::deserialize_reader(reader)?;
         Ok(Wad(inner))
+    }
+}
+
+// FIXME: test these
+impl BorshSchema for Number {
+    fn add_definitions_recursively(definitions: &mut BTreeMap<Declaration, Definition>) {
+        let definition = Definition::Primitive(32);
+        add_definition(Self::declaration(), definition, definitions);
+    }
+
+    fn declaration() -> Declaration {
+        "Number".into()
+    }
+}
+
+impl BorshSchema for Wad {
+    fn add_definitions_recursively(definitions: &mut BTreeMap<Declaration, Definition>) {
+        let definition = Definition::Primitive(32);
+        add_definition(Self::declaration(), definition, definitions);
+    }
+
+    fn declaration() -> Declaration {
+        "Wad".into()
     }
 }
 
