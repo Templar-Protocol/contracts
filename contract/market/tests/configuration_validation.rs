@@ -1,6 +1,10 @@
 use test_utils::*;
 
-use templar_common::{dec, interest_rate_strategy::InterestRateStrategy};
+use templar_common::{
+    dec,
+    fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
+    interest_rate_strategy::InterestRateStrategy,
+};
 
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_asset`: must not equal `collateral_asset`"]
@@ -81,6 +85,22 @@ async fn withdrawal_minimum_greater_than_supply_minimum() {
     setup_everything(&worker, |c| {
         c.supply_range = (1, None).try_into().unwrap();
         c.supply_withdrawal_range = (2, None).try_into().unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Invalid configuration field `supply_withdrawal_fee.fee`: out of bounds"]
+async fn withdrawal_fee_greater_than_withdrawal_minimum() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    setup_everything(&worker, |c| {
+        c.supply_range = (2, None).try_into().unwrap();
+        c.supply_withdrawal_range = (2, None).try_into().unwrap();
+        c.supply_withdrawal_fee = TimeBasedFee {
+            fee: Fee::Flat(100.into()),
+            duration: 100.into(),
+            behavior: TimeBasedFeeFunction::Linear,
+        };
     })
     .await;
 }

@@ -79,10 +79,6 @@ impl WithdrawalQueue {
         node_id: NonZeroU32,
         f: impl FnOnce(&mut QueueNode) -> T,
     ) -> T {
-        if self.is_locked && Some(node_id) == self.queue_head {
-            env::panic_str("Cannot mutate withdrawal queue head while queue is locked.");
-        }
-
         let mut node = self
             .queue
             .get(&node_id)
@@ -122,6 +118,11 @@ impl WithdrawalQueue {
         } else {
             None
         }
+    }
+
+    pub fn mut_head<T>(&mut self, f: impl FnOnce(&mut BorrowAssetAmount) -> T) -> Option<T> {
+        self.queue_head
+            .map(|node_id| self.mut_existing_node(node_id, |n| f(&mut n.amount)))
     }
 
     /// # Errors
@@ -217,6 +218,10 @@ impl WithdrawalQueue {
 
     pub fn insert_or_update(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
         if let Some(node_id) = self.entries.get(account_id) {
+            if self.is_locked && Some(node_id) == self.queue_head {
+                env::panic_str("Cannot mutate withdrawal queue head while queue is locked.");
+            }
+
             // update existing
             self.mut_existing_node(node_id, |node| node.amount = amount);
         } else {
@@ -372,6 +377,42 @@ mod tests {
     use near_sdk::AccountId;
 
     use super::WithdrawalQueue;
+
+    #[test]
+    fn mut_head() {
+        let mut wq = WithdrawalQueue::new(b"w");
+
+        let alice: AccountId = "alice".parse().unwrap();
+        let bob: AccountId = "bob".parse().unwrap();
+        let charlie: AccountId = "charlie".parse().unwrap();
+
+        wq.insert_or_update(&alice, 1.into());
+        wq.insert_or_update(&bob, 2.into());
+        wq.insert_or_update(&charlie, 3.into());
+
+        wq.mut_head(|a| a.join(10)).unwrap();
+        assert_eq!(wq.len(), 3);
+
+        assert_eq!(wq.get(&alice).unwrap(), 11.into());
+        assert_eq!(wq.get(&bob).unwrap(), 2.into());
+        assert_eq!(wq.get(&charlie).unwrap(), 3.into());
+        assert_eq!(wq.remove(&alice).unwrap(), 11.into());
+        assert_eq!(wq.len(), 2);
+
+        wq.mut_head(|a| a.join(20)).unwrap();
+        assert_eq!(wq.get(&alice), None);
+        assert_eq!(wq.get(&bob).unwrap(), 22.into());
+        assert_eq!(wq.get(&charlie).unwrap(), 3.into());
+        assert_eq!(wq.remove(&bob).unwrap(), 22.into());
+        assert_eq!(wq.len(), 1);
+
+        wq.mut_head(|a| a.join(30)).unwrap();
+        assert_eq!(wq.get(&alice), None);
+        assert_eq!(wq.get(&bob), None);
+        assert_eq!(wq.get(&charlie).unwrap(), 33.into());
+        assert_eq!(wq.remove(&charlie).unwrap(), 33.into());
+        assert_eq!(wq.len(), 0);
+    }
 
     #[test]
     fn withdrawal_remove() {

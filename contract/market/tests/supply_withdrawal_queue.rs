@@ -37,31 +37,6 @@ async fn successful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Insufficient liquidity to fulfill the request at this time"]
-async fn unsuccessful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
-
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 10_000),
-        c.collateralize(&borrow_user, 20_000),
-    );
-    c.borrow(&borrow_user, 5_000).await;
-
-    c.create_supply_withdrawal_request(&supply_user, 10_000)
-        .await;
-    let status = c.get_supply_withdrawal_queue_status().await;
-    assert_eq!(
-        status,
-        WithdrawalQueueStatus {
-            depth: 10_000.into(),
-            length: 1
-        },
-    );
-    c.execute_next_supply_withdrawal_request(&supply_user).await;
-}
-
-#[rstest]
-#[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
 async fn attempt_to_withdraw_more_than_deposit_incoming(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(worker extract(c) accounts(supply_user));
@@ -81,6 +56,52 @@ async fn attempt_to_withdraw_more_than_deposit(#[future(awt)] worker: Worker<San
         .await;
     c.create_supply_withdrawal_request(&supply_user, 12_000)
         .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn partial_fulfillment(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user_1, supply_user_2, borrow_user));
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user_1, 10_000),
+        c.supply_and_harvest_until_activation(&supply_user_2, 10_000),
+    );
+
+    c.collateralize(&borrow_user, 20_000).await;
+    c.borrow(&borrow_user, 2_000).await;
+
+    let balance_1_before = c.borrow_asset.balance_of(supply_user_1.id()).await;
+    let balance_2_before = c.borrow_asset.balance_of(supply_user_2.id()).await;
+
+    c.create_supply_withdrawal_request(&supply_user_1, 10_000)
+        .await;
+    c.create_supply_withdrawal_request(&supply_user_2, 10_000)
+        .await;
+
+    let status = c.get_supply_withdrawal_queue_status().await;
+    assert_eq!(status.depth, 20_000.into());
+    assert_eq!(status.length, 2);
+
+    // Supply user 1: Fully fulfilled
+    c.execute_next_supply_withdrawal_request(&borrow_user).await;
+    // Supply user 2: Can only withdraw 8000, because 2000 is borrowed
+    c.execute_next_supply_withdrawal_request(&borrow_user).await;
+
+    let balance_1_after = c.borrow_asset.balance_of(supply_user_1.id()).await;
+    let balance_2_after = c.borrow_asset.balance_of(supply_user_2.id()).await;
+
+    assert_eq!(balance_1_before + 10_000, balance_1_after);
+    assert_eq!(balance_2_before + 8_000, balance_2_after);
+
+    let status = c.get_supply_withdrawal_queue_status().await;
+    assert_eq!(status.depth, 2_000.into());
+    assert_eq!(status.length, 1);
+
+    let position_1_after = c.get_supply_position(supply_user_1.id()).await.unwrap();
+    assert_eq!(position_1_after.get_deposit().total(), 0.into());
+    let position_2_after = c.get_supply_position(supply_user_2.id()).await.unwrap();
+    assert_eq!(position_2_after.get_deposit().total(), 2_000.into());
 }
 
 #[rstest]
@@ -114,8 +135,8 @@ async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Worke
     setup_test!(worker extract(c) accounts(supply_user, supply_user_2));
 
     tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 10_000),
-        c.supply_and_harvest_until_activation(&supply_user_2, 10_000),
+        c.supply_and_harvest_until_activation(&supply_user, 20_000),
+        c.supply_and_harvest_until_activation(&supply_user_2, 20_000),
     );
 
     c.create_supply_withdrawal_request(&supply_user_2, 10_000)
@@ -138,6 +159,9 @@ async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Worke
         .unwrap()
         .into_result()
         .unwrap();
+
+    let position_1_before = c.get_supply_position(supply_user.id()).await.unwrap();
+    let position_2_before = c.get_supply_position(supply_user_2.id()).await.unwrap();
 
     // First one should fail
     let balance_before = c.borrow_asset.balance_of(supply_user_2.id()).await;
@@ -164,6 +188,18 @@ async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Worke
     let status = c.get_supply_withdrawal_queue_status().await;
     assert!(status.depth.is_zero());
     assert_eq!(status.length, 0);
+
+    let position_1_after = c.get_supply_position(supply_user.id()).await.unwrap();
+    let position_2_after = c.get_supply_position(supply_user_2.id()).await.unwrap();
+
+    assert_eq!(
+        u128::from(position_1_before.get_deposit().total()) - 10_000u128,
+        position_1_after.get_deposit().total().into(),
+    );
+    assert_eq!(
+        position_2_before.get_deposit().total(),
+        position_2_after.get_deposit().total(),
+    );
 }
 
 #[rstest]

@@ -369,9 +369,11 @@ impl<'a> SupplyPositionGuard<'a> {
 
         // The only way to withdraw from a position is if it already has a deposit.
         // Adding a deposit guarantees started_at_block_timestamp_ms != None
-        #[allow(clippy::unwrap_used, reason = "Guaranteed to never panic")]
-        let started_at_block_timestamp_ms =
-            self.0.position.started_at_block_timestamp_ms.unwrap().0;
+        let Some(U64(started_at_block_timestamp_ms)) =
+            self.0.position.started_at_block_timestamp_ms
+        else {
+            env::panic_str("Invariant violation: Position with deposit has no timestamp");
+        };
         let supply_duration = block_timestamp_ms.saturating_sub(started_at_block_timestamp_ms);
 
         let amount_to_fees = self
@@ -399,12 +401,11 @@ impl<'a> SupplyPositionGuard<'a> {
         withdrawal_resolution: &WithdrawalResolution,
         success: bool,
     ) {
-        let mut amount = withdrawal_resolution.amount_to_account;
+        let total = withdrawal_resolution.total();
 
         asset_op! {
-            amount += withdrawal_resolution.amount_to_fees;
-            self.position.borrow_asset_deposit.outgoing -= amount;
-            self.market.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account
+            self.position.borrow_asset_deposit.outgoing -= total;
+            self.market.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account;
         };
 
         if success {
@@ -415,7 +416,7 @@ impl<'a> SupplyPositionGuard<'a> {
             }
             .emit();
         } else {
-            self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
+            self.add_incoming(total, self.market.finalized_snapshots.len() + 1);
         }
     }
 

@@ -4,7 +4,6 @@ use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    asset_op,
     borrow::{BorrowPosition, BorrowStatus},
     contract::list,
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
@@ -237,6 +236,7 @@ impl MarketExternalInterface for Contract {
             withdraw_amount,
             env::block_timestamp_ms(),
         );
+        drop(supply_position);
 
         PromiseOrValue::Promise(
             self.configuration

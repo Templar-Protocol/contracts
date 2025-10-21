@@ -24,7 +24,6 @@ async fn cannot_borrow_untracked_funds(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Insufficient liquidity to fulfill the request at this time"]
 async fn cannot_withdraw_untracked_funds(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
@@ -45,5 +44,5 @@ async fn cannot_withdraw_untracked_funds(#[future(awt)] worker: Worker<Sandbox>)
         .await;
     c.execute_next_supply_withdrawal_request(&supply_user).await;
     let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
-    assert_eq!(balance_before + 10_000, balance_after);
+    assert_eq!(balance_before + 2_000, balance_after);
 }

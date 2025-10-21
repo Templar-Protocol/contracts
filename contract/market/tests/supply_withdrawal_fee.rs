@@ -21,6 +21,8 @@ async fn supply_withdrawal_fee_flat(#[future(awt)] worker: Worker<Sandbox>) {
         extract(c, protocol_yield_user)
         accounts(supply_user)
         config(|c| {
+            c.supply_range = (100, None).try_into().unwrap();
+            c.supply_withdrawal_range = (100, None).try_into().unwrap();
             c.supply_withdrawal_fee = fee;
         })
     );
@@ -79,6 +81,8 @@ async fn supply_withdrawal_fee_expired(#[future(awt)] worker: Worker<Sandbox>) {
         extract(c, protocol_yield_user)
         accounts(supply_user)
         config(|c| {
+            c.supply_range = (100, None).try_into().unwrap();
+            c.supply_withdrawal_range = (100, None).try_into().unwrap();
             c.supply_withdrawal_fee = fee;
         })
     );

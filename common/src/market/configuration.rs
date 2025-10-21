@@ -255,6 +255,12 @@ impl MarketConfiguration {
             return Err(error::out_of_bounds("supply_withdrawal_range.minimum"));
         }
 
+        if let Fee::Flat(amount) = self.supply_withdrawal_fee.fee {
+            if amount > self.supply_withdrawal_range.minimum {
+                return Err(error::out_of_bounds("supply_withdrawal_fee.fee"));
+            }
+        }
+
         if self.liquidation_maximum_spread >= 1u32 {
             return Err(error::out_of_bounds("liquidation_maximum_spread"));
         }
