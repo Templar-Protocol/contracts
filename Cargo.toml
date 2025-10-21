@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["bots", "common", "contract/*", "mock/*", "service/*", "test-utils", "universal-account"]
+members = [
+    "bots/accumulator",
+    "bots/common",
+    "bots/liquidator",
+    "common",
+    "contract/*",
+    "mock/*",
+    "service/*",
+    "test-utils",
+    "universal-account",
+]
 
 [workspace.package]
 license = "MIT"

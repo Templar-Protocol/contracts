@@ -12,8 +12,8 @@ use near_primitives::{
 use near_sdk::{serde_json::json, AccountId};
 use tracing::{error, info, instrument};
 
-use crate::{
-    near::{get_access_key_data, send_tx, serialize_and_encode, view},
+use templar_bots_common::{
+    get_access_key_data, send_tx, serialize_and_encode, view,
     BorrowPositions, Network, DEFAULT_GAS,
 };
 

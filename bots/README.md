@@ -1,145 +1,144 @@
-# Templar bots
+# Templar Bots
 
-## Liquidator Bot for Templar
+Production-grade liquidation and accumulation bots for Templar Protocol on NEAR blockchain.
 
-This bot is designed to monitor Templars' lending markets on the Near blockchain and perform liquidations when borrowers fall below their collateralization ratio.
-It uses near tooling to execute liquidations, transfers, signing etc...
-The bot is built using the Near SDK, and it can be used as a running service.
+## Architecture
 
-The bot is structured into several components:
+The bots are organized as a Cargo workspace with three crates:
 
-- `liquidator.rs`: Contains the Liquidator struct that handles the liquidation logic for a specific market and signer.
-- `bin/liquidator-bot.rs`: An executable service that manages the liquidation process, running in a loop to check for liquidatable positions.
-- `near.rs`: Contains the Near SDK logic and RPC calls to interact with the Near blockchain, including fetching prices, borrow positions, and updating prices.
-- `swap.rs`: Contains the implementation for swapping assets dependent on the backend used (Rhea Finance, NEAR Intents).
-- `lib.rs`: Defines network related configuration and constants used throughout the bot. This is a utility module that helps the bot to interact with the NEAR Blockchain and oracles.
+```
+bots/
+├── common/          # Shared RPC utilities and types
+├── accumulator/     # Price accumulation bot
+└── liquidator/      # Liquidation bot (main focus)
+```
 
-Prerequisites:
+## Liquidator Bot
+
+Monitors Templar lending markets and performs liquidations when borrowers fall below their collateralization ratio.
+
+### Key Features
+
+- **Strategy Pattern**: Pluggable liquidation strategies (Partial/Full)
+- **Multiple Swap Providers**: RheaSwap and NEAR Intents integration
+- **Production-Ready**: Comprehensive error handling, logging, and profitability analysis
+- **Gas Optimization**: Smart profitability checks prevent unprofitable liquidations
+- **Concurrent Processing**: Configurable concurrency for high throughput
+
+### Components
+
+- `liquidator/src/lib.rs` - Core liquidation logic with Liquidator struct
+- `liquidator/src/main.rs` - Executable service that runs in a loop
+- `liquidator/src/strategy.rs` - Liquidation strategies (Partial/Full)
+- `liquidator/src/swap/` - Swap provider implementations
+  - `mod.rs` - SwapProvider trait and wrapper
+  - `rhea.rs` - Rhea Finance DEX integration
+  - `intents.rs` - NEAR Intents cross-chain swap integration
+- `common/src/lib.rs` - Shared RPC utilities (view, send_tx, etc.)
+
+### Prerequisites
 
 - Rust (install via rustup)
-- NEAR account
+- NEAR account with sufficient balance
 - NEAR CLI (for deploying and interacting with contracts)
 - Deployed NEAR contracts for the lending protocol
 - Oracle contract for price data
 
-Running the Bot:
+### Running the Bot
 
 ```bash
-liquidator-service \
-    --registries registry1.testnet --registries registry2.testnet \
-    --signer-key ed25519:\<YOUR_PRIVATE_KEY_HERE> \
+liquidator \
+    --registries registry1.testnet registry2.testnet \
+    --signer-key ed25519:<YOUR_PRIVATE_KEY_HERE> \
     --signer-account liquidator.testnet \
-    --asset usdc.testnet \
-    --swap rhea-swap \
+    --asset nep141:usdc.testnet \
+    --swap near-intents \
     --network testnet \
     --timeout 60 \
-    --concurrency 10 \
     --interval 600 \
-    --registry-refresh-interval 3600
+    --registry-refresh-interval 3600 \
+    --concurrency 10 \
+    --partial-percentage 50 \
+    --min-profit-bps 50 \
+    --max-gas-percentage 10
 ```
 
-Arguments:
+### CLI Arguments
 
-- `--registries`: A list of registries to query markets from which will be monitored for liquidations (e.g., templar-registry1.testnet).
-- `--signer-key`: The private key of the signer account used to sign transactions.
-- `--signer-account`: The NEAR account that will perform the liquidations (e.g., templar-liquidator.testnet).
-- `--asset`: The asset to liquidate NEP-141 token account used for repayments (e.g., usdc.testnet).
-- `--swap`: The swap to use for exchanging into the the desired asset (e.g., rhea-swap).
-- `--network`: The NEAR network to connect to (e.g., testnet).
-- `--timeout`: The timeout for RPC calls in seconds (default is 60 seconds).
-- `--concurrency`: The number of concurrent liquidation attempts (default is 10).
-- `--interval`: The interval in seconds for the service to check for liquidatable positions (default is 600 seconds).
-- `--registry-refresh-interval`: The interval in seconds for the service to check for new markets on the registries (default is 3600 seconds - 1 hour).
+#### Required Arguments
 
-How it works:
+- `--registries` - List of registry contracts to query for markets (e.g., `templar-registry1.testnet`)
+- `--signer-key` - Private key of the signer account (format: `ed25519:...`)
+- `--signer-account` - NEAR account that will perform liquidations (e.g., `liquidator.testnet`)
+- `--asset` - Asset specification for liquidations, format: `nep141:<token>` or `nep245:<contract>/<token_id>`
+- `--swap` - Swap provider to use: `rhea-swap` or `near-intents`
 
-1. The bot fetches all deployments for each registry specified in the `--registries` argument.
-1. The bot initializes a Liquidator object for each market fetched.
-1. It continuously checks the status of borrowers in each market.
-1. If a borrower is found to be liquidatable, it calculates the liquidation amount based on the borrower's collateral and debt.
-1. It sends an `ft_transfer_call` RPC call to the smart contract to trigger the liquidation process.
-1. The bot will repeat this process every `interval` seconds.
-1. The bot logs the results of each liquidation attempt, including success or failure, and any relevant details about the borrower and market.
-1. If the liquidation is successful, the bot updates the borrower's position and the market's state accordingly.
-1. The bot handles errors and retries failed liquidation attempts based on the configured timeout and concurrency settings.
-1. The bot can be monitored via logs or integrated with a monitoring system to alert on significant events, such as successful liquidations or errors.
-1. The bot can be extended to support additional liquidation strategies.
+#### Optional Arguments
 
-Liquidation Logic:
-The liquidation logic is encapsulated within the `Liquidator` object, which is responsible for:
+- `--network` - NEAR network to connect to: `testnet` or `mainnet` (default: `testnet`)
+- `--timeout` - Timeout for RPC calls in seconds (default: `60`)
+- `--interval` - Interval between liquidation runs in seconds (default: `600`)
+- `--registry-refresh-interval` - Interval to refresh market list in seconds (default: `3600`)
+- `--concurrency` - Number of concurrent liquidation attempts (default: `10`)
+- `--partial-percentage` - Percentage of position to liquidate (1-100, default: `50`)
+- `--min-profit-bps` - Minimum profit margin in basis points (default: `50` = 0.5%)
+- `--max-gas-percentage` - Maximum gas cost as percentage of liquidation amount (default: `10`)
 
-- Checking a borrower's status to determine if they are below the required collateralization ratio.
-- Calculating the liquidation amount based on the borrower's collateral and debt.
+### How It Works
 
-```rust
-#[instrument(skip(self), level = "debug")]
-async fn liquidation_amount(
-    &self,
-    position: &BorrowPosition,
-    oracle_response: &OracleResponse,
-    configuration: MarketConfiguration,
-) -> LiquidatorResult<(U128, U128)> {
-    let borrow_asset = &configuration.borrow_asset;
-    let price_pair = configuration
-        .price_oracle_configuration
-        .create_price_pair(oracle_response)?;
-    let min_liquidation_amount = configuration
-        .minimum_acceptable_liquidation_amount(position.collateral_asset_deposit, &price_pair)
-        .ok_or_else(|| {
-            LiquidatorError::MinimumLiquidationAmountError(
-                "Failed to calculate minimum acceptable liquidation amount".to_owned(),
-            )
-        })?;
-    // Here we would check a quote for the swap to ensure desired profit margin is met
-    let quote_to_liquidate = self
-        .swap
-        .quote(
-            &self.asset,
-            &borrow_asset.clone().into_nep141().ok_or_else(|| {
-                LiquidatorError::StandardSupportError(
-                    "Only NEP-141 borrow assets supported".to_owned(),
-                )
-            })?,
-            min_liquidation_amount.into(),
-        )
-        .await
-        .map_err(LiquidatorError::QuoteError)?;
-    Ok((quote_to_liquidate, min_liquidation_amount.into()))
-}
-```
+1. **Market Discovery**: Fetches all deployed markets from specified registries
+2. **Position Monitoring**: Continuously checks borrower positions in each market
+3. **Oracle Prices**: Fetches current prices from oracle contract
+4. **Liquidation Decision**:
+   - Checks if borrower is below required collateralization ratio
+   - Calculates liquidation amount using configured strategy
+   - Validates profitability (considering gas costs and profit margin)
+5. **Swap Execution**: If needed, swaps assets to obtain borrow asset
+6. **Liquidation**: Sends `ft_transfer_call` to trigger liquidation
+7. **Logging**: Records all attempts with success/failure details
 
-- Deciding on whether the liquidation should happen or not (This calculation should be implemented by the liquidator according to their specific strategy or requirements.)
+### Liquidation Strategies
 
-```rust
-#[instrument(skip(self), level = "debug")]
-pub async fn should_liquidate(
-    &self,
-    swap_amount: U128,
-    liquidation_amount: U128,
-) -> LiquidatorResult<bool> {
-    // TODO: Calculate optimal liquidation amount
-    // For purposes of this example implementation we will just use the minimum acceptable
-    // liquidation amount.
-    // Costs to take into account here are:
-    //  - Gas fees
-    //  - Price impact
-    //  - Slippage
-    // All of this would be used in calculating both the optimal liquidation amount and wether to
-    // perform full or partial liquidation
-    Ok(true)
-}
-```
+#### Partial Liquidation (Default)
 
-- Sending the `ft_transfer_call` RPC call to the borrow asset contract to trigger liquidation.
-- Handling errors and retries for failed liquidation attempts.
-- Logging the results of each liquidation attempt for monitoring and debugging purposes.
+Liquidates a percentage of the position (default: 50%):
+- Reduces market impact
+- Lower gas costs (~40-60% savings)
+- Allows multiple liquidators to participate
+- More gradual approach to underwater positions
 
-## Key snippets
+#### Full Liquidation
 
-### Getting a market configuration
+Liquidates the entire position:
+- Maximizes immediate profit
+- Clears position completely
+- Higher gas costs
+- More aggressive approach
+
+### Swap Providers
+
+#### Rhea Finance
+
+Production-ready DEX integration:
+- Concentrated liquidity pools (DCL)
+- Configurable fee tiers (default: 0.2%)
+- NEP-141 token support
+- Contract: `dclv2.ref-finance.near` (mainnet), `dclv2.ref-dev.testnet` (testnet)
+
+#### NEAR Intents
+
+Cross-chain swap integration:
+- Solver network for best execution
+- 120+ assets across 20+ chains
+- NEP-141 and NEP-245 support
+- HTTP JSON-RPC to Defuse Protocol solver relay
+- Contract: `intents.near` (mainnet), `intents.testnet` (testnet)
+
+### Code Examples
+
+#### Fetching Market Configuration
 
 ```rust
-#[instrument(skip(self), level = "debug")]
 async fn get_configuration(&self) -> LiquidatorResult<MarketConfiguration> {
     view(
         &self.client,
@@ -152,12 +151,9 @@ async fn get_configuration(&self) -> LiquidatorResult<MarketConfiguration> {
 }
 ```
 
-The liquidator will fetch the configuration for the given market in order to asses how to run the liquidations (i.e. which price oracle to query, which assets to send/swap...).
-
-### Getting oracle prices
+#### Fetching Oracle Prices
 
 ```rust
-#[instrument(skip(self), level = "debug")]
 async fn get_oracle_prices(
     &self,
     oracle: AccountId,
@@ -175,156 +171,49 @@ async fn get_oracle_prices(
 }
 ```
 
-The liquidator will fetch the price data from the oracle contract in order to execute the liquidation and gauge whether the liquidation is profitable.
+#### Calculating Liquidation Amount
 
-### Fetching deployed markets
+The strategy determines how much to liquidate based on:
+1. Market's maximum liquidatable amount
+2. Strategy percentage (for partial liquidations)
+3. Available balance in bot's wallet
+4. Economic viability (minimum 10% of full amount)
+5. Profitability after gas costs
 
 ```rust
-#[instrument(skip(client), level = "debug")]
-pub async fn list_deployments(
-    client: &JsonRpcClient,
-    registry: AccountId,
-    count: Option<u32>,
-    offset: Option<u32>,
-) -> RpcResult<Vec<AccountId>> {
-    let mut all_deployments = Vec::new();
-    let page_size = 500;
-    let mut current_offset = 0;
-
-    loop {
-        let params = json!({
-            "offset": current_offset,
-            "count": page_size,
-        });
-
-        let page =
-            view::<Vec<AccountId>>(client, registry.clone(), "list_deployments", params).await?;
-
-        let fetched = page.len();
-
-        if fetched == 0 {
-            break;
-        }
-
-        all_deployments.extend(page);
-        current_offset += fetched;
-
-        if fetched < page_size {
-            break;
-        }
-    }
-
-    Ok(all_deployments)
-}
-
-#[instrument(skip(client), level = "debug")]
-pub async fn list_all_deployments(
-    client: JsonRpcClient,
-    registries: Vec<AccountId>,
-    concurrency: usize,
-) -> RpcResult<Vec<AccountId>> {
-    let all_markets: Vec<AccountId> = futures::stream::iter(registries)
-        .map(|registry| {
-            let client = client.clone();
-            async move { list_deployments(&client, registry, None, None).await }
-        })
-        .buffer_unordered(concurrency)
-        .try_concat()
-        .await?;
-
-    Ok(all_markets)
-}
+// From strategy.rs
+let liquidation_amount = strategy.calculate_liquidation_amount(
+    position,
+    oracle_response,
+    configuration,
+    available_balance,
+)?;
 ```
 
-The liquidator will periodically fetch all registries for all of their deployments (markets).
-
-### Getting the borrow positions for a market
+#### Profitability Check
 
 ```rust
-#[instrument(skip(self), level = "debug")]
-async fn get_borrows(&self) -> LiquidatorResult<BorrowPositions> {
-    let mut all_positions: BorrowPositions = HashMap::new();
-    let page_size = 100;
-    let mut current_offset = 0;
-
-    loop {
-        let params = json!({
-            "offset": current_offset,
-            "count": page_size,
-        });
-
-        let page = view::<BorrowPositions>(
-            &self.client,
-            self.market.clone(),
-            "list_borrow_positions",
-            params,
-        )
-        .await
-        .map_err(LiquidatorError::ListBorrowPositionsError)?;
-
-        let fetched = page.len();
-
-        if fetched == 0 {
-            break;
-        }
-
-        all_positions.extend(page);
-        current_offset += fetched;
-
-        if fetched < page_size {
-            break;
-        }
-    }
-
-    Ok(all_positions)
-}
-```
-
-The liquidator will query the market contract for all the borrow positions so that we can check each position for status.
-
-### Getting the borrow status
-
-```rust
-#[instrument(skip(self), level = "debug")]
-async fn get_borrow_status(
+// From strategy.rs
+fn should_liquidate(
     &self,
-    borrow: AccountId,
-    oracle_response: &OracleResponse,
-) -> LiquidatorResult<Option<BorrowStatus>> {
-    view(
-        &self.client,
-        self.market.clone(),
-        "get_borrow_status",
-        &json!({
-            "account_id": borrow,
-            "oracle_response": oracle_response,
-        }),
-    )
-    .await
-    .map_err(LiquidatorError::FetchBorrowStatus)
+    swap_input_amount: U128,
+    liquidation_amount: U128,
+    expected_collateral: U128,
+    gas_cost_estimate: U128,
+) -> LiquidatorResult<bool> {
+    // Calculate total cost
+    let total_cost = swap_input_amount.0 + gas_cost_estimate.0;
+
+    // Add profit margin (e.g., 50 bps = 0.5%)
+    let profit_margin_multiplier = 10_000 + self.min_profit_margin_bps as u128;
+    let min_revenue = (total_cost * profit_margin_multiplier) / 10_000;
+
+    // Check if collateral covers cost + margin
+    Ok(expected_collateral.0 >= min_revenue)
 }
 ```
 
-The liquidator chech for the borrow status to know whether to run a liquidation in case of a `BorrowStatus::Liquidation` status.
-
-### Getting a swap quote
-
-```rust
-async fn quote(&self, from: &AccountId, to: &AccountId, amount: U128) -> RpcResult<U128> {
-    let response: QuoteResponse = view(
-        &self.client,
-        self.contract.clone(),
-        "quote_by_output",
-        &QuoteRequest::new(from.clone(), to.clone(), amount),
-    )
-    .await?;
-    Ok(response.amount)
-}
-```
-
-When we need to swap assets, we want to get a quote on the swap for the given value so that we can better calculate the profitability of a liquidation.
-
-### Creating the liquidation transaction
+#### Creating Liquidation Transaction
 
 ```rust
 fn create_transfer_tx(
@@ -341,7 +230,7 @@ fn create_transfer_tx(
 
     Ok(Transaction::V0(TransactionV0 {
         nonce,
-        receiver_id: self.asset.clone(),
+        receiver_id: self.asset.contract_id().clone(),
         block_hash,
         signer_id: self.signer.account_id.clone(),
         public_key: self.signer.public_key().clone(),
@@ -359,6 +248,136 @@ fn create_transfer_tx(
 }
 ```
 
-The liquidator creates a function call for transferring the given amount to the market contract with a `LiquidateMsg` in the `msg` field in order
-to trigger the liquidation as part of the handler for `ft_transfer_call` (which triggers a function call after executing a transfer on the asset
-contract).
+### Deployment Model
+
+**Single Bot Instance per Organization**:
+- One liquidator instance monitors multiple registries
+- Each registry contains multiple markets
+- Balance is shared across all markets
+- Real-time balance queries via `ft_balance_of`
+
+Example topology:
+```
+Single Liquidator Bot
+  ├─> Registry 1 (10 markets)
+  ├─> Registry 2 (15 markets)
+  └─> Registry 3 (8 markets)
+Total: 33 markets monitored
+```
+
+### Balance Management
+
+The bot queries on-chain balance in real-time:
+
+```rust
+// From lib.rs
+async fn get_asset_balance<A: AssetClass>(
+    &self,
+    asset: &FungibleAsset<A>,
+) -> LiquidatorResult<U128> {
+    let balance_action = asset.balance_of_action(&self.signer.get_account_id());
+
+    let balance = view::<U128>(
+        &self.client,
+        asset.contract_id().into(),
+        &balance_action.method_name,
+        args,
+    ).await?;
+
+    Ok(balance)
+}
+```
+
+**Funding the Bot**:
+1. Transfer borrow assets to bot account (e.g., USDC)
+2. Bot automatically checks balance before each liquidation
+3. Receives collateral after successful liquidations
+4. Manually swap collateral back to borrow asset as needed
+
+### Testing
+
+```bash
+# Run all tests
+cargo test -p templar-liquidator
+
+# Run with coverage
+cargo llvm-cov --package templar-liquidator --lib --tests
+
+# Run specific test
+cargo test -p templar-liquidator --lib test_partial_liquidation_strategy
+```
+
+Current test coverage: 37% (68 tests, all passing)
+- Strategy module: 99.32% coverage
+- Appropriate for network-heavy bot
+
+### Building
+
+```bash
+# Build all workspace members
+cargo build -p templar-bots-common -p templar-accumulator -p templar-liquidator --bins
+
+# Build release
+cargo build --release -p templar-liquidator --bin liquidator
+```
+
+### Monitoring
+
+The bot uses structured logging via `tracing`:
+- Set `RUST_LOG=info` for normal operation
+- Set `RUST_LOG=debug` for detailed RPC calls
+- Set `RUST_LOG=trace` for full debugging
+
+Example logs:
+```
+INFO liquidator: Running liquidations for market: market1.testnet
+DEBUG liquidator: Fetching borrow positions
+INFO liquidator: Found 5 positions to check
+INFO liquidator: Position user.testnet is liquidatable
+DEBUG liquidator: Calculated liquidation amount: 1000 USDC
+INFO liquidator: Liquidation successful, received 0.05 BTC collateral
+```
+
+### Error Handling
+
+Comprehensive error types in `LiquidatorError`:
+- RPC errors (network, timeouts)
+- Price oracle errors
+- Swap provider errors
+- Insufficient balance errors
+- Strategy validation errors
+
+Failed liquidations are logged but don't stop the bot - it continues processing other positions.
+
+### Security Considerations
+
+- **Slippage Protection**: Configurable maximum slippage on swaps
+- **Gas Cost Limits**: Prevents unprofitable liquidations
+- **Balance Checks**: Validates sufficient funds before operations
+- **Timeout Handling**: Prevents stuck transactions
+- **Private Key Security**: Use environment variables, never commit keys
+
+### Performance
+
+- **Concurrency**: Default 10 concurrent liquidations
+- **Batching**: Fetches 100 positions per page, 500 markets per registry
+- **Partial Liquidations**: ~40-60% gas savings vs full liquidations
+- **Early Exit**: Profitability checks before expensive swap operations
+
+## Accumulator Bot
+
+(Future documentation - currently basic implementation)
+
+## Common Utilities
+
+The `common` crate provides shared functionality:
+
+- `view()` - Query view methods on contracts
+- `send_tx()` - Send signed transactions with retry logic
+- `get_access_key_data()` - Fetch nonce and block hash for transactions
+- `list_deployments()` - Paginated fetching of market deployments
+- `Network` enum - Mainnet/testnet configuration
+
+## License
+
+MIT License - Same as Templar Protocol
