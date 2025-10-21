@@ -278,7 +278,6 @@ impl Near {
             method_name: "storage_deposit".to_string(),
             args: serde_json::to_vec(&json!({
                 "account_id": account_id,
-                "registration_only": true,
             }))
             .unwrap(),
             gas: STORAGE_DEPOSIT_GAS,

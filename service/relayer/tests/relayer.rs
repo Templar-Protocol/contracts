@@ -12,7 +12,7 @@ use near_primitives::{
     },
     views::TxExecutionStatus,
 };
-use near_sdk::{json_types::U64, NearToken};
+use near_sdk::{json_types::U64, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Account, Worker};
 use p256::elliptic_curve::rand_core::OsRng;
 use rstest::{fixture, rstest};
@@ -36,7 +36,7 @@ use templar_universal_account::{
         self,
         data::{AuthenticatorData, ClientDataJson},
         with_raw_string::WithRawString,
-        Passkey, Payload, UncheckedMessage,
+        Passkey, Payload,
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
@@ -53,6 +53,55 @@ struct InitTest {
     ua_deployer: RegistryController,
     borrow_user: Account,
     relay_user: Account,
+}
+
+fn create_message<T: near_sdk::serde::Serialize>(
+    secret_key: &p256::SecretKey,
+    account_id: AccountId,
+    parameters: ExecutionParameters,
+    payload: T,
+) -> passkey::Message<T> {
+    let payload = WithRawString::from_parsed(Payload {
+        parameters,
+        account_id,
+        payload,
+    });
+
+    let challenge = payload.hash().into();
+
+    passkey::UncheckedMessage::new_and_sign(
+        secret_key,
+        payload,
+        AuthenticatorData(Box::new([0xffu8; 32])),
+        WithRawString::from_parsed(ClientDataJson {
+            r#type: "type".to_string(),
+            challenge,
+            origin: "origin".to_string(),
+            cross_origin: None,
+            top_origin: None,
+        }),
+    )
+    .try_into()
+    .unwrap()
+}
+
+fn create_execute_message(
+    secret_key: &p256::SecretKey,
+    account_id: AccountId,
+    parameters: ExecutionParameters,
+    receiver_id: AccountId,
+    actions: impl Into<Box<[transaction::Action]>>,
+) -> passkey::Message<Box<[Transaction]>> {
+    create_message(
+        secret_key,
+        account_id,
+        parameters,
+        vec![Transaction {
+            receiver_id,
+            actions: actions.into(),
+        }]
+        .into_boxed_slice(),
+    )
 }
 
 #[fixture]
@@ -99,6 +148,8 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
             ua_deployer.contract().id().as_ref(),
             "--ua-version-key",
             "v1",
+            "--intents-id",
+            "intents.near",
         ]),
         kill,
     );
@@ -223,14 +274,15 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
     let secret_key = p256::SecretKey::random(&mut OsRng);
     let passkey = Passkey(PublicKey(secret_key.public_key()));
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
+    let message = create_message(
+        &secret_key,
+        ua_deployer.contract().id().clone(),
+        ExecutionParameters {
             block_height: U64(0),
             index: U64(0),
             nonce: U64(0),
         },
-        account_id: ua_deployer.contract().id().clone(),
-        payload: Pow::mine(
+        Pow::mine(
             CreatePasskeyAccount {
                 key: passkey.clone(),
                 block_hash: fetch_nonce.block_hash,
@@ -239,24 +291,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
             10_000,
         )
         .unwrap(),
-    });
-
-    let challenge = payload.hash().into();
-
-    let message: passkey::Message<_> = passkey::UncheckedMessage::new_and_sign(
-        &secret_key,
-        payload,
-        AuthenticatorData(Box::new([0xffu8; 32])),
-        WithRawString::from_parsed(ClientDataJson {
-            r#type: "type".to_string(),
-            challenge,
-            origin: "origin".to_string(),
-            cross_origin: None,
-            top_origin: None,
-        }),
-    )
-    .try_into()
-    .unwrap();
+    );
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
@@ -293,51 +328,36 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     // Send an action to the universal account contract
 
-    let parameters = app
-        .ua_near
-        .load_ua_key(ua_account_id.clone(), KeyId::Passkey(passkey.clone()))
-        .await
-        .unwrap()
-        .unwrap();
+    let load_parameters = async |account_id: AccountId, key: KeyId| {
+        app.ua_near
+            .load_ua_key(account_id, key)
+            .await
+            .unwrap()
+            .unwrap()
+    };
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: parameters.next(),
-        account_id: ua_account_id.clone(),
-        payload: vec![Transaction {
-            receiver_id: c.contract().id().clone(),
-            actions: vec![transaction::FunctionCallAction {
-                function_name: "apply_interest".to_string(),
-                arguments: b"{}".to_vec().into(),
-                amount: NearToken::from_near(0),
-                gas: near_sdk::Gas::from_tgas(250),
-            }
-            .into()]
-            .into(),
-        }]
-        .into(),
-    });
-    let challenge = payload.hash().into();
-    let message: passkey::Message<_> = UncheckedMessage::new_and_sign(
+    let parameters = load_parameters(ua_account_id.clone(), KeyId::Passkey(passkey.clone())).await;
+
+    let message = create_execute_message(
         &secret_key,
-        payload,
-        AuthenticatorData(Box::new([0xff_u8; 32])),
-        WithRawString::from_parsed(ClientDataJson {
-            r#type: "type".to_string(),
-            challenge,
-            origin: "origin".to_string(),
-            cross_origin: None,
-            top_origin: None,
-        }),
-    )
-    .try_into()
-    .unwrap();
+        ua_account_id.clone(),
+        parameters.next(),
+        c.contract().id().clone(),
+        vec![transaction::FunctionCallAction {
+            function_name: "apply_interest".to_string(),
+            arguments: b"{}".to_vec().into(),
+            amount: NearToken::from_near(0),
+            gas: near_sdk::Gas::from_tgas(250),
+        }
+        .into()],
+    );
 
     let response = templar_relayer::route::universal_account::relay::relay(
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
-                key: passkey,
+                key: passkey.clone(),
                 message,
             },
             storage_deposit: HashSet::default(),
@@ -372,4 +392,54 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         .unwrap()
         .into_outcome()
         .assert_success();
+
+    // Test intents.near contract intraction
+    // The actual transaction should fail, because `intents.near` does not
+    // exist on the sandbox blockchain, but the relayer should still send the
+    // transaction.
+
+    let parameters = load_parameters(ua_account_id.clone(), KeyId::Passkey(passkey.clone())).await;
+
+    let message = create_execute_message(
+        &secret_key,
+        ua_account_id.clone(),
+        parameters.next(),
+        "intents.near".parse().unwrap(),
+        vec![transaction::FunctionCallAction {
+            function_name: "add_public_key".to_string(),
+            arguments: b"{}".to_vec().into(),
+            amount: NearToken::from_near(0),
+            gas: near_sdk::Gas::from_tgas(20),
+        }
+        .into()],
+    );
+
+    let response = templar_relayer::route::universal_account::relay::relay(
+        State(app.clone()),
+        Json(UaRelayRequest {
+            account_id: ua_account_id.clone(),
+            args: ExecuteArgs::Passkey {
+                key: passkey.clone(),
+                message,
+            },
+            storage_deposit: HashSet::default(),
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Success(result) = response else {
+        panic!("Should have succeeded: {response:?}");
+    };
+
+    let status = worker
+        .tx_status(
+            TransactionInfo::TransactionId {
+                tx_hash: result.transaction_hash,
+                sender_account_id: ua_account_id.clone(),
+            },
+            TxExecutionStatus::Final,
+        )
+        .await;
+
+    eprintln!("Status: {status:?}");
 }

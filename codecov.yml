@@ -1,0 +1,35 @@
+# Minimal Codecov configuration focused on PR checks
+coverage:
+  precision: 2
+  round: down
+  range: "70...90"
+
+  status:
+    project:
+      default:
+        target: 15%  # Low threshold for unit tests only
+        threshold: 5%
+        base: auto
+
+    patch:
+      default:
+        target: 15%  # Low threshold for new code
+        threshold: 5%
+        only_pulls: true
+
+# PR comment configuration
+comment:
+  layout: "reach,diff,files"
+  behavior: default
+  require_changes: true
+
+# Ignore test files and build artifacts
+ignore:
+  - "target/"
+  - "mock/"
+  - "test-utils/"
+  - "**/*test*"
+  - "**/tests/"
+  - "**/examples/"
+  - "script/"
+  - "docs/"
