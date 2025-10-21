@@ -7,14 +7,14 @@ coverage:
   status:
     project:
       default:
-        target: 25%  # Set low to not block PRs while building coverage
-        threshold: 5%  # Allow larger decreases while stabilizing
+        target: 15%  # Low threshold for unit tests only
+        threshold: 5%
         base: auto
 
     patch:
       default:
-        target: 50%  # Reduced from 85% - encourage coverage but don't block
-        threshold: 10%  # More lenient for new code
+        target: 15%  # Low threshold for new code
+        threshold: 5%
         only_pulls: true
 
 # PR comment configuration
