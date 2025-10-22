@@ -10,9 +10,8 @@ use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
-        Callbacks, Event, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_EXEC_WITHDRAW_READ_GAS,
-        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_POSITION_CHECK_GAS, EXECUTE_WITHDRAW_REQ_GAS,
-        GET_SUPPLY_POSITION_GAS,
+        Event, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_EXEC_WITHDRAW_READ_GAS, AFTER_SEND_TO_USER_GAS,
+        AFTER_SUPPLY_POSITION_CHECK_GAS, EXECUTE_WITHDRAW_REQ_GAS, GET_SUPPLY_POSITION_GAS,
     },
 };
 
@@ -21,19 +20,17 @@ impl Contract {
     #[private]
     pub fn after_supply_1_check(
         &mut self,
-        #[callback_result] accepted: Result<U128, PromiseError>, // NOTE: we probably can't rely on
-        // this as a `true` value of accepted, so we are taking a belt-and-braces approach of
+        // NOTE: we can't rely on this as a `true` value of accepted, so we are taking a belt-and-braces approach of
         // querying the supply position
+        #[callback_result] accepted: Result<U128, PromiseError>,
         op_id: u64,
         market_index: u32,
         attempted: U128,
     ) -> PromiseOrValue<()> {
-        // Invariant: Index drift or stale op_id results in a graceful stop
-        let () = if let Err(e) = self.ctx_allocating(op_id) {
+        if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
         };
 
-        // Resolve market by plan  or supply_queue
         let market = match self.resolve_supply_market(market_index) {
             Ok(m) => m,
             Err(e) => return self.stop_and_exit(Some(&e)),
@@ -82,17 +79,15 @@ impl Contract {
         attempted: U128,
         accepted: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, rem) = match self.ctx_allocating(op_id) {
+        let (i, remaining) = match self.ctx_allocating(op_id) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        // Invariant: Index drift or stale op_id results in a graceful stop
-        if idx != market_index {
-            return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
+        if i != market_index {
+            return self.stop_and_exit(Some(&Error::IndexDrifted(i, market_index)));
         }
 
-        // Resolve market by plan (if present) or supply_queue
         let market = match self.resolve_supply_market(market_index) {
             Ok(m) => m,
             Err(e) => return self.stop_and_exit(Some(&e)),
@@ -102,7 +97,7 @@ impl Contract {
             Ok(Some(position)) => {
                 let new_principal: u128 = position.get_deposit().total().into();
                 let accepted_event = new_principal.saturating_sub(before.0);
-                let remaining = rem.saturating_sub(accepted_event);
+                let remaining = remaining.saturating_sub(accepted_event);
                 (new_principal, accepted_event, remaining)
             }
             Ok(None) => {
@@ -166,14 +161,14 @@ impl Contract {
         market_index: u32,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, rem, recv, coll, owner, escrow_shares) = match self.ctx_withdrawing(op_id) {
-            Ok(v) => v,
-            Err(e) => return self.stop_and_exit(Some(&e)),
-        };
+        let (i, remaining, received, collected, owner, escrow_shares) =
+            match self.ctx_withdrawing(op_id) {
+                Ok(v) => v,
+                Err(e) => return self.stop_and_exit(Some(&e)),
+            };
 
-        // Invariant: Index drift or stale op_id results in a graceful stop
-        if idx != market_index {
-            return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
+        if i != market_index {
+            return self.stop_and_exit(Some(&Error::IndexDrifted(i, market_index)));
         }
 
         let market = match self.resolve_withdraw_market(market_index) {
@@ -181,12 +176,11 @@ impl Contract {
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        if let Ok(()) = did_create {
+        if did_create.is_ok() {
             PromiseOrValue::Promise(
                 ext_market::ext(market.clone())
                     .with_static_gas(EXECUTE_WITHDRAW_REQ_GAS)
-                    // TODO: we can only do this if there is sufficient liquidity in the market, we
-                    // should check that there is first, but even so, we can be rugged
+                    .with_unused_gas_weight(0)
                     .execute_next_supply_withdrawal_request()
                     .then(
                         ext_self::ext(env::current_account_id())
@@ -199,9 +193,9 @@ impl Contract {
             self.op_state = OpState::Withdrawing {
                 op_id,
                 index: market_index + 1,
-                remaining: rem,
-                receiver: recv,
-                collected: coll,
+                remaining: remaining,
+                receiver: received,
+                collected: collected,
                 owner,
                 escrow_shares,
             };
@@ -216,14 +210,13 @@ impl Contract {
         market_index: u32,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, _rem, _recv, _coll, _owner, _escrow_shares) = match self.ctx_withdrawing(op_id) {
+        let (i, _, _, _, _, _) = match self.ctx_withdrawing(op_id) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        // Invariant: Index drift or stale op_id results in a graceful stop
-        if idx != market_index {
-            return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
+        if i != market_index {
+            return self.stop_and_exit(Some(&Error::IndexDrifted(i, market_index)));
         }
 
         let market = match self.resolve_withdraw_market(market_index) {
@@ -255,13 +248,14 @@ impl Contract {
         before: U128,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (idx, rem, recv, coll, owner, escrow_shares) = match self.ctx_withdrawing(op_id) {
-            Ok(v) => v,
-            Err(e) => return self.stop_and_exit(Some(&e)),
-        };
+        let (i, remaining, received, collected, owner, escrow_shares) =
+            match self.ctx_withdrawing(op_id) {
+                Ok(v) => v,
+                Err(e) => return self.stop_and_exit(Some(&e)),
+            };
 
-        if idx != market_index {
-            return self.stop_and_exit(Some(&Error::IndexDrifted(idx, market_index)));
+        if i != market_index {
+            return self.stop_and_exit(Some(&Error::IndexDrifted(i, market_index)));
         }
 
         let market = match self.resolve_withdraw_market(market_index) {
@@ -277,15 +271,6 @@ impl Contract {
             }
             Ok(None) => {
                 // No position => treat as principal = 0
-                // NOTE: this is a successful withdraw
-                Event::WithdrawalPositionMissing {
-                    op_id: op_id.into(),
-                    market: market.clone(),
-                    index: market_index,
-                    before: U128(before_principal),
-                    need,
-                }
-                .emit();
                 0
             }
             Err(_) => {
@@ -301,10 +286,14 @@ impl Contract {
             }
         };
 
-        let (credited, remaining, collected, idle_delta) =
-            self.reconcile_withdraw_outcome(before_principal, new_principal, need.0, rem, coll);
+        let (_credited, remaining, collected, idle_delta) = self.reconcile_withdraw_outcome(
+            before_principal,
+            new_principal,
+            need.0,
+            remaining,
+            collected,
+        );
 
-        // Update accounting to match market state
         self.market_supply.insert(market.clone(), new_principal);
         if idle_delta > 0 {
             self.idle_balance = self.idle_balance.saturating_add(idle_delta);
@@ -314,7 +303,7 @@ impl Contract {
             if collected > 0 {
                 self.op_state = OpState::Payout {
                     op_id,
-                    receiver: recv.clone(),
+                    receiver: received.clone(),
                     amount: collected,
                     owner: owner.clone(),
                     escrow_shares,
@@ -323,16 +312,17 @@ impl Contract {
                 PromiseOrValue::Promise(
                     self.underlying_asset
                         .clone()
-                        .transfer(recv.clone(), U128(collected).into())
+                        .transfer(received.clone(), U128(collected).into())
                         .then(
                             ext_self::ext(env::current_account_id())
                                 .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .after_send_to_user(op_id, recv, U128(collected)),
+                                .after_send_to_user(op_id, received, U128(collected)),
                         ),
                 )
             } else {
                 // Nothing collected; refund escrowed shares
                 let self_id = env::current_account_id();
+                // We expect the owner to maintain storage accounts, otherwise they will lose access to their funds
                 self.transfer_unchecked(&self_id, &owner, escrow_shares)
                     .expect("Failed to refund escrowed shares");
                 self.op_state = OpState::Idle;
@@ -343,7 +333,7 @@ impl Contract {
                 op_id,
                 index: market_index + 1,
                 remaining,
-                receiver: recv,
+                receiver: received,
                 collected,
                 owner,
                 escrow_shares,
@@ -360,16 +350,16 @@ impl Contract {
         receiver: AccountId,
         amount: U128,
     ) -> bool {
-        let (owner, escrow_shares, payout_amount, burn_shares) = match &self.op_state {
+        let (owner, escrow_shares, amount, burn_shares) = match &self.op_state {
             OpState::Payout {
-                op_id: cur,
-                receiver: r,
-                amount: a,
+                op_id: current_op,
+                receiver: recv,
+                amount,
                 owner,
                 escrow_shares,
                 burn_shares,
-            } if *cur == op_id && *r == receiver => {
-                (owner.clone(), *escrow_shares, *a, *burn_shares)
+            } if *current_op == op_id && *recv == receiver => {
+                (owner.clone(), *escrow_shares, *amount, *burn_shares)
             }
             _ => {
                 Event::PayoutUnexpectedState {
@@ -382,10 +372,10 @@ impl Contract {
             }
         };
 
-        if let Ok(()) = result {
-            // Invariant: On payout success, idle_balance -= payout_amount.
+        if result.is_ok() {
+            // On payout success, idle_balance -= payout_amount.
             // Burn only the proportional shares and refund the remainder to the owner.
-            self.idle_balance = self.idle_balance.saturating_sub(payout_amount);
+            self.idle_balance = self.idle_balance.saturating_sub(amount);
             let EscrowSettlement { to_burn, refund } =
                 Self::compute_escrow_settlement(escrow_shares, burn_shares);
             if to_burn > 0 {
@@ -400,7 +390,7 @@ impl Contract {
             self.op_state = OpState::Idle;
             true
         } else {
-            // Invariant: On payout failure, refund full escrow to owner and leave idle_balance unchanged
+            // On payout failure, refund full escrow to owner and leave idle_balance unchanged
             #[allow(clippy::expect_used, reason = "No side effects")]
             self.transfer_unchecked(&env::current_account_id(), &owner, escrow_shares)
                 .unwrap_or_else(|e| env::panic_str(&e.to_string()));
@@ -442,7 +432,7 @@ impl Contract {
 }
 
 impl Contract {
-    fn stop_and_exit_allocating<T: Display + core::fmt::Debug + ?Sized>(
+    pub fn stop_and_exit_allocating<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
     ) {
@@ -452,7 +442,6 @@ impl Contract {
             remaining,
         } = &self.op_state
         {
-            // Emit completion vs stop event before reconciling remaining
             match msg {
                 None => {
                     Event::AllocationCompleted { op_id: *op_id }.emit();
@@ -477,7 +466,7 @@ impl Contract {
     }
 
     /// Stop helper for Withdrawing: refund escrowed shares to owner and go Idle.
-    fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
+    pub fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
     ) {
@@ -501,27 +490,27 @@ impl Contract {
             }
             .emit();
         }
-        let (owner_acc, escrow) = match &self.op_state {
+        if let Some((owner_acc, escrow)) = match &self.op_state {
             OpState::Withdrawing {
                 owner,
                 escrow_shares,
                 ..
-            } => (Some(owner.clone()), *escrow_shares),
-            _ => (None, 0),
-        };
-        if let (Some(owner_acc), escrow) = (owner_acc, escrow) {
-            if escrow > 0 {
-                let self_id = env::current_account_id();
-                #[allow(clippy::expect_used, reason = "No side effects")]
-                self.transfer_unchecked(&self_id, &owner_acc, escrow)
-                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-            }
+            } if *escrow_shares > 0 => Some((owner.clone(), *escrow_shares)),
+            _ => None,
+        } {
+            let self_id = env::current_account_id();
+            #[allow(clippy::expect_used, reason = "No side effects")]
+            self.transfer_unchecked(&self_id, &owner_acc, escrow)
+                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
         }
         self.op_state = OpState::Idle;
     }
 
-    /// Payout: refund escrowed shares to owner and go Idle.
-    fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(&mut self, msg: Option<&T>) {
+    /// refund escrowed shares to owner and go Idle.
+    pub fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(
+        &mut self,
+        msg: Option<&T>,
+    ) {
         {
             if let OpState::Payout {
                 op_id,
@@ -539,17 +528,16 @@ impl Contract {
                 .emit();
             }
         }
-        let (owner_acc, escrow) = match &self.op_state {
-            OpState::Payout {
-                owner,
-                escrow_shares,
-                ..
-            } => (Some(owner.clone()), *escrow_shares),
-            _ => (None, 0),
-        };
-        if let (Some(owner_acc), escrow) = (owner_acc, escrow) {
-            if escrow > 0 {
+        if let OpState::Payout {
+            owner,
+            escrow_shares,
+            ..
+        } = &self.op_state
+        {
+            if *escrow_shares > 0 {
                 let self_id = env::current_account_id();
+                let owner_acc = owner.clone();
+                let escrow = *escrow_shares;
                 #[allow(clippy::expect_used, reason = "No side effects")]
                 self.transfer_unchecked(&self_id, &owner_acc, escrow)
                     .unwrap_or_else(|e| env::panic_str(&e.to_string()));
