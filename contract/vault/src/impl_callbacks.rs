@@ -15,6 +15,15 @@ use templar_common::{
     },
 };
 
+/// State machine:
+///
+/// - Allocating -> Withdrawing (or Idle via stop)
+/// - Withdrawing -> Withdrawing (advance) | Payout | Idle (refund)
+/// - Payout -> Idle (success or failure)
+///
+/// Invariants:
+/// - idle_balance increases only when funds are received and decreases only on payout success.
+/// - escrow_shares are refunded on stop/failure or partially burned/refunded on payout success.
 #[near]
 impl Contract {
     #[private]
@@ -36,37 +45,39 @@ impl Contract {
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        // If the transfer failed, do not attempt to reconcile; stop and leave remaining untouched
-        if accepted.is_err() {
-            Event::AllocationTransferFailed {
-                op_id: op_id.into(),
-                index: market_index,
-                market: market.clone(),
-                attempted,
+        match accepted {
+            Err(_) => {
+                Event::AllocationTransferFailed {
+                    op_id: op_id.into(),
+                    index: market_index,
+                    market: market.clone(),
+                    attempted,
+                }
+                .emit();
+                self.stop_and_exit(Some(&Error::MarketTransferFailed))
             }
-            .emit();
-            return self.stop_and_exit(Some(&Error::MarketTransferFailed));
-        }
+            Ok(accepted) => {
+                let before = self.market_supply.get(&market).unwrap_or(&0);
 
-        let before = self.market_supply.get(&market).unwrap_or(&0);
-
-        PromiseOrValue::Promise(
-            ext_market::ext(market.clone())
-                .with_static_gas(GET_SUPPLY_POSITION_GAS)
-                .with_unused_gas_weight(0)
-                .get_supply_position(env::current_account_id())
-                .then(
-                    ext_self::ext(env::current_account_id())
-                        .with_static_gas(AFTER_SUPPLY_POSITION_CHECK_GAS)
-                        .after_supply_2_read(
-                            op_id,
-                            market_index,
-                            U128(*before),
-                            attempted,
-                            accepted.unwrap_or(U128(0)),
+                PromiseOrValue::Promise(
+                    ext_market::ext(market.clone())
+                        .with_static_gas(GET_SUPPLY_POSITION_GAS)
+                        .with_unused_gas_weight(0)
+                        .get_supply_position(env::current_account_id())
+                        .then(
+                            ext_self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_SUPPLY_POSITION_CHECK_GAS)
+                                .after_supply_2_read(
+                                    op_id,
+                                    market_index,
+                                    U128(*before),
+                                    attempted,
+                                    accepted,
+                                ),
                         ),
-                ),
-        )
+                )
+            }
+        }
     }
 
     #[private]
@@ -79,7 +90,7 @@ impl Contract {
         attempted: U128,
         accepted: U128,
     ) -> PromiseOrValue<()> {
-        let (i, remaining) = match self.ctx_allocating(op_id) {
+        let (i, remaining_ctx) = match self.ctx_allocating(op_id) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
@@ -96,12 +107,12 @@ impl Contract {
         let SupplyReconciliation {
             new_principal,
             accepted_event,
-            remaining,
+            remaining: remaining_next,
         } = match position {
             Ok(Some(position)) => reconcile_supply_outcome(
                 &position.get_deposit().total().into(),
                 &before.0,
-                &remaining,
+                &remaining_ctx,
             ),
             Ok(None) => {
                 Event::AllocationPositionMissing {
@@ -137,7 +148,7 @@ impl Contract {
             accepted: U128(accepted_event),
             attempted,
             refunded: U128(refunded),
-            remaining_after: U128(remaining),
+            remaining_after: U128(remaining_next),
         }
         .emit();
 
@@ -151,7 +162,7 @@ impl Contract {
         self.op_state = OpState::Allocating {
             op_id,
             index: market_index + 1,
-            remaining,
+            remaining: remaining_next,
         };
         self.step_allocation()
     }
@@ -192,7 +203,13 @@ impl Contract {
                     ),
             )
         } else {
-            env::log_str("create_supply_withdrawal_request failed; moving to next market");
+            Event::CreateWithdrawalFailed {
+                op_id: op_id.into(),
+                market: market.clone(),
+                index: i,
+                need: need,
+            }
+            .emit();
             self.op_state = OpState::Withdrawing {
                 op_id,
                 index: market_index + 1,
@@ -242,6 +259,12 @@ impl Contract {
         )
     }
 
+    /// Cash flow:
+    /// - Reconcile market position to compute 'credited' (funds returned from market).
+    /// - Increment idle_balance by credited to reflect funds now held by the vault.
+    /// - If remaining == 0, transition to Payout; otherwise continue Withdrawing on next market.
+    /// - Later in after_send_to_user, idle_balance is decremented on successful transfer to the user.
+    /// - On transfer failure, idle_balance stays unchanged and escrowed shares are refunded to the owner.
     #[private]
     pub fn after_exec_withdraw_read(
         &mut self,
@@ -251,7 +274,7 @@ impl Contract {
         before: U128,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (i, remaining, receiver, collected, owner, escrow_shares) =
+        let (i, remaining_ctx, receiver, collected_ctx, owner, escrow_shares) =
             match self.ctx_withdrawing(op_id) {
                 Ok(v) => v,
                 Err(e) => return self.stop_and_exit(Some(&e)),
@@ -289,25 +312,26 @@ impl Contract {
             }
         };
 
-        let (_credited, remaining, collected, idle_delta) = self.reconcile_withdraw_outcome(
-            before_principal,
-            new_principal,
-            need.0,
-            remaining,
-            collected,
-        );
+        let (_credited, remaining_next, collected_next, idle_delta) = self
+            .reconcile_withdraw_outcome(
+                before_principal,
+                new_principal,
+                need.0,
+                remaining_ctx,
+                collected_ctx,
+            );
 
         self.market_supply.insert(market.clone(), new_principal);
         if idle_delta > 0 {
             self.idle_balance = self.idle_balance.saturating_add(idle_delta);
         }
 
-        if remaining == 0 {
-            if collected > 0 {
+        if remaining_next == 0 {
+            if collected_next > 0 {
                 self.op_state = OpState::Payout {
                     op_id,
                     receiver: receiver.clone(),
-                    amount: collected,
+                    amount: collected_next,
                     owner: owner.clone(),
                     escrow_shares,
                     burn_shares: escrow_shares,
@@ -315,11 +339,11 @@ impl Contract {
                 PromiseOrValue::Promise(
                     self.underlying_asset
                         .clone()
-                        .transfer(receiver.clone(), U128(collected).into())
+                        .transfer(receiver.clone(), U128(collected_next).into())
                         .then(
                             ext_self::ext(env::current_account_id())
                                 .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .after_send_to_user(op_id, receiver, U128(collected)),
+                                .after_send_to_user(op_id, receiver, U128(collected_next)),
                         ),
                 )
             } else {
@@ -335,9 +359,9 @@ impl Contract {
             self.op_state = OpState::Withdrawing {
                 op_id,
                 index: market_index + 1,
-                remaining,
+                remaining: remaining_next,
                 receiver: receiver,
-                collected,
+                collected: collected_next,
                 owner,
                 escrow_shares,
             };
@@ -345,6 +369,10 @@ impl Contract {
         }
     }
 
+    /// Cash flow:
+    /// - Runs in Payout context after funds were credited in after_exec_withdraw_read.
+    /// - On success: idle_balance -= amount; burn a portion of escrow_shares and refund the rest to the owner.
+    /// - On failure: refund full escrow_shares to the owner and keep idle_balance unchanged (funds remain in vault).
     #[private]
     pub fn after_send_to_user(
         &mut self,
@@ -421,16 +449,12 @@ impl Contract {
                 return PromiseOrValue::Value(());
             }
         };
-        if amount == 0 {
-            PromiseOrValue::Value(())
-        } else {
-            PromiseOrValue::Promise(
-                ext_ft_core::ext(token)
-                    .with_attached_deposit(NearToken::from_yoctonear(1))
-                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
-                    .ft_transfer(recipient, U128(amount), None),
-            )
-        }
+        PromiseOrValue::Promise(
+            ext_ft_core::ext(token)
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                .ft_transfer(recipient, U128(amount), None),
+        )
     }
 }
 
@@ -559,7 +583,7 @@ impl Contract {
             OpState::Payout { .. } => self.stop_and_exit_payout(msg),
             OpState::Idle => {
                 Event::OperationStoppedWhileIdle {
-                    reason: msg.map(|m| format!("{m:?}")),
+                    reason: msg.map(std::string::ToString::to_string),
                 }
                 .emit();
                 self.op_state = OpState::Idle;
@@ -682,6 +706,7 @@ mod tests {
     use near_sdk::test_utils::accounts;
     use near_sdk::PromiseOrValue;
     use near_sdk::PromiseResult;
+    use near_sdk_contract_tools::ft::Nep141 as _;
     use rstest::rstest;
 
     use crate::Contract;
@@ -1544,19 +1569,23 @@ mod tests {
             burn_shares: 0,
         };
 
-        let supply_before = c.total_supply();
-        let vault_before = c.balance_of(&near_sdk::env::current_account_id());
-        let owner_before = c.balance_of(&owner);
+        let supply_before = c.ft_total_supply();
+        let vault_before = c.ft_balance_of(near_sdk::env::current_account_id());
+        let owner_before = c.ft_balance_of(owner.clone());
 
         c.stop_and_exit_payout::<&str>(None);
 
         assert!(matches!(c.op_state, OpState::Idle));
-        assert_eq!(c.total_supply(), supply_before, "No supply change");
+        assert_eq!(c.ft_total_supply(), supply_before, "No supply change");
         assert_eq!(
-            c.balance_of(&near_sdk::env::current_account_id()),
+            c.ft_balance_of(near_sdk::env::current_account_id()),
             vault_before,
             "Vault balance unchanged"
         );
-        assert_eq!(c.balance_of(&owner), owner_before, "Owner balance unchanged");
+        assert_eq!(
+            c.ft_balance_of(owner),
+            owner_before,
+            "Owner balance unchanged"
+        );
     }
 }
