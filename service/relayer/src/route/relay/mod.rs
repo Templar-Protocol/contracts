@@ -61,10 +61,15 @@ pub async fn relay(
             };
         }
 
+        let storage_deposit = storage_balance_bounds
+            .min
+            .saturating_mul(app.args.relay.storage_deposit_multiplier_cents)
+            .saturating_div(100);
+
         let Some(cost_of_gas) = app
             .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
             .await
-            .map(|amount| amount.saturating_add(storage_balance_bounds.min))
+            .map(|amount| amount.saturating_add(storage_deposit))
         else {
             return SimpleResponse::Failure {
                 error: "Failed to estimate gas cost".to_string(),
@@ -77,7 +82,7 @@ pub async fn relay(
                 &app.cache,
                 account_id.clone(),
                 contract_id,
-                storage_balance_bounds.min,
+                storage_deposit,
             )
             .await;
 
@@ -85,7 +90,7 @@ pub async fn relay(
             .send_and_resolve_transaction(
                 account_id.clone(),
                 cost_of_gas,
-                storage_balance_bounds.min,
+                storage_deposit,
                 signed_transaction,
                 TxExecutionStatus::Final,
             )
