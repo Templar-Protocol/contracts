@@ -1481,4 +1481,82 @@ mod tests {
         assert_eq!(out.accepted_event, 5);
         assert_eq!(out.remaining, 0);
     }
+
+    #[rstest]
+    fn stop_and_exit_payout_refunds_and_idle(
+        mut c: Contract,
+        owner: AccountId,
+        receiver: AccountId,
+    ) {
+        use near_sdk_contract_tools::ft::Nep141Controller as _;
+        let escrow: u128 = 10;
+
+        // Seed escrowed shares into the vault's own account
+        c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+            .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
+
+        // Enter Payout with non-zero escrow
+        c.op_state = OpState::Payout {
+            op_id: 123,
+            receiver: receiver.clone(),
+            amount: 77,
+            owner: owner.clone(),
+            escrow_shares: escrow,
+            burn_shares: escrow,
+        };
+
+        let supply_before = c.total_supply();
+        let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+        let owner_before = c.balance_of(&owner);
+        let idle_before = c.idle_balance;
+
+        c.stop_and_exit_payout::<&str>(Some(&"reason"));
+
+        // Escrow refunded, no burn, vault goes Idle
+        assert!(matches!(c.op_state, OpState::Idle));
+        assert_eq!(c.total_supply(), supply_before, "No burn/mint on stop");
+        assert_eq!(
+            c.balance_of(&near_sdk::env::current_account_id()),
+            vault_before.saturating_sub(escrow),
+            "Vault should transfer escrow to owner"
+        );
+        assert_eq!(
+            c.balance_of(&owner),
+            owner_before.saturating_add(escrow),
+            "Owner should receive escrow refund"
+        );
+        assert_eq!(c.idle_balance, idle_before, "Idle balance unchanged");
+    }
+
+    #[rstest]
+    fn stop_and_exit_payout_zero_escrow_just_idle(
+        mut c: Contract,
+        owner: AccountId,
+        receiver: AccountId,
+    ) {
+        // Enter Payout with zero escrow; no transfers should occur
+        c.op_state = OpState::Payout {
+            op_id: 7,
+            receiver,
+            amount: 1,
+            owner: owner.clone(),
+            escrow_shares: 0,
+            burn_shares: 0,
+        };
+
+        let supply_before = c.total_supply();
+        let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+        let owner_before = c.balance_of(&owner);
+
+        c.stop_and_exit_payout::<&str>(None);
+
+        assert!(matches!(c.op_state, OpState::Idle));
+        assert_eq!(c.total_supply(), supply_before, "No supply change");
+        assert_eq!(
+            c.balance_of(&near_sdk::env::current_account_id()),
+            vault_before,
+            "Vault balance unchanged"
+        );
+        assert_eq!(c.balance_of(&owner), owner_before, "Owner balance unchanged");
+    }
 }
