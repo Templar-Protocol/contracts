@@ -823,13 +823,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn after_exec_withdraw_read_none_to_payout() {
-        let vault_id = accounts(0);
-        setup_env(&vault_id, &vault_id, vec![]);
-
-        let mut c = new_test_contract(&vault_id);
-
+    #[rstest]
+    fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         // Prepare a single-market withdraw queue with non-zero principal
         let market = mk(8);
         c.withdraw_queue.push(market.clone());
@@ -1311,12 +1306,12 @@ mod tests {
         assert!(matches!(c.op_state, OpState::Idle));
     }
 
-    #[test]
-    fn after_create_withdraw_req_success_returns_promise() {
-        let vault_id = accounts(0);
-        setup_env(&vault_id, &vault_id, vec![]);
-        let mut c = new_test_contract(&vault_id);
-
+    #[rstest]
+    fn after_create_withdraw_req_success_returns_promise(
+        mut c: Contract,
+        receiver: AccountId,
+        owner: AccountId,
+    ) {
         let market = mk(50);
         c.withdraw_queue.push(market.clone());
         c.market_supply.insert(market.clone(), 100);
@@ -1325,9 +1320,9 @@ mod tests {
             op_id: 21,
             index: 0,
             remaining: 60,
-            receiver: mk(9),
+            receiver: receiver.clone(),
             collected: 10,
-            owner: accounts(1),
+            owner: owner.clone(),
             escrow_shares: 5,
         };
 
@@ -1340,12 +1335,8 @@ mod tests {
         assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
     }
 
-    #[test]
-    fn after_exec_withdraw_req_returns_promise() {
-        let vault_id = accounts(0);
-        setup_env(&vault_id, &vault_id, vec![]);
-        let mut c = new_test_contract(&vault_id);
-
+    #[rstest]
+    fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         let market = mk(60);
         c.withdraw_queue.push(market.clone());
         c.market_supply.insert(market.clone(), 10);
@@ -1368,12 +1359,12 @@ mod tests {
         assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
     }
 
-    #[test]
-    fn after_exec_withdraw_read_advances_when_remaining() {
-        let vault_id = accounts(0);
-        setup_env(&vault_id, &vault_id, vec![]);
-        let mut c = new_test_contract(&vault_id);
-
+    #[rstest]
+    fn after_exec_withdraw_read_advances_when_remaining(
+        mut c: Contract,
+        owner: AccountId,
+        receiver: AccountId,
+    ) {
         // Two markets; first has principal to withdraw
         let m1 = mk(70);
         let m2 = mk(71);
@@ -1381,8 +1372,6 @@ mod tests {
         c.withdraw_queue.push(m2.clone());
         c.market_supply.insert(m1.clone(), 10);
 
-        let owner = accounts(1);
-        let receiver = mk(9);
         c.op_state = OpState::Withdrawing {
             op_id: 0,
             index: 0,
@@ -1424,12 +1413,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stop_and_exit_when_idle_emits_and_stays_idle() {
-        let vault_id = accounts(0);
-        setup_env(&vault_id, &vault_id, vec![]);
-        let mut c = new_test_contract(&vault_id);
-
+    #[rstest]
+    fn stop_and_exit_when_idle_emits_and_stays_idle(mut c: Contract) {
         // Already Idle; ensure branch is executed
         c.op_state = OpState::Idle;
 
