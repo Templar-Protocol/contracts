@@ -16,10 +16,48 @@ use near_sdk::{json_types::U128, AccountId};
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
-use rstest::rstest;
+use rstest::{rstest, fixture};
 use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::{AllocationMode, DepositMsg};
+
+#[fixture]
+fn vault_id_fixture() -> AccountId {
+    accounts(0)
+}
+
+#[fixture]
+fn c_vault_env(vault_id_fixture: AccountId) -> Contract {
+    setup_env(&vault_id_fixture, &vault_id_fixture, vec![]);
+    new_test_contract(&vault_id_fixture)
+}
+
+#[fixture]
+fn c_owner_env(vault_id_fixture: AccountId) -> Contract {
+    let mut c = new_test_contract(&vault_id_fixture);
+    let owner = c
+        .own_get_owner()
+        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+    setup_env(&vault_id_fixture, &owner, vec![]);
+    c
+}
+
+#[fixture]
+fn c_asset_env(vault_id_fixture: AccountId) -> Contract {
+    let mut c = new_test_contract(&vault_id_fixture);
+    let asset: AccountId = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id_fixture, &asset, vec![]);
+    c
+}
+
+#[fixture]
+fn enabled_market_100() -> (AccountId, MarketConfiguration) {
+    let m = mk(9001);
+    let mut cfg = MarketConfiguration::default();
+    cfg.cap = U128(100);
+    cfg.enabled = true;
+    (m, cfg)
+}
 
 #[rstest(len => [2usize, 3, 5])]
 #[should_panic = "Duplicate market"]
@@ -67,11 +105,9 @@ fn prop_withdraw_queue_mustnt_have_duplicates(len: usize) {
     c.set_withdraw_queue(queue);
 }
 
-#[test]
-fn fee_accrues_only_on_growth_unit() {
-    let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-    let mut c = new_test_contract(&vault_id);
+#[rstest]
+fn fee_accrues_only_on_growth_unit(mut c_vault_env: Contract) {
+    let mut c = c_vault_env;
 
     // Seed total supply so fees can mint
     let user = accounts(1);
@@ -104,11 +140,11 @@ fn fee_accrues_only_on_growth_unit() {
     );
 }
 
-#[test]
-fn payout_success_burns_only_proportional_escrow_and_refunds_remainder() {
-    let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-    let mut c = new_test_contract(&vault_id);
+#[rstest]
+fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(
+    mut c_vault_env: Contract,
+) {
+    let mut c = c_vault_env;
 
     let receiver = mk(7);
     let owner = accounts(1);
@@ -140,14 +176,13 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder() {
     assert!(matches!(c.op_state, OpState::Idle));
 }
 
-#[test]
-fn execute_next_withdrawal_request_skips_holes() {
+#[rstest]
+fn execute_next_withdrawal_request_skips_holes(mut c_owner_env: Contract) {
+    let mut c = c_owner_env;
     let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
     let owner = c
         .own_get_owner()
         .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
-    setup_env(&vault_id, &owner, vec![]);
 
     println!("vault_id: {vault_id}");
     println!("owner: {owner}");
@@ -226,11 +261,9 @@ fn set_withdraw_queue_must_include_all_holding() {
     c.set_withdraw_queue(vec![m2]);
 }
 
-#[test]
-fn execute_supply_wrong_token_refunds_full() {
-    let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-    let mut c = new_test_contract(&vault_id);
+#[rstest]
+fn execute_supply_wrong_token_refunds_full(mut c_vault_env: Contract) {
+    let mut c = c_vault_env;
 
     let sender = accounts(1);
     let wrong_token: AccountId = "wrong.token".parse().unwrap();
@@ -267,11 +300,9 @@ fn set_withdraw_queue_must_include_all_enabled() {
     c.set_withdraw_queue(vec![m2]);
 }
 
-#[test]
-fn start_allocation_reserves_only_amount() {
-    let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-    let mut c = new_test_contract(&vault_id);
+#[rstest]
+fn start_allocation_reserves_only_amount(mut c_vault_env: Contract) {
+    let mut c = c_vault_env;
 
     // Configure a single market with cap = 80 in the supply queue
     let m1 = mk(2000);
@@ -1035,23 +1066,14 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
     );
 }
 
-#[test]
-fn ft_on_transfer_supply_accepts_full_and_mints_shares() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let asset = c.underlying_asset.contract_id().into();
-    setup_env(&vault_id, &asset, vec![]);
-
-    // Prevent eager allocation from firing in this test
-    c.mode = AllocationMode::Eager {
-        min_batch: U128(u128::MAX),
-    };
-
-    // Setup a market so max_deposit > 0
-    let m = mk(9001);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(100);
-    cfg.enabled = true;
+#[rstest]
+fn ft_on_transfer_supply_accepts_full_and_mints_shares(
+    mut c_asset_env: Contract,
+    enabled_market_100: (AccountId, MarketConfiguration),
+) {
+    let mut c = c_asset_env;
+    c.mode = AllocationMode::Eager { min_batch: U128(u128::MAX) };
+    let (m, cfg) = enabled_market_100;
     c.config.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
@@ -1088,21 +1110,15 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares() {
     );
 }
 
-#[test]
-fn ft_on_transfer_supply_partial_refund_when_capped() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let asset = c.underlying_asset.contract_id().into();
-    setup_env(&vault_id, &asset, vec![]);
-
-    c.mode = AllocationMode::Eager {
-        min_batch: U128(u128::MAX),
-    };
-
-    let m = mk(9002);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(50); // cap < deposit
-    cfg.enabled = true;
+#[rstest]
+fn ft_on_transfer_supply_partial_refund_when_capped(
+    mut c_asset_env: Contract,
+    enabled_market_100: (AccountId, MarketConfiguration),
+) {
+    let mut c = c_asset_env;
+    c.mode = AllocationMode::Eager { min_batch: U128(u128::MAX) };
+    let (m, mut cfg) = enabled_market_100;
+    cfg.cap = U128(50); // override cap for this case
     c.config.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
@@ -1181,17 +1197,15 @@ fn ft_on_transfer_invalid_msg_panics() {
     let _ = c.ft_on_transfer(accounts(4), U128(10), "not-json".into());
 }
 
-#[test]
-fn ft_on_transfer_zero_amount_returns_zero_refund() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &vault_id, vec![]);
+#[rstest]
+fn ft_on_transfer_zero_amount_returns_zero_refund(
+    mut c_vault_env: Contract,
+    enabled_market_100: (AccountId, MarketConfiguration),
+) {
+    let mut c = c_vault_env;
 
     // Setup a valid market
-    let m = mk(9004);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(100);
-    cfg.enabled = true;
+    let (m, cfg) = enabled_market_100;
     c.config.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
@@ -1214,21 +1228,18 @@ fn ft_on_transfer_zero_amount_returns_zero_refund() {
     );
 }
 
-#[test]
-fn ft_on_transfer_eager_mode_triggers_allocation() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let asset = c.underlying_asset.contract_id().into();
-    setup_env(&vault_id, &asset, vec![]);
+#[rstest]
+fn ft_on_transfer_eager_mode_triggers_allocation(
+    mut c_asset_env: Contract,
+    enabled_market_100: (AccountId, MarketConfiguration),
+) {
+    let mut c = c_asset_env;
 
     // Trigger eager allocation with any positive deposit
     c.mode = AllocationMode::Eager { min_batch: U128(1) };
 
     // Valid market/cap
-    let m = mk(9005);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(100);
-    cfg.enabled = true;
+    let (m, cfg) = enabled_market_100;
     c.config.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
