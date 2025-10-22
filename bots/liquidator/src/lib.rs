@@ -39,7 +39,10 @@ use std::{collections::HashMap, sync::Arc};
 use futures::{StreamExt, TryStreamExt};
 use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
-use near_primitives::{hash::CryptoHash, transaction::{Transaction, TransactionV0}};
+use near_primitives::{
+    hash::CryptoHash,
+    transaction::{Transaction, TransactionV0},
+};
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
@@ -53,12 +56,13 @@ use templar_common::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
-use templar_bots_common::{get_access_key_data, send_tx, view, AppError, RpcError, BorrowPositions};
 use crate::{
+    rpc::{get_access_key_data, send_tx, view, AppError, BorrowPositions, RpcError},
     strategy::LiquidationStrategy,
     swap::{SwapProvider, SwapProviderImpl},
 };
 
+pub mod rpc;
 pub mod strategy;
 pub mod swap;
 
@@ -337,14 +341,12 @@ impl Liquidator {
         let available_balance = self.get_asset_balance(self.asset.as_ref()).await?;
 
         // Calculate liquidation amount using strategy
-        let Some(liquidation_amount) = self
-            .strategy
-            .calculate_liquidation_amount(
-                &position,
-                &oracle_response,
-                &configuration,
-                available_balance,
-            )?
+        let Some(liquidation_amount) = self.strategy.calculate_liquidation_amount(
+            &position,
+            &oracle_response,
+            &configuration,
+            available_balance,
+        )?
         else {
             info!("Strategy determined no liquidation should occur");
             return Ok(());
@@ -434,7 +436,7 @@ impl Liquidator {
             borrow_asset,
             &borrow_account,
             liquidation_amount,
-            None,  // Let contract calculate collateral amount
+            None, // Let contract calculate collateral amount
             nonce,
             block_hash,
         )?;
@@ -515,8 +517,8 @@ impl Liquidator {
 }
 
 // Re-export types for CLI arguments
+use crate::rpc::Network;
 use clap::ValueEnum;
-use templar_bots_common::Network;
 
 /// Swap provider types available for liquidation.
 #[derive(Debug, Clone, Copy, ValueEnum)]

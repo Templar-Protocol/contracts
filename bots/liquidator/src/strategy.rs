@@ -16,9 +16,7 @@
 
 use near_sdk::json_types::U128;
 use templar_common::{
-    borrow::BorrowPosition,
-    market::MarketConfiguration,
-    oracle::pyth::OracleResponse,
+    borrow::BorrowPosition, market::MarketConfiguration, oracle::pyth::OracleResponse,
 };
 use tracing::{debug, instrument};
 
@@ -164,16 +162,13 @@ impl PartialLiquidationStrategy {
     pub fn default_partial() -> Self {
         Self {
             target_percentage: 50,
-            min_profit_margin_bps: 50, // 0.5% profit margin
+            min_profit_margin_bps: 50,   // 0.5% profit margin
             max_gas_cost_percentage: 10, // Max 10% gas cost
         }
     }
 
     /// Calculates the partial liquidation amount based on target percentage.
-    fn calculate_partial_amount(
-        self,
-        full_amount: U128,
-    ) -> U128 {
+    fn calculate_partial_amount(self, full_amount: U128) -> U128 {
         #[allow(clippy::cast_lossless)]
         let percentage = self.target_percentage as u128;
         let full: u128 = full_amount.into();
@@ -196,10 +191,7 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
             .create_price_pair(oracle_response)?;
 
         let min_full_amount = configuration
-            .minimum_acceptable_liquidation_amount(
-                position.collateral_asset_deposit,
-                &price_pair,
-            );
+            .minimum_acceptable_liquidation_amount(position.collateral_asset_deposit, &price_pair);
 
         let Some(full_amount) = min_full_amount else {
             debug!("Could not calculate minimum liquidation amount");
@@ -342,7 +334,7 @@ impl FullLiquidationStrategy {
     #[must_use]
     pub fn aggressive() -> Self {
         Self {
-            min_profit_margin_bps: 20, // 0.2% profit margin
+            min_profit_margin_bps: 20,   // 0.2% profit margin
             max_gas_cost_percentage: 15, // Max 15% gas cost
         }
     }
@@ -362,10 +354,7 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             .create_price_pair(oracle_response)?;
 
         let full_amount = configuration
-            .minimum_acceptable_liquidation_amount(
-                position.collateral_asset_deposit,
-                &price_pair,
-            );
+            .minimum_acceptable_liquidation_amount(position.collateral_asset_deposit, &price_pair);
 
         let Some(amount) = full_amount else {
             return Ok(None);
@@ -493,10 +482,10 @@ mod tests {
         // Cost: 1000, Min revenue: 1005, Collateral: 1010
         let is_profitable = strategy
             .should_liquidate(
-                U128(900),      // swap input
-                U128(1000),     // liquidation amount (for gas calc)
-                U128(1010),     // expected collateral
-                U128(100),      // gas cost
+                U128(900),  // swap input
+                U128(1000), // liquidation amount (for gas calc)
+                U128(1010), // expected collateral
+                U128(100),  // gas cost
             )
             .unwrap();
         assert!(is_profitable, "Should be profitable");
@@ -507,7 +496,7 @@ mod tests {
             .should_liquidate(
                 U128(900),
                 U128(1000),
-                U128(1000),     // collateral too low
+                U128(1000), // collateral too low
                 U128(100),
             )
             .unwrap();
@@ -522,9 +511,9 @@ mod tests {
         let too_expensive = strategy
             .should_liquidate(
                 U128(900),
-                U128(1000),     // liquidation amount
-                U128(10000),    // high collateral
-                U128(150),      // gas cost > 10%
+                U128(1000),  // liquidation amount
+                U128(10000), // high collateral
+                U128(150),   // gas cost > 10%
             )
             .unwrap();
         assert!(!too_expensive, "Gas cost should be too high");
@@ -535,7 +524,7 @@ mod tests {
                 U128(900),
                 U128(1000),
                 U128(10000),
-                U128(50),       // gas cost < 10%
+                U128(50), // gas cost < 10%
             )
             .unwrap();
         assert!(acceptable, "Gas cost should be acceptable");

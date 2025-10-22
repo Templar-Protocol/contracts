@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use templar_common::asset::{AssetClass, FungibleAsset};
 use tracing::{debug, error, info, instrument};
 
-use templar_bots_common::{get_access_key_data, send_tx, AppError, AppResult};
+use crate::rpc::{get_access_key_data, send_tx, AppError, AppResult, Network};
 
 use super::SwapProvider;
 
@@ -70,6 +70,7 @@ struct QuoteParams {
 
 /// JSON-RPC response from solver relay.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct SolverQuoteResponse {
     jsonrpc: String,
     id: u64,
@@ -81,6 +82,7 @@ struct SolverQuoteResponse {
 
 /// Successful quote result.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct QuoteResult {
     /// Input amount required (as string)
     input_amount: String,
@@ -99,6 +101,7 @@ struct QuoteResult {
 
 /// JSON-RPC error object.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct JsonRpcError {
     code: i32,
     message: String,
@@ -193,11 +196,7 @@ impl IntentsSwap {
     ///     Network::Testnet,
     /// );
     /// ```
-    pub fn new(
-        client: JsonRpcClient,
-        signer: Arc<Signer>,
-        network: templar_bots_common::Network,
-    ) -> Self {
+    pub fn new(client: JsonRpcClient, signer: Arc<Signer>, network: Network) -> Self {
         let http_client = Client::builder()
             .timeout(Duration::from_millis(Self::DEFAULT_QUOTE_TIMEOUT_MS))
             .build()
@@ -249,7 +248,8 @@ impl IntentsSwap {
     }
 
     /// Default solver relay endpoint (Defuse Protocol V2)
-    pub const DEFAULT_SOLVER_RELAY_URL: &'static str = "https://solver-relay-v2.chaindefuser.com/rpc";
+    pub const DEFAULT_SOLVER_RELAY_URL: &'static str =
+        "https://solver-relay-v2.chaindefuser.com/rpc";
 
     /// Default quote timeout (60 seconds)
     pub const DEFAULT_QUOTE_TIMEOUT_MS: u64 = 60_000;
@@ -268,12 +268,17 @@ impl IntentsSwap {
 
     /// Returns the appropriate intents contract for the network.
     #[must_use]
-    #[allow(clippy::expect_used, reason = "Hardcoded contract IDs are always valid")]
-    fn intents_contract_for_network(network: templar_bots_common::Network) -> AccountId {
+    #[allow(
+        clippy::expect_used,
+        reason = "Hardcoded contract IDs are always valid"
+    )]
+    fn intents_contract_for_network(network: Network) -> AccountId {
         match network {
-            templar_bots_common::Network::Mainnet => Self::MAINNET_INTENTS_CONTRACT.parse()
+            Network::Mainnet => Self::MAINNET_INTENTS_CONTRACT
+                .parse()
                 .expect("Mainnet intents contract ID is valid"),
-            templar_bots_common::Network::Testnet => Self::TESTNET_INTENTS_CONTRACT.parse()
+            Network::Testnet => Self::TESTNET_INTENTS_CONTRACT
+                .parse()
                 .expect("Testnet intents contract ID is valid"),
         }
     }
@@ -452,8 +457,9 @@ impl IntentsSwap {
             solver_whitelist: None,
         };
 
-        serde_json::to_string(&message)
-            .map_err(|e| AppError::SerializationError(format!("Failed to create intent message: {e}")))
+        serde_json::to_string(&message).map_err(|e| {
+            AppError::SerializationError(format!("Failed to create intent message: {e}"))
+        })
     }
 }
 
@@ -500,16 +506,16 @@ impl SwapProvider for IntentsSwap {
         #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
         let slippage_multiplier = 1.0 - (f64::from(self.max_slippage_bps) / 10000.0);
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
         let min_output_amount = U128((amount.0 as f64 * slippage_multiplier) as u128);
 
         // Create intent message
-        let intent_msg = Self::create_intent_message(
-            from_asset,
-            to_asset,
-            amount,
-            min_output_amount,
-        )?;
+        let intent_msg =
+            Self::create_intent_message(from_asset, to_asset, amount, min_output_amount)?;
 
         // Get transaction parameters
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
@@ -551,8 +557,8 @@ impl SwapProvider for IntentsSwap {
         // we'll focus on NEAR-native assets
         let from_supported = from_asset.clone().into_nep141().is_some()
             || from_asset.clone().into_nep245().is_some();
-        let to_supported = to_asset.clone().into_nep141().is_some()
-            || to_asset.clone().into_nep245().is_some();
+        let to_supported =
+            to_asset.clone().into_nep141().is_some() || to_asset.clone().into_nep245().is_some();
 
         from_supported && to_supported
     }
@@ -572,7 +578,10 @@ mod tests {
 
         // NEP-245
         let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:eth".parse().unwrap();
-        assert_eq!(IntentsSwap::to_defuse_asset_id(&nep245), "near:multi.near/eth");
+        assert_eq!(
+            IntentsSwap::to_defuse_asset_id(&nep245),
+            "near:multi.near/eth"
+        );
     }
 
     #[test]
@@ -584,15 +593,14 @@ mod tests {
             signer_key,
         ));
 
-        let intents = IntentsSwap::new(
-            client,
-            signer,
-            templar_bots_common::Network::Testnet,
-        );
+        let intents = IntentsSwap::new(client, signer, Network::Testnet);
 
         assert_eq!(intents.provider_name(), "NEAR Intents");
         assert_eq!(intents.intents_contract.as_str(), "intents.testnet");
-        assert_eq!(intents.quote_timeout_ms, IntentsSwap::DEFAULT_QUOTE_TIMEOUT_MS);
+        assert_eq!(
+            intents.quote_timeout_ms,
+            IntentsSwap::DEFAULT_QUOTE_TIMEOUT_MS
+        );
     }
 
     #[test]
@@ -604,11 +612,7 @@ mod tests {
             signer_key,
         ));
 
-        let intents = IntentsSwap::new(
-            client,
-            signer,
-            templar_bots_common::Network::Testnet,
-        );
+        let intents = IntentsSwap::new(client, signer, Network::Testnet);
 
         let nep141: FungibleAsset<BorrowAsset> = "nep141:token.near".parse().unwrap();
         let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:token1".parse().unwrap();
@@ -623,11 +627,11 @@ mod tests {
     #[test]
     fn test_network_contract_selection() {
         assert_eq!(
-            IntentsSwap::intents_contract_for_network(templar_bots_common::Network::Mainnet).as_str(),
+            IntentsSwap::intents_contract_for_network(Network::Mainnet).as_str(),
             "intents.near"
         );
         assert_eq!(
-            IntentsSwap::intents_contract_for_network(templar_bots_common::Network::Testnet).as_str(),
+            IntentsSwap::intents_contract_for_network(Network::Testnet).as_str(),
             "intents.testnet"
         );
     }

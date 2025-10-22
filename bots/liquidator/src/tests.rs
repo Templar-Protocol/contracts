@@ -14,11 +14,11 @@ use near_primitives::views::FinalExecutionStatus;
 use near_sdk::{json_types::U128, AccountId};
 use std::sync::Arc;
 
-use templar_bots_common::{AppError, AppResult, Network};
 use crate::{
-    Liquidator,
+    rpc::{AppError, AppResult, Network},
     strategy::{FullLiquidationStrategy, LiquidationStrategy, PartialLiquidationStrategy},
     swap::{intents::IntentsSwap, rhea::RheaSwap, SwapProvider, SwapProviderImpl},
+    Liquidator,
 };
 use templar_common::asset::{AssetClass, BorrowAsset, FungibleAsset};
 
@@ -67,9 +67,7 @@ impl SwapProvider for MockSwapProvider {
         _amount: U128,
     ) -> AppResult<FinalExecutionStatus> {
         if self.should_fail {
-            Err(AppError::ValidationError(
-                "Mock swap failure".to_string(),
-            ))
+            Err(AppError::ValidationError("Mock swap failure".to_string()))
         } else {
             Ok(FinalExecutionStatus::SuccessValue(vec![]))
         }
@@ -162,11 +160,7 @@ async fn test_rhea_swap_provider_integration() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
-        client,
-        signer,
-    );
+    let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
 
     assert_eq!(rhea.provider_name(), "RheaSwap");
     assert_eq!(rhea.fee_tier, RheaSwap::DEFAULT_FEE_TIER);
@@ -246,11 +240,7 @@ async fn test_liquidator_with_intents_and_full_strategy() {
         "usdc.testnet".parse().unwrap(),
     ));
 
-    let intents = IntentsSwap::new(
-        client.clone(),
-        signer.clone(),
-        Network::Testnet,
-    );
+    let intents = IntentsSwap::new(client.clone(), signer.clone(), Network::Testnet);
 
     let swap_provider = SwapProviderImpl::intents(intents);
     let strategy = Box::new(FullLiquidationStrategy::aggressive());
@@ -277,7 +267,10 @@ async fn test_mock_swap_provider_quote() {
     let to: FungibleAsset<BorrowAsset> = "nep141:usdt.near".parse().unwrap();
 
     let quote = mock.quote(&from, &to, U128(100)).await.unwrap();
-    assert_eq!(quote.0, 50, "Should need 50 input for 100 output at 2:1 rate");
+    assert_eq!(
+        quote.0, 50,
+        "Should need 50 input for 100 output at 2:1 rate"
+    );
 
     println!("✓ Mock swap provider quote working correctly");
 }
@@ -322,7 +315,7 @@ fn test_strategy_profitability_calculations() {
         .should_liquidate(
             U128(1000),
             U128(10000),
-            U128(1050),  // collateral too low
+            U128(1050), // collateral too low
             U128(50),
         )
         .unwrap();
@@ -332,9 +325,9 @@ fn test_strategy_profitability_calculations() {
     let gas_too_high = strategy
         .should_liquidate(
             U128(1000),
-            U128(1000),   // liquidation amount
-            U128(10000),  // high collateral
-            U128(150),    // gas > 10% of 1000
+            U128(1000),  // liquidation amount
+            U128(10000), // high collateral
+            U128(150),   // gas > 10% of 1000
         )
         .unwrap();
     assert!(!gas_too_high, "Gas cost should be too high");
@@ -346,9 +339,18 @@ fn test_strategy_profitability_calculations() {
 fn test_different_strategy_configurations() {
     // Test various strategy configurations
     let strategies = vec![
-        ("Conservative 25%", PartialLiquidationStrategy::new(25, 200, 5)),
-        ("Standard 50%", PartialLiquidationStrategy::default_partial()),
-        ("Aggressive 75%", PartialLiquidationStrategy::new(75, 20, 15)),
+        (
+            "Conservative 25%",
+            PartialLiquidationStrategy::new(25, 200, 5),
+        ),
+        (
+            "Standard 50%",
+            PartialLiquidationStrategy::default_partial(),
+        ),
+        (
+            "Aggressive 75%",
+            PartialLiquidationStrategy::new(75, 20, 15),
+        ),
     ];
 
     for (name, strategy) in strategies {
@@ -385,10 +387,10 @@ async fn test_multiple_swap_providers() {
 #[test]
 fn test_edge_cases_for_partial_liquidation() {
     // Test edge cases
-    let strategy = PartialLiquidationStrategy::new(1, 0, 100);  // Minimum 1%
+    let strategy = PartialLiquidationStrategy::new(1, 0, 100); // Minimum 1%
     assert_eq!(strategy.target_percentage, 1);
 
-    let strategy_max = PartialLiquidationStrategy::new(100, 0, 0);  // Maximum 100%
+    let strategy_max = PartialLiquidationStrategy::new(100, 0, 0); // Maximum 100%
     assert_eq!(strategy_max.target_percentage, 100);
 
     println!("✓ Edge case partial liquidation strategies validated");
@@ -415,11 +417,7 @@ async fn test_swap_provider_impl_rhea_wrapper() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
-        client,
-        signer,
-    );
+    let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
 
     let provider = SwapProviderImpl::rhea(rhea);
 
@@ -526,26 +524,17 @@ async fn test_intents_swap_custom_config() {
     println!("✓ IntentsSwap custom configuration works correctly");
 }
 
-
 #[tokio::test]
 async fn test_intents_mainnet_vs_testnet() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
     // Test testnet
-    let intents_testnet = IntentsSwap::new(
-        client.clone(),
-        signer.clone(),
-        Network::Testnet,
-    );
+    let intents_testnet = IntentsSwap::new(client.clone(), signer.clone(), Network::Testnet);
     assert_eq!(intents_testnet.intents_contract.as_str(), "intents.testnet");
 
     // Test mainnet
-    let intents_mainnet = IntentsSwap::new(
-        client,
-        signer,
-        Network::Mainnet,
-    );
+    let intents_mainnet = IntentsSwap::new(client, signer, Network::Mainnet);
     assert_eq!(intents_mainnet.intents_contract.as_str(), "intents.near");
 
     println!("✓ Intents provider correctly selects contract by network");
@@ -571,11 +560,14 @@ fn test_full_liquidation_strategy_profitability() {
         .should_liquidate(
             U128(1000),
             U128(10000),
-            U128(1055),  // Only 5.5% margin, below required 10%
+            U128(1055), // Only 5.5% margin, below required 10%
             U128(50),
         )
         .unwrap();
-    assert!(!not_profitable, "Should not be profitable with only 5.5% margin");
+    assert!(
+        !not_profitable,
+        "Should not be profitable with only 5.5% margin"
+    );
 
     println!("✓ Full liquidation strategy profitability calculations work correctly");
 }
@@ -598,7 +590,10 @@ fn test_aggressive_vs_conservative_strategies() {
         )
         .unwrap();
 
-    assert!(!conservative_result, "Conservative strategy should reject 0.89% margin (requires 1%)");
+    assert!(
+        !conservative_result,
+        "Conservative strategy should reject 0.89% margin (requires 1%)"
+    );
 
     // Aggressive scenario: above 0.2% margin but below 1%
     let aggressive_scenario = (U128(1000), U128(10000), U128(1015), U128(10));
@@ -612,7 +607,10 @@ fn test_aggressive_vs_conservative_strategies() {
         )
         .unwrap();
 
-    assert!(aggressive_result, "Aggressive strategy should accept 0.5% margin (requires 0.2%)");
+    assert!(
+        aggressive_result,
+        "Aggressive strategy should accept 0.5% margin (requires 0.2%)"
+    );
 
     println!("✓ Aggressive and conservative strategies have different risk tolerances");
 }
@@ -638,7 +636,10 @@ async fn test_mock_provider_high_exchange_rate() {
     let to: FungibleAsset<BorrowAsset> = "nep141:usdt.near".parse().unwrap();
 
     let quote = mock.quote(&from, &to, U128(1000)).await.unwrap();
-    assert_eq!(quote.0, 100, "Should need 100 input for 1000 output at 10:1 rate");
+    assert_eq!(
+        quote.0, 100,
+        "Should need 100 input for 1000 output at 10:1 rate"
+    );
 
     println!("✓ Mock provider handles high exchange rates correctly");
 }
@@ -646,7 +647,7 @@ async fn test_mock_provider_high_exchange_rate() {
 #[test]
 fn test_strategy_max_gas_percentage_validation() {
     // Test various gas percentage limits
-    let strict = PartialLiquidationStrategy::new(50, 50, 5);  // Max 5% gas
+    let strict = PartialLiquidationStrategy::new(50, 50, 5); // Max 5% gas
     let relaxed = PartialLiquidationStrategy::new(50, 50, 20); // Max 20% gas
 
     // Scenario: liquidation amount 1000, gas 100 (10%)
@@ -658,8 +659,14 @@ fn test_strategy_max_gas_percentage_validation() {
         .should_liquidate(U128(0), U128(1000), U128(10000), U128(100))
         .unwrap();
 
-    assert!(!strict_result, "Strict strategy should reject 10% gas (max 5%)");
-    assert!(relaxed_result, "Relaxed strategy should accept 10% gas (max 20%)");
+    assert!(
+        !strict_result,
+        "Strict strategy should reject 10% gas (max 5%)"
+    );
+    assert!(
+        relaxed_result,
+        "Relaxed strategy should accept 10% gas (max 20%)"
+    );
 
     println!("✓ Strategy gas percentage validation works correctly");
 }
@@ -694,18 +701,42 @@ async fn test_cross_asset_type_support() {
     let nep141: FungibleAsset<BorrowAsset> = "nep141:usdc.near".parse().unwrap();
     let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:eth".parse().unwrap();
 
-    assert!(rhea.supports_assets(&nep141, &nep141), "Rhea should support NEP-141 to NEP-141");
-    assert!(!rhea.supports_assets(&nep141, &nep245), "Rhea should not support NEP-141 to NEP-245");
-    assert!(!rhea.supports_assets(&nep245, &nep141), "Rhea should not support NEP-245 to NEP-141");
-    assert!(!rhea.supports_assets(&nep245, &nep245), "Rhea should not support NEP-245 to NEP-245");
+    assert!(
+        rhea.supports_assets(&nep141, &nep141),
+        "Rhea should support NEP-141 to NEP-141"
+    );
+    assert!(
+        !rhea.supports_assets(&nep141, &nep245),
+        "Rhea should not support NEP-141 to NEP-245"
+    );
+    assert!(
+        !rhea.supports_assets(&nep245, &nep141),
+        "Rhea should not support NEP-245 to NEP-141"
+    );
+    assert!(
+        !rhea.supports_assets(&nep245, &nep245),
+        "Rhea should not support NEP-245 to NEP-245"
+    );
 
     // Intents - supports both
     let intents = IntentsSwap::new(client, signer, Network::Testnet);
 
-    assert!(intents.supports_assets(&nep141, &nep141), "Intents should support NEP-141 to NEP-141");
-    assert!(intents.supports_assets(&nep141, &nep245), "Intents should support NEP-141 to NEP-245");
-    assert!(intents.supports_assets(&nep245, &nep141), "Intents should support NEP-245 to NEP-141");
-    assert!(intents.supports_assets(&nep245, &nep245), "Intents should support NEP-245 to NEP-245");
+    assert!(
+        intents.supports_assets(&nep141, &nep141),
+        "Intents should support NEP-141 to NEP-141"
+    );
+    assert!(
+        intents.supports_assets(&nep141, &nep245),
+        "Intents should support NEP-141 to NEP-245"
+    );
+    assert!(
+        intents.supports_assets(&nep245, &nep141),
+        "Intents should support NEP-245 to NEP-141"
+    );
+    assert!(
+        intents.supports_assets(&nep245, &nep245),
+        "Intents should support NEP-245 to NEP-245"
+    );
 
     println!("✓ Cross-asset type support validated for all providers");
 }
@@ -719,7 +750,7 @@ fn test_strategy_edge_case_zero_collateral() {
         .should_liquidate(
             U128(1000),
             U128(1000),
-            U128(0),  // Zero collateral
+            U128(0), // Zero collateral
             U128(50),
         )
         .unwrap();
@@ -735,12 +766,7 @@ fn test_strategy_edge_case_zero_liquidation() {
 
     // Zero liquidation amount
     let result = strategy
-        .should_liquidate(
-            U128(0),
-            U128(0),
-            U128(1000),
-            U128(50),
-        )
+        .should_liquidate(U128(0), U128(0), U128(1000), U128(50))
         .unwrap();
 
     assert!(!result, "Zero liquidation amount should fail");
@@ -770,11 +796,7 @@ async fn test_provider_name_consistency() {
         signer.clone(),
     );
 
-    let intents_provider = IntentsSwap::new(
-        client.clone(),
-        signer.clone(),
-        Network::Testnet,
-    );
+    let intents_provider = IntentsSwap::new(client.clone(), signer.clone(), Network::Testnet);
 
     assert_eq!(rhea_provider.provider_name(), "RheaSwap");
     assert_eq!(intents_provider.provider_name(), "NEAR Intents");
@@ -835,8 +857,8 @@ fn test_swap_type_debug_format() {
     let intents = SwapType::NearIntents;
 
     // Test Debug formatting
-    let rhea_debug = format!("{:?}", rhea);
-    let intents_debug = format!("{:?}", intents);
+    let rhea_debug = format!("{rhea:?}");
+    let intents_debug = format!("{intents:?}");
 
     assert!(rhea_debug.contains("RheaSwap"));
     assert!(intents_debug.contains("NearIntents"));
@@ -849,11 +871,11 @@ fn test_liquidator_error_display() {
     use crate::LiquidatorError;
 
     let error = LiquidatorError::InsufficientBalance;
-    let display = format!("{}", error);
+    let display = format!("{error}");
     assert_eq!(display, "Insufficient balance for liquidation");
 
     let error2 = LiquidatorError::StrategyError("test error".to_string());
-    let display2 = format!("{}", error2);
+    let display2 = format!("{error2}");
     assert!(display2.contains("test error"));
 
     println!("✓ LiquidatorError Display trait works correctly");
@@ -911,8 +933,7 @@ fn test_partial_strategy_calculate_partial_amount() {
 
 #[test]
 fn test_error_conversions() {
-    use crate::LiquidatorError;
-    use templar_bots_common::AppError;
+    use crate::{rpc::AppError, LiquidatorError};
 
     // Test From<AppError> for LiquidatorError
     let app_error = AppError::ValidationError("test".to_string());
@@ -932,6 +953,7 @@ fn test_liquidator_result_type_alias() {
 
     // Test that LiquidatorResult works correctly
     let success: LiquidatorResult<u32> = Ok(42);
+    assert!(success.is_ok());
     assert_eq!(success.unwrap(), 42);
 
     let failure: LiquidatorResult<u32> = Err(LiquidatorError::InsufficientBalance);
@@ -967,11 +989,7 @@ async fn test_intents_supports_both_nep_standards() {
 async fn test_rhea_only_supports_nep141() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
-        client,
-        signer,
-    );
+    let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
 
     let nep141: FungibleAsset<BorrowAsset> = "nep141:usdc.near".parse().unwrap();
     let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:eth".parse().unwrap();
@@ -1002,10 +1020,10 @@ fn test_partial_strategy_profitability_with_zero_swap() {
     // Test when no swap is needed (swap_input_amount = 0)
     let result = strategy
         .should_liquidate(
-            U128(0),      // No swap needed
-            U128(1000),   // Liquidation amount
-            U128(2000),   // High collateral
-            U128(50),     // Gas
+            U128(0),    // No swap needed
+            U128(1000), // Liquidation amount
+            U128(2000), // High collateral
+            U128(50),   // Gas
         )
         .unwrap();
 
@@ -1024,13 +1042,19 @@ fn test_full_strategy_profitability_edge_cases() {
     let result = strategy
         .should_liquidate(U128(1000), U128(10000), U128(1013), U128(10))
         .unwrap();
-    assert!(result, "Should be profitable above minimum (1013 >= 1012.02)");
+    assert!(
+        result,
+        "Should be profitable above minimum (1013 >= 1012.02)"
+    );
 
     // Test just below minimum (1011 < 1012.02)
     let result = strategy
         .should_liquidate(U128(1000), U128(10000), U128(1011), U128(10))
         .unwrap();
-    assert!(!result, "Should not be profitable below minimum (1011 < 1012.02)");
+    assert!(
+        !result,
+        "Should not be profitable below minimum (1011 < 1012.02)"
+    );
 
     println!("✓ Full strategy edge case profitability works correctly");
 }
@@ -1059,7 +1083,8 @@ fn test_strategy_trait_object_safety() {
     use crate::strategy::LiquidationStrategy;
 
     // Test that we can create Box<dyn LiquidationStrategy>
-    let strategy: Box<dyn LiquidationStrategy> = Box::new(PartialLiquidationStrategy::new(50, 50, 10));
+    let strategy: Box<dyn LiquidationStrategy> =
+        Box::new(PartialLiquidationStrategy::new(50, 50, 10));
     assert_eq!(strategy.strategy_name(), "Partial Liquidation");
 
     let strategy2: Box<dyn LiquidationStrategy> = Box::new(FullLiquidationStrategy::conservative());
@@ -1070,7 +1095,10 @@ fn test_strategy_trait_object_safety() {
 
 #[test]
 fn test_intents_default_constants() {
-    assert_eq!(IntentsSwap::DEFAULT_SOLVER_RELAY_URL, "https://solver-relay-v2.chaindefuser.com/rpc");
+    assert_eq!(
+        IntentsSwap::DEFAULT_SOLVER_RELAY_URL,
+        "https://solver-relay-v2.chaindefuser.com/rpc"
+    );
     assert_eq!(IntentsSwap::DEFAULT_QUOTE_TIMEOUT_MS, 60_000);
     assert_eq!(IntentsSwap::DEFAULT_MAX_SLIPPAGE_BPS, 100);
 
@@ -1089,8 +1117,8 @@ fn test_strategy_debug_format() {
     let partial = PartialLiquidationStrategy::new(50, 50, 10);
     let full = FullLiquidationStrategy::conservative();
 
-    let partial_debug = format!("{:?}", partial);
-    let full_debug = format!("{:?}", full);
+    let partial_debug = format!("{partial:?}");
+    let full_debug = format!("{full:?}");
 
     assert!(partial_debug.contains("PartialLiquidationStrategy"));
     assert!(full_debug.contains("FullLiquidationStrategy"));

@@ -15,12 +15,12 @@ clap = { workspace = true }
 futures = { workspace = true }
 near-crypto = { workspace = true }
 near-jsonrpc-client = { workspace = true }
+near-jsonrpc-primitives = { workspace = true }
 near-primitives = { workspace = true }
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-templar-bots-common = { path = "../common" }
 templar-common = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

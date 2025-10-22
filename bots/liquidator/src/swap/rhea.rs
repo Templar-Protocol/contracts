@@ -26,7 +26,7 @@ use near_sdk::{json_types::U128, near, serde_json, AccountId};
 use templar_common::asset::{AssetClass, FungibleAsset};
 use tracing::{debug, instrument};
 
-use templar_bots_common::{get_access_key_data, send_tx, view, AppError, AppResult};
+use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
 
 use super::SwapProvider;
 
@@ -350,11 +350,7 @@ mod tests {
             signer_key,
         ));
 
-        let rhea = RheaSwap::new(
-            "dclv2.ref-dev.testnet".parse().unwrap(),
-            client,
-            signer,
-        );
+        let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
 
         assert_eq!(rhea.provider_name(), "RheaSwap");
         assert_eq!(rhea.fee_tier, RheaSwap::DEFAULT_FEE_TIER);
@@ -369,11 +365,7 @@ mod tests {
             signer_key,
         ));
 
-        let rhea = RheaSwap::new(
-            "dclv2.ref-dev.testnet".parse().unwrap(),
-            client,
-            signer,
-        );
+        let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
 
         let nep141: FungibleAsset<BorrowAsset> = "nep141:token.near".parse().unwrap();
         let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:token1".parse().unwrap();

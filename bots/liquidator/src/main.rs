@@ -9,11 +9,11 @@ use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
 use templar_liquidator::{
-    Liquidator, LiquidatorError, LiquidatorResult, SwapType,
+    rpc::{list_all_deployments, Network},
     strategy::PartialLiquidationStrategy,
     swap::{intents::IntentsSwap, rhea::RheaSwap, SwapProviderImpl},
+    Liquidator, LiquidatorError, LiquidatorResult, SwapType,
 };
-use templar_bots_common::{list_all_deployments, Network};
 use tokio::time::sleep;
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};

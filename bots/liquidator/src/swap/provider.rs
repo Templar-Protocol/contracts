@@ -9,7 +9,7 @@ use near_primitives::views::FinalExecutionStatus;
 use near_sdk::json_types::U128;
 use templar_common::asset::{AssetClass, FungibleAsset};
 
-use templar_bots_common::AppResult;
+use crate::rpc::AppResult;
 
 use super::{intents::IntentsSwap, rhea::RheaSwap, SwapProvider};
 
