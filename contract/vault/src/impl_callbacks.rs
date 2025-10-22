@@ -93,13 +93,16 @@ impl Contract {
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        let (new_principal, accepted_event, remaining_next) = match position {
-            Ok(Some(position)) => {
-                let new_principal: u128 = position.get_deposit().total().into();
-                let accepted_event = new_principal.saturating_sub(before.0);
-                let remaining = remaining.saturating_sub(accepted_event);
-                (new_principal, accepted_event, remaining)
-            }
+        let SupplyReconciliation {
+            new_principal,
+            accepted_event,
+            remaining,
+        } = match position {
+            Ok(Some(position)) => reconcile_supply_outcome(
+                &position.get_deposit().total().into(),
+                &before.0,
+                &remaining,
+            ),
             Ok(None) => {
                 Event::AllocationPositionMissing {
                     op_id: op_id.into(),
@@ -134,7 +137,7 @@ impl Contract {
             accepted: U128(accepted_event),
             attempted,
             refunded: U128(refunded),
-            remaining_after: U128(remaining_next),
+            remaining_after: U128(remaining),
         }
         .emit();
 
@@ -148,7 +151,7 @@ impl Contract {
         self.op_state = OpState::Allocating {
             op_id,
             index: market_index + 1,
-            remaining: remaining_next,
+            remaining,
         };
         self.step_allocation()
     }
@@ -248,7 +251,7 @@ impl Contract {
         before: U128,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (i, remaining, received, collected, owner, escrow_shares) =
+        let (i, remaining, receiver, collected, owner, escrow_shares) =
             match self.ctx_withdrawing(op_id) {
                 Ok(v) => v,
                 Err(e) => return self.stop_and_exit(Some(&e)),
@@ -303,7 +306,7 @@ impl Contract {
             if collected > 0 {
                 self.op_state = OpState::Payout {
                     op_id,
-                    receiver: received.clone(),
+                    receiver: receiver.clone(),
                     amount: collected,
                     owner: owner.clone(),
                     escrow_shares,
@@ -312,11 +315,11 @@ impl Contract {
                 PromiseOrValue::Promise(
                     self.underlying_asset
                         .clone()
-                        .transfer(received.clone(), U128(collected).into())
+                        .transfer(receiver.clone(), U128(collected).into())
                         .then(
                             ext_self::ext(env::current_account_id())
                                 .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .after_send_to_user(op_id, received, U128(collected)),
+                                .after_send_to_user(op_id, receiver, U128(collected)),
                         ),
                 )
             } else {
@@ -333,7 +336,7 @@ impl Contract {
                 op_id,
                 index: market_index + 1,
                 remaining,
-                receiver: received,
+                receiver: receiver,
                 collected,
                 owner,
                 escrow_shares,
@@ -648,10 +651,31 @@ impl Contract {
     }
 }
 
+pub(crate) struct SupplyReconciliation {
+    new_principal: u128,
+    accepted_event: u128,
+    remaining: u128,
+}
+
+pub(crate) fn reconcile_supply_outcome(
+    total_position: &u128,
+    before: &u128,
+    remaining: &u128,
+) -> SupplyReconciliation {
+    let accepted_event = total_position.saturating_sub(*before);
+    let remaining = remaining.saturating_sub(accepted_event);
+    SupplyReconciliation {
+        new_principal: *total_position,
+        accepted_event,
+        remaining,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::u128;
 
+    use crate::impl_callbacks::reconcile_supply_outcome;
     use crate::test_utils::*;
 
     use near_sdk::json_types::U128;
@@ -660,12 +684,26 @@ mod tests {
     use near_sdk::PromiseResult;
     use rstest::rstest;
 
+    use crate::Contract;
+    use near_sdk::AccountId;
+    use rstest::fixture;
     use templar_common::vault::Error;
     use templar_common::vault::OpState;
 
-    #[test]
-    fn after_supply_1_check_allocating_not_allocating() {
-        let vault_id = accounts(0);
+    #[fixture]
+    fn vault_id() -> AccountId {
+        accounts(0)
+    }
+
+    #[fixture]
+    fn c(vault_id: AccountId) -> Contract {
+        setup_env(&vault_id, &vault_id, vec![]);
+        new_test_contract(&vault_id)
+    }
+
+    // Contract with the env used by after_supply_1_check_* tests
+    #[fixture]
+    fn c_max(vault_id: AccountId) -> Contract {
         setup_env(
             &vault_id,
             &vault_id,
@@ -674,10 +712,22 @@ mod tests {
                     .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
             )],
         );
+        new_test_contract(&vault_id)
+    }
 
-        let mut c = new_test_contract(&vault_id);
+    #[fixture]
+    fn receiver() -> AccountId {
+        mk(9)
+    }
 
-        let receiver = mk(7);
+    #[fixture]
+    fn owner() -> AccountId {
+        accounts(1)
+    }
+
+    #[rstest]
+    fn after_supply_1_check_allocating_not_allocating(mut c_max: Contract) {
+        let mut c = c_max;
 
         c.op_state = OpState::Idle;
 
@@ -1200,5 +1250,250 @@ mod tests {
             c.resolve_withdraw_market(2),
             Err(Error::MissingMarket(2))
         ));
+    }
+
+    #[test]
+    fn after_supply_2_read_missing_position_stops() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        // Resolve market via supply_queue
+        let market = mk(42);
+        c.supply_queue.push(market);
+
+        // Must be in Allocating ctx
+        c.op_state = OpState::Allocating {
+            op_id: 1,
+            index: 0,
+            remaining: 10,
+        };
+
+        // Missing position -> stop_and_exit
+        let res = c.after_supply_2_read(Ok(None), 1, 0, U128(0), U128(5), U128(5));
+        match res {
+            PromiseOrValue::Value(()) => {}
+            _ => panic!("Expected Value on missing position"),
+        }
+        assert!(matches!(c.op_state, OpState::Idle));
+    }
+
+    #[test]
+    fn after_supply_2_read_read_failed_stops() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        // Resolve market via supply_queue
+        let market = mk(43);
+        c.supply_queue.push(market);
+
+        // Must be in Allocating ctx
+        c.op_state = OpState::Allocating {
+            op_id: 7,
+            index: 0,
+            remaining: 100,
+        };
+
+        // Read failure -> stop_and_exit
+        let res = c.after_supply_2_read(
+            Err(near_sdk::PromiseError::Failed),
+            7,
+            0,
+            U128(0),
+            U128(10),
+            U128(10),
+        );
+        match res {
+            PromiseOrValue::Value(()) => {}
+            _ => panic!("Expected Value on read failure"),
+        }
+        assert!(matches!(c.op_state, OpState::Idle));
+    }
+
+    #[test]
+    fn after_create_withdraw_req_success_returns_promise() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        let market = mk(50);
+        c.withdraw_queue.push(market.clone());
+        c.market_supply.insert(market.clone(), 100);
+
+        c.op_state = OpState::Withdrawing {
+            op_id: 21,
+            index: 0,
+            remaining: 60,
+            receiver: mk(9),
+            collected: 10,
+            owner: accounts(1),
+            escrow_shares: 5,
+        };
+
+        let res = c.after_create_withdraw_req(Ok(()), 21, 0, U128(60));
+        match res {
+            PromiseOrValue::Promise(_) => {}
+            _ => panic!("Expected Promise when create succeeds"),
+        }
+        // State remains Withdrawing and will continue via the promise chain
+        assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
+    }
+
+    #[test]
+    fn after_exec_withdraw_req_returns_promise() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        let market = mk(60);
+        c.withdraw_queue.push(market.clone());
+        c.market_supply.insert(market.clone(), 10);
+
+        c.op_state = OpState::Withdrawing {
+            op_id: 33,
+            index: 0,
+            remaining: 5,
+            receiver: mk(9),
+            collected: 0,
+            owner: accounts(1),
+            escrow_shares: 0,
+        };
+
+        let res = c.after_exec_withdraw_req(33, 0, U128(5));
+        match res {
+            PromiseOrValue::Promise(_) => {}
+            _ => panic!("Expected Promise to read supply position after exec"),
+        }
+        assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
+    }
+
+    #[test]
+    fn after_exec_withdraw_read_advances_when_remaining() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        // Two markets; first has principal to withdraw
+        let m1 = mk(70);
+        let m2 = mk(71);
+        c.withdraw_queue.push(m1.clone());
+        c.withdraw_queue.push(m2.clone());
+        c.market_supply.insert(m1.clone(), 10);
+
+        let owner = accounts(1);
+        let receiver = mk(9);
+        c.op_state = OpState::Withdrawing {
+            op_id: 0,
+            index: 0,
+            remaining: 100,
+            receiver: receiver.clone(),
+            collected: 0,
+            owner: owner.clone(),
+            escrow_shares: 0,
+        };
+
+        // Position None => new_principal = 0 => withdrawn = 10 => credited = 10
+        let res = c.after_exec_withdraw_read(Ok(None), 0, 0, U128(10), U128(100));
+        match res {
+            PromiseOrValue::Promise(_) => {}
+            _ => panic!("Expected Promise to continue withdraw steps"),
+        }
+
+        // Idle credited, state advanced to next index with remaining reduced
+        assert_eq!(c.idle_balance, 10);
+
+        // This works
+        match &c.op_state {
+            OpState::Payout {
+                op_id,
+                receiver: r,
+                amount,
+                owner: o,
+                escrow_shares,
+                burn_shares,
+            } => {
+                assert_eq!(*op_id, 0);
+                assert_eq!(*amount, 10);
+                assert_eq!(*escrow_shares, 0);
+                assert_eq!(*burn_shares, 0);
+                assert_eq!(*r, receiver);
+                assert_eq!(*o, owner);
+            }
+            other => panic!("Unexpected state after advancing: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stop_and_exit_when_idle_emits_and_stays_idle() {
+        let vault_id = accounts(0);
+        setup_env(&vault_id, &vault_id, vec![]);
+        let mut c = new_test_contract(&vault_id);
+
+        // Already Idle; ensure branch is executed
+        c.op_state = OpState::Idle;
+
+        let res = c.stop_and_exit::<&str>(Some(&"reason"));
+        match res {
+            PromiseOrValue::Value(()) => {}
+            _ => panic!("Expected Value on stop while Idle"),
+        }
+        assert!(matches!(c.op_state, OpState::Idle));
+    }
+    #[test]
+    fn accepts_increase_and_decrements_remaining() {
+        let out = reconcile_supply_outcome(&1_600, &1_000, &1_000);
+        let expected_accepted = 1_600u128.saturating_sub(1_000);
+        let expected_remaining = 1_000u128.saturating_sub(expected_accepted);
+
+        assert_eq!(out.new_principal, 1_600);
+        assert_eq!(out.accepted_event, expected_accepted); // 600
+        assert_eq!(out.remaining, expected_remaining); // 400
+    }
+
+    #[test]
+    fn no_accept_when_total_does_not_increase() {
+        // decreased
+        let out = reconcile_supply_outcome(&1_500, &2_000, &5_000);
+        assert_eq!(out.new_principal, 1_500);
+        assert_eq!(out.accepted_event, 0);
+        assert_eq!(out.remaining, 5_000);
+
+        // equal
+        let out = reconcile_supply_outcome(&2_000, &2_000, &1_234);
+        assert_eq!(out.new_principal, 2_000);
+        assert_eq!(out.accepted_event, 0);
+        assert_eq!(out.remaining, 1_234);
+    }
+
+    #[test]
+    fn remaining_saturates_to_zero_when_acceptance_exceeds_it() {
+        let out = reconcile_supply_outcome(&u128::MAX, &0, &1);
+        assert_eq!(out.new_principal, u128::MAX);
+        assert_eq!(out.accepted_event, u128::MAX);
+        assert_eq!(out.remaining, 0);
+
+        let out = reconcile_supply_outcome(&10_000, &0, &5);
+        assert_eq!(out.new_principal, 10_000);
+        assert_eq!(out.accepted_event, 10_000);
+        assert_eq!(out.remaining, 0);
+    }
+
+    #[test]
+    fn handles_extreme_boundaries_correctly() {
+        let out = reconcile_supply_outcome(&0, &0, &0);
+        assert_eq!(out.new_principal, 0);
+        assert_eq!(out.accepted_event, 0);
+        assert_eq!(out.remaining, 0);
+
+        let out = reconcile_supply_outcome(&0, &u128::MAX, &123);
+        assert_eq!(out.new_principal, 0);
+        assert_eq!(out.accepted_event, 0);
+        assert_eq!(out.remaining, 123);
+
+        let out = reconcile_supply_outcome(&u128::MAX, &(u128::MAX - 5), &2);
+        assert_eq!(out.new_principal, u128::MAX);
+        assert_eq!(out.accepted_event, 5);
+        assert_eq!(out.remaining, 0);
     }
 }
