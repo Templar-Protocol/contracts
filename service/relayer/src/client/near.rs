@@ -111,10 +111,13 @@ impl Near {
     /// # Errors
     ///
     /// - RPC errors
+    #[tracing::instrument(skip(self), name = "fetch_gas_price")]
     pub async fn fetch_gas_price(&self) -> Result<NearToken, JsonRpcError<RpcGasPriceError>> {
         let method = methods::gas_price::RpcGasPriceRequest { block_id: None };
         let response = self.client.call(method).await?;
-        Ok(NearToken::from_yoctonear(response.gas_price))
+        let price = NearToken::from_yoctonear(response.gas_price);
+        tracing::trace!(gas_price = %price, "Fetched gas price");
+        Ok(price)
     }
 
     /// # Errors
@@ -137,11 +140,13 @@ impl Near {
     /// # Errors
     ///
     /// - RPC errors
+    #[tracing::instrument(skip(self), fields(account_id = %account_id, transaction_hash = %transaction_hash))]
     pub async fn fetch_transaction_status(
         &self,
         account_id: AccountId,
         transaction_hash: CryptoHash,
     ) -> Result<FinalExecutionOutcomeView, JsonRpcError<RpcTransactionError>> {
+        tracing::debug!("Fetching transaction status");
         let response = self
             .client
             .call(methods::tx::RpcTransactionStatusRequest {
@@ -157,7 +162,9 @@ impl Near {
             clippy::unwrap_used,
             reason = "TxExecutionStatus::Final guarantees outcome is not None"
         )]
-        Ok(response.final_execution_outcome.unwrap().into_outcome())
+        let outcome = response.final_execution_outcome.unwrap().into_outcome();
+        tracing::debug!(status = ?outcome.status, "Transaction status fetched");
+        Ok(outcome)
     }
 
     pub fn next_signer(&self) -> &Signer {
@@ -364,17 +371,29 @@ impl Near {
     /// # Errors
     ///
     /// - RPC errors
+    #[tracing::instrument(skip(self, signed_transaction), fields(
+        transaction_hash = %signed_transaction.get_hash(),
+        wait_until = ?wait_until
+    ))]
     pub async fn send_transaction(
         &self,
         signed_transaction: SignedTransaction,
         wait_until: TxExecutionStatus,
     ) -> Result<RpcTransactionResponse, JsonRpcError<RpcTransactionError>> {
-        self.client
+        tracing::info!("Sending transaction to NEAR");
+        let result = self.client
             .call(methods::send_tx::RpcSendTransactionRequest {
                 signed_transaction,
                 wait_until,
             })
-            .await
+            .await;
+
+        match &result {
+            Ok(_) => tracing::info!("Transaction sent successfully"),
+            Err(e) => tracing::error!(error = %e, "Failed to send transaction"),
+        }
+
+        result
     }
 
     async fn view<T: DeserializeOwned>(

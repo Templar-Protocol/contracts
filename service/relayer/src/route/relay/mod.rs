@@ -1,7 +1,6 @@
 use axum::{extract::State, Json};
 use near_primitives::views::TxExecutionStatus;
 use near_sdk::NearToken;
-use tracing::error;
 
 use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 
@@ -9,6 +8,15 @@ mod message;
 pub use message::{RelayRequest, RelayResponse};
 
 #[allow(clippy::too_many_lines)]
+#[tracing::instrument(
+    name = "relay_transaction",
+    skip(app, signed_delegate_action),
+    fields(
+        sender_id = %signed_delegate_action.delegate_action.sender_id,
+        receiver_id = %signed_delegate_action.delegate_action.receiver_id,
+        storage_deposit = %storage_deposit,
+    )
+)]
 pub async fn relay(
     State(app): State<App>,
     Json(RelayRequest {
@@ -17,9 +25,14 @@ pub async fn relay(
         wait_until,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
+    tracing::info!("Processing relay request");
     let (gas, contract_data) = match app.check_and_calculate_gas(&signed_delegate_action).await {
-        Ok(x) => x,
+        Ok(x) => {
+            tracing::info!(gas = %x.0, "Gas check passed");
+            x
+        }
         Err(e) => {
+            tracing::info!(error = %e, "Gas check failed");
             return SimpleResponse::Rejected {
                 reason: e.to_string(),
             }
@@ -30,6 +43,7 @@ pub async fn relay(
 
     // Deposit for storage before sending the meta transaction.
     if storage_deposit {
+        tracing::info!("Processing storage deposit request");
         let contract_id = signed_delegate_action.delegate_action.receiver_id.clone();
 
         let Some(storage_balance_bounds) = contract_data
@@ -37,6 +51,7 @@ pub async fn relay(
             .as_ref()
             .filter(|b| !b.min.is_zero())
         else {
+            tracing::info!("Contract has no storage requirements");
             return SimpleResponse::Rejected {
                 reason: "Contract has no storage requirements".to_string(),
             };
@@ -98,7 +113,7 @@ pub async fn relay(
         {
             Ok(future) => future,
             Err(e) => {
-                error!("Send transaction failure: {e}");
+                tracing::error!("Send transaction failure: {e}");
                 return SimpleResponse::Failure {
                     error: e.to_string(),
                 };
@@ -107,12 +122,12 @@ pub async fn relay(
 
         // Resolve synchronously.
         if let Err(e) = resolve_transaction.await {
-            error!("Resolve transaction failure: {e}");
+            tracing::error!("Resolve transaction failure: {e}");
         }
     } // end storage deposit
 
     let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
-        error!("Failed to estimate cost of gas: {gas}");
+        tracing::error!("Failed to estimate cost of gas: {gas}");
         return SimpleResponse::Failure {
             error: "Failed to estimate cost of gas".to_string(),
         };
@@ -125,7 +140,7 @@ pub async fn relay(
     {
         Ok(available) => available,
         Err(e) => {
-            error!("Database error trying to obtain available balance: {e}");
+            tracing::error!("Database error trying to obtain available balance: {e}");
             return SimpleResponse::Failure {
                 error: "Database Error".to_string(),
             };
@@ -157,7 +172,7 @@ pub async fn relay(
     {
         Ok(future) => future,
         Err(e) => {
-            error!("Send transaction failure: {e}");
+            tracing::error!("Send transaction failure: {e}");
             return SimpleResponse::Failure {
                 error: e.to_string(),
             };
@@ -167,7 +182,7 @@ pub async fn relay(
     // Resolve asynchronously.
     tokio::spawn(async move {
         if let Err(e) = resolve_transaction.await {
-            error!("Resolve transaction failure: {e}");
+            tracing::error!("Resolve transaction failure: {e}");
         }
     });
 

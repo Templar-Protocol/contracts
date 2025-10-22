@@ -19,7 +19,6 @@ use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
 };
-use tracing::{error, info, warn};
 
 use crate::{
     broom,
@@ -93,17 +92,23 @@ impl App {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(gas = %gas))]
     pub async fn estimate_cost_of_gas(&self, gas: u64) -> Option<NearToken> {
         const TERA: u128 = near_sdk::Gas::from_tgas(1).as_gas() as u128;
 
         let price_per_tgas = self.cache.gas_price().await;
-        price_per_tgas
+        let result = price_per_tgas
             .checked_mul(u128::from(gas))?
-            .checked_div(TERA)
+            .checked_div(TERA);
+
+        tracing::debug!(cost = ?result, "Estimated gas cost");
+        result
     }
 
     #[allow(clippy::too_many_lines, reason = "procedural")]
+    #[tracing::instrument(skip(self), name = "load_markets")]
     pub async fn load_markets(&mut self) {
+        tracing::info!("Loading markets from registry and individual sources");
         let mut markets = self.args.monitor.market.clone();
 
         // Load markets from registry...
@@ -116,7 +121,7 @@ impl App {
                     near.load_deployments_from_registry(registry_id.clone())
                         .await
                         .unwrap_or_else(|e| {
-                            warn!("Failed to load deployments from registry {registry_id}: {e}");
+                            tracing::warn!("Failed to load deployments from registry {registry_id}: {e}");
                             vec![]
                         })
                 }
@@ -133,7 +138,7 @@ impl App {
                     match near.load_market_accounts(market.clone()).await {
                         Ok(market_accounts) => Some(market_accounts),
                         Err(e) => {
-                            warn!("Failed to load accounts for market {market}: {e}");
+                            tracing::warn!("Failed to load accounts for market {market}: {e}");
                             None
                         }
                     }
@@ -161,7 +166,7 @@ impl App {
         }
 
         for market_accounts in market_accounts_vec.into_iter().flatten() {
-            info!(
+            tracing::info!(
                 "Loaded market {} with borrow asset {} and collateral asset {}, querying oracle {}",
                 market_accounts.account_id,
                 market_accounts.borrow_asset,
@@ -201,7 +206,7 @@ impl App {
                             .await
                             .ok();
 
-                        info!(
+                        tracing::info!(
                             "Loaded storage balance bounds for contract {}: {}",
                             contract_id,
                             storage_balance_bounds
@@ -238,6 +243,7 @@ impl App {
     ///
     /// - If the receiver is not known.
     /// - If any of the function call actions are not allowed.
+    #[tracing::instrument(skip(self, accounts, calls), fields(receiver_id = %receiver_id))]
     pub fn actions_are_allowed<'a>(
         &self,
         receiver_id: &AccountIdRef,
@@ -323,10 +329,15 @@ impl App {
     /// - If the function name is not valid.
     /// - If the function arguments are invalid.
     /// - etc. See [`PreconditionError`] for more details.
+    #[tracing::instrument(skip(self, signed_delegate_action), fields(
+        sender_id = %signed_delegate_action.delegate_action.sender_id,
+        receiver_id = %signed_delegate_action.delegate_action.receiver_id
+    ))]
     pub async fn check_and_calculate_gas(
         &self,
         signed_delegate_action: &SignedDelegateAction,
     ) -> Result<(u64, ContractData), PreconditionError> {
+        tracing::debug!("Checking and calculating gas for delegate action");
         if !signed_delegate_action.verify() {
             return Err(PreconditionError::SignatureVerificationFailure);
         }
@@ -365,6 +376,12 @@ impl App {
     ///
     /// - When sending the transaction
     /// - When resolving the transaction in the database
+    #[tracing::instrument(skip(self, signed_transaction), fields(
+        account_id = %account_id,
+        gas_cost_estimate = %gas_cost_estimate,
+        spend_within_transaction = %spend_within_transaction,
+        transaction_hash = tracing::field::Empty
+    ))]
     pub async fn send_and_resolve_transaction(
         &self,
         account_id: AccountId,
@@ -377,6 +394,8 @@ impl App {
         SendTransactionError,
     > {
         let transaction_hash = signed_transaction.get_hash();
+        tracing::Span::current().record("transaction_hash", tracing::field::display(&transaction_hash));
+        tracing::info!("Sending and resolving transaction");
 
         self.database
             .set_pending_transaction(

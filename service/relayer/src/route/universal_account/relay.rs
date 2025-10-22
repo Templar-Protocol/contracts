@@ -30,6 +30,14 @@ pub struct RelayResponse {
 }
 
 #[allow(clippy::too_many_lines)]
+#[tracing::instrument(
+    name = "relay_universal_account",
+    skip(app, args),
+    fields(
+        account_id = %account_id,
+        storage_deposit_count = %storage_deposit.len()
+    )
+)]
 pub async fn relay(
     State(app): State<App>,
     Json(RelayRequest {
@@ -38,6 +46,7 @@ pub async fn relay(
         storage_deposit,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
+    tracing::info!("Processing universal account relay");
     let ExecuteArgs::Passkey {
         ref key,
         ref message,
