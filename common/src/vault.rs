@@ -445,14 +445,6 @@ pub enum Event {
 
     // Withdrawal read diagnostics
     #[event_version("1.0.0")]
-    WithdrawalPositionMissing {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        before: U128,
-        need: U128,
-    },
-    #[event_version("1.0.0")]
     WithdrawalPositionReadFailed {
         op_id: U64,
         market: AccountId,
