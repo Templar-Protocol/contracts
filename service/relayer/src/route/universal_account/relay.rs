@@ -133,6 +133,12 @@ pub async fn relay(
             };
         eligible_for_storage_deposit.insert(receiver_id.clone());
         eligible_for_storage_deposit.extend(additional_interactions.into_iter());
+        if let Some(market_data) = accounts.market_data.get(receiver_id) {
+            eligible_for_storage_deposit.insert(market_data.oracle_id.clone());
+            eligible_for_storage_deposit.insert(market_data.borrow_asset.contract_id().to_owned());
+            eligible_for_storage_deposit
+                .insert(market_data.collateral_asset.contract_id().to_owned());
+        }
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
 
