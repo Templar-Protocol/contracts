@@ -95,10 +95,10 @@ async fn interest_rate(
         );
         let duration_outer = time_outer.elapsed();
 
-        let supply_yield_1 = u128::from(supply_position_1.borrow_asset_yield.get_total())
-            + u128::from(supply_position_1.borrow_asset_yield.pending_estimate);
-        let supply_yield_2 = u128::from(supply_position_2.borrow_asset_yield.get_total())
-            + u128::from(supply_position_2.borrow_asset_yield.pending_estimate);
+        let supply_yield_1 = supply_position_1.borrow_asset_yield.get_total()
+            + supply_position_1.borrow_asset_yield.pending_estimate;
+        let supply_yield_2 = supply_position_2.borrow_asset_yield.get_total()
+            + supply_position_2.borrow_asset_yield.pending_estimate;
 
         let yield_rate = c
             .configuration
@@ -127,19 +127,19 @@ async fn interest_rate(
         let approximation_below = (f * duration_inner.as_millis()).to_u128_ceil().unwrap();
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
 
-        let actual_1 = u128::from(borrow_position_1.interest.get_total())
-            + u128::from(borrow_position_1.interest.pending_estimate);
+        let actual_1 =
+            borrow_position_1.interest.get_total() + borrow_position_1.interest.pending_estimate;
         eprintln!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
-        assert!(approximation_below <= actual_1);
-        assert!(actual_1 <= approximation_above);
+        assert!(approximation_below <= actual_1.into());
+        assert!(u128::from(actual_1) <= approximation_above);
 
-        let actual_2 = u128::from(borrow_position_2.interest.get_total())
-            + u128::from(borrow_position_2.interest.pending_estimate);
+        let actual_2 =
+            borrow_position_2.interest.get_total() + borrow_position_2.interest.pending_estimate;
         eprintln!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
-        assert!(approximation_below <= actual_2);
-        assert!(actual_2 <= approximation_above + iters);
+        assert!(approximation_below <= actual_2.into());
+        assert!(u128::from(actual_2) <= approximation_above + iters);
 
         assert!(
             actual_2 >= actual_1,
@@ -157,9 +157,10 @@ async fn interest_rate(
             let r = c
                 .repay(
                     &borrow_user,
-                    (u128::from(borrow_position_before.get_total_borrow_asset_liability())
-                        + u128::from(borrow_position_before.interest.pending_estimate))
-                        * 110
+                    u128::from(
+                        borrow_position_before.get_total_borrow_asset_liability()
+                            + borrow_position_before.interest.pending_estimate,
+                    ) * 110
                         / 100, /* overpayment */
                 )
                 .await;
@@ -180,9 +181,10 @@ async fn interest_rate(
             let borrow_position_before = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
             c.repay(
                 &borrow_user_2,
-                (u128::from(borrow_position_before.get_total_borrow_asset_liability())
-                    + u128::from(borrow_position_before.interest.pending_estimate))
-                    * 110
+                u128::from(
+                    borrow_position_before.get_total_borrow_asset_liability()
+                        + borrow_position_before.interest.pending_estimate,
+                ) * 110
                     / 100, /* overpayment */
             )
             .await;

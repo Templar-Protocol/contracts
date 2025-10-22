@@ -4,7 +4,6 @@ use near_sdk::{env, near, require, AccountId, Promise, PromiseOrValue};
 use templar_common::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    asset_op,
     borrow::{BorrowPosition, BorrowStatus},
     contract::list,
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
@@ -213,9 +212,7 @@ impl MarketExternalInterface for Contract {
             "Insufficient liquidity to fulfill the request at this time",
         );
 
-        asset_op!(
-            self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account
-        );
+        self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account;
 
         PromiseOrValue::Promise(
             self.configuration
@@ -315,9 +312,7 @@ impl MarketExternalInterface for Contract {
 
         let amount = amount.unwrap_or_else(|| yield_record.get_total());
 
-        yield_record
-            .remove(amount)
-            .unwrap_or_else(|| env::panic_str("Attempt to overdraw"));
+        yield_record.remove(amount);
 
         self.static_yield.insert(&predecessor, &yield_record);
 
