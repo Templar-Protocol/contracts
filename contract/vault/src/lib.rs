@@ -90,8 +90,7 @@ pub struct Contract {
     /// configuration per market (market ID -> MarketConfig)
     config: IterableMap<AccountId, MarketConfiguration>,
 
-    /// TODO: decimal offset for virtual shares
-    /// Performance fee (as WAD fraction)
+    /// Performance fee
     performance_fee: wad::Wad,
     fee_recipient: AccountId,
     skim_recipient: AccountId,
