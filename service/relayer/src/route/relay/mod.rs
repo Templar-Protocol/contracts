@@ -35,7 +35,7 @@ pub async fn relay(
             tracing::info!(error = %e, "Gas check failed");
             return SimpleResponse::Rejected {
                 reason: e.to_string(),
-            }
+            };
         }
     };
 

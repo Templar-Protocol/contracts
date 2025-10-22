@@ -121,7 +121,9 @@ impl App {
                     near.load_deployments_from_registry(registry_id.clone())
                         .await
                         .unwrap_or_else(|e| {
-                            tracing::warn!("Failed to load deployments from registry {registry_id}: {e}");
+                            tracing::warn!(
+                                "Failed to load deployments from registry {registry_id}: {e}"
+                            );
                             vec![]
                         })
                 }
@@ -394,7 +396,10 @@ impl App {
         SendTransactionError,
     > {
         let transaction_hash = signed_transaction.get_hash();
-        tracing::Span::current().record("transaction_hash", tracing::field::display(&transaction_hash));
+        tracing::Span::current().record(
+            "transaction_hash",
+            tracing::field::display(&transaction_hash),
+        );
         tracing::info!("Sending and resolving transaction");
 
         self.database

@@ -381,7 +381,8 @@ impl Near {
         wait_until: TxExecutionStatus,
     ) -> Result<RpcTransactionResponse, JsonRpcError<RpcTransactionError>> {
         tracing::info!("Sending transaction to NEAR");
-        let result = self.client
+        let result = self
+            .client
             .call(methods::send_tx::RpcSendTransactionRequest {
                 signed_transaction,
                 wait_until,
