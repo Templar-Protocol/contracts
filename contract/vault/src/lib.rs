@@ -123,9 +123,6 @@ pub struct Contract {
     op_state: OpState,
     next_op_id: u64,
 
-    /// Storage usage
-    storage_usage_supply: u64,
-    storage_usage_role: u64,
 
     /// Pending withdrawals queue (vault-level, FIFO by id)
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
@@ -181,8 +178,6 @@ impl Contract {
             };
         }
 
-        let storage_usage_supply = env::storage_usage();
-        let storage_usage_role = env::storage_usage();
 
         let mut contract = Self {
             underlying_asset: underlying_token,
@@ -203,8 +198,6 @@ impl Contract {
             idle_balance: 0,
             op_state: OpState::Idle,
             next_op_id: 1,
-            storage_usage_supply,
-            storage_usage_role,
             mode,
             plan: None,
 
@@ -228,7 +221,7 @@ impl Contract {
         Self::with_members_of(&Role::Curator, |members| {
             require!(
                 members.len() < 2,
-                "Invariant violation: Cannot Have more than 1 Curator"
+                "Invariant violation: Cannot have more than one Curator"
             );
             require!(
                 !members.contains(&account),
@@ -271,7 +264,7 @@ impl Contract {
         Self::with_members_of(&Role::Guardian, |members| {
             require!(
                 members.len() < 2,
-                "Invariant violation: Cannot Have more than 1 Guardian"
+                "Invariant violation: Cannot have more than one Guardian"
             );
             require!(!members.contains(&new_g), "Already set to this address");
             guardian_occupied = !members.is_empty();
@@ -880,14 +873,14 @@ impl Contract {
             curator: Self::with_members_of(&Role::Curator, |members| {
                 require!(
                     members.len() == 1,
-                    "Invariant violation: Cannot Have more than 1 Curator"
+                    "Invariant violation: Cannot have more than one Curator"
                 );
                 members.iter().next().expect("Curator not set").clone()
             }),
             guardian: Self::with_members_of(&Role::Guardian, |members| {
                 require!(
                     members.len() == 1,
-                    "Invariant violation: Cannot Have more than 1 Guardian"
+                    "Invariant violation: Cannot have more than one Guardian"
                 );
                 members.iter().next().expect("Guardian not set").clone()
             }),
@@ -1377,7 +1370,7 @@ impl Contract {
 
             PromiseOrValue::Promise(self.supply_and_then(&market, to_supply, op_id, index))
         } else {
-            self.stop_and_exit(Some("Market not found"))
+            self.stop_and_exit::<Error>(None)
         }
     }
 
