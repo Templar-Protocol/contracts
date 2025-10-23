@@ -153,7 +153,7 @@ pub fn vault_configuration(
         curator: curator_id,
         guardian: guardian_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
-        initial_timelock_sec: templar_common::vault::MIN_TIMELOCK_NS as u32,
+        initial_timelock_ns: templar_common::vault::MIN_TIMELOCK_NS.into(),
         fee_recipient: fee_recipient_id,
         skim_recipient: skim_recipient_id,
         name: "Vault".to_string(),

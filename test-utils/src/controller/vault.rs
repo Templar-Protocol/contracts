@@ -4,7 +4,7 @@ use crate::{
     print_execution, UnifiedMarketController,
 };
 use near_sdk::{
-    json_types::U128,
+    json_types::{U128, U64},
     serde_json::{self, json},
     AccountId, NearToken,
 };
@@ -134,7 +134,7 @@ impl VaultController {
         pub fn set_performance_fee(fee: U128);
 
         #[call(exec, tgas(50))]
-        pub fn submit_timelock(new_timelock_secs: u32);
+        pub fn submit_timelock(new_timelock_ns: U64);
 
         #[call(exec, tgas(50))]
         pub fn accept_timelock();

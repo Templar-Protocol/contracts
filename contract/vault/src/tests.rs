@@ -16,7 +16,7 @@ use near_sdk::{json_types::U128, AccountId};
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
-use rstest::{rstest, fixture};
+use rstest::{fixture, rstest};
 use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::{AllocationMode, DepositMsg};
@@ -141,9 +141,7 @@ fn fee_accrues_only_on_growth_unit(mut c_vault_env: Contract) {
 }
 
 #[rstest]
-fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(
-    mut c_vault_env: Contract,
-) {
+fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(mut c_vault_env: Contract) {
     let mut c = c_vault_env;
 
     let receiver = mk(7);
@@ -1072,7 +1070,9 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
     enabled_market_100: (AccountId, MarketConfiguration),
 ) {
     let mut c = c_asset_env;
-    c.mode = AllocationMode::Eager { min_batch: U128(u128::MAX) };
+    c.mode = AllocationMode::Eager {
+        min_batch: U128(u128::MAX),
+    };
     let (m, cfg) = enabled_market_100;
     c.config.insert(m.clone(), cfg);
     c.supply_queue.push(m);
@@ -1116,7 +1116,9 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
     enabled_market_100: (AccountId, MarketConfiguration),
 ) {
     let mut c = c_asset_env;
-    c.mode = AllocationMode::Eager { min_batch: U128(u128::MAX) };
+    c.mode = AllocationMode::Eager {
+        min_batch: U128(u128::MAX),
+    };
     let (m, mut cfg) = enabled_market_100;
     cfg.cap = U128(50); // override cap for this case
     c.config.insert(m.clone(), cfg);
@@ -1495,13 +1497,13 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let cur = c.get_configuration().initial_timelock_sec;
+    let cur = c.get_configuration().initial_timelock_ns;
 
     // Increase applies immediately
-    c.submit_timelock(cur + 1);
+    c.submit_timelock((cur.0 + 1).into());
     assert_eq!(
-        c.get_configuration().initial_timelock_sec,
-        cur + 1,
+        c.get_configuration().initial_timelock_ns.0,
+        cur.0 + 1,
         "timelock should increase immediately"
     );
 
@@ -1515,7 +1517,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     );
     c.accept_timelock();
     assert_eq!(
-        c.get_configuration().initial_timelock_sec,
+        c.get_configuration().initial_timelock_ns,
         cur,
         "timelock should decrease after accept"
     );
@@ -1541,10 +1543,10 @@ fn governance_revoke_pending_timelock_then_accept_panics() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let cur = c.get_configuration().initial_timelock_sec;
+    let cur = c.get_configuration().initial_timelock_ns;
 
     // Force a pending by first increasing then decreasing
-    c.submit_timelock(cur + 1);
+    c.submit_timelock((cur.0 + 1).into());
     c.submit_timelock(cur);
 
     // Revoke the pending change; accept must now panic
