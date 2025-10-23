@@ -42,7 +42,8 @@ async fn supply_withdrawal_fee_flat(#[future(awt)] worker: Worker<Sandbox>) {
         .map_or(0, |r| u128::from(r.get_total()));
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
-    c.execute_next_supply_withdrawal_request(&supply_user).await;
+    c.execute_next_supply_withdrawal_request(&supply_user, None)
+        .await;
 
     let supply_user_balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     c.accumulate_static_yield(&protocol_yield_user, None, None)
@@ -102,7 +103,8 @@ async fn supply_withdrawal_fee_expired(#[future(awt)] worker: Worker<Sandbox>) {
         .map_or(0, |r| u128::from(r.get_total()));
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
-    c.execute_next_supply_withdrawal_request(&supply_user).await;
+    c.execute_next_supply_withdrawal_request(&supply_user, None)
+        .await;
 
     let supply_user_balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     let yield_after = u128::from(

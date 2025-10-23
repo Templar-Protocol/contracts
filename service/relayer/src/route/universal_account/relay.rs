@@ -133,6 +133,12 @@ pub async fn relay(
             };
         eligible_for_storage_deposit.insert(receiver_id.clone());
         eligible_for_storage_deposit.extend(additional_interactions.into_iter());
+        if let Some(market_data) = accounts.market_data.get(receiver_id) {
+            eligible_for_storage_deposit.insert(market_data.oracle_id.clone());
+            eligible_for_storage_deposit.insert(market_data.borrow_asset.contract_id().to_owned());
+            eligible_for_storage_deposit
+                .insert(market_data.collateral_asset.contract_id().to_owned());
+        }
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
 
@@ -169,10 +175,15 @@ pub async fn relay(
             continue;
         }
 
+        let storage_deposit_amount = storage_balance_bounds
+            .min
+            .saturating_mul(app.args.relay.storage_deposit_multiplier_cents)
+            .saturating_div(100);
+
         let Some(cost_of_gas) = app
             .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
             .await
-            .map(|amount| amount.saturating_add(storage_balance_bounds.min))
+            .map(|amount| amount.saturating_add(storage_deposit_amount))
         else {
             return SimpleResponse::Failure {
                 error: "Failed to estimate gas cost".to_string(),
@@ -185,7 +196,7 @@ pub async fn relay(
                 &app.cache,
                 account_id.clone(),
                 contract_id.clone(),
-                storage_balance_bounds.min,
+                storage_deposit_amount,
             )
             .await;
 
@@ -193,7 +204,7 @@ pub async fn relay(
             .send_and_resolve_transaction(
                 account_id.clone(),
                 cost_of_gas,
-                storage_balance_bounds.min,
+                storage_deposit_amount,
                 signed_transaction,
                 TxExecutionStatus::Final,
             )

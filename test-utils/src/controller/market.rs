@@ -18,7 +18,9 @@ use templar_common::{
     price::Convert,
     snapshot::Snapshot,
     supply::SupplyPosition,
-    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
+    withdrawal_queue::{
+        WithdrawalQueueExecutionResult, WithdrawalQueueStatus, WithdrawalRequestStatus,
+    },
 };
 use tokio::sync::OnceCell;
 
@@ -97,8 +99,10 @@ impl MarketController {
         pub fn withdraw_collateral(amount: CollateralAssetAmount);
         #[call(exec)]
         pub fn create_supply_withdrawal_request(amount: BorrowAssetAmount);
-        #[call(exec, tgas(25))]
-        pub fn execute_next_supply_withdrawal_request();
+        #[call(tgas(300))]
+        pub fn execute_next_supply_withdrawal_request(batch_limit: Option<u32>) -> WithdrawalQueueExecutionResult;
+        #[call(exec, tgas(300))]
+        pub fn execute_next_supply_withdrawal_request_exec["execute_next_supply_withdrawal_request"](batch_limit: Option<u32>);
     }
 
     #[allow(unused)] // This is useful for debugging tests

@@ -114,6 +114,21 @@ pub struct Relay {
     /// Starting allowance in yoctoNEAR.
     #[arg(long, env = "STARTING_ALLOWANCE_YOCTO", default_value_t = NearToken::from_millinear(250))]
     pub starting_allowance_yocto: NearToken,
+    /// Multiplier of minimum storage allowance to deposit on contracts, multiplied by 100.
+    ///
+    /// Example: a value of 200 means a multiplier of 2x of the minimum.
+    #[arg(
+        long,
+        env = "STORAGE_DEPOSIT_MULTIPLIER_CENTS",
+        default_value_t = 100u128
+    )]
+    pub storage_deposit_multiplier_cents: u128,
+    /// Account ID of the NEAR Intents contract.
+    #[arg(long, env = "INTENTS_ID")]
+    pub intents_id: Option<AccountId>,
+    /// Comma-separated list of sponsored methods on the intents contract.
+    #[arg(long, env = "INTENTS_ALLOWED_METHODS", default_values_t = vec!["add_public_key".to_string(), "remove_public_key".to_string()], value_delimiter = ',')]
+    pub intents_allowed_methods: Vec<String>,
 }
 
 #[derive(Args, Debug, Clone)]

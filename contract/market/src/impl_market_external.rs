@@ -11,8 +11,10 @@ use templar_common::{
     oracle::pyth::OracleResponse,
     self_ext,
     snapshot::Snapshot,
-    supply::SupplyPosition,
-    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
+    supply::{SupplyPosition, SupplyPositionGuard, WithdrawalAttempt},
+    withdrawal_queue::{
+        WithdrawalQueueExecutionResult, WithdrawalQueueStatus, WithdrawalRequestStatus,
+    },
 };
 
 use crate::{Contract, ContractExt};
@@ -191,61 +193,88 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.remove(&env::predecessor_account_id());
     }
 
-    fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
-        let (account_id, amount) = self
-            .withdrawal_queue
-            .try_lock()
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    fn execute_next_supply_withdrawal_request(
+        &mut self,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<WithdrawalQueueExecutionResult> {
+        let batch_limit = batch_limit.unwrap_or(1);
+        let mut batch = Vec::with_capacity(batch_limit.min(self.withdrawal_queue.len()) as usize);
+        let snapshot_proof = self.snapshot();
+        let block_timestamp_ms = env::block_timestamp_ms();
+        let queue_len_start = self.withdrawal_queue.len();
+        let mut depth_cleared = BorrowAssetAmount::zero();
 
-        let market_borrow_asset_deposited_active = self.borrow_asset_deposited_active;
-        let market_borrowed = self.borrowed();
-        let proof = self.snapshot();
-        let Some(mut supply_position) = self.supply_position_guard(proof, account_id) else {
-            self.withdrawal_queue
-                .try_pop()
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
-            env::log_str("Supply position does not exist: skipping.");
-            return PromiseOrValue::Value(());
+        while let Some((account_id, requested_amount)) = self.withdrawal_queue.peek() {
+            if batch.len() >= batch_limit as usize {
+                break;
+            }
+
+            let withdrawal_attempt = {
+                let Some(mut position_guard) =
+                    self.supply_position_guard(snapshot_proof, account_id.clone())
+                else {
+                    // Somehow the account does not exist. This should not happen,
+                    // but it is recoverable if it does.
+                    self.withdrawal_queue.pop();
+                    depth_cleared += requested_amount;
+                    continue;
+                };
+                let accumulation_proof = position_guard.accumulate_yield();
+                position_guard.record_withdrawal_initial(
+                    accumulation_proof,
+                    requested_amount,
+                    block_timestamp_ms,
+                )
+            };
+
+            match withdrawal_attempt {
+                WithdrawalAttempt::EmptyPosition => {
+                    self.withdrawal_queue.pop();
+                    depth_cleared += requested_amount;
+                    continue;
+                }
+                WithdrawalAttempt::NoLiquidity => {
+                    break;
+                }
+                WithdrawalAttempt::Full(withdrawal) => {
+                    batch.push(withdrawal);
+                    self.withdrawal_queue.pop();
+                    depth_cleared += requested_amount;
+                }
+                WithdrawalAttempt::Partial {
+                    withdrawal,
+                    remaining,
+                } => {
+                    batch.push(withdrawal);
+                    self.withdrawal_queue.mut_head(|a| *a = remaining);
+                    depth_cleared += requested_amount - remaining;
+                    break;
+                }
+            }
+        }
+
+        let result = WithdrawalQueueExecutionResult {
+            depth: depth_cleared,
+            length: queue_len_start - self.withdrawal_queue.len(),
         };
 
-        let requested_amount = amount.min(supply_position.total_deposit());
-
-        if requested_amount.is_zero() {
-            drop(supply_position);
-            self.withdrawal_queue
-                .try_pop()
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
-            env::log_str("Requested amount is zero");
-            return PromiseOrValue::Value(());
-        }
-
-        let amount_available: BorrowAssetAmount = u128::from(market_borrow_asset_deposited_active)
-            .saturating_add(u128::from(supply_position.inner().total_incoming()))
-            .saturating_sub(u128::from(market_borrowed))
-            .into();
-
-        let withdraw_amount = requested_amount.min(amount_available);
-
-        if withdraw_amount.is_zero() {
-            env::panic_str("Unable to fulfill withdrawal request at this time");
-        }
-
-        let proof = supply_position.accumulate_yield();
-        let resolution = supply_position.record_withdrawal_initial(
-            proof,
-            withdraw_amount,
-            env::block_timestamp_ms(),
-        );
-        drop(supply_position);
+        let Some(transfers) = batch
+            .iter()
+            .map(|resolution| {
+                self.configuration
+                    .borrow_asset
+                    .transfer(resolution.account_id.clone(), resolution.amount_to_account)
+            })
+            .reduce(|a, b| a.and(b))
+        else {
+            return PromiseOrValue::Value(result);
+        };
 
         PromiseOrValue::Promise(
-            self.configuration
-                .borrow_asset
-                .transfer(resolution.account_id.clone(), resolution.amount_to_account)
-                .then(
-                    self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
-                        .execute_next_supply_withdrawal_request_01_finalize(resolution),
-                ),
+            transfers.then(
+                self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
+                    .execute_next_supply_withdrawal_request_01_finalize(batch, result),
+            ),
         )
     }
 
@@ -333,9 +362,7 @@ impl MarketExternalInterface for Contract {
 
         let amount = amount.unwrap_or_else(|| yield_record.get_total());
 
-        yield_record
-            .remove(amount)
-            .unwrap_or_else(|| env::panic_str("Attempt to overdraw"));
+        yield_record.remove(amount);
 
         self.static_yield.insert(&predecessor, &yield_record);
 

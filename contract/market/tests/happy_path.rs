@@ -205,7 +205,8 @@ async fn test_happy(
                 let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
                 // Withdraw all
                 c.create_supply_withdrawal_request(&supply_user, 80).await;
-                c.execute_next_supply_withdrawal_request(&supply_user).await;
+                c.execute_next_supply_withdrawal_request(&supply_user, None)
+                    .await;
                 let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
 
                 assert_eq!(
@@ -249,7 +250,8 @@ async fn test_happy(
                 assert_eq!(u128::from(queue_status.depth), 1100);
                 assert_eq!(queue_status.length, 1);
 
-                c.execute_next_supply_withdrawal_request(&supply_user).await;
+                c.execute_next_supply_withdrawal_request(&supply_user, None)
+                    .await;
 
                 // Check the queue is empty again.
                 let request_status = c

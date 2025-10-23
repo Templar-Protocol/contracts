@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     future::Future,
     sync::Arc,
     time::Duration,
@@ -102,6 +102,7 @@ impl App {
             .checked_div(TERA)
     }
 
+    #[allow(clippy::too_many_lines, reason = "procedural")]
     pub async fn load_markets(&mut self) {
         let mut markets = self.args.monitor.market.clone();
 
@@ -112,16 +113,12 @@ impl App {
                 let near = self.relay_near.clone();
                 let registry_id = registry_id.clone();
                 async move {
-                    match near
-                        .load_deployments_from_registry(registry_id.clone())
+                    near.load_deployments_from_registry(registry_id.clone())
                         .await
-                    {
-                        Ok(deployments) => deployments,
-                        Err(e) => {
+                        .unwrap_or_else(|e| {
                             warn!("Failed to load deployments from registry {registry_id}: {e}");
                             vec![]
-                        }
-                    }
+                        })
                 }
             });
         }
@@ -147,41 +144,81 @@ impl App {
 
         let mut markets = HashMap::new();
         let mut allowed_contracts = HashMap::new();
-        let mut oracles = HashSet::new();
+        if let Some(intents_id) = self.args.relay.intents_id.clone() {
+            allowed_contracts.insert(
+                intents_id,
+                ContractData {
+                    storage_balance_bounds: None,
+                    allowed_methods: self
+                        .args
+                        .relay
+                        .intents_allowed_methods
+                        .iter()
+                        .cloned()
+                        .collect(),
+                },
+            );
+        }
 
         for market_accounts in market_accounts_vec.into_iter().flatten() {
-            let market_id = market_accounts.account_id.clone();
-
             info!(
-                "Loaded market {market_id} with borrow asset {} and collateral asset {}, querying oracle {}",
-                market_accounts.borrow_asset, market_accounts.collateral_asset, market_accounts.oracle_id,
+                "Loaded market {} with borrow asset {} and collateral asset {}, querying oracle {}",
+                market_accounts.account_id,
+                market_accounts.borrow_asset,
+                market_accounts.collateral_asset,
+                market_accounts.oracle_id,
             );
 
-            oracles.insert(market_accounts.oracle_id.clone());
-
-            for contract_id in [
-                market_id,
-                market_accounts.borrow_asset.contract_id().to_owned(),
-                market_accounts.collateral_asset.contract_id().to_owned(),
+            for (contract_id, allowed_methods) in [
+                (
+                    market_accounts.account_id.as_ref(),
+                    self.args.relay.allowed_methods.as_slice(),
+                ),
+                (
+                    market_accounts.borrow_asset.contract_id(),
+                    &[market_accounts
+                        .borrow_asset
+                        .transfer_call_method_name()
+                        .to_string()],
+                ),
+                (
+                    market_accounts.collateral_asset.contract_id(),
+                    &[market_accounts
+                        .collateral_asset
+                        .transfer_call_method_name()
+                        .to_string()],
+                ),
+                (
+                    &market_accounts.oracle_id,
+                    &self.args.relay.oracle_allowed_methods,
+                ),
             ] {
-                if let Entry::Vacant(e) = allowed_contracts.entry(contract_id.clone()) {
-                    let storage_balance_bounds = self
-                        .relay_near
-                        .load_storage_balance_bounds(contract_id.clone())
-                        .await
-                        .ok();
+                match allowed_contracts.entry(contract_id.to_owned()) {
+                    Entry::Vacant(e) => {
+                        let storage_balance_bounds = self
+                            .relay_near
+                            .load_storage_balance_bounds(contract_id.to_owned())
+                            .await
+                            .ok();
 
-                    info!(
-                        "Loaded storage balance bounds for contract {}: {}",
-                        contract_id,
-                        storage_balance_bounds
-                            .as_ref()
-                            .map_or(NearToken::from_near(0), |bounds| bounds.min),
-                    );
+                        info!(
+                            "Loaded storage balance bounds for contract {}: {}",
+                            contract_id,
+                            storage_balance_bounds
+                                .as_ref()
+                                .map_or(NearToken::from_near(0), |bounds| bounds.min),
+                        );
 
-                    e.insert(ContractData {
-                        storage_balance_bounds,
-                    });
+                        e.insert(ContractData {
+                            storage_balance_bounds,
+                            allowed_methods: allowed_methods.iter().cloned().collect(),
+                        });
+                    }
+                    Entry::Occupied(mut e) => {
+                        e.get_mut()
+                            .allowed_methods
+                            .extend(allowed_methods.iter().cloned());
+                    }
                 }
             }
 
@@ -191,7 +228,6 @@ impl App {
         let mut handle = self.accounts.write().await;
         handle.market_data = markets;
         handle.allowed_contract_data = allowed_contracts;
-        handle.oracles = oracles;
     }
 
     /// Checks that the all of the function call actions are allowed for the specific receiver.
@@ -210,37 +246,27 @@ impl App {
     ) -> Result<Vec<AccountId>, PreconditionError> {
         let mut other_interactions = Vec::new();
 
-        if accounts.market_data.contains_key(receiver_id) {
-            // Calling a market contract directly.
-            for (index, call) in calls.into_iter().enumerate() {
-                if !self.args.relay.allowed_methods.contains(&call.method_name) {
-                    return Err(PreconditionError::UnknownFunctionName { index });
-                }
+        let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
+            return Err(PreconditionError::UnknownTransactionReceiverId {
+                account_id: receiver_id.to_owned(),
+            });
+        };
+
+        for (index, call) in calls.into_iter().enumerate() {
+            if !contract_data.allowed_methods.contains(&call.method_name) {
+                return Err(PreconditionError::UnknownFunctionName { index });
             }
-        } else if accounts.oracles.contains(receiver_id) {
-            // Pushing price updates to Pyth oracle
-            for (index, call) in calls.into_iter().enumerate() {
-                if !self
-                    .args
-                    .relay
-                    .oracle_allowed_methods
-                    .contains(&call.method_name)
-                {
-                    return Err(PreconditionError::UnknownFunctionName { index });
-                }
-            }
-        } else {
-            // Token contract transfer call to market.
-            for (index, call) in calls.into_iter().enumerate() {
-                let transfer =
-                    AssetTransfer::parse(receiver_id.to_owned(), call).map_err(|e| match e {
-                        AssetTransferParseError::UnknownFunctionName => {
-                            PreconditionError::UnknownFunctionName { index }
-                        }
-                        AssetTransferParseError::ArgumentDeserialization => {
-                            PreconditionError::ArgumentDeserializationFailure { index }
-                        }
-                    })?;
+
+            if let Ok(transfer) =
+                AssetTransfer::parse(receiver_id.to_owned(), call).map_err(|e| match e {
+                    AssetTransferParseError::UnknownFunctionName => {
+                        PreconditionError::UnknownFunctionName { index }
+                    }
+                    AssetTransferParseError::ArgumentDeserialization => {
+                        PreconditionError::ArgumentDeserializationFailure { index }
+                    }
+                })
+            {
                 let market_id = transfer.token_receiver_id();
                 other_interactions.push(market_id.to_owned());
 

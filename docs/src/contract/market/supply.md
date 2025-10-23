@@ -4,7 +4,7 @@ Accounts may deposit assets to the market's supply to earn yield.
 
 ## Deposit
 
-To add funds to a market's supply, send the to the contract, specifying [`"Supply"`](../../doc/templar_common/market/enum.DepositMsg.html#variant.Supply) as the transfer `msg`.
+To add funds to a market's supply, send the to the contract, specifying [`"Supply"`](../../../doc/templar_common/market/enum.DepositMsg.html#variant.Supply) as the transfer `msg`.
 
 For example:
 
@@ -38,13 +38,13 @@ near contract call-function as-transaction \
     sign-as <account-id>
 ```
 
-Now the account has a position in the queue. Should the account wish to update the amount of the request, it can call [`create_supply_withdrawal_request`](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.create_supply_withdrawal_request) again, however, this will also reset its position to the end of the queue.
+Now the account has a position in the queue. Should the account wish to update the amount of the request, it can call [`create_supply_withdrawal_request`](../../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.create_supply_withdrawal_request) again, however, this will also reset its position to the end of the queue.
 
-A supply withdrawal request can be cancelled via [`cancel_supply_withdrawal_request`](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.cancel_supply_withdrawal_request).
+A supply withdrawal request can be cancelled via [`cancel_supply_withdrawal_request`](../../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.cancel_supply_withdrawal_request).
 
 In order for an account's supply withdrawal request to be fulfilled, all of the requests that are ahead of it in the queue must be fulfilled first.
 
-To execute the next withdrawal request, use the [`execute_next_supply_withdrawal_request`](../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.execute_next_supply_withdrawal_request) function:
+To execute the next withdrawal request, use the [`execute_next_supply_withdrawal_request`](../../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.execute_next_supply_withdrawal_request) function:
 
 ```bash
 near contract call-function as-transaction \

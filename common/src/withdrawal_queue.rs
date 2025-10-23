@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
-use crate::{asset::BorrowAssetAmount, asset_op};
+use crate::asset::BorrowAssetAmount;
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]
@@ -18,7 +18,6 @@ pub struct QueueNode {
 pub struct WithdrawalQueue {
     prefix: Vec<u8>,
     length: u32,
-    is_locked: bool,
     next_queue_node_id: NonZeroU32,
     queue: LookupMap<NonZeroU32, QueueNode>,
     queue_head: Option<NonZeroU32>,
@@ -33,6 +32,10 @@ enum StorageKey {
     Entries,
 }
 
+fn inconsistent_state<T>() -> T {
+    env::panic_str("Inconsistent state")
+}
+
 impl WithdrawalQueue {
     pub fn new(prefix: impl IntoStorageKey) -> Self {
         let prefix = prefix.into_storage_key();
@@ -44,7 +47,6 @@ impl WithdrawalQueue {
         Self {
             prefix: prefix.clone(),
             length: 0,
-            is_locked: false,
             next_queue_node_id: NonZeroU32::MIN,
             queue: LookupMap::new(key!(Queue)),
             queue_head: None,
@@ -79,29 +81,20 @@ impl WithdrawalQueue {
         node_id: NonZeroU32,
         f: impl FnOnce(&mut QueueNode) -> T,
     ) -> T {
-        let mut node = self
-            .queue
-            .get(&node_id)
-            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+        let mut node = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
         let r = f(&mut node);
         self.queue.insert(&node_id, &node);
         r
     }
 
     fn set_existing_node_next(&mut self, node_id: NonZeroU32, next: Option<NonZeroU32>) {
-        let mut node = self
-            .queue
-            .get(&node_id)
-            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+        let mut node = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
         node.next = next;
         self.queue.insert(&node_id, &node);
     }
 
     fn set_existing_node_prev(&mut self, node_id: NonZeroU32, prev: Option<NonZeroU32>) {
-        let mut node = self
-            .queue
-            .get(&node_id)
-            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+        let mut node = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
         node.prev = prev;
         self.queue.insert(&node_id, &node);
     }
@@ -110,10 +103,7 @@ impl WithdrawalQueue {
         if let Some(node_id) = self.queue_head {
             let QueueNode {
                 account_id, amount, ..
-            } = self
-                .queue
-                .get(&node_id)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+            } = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
             Some((account_id, amount))
         } else {
             None
@@ -125,40 +115,8 @@ impl WithdrawalQueue {
             .map(|node_id| self.mut_existing_node(node_id, |n| f(&mut n.amount)))
     }
 
-    /// # Errors
-    /// - If the queue is already locked.
-    /// - If the queue is empty.
-    pub fn try_lock(
-        &mut self,
-    ) -> Result<(AccountId, BorrowAssetAmount), error::WithdrawalQueueLockError> {
-        if self.is_locked {
-            return Err(error::AlreadyLockedError.into());
-        }
-
-        if let Some(peek) = self.peek() {
-            self.is_locked = true;
-            Ok(peek)
-        } else {
-            Err(error::EmptyError.into())
-        }
-    }
-
-    pub fn unlock(&mut self) {
-        self.is_locked = false;
-    }
-
-    /// Only pops if:
-    /// 1. Queue is non-empty.
-    /// 2. Queue is locked.
-    ///
-    /// Unlocks the queue.
-    pub fn try_pop(&mut self) -> Option<(AccountId, BorrowAssetAmount)> {
-        if !self.is_locked {
-            env::panic_str("Withdrawal queue must be locked to pop.");
-        }
-
-        self.is_locked = false;
-
+    /// Only pops if queue is non-empty.
+    pub fn pop(&mut self) -> Option<(AccountId, BorrowAssetAmount)> {
         if let Some(node_id) = self.queue_head {
             let QueueNode {
                 account_id,
@@ -168,7 +126,7 @@ impl WithdrawalQueue {
             } = self
                 .queue
                 .remove(&node_id)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+                .unwrap_or_else(inconsistent_state);
             self.queue_head = next;
             if let Some(next_id) = next {
                 self.set_existing_node_prev(next_id, None);
@@ -186,15 +144,11 @@ impl WithdrawalQueue {
     /// If the queue is locked, accounts can only be removed if they are not
     /// at the head of the queue.
     pub fn remove(&mut self, account_id: &AccountId) -> Option<BorrowAssetAmount> {
-        if self.is_locked && self.queue_head == self.entries.get(account_id) {
-            env::panic_str("Cannot remove head while withdrawal queue is locked.");
-        }
-
         if let Some(node_id) = self.entries.remove(account_id) {
             let node = self
                 .queue
                 .remove(&node_id)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+                .unwrap_or_else(inconsistent_state);
 
             if let Some(next_id) = node.next {
                 self.set_existing_node_prev(next_id, node.prev);
@@ -289,7 +243,7 @@ impl WithdrawalQueue {
                 });
             }
 
-            asset_op!(depth += amount);
+            depth += amount;
         }
 
         unreachable!()
@@ -319,7 +273,7 @@ impl Iterator for WithdrawalQueueIter<'_> {
             .withdrawal_queue
             .queue
             .get(&next_node_id)
-            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+            .unwrap_or_else(inconsistent_state);
         self.next_node_id = r.next;
         Some((r.account_id, r.amount))
     }
@@ -351,25 +305,22 @@ pub struct WithdrawalQueueStatus {
     pub length: u32,
 }
 
+/// Return value after executing requests from the withdrawal queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct WithdrawalQueueExecutionResult {
+    /// What is the total value of the requests that were cleared from the queue?
+    pub depth: BorrowAssetAmount,
+    /// How many requests were cleared from the queue?
+    pub length: u32,
+}
+
 pub mod error {
     use thiserror::Error;
 
     #[derive(Error, Debug)]
-    #[error("The withdrawal queue is already locked")]
-    pub struct AlreadyLockedError;
-
-    #[derive(Error, Debug)]
     #[error("The withdrawal queue is empty")]
     pub struct EmptyError;
-
-    #[derive(Error, Debug)]
-    #[error("The withdrawal queue could not be locked: {}", .0)]
-    pub enum WithdrawalQueueLockError {
-        #[error(transparent)]
-        AlreadyLocked(#[from] AlreadyLockedError),
-        #[error(transparent)]
-        Empty(#[from] EmptyError),
-    }
 }
 
 #[cfg(test)]
@@ -452,16 +403,21 @@ mod tests {
         assert_eq!(wq.peek(), Some((alice.clone(), 99.into())));
         wq.insert_or_update(&bob, 123.into());
         assert_eq!(wq.len(), 2);
-        wq.try_lock().unwrap();
-        assert_eq!(wq.try_pop(), Some((alice.clone(), 99.into())));
+
+        assert_eq!(wq.pop(), Some((alice.clone(), 99.into())));
         assert_eq!(wq.len(), 1);
-        wq.insert_or_update(&charlie, 42.into());
+        assert_eq!(wq.peek(), Some((bob.clone(), 123.into())));
+
+        wq.insert_or_update(&charlie, 8080.into());
         assert_eq!(wq.len(), 2);
-        wq.try_lock().unwrap();
-        assert_eq!(wq.try_pop(), Some((bob.clone(), 123.into())));
+        assert_eq!(wq.peek(), Some((bob.clone(), 123.into())));
+
+        assert_eq!(wq.pop(), Some((bob.clone(), 123.into())));
         assert_eq!(wq.len(), 1);
-        wq.try_lock().unwrap();
-        assert_eq!(wq.try_pop(), Some((charlie.clone(), 42.into())));
+        assert_eq!(wq.peek(), Some((charlie.clone(), 8080.into())));
+
+        assert_eq!(wq.pop(), Some((charlie.clone(), 8080.into())));
         assert_eq!(wq.len(), 0);
+        assert_eq!(wq.peek(), None);
     }
 }

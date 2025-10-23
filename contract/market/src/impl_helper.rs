@@ -4,10 +4,11 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     borrow::{InitialBorrow, InitialLiquidation},
-    market::{LiquidateMsg, WithdrawalResolution},
+    market::{LiquidateMsg, Withdrawal},
     oracle::pyth::OracleResponse,
     price::PricePair,
     self_ext,
+    withdrawal_queue::WithdrawalQueueExecutionResult,
 };
 
 use crate::{Contract, ContractExt, ReturnStyle};
@@ -173,67 +174,26 @@ impl Contract {
     #[private]
     pub fn execute_next_supply_withdrawal_request_01_finalize(
         &mut self,
-        withdrawal_resolution: WithdrawalResolution,
-    ) {
-        // If the withdrawal request is fully filled, we remove the withdrawal
-        // request from the queue regardless of whether the transfer attempt
-        // succeeded or failed. It is the responsibility of the user to ensure
-        // that they are able to receive tokens.
-        let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
-
+        resolutions: Vec<Withdrawal>,
+        result: WithdrawalQueueExecutionResult,
+    ) -> WithdrawalQueueExecutionResult {
         let snapshot = self.snapshot();
-        let mut supply_position = self
-            .supply_position_guard(snapshot, withdrawal_resolution.account_id.clone())
-            .unwrap_or_else(|| env::panic_str("Invariant violation: Nonexistent supply position"));
-        supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
-        drop(supply_position);
 
-        let amount_remaining = if withdrawal_succeeded {
-            self.withdrawal_queue
-                .mut_head(|amount| {
-                    amount
-                        .split(withdrawal_resolution.total())
-                        .unwrap_or_else(|| {
-                            env::panic_str(
-                                "Invariant violation: withdrawal total > requested amount",
-                            )
-                        });
-                    *amount
-                })
-                .unwrap_or_else(|| env::panic_str("Invariant violation: Empty withdrawal queue"))
-        } else {
-            0.into()
-        };
+        for (i, resolution) in resolutions.iter().enumerate() {
+            let succeeded = matches!(env::promise_result(i as u64), PromiseResult::Successful(_));
 
-        if amount_remaining.is_zero() {
-            // Withdrawal request has been fully filled or cannot be filled
+            if let Some(mut position) =
+                self.supply_position_guard(snapshot, resolution.account_id.clone())
+            {
+                position.record_withdrawal_final(resolution, succeeded);
+            }
 
-            // TODO: If this panics, this is BIG BAD, as it means there is
-            // some way to unlock the queue while a withdrawal is in-flight.
-            // So, maybe we should not *actually* panic here, but do some sort of recovery?
-            let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
-                env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
-            });
-
-            // This is another consistency check: that the account at the
-            // head of the queue cannot change while transfers are
-            // in-flight. This should be maintained by the queue itself.
-            require!(
-                popped_account == withdrawal_resolution.account_id,
-                "Invariant violation: Queue shifted while locked/in-flight.",
-            );
-        }
-
-        if withdrawal_succeeded {
-            self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
-
-            if self.cleanup_supply_position(&withdrawal_resolution.account_id) {
-                self.refund_for_storage(
-                    &withdrawal_resolution.account_id,
-                    self.storage_usage_supply_position,
-                );
+            if succeeded && self.cleanup_supply_position(&resolution.account_id) {
+                self.refund_for_storage(&resolution.account_id, self.storage_usage_supply_position);
             }
         }
+
+        result
     }
 
     // ~3.4 TGas
