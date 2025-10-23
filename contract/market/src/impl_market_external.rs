@@ -11,7 +11,7 @@ use templar_common::{
     oracle::pyth::OracleResponse,
     self_ext,
     snapshot::Snapshot,
-    supply::{SupplyPosition, SupplyPositionGuard, WithdrawalAttempt},
+    supply::{SupplyPosition, WithdrawalAttempt},
     withdrawal_queue::{
         WithdrawalQueueExecutionResult, WithdrawalQueueStatus, WithdrawalRequestStatus,
     },

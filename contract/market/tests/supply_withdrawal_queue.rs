@@ -121,9 +121,11 @@ async fn partial_fulfillment(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(status.length, 2);
 
     // Supply user 1: Fully fulfilled
-    c.execute_next_supply_withdrawal_request(&borrow_user).await;
+    c.execute_next_supply_withdrawal_request(&borrow_user, None)
+        .await;
     // Supply user 2: Can only withdraw 8000, because 2000 is borrowed
-    c.execute_next_supply_withdrawal_request(&borrow_user).await;
+    c.execute_next_supply_withdrawal_request(&borrow_user, None)
+        .await;
 
     let balance_1_after = c.borrow_asset.balance_of(supply_user_1.id()).await;
     let balance_2_after = c.borrow_asset.balance_of(supply_user_2.id()).await;

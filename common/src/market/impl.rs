@@ -10,7 +10,7 @@ use crate::{
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
-    market::{MarketConfiguration, Withdrawal},
+    market::MarketConfiguration,
     number::Decimal,
     snapshot::Snapshot,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
@@ -311,39 +311,6 @@ impl Market {
             .and_then(|_| self.borrow_positions.remove(account_id))
             .is_some()
     }
-
-    /// # Errors
-    /// - If the withdrawal queue is already locked.
-    /// - If the withdrawal queue is empty.
-    // pub fn withdrawal_resolution(
-    //     &mut self,
-    //     snapshot_proof: SnapshotProof,
-    //     block_timestamp_ms: u64,
-    //     account_id: AccountId,
-    //     requested_amount: BorrowAssetAmount,
-    // ) -> Option<Withdrawal> {
-    //     let Some((amount, mut supply_position)) = self
-    //         .supply_position_guard(snapshot_proof, account_id)
-    //         .and_then(|supply_position| {
-    //             // Cap withdrawal amount to deposit amount at most.
-    //             let amount = supply_position.total_deposit().min(requested_amount);
-
-    //             (!amount.is_zero()).then_some((amount, supply_position))
-    //         })
-    //     else {
-    //         // The amount that the entry is eligible to withdraw is zero, so skip it.
-    //         return None;
-    //     };
-
-    //     let accumulation_proof = supply_position.accumulate_yield();
-    //     let resolution = supply_position.record_withdrawal_initial(
-    //         accumulation_proof,
-    //         amount,
-    //         block_timestamp_ms,
-    //     );
-
-    //     Some(resolution)
-    // }
 
     pub fn record_borrow_asset_protocol_yield(&mut self, amount: BorrowAssetAmount) {
         let mut yield_record = self

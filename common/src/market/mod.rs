@@ -104,10 +104,8 @@ pub struct Withdrawal {
     pub amount_to_fees: BorrowAssetAmount,
 }
 
-impl WithdrawalResolution {
-    pub fn total(&self) -> BorrowAssetAmount {
-        let mut total = self.amount_to_account;
-        crate::asset_op!(total += self.amount_to_fees);
-        total
-    }
-}
+// impl Withdrawal {
+//     pub fn total(&self) -> BorrowAssetAmount {
+//         self.amount_to_account + self.amount_to_fees
+//     }
+// }

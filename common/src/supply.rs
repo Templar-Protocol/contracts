@@ -441,7 +441,7 @@ impl<'a> SupplyPositionGuard<'a> {
             }
             .emit();
         } else {
-            self.add_incoming(total, self.market.finalized_snapshots.len() + 1);
+            self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
         }
     }
 
