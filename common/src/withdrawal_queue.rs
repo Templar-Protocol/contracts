@@ -1,8 +1,6 @@
 use std::num::NonZeroU32;
 
-use near_sdk::{
-    collections::LookupMap, env, near, AccountId, AccountIdRef, BorshStorageKey, IntoStorageKey,
-};
+use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
 use crate::asset::BorrowAssetAmount;
 
@@ -115,48 +113,6 @@ impl WithdrawalQueue {
     pub fn mut_head<T>(&mut self, f: impl FnOnce(&mut BorrowAssetAmount) -> T) -> Option<T> {
         self.queue_head
             .map(|node_id| self.mut_existing_node(node_id, |n| f(&mut n.amount)))
-    }
-
-    pub fn dequeue_amount(
-        &mut self,
-        amount_limit: BorrowAssetAmount,
-    ) -> Option<(AccountId, BorrowAssetAmount)> {
-        if amount_limit.is_zero() {
-            return None;
-        }
-
-        let queue_head = self.queue_head?;
-
-        let QueueNode {
-            account_id,
-            amount,
-            next,
-            ..
-        } = self
-            .queue
-            .get(&queue_head)
-            .unwrap_or_else(inconsistent_state);
-
-        if amount > amount_limit {
-            self.mut_existing_node(queue_head, |n| {
-                n.amount -= amount_limit;
-            });
-            return Some((account_id, amount_limit));
-        }
-
-        self.queue
-            .remove(&queue_head)
-            .unwrap_or_else(inconsistent_state);
-        self.queue_head = next;
-        if let Some(next_id) = next {
-            self.set_existing_node_prev(next_id, None);
-        } else {
-            self.queue_tail = None;
-        }
-        self.entries.remove(&account_id);
-        self.length -= 1;
-
-        Some((account_id, amount))
     }
 
     /// Only pops if queue is non-empty.
@@ -345,6 +301,16 @@ pub struct WithdrawalQueueStatus {
     pub length: u32,
 }
 
+/// Return value after executing requests from the withdrawal queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct WithdrawalQueueExecutionResult {
+    /// What is the total value of the requests that were cleared from the queue?
+    pub depth: BorrowAssetAmount,
+    /// How many requests were cleared from the queue?
+    pub length: u32,
+}
+
 pub mod error {
     use thiserror::Error;
 
@@ -398,17 +364,7 @@ mod tests {
         wq.insert_or_update(&bob, 123.into());
         assert_eq!(wq.len(), 2);
 
-        assert_eq!(
-            wq.dequeue_amount(|_| 90.into()),
-            Some((alice.clone(), 90.into())),
-        );
-        assert_eq!(wq.len(), 2);
-        assert_eq!(wq.peek(), Some((alice.clone(), 9.into())));
-
-        assert_eq!(
-            wq.dequeue_amount(|_| 10_000_000.into()),
-            Some((alice.clone(), 9.into())),
-        );
+        assert_eq!(wq.pop(), Some((alice.clone(), 99.into())));
         assert_eq!(wq.len(), 1);
         assert_eq!(wq.peek(), Some((bob.clone(), 123.into())));
 
@@ -416,17 +372,11 @@ mod tests {
         assert_eq!(wq.len(), 2);
         assert_eq!(wq.peek(), Some((bob.clone(), 123.into())));
 
-        assert_eq!(
-            wq.dequeue_amount(|_| 10_000_000.into()),
-            Some((bob.clone(), 123.into())),
-        );
+        assert_eq!(wq.pop(), Some((bob.clone(), 123.into())));
         assert_eq!(wq.len(), 1);
         assert_eq!(wq.peek(), Some((charlie.clone(), 8080.into())));
 
-        assert_eq!(
-            wq.dequeue_amount(|_| 10_000_000.into()),
-            Some((charlie.clone(), 8080.into())),
-        );
+        assert_eq!(wq.pop(), Some((charlie.clone(), 8080.into())));
         assert_eq!(wq.len(), 0);
         assert_eq!(wq.peek(), None);
     }

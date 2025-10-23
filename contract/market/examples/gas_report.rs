@@ -120,7 +120,9 @@ async fn main() {
         .create_supply_withdrawal_request(&supply_user, 120_000)
         .await;
     let create_supply_withdrawal_gas = e.total_gas_burnt;
-    let e = c.execute_next_supply_withdrawal_request(&supply_user).await;
+    let e = c
+        .execute_next_supply_withdrawal_request_exec(&supply_user, None)
+        .await;
     let execute_supply_withdrawal_gas = e.total_gas_burnt;
 
     println!("## Gas Report");
