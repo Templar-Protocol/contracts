@@ -79,12 +79,14 @@ pub struct Cache {
     request: mpsc::Sender<CacheRequest>,
 }
 
+#[tracing::instrument(skip_all, name = "cache_service")]
 async fn start(
     mut recv: mpsc::Receiver<CacheRequest>,
     near: Near,
     cache_config: crate::app::args::Cache,
     kill: watch::Sender<()>,
 ) {
+    tracing::info!("Starting cache service");
     let mut gas_price = CacheRecord::empty();
     let mut nonce = HashMap::<(AccountId, PublicKey), CacheRecord<u64>>::new();
     let block_hash = Arc::new(RwLock::new(CryptoHash::new()));
@@ -120,9 +122,11 @@ async fn start(
                 };
                 match request {
                     CacheRequest::GasPrice(sender) => {
+                        tracing::trace!("Processing gas price cache request");
                         let fresh = gas_price.fetch(update_gas, cache_config.gas_price_refresh).await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(price) = fresh {
+                            tracing::trace!(price = %price, "Sending fresh gas price");
                             sender.send(*price).unwrap();
                         } else if let Some(price) = gas_price.stale() {
                             tracing::warn!("Failed to fetch gas price, sending stale value.");
@@ -133,12 +137,14 @@ async fn start(
                         }
                     }
                     CacheRequest::Nonce { key, sender } => {
+                        tracing::trace!(account_id = %key.0, "Processing nonce cache request");
                         let entry = nonce.entry(key.clone()).or_insert_with(CacheRecord::empty);
                         let fresh = entry
                             .fetch_update(update_nonce(key.clone()), cache_config.nonce_refresh, |n| *n += 1)
                             .await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(nonce) = fresh {
+                            tracing::trace!(nonce = %nonce, "Sending fresh nonce");
                             sender.send((*nonce, *block_hash.read().await)).unwrap();
                         } else if let Some(nonce) = entry.update_stale(|n| *n += 1) {
                             tracing::warn!(
