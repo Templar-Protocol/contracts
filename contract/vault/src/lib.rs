@@ -13,7 +13,7 @@ use crate::storage_management::{
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env,
-    json_types::U128,
+    json_types::{U128, U64},
     near, require, serde_json,
     store::{IterableMap, LookupMap, Vector},
     AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
@@ -123,7 +123,6 @@ pub struct Contract {
     op_state: OpState,
     next_op_id: u64,
 
-
     /// Pending withdrawals queue (vault-level, FIFO by id)
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_id: u64,
@@ -150,7 +149,7 @@ impl Contract {
             curator,
             guardian,
             underlying_token,
-            initial_timelock_sec,
+            initial_timelock_ns,
             fee_recipient,
             skim_recipient,
             name,
@@ -159,9 +158,8 @@ impl Contract {
             mode,
         } = configuration;
 
-        let timelock_ns = u64::from(initial_timelock_sec) * 1_000_000_000;
         require!(
-            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&timelock_ns),
+            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&initial_timelock_ns.0),
             "timelock bounds"
         );
 
@@ -178,10 +176,9 @@ impl Contract {
             };
         }
 
-
         let mut contract = Self {
             underlying_asset: underlying_token,
-            timelock_ns,
+            timelock_ns: initial_timelock_ns.0,
             performance_fee: Default::default(),
             fee_recipient,
             skim_recipient,
@@ -362,33 +359,33 @@ impl Contract {
     /* ----- Timelocks / Pending ----- */
     /// Proposes a new governance timelock in seconds.
     /// If increasing, applies immediately; if decreasing, starts a timelock equal to the current duration.
-    pub fn submit_timelock(&mut self, new_timelock_secs: u32) {
+    pub fn submit_timelock(&mut self, new_timelock_ns: U64) {
         Self::require_owner();
-        let as_nanos = u64::from(new_timelock_secs) * 1_000_000_000;
+        let tl = &new_timelock_ns.0;
 
-        require!(as_nanos != self.timelock_ns, "Already set to this value");
+        require!(tl != &self.timelock_ns, "Already set to this value");
         require!(
             self.pending_timelock.is_none(),
             "Timelock change already pending"
         );
         require!(
-            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&as_nanos),
+            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&tl),
             "Timelock out of bounds"
         );
-        if as_nanos > self.timelock_ns {
-            self.timelock_ns = as_nanos;
+        if tl > &self.timelock_ns {
+            self.timelock_ns = *tl;
             Event::TimelockSet {
-                seconds: new_timelock_secs,
+                seconds: new_timelock_ns,
             }
             .emit();
         } else {
             let valid_at = env::block_timestamp() + self.timelock_ns;
             self.pending_timelock = Some(PendingValue {
-                value: as_nanos,
+                value: *tl,
                 valid_at,
             });
             Event::TimelockChangeSubmitted {
-                new_seconds: new_timelock_secs,
+                new_ns: new_timelock_ns,
                 valid_at: valid_at.into(),
             }
             .emit();
@@ -865,7 +862,6 @@ impl Contract {
 impl Contract {
     #[allow(clippy::expect_used, reason = "No side effects")]
     pub fn get_configuration(&self) -> VaultConfiguration {
-        let timelock_sec = self.timelock_ns / 1_000_000_000;
         VaultConfiguration {
             owner: self
                 .own_get_owner()
@@ -885,7 +881,7 @@ impl Contract {
                 members.iter().next().expect("Guardian not set").clone()
             }),
             underlying_token: self.underlying_asset.clone(),
-            initial_timelock_sec: timelock_sec as u32,
+            initial_timelock_ns: self.timelock_ns.clone().into(),
             fee_recipient: self.fee_recipient.clone(),
             skim_recipient: self.skim_recipient.clone(),
             name: self.get_metadata().name,

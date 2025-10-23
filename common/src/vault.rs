@@ -88,7 +88,7 @@ pub struct VaultConfiguration {
     /// The underlying asset for this vault.
     pub underlying_token: FungibleAsset<BorrowAsset>,
     /// The initial timelock for this vault used for modifying the configuration.
-    pub initial_timelock_sec: u32,
+    pub initial_timelock_ns: U64,
     /// The account that receives fees for this vault.
     pub fee_recipient: AccountId,
     /// The skim account that can unorphan any assets erroneously sent to this vault.
@@ -112,7 +112,7 @@ pub trait VaultExt {
     fn set_skim_recipient(account: AccountId);
     fn set_fee_recipient(account: AccountId);
     fn set_performance_fee(fee: U128);
-    fn submit_timelock(new_timelock_secs: u32);
+    fn submit_timelock(new_timelock_ns: U64);
     fn accept_timelock();
     fn revoke_pending_timelock();
 
@@ -426,9 +426,9 @@ pub enum Event {
     PerformanceFeeSet { fee: U128 },
 
     #[event_version("1.0.0")]
-    TimelockSet { seconds: u32 },
+    TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
-    TimelockChangeSubmitted { new_seconds: u32, valid_at: U64 },
+    TimelockChangeSubmitted { new_ns: U64, valid_at: U64 },
     #[event_version("1.0.0")]
     PendingTimelockRevoked,
 
