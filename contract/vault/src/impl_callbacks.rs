@@ -161,7 +161,7 @@ impl Contract {
 
         self.op_state = OpState::Allocating {
             op_id,
-            index: market_index + 1,
+            index: market_index.saturating_add(1),
             remaining: remaining_next,
         };
         self.step_allocation()
@@ -212,7 +212,7 @@ impl Contract {
             .emit();
             self.op_state = OpState::Withdrawing {
                 op_id,
-                index: market_index + 1,
+                index: market_index.saturating_add(1),
                 remaining: remaining,
                 receiver: received,
                 collected: collected,
@@ -312,14 +312,17 @@ impl Contract {
             }
         };
 
-        let (_credited, remaining_next, collected_next, idle_delta) = self
-            .reconcile_withdraw_outcome(
-                before_principal,
-                new_principal,
-                need.0,
-                remaining_ctx,
-                collected_ctx,
-            );
+        let WithdrawReconciliation {
+            remaining_next,
+            collected_next,
+            idle_delta,
+            ..
+        } = reconcile_withdraw_outcome(
+            before_principal,
+            new_principal,
+            remaining_ctx,
+            collected_ctx,
+        );
 
         self.market_supply.insert(market.clone(), new_principal);
         if idle_delta > 0 {
@@ -358,7 +361,7 @@ impl Contract {
         } else {
             self.op_state = OpState::Withdrawing {
                 op_id,
-                index: market_index + 1,
+                index: market_index.saturating_add(1),
                 remaining: remaining_next,
                 receiver: receiver,
                 collected: collected_next,
@@ -381,7 +384,7 @@ impl Contract {
         receiver: AccountId,
         amount: U128,
     ) -> bool {
-        let (owner, escrow_shares, amount, burn_shares) = match &self.op_state {
+        let (owner, escrow_shares, expected_amount, burn_shares) = match &self.op_state {
             OpState::Payout {
                 op_id: current_op,
                 receiver: recv,
@@ -405,27 +408,42 @@ impl Contract {
 
         if result.is_ok() {
             // On payout success, idle_balance -= payout_amount.
+            self.idle_balance = self.idle_balance.saturating_sub(expected_amount);
+
+            let EscrowSettlement {
+                to_burn: burn_shares,
+                refund,
+            } = Self::compute_escrow_settlement(escrow_shares, burn_shares);
+
             // Burn only the proportional shares and refund the remainder to the owner.
-            self.idle_balance = self.idle_balance.saturating_sub(amount);
-            let EscrowSettlement { to_burn, refund } =
-                Self::compute_escrow_settlement(escrow_shares, burn_shares);
-            if to_burn > 0 {
-                self.withdraw_unchecked(&env::current_account_id(), to_burn)
-                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            if burn_shares > 0 {
+                // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
+                self.withdraw_unchecked(&env::current_account_id(), burn_shares)
+                    .unwrap_or_else(|e| env::log_str(&e.to_string()));
+                // TODO: emit burn event
             }
+
+            // Maybe refund any delta to the owner
             if refund > 0 {
+                // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
+                // Note: this should be infallible since we are transferring to an existing owner, and they are unable to unregister from storage
                 #[allow(clippy::expect_used, reason = "No side effects")]
                 self.transfer_unchecked(&env::current_account_id(), &owner, refund)
-                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+                    .unwrap_or_else(|e| env::log_str(&e.to_string()));
+                // TODO: emit Refund event
             }
+
+            // Pop the withdrawing id and reconcile the primer
             self.op_state = OpState::Idle;
+            sanitise_queue();
             true
         } else {
             // On payout failure, refund full escrow to owner and leave idle_balance unchanged
-            #[allow(clippy::expect_used, reason = "No side effects")]
             self.transfer_unchecked(&env::current_account_id(), &owner, escrow_shares)
-                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+                // If this fails, this is a serious issue as above
+                .unwrap_or_else(|e| env::log_str(&e.to_string()));
             self.op_state = OpState::Idle;
+            sanitise_queue();
             false
         }
     }
@@ -528,7 +546,7 @@ impl Contract {
             let self_id = env::current_account_id();
             #[allow(clippy::expect_used, reason = "No side effects")]
             self.transfer_unchecked(&self_id, &owner_acc, escrow)
-                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+                .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
         self.op_state = OpState::Idle;
     }
@@ -567,7 +585,7 @@ impl Contract {
                 let escrow = *escrow_shares;
                 #[allow(clippy::expect_used, reason = "No side effects")]
                 self.transfer_unchecked(&self_id, &owner_acc, escrow)
-                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+                    .unwrap_or_else(|e| env::log_str(&e.to_string()));
             }
         }
         self.op_state = OpState::Idle;

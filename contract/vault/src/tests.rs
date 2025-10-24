@@ -1,5 +1,6 @@
 use std::u64;
 
+use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::storage_management::yocto_for_new_market;
@@ -717,18 +718,21 @@ fn reconcile_withdraw_outcome_invariants_cases(
     rem: u128,
     coll: u128,
 ) {
-    let c = new_test_contract(&mk(0));
-    let (credited, remaining_next, collected_next, idle_delta) =
-        c.reconcile_withdraw_outcome(before, new_principal, need, rem, coll);
+    let WithdrawReconciliation {
+        payout_delta,
+        remaining_next,
+        collected_next,
+        idle_delta,
+    } = crate::impl_callbacks::reconcile_withdraw_outcome(before, new_principal, rem, coll);
 
     let withdrawn = before.saturating_sub(new_principal);
     let expected_credited = withdrawn.min(need);
 
-    assert_eq!(credited, expected_credited);
-    assert!(credited <= need);
-    assert_eq!(remaining_next, rem.saturating_sub(credited));
-    assert_eq!(collected_next, coll.saturating_add(credited));
-    assert_eq!(idle_delta, credited);
+    assert_eq!(payout_delta, expected_credited);
+    assert!(payout_delta <= need);
+    assert_eq!(remaining_next, rem.saturating_sub(payout_delta));
+    assert_eq!(collected_next, coll.saturating_add(payout_delta));
+    assert_eq!(idle_delta, payout_delta);
 }
 
 #[rstest(
