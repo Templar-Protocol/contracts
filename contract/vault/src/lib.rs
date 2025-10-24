@@ -5,10 +5,13 @@ use std::{
     num::NonZeroU8,
 };
 
-use crate::storage_management::{
-    require_attached_at_least, require_attached_for_pending_withdrawal,
-    storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
-    yocto_for_pending_cap,
+use crate::{
+    aum::AUM,
+    storage_management::{
+        require_attached_at_least, require_attached_for_pending_withdrawal,
+        storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
+        yocto_for_pending_cap,
+    },
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -16,12 +19,12 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, serde_json,
     store::{IterableMap, LookupMap, Vector},
-    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, BorshStorageKey, Gas, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
-        nep141::GAS_FOR_FT_TRANSFER_CALL, ContractMetadata, FungibleToken, Nep141Controller,
-        Nep148Controller,
+        nep141::GAS_FOR_FT_TRANSFER_CALL, nep145::Nep145ForceUnregister, ContractMetadata,
+        FungibleToken, Nep141Controller, Nep145, Nep148Controller,
     },
     Owner, Rbac,
 };
@@ -34,7 +37,7 @@ use templar_common::{
         Event, MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
         VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
         AFTER_SUPPLY_ENSURE_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        EXECUTE_WITHDRAW_REQ_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -59,6 +62,7 @@ pub enum StorageKey {
     WithdrawQueue,
     MarketSupply,
     PendingWithdrawals,
+    PrimingProgress,
 }
 
 #[derive(BorshStorageKey)]
@@ -147,6 +151,8 @@ pub struct Contract {
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_id: u64,
     next_withdraw_to_execute: u64,
+    priming_progress: LookupMap<u64, PrimingProgress>,
+    executing_withdraw_id: Option<u64>,
 }
 
 #[near]
@@ -158,7 +164,7 @@ impl Contract {
     /// - `curator_id`: manages markets and is also granted the Allocator role.
     /// - `guardian_id`: can revoke pending governance actions.
     /// - `underlying_token_id`: NEP-141 underlying asset managed by the vault.
-    /// - `initial_timelock_sec`: governance timelock in seconds.
+    /// - `initial_timelock_ns`: governance timelock in nanoseconds.
     /// - `fee_recipient`: account to receive performance fees.
     /// - `skim_recipient`: account to receive skimmed tokens.
     /// - `name`/`symbol`/`decimals`: metadata for the share token.
@@ -223,6 +229,8 @@ impl Contract {
             pending_withdrawals: IterableMap::new(key!(PendingWithdrawals)),
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
+            priming_progress: LookupMap::new(key!(PrimingProgress)),
+            executing_withdraw_id: None,
         };
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
         Owner::init(&mut contract, &owner);
@@ -768,6 +776,14 @@ impl Contract {
         .emit();
 
         self.enqueue_pending_withdrawal(&sender, &receiver, shares, assets);
+
+        let new_id = self.next_withdraw_id.saturating_sub(1);
+        if self.next_withdraw_to_execute == new_id {
+            if let Some(p) = self._prime_head_withdrawal(assets, self.withdraw_queue.len() as u32) {
+                return PromiseOrValue::Promise(p);
+            }
+        }
+
         PromiseOrValue::Value(())
     }
 
@@ -778,23 +794,41 @@ impl Contract {
         self.ensure_idle();
         Self::assert_allocator();
 
-        // Find the next present pending withdrawal by id
-        let mut id = self.next_withdraw_to_execute;
-        while id < self.next_withdraw_id {
-            if let Some(pending) = self.pending_withdrawals.remove(&id) {
-                // Advance the head pointer and start processing
-                self.next_withdraw_to_execute = id.saturating_add(1);
+        let start = self.next_withdraw_to_execute;
+        let end = self.next_withdraw_id;
+
+        if let Some(id) = (start..end).find(|i| self.pending_withdrawals.get(i).is_some()) {
+            // Advance head to the found id and start execution
+            self.next_withdraw_to_execute = id;
+            if let Some(pending) = self.pending_withdrawals.get(&id).cloned() {
+                self.executing_withdraw_id = Some(id);
                 return self.start_withdraw(
                     pending.expected_assets,
-                    pending.receiver,
-                    pending.owner,
+                    &pending.receiver,
+                    &pending.owner,
                     pending.escrow_shares,
                 );
             }
-            id = id.saturating_add(1);
-            self.next_withdraw_to_execute = id;
+        } else {
+            self.next_withdraw_to_execute = end;
         }
 
+        PromiseOrValue::Value(())
+    }
+
+    /// Allocator-only: pre-creates market withdrawal requests for the current head pending.
+    pub fn prime_head_withdrawal(&mut self, max_steps: u32) -> PromiseOrValue<()> {
+        Self::assert_allocator();
+        self.ensure_idle();
+        let head_id = self.next_withdraw_to_execute;
+        let expected = match self.pending_withdrawals.get(&head_id) {
+            Some(p) => p.expected_assets,
+            None => return PromiseOrValue::Value(()),
+        };
+        // Priming idempotent via priming_progress; no head_primed guard
+        if let Some(p) = self._prime_head_withdrawal(expected, max_steps) {
+            return PromiseOrValue::Promise(p);
+        }
         PromiseOrValue::Value(())
     }
 
@@ -827,6 +861,37 @@ impl Contract {
             )
     }
 
+    /// Cancel a pending withdrawal request and refund escrowed shares.
+    /// Only the owner of the pending can cancel. Allowed only while Idle.
+    pub fn cancel(&mut self, id: U64) {
+        self.ensure_idle();
+        let id = id.0;
+
+        if let Some(p) = self.pending_withdrawals.get(&id).cloned() {
+            require!(
+                env::predecessor_account_id() == p.owner,
+                "Only pending owner can cancel"
+            );
+            let self_id = env::current_account_id();
+            #[allow(clippy::expect_used, reason = "No side effects")]
+            self.transfer_unchecked(&self_id, &p.owner, p.escrow_shares)
+                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            self.pending_withdrawals.remove(&id);
+            self.priming_progress.remove(&id);
+            if self.next_withdraw_to_execute == id {
+                // Advance the head pointer to the next present pending
+                let mut next = id.saturating_add(1);
+                while next < self.next_withdraw_id && self.pending_withdrawals.get(&next).is_none()
+                {
+                    next = next.saturating_add(1);
+                }
+                self.next_withdraw_to_execute = next;
+            }
+        } else {
+            env::panic_str("Pending withdrawal not found");
+        }
+    }
+
     /// Allocates assets across markets according to the provided weights.
     /// If `amount` is provided, it is used as the target amount for each market.
     /// Otherwise, the vault will attempt to allocate as much as possible.
@@ -847,16 +912,7 @@ impl Contract {
         Self::assert_allocator();
         self.ensure_idle();
 
-        let existing: HashSet<AccountId> = self.withdraw_queue.iter().cloned().collect();
-
-        let candidates: Vec<AccountId> = if weights.is_empty() {
-            self.supply_queue.iter().cloned().collect()
-        } else {
-            weights.iter().map(|(m, _)| m.clone()).collect()
-        };
-
-        let required_yocto = storage_management::yocto_for_queue_additions(&existing, &candidates);
-        let _ = require_attached_at_least(required_yocto, "potential queue additions");
+        // allocate does not mutate queues; no storage deposit is required here.
 
         let total = self.clamp_allocation_total(amount.map(|x| x.0));
 
@@ -1031,6 +1087,13 @@ impl From<EscrowSettlement> for (u128, u128) {
     }
 }
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh])]
+pub struct PrimingProgress {
+    pub next_index: u32,
+    pub assigned: u128,
+}
+
 /* ----- Private Helpers ----- */
 impl Contract {
     fn cfg_mut(&mut self, id: &AccountId) -> &mut MarketConfiguration {
@@ -1039,7 +1102,6 @@ impl Contract {
             .unwrap_or_else(|| env::panic_str("Config not found"))
     }
 
-    // Read-only config accessor with consistent panic
     fn cfg(&self, id: &AccountId) -> &MarketConfiguration {
         self.markets
             .get(id)
@@ -1120,6 +1182,142 @@ impl Contract {
             requested_at: requested_at.into(),
         }
         .emit();
+    }
+
+    fn _prime_head_withdrawal(&mut self, expected: u128, max_steps: u32) -> Option<Promise> {
+        let head_id = self.next_withdraw_to_execute;
+
+        if expected == 0 || max_steps == 0 || !self.pending_withdrawals.contains_key(&head_id) {
+            return None;
+        }
+
+        let mut progress =
+            self.priming_progress
+                .get(&head_id)
+                .cloned()
+                .unwrap_or(PrimingProgress {
+                    next_index: 0,
+                    assigned: 0,
+                });
+
+        let remaining_target = expected.saturating_sub(progress.assigned);
+        let qlen = self.withdraw_queue.len();
+
+        Event::WithdrawalPrimingStarted {
+            id: head_id.into(),
+            expected_assets: U128(expected),
+            max_steps,
+        }
+        .emit();
+
+        let start_idx = progress.next_index;
+        if remaining_target == 0 || start_idx >= qlen {
+            Event::WithdrawalPrimingCompleted {
+                id: head_id.into(),
+                assigned_total: U128(progress.assigned),
+                next_index: progress.next_index,
+            }
+            .emit();
+            self.priming_progress.insert(head_id, progress);
+            return None;
+        }
+
+        let prepaid = env::prepaid_gas();
+        let used = env::used_gas();
+        let available = prepaid.saturating_sub(used);
+
+        let safety_margin = Gas::from_tgas(5);
+        let allowed_steps = if available <= safety_margin {
+            0
+        } else {
+            let available_for_subcalls = available.saturating_sub(safety_margin);
+            let denom = CREATE_WITHDRAW_REQ_GAS.as_gas().max(1);
+            let by_gas_u64 = available_for_subcalls.as_gas() / denom;
+            let by_gas_u32 = by_gas_u64.min(u64::from(u32::MAX)) as u32;
+            max_steps.min(by_gas_u32)
+        };
+
+        if allowed_steps == 0 {
+            Event::WithdrawalPrimingGasLimited {
+                id: head_id.into(),
+                allowed_steps: 0,
+                remaining_gas: available,
+            }
+            .emit();
+            self.priming_progress.insert(head_id, progress);
+            return None;
+        }
+
+        let mut promise: Option<Promise> = None;
+        let mut remaining = remaining_target;
+        let mut steps_taken: u32 = 0;
+        let mut last_scanned: Option<usize> = None;
+
+        for (i, market) in self
+            .withdraw_queue
+            .iter()
+            .enumerate()
+            .skip(start_idx as usize)
+        {
+            if steps_taken >= allowed_steps || remaining == 0 {
+                break;
+            }
+
+            last_scanned = Some(i);
+
+            let have = *self.market_supply.get(market).unwrap_or(&0);
+            let to_request = remaining.min(have);
+
+            if to_request > 0 {
+                Event::WithdrawalPrimingStep {
+                    id: head_id.into(),
+                    market: market.clone(),
+                    requested: U128(to_request),
+                    assigned_so_far: U128(progress.assigned.saturating_add(to_request)),
+                    remaining: U128(remaining.saturating_sub(to_request)),
+                }
+                .emit();
+
+                let p = templar_common::market::ext_market::ext(market.clone())
+                    .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
+                    .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)));
+
+                promise = Some(match promise.take() {
+                    None => p,
+                    Some(prev) => prev.and(p),
+                });
+
+                progress.assigned = progress.assigned.saturating_add(to_request);
+                remaining = remaining.saturating_sub(to_request);
+                steps_taken = steps_taken.saturating_add(1);
+            } else {
+                Event::WithdrawalPrimingSkipped {
+                    id: head_id.into(),
+                    market: market.clone(),
+                    reason: if have == 0 {
+                        "no-supply".to_string()
+                    } else {
+                        "nothing-needed".to_string()
+                    },
+                }
+                .emit();
+            }
+        }
+
+        if let Some(i) = last_scanned {
+            progress.next_index = (i as u32).saturating_add(1);
+        }
+
+        self.priming_progress.insert(head_id, progress.clone());
+
+        Event::WithdrawalPrimingCompleted {
+            id: head_id.into(),
+            assigned_total: U128(progress.assigned),
+            next_index: progress.next_index,
+        }
+        .emit();
+
+        promise
     }
 
     /// Computes fee-aware effective totals for conversions, mimicking `MetaMorpho`:
@@ -1440,8 +1638,8 @@ impl Contract {
     fn start_withdraw(
         &mut self,
         amount: u128,
-        receiver: AccountId,
-        owner: AccountId,
+        receiver: &AccountId,
+        owner: &AccountId,
         escrow_shares: u128,
     ) -> PromiseOrValue<()> {
         if amount == 0 {
@@ -1460,9 +1658,9 @@ impl Contract {
             op_id,
             index: Default::default(),
             remaining,
-            receiver,
+            receiver: receiver.clone(),
             collected,
-            owner,
+            owner: owner.clone(),
             escrow_shares,
         };
         self.step_withdraw()
@@ -1511,8 +1709,7 @@ impl Contract {
         }
         if let Some(market) = self.withdraw_queue.get(index) {
             let have = self.market_supply.get(market).unwrap_or(&0);
-            let to_request = have.min(&remaining);
-            if to_request == &0 {
+            if *have == 0 {
                 self.op_state = OpState::Withdrawing {
                     op_id,
                     index: index + 1,
@@ -1529,13 +1726,12 @@ impl Contract {
             }
             PromiseOrValue::Promise(
                 templar_common::market::ext_market::ext(market.clone())
-                    // FIXME: incorrect
-                    .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
-                    .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(*to_request)))
+                    .with_static_gas(EXECUTE_WITHDRAW_REQ_GAS)
+                    .execute_next_supply_withdrawal_request()
                     .then(
                         ext_self::ext(env::current_account_id())
                             .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
-                            .after_create_withdraw_req(op_id, index, U128(*to_request)),
+                            .after_exec_withdraw_req(op_id, index, U128(remaining)),
                     ),
             )
         } else {
@@ -1576,7 +1772,10 @@ impl Contract {
                     ),
             )
         } else {
-            self.stop_and_exit(Some(&Error::InsufficientLiquidity))
+            // Park the head pending: keep escrowed shares, stay in queue, try again later
+            self.op_state = OpState::Idle;
+            self.executing_withdraw_id = None;
+            PromiseOrValue::Value(())
         }
     }
 }
