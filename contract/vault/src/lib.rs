@@ -936,12 +936,7 @@ impl Contract {
 
     /// Returns total assets under management = idle balance + sum of market principals.
     pub fn get_total_assets(&self) -> U128 {
-        // TODO: join
-        let mut sum = self.idle_balance;
-        self.withdraw_queue.iter().for_each(|m| {
-            sum = sum.saturating_add(self.principal_of(m));
-        });
-        U128(sum)
+        AUM::GovernanceAbandonment.get_total_assets(&self)
     }
 
     pub fn get_total_supply(&self) -> U128 {
@@ -1086,9 +1081,7 @@ impl Contract {
             market: market.clone(),
         }
         .emit();
-        if before_principal > 0 {
-            self.last_total_assets = self.last_total_assets.saturating_add(before_principal);
-        }
+        AUM::GovernanceAbandonment.paper_aum_undercounting(self, &before_principal);
     }
 
     /// Enqueue a vault-level pending withdrawal request (escrow already taken).
@@ -1584,5 +1577,70 @@ impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Co
         env::panic_str("force unregistration is not supported")
     }
 }
+
+mod aum {
+    use super::*;
+    pub enum AUM {
+        // MetaMorpho treats “AUM” as the assets of active markets that governance still stands behind.
+        // Once governance has decided (with a timelock) to abandon a market, MetaMorpho writes that position down to zero for AUM purposes by removing it from the withdrawQueue.
+        // AUM definition is withdrawQueue‑scoped by design.
+        //
+        // - totalAssets() sums MORPHO.expectedSupplyAssets over withdrawQueue only. That is a deliberate filter: if a market is not in the withdrawQueue, it does not contribute to AUM.
+        // - Removing a market with non‑zero supply is allowed, but only after a timelock.
+        // - updateWithdrawQueue enforces: to remove an entry you must have cap == 0, no pending cap, and if supplyShares != 0 then removableAt must be set and the timelock elapsed. After that, it deletes config[id] and drops the market from the queue.
+        // - Effect: it’s a governance “write‑down.” The vault stops counting that position in AUM, even if tokens are still there or might be recoverable later.
+        //
+        // Why that’s acceptable to them:
+        // - It prevents new depositors from paying for stranded or possibly unrecoverable positions. Price (shares per asset) only reflects active, opted‑in markets.
+        // - The decision is gated by a timelock, giving existing holders time to exit before the write‑down takes effect. It’s an explicit, auditable policy action, not an operational side‑effect.
+        GovernanceAbandonment,
+        BalanceSheet,
+    }
+
+    impl AUM {
+        pub fn get_total_assets(&self, c: &Contract) -> U128 {
+            U128(match self {
+                AUM::GovernanceAbandonment => {
+                    c.withdraw_queue.iter().fold(c.idle_balance, |prev, m| {
+                        prev.saturating_add(c.principal_of(m))
+                    })
+                }
+                AUM::BalanceSheet => c.supply_queue.iter().fold(c.idle_balance, |prev, m| {
+                    prev.saturating_add(c.principal_of(m))
+                }),
+            })
+        }
+
+        pub fn policy_removal(&self, cfg: &MarketConfiguration, has_supply: &bool) {
+            match self {
+                AUM::GovernanceAbandonment => {
+                    if *has_supply {
+                        require!(
+                            cfg.removable_at > 0,
+                            "Policy violation: Market still has supply but no removal scheduled"
+                        );
+                        require!(
+                            env::block_timestamp() >= cfg.removable_at,
+                            "Policy violation: Removal timelock not elapsed for market"
+                        );
+                    }
+                }
+                AUM::BalanceSheet => require!(!has_supply, "Policy violation: Supply shares exist"),
+            }
+        }
+
+        pub fn paper_aum_undercounting(&self, c: &mut Contract, before_principal: &u128) {
+            match self {
+                AUM::GovernanceAbandonment => {
+                    if *before_principal > 0 {
+                        c.last_total_assets = c.last_total_assets.saturating_add(*before_principal);
+                    }
+                }
+                AUM::BalanceSheet => {}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
