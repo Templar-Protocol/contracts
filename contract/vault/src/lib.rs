@@ -713,10 +713,7 @@ impl Contract {
         }
 
         let required_yocto = storage_management::yocto_for_queue_additions(&current, &queue);
-        require_attached_at_least(required_yocto, "withdraw queue update");
-        for id in current.difference(&seen).cloned().collect::<Vec<_>>() {
-            self.config.remove(&id);
-        }
+        let _ = require_attached_at_least(required_yocto, "withdraw queue update");
 
         self.withdraw_queue.clear();
         for id in &queue {
@@ -927,9 +924,9 @@ impl Contract {
             initial_timelock_ns: self.timelock_ns.clone().into(),
             fee_recipient: self.fee_recipient.clone(),
             skim_recipient: self.skim_recipient.clone(),
-            name: self.get_metadata().name,
-            symbol: self.get_metadata().symbol,
-            decimals: NonZeroU8::new(self.get_metadata().decimals).unwrap(),
+            name: meta.name,
+            symbol: meta.symbol,
+            decimals: NonZeroU8::new(meta.decimals).unwrap(),
             mode: self.mode.clone(),
         }
     }
