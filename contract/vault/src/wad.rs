@@ -3,10 +3,7 @@ use std::collections::BTreeMap;
 use std::ops::{Add, Sub};
 
 use near_sdk::borsh::schema::{add_definition, Declaration, Definition, Fields};
-use near_sdk::{
-    borsh::{BorshDeserialize, BorshSchema, BorshSerialize},
-    near,
-};
+use near_sdk::borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use templar_common::primitive_types::{U256, U512};
 
 pub type WIDE = U512;

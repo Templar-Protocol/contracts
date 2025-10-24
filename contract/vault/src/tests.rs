@@ -291,8 +291,8 @@ fn set_withdraw_queue_must_include_all_holding() {
     let m2 = mk(104);
 
     // Both known; m1 has supply > 0
-    c.config.insert(m1.clone(), MarketConfiguration::default());
-    c.config.insert(m2.clone(), MarketConfiguration::default());
+    c.markets.insert(m1.clone(), MarketConfiguration::default());
+    c.markets.insert(m2.clone(), MarketConfiguration::default());
     c.market_supply.insert(m1.clone(), 10);
 
     // Missing m1 should panic
@@ -331,8 +331,8 @@ fn set_withdraw_queue_must_include_all_enabled() {
     // m1 enabled, m2 disabled; provide both configs
     let mut cfg1 = MarketConfiguration::default();
     cfg1.enabled = true;
-    c.config.insert(m1.clone(), cfg1);
-    c.config.insert(m2.clone(), MarketConfiguration::default());
+    c.markets.insert(m1.clone(), cfg1);
+    c.markets.insert(m2.clone(), MarketConfiguration::default());
 
     // Missing m1 should panic
     c.set_withdraw_queue(vec![m2]);
@@ -347,7 +347,7 @@ fn start_allocation_reserves_only_amount(mut c_vault_env: Contract) {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(80);
     cfg.enabled = true;
-    c.config.insert(m1.clone(), cfg);
+    c.markets.insert(m1.clone(), cfg);
     c.supply_queue.push(m1.clone());
 
     // Idle = 100, so max_room (80) should clamp allocation
@@ -407,7 +407,7 @@ fn queue_allocation_ignores_stale_plan() {
     let mut cfg1 = MarketConfiguration::default();
     cfg1.cap = U128(10);
     cfg1.enabled = true;
-    c.config.insert(m1.clone(), cfg1);
+    c.markets.insert(m1.clone(), cfg1);
     c.withdraw_queue.push(m1.clone());
     c.supply_queue.push(m1);
 
@@ -443,7 +443,7 @@ fn set_withdraw_queue_disallow_nonzero_position_removal() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(0); // required precondition to attempt removal
     cfg.enabled = true;
-    c.config.insert(m1.clone(), cfg);
+    c.markets.insert(m1.clone(), cfg);
 
     // Market has non-zero position but no removal scheduled
     c.market_supply.insert(m1.clone(), 1);
@@ -518,7 +518,7 @@ fn removing_holding_market_hides_assets_and_leaves_orphan_supply() {
     cfg.cap = U128(0);
     cfg.enabled = true;
     cfg.removable_at = 1; // scheduled in the past relative to the block timestamp we set below
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.market_supply.insert(m.clone(), 10);
 
     // Present in current withdraw queue
@@ -531,7 +531,7 @@ fn removing_holding_market_hides_assets_and_leaves_orphan_supply() {
     c.set_withdraw_queue(vec![]);
 
     // Config was removed, but supply mapping still exists (orphaned)
-    assert!(c.config.get(&m).is_none(), "Config should be removed");
+    assert!(c.markets.get(&m).is_none(), "Config should be removed");
     assert_eq!(
         *c.market_supply.get(&m).unwrap_or(&0),
         10,
@@ -560,11 +560,11 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(10);
     cfg.enabled = true;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
 
     // Lower cap to zero: should NOT disable the market anymore
     c.submit_cap(m.clone(), U128(0));
-    let cfg_after = c.config.get(&m).expect("market must exist");
+    let cfg_after = c.markets.get(&m).expect("market must exist");
     assert_eq!(cfg_after.cap.0, 0, "cap must be updated to 0");
     assert!(cfg_after.enabled, "enabled must remain true when cap is 0");
 
@@ -572,7 +572,7 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
 
     // Now we can schedule removal
     c.submit_market_removal(m.clone());
-    let cfg_after2 = c.config.get(&m).expect("market must exist");
+    let cfg_after2 = c.markets.get(&m).expect("market must exist");
     assert!(cfg_after2.removable_at > 0, "removal must be scheduled");
 }
 #[test]
@@ -586,7 +586,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     let m = mk(8002);
 
     // Start disabled with cap=0
-    c.config.insert(m.clone(), MarketConfiguration::default());
+    c.markets.insert(m.clone(), MarketConfiguration::default());
 
     // Submit raise -> pending
     let raise = 5u128;
@@ -602,7 +602,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     );
     c.accept_cap(m.clone());
 
-    let cfg1 = c.config.get(&m).unwrap();
+    let cfg1 = c.markets.get(&m).unwrap();
     assert_eq!(cfg1.cap.0, raise);
     assert!(cfg1.enabled, "market should be enabled after raise");
     assert!(
@@ -612,7 +612,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
 
     // Now lower back to 0 (immediate path) and ensure enabled stays true
     c.submit_cap(m.clone(), U128(0));
-    let cfg2 = c.config.get(&m).unwrap();
+    let cfg2 = c.markets.get(&m).unwrap();
     assert_eq!(cfg2.cap.0, 0);
     assert!(cfg2.enabled, "enabled must remain true on cap=0");
 }
@@ -633,7 +633,7 @@ fn set_withdraw_queue_disallow_nonzero_cap_removal() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(1); // non-zero cap
     cfg.enabled = true; // must be enabled or holding to trigger invariant
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.withdraw_queue.push(m.clone());
 
     // Attempt to remove from queue should panic due to non-zero cap
@@ -652,7 +652,7 @@ fn set_withdraw_queue_disallow_pending_cap_removal() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(0);
     cfg.enabled = true;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.withdraw_queue.push(m.clone());
 
     // Insert a pending cap change
@@ -681,7 +681,7 @@ fn set_withdraw_queue_disallow_timelock_not_elapsed() {
     cfg.cap = U128(0);
     cfg.enabled = true;
     cfg.removable_at = 10; // in the future relative to block timestamp we set below
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.market_supply.insert(m.clone(), 1); // non-zero supply enforces timelock path
     c.withdraw_queue.push(m.clone());
 
@@ -708,7 +708,7 @@ fn set_withdraw_queue_allows_zero_supply_removal() {
     cfg.cap = U128(0);
     cfg.enabled = true;
     // removable_at irrelevant when supply is zero
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.withdraw_queue.push(m.clone());
 
     // Supply is zero; removal should be allowed immediately
@@ -716,7 +716,7 @@ fn set_withdraw_queue_allows_zero_supply_removal() {
 
     // Config should be deleted
     assert!(
-        c.config.get(&m).is_none(),
+        c.markets.get(&m).is_none(),
         "Config must be removed for omitted market with zero supply"
     );
     // And the queue should be empty
@@ -827,7 +827,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(cap);
     cfg.enabled = cap > 0;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.market_supply.insert(m.clone(), cur);
     c.supply_queue.push(m.clone());
     c.idle_balance = idle;
@@ -855,7 +855,7 @@ fn total_assets_ignores_offqueue_cases(principal: u128, idle: u128) {
     let mut c = new_test_contract(&vault_id);
 
     let m = mk(7003);
-    c.config.insert(m.clone(), MarketConfiguration::default());
+    c.markets.insert(m.clone(), MarketConfiguration::default());
     c.market_supply.insert(m.clone(), principal);
     c.idle_balance = idle;
 
@@ -1117,7 +1117,7 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
         min_batch: U128(u128::MAX),
     };
     let (m, cfg) = enabled_market_100;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
     let sender = accounts(1);
@@ -1164,7 +1164,7 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
     };
     let (m, mut cfg) = enabled_market_100;
     cfg.cap = U128(50); // override cap for this case
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
     let sender = accounts(2);
@@ -1213,7 +1213,7 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(100);
     cfg.enabled = true;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
     let sender = accounts(3);
@@ -1251,7 +1251,7 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
 
     // Setup a valid market
     let (m, cfg) = enabled_market_100;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
     let sender = accounts(5);
@@ -1285,7 +1285,7 @@ fn ft_on_transfer_eager_mode_triggers_allocation(
 
     // Valid market/cap
     let (m, cfg) = enabled_market_100;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
     c.supply_queue.push(m);
 
     let deposit = 5u128;
@@ -1411,7 +1411,7 @@ fn governance_set_curator_grants_allocator() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(1);
     cfg.enabled = true;
-    c.config.insert(m1.clone(), cfg);
+    c.markets.insert(m1.clone(), cfg);
 
     let new_cur = accounts(3);
     c.set_curator(new_cur.clone());
@@ -1442,7 +1442,7 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(1);
     cfg.enabled = true;
-    c.config.insert(m1.clone(), cfg);
+    c.markets.insert(m1.clone(), cfg);
 
     // Grant Allocator role
     c.set_is_allocator(grantee.clone(), true);
@@ -1475,7 +1475,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(1);
     cfg.enabled = true;
-    c.config.insert(m1.clone(), cfg);
+    c.markets.insert(m1.clone(), cfg);
 
     // Revoke Allocator role; subsequent queue op by grantee should panic due to lack of rights
     c.set_is_allocator(grantee.clone(), false);
@@ -1608,10 +1608,10 @@ fn governance_submit_cap_immediate_decrease() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(10);
     cfg.enabled = true;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
 
     c.submit_cap(m.clone(), U128(3));
-    let after = c.config.get(&m).unwrap();
+    let after = c.markets.get(&m).unwrap();
     assert_eq!(after.cap, U128(3));
 }
 
@@ -1642,7 +1642,7 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
     );
     c.accept_cap(m.clone());
 
-    let cfg = c.config.get(&m).unwrap();
+    let cfg = c.markets.get(&m).unwrap();
     assert_eq!(cfg.cap.0, 5);
     assert!(
         cfg.enabled,
@@ -1691,16 +1691,16 @@ fn governance_submit_and_revoke_market_removal() {
     let mut cfg = MarketConfiguration::default();
     cfg.cap = U128(0);
     cfg.enabled = true;
-    c.config.insert(m.clone(), cfg);
+    c.markets.insert(m.clone(), cfg);
 
     // Submit removal (schedules timelock)
     c.submit_market_removal(m.clone());
-    let after = c.config.get(&m).unwrap();
+    let after = c.markets.get(&m).unwrap();
     assert!(after.removable_at > 0, "removal must be scheduled");
 
     // Revoke pending removal
     c.revoke_pending_market_removal(m.clone());
-    let after2 = c.config.get(&m).unwrap();
+    let after2 = c.markets.get(&m).unwrap();
     assert_eq!(after2.removable_at, 0, "removal must be revoked");
 }
 
@@ -1762,7 +1762,7 @@ fn governance_set_withdraw_queue_happy_path() {
         let mut cfg = MarketConfiguration::default();
         cfg.cap = U128(1);
         cfg.enabled = true;
-        c.config.insert(m.clone(), cfg);
+        c.markets.insert(m.clone(), cfg);
     }
 
     set_ctx(
