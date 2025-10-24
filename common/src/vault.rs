@@ -413,9 +413,14 @@ pub enum Event {
         deposit_accepted: U128,
     },
 
+    #[event_version("1.0.0")]
+    PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
+
     // Admin and configuration events
     #[event_version("1.0.0")]
     CuratorSet { account: AccountId },
+    #[event_version("1.0.0")]
+    GuardianSet { account: AccountId },
     #[event_version("1.0.0")]
     AllocatorRoleSet { account: AccountId, allowed: bool },
     #[event_version("1.0.0")]
@@ -441,6 +446,9 @@ pub enum Event {
         new_cap: U128,
         valid_at: u64,
     },
+    #[event_version("1.0.0")]
+    SupplyCapRaiseRevoked { market: AccountId },
+
     #[event_version("1.0.0")]
     SupplyCapSet { market: AccountId, new_cap: U128 },
     #[event_version("1.0.0")]
