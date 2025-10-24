@@ -380,65 +380,62 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
     }
 
     #[must_use]
-    pub fn split(&mut self, amount: impl Into<Self>) -> Option<Self> {
-        let a = amount.into();
-        self.amount.0 = self.amount.0.checked_sub(a.amount.0)?;
-        Some(a)
+    pub fn unwrap_add(self, other: impl Into<Self>, message: &str) -> Self {
+        Self {
+            amount: self
+                .amount
+                .0
+                .checked_add(other.into().amount.0)
+                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic overflow: {message}")))
+                .into(),
+            ..self
+        }
     }
 
     #[must_use]
-    pub fn join(&mut self, amount: impl Into<Self>) -> Option<()> {
-        let a = amount.into();
-        self.amount.0 = self.amount.0.checked_add(a.amount.0)?;
-        Some(())
+    pub fn saturating_add(self, other: impl Into<Self>) -> Self {
+        Self {
+            amount: self.amount.0.saturating_add(other.into().amount.0).into(),
+            ..self
+        }
     }
-}
 
-#[macro_export]
-macro_rules! asset_op {
-    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* += $b:expr $(;)*) => {
-        $crate::asset::FungibleAssetAmount::join(&mut $a_head $(.$a_tail)*, $b).unwrap_or_else(|| {
-            ::near_sdk::env::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " + ", stringify!($b), " overflow"));
-        });
-    };
-    ($a_head:ident $(. $a_tail:ident)* += $b:expr $(;)*) => {
-        $crate::asset_op!(@msg() $a_head $(.$a_tail)* += $b);
-    };
-    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* += $b:expr ; $($tail:tt)*) => {
-        $crate::asset_op!(@msg($($msg)?) $a_head $(.$a_tail)* += $b);
-        $crate::asset_op!($($tail)*);
-    };
-    ($a_head:ident $(. $a_tail:ident)* += $b:expr ; $($tail:tt)*) => {
-        $crate::asset_op!($a_head $(.$a_tail)* += $b);
-        $crate::asset_op!($($tail)*);
-    };
+    #[must_use]
+    pub fn checked_add(self, other: impl Into<Self>) -> Option<Self> {
+        Some(Self {
+            amount: self.amount.0.checked_add(other.into().amount.0)?.into(),
+            ..self
+        })
+    }
 
-    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* -= $b:expr $(;)*) => {
-        $crate::asset::FungibleAssetAmount::split(&mut $a_head $(.$a_tail)*, $b).unwrap_or_else(|| {
-            ::near_sdk::env::panic_str(concat!($($msg, ": ",)? stringify!($a_head $(.$a_tail)*), " - ", stringify!($b), " underflow"));
-        });
-    };
-    ($a_head:ident $(. $a_tail:ident)* -= $b:expr $(;)*) => {
-        $crate::asset_op!(@msg() $a_head $(.$a_tail)* -= $b);
-    };
-    (@msg($($msg:literal)?) $a_head:ident $(. $a_tail:ident)* -= $b:expr ; $($tail:tt)*) => {
-        $crate::asset_op!(@msg($($msg)?) $a_head $(.$a_tail)* -= $b);
-        $crate::asset_op!($($tail)*);
-    };
-    ($a_head:ident $(. $a_tail:ident)* -= $b:expr ; $($tail:tt)*) => {
-        $crate::asset_op!($a_head $(.$a_tail)* -= $b);
-        $crate::asset_op!($($tail)*);
-    };
+    #[must_use]
+    pub fn unwrap_sub(self, other: impl Into<Self>, message: &str) -> Self {
+        Self {
+            amount: self
+                .amount
+                .0
+                .checked_sub(other.into().amount.0)
+                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic underflow: {message}")))
+                .into(),
+            ..self
+        }
+    }
 
-    ($s:stmt $(;)*) => {
-        $s;
-    };
-    ($s:stmt ; $($tail:tt)*) => {
-        $s;
-        $crate::asset_op!($($tail)*);
-    };
+    #[must_use]
+    pub fn saturating_sub(self, other: impl Into<Self>) -> Self {
+        Self {
+            amount: self.amount.0.saturating_sub(other.into().amount.0).into(),
+            ..self
+        }
+    }
 
-    () => {};
+    #[must_use]
+    pub fn checked_sub(self, other: impl Into<Self>) -> Option<Self> {
+        Some(Self {
+            amount: self.amount.0.checked_sub(other.into().amount.0)?.into(),
+            ..self
+        })
+    }
 }
 
 impl<T: AssetClass> From<FungibleAssetAmount<T>> for Decimal {
@@ -459,6 +456,40 @@ impl<T: AssetClass> std::fmt::Display for FungibleAssetAmount<T> {
     }
 }
 
+impl<T: AssetClass, R: Into<Self>> std::ops::Add<R> for FungibleAssetAmount<T> {
+    type Output = Self;
+
+    fn add(self, rhs: R) -> Self::Output {
+        Self {
+            amount: U128(self.amount.0 + rhs.into().amount.0),
+            ..self
+        }
+    }
+}
+
+impl<T: AssetClass, R: Into<Self>> std::ops::AddAssign<R> for FungibleAssetAmount<T> {
+    fn add_assign(&mut self, rhs: R) {
+        self.amount.0 += rhs.into().amount.0;
+    }
+}
+
+impl<T: AssetClass, R: Into<Self>> std::ops::Sub<R> for FungibleAssetAmount<T> {
+    type Output = Self;
+
+    fn sub(self, rhs: R) -> Self::Output {
+        Self {
+            amount: U128(self.amount.0 - rhs.into().amount.0),
+            ..self
+        }
+    }
+}
+
+impl<T: AssetClass, R: Into<Self>> std::ops::SubAssign<R> for FungibleAssetAmount<T> {
+    fn sub_assign(&mut self, rhs: R) {
+        self.amount.0 -= rhs.into().amount.0;
+    }
+}
+
 pub type BorrowAssetAmount = FungibleAssetAmount<BorrowAsset>;
 pub type CollateralAssetAmount = FungibleAssetAmount<CollateralAsset>;
 
@@ -474,25 +505,5 @@ mod tests {
         assert_eq!(serialized, "\"100\"");
         let deserialized: BorrowAssetAmount = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, amount);
-    }
-
-    #[test]
-    #[should_panic = "a + u128::MAX overflow"]
-    fn asset_op_macro_overflow() {
-        let mut a = BorrowAssetAmount::new(100);
-
-        asset_op! {
-            a += u128::MAX;
-        };
-    }
-
-    #[test]
-    #[should_panic = "a - 101u128 underflow"]
-    fn asset_op_macro_underflow() {
-        let mut a = BorrowAssetAmount::new(100);
-
-        asset_op! {
-            a -= 101u128;
-        };
     }
 }

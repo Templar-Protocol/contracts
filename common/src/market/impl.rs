@@ -6,7 +6,6 @@ use near_sdk::{
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    asset_op,
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
@@ -110,19 +109,15 @@ impl Market {
     }
 
     pub fn borrowed(&self) -> BorrowAssetAmount {
-        let mut total = self.borrow_asset_borrowed;
-        asset_op!(total += self.borrow_asset_borrowed_in_flight);
-        total
+        self.borrow_asset_borrowed + self.borrow_asset_borrowed_in_flight
     }
 
     pub fn total_incoming(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposited_incoming.iter().fold(
-            BorrowAssetAmount::zero(),
-            |mut total_incoming, incoming| {
-                asset_op!(total_incoming += incoming.amount);
-                total_incoming
-            },
-        )
+        self.borrow_asset_deposited_incoming
+            .iter()
+            .fold(BorrowAssetAmount::zero(), |total_incoming, incoming| {
+                total_incoming + incoming.amount
+            })
     }
 
     pub fn incoming_at(&self, snapshot_index: u32) -> BorrowAssetAmount {
@@ -145,8 +140,7 @@ impl Market {
         let current_snapshot_index = self.finalized_snapshots.len();
         let incoming = self.incoming_at(current_snapshot_index);
 
-        let mut active = self.borrow_asset_deposited_active;
-        asset_op!(active += incoming);
+        let active = self.borrow_asset_deposited_active + incoming;
 
         let borrowed = self.borrowed();
 
@@ -192,7 +186,7 @@ impl Market {
         for i in 0..self.borrow_asset_deposited_incoming.len() {
             let incoming = &self.borrow_asset_deposited_incoming[i];
             if incoming.activate_at_snapshot_index == current_snapshot_index {
-                asset_op!(self.borrow_asset_deposited_active += incoming.amount);
+                self.borrow_asset_deposited_active += incoming.amount;
                 self.borrow_asset_deposited_incoming.remove(i);
                 break;
             }
@@ -368,7 +362,7 @@ impl Market {
             return;
         }
 
-        asset_op!(self.current_yield_distribution += amount);
+        self.current_yield_distribution += amount;
     }
 
     /// Accumulate static yield for an account.

@@ -4,8 +4,7 @@ use near_sdk::{env, json_types::U64, near, require, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
-    asset::{BorrowAsset, BorrowAssetAmount, FungibleAssetAmount},
-    asset_op,
+    asset::{BorrowAsset, BorrowAssetAmount},
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
     market::{Market, WithdrawalResolution},
@@ -30,9 +29,9 @@ impl Deposit {
     pub fn total(&self) -> BorrowAssetAmount {
         let mut total = self.active;
         for incoming in &self.incoming {
-            asset_op!(total += incoming.amount);
+            total += incoming.amount;
         }
-        asset_op!(total += self.outgoing);
+        total += self.outgoing;
         total
     }
 }
@@ -59,13 +58,12 @@ impl SupplyPosition {
     }
 
     pub fn total_incoming(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposit.incoming.iter().fold(
-            BorrowAssetAmount::zero(),
-            |mut total_incoming, incoming| {
-                asset_op!(total_incoming += incoming.amount);
-                total_incoming
-            },
-        )
+        self.borrow_asset_deposit
+            .incoming
+            .iter()
+            .fold(BorrowAssetAmount::zero(), |total_incoming, incoming| {
+                total_incoming + incoming.amount
+            })
     }
 
     pub fn get_started_at_block_timestamp_ms(&self) -> Option<u64> {
@@ -238,7 +236,7 @@ impl<'a> SupplyPositionGuard<'a> {
         while let Some(deposit) =
             incoming.next_if(|d| d.activate_at_snapshot_index <= through_snapshot_index)
         {
-            asset_op!(self.position.borrow_asset_deposit.active += deposit.amount);
+            self.position.borrow_asset_deposit.active += deposit.amount;
         }
         self.position.borrow_asset_deposit.incoming = incoming.collect();
 
@@ -246,10 +244,8 @@ impl<'a> SupplyPositionGuard<'a> {
     }
 
     fn remove_active(&mut self, amount: BorrowAssetAmount) {
-        asset_op! {
-            self.position.borrow_asset_deposit.active -= amount;
-            self.market.borrow_asset_deposited_active -= amount;
-        };
+        self.position.borrow_asset_deposit.active -= amount;
+        self.market.borrow_asset_deposited_active -= amount;
     }
 
     fn add_incoming(&mut self, amount: BorrowAssetAmount, activate_at_snapshot_index: u32) {
@@ -258,7 +254,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .last_mut()
             .filter(|i| i.activate_at_snapshot_index == activate_at_snapshot_index)
         {
-            asset_op!(deposit.amount += amount);
+            deposit.amount += amount;
         } else {
             const MAX_INCOMING: usize = 4;
             require!(
@@ -277,7 +273,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .iter_mut()
             .find(|incoming| incoming.activate_at_snapshot_index == activate_at_snapshot_index)
         {
-            asset_op!(incoming.amount += amount);
+            incoming.amount += amount;
         } else {
             self.market
                 .borrow_asset_deposited_incoming
@@ -292,7 +288,7 @@ impl<'a> SupplyPositionGuard<'a> {
     fn remove_incoming(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         while let Some(newest) = self.position.borrow_asset_deposit.incoming.pop() {
-            asset_op!(total += newest.amount);
+            total += newest.amount;
 
             let Some(market_incoming) = self
                 .market
@@ -304,19 +300,13 @@ impl<'a> SupplyPositionGuard<'a> {
             else {
                 env::panic_str("Invariant violation: Market incoming entry should exist if position incoming entry exists");
             };
-            asset_op!(
-                @msg("Invariant violation: Market incoming >= position incoming should hold for all snapshot indices")
-                market_incoming.amount -= newest.amount;
-            );
+            market_incoming.amount = market_incoming.amount.unwrap_sub(newest.amount, "Invariant violation: Market incoming >= position incoming should hold for all snapshot indices");
 
             #[allow(clippy::comparison_chain)]
             if total == amount {
                 return amount;
             } else if total > amount {
-                let mut remainder = total;
-                // Infallible
-                let _ = remainder.split(amount);
-                self.add_incoming(remainder, newest.activate_at_snapshot_index);
+                self.add_incoming(total - amount, newest.activate_at_snapshot_index);
                 return amount;
             }
         }
@@ -356,12 +346,12 @@ impl<'a> SupplyPositionGuard<'a> {
     ) -> WithdrawalResolution {
         let mut amount_to_remove = amount;
 
-        asset_op! {
-            self.position.borrow_asset_deposit.outgoing += amount;
+        self.position.borrow_asset_deposit.outgoing += amount;
 
-            @msg("Invariant violation: remove_incoming(amount) > amount")
-            amount_to_remove -= self.remove_incoming(amount);
-        };
+        amount_to_remove = amount_to_remove.unwrap_sub(
+            self.remove_incoming(amount),
+            "Invariant violation: remove_incoming(amount) > amount",
+        );
 
         if !amount_to_remove.is_zero() {
             self.remove_active(amount_to_remove);
@@ -381,9 +371,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .of(amount, supply_duration)
             .unwrap_or_else(|| env::panic_str("Fee calculation overflow"));
 
-        if amount.split(amount_to_fees).is_none() {
-            amount = FungibleAssetAmount::zero();
-        }
+        amount = amount.saturating_sub(amount_to_fees);
 
         WithdrawalResolution {
             account_id: self.account_id.clone(),
@@ -397,12 +385,9 @@ impl<'a> SupplyPositionGuard<'a> {
         withdrawal_resolution: &WithdrawalResolution,
         success: bool,
     ) {
-        let mut amount = withdrawal_resolution.amount_to_account;
+        let amount = withdrawal_resolution.amount_to_account + withdrawal_resolution.amount_to_fees;
 
-        asset_op! {
-            amount += withdrawal_resolution.amount_to_fees;
-            self.position.borrow_asset_deposit.outgoing -= amount;
-        };
+        self.position.borrow_asset_deposit.outgoing -= amount;
 
         if success {
             MarketEvent::SupplyWithdrawn {
@@ -439,10 +424,7 @@ impl<'a> SupplyPositionGuard<'a> {
         }
     }
 
-    pub fn record_yield_withdrawal(
-        &mut self,
-        amount: BorrowAssetAmount,
-    ) -> Option<BorrowAssetAmount> {
-        self.0.position.borrow_asset_yield.remove(amount)
+    pub fn record_yield_withdrawal(&mut self, amount: BorrowAssetAmount) {
+        self.0.position.borrow_asset_yield.remove(amount);
     }
 }
