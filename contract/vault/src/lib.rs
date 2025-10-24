@@ -299,6 +299,10 @@ impl Contract {
             });
         } else {
             Self::add_role(self, &new_g, &Role::Guardian);
+            Event::GuardianSet {
+                account: new_g.clone(),
+            }
+            .emit();
         }
     }
 
