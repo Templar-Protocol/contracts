@@ -308,6 +308,10 @@ impl Contract {
                 });
                 Self::add_role(self, &p.value, &Role::Guardian);
             });
+            Event::GuardianSet {
+                account: p.value.clone(),
+            }
+            .emit();
             self.pending_guardian = None;
         }
     }
@@ -414,6 +418,10 @@ impl Contract {
                 "Timelock not elapsed yet"
             );
             self.timelock_ns = p.value;
+            Event::TimelockSet {
+                seconds: p.value.into(),
+            }
+            .emit();
             self.pending_timelock = None;
         } else {
             env::panic_str("No pending timelock change");
@@ -557,6 +565,10 @@ impl Contract {
         Self::assert_curator_or_owner();
         if self.pending_cap.get(&market).is_some() {
             self.pending_cap.remove(&market);
+            Event::SupplyCapRaiseRevoked {
+                market: market.clone(),
+            }
+            .emit();
         }
     }
 
@@ -735,7 +747,9 @@ impl Contract {
         let assets = self.convert_to_assets(U128(shares)).0;
         let sender = env::predecessor_account_id();
 
-        require_attached_for_pending_withdrawal();
+        require!(shares > 0, "Invalid shares");
+
+        let _ = require_attached_for_pending_withdrawal();
 
         // Move shares into escrow
         #[allow(clippy::expect_used, reason = "No side effects")]
