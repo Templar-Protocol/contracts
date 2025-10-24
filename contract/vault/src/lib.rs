@@ -345,6 +345,7 @@ impl Contract {
     }
 
     /// Sets the performance fee recipient. Accrues pending fees with the current recipient first.
+    #[payable]
     pub fn set_fee_recipient(&mut self, account: AccountId) {
         Self::require_owner();
         require!(account != self.fee_recipient, "Already set to this address");
@@ -357,6 +358,8 @@ impl Contract {
             account: account.clone(),
         }
         .emit();
+        self.storage_deposit(Some(account.clone()), Some(true));
+
         self.fee_recipient = account;
     }
 
