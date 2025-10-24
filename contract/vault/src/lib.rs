@@ -76,11 +76,24 @@ pub enum Role {
 }
 
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
-/// FIXME: #[nep145(force_unregister_hook = "Self")]
+#[fungible_token(force_unregister_hook = "Self")]
 #[rbac(roles = "Role", crate = "crate")]
 #[near(contract_state)]
 /// Vault contract that issues shares over an underlying fungible asset and allocates liquidity
 /// across configured markets. Implements 4626-like deposit/withdraw semantics.
+///
+/// What this contract does (high-level mental model)
+/// - Issues a share token (NEP-141) that represents a vault over an underlying NEP-141 “BorrowAsset”.
+/// - Allocates deposits across “markets” (external contracts) via a supply queue, and withdraws via a withdraw queue.
+/// - Governance uses Owner + RBAC (Curator/Guardian/Allocator) with a timelock for certain changes.
+/// - Withdraw flow escrows shares, builds market-side withdrawal requests, then pays out and burns proportional escrow.
+/// - Performance fees accrue by minting fee shares based on increases in total assets.
+/// Critical invariants the code intends to keep
+/// - Assets accounting is correct: total_assets = idle_balance + sum(all principals in markets).
+/// - Withdraw queue contains every market that either is enabled or still holds principal (until that principal is zero).
+/// - Only one op in flight (op_state); mutating ops require Idle.
+/// - Governance changes obey timelocks; Guardian may revoke pending changes.
+///
 /// Note: RBAC storage (role membership) is paid by the contract; callers are not charged deposits for RBAC changes.
 pub struct Contract {
     mode: AllocationMode,
@@ -1535,5 +1548,11 @@ impl Contract {
     }
 }
 
+impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {
+    fn hook<R>(_: &mut Self, _: &Nep145ForceUnregister, _: impl FnOnce(&mut Self) -> R) -> R {
+        // Invariant: Force unregister must fail to preserve FT ledger integrity.
+        env::panic_str("force unregistration is not supported")
+    }
+}
 #[cfg(test)]
 mod tests;
