@@ -209,7 +209,7 @@ impl Contract {
             pending_guardian: None,
             supply_queue: Vector::new(key!(SupplyQueue)),
             withdraw_queue: Vector::new(key!(WithdrawQueue)),
-            market_supply: LookupMap::new(key!(MarketSupply)),
+            market_supply: IterableMap::new(key!(MarketSupply)),
             last_total_assets: 0,
             virtual_shares: 1,
             virtual_assets: 1,
@@ -389,7 +389,7 @@ impl Contract {
     }
 
     /* ----- Timelocks / Pending ----- */
-    /// Proposes a new governance timelock in seconds.
+    /// Proposes a new governance timelock in nanoseconds.
     /// If increasing, applies immediately; if decreasing, starts a timelock equal to the current duration.
     pub fn submit_timelock(&mut self, new_timelock_ns: U64) {
         Self::require_owner();
