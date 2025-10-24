@@ -1738,3 +1738,53 @@ fn governance_set_withdraw_queue_happy_path() {
     assert_eq!(c.withdraw_queue.get(0), Some(&m1));
     assert_eq!(c.withdraw_queue.get(1), Some(&m2));
 }
+
+#[test]
+fn test_prevent_skim_underlying_and_shares() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Set a skim recipient
+    let recipient = accounts(8);
+    c.set_skim_recipient(recipient.clone());
+
+    // Seed idle underlying and escrow some shares (held by the vault itself)
+    c.idle_balance = 123;
+    c.deposit_unchecked(&vault_id, 100)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    // Snapshot pre-state
+    let pre_idle = c.idle_balance;
+    let pre_vault_shares = c.balance_of(&vault_id);
+    let pre_recipient_shares = c.balance_of(&recipient);
+
+    // Attempt to skim underlying token -> must panic
+    let underlying: AccountId = c.underlying_asset.contract_id().into();
+    let r1 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = c.skim(underlying.clone());
+    }));
+    assert!(r1.is_err(), "skimming underlying token should panic");
+
+    // Attempt to skim the share token -> must panic
+    let share_token: AccountId = vault_id.clone();
+    let r2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = c.skim(share_token.clone());
+    }));
+    assert!(r2.is_err(), "skimming share token should panic");
+
+    // State must be unchanged
+    assert_eq!(c.idle_balance, pre_idle, "idle balance must be unchanged");
+    assert_eq!(
+        c.balance_of(&vault_id),
+        pre_vault_shares,
+        "vault's escrowed shares must be unchanged"
+    );
+    assert_eq!(
+        c.balance_of(&recipient),
+        pre_recipient_shares,
+        "skim recipient must not receive any shares"
+    );
+    assert!(matches!(c.op_state, OpState::Idle), "op_state must remain Idle");
+}
