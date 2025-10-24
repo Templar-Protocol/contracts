@@ -784,6 +784,22 @@ impl Contract {
     /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
     pub fn skim(&mut self, token: AccountId) -> Promise {
         Self::require_owner();
+
+        // Disallow skimming underlying or this own share token
+        let share_token_id = env::current_account_id();
+        let underlying_token_id = self.underlying_asset.contract_id();
+
+        require!(
+            token != share_token_id,
+            "Refusing to skim the share token (would steal escrowed shares)"
+        );
+        require!(
+            token != underlying_token_id,
+            "Refusing to skim the underlying token"
+        );
+
+        self.ensure_idle();
+
         ext_ft_core::ext(token.clone())
             .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
             .ft_balance_of(env::current_account_id())
