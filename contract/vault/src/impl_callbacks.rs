@@ -651,28 +651,6 @@ impl Contract {
             .cloned()
             .ok_or(Error::MissingMarket(market_index))
     }
-
-    /// Pure reconciliation for withdraw read outcome to enable unit tests
-    pub(crate) fn reconcile_withdraw_outcome(
-        &self,
-        before_principal: u128,
-        new_principal: u128,
-        need: u128,
-        rem: u128,
-        coll: u128,
-    ) -> (
-        u128, /* credited */
-        u128, /* remaining_next */
-        u128, /* collected_next */
-        u128, /* idle_delta */
-    ) {
-        let withdrawn = before_principal.saturating_sub(new_principal);
-        let credited = withdrawn.min(need);
-        let remaining_next = rem.saturating_sub(credited);
-        let collected_next = coll.saturating_add(credited);
-        let idle_delta = credited;
-        (credited, remaining_next, collected_next, idle_delta)
-    }
 }
 
 pub(crate) struct SupplyReconciliation {
@@ -692,6 +670,33 @@ pub(crate) fn reconcile_supply_outcome(
         new_principal: *total_position,
         accepted_event,
         remaining,
+    }
+}
+
+pub struct WithdrawReconciliation {
+    pub payout_delta: u128,
+    pub remaining_next: u128,
+    pub collected_next: u128,
+    pub idle_delta: u128,
+}
+
+/// Pure reconciliation for withdraw read outcome to enable unit tests
+pub(crate) fn reconcile_withdraw_outcome(
+    before_principal: u128,
+    new_principal: u128,
+    remaining_total: u128,
+    collected_total: u128,
+) -> WithdrawReconciliation {
+    let withdrawn = before_principal.saturating_sub(new_principal);
+    let idle_delta = withdrawn;
+    let payout_delta = withdrawn.min(remaining_total);
+    let remaining_next = remaining_total.saturating_sub(payout_delta);
+    let collected_next = collected_total.saturating_add(payout_delta);
+    WithdrawReconciliation {
+        payout_delta,
+        remaining_next,
+        collected_next,
+        idle_delta,
     }
 }
 
@@ -880,8 +885,8 @@ mod tests {
         );
 
         assert_eq!(
-            c.idle_balance, 60,
-            "Idle balance should increase by credited amount"
+            c.idle_balance, 100,
+            "Idle balance should increase by returned amount"
         );
 
         // State should transition to Payout with amount = collected (10) + credited (60) = 70
