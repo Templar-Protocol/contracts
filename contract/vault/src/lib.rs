@@ -694,16 +694,7 @@ impl Contract {
                         self.pending_cap.get(id).is_none(),
                         "Policy violation: Cannot remove market with pending cap change"
                     );
-                    if has_supply {
-                        require!(
-                            cfg.removable_at > 0,
-                            "Policy violation: Market still has supply but no removal scheduled"
-                        );
-                        require!(
-                            env::block_timestamp() >= cfg.removable_at,
-                            "Policy violation: Removal timelock not elapsed for market"
-                        );
-                    }
+                    AUM::GovernanceAbandonment.policy_removal(cfg, &has_supply);
                 } else {
                     // Not in current queue: must be included if enabled or holding.
                     env::panic_str(
@@ -1202,7 +1193,13 @@ impl Contract {
             self.total_supply().into(),
         );
         if fee_shares > Number::zero() {
-            self.mint_shares(&self.fee_recipient.clone(), fee_shares.into());
+            let minted: u128 = fee_shares.into();
+            self.mint_shares(&self.fee_recipient.clone(), minted);
+            Event::PerformanceFeeAccrued {
+                recipient: self.fee_recipient.clone(),
+                shares: U128(minted),
+            }
+            .emit();
         }
         self.last_total_assets = cur;
     }
