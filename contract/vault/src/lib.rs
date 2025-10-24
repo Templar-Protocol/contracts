@@ -129,7 +129,7 @@ pub struct Contract {
     withdraw_queue: Vector<AccountId>,
 
     /// vault's supplied principal per market (borrow-asset units)
-    market_supply: LookupMap<AccountId, u128>,
+    market_supply: IterableMap<AccountId, u128>,
 
     /// underlying held by vault
     idle_balance: u128,
