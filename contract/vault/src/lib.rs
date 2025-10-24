@@ -102,7 +102,7 @@ pub struct Contract {
 
     underlying_asset: FungibleAsset<BorrowAsset>,
     /// configuration per market (market ID -> MarketConfig)
-    config: IterableMap<AccountId, MarketConfiguration>,
+    markets: IterableMap<AccountId, MarketConfiguration>,
 
     /// Performance fee
     performance_fee: wad::Wad,
@@ -196,7 +196,7 @@ impl Contract {
             performance_fee: Default::default(),
             fee_recipient,
             skim_recipient,
-            config: IterableMap::new(key!(Config)),
+            markets: IterableMap::new(key!(Config)),
             pending_cap: IterableMap::new(key!(PendingCaps)),
             pending_timelock: None,
             pending_guardian: None,
@@ -445,10 +445,10 @@ impl Contract {
         self.ensure_idle();
 
         let mut required_deposit: u128 = 0;
-        if self.config.get(&market).is_none() {
+        if self.markets.get(&market).is_none() {
             required_deposit = required_deposit.saturating_add(yocto_for_new_market());
         }
-        let current_cap = self.config.get(&market).map_or(0, |c| c.cap.0);
+        let current_cap = self.markets.get(&market).map_or(0, |c| c.cap.0);
         if new_cap.0 > current_cap {
             required_deposit = required_deposit.saturating_add(yocto_for_pending_cap());
         }
@@ -459,9 +459,9 @@ impl Contract {
             "Policy violation: A cap change is already pending for this market"
         );
 
-        let config = match self.config.get_mut(&market) {
+        let config = match self.markets.get_mut(&market) {
             None => {
-                self.config
+                self.markets
                     .insert(market.clone(), MarketConfiguration::default());
                 Event::MarketCreated {
                     market: market.clone(),
@@ -583,7 +583,7 @@ impl Contract {
     pub fn submit_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
         let cfg = self
-            .config
+            .markets
             .get_mut(&market)
             .unwrap_or_else(|| env::panic_str("unknown market"));
         require!(
@@ -609,7 +609,7 @@ impl Contract {
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        if let Some(cfg) = self.config.get_mut(&market) {
+        if let Some(cfg) = self.markets.get_mut(&market) {
             cfg.removable_at = 0;
         }
         Event::MarketRemovalRevoked { market }.emit();
@@ -632,7 +632,7 @@ impl Contract {
         }
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
-            let cap = self.config.get(m).map_or(0, |c| c.cap.into());
+            let cap = self.markets.get(m).map_or(0, |c| c.cap.into());
             require!(cap > 0, "unauthorized market");
         }
 
@@ -677,12 +677,12 @@ impl Contract {
 
         for id in &queue {
             require!(
-                self.config.get(id).is_some(),
+                self.markets.get(id).is_some(),
                 "Policy violation: Unknown market in new queue"
             );
         }
 
-        for (id, cfg) in self.config.iter() {
+        for (id, cfg) in self.markets.iter() {
             let has_supply = *self.market_supply.get(id).unwrap_or(&0) > 0;
             if (cfg.enabled || has_supply) && !seen.contains(id) {
                 if current.contains(id) {
@@ -897,6 +897,7 @@ impl Contract {
 impl Contract {
     #[allow(clippy::expect_used, reason = "No side effects")]
     pub fn get_configuration(&self) -> VaultConfiguration {
+        let meta = self.get_metadata();
         VaultConfiguration {
             owner: self
                 .own_get_owner()
@@ -1022,14 +1023,14 @@ impl From<EscrowSettlement> for (u128, u128) {
 /* ----- Private Helpers ----- */
 impl Contract {
     fn cfg_mut(&mut self, id: &AccountId) -> &mut MarketConfiguration {
-        self.config
+        self.markets
             .get_mut(id)
             .unwrap_or_else(|| env::panic_str("Config not found"))
     }
 
     // Read-only config accessor with consistent panic
     fn cfg(&self, id: &AccountId) -> &MarketConfiguration {
-        self.config
+        self.markets
             .get(id)
             .unwrap_or_else(|| env::panic_str("Config not found"))
     }
@@ -1039,9 +1040,8 @@ impl Contract {
         *self.market_supply.get(market).unwrap_or(&0)
     }
 
-    // Current cap value for a market (0 if unknown)
     fn cap_of(&self, market: &AccountId) -> u128 {
-        self.config.get(market).map_or(0, |c| c.cap.0)
+        self.markets.get(market).map_or(0, |c| c.cap.0)
     }
 
     // Remaining room until cap for a market
@@ -1050,7 +1050,6 @@ impl Contract {
             .saturating_sub(self.principal_of(market))
     }
 
-    // Membership check: is market in withdraw_queue?
     fn in_withdraw_queue(&self, market: &AccountId) -> bool {
         self.withdraw_queue.iter().any(|m| m == market)
     }

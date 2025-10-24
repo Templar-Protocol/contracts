@@ -86,7 +86,7 @@ pub fn ensure_market(
     cfg.cap = near_sdk::json_types::U128(cap);
     cfg.enabled = enabled;
     cfg.removable_at = removable_at;
-    c.config.insert(id.clone(), cfg);
+    c.markets.insert(id.clone(), cfg);
     if supply > 0 {
         c.market_supply.insert(id.clone(), supply);
     }
