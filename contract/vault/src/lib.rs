@@ -97,10 +97,16 @@ pub enum Role {
 ///
 /// Note: RBAC storage (role membership) is paid by the contract; callers are not charged deposits for RBAC changes.
 pub struct Contract {
+    /// The underlying asset that the vault manages
+    underlying_asset: FungibleAsset<BorrowAsset>,
+
+    /// The process in which the vault calculates its assets under management (AUM)
+    aum: AUM,
+
+    /// The mode in which the allocator will operate
     mode: AllocationMode,
     plan: Option<AllocationPlan>,
 
-    underlying_asset: FungibleAsset<BorrowAsset>,
     /// configuration per market (market ID -> MarketConfig)
     markets: IterableMap<AccountId, MarketConfiguration>,
 
@@ -192,6 +198,7 @@ impl Contract {
 
         let mut contract = Self {
             underlying_asset: underlying_token,
+            aum: AUM::GovernanceAbandonment,
             timelock_ns: initial_timelock_ns.0,
             performance_fee: Default::default(),
             fee_recipient,
@@ -695,7 +702,7 @@ impl Contract {
                         self.pending_cap.get(id).is_none(),
                         "Policy violation: Cannot remove market with pending cap change"
                     );
-                    AUM::GovernanceAbandonment.policy_removal(cfg, &has_supply);
+                    self.aum.policy_removal(cfg, &has_supply);
                 } else {
                     // Not in current queue: must be included if enabled or holding.
                     env::panic_str(
@@ -929,7 +936,7 @@ impl Contract {
 
     /// Returns total assets under management = idle balance + sum of market principals.
     pub fn get_total_assets(&self) -> U128 {
-        AUM::GovernanceAbandonment.get_total_assets(&self)
+        self.aum.get_total_assets(&self)
     }
 
     pub fn get_total_supply(&self) -> U128 {
@@ -941,7 +948,7 @@ impl Contract {
         let total = self
             .supply_queue
             .iter()
-            .fold(0u128, |acc, m| match self.config.get(m) {
+            .fold(0u128, |acc, m| match self.markets.get(m) {
                 Some(cfg) if cfg.cap.0 > 0 => {
                     let cur = *self.market_supply.get(m).unwrap_or(&0);
                     acc + cfg.cap.0.saturating_sub(cur)
@@ -1072,7 +1079,9 @@ impl Contract {
             market: market.clone(),
         }
         .emit();
-        AUM::GovernanceAbandonment.paper_aum_undercounting(self, &before_principal);
+        self.aum
+            .clone()
+            .paper_aum_undercounting(self, &before_principal);
     }
 
     /// Enqueue a vault-level pending withdrawal request (escrow already taken).
