@@ -374,14 +374,12 @@ async fn measure_gas(#[future(awt)] worker: Worker<Sandbox>) {
 
     let r1 = r.total_gas_burnt.as_gas();
 
-    c.create_supply_withdrawal_request(&supply_user_1, 1_000)
-        .await;
-    c.create_supply_withdrawal_request(&supply_user_2, 1_000)
-        .await;
-    c.create_supply_withdrawal_request(&supply_user_3, 1_000)
-        .await;
-    c.create_supply_withdrawal_request(&supply_user_4, 1_000)
-        .await;
+    tokio::join!(
+        c.create_supply_withdrawal_request(&supply_user_1, 1_000),
+        c.create_supply_withdrawal_request(&supply_user_2, 1_000),
+        c.create_supply_withdrawal_request(&supply_user_3, 1_000),
+        c.create_supply_withdrawal_request(&supply_user_4, 1_000),
+    );
     let r = c
         .execute_next_supply_withdrawal_request_exec(&supply_user_1, Some(100))
         .await;
