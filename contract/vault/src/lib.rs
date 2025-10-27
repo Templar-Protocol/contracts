@@ -36,8 +36,9 @@ use templar_common::{
         ext_self, require_at_least, AllocationMode, AllocationPlan, AllocationWeights, Error,
         Event, MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
         VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_ENSURE_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_GAS, WITHDRAW_GAS,
+        AFTER_SUPPLY_1_CHECK_GAS, AFTER_SUPPLY_ENSURE_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_GAS,
+        WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -943,6 +944,10 @@ impl Contract {
         self.aum.get_total_assets(&self)
     }
 
+    pub fn get_idle_balance(&self) -> U128 {
+        self.idle_balance.into()
+    }
+
     pub fn get_total_supply(&self) -> U128 {
         U128(self.total_supply())
     }
@@ -1277,8 +1282,9 @@ impl Contract {
         self.step_allocation()
     }
 
-    // Helper: build a supply transfer_call and chain after_supply_1_check
+    /// build a supply transfer_call and chain after_supply_1_check
     fn supply_and_then(&self, market: &AccountId, amount: u128, op_id: u64, index: u32) -> Promise {
+        self::require_at_least(AFTER_SUPPLY_1_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL));
         self.underlying_asset
             .transfer_call(
                 market,
@@ -1292,8 +1298,8 @@ impl Contract {
             )
             .then(
                 ext_self::ext(env::current_account_id())
-                    .with_static_gas(AFTER_SUPPLY_ENSURE_GAS)
-                    .with_unused_gas_weight(0)
+                    .with_static_gas(AFTER_SUPPLY_1_CHECK_GAS)
+                    // .with_unused_gas_weight(0)
                     .after_supply_1_check(op_id, index, U128(amount)),
             )
     }
