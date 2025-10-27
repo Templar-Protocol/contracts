@@ -165,6 +165,10 @@ impl Contract {
             index: market_index.saturating_add(1),
             remaining: remaining_next,
         };
+        if remaining_next == 0 {
+            // All funds allocated successfully
+            return self.stop_and_exit(None::<&String>);
+        }
         self.step_allocation()
     }
 
@@ -501,6 +505,7 @@ impl Contract {
                 }
             }
 
+            // Always add back remaining to idle_balance
             if *remaining > 0 {
                 self.idle_balance = self.idle_balance.saturating_add(*remaining);
             }

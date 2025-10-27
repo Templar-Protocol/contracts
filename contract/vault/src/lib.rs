@@ -1436,6 +1436,7 @@ impl Contract {
         };
 
         if remaining == 0 {
+            // All funds allocated successfully
             return self.stop_and_exit::<Error>(None);
         }
 
