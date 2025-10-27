@@ -435,7 +435,6 @@ impl Contract {
 
             // Pop the withdrawing id and reconcile the primer
             self.op_state = OpState::Idle;
-            sanitise_queue();
             true
         } else {
             // On payout failure, refund full escrow to owner and leave idle_balance unchanged
@@ -443,7 +442,6 @@ impl Contract {
                 // If this fails, this is a serious issue as above
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
             self.op_state = OpState::Idle;
-            sanitise_queue();
             false
         }
     }

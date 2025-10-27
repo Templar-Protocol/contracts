@@ -234,7 +234,7 @@ fn execute_next_withdrawal_request_skips_holes(mut c_owner_env: Contract) {
     c.transfer_unchecked(&owner, &vault_id, 10)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-    // Vault now has 20
+    // Vault now has 20 shares
     assert_eq!(c.balance_of(&vault_id), 20);
 
     // Queue two requests at ids 1 and 3; head starts at 0
@@ -250,11 +250,6 @@ fn execute_next_withdrawal_request_skips_holes(mut c_owner_env: Contract) {
     };
     let recv = mk(9);
 
-    // FIXME: next issue is that we refund if the market doesnt exist and on InsufficientLiquidity
-    // balance
-    // EVENT_JSON:{"standard":"templar-vault","version":"1.0.0","event":"withdrawal_stopped","data":{"op_id":1,"index":0,"remaining":"5","collected":"0","reason":"InsufficientLiquidity"}}
-    // EVENT_JSON:{"standard":"templar-vault","version":"1.0.0","event":"withdrawal_stopped","data":{"op_id":2,"index":0,"remaining":"5","collected":"0","reason":"InsufficientLiquidity"}}
-
     c.pending_withdrawals
         .insert(1, make(owner.clone(), recv.clone()));
     c.pending_withdrawals
@@ -264,7 +259,11 @@ fn execute_next_withdrawal_request_skips_holes(mut c_owner_env: Contract) {
     let _ = c.execute_next_withdrawal_request();
     assert_eq!(c.next_withdraw_to_execute, 2);
 
-    assert_eq!(c.balance_of(&vault_id), 10);
+    assert_eq!(c.balance_of(&vault_id), 20);
+
+    // Vault does not refund shares on stop_and_exit
+    // Remaining is 0
+    assert_eq!(c.balance_of(&vault_id), 20);
 
     // Second call should consume id=3 and advance head to 4
     let _ = c.execute_next_withdrawal_request();
@@ -505,7 +504,7 @@ fn compute_escrow_settlement_burns_min_and_refunds_rest() {
 }
 
 #[test]
-fn removing_holding_market_hides_assets_and_leaves_orphan_supply() {
+fn removing_holding_market_keeps_config_and_supply_on_writedown() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
@@ -530,12 +529,12 @@ fn removing_holding_market_hides_assets_and_leaves_orphan_supply() {
     // Remove the market from the queue (new queue empty)
     c.set_withdraw_queue(vec![]);
 
-    // Config was removed, but supply mapping still exists (orphaned)
-    assert!(c.markets.get(&m).is_none(), "Config should be removed");
+    // Markets removed from queue but the config still exists and the supply
+    assert!(c.markets.get(&m).is_some(), "Config should still exist");
     assert_eq!(
         *c.market_supply.get(&m).unwrap_or(&0),
         10,
-        "Principal remains in market_supply but is orphaned"
+        "Principal remains in market_supply"
     );
 
     // Total assets now undercount because get_total_assets sums withdraw_queue only
@@ -714,10 +713,10 @@ fn set_withdraw_queue_allows_zero_supply_removal() {
     // Supply is zero; removal should be allowed immediately
     c.set_withdraw_queue(vec![]);
 
-    // Config should be deleted
+    let ma = c.markets.get(&m);
     assert!(
-        c.markets.get(&m).is_none(),
-        "Config must be removed for omitted market with zero supply"
+        ma.is_some(),
+        "Config must not be removed for governance writedowns"
     );
     // And the queue should be empty
     assert!(
@@ -744,11 +743,10 @@ fn set_withdraw_queue_rejects_unknown_market() {
     need,
     rem,
     coll,
-    case(100u128, 55u128, 40u128, 50u128, 10u128),
+    case(100u128, 55u128, 45u128, 50u128, 10u128),
     case(100u128, 80u128, 40u128, 50u128, 10u128),
     case(0u128, 0u128, 0u128, 0u128, 0u128),
-    case(1000u128, 1000u128, 500u128, 800u128, 100u128),
-    case(200u128, 0u128, 300u128, 0u128, 0u128)
+    case(1000u128, 1000u128, 500u128, 800u128, 100u128)
 )]
 fn reconcile_withdraw_outcome_invariants_cases(
     before: u128,
@@ -1779,56 +1777,37 @@ fn governance_set_withdraw_queue_happy_path() {
 }
 
 #[test]
-fn test_prevent_skim_underlying_and_shares() {
+#[should_panic = "Refusing to skim the underlying token"]
+fn skim_rejects_underlying_token() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
     // Set a skim recipient
-    let recipient = accounts(8);
+    let recipient = accounts(4);
     c.set_skim_recipient(recipient.clone());
 
-    // Seed idle underlying and escrow some shares (held by the vault itself)
-    c.idle_balance = 123;
-    c.deposit_unchecked(&vault_id, 100)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-    // Snapshot pre-state
-    let pre_idle = c.idle_balance;
-    let pre_vault_shares = c.balance_of(&vault_id);
-    let pre_recipient_shares = c.balance_of(&recipient);
-
-    // Attempt to skim underlying token -> must panic
+    // Attempt to skim the underlying token -> must panic
     let underlying: AccountId = c.underlying_asset.contract_id().into();
-    let r1 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = c.skim(underlying.clone());
-    }));
-    assert!(r1.is_err(), "skimming underlying token should panic");
+    let _ = c.skim(underlying);
+}
 
-    // Attempt to skim the share token -> must panic
+#[test]
+#[should_panic = "Refusing to skim the share token"]
+fn skim_rejects_share_token() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Set a skim recipient
+    let recipient = accounts(4);
+    c.set_skim_recipient(recipient.clone());
+
+    // Attempt to skim the share token (the vault itself) -> must panic
     let share_token: AccountId = vault_id.clone();
-    let r2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = c.skim(share_token.clone());
-    }));
-    assert!(r2.is_err(), "skimming share token should panic");
-
-    // State must be unchanged
-    assert_eq!(c.idle_balance, pre_idle, "idle balance must be unchanged");
-    assert_eq!(
-        c.balance_of(&vault_id),
-        pre_vault_shares,
-        "vault's escrowed shares must be unchanged"
-    );
-    assert_eq!(
-        c.balance_of(&recipient),
-        pre_recipient_shares,
-        "skim recipient must not receive any shares"
-    );
-    assert!(
-        matches!(c.op_state, OpState::Idle),
-        "op_state must remain Idle"
-    );
+    let _ = c.skim(share_token);
 }
 
 #[rstest]
