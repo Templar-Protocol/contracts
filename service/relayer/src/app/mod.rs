@@ -29,6 +29,7 @@ use crate::{
             Database,
         },
         near::Near,
+        pyth::Pyth,
     },
     error::PreconditionError,
     AccountData, AssetTransfer, AssetTransferParseError, ContractData,
@@ -43,6 +44,7 @@ pub struct App {
     pub accounts: Arc<RwLock<AccountData>>,
     pub relay_near: Near,
     pub ua_near: Near,
+    pub pyth: Pyth,
     pub cache: Arc<Cache>,
     pub database: Database,
 }
@@ -69,6 +71,8 @@ impl App {
                 .collect(),
         );
 
+        let pyth = Pyth::new(args.pyth.clone());
+
         #[allow(clippy::unwrap_used)]
         let database = Database::new(&args.database_url, kill.clone()).unwrap();
 
@@ -87,6 +91,7 @@ impl App {
             accounts: Arc::new(RwLock::new(AccountData::default())),
             relay_near,
             ua_near,
+            pyth,
             cache: Arc::new(cache),
             database,
         }

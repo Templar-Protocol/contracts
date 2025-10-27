@@ -6,6 +6,7 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId, NearToken,
 };
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_universal_account::{
     authentication::{ExecutionContextProvider, Key},
     transaction::Action,
@@ -21,6 +22,8 @@ pub struct RelayRequest {
     pub args: ExecuteArgs,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
+    #[serde(default)]
+    pub update_price_feeds: HashSet<PriceIdentifier>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -32,10 +35,9 @@ pub struct RelayResponse {
 #[allow(clippy::too_many_lines)]
 #[tracing::instrument(
     name = "relay_universal_account",
-    skip(app, args),
+    skip(app),
     fields(
         account_id = %account_id,
-        storage_deposit_count = %storage_deposit.len()
     )
 )]
 pub async fn relay(
@@ -44,6 +46,7 @@ pub async fn relay(
         account_id,
         args,
         storage_deposit,
+        update_price_feeds,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
@@ -102,7 +105,7 @@ pub async fn relay(
     let accounts = app.accounts.read().await;
 
     let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
-    let mut eligible_for_storage_deposit = HashSet::with_capacity(payload.len());
+    let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
         if !accounts.allowed_contract_data.contains_key(receiver_id) {
@@ -140,18 +143,17 @@ pub async fn relay(
                     };
                 }
             };
-        eligible_for_storage_deposit.insert(receiver_id.clone());
-        eligible_for_storage_deposit.extend(additional_interactions.into_iter());
+        interacted_contract_ids.insert(receiver_id.clone());
+        interacted_contract_ids.extend(additional_interactions.into_iter());
         if let Some(market_data) = accounts.market_data.get(receiver_id) {
-            eligible_for_storage_deposit.insert(market_data.oracle_id.clone());
-            eligible_for_storage_deposit.insert(market_data.borrow_asset.contract_id().to_owned());
-            eligible_for_storage_deposit
-                .insert(market_data.collateral_asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.oracle_id.clone());
+            interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
         }
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
 
-    let storage_deposit = eligible_for_storage_deposit.intersection(&storage_deposit);
+    let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
 
     // Deposit for storage before sending the user's transaction.
     for contract_id in storage_deposit {
@@ -231,9 +233,90 @@ pub async fn relay(
         // Resolve synchronously.
         if let Err(e) = resolve_transaction.await {
             tracing::error!("Resolve transaction failure: {e}");
+            return SimpleResponse::Failure {
+                error: e.to_string(),
+            };
         }
     }
 
+    // Send any requested price updates
+    let mut interacted_price_identifiers = HashSet::with_capacity(2);
+    for contract_id in &interacted_contract_ids {
+        if let Some(market_data) = accounts.market_data.get(contract_id) {
+            interacted_price_identifiers.insert(market_data.collateral_asset_price_id);
+            interacted_price_identifiers.insert(market_data.borrow_asset_price_id);
+        }
+    }
+
+    let send_price_updates_for = app
+        .pyth
+        .needs_update(interacted_price_identifiers.intersection(&update_price_feeds))
+        .await;
+
+    if !send_price_updates_for.is_empty() {
+        let vaa = match app
+            .pyth
+            .get_latest_price_updates_vaa(&send_price_updates_for)
+            .await
+        {
+            Ok(vaa) => vaa,
+            Err(e) => {
+                tracing::warn!("Failed to fetch Pyth VAA: {e:?}");
+                return SimpleResponse::Failure {
+                    error: "Failed to fetch Pyth VAA".to_string(),
+                };
+            }
+        };
+
+        let gas = app.args.pyth.push_tgas;
+        let deposit = app.args.pyth.push_deposit.as_yoctonear();
+
+        let update_transaction = app
+            .relay_near
+            .construct_pyth_update_transaction(
+                &app.cache,
+                app.args.pyth.oracle_id.clone(),
+                vaa,
+                gas,
+                deposit,
+            )
+            .await;
+
+        let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
+            tracing::error!("Failed to estimate cost of gas for Pyth update transaction");
+            return SimpleResponse::Failure {
+                error: "Failed to estimate cost of gas for Pyth update transaction".to_string(),
+            };
+        };
+
+        match app
+            .send_and_resolve_transaction(
+                account_id.clone(),
+                cost_of_gas,
+                NearToken::from_near(0), // although we actually do attach a deposit to the pyth transaction, the oracle contract returns this deposit, so we don't need to charge the user for it
+                update_transaction,
+                TxExecutionStatus::Final,
+            )
+            .await
+        {
+            Ok(resolve) => {
+                if let Err(e) = resolve.await {
+                    tracing::error!("Resolve Pyth update transaction failure: {e:?}");
+                    return SimpleResponse::Failure {
+                        error: "Resolve Pyth update transaction failure".to_string(),
+                    };
+                }
+            }
+            Err(e) => {
+                tracing::error!("Send Pyth update transaction error: {e:?}");
+                return SimpleResponse::Failure {
+                    error: "Send Pyth update transaction error".to_string(),
+                };
+            }
+        };
+    }
+
+    // Send the user's transaction
     let signed_transaction = app
         .relay_near
         .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas)

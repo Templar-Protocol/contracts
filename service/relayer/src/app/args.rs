@@ -23,6 +23,8 @@ pub struct Configuration {
     #[clap(flatten)]
     pub ua: UniversalAccount,
     #[clap(flatten)]
+    pub pyth: Pyth,
+    #[clap(flatten)]
     pub cache: Cache,
     /// Broom batch size.
     #[arg(long, env = "BROOM_BATCH_SIZE", default_value_t = 16)]
@@ -34,6 +36,51 @@ pub struct Configuration {
 
 fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
     Ok(Duration::from_secs(u64::from_str(s)?))
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct Pyth {
+    /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
+    #[arg(
+        long,
+        env = "PYTH_HERMES_URL",
+        default_value_t = String::from("https://hermes-beta.pyth.network")
+    )]
+    pub hermes_url: String,
+    /// Do not push price updates to Pyth oracle if the last push was less
+    /// than this long ago, even if requested.
+    #[arg(
+        id = "pyth-refresh-secs",
+        long = "pyth-refresh-secs",
+        env = "PYTH_REFRESH_SECS",
+        value_parser = duration_from_secs,
+        default_value = "25"
+    )]
+    pub refresh: Duration,
+    /// Oracle ID to push price updates to.
+    #[arg(
+        id = "pyth-oracle-id",
+        long = "pyth-oracle-id",
+        env = "PYTH_ORACLE_ID",
+        default_value_t = AccountId::from_str("pyth-oracle.testnet").unwrap()
+    )]
+    pub oracle_id: AccountId,
+    /// How much gas (in units of Tgas) to attach to oracle price update calls.
+    #[arg(
+        id = "pyth-push-tgas",
+        long = "pyth-push-tgas",
+        env = "PYTH_PUSH_TGAS",
+        default_value_t = 300
+    )]
+    pub push_tgas: u64,
+    /// How much NEAR to attach as a deposit to oracle price update calls.
+    #[arg(
+        id = "pyth-push-deposit",
+        long = "pyth-push-deposit",
+        env = "PYTH_PUSH_DEPOSIT",
+        default_value = "0.1 NEAR"
+    )]
+    pub push_deposit: NearToken,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -56,15 +103,6 @@ pub struct Cache {
         default_value = "60"
     )]
     pub nonce_refresh: Duration,
-    /// Refresh the cached protocol configuration after X seconds.
-    #[arg(
-        id = "cache-protocol-config-secs",
-        long = "cache-protocol-config-secs",
-        env = "CACHE_PROTOCOL_CONFIG_SECS",
-        value_parser = duration_from_secs,
-        default_value = "3600"
-    )]
-    pub protocol_config_refresh: Duration,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -28,7 +28,10 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBounds};
 
-use templar_common::market::MarketConfiguration;
+use templar_common::{
+    market::MarketConfiguration,
+    oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier},
+};
 use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
 
 use crate::{cache::Cache, MarketData};
@@ -368,6 +371,40 @@ impl Near {
         .sign(signer)
     }
 
+    #[must_use]
+    pub async fn construct_pyth_update_transaction(
+        &self,
+        cache: &Cache,
+        pyth_account_id: AccountId,
+        vaa: Vec<u8>,
+        gas: u64,
+        deposit: u128,
+    ) -> SignedTransaction {
+        let signer = self.next_signer();
+        let public_key = signer.public_key();
+
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
+
+        let action = FunctionCallAction {
+            method_name: "execute".to_string(),
+            args: serde_json::to_vec(&json!({ "data": vaa })).unwrap(),
+            gas,
+            deposit,
+        };
+
+        Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key,
+            nonce,
+            receiver_id: pyth_account_id,
+            block_hash,
+            actions: vec![action.into()],
+        })
+        .sign(signer)
+    }
+
     /// # Errors
     ///
     /// - RPC errors
@@ -479,16 +516,50 @@ impl Near {
         &self,
         market_id: AccountId,
     ) -> Result<MarketData, ViewError> {
-        let market_configuration = self
+        let config = self
             .view::<MarketConfiguration>(market_id.clone(), "get_configuration", json!({}))
+            .await?;
+
+        let oracle_id = config.price_oracle_configuration.account_id;
+
+        let borrow_asset_price_id = self
+            .try_resolve_price_identifier(
+                oracle_id.clone(),
+                config.price_oracle_configuration.borrow_asset_price_id,
+            )
+            .await?;
+        let collateral_asset_price_id = self
+            .try_resolve_price_identifier(
+                oracle_id.clone(),
+                config.price_oracle_configuration.collateral_asset_price_id,
+            )
             .await?;
 
         Ok(MarketData {
             account_id: market_id.clone(),
-            oracle_id: market_configuration.price_oracle_configuration.account_id,
-            borrow_asset: market_configuration.borrow_asset,
-            collateral_asset: market_configuration.collateral_asset,
+            oracle_id,
+            borrow_asset: config.borrow_asset,
+            borrow_asset_price_id,
+            collateral_asset: config.collateral_asset,
+            collateral_asset_price_id,
         })
+    }
+
+    async fn try_resolve_price_identifier(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+    ) -> Result<PriceIdentifier, ViewError> {
+        match self
+            .view::<PriceTransformer>(oracle_id, "get_transformer", json!({}))
+            .await
+        {
+            Ok(transformer) => Ok(transformer.price_id),
+            Err(e) => {
+                tracing::error!("Price identifier resolution error: {e:?}");
+                Ok(price_identifier)
+            }
+        }
     }
 
     /// # Errors
