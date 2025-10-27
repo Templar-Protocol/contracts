@@ -10,8 +10,9 @@ use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
-        Event, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_EXEC_WITHDRAW_READ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_POSITION_CHECK_GAS, EXECUTE_WITHDRAW_REQ_GAS, GET_SUPPLY_POSITION_GAS,
+        Event, AFTER_EXECUTE_NEXT_WITHDRAW_GAS, AFTER_EXECUTE_NEXT_WITHDRAW_READ_GAS,
+        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_2_READ_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
+        GET_SUPPLY_POSITION_GAS,
     },
 };
 
@@ -66,7 +67,7 @@ impl Contract {
                         .get_supply_position(env::current_account_id())
                         .then(
                             ext_self::ext(env::current_account_id())
-                                .with_static_gas(AFTER_SUPPLY_POSITION_CHECK_GAS)
+                                .with_static_gas(AFTER_SUPPLY_2_READ_GAS)
                                 .after_supply_2_read(
                                     op_id,
                                     market_index,
@@ -193,12 +194,12 @@ impl Contract {
         if did_create.is_ok() {
             PromiseOrValue::Promise(
                 ext_market::ext(market.clone())
-                    .with_static_gas(EXECUTE_WITHDRAW_REQ_GAS)
+                    .with_static_gas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
                     .with_unused_gas_weight(0)
                     .execute_next_supply_withdrawal_request()
                     .then(
                         ext_self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
+                            .with_static_gas(AFTER_EXECUTE_NEXT_WITHDRAW_GAS)
                             .after_exec_withdraw_req(op_id, market_index, need),
                     ),
             )
@@ -253,7 +254,7 @@ impl Contract {
                 .get_supply_position(env::current_account_id())
                 .then(
                     ext_self::ext(env::current_account_id())
-                        .with_static_gas(AFTER_EXEC_WITHDRAW_READ_GAS)
+                        .with_static_gas(AFTER_EXECUTE_NEXT_WITHDRAW_READ_GAS)
                         .after_exec_withdraw_read(op_id, market_index, U128(before), need),
                 ),
         )
