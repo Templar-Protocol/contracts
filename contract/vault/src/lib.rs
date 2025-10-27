@@ -1265,6 +1265,7 @@ impl Contract {
             amount <= self.idle_balance,
             "Policy violation: reserve amount must be <= idle_balance"
         );
+        // Deduct from idle_balance upfront
         self.idle_balance -= amount;
 
         let op_id = self.next_op_id;
