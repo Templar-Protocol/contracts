@@ -103,9 +103,3 @@ pub struct Withdrawal {
     pub amount_to_account: BorrowAssetAmount,
     pub amount_to_fees: BorrowAssetAmount,
 }
-
-// impl Withdrawal {
-//     pub fn total(&self) -> BorrowAssetAmount {
-//         self.amount_to_account + self.amount_to_fees
-//     }
-// }
