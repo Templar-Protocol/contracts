@@ -353,3 +353,47 @@ async fn batch_fulfillment_partial(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(balance_2_before + 10_000, balance_2_after);
     assert_eq!(balance_3_before + 5_000, balance_3_after);
 }
+
+#[rstest]
+#[tokio::test]
+async fn measure_gas(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(supply_user_1, supply_user_2, supply_user_3, supply_user_4));
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user_1, 20_000),
+        c.supply_and_harvest_until_activation(&supply_user_2, 20_000),
+        c.supply_and_harvest_until_activation(&supply_user_3, 20_000),
+        c.supply_and_harvest_until_activation(&supply_user_4, 20_000),
+    );
+
+    c.create_supply_withdrawal_request(&supply_user_1, 1_000)
+        .await;
+    let r = c
+        .execute_next_supply_withdrawal_request_exec(&supply_user_1, None)
+        .await;
+
+    let r1 = r.total_gas_burnt.as_gas();
+
+    c.create_supply_withdrawal_request(&supply_user_1, 1_000)
+        .await;
+    c.create_supply_withdrawal_request(&supply_user_2, 1_000)
+        .await;
+    c.create_supply_withdrawal_request(&supply_user_3, 1_000)
+        .await;
+    c.create_supply_withdrawal_request(&supply_user_4, 1_000)
+        .await;
+    let r = c
+        .execute_next_supply_withdrawal_request_exec(&supply_user_1, Some(100))
+        .await;
+
+    let r2 = r.total_gas_burnt.as_gas();
+
+    let base = near_sdk::Gas::from_gas((4 * r1 - r2) / 3);
+    let amount_per_request = near_sdk::Gas::from_gas((r2 - r1) / 3);
+
+    eprintln!("Base: {base}");
+    eprintln!("Amount per request: {amount_per_request}");
+
+    assert!(base < near_sdk::Gas::from_tgas(7));
+    assert!(amount_per_request < near_sdk::Gas::from_tgas(5));
+}
