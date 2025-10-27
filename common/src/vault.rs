@@ -149,13 +149,14 @@ pub trait VaultExt {
 pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(4);
 // FIXME: move to market
 pub const CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(10);
+pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(20);
+
 // FIXME: move to market
-pub const EXECUTE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(10);
+pub const EXECUTE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(30);
+pub const AFTER_EXEC_WITHDRAW_READ_GAS: Gas = Gas::from_tgas(10);
 
 pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
 pub const AFTER_SUPPLY_POSITION_CHECK_GAS: Gas = Gas::from_tgas(10);
-pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(20);
-pub const AFTER_EXEC_WITHDRAW_READ_GAS: Gas = Gas::from_tgas(10);
 pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(5);
 
 // Add a 20% buffer to a gas estimate
@@ -482,7 +483,12 @@ pub enum Event {
         expected_assets: U128,
         requested_at: U64,
     },
-
+    #[event_version("1.0.0")]
+    WithdrawalPrimed {
+        id: U64,
+        amount: U128,
+        remaining: U128,
+    },
     // Allocation read/settlement diagnostics
     #[event_version("1.0.0")]
     AllocationPositionMissing {
@@ -543,6 +549,40 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     OperationStoppedWhileIdle { reason: Option<String> },
+
+    // Withdrawal priming events
+    #[event_version("1.0.0")]
+    WithdrawalPrimingStarted {
+        id: U64,
+        expected_assets: U128,
+        max_steps: u32,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalPrimingStep {
+        id: U64,
+        market: AccountId,
+        requested: U128,
+        assigned_so_far: U128,
+        remaining: U128,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalPrimingSkipped {
+        id: U64,
+        market: AccountId,
+        reason: String,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalPrimingCompleted {
+        id: U64,
+        assigned_total: U128,
+        next_index: u32,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalPrimingGasLimited {
+        id: U64,
+        allowed_steps: u32,
+        remaining_gas: Gas,
+    },
 
     // Skim and deposits
     #[event_version("1.0.0")]

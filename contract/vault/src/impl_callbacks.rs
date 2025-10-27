@@ -6,12 +6,14 @@ use crate::{
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{env, json_types::U128, AccountId, NearToken, PromiseError, PromiseOrValue};
 use near_sdk_contract_tools::ft::nep141::GAS_FOR_FT_TRANSFER_CALL;
+use templar_common::asset::BorrowAssetAmount;
 use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
         Event, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_EXEC_WITHDRAW_READ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_POSITION_CHECK_GAS, EXECUTE_WITHDRAW_REQ_GAS, GET_SUPPLY_POSITION_GAS,
+        AFTER_SUPPLY_POSITION_CHECK_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_REQ_GAS,
+        GET_SUPPLY_POSITION_GAS,
     },
 };
 
@@ -329,6 +331,24 @@ impl Contract {
             self.idle_balance = self.idle_balance.saturating_add(idle_delta);
         }
 
+        // If nothing was credited, try creating a request now (execute-first, then create-if-needed)
+        if idle_delta == 0 && remaining_next > 0 {
+            if new_principal > 0 {
+                let to_request = new_principal.min(remaining_next);
+                return PromiseOrValue::Promise(
+                    ext_market::ext(market.clone())
+                        .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
+                        .with_unused_gas_weight(0)
+                        .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)))
+                        .then(
+                            ext_self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
+                                .after_create_withdraw_req(op_id, market_index, U128(to_request)),
+                        ),
+                );
+            }
+        }
+
         if remaining_next == 0 {
             if collected_next > 0 {
                 self.op_state = OpState::Payout {
@@ -350,13 +370,10 @@ impl Contract {
                         ),
                 )
             } else {
-                // Nothing collected; refund escrowed shares
-                let self_id = env::current_account_id();
-                // We expect the owner to maintain storage accounts, otherwise they will lose access to their funds
-                self.transfer_unchecked(&self_id, &owner, escrow_shares)
-                    .expect("Failed to refund escrowed shares");
+                // Keep escrowed shares so the request can be honored later
                 self.op_state = OpState::Idle;
-                PromiseOrValue::Value(())
+                self.executing_withdraw_id = None;
+                return PromiseOrValue::Value(());
             }
         } else {
             self.op_state = OpState::Withdrawing {
@@ -435,7 +452,7 @@ impl Contract {
 
             // Pop the withdrawing id and reconcile the primer
             self.op_state = OpState::Idle;
-            sanitise_queue();
+            self.sanitise_queue();
             true
         } else {
             // On payout failure, refund full escrow to owner and leave idle_balance unchanged
@@ -443,7 +460,7 @@ impl Contract {
                 // If this fails, this is a serious issue as above
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
             self.op_state = OpState::Idle;
-            sanitise_queue();
+            self.sanitise_queue();
             false
         }
     }
@@ -668,6 +685,18 @@ impl Contract {
             .get(market_index)
             .cloned()
             .ok_or(Error::MissingMarket(market_index))
+    }
+    fn sanitise_queue(&mut self) {
+        if let Some(id) = self.executing_withdraw_id.take() {
+            self.pending_withdrawals.remove(&id);
+            self.priming_progress.remove(&id);
+            let mut next = id.saturating_add(1);
+            while next < self.next_withdraw_id && self.pending_withdrawals.get(&next).is_none() {
+                next = next.saturating_add(1);
+            }
+            self.next_withdraw_to_execute = next;
+            // TODO : emit events
+        }
     }
 }
 
