@@ -5,10 +5,13 @@ use std::{
     num::NonZeroU8,
 };
 
-use crate::storage_management::{
-    require_attached_at_least, require_attached_for_pending_withdrawal,
-    storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
-    yocto_for_pending_cap,
+use crate::{
+    aum::AUM,
+    storage_management::{
+        require_attached_at_least, require_attached_for_pending_withdrawal,
+        storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
+        yocto_for_pending_cap,
+    },
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -16,12 +19,12 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, serde_json,
     store::{IterableMap, LookupMap, Vector},
-    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, BorshStorageKey, Gas, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
-        nep141::GAS_FOR_FT_TRANSFER_CALL, ContractMetadata, FungibleToken, Nep141Controller,
-        Nep148Controller,
+        nep141::GAS_FOR_FT_TRANSFER_CALL, nep145::Nep145ForceUnregister, ContractMetadata,
+        FungibleToken, Nep141Controller, Nep145 as _, Nep148Controller,
     },
     Owner, Rbac,
 };
@@ -34,7 +37,7 @@ use templar_common::{
         Event, MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
         VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
         AFTER_SUPPLY_ENSURE_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_GAS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -809,10 +812,7 @@ impl Contract {
         let share_token_id = env::current_account_id();
         let underlying_token_id = self.underlying_asset.contract_id();
 
-        require!(
-            token != share_token_id,
-            "Refusing to skim the share token (would steal escrowed shares)"
-        );
+        require!(token != share_token_id, "Refusing to skim the share token");
         require!(
             token != underlying_token_id,
             "Refusing to skim the underlying token"
@@ -1492,6 +1492,7 @@ impl Contract {
                 ),
                 _ => return self.stop_and_exit(Some(&Error::NotWithdrawing)),
             };
+
         if remaining == 0 {
             self.op_state = OpState::Payout {
                 op_id,
@@ -1531,7 +1532,6 @@ impl Contract {
             }
             PromiseOrValue::Promise(
                 templar_common::market::ext_market::ext(market.clone())
-                    // FIXME: incorrect
                     .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
                     .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(*to_request)))
                     .then(
@@ -1546,8 +1546,6 @@ impl Contract {
     }
 
     ///  If we collected something, pay it out now and burn proportional shares or pay directly from idle balance
-    ///  TODO: should directly check idle balance first?
-    ///  TODO: unit test me
     fn pay_collected(
         &mut self,
         op_id: u64,
@@ -1580,7 +1578,6 @@ impl Contract {
         } else {
             // Park the head pending: keep escrowed shares, stay in queue, try again later
             self.op_state = OpState::Idle;
-            self.executing_withdraw_id = None;
             PromiseOrValue::Value(())
         }
     }
