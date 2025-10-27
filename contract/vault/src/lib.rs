@@ -850,17 +850,6 @@ impl Contract {
         Self::assert_allocator();
         self.ensure_idle();
 
-        let existing: HashSet<AccountId> = self.withdraw_queue.iter().cloned().collect();
-
-        let candidates: Vec<AccountId> = if weights.is_empty() {
-            self.supply_queue.iter().cloned().collect()
-        } else {
-            weights.iter().map(|(m, _)| m.clone()).collect()
-        };
-
-        let required_yocto = storage_management::yocto_for_queue_additions(&existing, &candidates);
-        let _ = require_attached_at_least(required_yocto, "potential queue additions");
-
         let total = self.clamp_allocation_total(amount.map(|x| x.0));
 
         if weights.is_empty() {
