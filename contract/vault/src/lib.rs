@@ -599,7 +599,7 @@ impl Contract {
         let cfg = self
             .markets
             .get_mut(&market)
-            .unwrap_or_else(|| env::panic_str("unknown market"));
+            .unwrap_or_else(|| env::panic_str(&format!("Unknown market: {}", market)));
         require!(
             cfg.removable_at == 0,
             "Removal already pending for this market"
@@ -713,7 +713,10 @@ impl Contract {
                 } else {
                     // Not in current queue: must be included if enabled or holding.
                     env::panic_str(
-                        "Invariant violation: Withdraw queue must include all enabled or holding markets",
+                        &format!(
+                            "Invariant violation: Withdraw queue must include all enabled or holding markets; missing {}",
+                            id
+                        ),
                     );
                 }
             }
@@ -912,20 +915,28 @@ impl Contract {
         VaultConfiguration {
             owner: self
                 .own_get_owner()
-                .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+                .unwrap_or_else(|| env::panic_str("Owner not set in get_configuration")),
             curator: Self::with_members_of(&Role::Curator, |members| {
                 require!(
                     members.len() == 1,
                     "Invariant violation: Cannot have more than one Curator"
                 );
-                members.iter().next().expect("Curator not set").clone()
+                members
+                    .iter()
+                    .next()
+                    .expect("Curator not set in get_configuration")
+                    .clone()
             }),
             guardian: Self::with_members_of(&Role::Guardian, |members| {
                 require!(
                     members.len() == 1,
                     "Invariant violation: Cannot have more than one Guardian"
                 );
-                members.iter().next().expect("Guardian not set").clone()
+                members
+                    .iter()
+                    .next()
+                    .expect("Guardian not set in get_configuration")
+                    .clone()
             }),
             underlying_token: self.underlying_asset.clone(),
             initial_timelock_ns: self.timelock_ns.clone().into(),
@@ -1036,14 +1047,13 @@ impl Contract {
     fn cfg_mut(&mut self, id: &AccountId) -> &mut MarketConfiguration {
         self.markets
             .get_mut(id)
-            .unwrap_or_else(|| env::panic_str("Config not found"))
+            .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {}", id)))
     }
 
-    // Read-only config accessor with consistent panic
     fn cfg(&self, id: &AccountId) -> &MarketConfiguration {
         self.markets
             .get(id)
-            .unwrap_or_else(|| env::panic_str("Config not found"))
+            .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {}", id)))
     }
 
     // Principal (vault-supplied) units currently recorded for a market
@@ -1244,7 +1254,10 @@ impl Contract {
     fn ensure_idle(&self) {
         // Invariant: Only one op in flight; ensure_idle() guards all mutating ops.
         if !matches!(self.op_state, OpState::Idle) {
-            env::panic_str("Invariant: Only one op in flight");
+            env::panic_str(&format!(
+                "Invariant: Only one op in flight; current op_state = {:?}",
+                self.op_state
+            ));
         }
     }
 
