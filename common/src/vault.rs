@@ -145,32 +145,55 @@ pub trait VaultExt {
     fn preview_redeem(shares: U128) -> U128;
 }
 
-// FIXME: move to market
-pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(4);
-// FIXME: move to market
-pub const CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(10);
-// FIXME: move to market
-pub const EXECUTE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(10);
-
-pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
-pub const AFTER_SUPPLY_POSITION_CHECK_GAS: Gas = Gas::from_tgas(10);
-pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas = Gas::from_tgas(20);
-pub const AFTER_EXEC_WITHDRAW_READ_GAS: Gas = Gas::from_tgas(10);
-pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(5);
-
 // Add a 20% buffer to a gas estimate
-pub const fn buffer(size: usize) -> Gas {
-    // 20% buffer => multiply by 6/5 (≈1.2x)
-    Gas::from_tgas(size as u64)
-        .saturating_mul(6)
-        .saturating_div(5)
+pub const fn buffer(size: u64) -> Gas {
+    Gas::from_tgas((size * 6 + 4) / 5)
 }
+
+// Fetching a position
+const GET_SUPPLY_POSITION: u64 = 4;
+pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(GET_SUPPLY_POSITION);
+
+// Create a withdrawal request
+pub const CREATE_WITHDRAW_REQ_GAS: Gas = buffer(5);
+
+// Execute the next withdrawal request on a market
+const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 = 20;
+pub const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS: Gas =
+    Gas::from_tgas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
+
+// ?
+pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
+
+// Our callback roots
+
+// TODO: rename
+pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas =
+    buffer(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ + AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
+
+// TODO: rename
+const AFTER_EXECUTE_NEXT_WITHDRAW: u64 = 5 + 5 + AFTER_SEND_TO_USER;
+pub const AFTER_EXECUTE_NEXT_WITHDRAW_READ_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
+
+// todo: rename
+const AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 =
+    GET_SUPPLY_POSITION + AFTER_EXECUTE_NEXT_WITHDRAW;
+pub const AFTER_EXECUTE_NEXT_WITHDRAW_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
+
+const AFTER_SUPPLY_2_READ: u64 = 5;
+pub const AFTER_SUPPLY_2_READ_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
+pub const AFTER_SUPPLY_1_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
 
 // NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);
-pub const ALLOCATE_GAS: Gas = buffer(21);
+pub const ALLOCATE_GAS: Gas = buffer(28);
+
 pub const WITHDRAW_GAS: Gas = buffer(4);
+
 pub const EXECUTE_WITHDRAW_GAS: Gas = buffer(9);
+const AFTER_SEND_TO_USER: u64 = 5;
+pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(AFTER_SEND_TO_USER);
+
 pub const SUBMIT_CAP_GAS: Gas = buffer(3);
 
 pub fn require_at_least(needed: Gas) {

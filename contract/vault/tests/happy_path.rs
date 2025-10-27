@@ -21,10 +21,21 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     );
     vault.init_account(&supply_user).await;
 
+    let initial_user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
+    println!("Initial supply_user balance: {}", initial_user_balance);
+
     let v = vault.contract().id();
     let amount: U128 = 1000.into();
 
+    assert_eq!(
+        vault.get_total_assets().await.0,
+        0,
+        "Vault should appropriately track assets"
+    );
+
     vault.supply(&supply_user, amount.0).await;
+    let after_supply_balance = c.borrow_asset.balance_of(supply_user.id()).await;
+    println!("After supply of {}: {}", amount.0, after_supply_balance);
     c.collateralize(&borrow_user, 2000).await;
 
     let weights = vec![(c.market.contract().id().clone(), U128(1))];
@@ -41,6 +52,11 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         vault.get_total_supply().await,
         amount,
         "Vault should have issued shares to the supplier"
+    );
+    assert_eq!(
+        vault.get_idle_balance().await.0,
+        0,
+        "Vault should not have idle balance after allocation"
     );
     assert_eq!(
         vault.get_total_assets().await,
@@ -70,7 +86,6 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     let user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
 
     vault.withdraw(&supply_user, amount, None).await;
-    // TODO: assert the user now escrowed their shares
     vault.execute_next_withdrawal(&vault_curator).await;
 
     assert_eq!(
