@@ -1576,7 +1576,10 @@ impl Contract {
                     ),
             )
         } else {
-            self.stop_and_exit(Some(&Error::InsufficientLiquidity))
+            // Park the head pending: keep escrowed shares, stay in queue, try again later
+            self.op_state = OpState::Idle;
+            self.executing_withdraw_id = None;
+            PromiseOrValue::Value(())
         }
     }
 }
