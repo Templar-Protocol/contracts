@@ -134,6 +134,8 @@ use super::*;
 /// - AUM includes all positions that still belong to the vault until assets actually
 ///   move. Queue membership must not change accounting.
 /// - Markets cannot be removed from the withdraw_queue while principal > 0.
+#[near(serializers = [borsh, json])]
+#[derive(Debug, Clone)]
 pub enum AUM {
     /// GovernanceAbandonment: queue = truth for AUM. See module docs for tradeoffs.
     GovernanceAbandonment,
@@ -164,9 +166,10 @@ impl AUM {
                     prev.saturating_add(c.principal_of(m))
                 })
             }
-            AUM::BalanceSheet => c.supply_queue.iter().fold(c.idle_balance, |prev, m| {
-                prev.saturating_add(c.principal_of(m))
-            }),
+            AUM::BalanceSheet => c
+                .market_supply
+                .iter()
+                .fold(c.idle_balance, |prev, (_, p)| prev.saturating_add(*p)),
         })
     }
 
