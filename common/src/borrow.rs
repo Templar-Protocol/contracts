@@ -63,7 +63,9 @@ pub struct BorrowPosition {
     borrow_asset_principal: BorrowAssetAmount,
     pub interest: Accumulator<BorrowAsset>,
     pub fees: BorrowAssetAmount,
+    #[serde(default)]
     borrow_asset_in_flight: BorrowAssetAmount,
+    #[serde(default)]
     collateral_asset_in_flight: CollateralAssetAmount,
     pub liquidation_lock: CollateralAssetAmount,
 }

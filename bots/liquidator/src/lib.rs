@@ -62,7 +62,11 @@ use templar_common::{
     asset::{AssetClass, BorrowAsset, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
     market::{DepositMsg, LiquidateMsg, MarketConfiguration},
-    oracle::pyth::{OracleResponse, PriceIdentifier},
+    number::Decimal,
+    oracle::{
+        price_transformer::PriceTransformer,
+        pyth::{OracleResponse, PriceIdentifier},
+    },
 };
 use tracing::{debug, error, info, warn, Span};
 
@@ -274,16 +278,17 @@ impl Liquidator {
         match result {
             Ok(response) => Ok(response),
             Err(e) => {
-                let error_msg = e.to_string();
+                // Use Debug format to get full error details including ProhibitedInView
+                let error_msg = format!("{:?}", e);
                 tracing::debug!("First oracle call failed for {}: {}", oracle, error_msg);
 
                 // Check if oracle creates promises in view calls (incompatible with liquidation bot)
                 if error_msg.contains("ProhibitedInView") {
-                    tracing::info!(
+                    tracing::debug!(
                         oracle = %oracle,
-                        "Oracle incompatible - creates promises in view calls"
+                        "Oracle creates promises in view calls, trying LST oracle approach"
                     );
-                    return Ok(std::collections::HashMap::new());
+                    return self.get_oracle_prices_with_transformers(oracle, price_ids, age).await;
                 }
 
                 // If method not found, try the standard method with age validation
@@ -310,13 +315,16 @@ impl Liquidator {
                             Ok(response)
                         }
                         Err(fallback_err) => {
+                            // Use Debug format to get full error details
+                            let fallback_error_msg = format!("{:?}", fallback_err);
+
                             // Check if fallback also fails with ProhibitedInView
-                            if fallback_err.to_string().contains("ProhibitedInView") {
-                                tracing::warn!(
+                            if fallback_error_msg.contains("ProhibitedInView") {
+                                tracing::debug!(
                                     oracle = %oracle,
-                                    "Skipping market - oracle incompatible with view-only queries"
+                                    "Fallback also creates promises, trying LST oracle approach"
                                 );
-                                return Ok(std::collections::HashMap::new());
+                                return self.get_oracle_prices_with_transformers(oracle, price_ids, age).await;
                             }
                             Err(LiquidatorError::PriceFetchError(fallback_err))
                         }
@@ -325,6 +333,187 @@ impl Liquidator {
                     Err(LiquidatorError::PriceFetchError(e))
                 }
             }
+        }
+    }
+
+    /// Fetches prices from LST oracle by calling underlying Pyth oracle and applying transformers.
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn get_oracle_prices_with_transformers(
+        &self,
+        lst_oracle: AccountId,
+        price_ids: &[PriceIdentifier],
+        age: u32,
+    ) -> LiquidatorResult<OracleResponse> {
+        tracing::info!(
+            oracle = %lst_oracle,
+            "Detected LST oracle, fetching transformers and applying manually"
+        );
+
+        // Get transformers for each price ID
+        let mut transformers: HashMap<PriceIdentifier, PriceTransformer> = HashMap::new();
+        let mut underlying_price_ids: Vec<PriceIdentifier> = Vec::new();
+
+        for &price_id in price_ids {
+            match view::<Option<PriceTransformer>>(
+                &self.client,
+                lst_oracle.clone(),
+                "get_transformer",
+                json!({ "price_identifier": price_id }),
+            )
+            .await
+            {
+                Ok(Some(transformer)) => {
+                    tracing::debug!(
+                        price_id = ?price_id,
+                        underlying_id = ?transformer.price_id,
+                        "Found price transformer"
+                    );
+                    underlying_price_ids.push(transformer.price_id);
+                    transformers.insert(price_id, transformer);
+                }
+                Ok(None) => {
+                    tracing::debug!(price_id = ?price_id, "No transformer, using price ID as-is");
+                    underlying_price_ids.push(price_id);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        price_id = ?price_id,
+                        error = %e,
+                        "Failed to get transformer, skipping market"
+                    );
+                    return Ok(HashMap::new());
+                }
+            }
+        }
+
+        // Get underlying oracle account ID
+        let underlying_oracle: AccountId = match view(
+            &self.client,
+            lst_oracle.clone(),
+            "oracle_id",
+            json!({}),
+        )
+        .await
+        {
+            Ok(oracle_id) => oracle_id,
+            Err(e) => {
+                tracing::warn!(
+                    oracle = %lst_oracle,
+                    error = %e,
+                    "Failed to get underlying oracle ID, skipping market"
+                );
+                return Ok(HashMap::new());
+            }
+        };
+
+        tracing::debug!(
+            underlying_oracle = %underlying_oracle,
+            underlying_price_ids = ?underlying_price_ids,
+            "Fetching prices from underlying Pyth oracle"
+        );
+
+        // Fetch prices from underlying Pyth oracle (use Box::pin to avoid infinite recursion)
+        let mut underlying_prices = Box::pin(self
+            .get_oracle_prices(underlying_oracle.clone(), &underlying_price_ids, age))
+            .await?;
+
+        if underlying_prices.is_empty() {
+            tracing::warn!("Underlying oracle returned no prices, skipping market");
+            return Ok(HashMap::new());
+        }
+
+        // Apply transformers to get final prices
+        let mut final_prices: OracleResponse = HashMap::new();
+
+        for (&original_price_id, transformer) in &transformers {
+            if let Some(Some(underlying_price)) = underlying_prices.remove(&transformer.price_id) {
+                // Need to get the input value for transformation (e.g., LST redemption rate)
+                match self
+                    .fetch_transformer_input(&transformer.call, &lst_oracle)
+                    .await
+                {
+                    Ok(input) => {
+                        if let Some(transformed_price) =
+                            transformer.action.apply(underlying_price, input)
+                        {
+                            tracing::debug!(
+                                price_id = ?original_price_id,
+                                "Successfully transformed price"
+                            );
+                            final_prices.insert(original_price_id, Some(transformed_price));
+                        } else {
+                            tracing::warn!(
+                                price_id = ?original_price_id,
+                                "Price transformation returned None"
+                            );
+                            final_prices.insert(original_price_id, None);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            price_id = ?original_price_id,
+                            error = %e,
+                            "Failed to fetch transformer input"
+                        );
+                        final_prices.insert(original_price_id, None);
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    price_id = ?original_price_id,
+                    underlying_id = ?transformer.price_id,
+                    "Underlying price not found in oracle response"
+                );
+                final_prices.insert(original_price_id, None);
+            }
+        }
+
+        // Add prices that didn't need transformation
+        for &price_id in price_ids {
+            if !transformers.contains_key(&price_id) {
+                if let Some(price) = underlying_prices.remove(&price_id) {
+                    final_prices.insert(price_id, price);
+                }
+            }
+        }
+
+        tracing::info!(
+            oracle = %lst_oracle,
+            price_count = final_prices.len(),
+            "Successfully fetched and transformed LST oracle prices"
+        );
+
+        Ok(final_prices)
+    }
+
+    /// Fetches the input value needed for price transformation (e.g., LST redemption rate).
+    async fn fetch_transformer_input(
+        &self,
+        call: &templar_common::oracle::price_transformer::Call,
+        _oracle: &AccountId,
+    ) -> Result<Decimal, RpcError> {
+        // Use the rpc_call() method to create a view query
+        let query = call.rpc_call();
+
+        // Execute the query using the RPC client
+        let request = near_jsonrpc_client::methods::query::RpcQueryRequest {
+            block_reference: near_primitives::types::BlockReference::latest(),
+            request: query,
+        };
+
+        let response = self.client.call(request).await.map_err(RpcError::from)?;
+
+        // Parse the result
+        if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) =
+            response.kind
+        {
+            let value: Decimal =
+                serde_json::from_slice(&result.result).map_err(RpcError::DeserializeError)?;
+            Ok(value)
+        } else {
+            Err(RpcError::WrongResponseKind(
+                "Expected CallResult".to_string(),
+            ))
         }
     }
 
