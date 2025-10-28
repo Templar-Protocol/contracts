@@ -106,8 +106,8 @@ mod tests {
             hermes_url: "https://hermes.pyth.network".into(),
             refresh: Duration::from_secs(25),
             oracle_id: "pyth-oracle.near".parse().unwrap(),
-            push_tgas: 300,
-            push_deposit: near_sdk::NearToken::from_near(1).saturating_div(10),
+            update_gas: near_sdk::Gas::from_tgas(300),
+            update_deposit: near_sdk::NearToken::from_near(1).saturating_div(10),
         });
 
         let vaa = c

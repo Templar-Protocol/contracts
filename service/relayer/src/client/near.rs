@@ -2,7 +2,7 @@ use std::sync::{atomic::AtomicUsize, Arc};
 
 use near_crypto::{PublicKey, Signer};
 use near_jsonrpc_client::{
-    errors::JsonRpcError,
+    errors::{JsonRpcError, JsonRpcServerError},
     methods::{
         self,
         block::RpcBlockError,
@@ -36,8 +36,8 @@ use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
 
 use crate::{cache::Cache, MarketData};
 
-pub const STORAGE_DEPOSIT_GAS: u64 = Gas::from_tgas(5).as_gas();
-pub const DEPLOY_GAS: u64 = Gas::from_tgas(50).as_gas();
+pub const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(5);
+pub const DEPLOY_GAS: Gas = Gas::from_tgas(50);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
@@ -290,7 +290,7 @@ impl Near {
                 "account_id": account_id,
             }))
             .unwrap(),
-            gas: STORAGE_DEPOSIT_GAS,
+            gas: STORAGE_DEPOSIT_GAS.as_gas(),
             deposit: amount.as_yoctonear(),
         };
 
@@ -323,7 +323,7 @@ impl Near {
         let action = FunctionCallAction {
             method_name: "deploy".to_string(),
             args: serde_json::to_vec(args).unwrap(),
-            gas: DEPLOY_GAS,
+            gas: DEPLOY_GAS.as_gas(),
             deposit: 0,
         };
 
@@ -377,8 +377,8 @@ impl Near {
         cache: &Cache,
         pyth_account_id: AccountId,
         vaa: Vec<u8>,
-        gas: u64,
-        deposit: u128,
+        gas: near_sdk::Gas,
+        deposit: near_sdk::NearToken,
     ) -> SignedTransaction {
         let signer = self.next_signer();
         let public_key = signer.public_key();
@@ -388,10 +388,10 @@ impl Near {
             .await;
 
         let action = FunctionCallAction {
-            method_name: "execute".to_string(),
-            args: serde_json::to_vec(&json!({ "data": vaa })).unwrap(),
-            gas,
-            deposit,
+            method_name: "update_price_feeds".to_string(),
+            args: serde_json::to_vec(&json!({ "data": hex::encode(vaa) })).unwrap(),
+            gas: gas.as_gas(),
+            deposit: deposit.as_yoctonear(),
         };
 
         Transaction::V0(TransactionV0 {
@@ -554,10 +554,19 @@ impl Near {
             .view::<PriceTransformer>(oracle_id, "get_transformer", json!({}))
             .await
         {
-            Ok(transformer) => Ok(transformer.price_id),
-            Err(e) => {
-                tracing::error!("Price identifier resolution error: {e:?}");
+            Ok(transformer) => {
+                tracing::debug!("Price ID {price_identifier} resolved: LST oracle contract");
+                Ok(transformer.price_id)
+            }
+            Err(ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+                RpcQueryError::ContractExecutionError { vm_error, .. },
+            )))) if vm_error.contains("MethodResolveError(MethodNotFound)") => {
+                tracing::debug!("Price ID {price_identifier} resolved: not an LST oracle contract");
                 Ok(price_identifier)
+            }
+            Err(e) => {
+                tracing::error!("Failed to resolve price ID {price_identifier}: {e:?}");
+                Err(e)
             }
         }
     }

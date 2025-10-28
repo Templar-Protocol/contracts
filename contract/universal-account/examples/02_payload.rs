@@ -15,7 +15,9 @@ pub fn main() {
             index: U64(0),
             nonce: U64(1),
         },
-        account_id: "my-universal-account.testnet".parse().unwrap(),
+        account_id: "default-18843764340.gh-275.templar-in-training.testnet"
+            .parse()
+            .unwrap(),
         payload: vec![Transaction {
             receiver_id: "alice.testnet".parse().unwrap(),
             actions: vec![Action::Transfer {

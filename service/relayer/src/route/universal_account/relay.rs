@@ -9,11 +9,14 @@ use near_sdk::{
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_universal_account::{
     authentication::{ExecutionContextProvider, Key},
-    transaction::Action,
+    transaction::{Action, Transaction},
     ExecuteArgs, KeyId,
 };
 
-use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
+use crate::{
+    app::App, client::near::STORAGE_DEPOSIT_GAS, error::PayloadRejectionReason,
+    route::SimpleResponse, AccountData,
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -32,14 +35,57 @@ pub struct RelayResponse {
     pub transaction_hash: CryptoHash,
 }
 
+fn interacted_contracts_and_gas(
+    app: &App,
+    accounts: &AccountData,
+    payload: &[Transaction],
+) -> Result<(HashSet<AccountId>, near_sdk::Gas), PayloadRejectionReason> {
+    let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
+    let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
+    for transaction in payload {
+        let receiver_id = &transaction.receiver_id;
+        if !accounts.allowed_contract_data.contains_key(receiver_id) {
+            return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
+                account_id: receiver_id.clone(),
+            });
+        }
+        let calls = transaction
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| match action {
+                Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
+                    Ok((**call).clone().into())
+                }
+                _ => Err(PayloadRejectionReason::UnsupportedAction { index }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
+            return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
+                account_id: receiver_id.clone(),
+            });
+        };
+
+        interacted_contract_ids.insert(receiver_id.clone());
+        interacted_contract_ids.extend(app.actions_are_allowed(
+            accounts,
+            receiver_id,
+            contract_data,
+            calls.iter(),
+        )?);
+        if let Some(market_data) = accounts.market_data.get(receiver_id) {
+            interacted_contract_ids.insert(market_data.oracle_id.clone());
+            interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
+        }
+        gas += calls.iter().map(|f| f.gas).sum::<u64>();
+    }
+
+    Ok((interacted_contract_ids, near_sdk::Gas::from_gas(gas)))
+}
+
 #[allow(clippy::too_many_lines)]
-#[tracing::instrument(
-    name = "relay_universal_account",
-    skip(app),
-    fields(
-        account_id = %account_id,
-    )
-)]
+#[tracing::instrument(name = "relay_universal_account", skip(app))]
 pub async fn relay(
     State(app): State<App>,
     Json(RelayRequest {
@@ -73,7 +119,7 @@ pub async fn relay(
     let Some(parameters) = parameters else {
         tracing::info!(
             "Key \"{}\" does not exist on account \"{account_id}\"",
-            key.0
+            key.0,
         );
         return SimpleResponse::Rejected {
             reason: "Key does not exist on account".to_string(),
@@ -104,54 +150,16 @@ pub async fn relay(
 
     let accounts = app.accounts.read().await;
 
-    let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
-    let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
-    for transaction in payload {
-        let receiver_id = &transaction.receiver_id;
-        if !accounts.allowed_contract_data.contains_key(receiver_id) {
-            tracing::info!("Unknown receiver {receiver_id}");
-            return SimpleResponse::Rejected {
-                reason: "Unknown receiver".to_string(),
-            };
-        }
-        let calls = match transaction
-            .actions
-            .iter()
-            .map(|action| match action {
-                Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
-                    Ok((**call).clone().into())
-                }
-                a => Err(a),
-            })
-            .collect::<Result<Vec<_>, _>>()
-        {
-            Ok(calls) => calls,
+    let (interacted_contract_ids, gas) =
+        match interacted_contracts_and_gas(&app, &accounts, payload) {
+            Ok(a) => a,
             Err(e) => {
-                tracing::info!("Unsupported action type: {e:?}");
+                tracing::info!("Rejecting payload for reason: {e}");
                 return SimpleResponse::Rejected {
-                    reason: "Unsupported action type".to_string(),
+                    reason: e.to_string(),
                 };
             }
         };
-        let additional_interactions =
-            match app.actions_are_allowed(receiver_id, &accounts, calls.iter()) {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::info!("Disallowed action: {e}");
-                    return SimpleResponse::Rejected {
-                        reason: "Disallowed action".to_string(),
-                    };
-                }
-            };
-        interacted_contract_ids.insert(receiver_id.clone());
-        interacted_contract_ids.extend(additional_interactions.into_iter());
-        if let Some(market_data) = accounts.market_data.get(receiver_id) {
-            interacted_contract_ids.insert(market_data.oracle_id.clone());
-            interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
-            interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
-        }
-        gas += calls.iter().map(|f| f.gas).sum::<u64>();
-    }
 
     let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
 
@@ -268,8 +276,8 @@ pub async fn relay(
             }
         };
 
-        let gas = app.args.pyth.push_tgas;
-        let deposit = app.args.pyth.push_deposit.as_yoctonear();
+        let gas = app.args.pyth.update_gas;
+        let deposit = app.args.pyth.update_deposit;
 
         let update_transaction = app
             .relay_near
@@ -319,7 +327,7 @@ pub async fn relay(
     // Send the user's transaction
     let signed_transaction = app
         .relay_near
-        .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas)
+        .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas.as_gas())
         .await;
     let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
         tracing::error!("Failed to estimate cost of gas");

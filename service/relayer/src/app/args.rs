@@ -38,11 +38,15 @@ fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
     Ok(Duration::from_secs(u64::from_str(s)?))
 }
 
+fn gas_from_tgas(s: &str) -> Result<near_sdk::Gas, std::num::ParseIntError> {
+    Ok(near_sdk::Gas::from_tgas(u64::from_str(s)?))
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct Pyth {
     /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
     #[arg(
-        long,
+        long = "pyth-hermes-url",
         env = "PYTH_HERMES_URL",
         default_value_t = String::from("https://hermes-beta.pyth.network")
     )]
@@ -67,20 +71,21 @@ pub struct Pyth {
     pub oracle_id: AccountId,
     /// How much gas (in units of Tgas) to attach to oracle price update calls.
     #[arg(
-        id = "pyth-push-tgas",
-        long = "pyth-push-tgas",
-        env = "PYTH_PUSH_TGAS",
-        default_value_t = 300
+        id = "pyth-update-tgas",
+        long = "pyth-update-tgas",
+        env = "PYTH_UPDATE_TGAS",
+        value_parser = gas_from_tgas,
+        default_value_t = near_sdk::Gas::from_tgas(300)
     )]
-    pub push_tgas: u64,
+    pub update_gas: near_sdk::Gas,
     /// How much NEAR to attach as a deposit to oracle price update calls.
     #[arg(
-        id = "pyth-push-deposit",
-        long = "pyth-push-deposit",
-        env = "PYTH_PUSH_DEPOSIT",
-        default_value = "0.1 NEAR"
+        id = "pyth-update-deposit",
+        long = "pyth-update-deposit",
+        env = "PYTH_UPDATE_DEPOSIT",
+        default_value = "0.01 NEAR"
     )]
-    pub push_deposit: NearToken,
+    pub update_deposit: NearToken,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -31,8 +31,8 @@ use crate::{
         near::Near,
         pyth::Pyth,
     },
-    error::PreconditionError,
-    AccountData, AssetTransfer, AssetTransferParseError, ContractData,
+    error::{FunctionCallRejectionReason, PayloadRejectionReason},
+    AccountData, AssetTransfer, ContractData,
 };
 
 pub mod args;
@@ -98,20 +98,20 @@ impl App {
     }
 
     #[tracing::instrument(skip(self), fields(gas = %gas))]
-    pub async fn estimate_cost_of_gas(&self, gas: u64) -> Option<NearToken> {
+    pub async fn estimate_cost_of_gas(&self, gas: near_sdk::Gas) -> Option<NearToken> {
         const TERA: u128 = near_sdk::Gas::from_tgas(1).as_gas() as u128;
 
         let price_per_tgas = self.cache.gas_price().await;
         let result = price_per_tgas
-            .checked_mul(u128::from(gas))?
-            .checked_div(TERA);
+            .checked_mul(u128::from(gas.as_gas()))
+            .and_then(|x| x.checked_div(TERA));
 
         tracing::debug!(cost = ?result, "Estimated gas cost");
         result
     }
 
     #[allow(clippy::too_many_lines, reason = "procedural")]
-    #[tracing::instrument(skip(self), name = "load_markets")]
+    #[tracing::instrument(skip(self))]
     pub async fn load_markets(&mut self) {
         tracing::info!("Loading markets from registry and individual sources");
         let mut markets = self.args.monitor.market.clone();
@@ -250,41 +250,30 @@ impl App {
     ///
     /// - If the receiver is not known.
     /// - If any of the function call actions are not allowed.
-    #[tracing::instrument(skip(self, accounts, calls), fields(receiver_id = %receiver_id))]
+    #[tracing::instrument(skip(self, accounts, contract_data, calls))]
     pub fn actions_are_allowed<'a>(
         &self,
-        receiver_id: &AccountIdRef,
         accounts: &AccountData,
+        receiver_id: &AccountIdRef,
+        contract_data: &ContractData,
         calls: impl IntoIterator<Item = &'a FunctionCallAction>,
-    ) -> Result<Vec<AccountId>, PreconditionError> {
+    ) -> Result<Vec<AccountId>, FunctionCallRejectionReason> {
         let mut other_interactions = Vec::new();
-
-        let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
-            return Err(PreconditionError::UnknownTransactionReceiverId {
-                account_id: receiver_id.to_owned(),
-            });
-        };
 
         for (index, call) in calls.into_iter().enumerate() {
             if !contract_data.allowed_methods.contains(&call.method_name) {
-                return Err(PreconditionError::UnknownFunctionName { index });
+                return Err(FunctionCallRejectionReason::UnknownFunctionName {
+                    index,
+                    function_name: call.method_name.clone(),
+                });
             }
 
-            if let Ok(transfer) =
-                AssetTransfer::parse(receiver_id.to_owned(), call).map_err(|e| match e {
-                    AssetTransferParseError::UnknownFunctionName => {
-                        PreconditionError::UnknownFunctionName { index }
-                    }
-                    AssetTransferParseError::ArgumentDeserialization => {
-                        PreconditionError::ArgumentDeserializationFailure { index }
-                    }
-                })
-            {
+            if let Ok(transfer) = AssetTransfer::parse(receiver_id.to_owned(), call) {
                 let market_id = transfer.token_receiver_id();
                 other_interactions.push(market_id.to_owned());
 
                 let Some(market_account_ids) = accounts.market_data.get(market_id) else {
-                    return Err(PreconditionError::UnknownTransferReceiverId {
+                    return Err(FunctionCallRejectionReason::UnknownTransferReceiverId {
                         account_id: market_id.to_owned(),
                         index,
                     });
@@ -292,7 +281,7 @@ impl App {
 
                 let msg = transfer.args.msg();
                 let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
-                    return Err(PreconditionError::MsgDeserializationFailure {
+                    return Err(FunctionCallRejectionReason::MsgDeserializationFailure {
                         index,
                         msg: msg.to_string(),
                     });
@@ -301,7 +290,7 @@ impl App {
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
                     if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
-                        return Err(PreconditionError::InvalidMsgForAsset {
+                        return Err(FunctionCallRejectionReason::InvalidMsgForAsset {
                             index,
                             expected: "\"Supply\" or \"Repay\"".to_string(),
                             actual: serde_json::to_string(&msg).unwrap(),
@@ -309,16 +298,14 @@ impl App {
                     }
                 } else if transfer.asset() == market_account_ids.collateral_asset {
                     if !matches!(msg, DepositMsg::Collateralize) {
-                        return Err(PreconditionError::InvalidMsgForAsset {
+                        return Err(FunctionCallRejectionReason::InvalidMsgForAsset {
                             index,
                             expected: "\"Collateralize\"".to_string(),
                             actual: serde_json::to_string(&msg).unwrap(),
                         });
                     }
                 } else {
-                    return Err(PreconditionError::UnknownTransactionReceiverId {
-                        account_id: receiver_id.to_owned(),
-                    });
+                    // Not a standard-compliant function call
                 }
             }
         }
@@ -343,17 +330,17 @@ impl App {
     pub async fn check_and_calculate_gas(
         &self,
         signed_delegate_action: &SignedDelegateAction,
-    ) -> Result<(u64, ContractData), PreconditionError> {
+    ) -> Result<(near_sdk::Gas, ContractData), PayloadRejectionReason> {
         tracing::debug!("Checking and calculating gas for delegate action");
         if !signed_delegate_action.verify() {
-            return Err(PreconditionError::SignatureVerificationFailure);
+            return Err(PayloadRejectionReason::SignatureVerificationFailure);
         }
 
         let receiver_id = &signed_delegate_action.delegate_action.receiver_id;
         let accounts = self.accounts.read().await;
 
         let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id).cloned() else {
-            return Err(PreconditionError::UnknownTransactionReceiverId {
+            return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
                 account_id: receiver_id.clone(),
             });
         };
@@ -362,21 +349,27 @@ impl App {
         let len = actions.len();
         let calls = actions
             .into_iter()
-            .try_fold(Vec::with_capacity(len), |mut v, action| {
+            .enumerate()
+            .try_fold(Vec::with_capacity(len), |mut v, (i, action)| {
                 if let Action::FunctionCall(fc) = action {
                     v.push(fc);
                     Ok(v)
                 } else {
-                    Err((v.len(), action))
+                    Err(i)
                 }
             })
-            .map_err(|(index, action)| PreconditionError::UnsupportedAction { index, action })?;
+            .map_err(|index| PayloadRejectionReason::UnsupportedAction { index })?;
 
-        self.actions_are_allowed(receiver_id, &accounts, calls.iter().map(Borrow::borrow))?;
+        self.actions_are_allowed(
+            &accounts,
+            receiver_id,
+            &contract_data,
+            calls.iter().map(Borrow::borrow),
+        )?;
 
         let gas_total = calls.iter().map(|call| call.gas).sum();
 
-        Ok((gas_total, contract_data))
+        Ok((near_sdk::Gas::from_gas(gas_total), contract_data))
     }
 
     /// # Errors
