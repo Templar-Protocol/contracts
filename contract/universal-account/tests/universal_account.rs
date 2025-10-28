@@ -2,7 +2,9 @@ use near_sdk::{
     serde_json::{self, json},
     NearToken,
 };
+use near_workspaces::{network::Sandbox, Worker};
 use p256::elliptic_curve::rand_core::OsRng;
+use rstest::rstest;
 use templar_universal_account::{
     authentication::passkey::{
         self,
@@ -15,14 +17,13 @@ use templar_universal_account::{
     ExecuteArgs, KeyId,
 };
 use test_utils::{
-    controller::universal_account::UniversalAccountController, print_execution, ContractController,
-    FtController,
+    controller::universal_account::UniversalAccountController, print_execution, worker,
+    ContractController, FtController,
 };
 
+#[rstest]
 #[tokio::test]
-pub async fn universal_account() {
-    let worker = near_workspaces::sandbox().await.unwrap();
-
+pub async fn universal_account(#[future(awt)] worker: Worker<Sandbox>) {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
     let secret_key = p256::SecretKey::random(&mut OsRng);
