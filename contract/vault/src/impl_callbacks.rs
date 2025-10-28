@@ -196,17 +196,23 @@ impl Contract {
         };
 
         if did_create.is_ok() {
-            PromiseOrValue::Promise(
-                ext_market::ext(market.clone())
-                    .with_static_gas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
-                    .with_unused_gas_weight(0)
-                    .execute_next_supply_withdrawal_request()
-                    .then(
-                        ext_self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_EXECUTE_NEXT_WITHDRAW_GAS)
-                            .after_exec_withdraw_req(op_id, market_index, need),
-                    ),
-            )
+            if self.defer_market_execute {
+                // record the created request and pause; executor will pick it up
+                self.pending_market_exec.push(market_index);
+                return PromiseOrValue::Value(());
+            } else {
+                return PromiseOrValue::Promise(
+                    ext_market::ext(market.clone())
+                        .with_static_gas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
+                        .with_unused_gas_weight(0)
+                        .execute_next_supply_withdrawal_request()
+                        .then(
+                            ext_self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_EXECUTE_NEXT_WITHDRAW_GAS)
+                                .after_exec_withdraw_req(op_id, market_index, need),
+                        ),
+                );
+            }
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -334,35 +340,33 @@ impl Contract {
             self.idle_balance = self.idle_balance.saturating_add(idle_delta);
         }
 
+        if let Some(pos) = self
+            .pending_market_exec
+            .iter()
+            .position(|&idx| idx == market_index)
+        {
+            self.pending_market_exec.remove(pos);
+        }
+
         if remaining_next == 0 {
-            if collected_next > 0 {
-                self.op_state = OpState::Payout {
-                    op_id,
-                    receiver: receiver.clone(),
-                    amount: collected_next,
-                    owner: owner.clone(),
-                    escrow_shares,
-                    burn_shares: escrow_shares,
-                };
-                PromiseOrValue::Promise(
-                    self.underlying_asset
-                        .clone()
-                        .transfer(receiver.clone(), U128(collected_next).into())
-                        .then(
-                            ext_self::ext(env::current_account_id())
-                                .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .after_send_to_user(op_id, receiver, U128(collected_next)),
-                        ),
-                )
-            } else {
-                // Nothing collected; refund escrowed shares
-                let self_id = env::current_account_id();
-                // We expect the owner to maintain storage accounts, otherwise they will lose access to their funds
-                self.transfer_unchecked(&self_id, &owner, escrow_shares)
-                    .expect("Failed to refund escrowed shares");
-                self.op_state = OpState::Idle;
-                PromiseOrValue::Value(())
-            }
+            self.pay_collected(
+                op_id,
+                &receiver,
+                collected_next,
+                &owner,
+                escrow_shares,
+                escrow_shares,
+                |_self| {
+                    // Nothing collected; refund escrowed shares
+                    let self_id = env::current_account_id();
+                    // We expect the owner to maintain storage accounts, otherwise they will lose access to their funds
+                    _self
+                        .transfer_unchecked(&self_id, &owner, escrow_shares)
+                        .expect("Failed to refund escrowed shares");
+                    _self.op_state = OpState::Idle;
+                    PromiseOrValue::Value(())
+                },
+            )
         } else {
             self.op_state = OpState::Withdrawing {
                 op_id,
@@ -388,7 +392,7 @@ impl Contract {
         op_id: u64,
         receiver: AccountId,
         amount: U128,
-    ) -> bool {
+    ) {
         let (owner, escrow_shares, expected_amount, burn_shares) = match &self.op_state {
             OpState::Payout {
                 op_id: current_op,
@@ -407,7 +411,7 @@ impl Contract {
                     amount,
                 }
                 .emit();
-                return false;
+                return;
             }
         };
 
@@ -437,18 +441,17 @@ impl Contract {
                     .unwrap_or_else(|e| env::log_str(&e.to_string()));
                 // TODO: emit Refund event
             }
-
-            // Pop the withdrawing id and reconcile the primer
-            self.op_state = OpState::Idle;
-            true
         } else {
             // On payout failure, refund full escrow to owner and leave idle_balance unchanged
             self.transfer_unchecked(&env::current_account_id(), &owner, escrow_shares)
                 // If this fails, this is a serious issue as above
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
-            self.op_state = OpState::Idle;
-            false
         }
+        self.pending_market_exec.clear();
+        self.pending_market_exec.clear();
+        self.remove_inflight_and_advance_head();
+        self.pending_market_exec.clear();
+        self.op_state = OpState::Idle;
     }
 
     #[private]
@@ -552,6 +555,7 @@ impl Contract {
             self.transfer_unchecked(&self_id, &owner_acc, escrow)
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
+        self.remove_inflight_and_advance_head();
         self.op_state = OpState::Idle;
     }
 
@@ -592,6 +596,7 @@ impl Contract {
                     .unwrap_or_else(|e| env::log_str(&e.to_string()));
             }
         }
+        self.remove_inflight_and_advance_head();
         self.op_state = OpState::Idle;
     }
 
@@ -681,7 +686,8 @@ pub struct SupplyReconciliation {
     pub remaining: u128,
 }
 
-#[must_use] pub fn reconcile_supply_outcome(
+#[must_use]
+pub fn reconcile_supply_outcome(
     total_position: &u128,
     before: &u128,
     remaining: &u128,
@@ -703,7 +709,8 @@ pub struct WithdrawReconciliation {
 }
 
 /// Pure reconciliation for withdraw read outcome to enable unit tests
-#[must_use] pub fn reconcile_withdraw_outcome(
+#[must_use]
+pub fn reconcile_withdraw_outcome(
     before_principal: u128,
     new_principal: u128,
     remaining_total: u128,

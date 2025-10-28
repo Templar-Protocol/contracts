@@ -36,9 +36,8 @@ use templar_common::{
         ext_self, require_at_least, AllocationMode, AllocationPlan, AllocationWeights, Error,
         Event, MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
         VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
-        WITHDRAW_GAS,
+        AFTER_SUPPLY_1_CHECK_GAS, AFTER_EXECUTE_NEXT_WITHDRAW_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
+        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -138,6 +137,7 @@ pub struct Contract {
     supply_queue: Vector<AccountId>,
     /// Ordered list of market IDs for withdrawal prioritytr
     withdraw_queue: Vector<AccountId>,
+    current_withdraw_inflight: Option<u64>, // id of the pending withdrawal being executed, if any
 
     /// vault's supplied principal per market (borrow-asset units)
     market_supply: IterableMap<AccountId, u128>,
@@ -151,6 +151,11 @@ pub struct Contract {
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_id: u64,
     next_withdraw_to_execute: u64,
+
+    // if true, only create requests during build; executor will run them
+    defer_market_execute: bool,
+    // indices of markets with created requests (per withdrawing op)
+    pending_market_exec: Vec<u32>,
 }
 
 #[near]
@@ -227,6 +232,10 @@ impl Contract {
             pending_withdrawals: IterableMap::new(key!(PendingWithdrawals)),
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
+
+            // Deferred market execution
+            defer_market_execute: true, // default to “stop executing automatically” per request
+            pending_market_exec: Vec::new(),
         };
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
         Owner::init(&mut contract, &owner);
@@ -784,24 +793,64 @@ impl Contract {
         self.ensure_idle();
         Self::assert_allocator();
 
-        // Find the next present pending withdrawal by id
-        let mut id = self.next_withdraw_to_execute;
-        while id < self.next_withdraw_id {
-            if let Some(pending) = self.pending_withdrawals.remove(&id) {
-                // Advance the head pointer and start processing
-                self.next_withdraw_to_execute = id.saturating_add(1);
-                return self.start_withdraw(
-                    pending.expected_assets,
-                    pending.receiver,
-                    pending.owner,
-                    pending.escrow_shares,
-                );
-            }
-            id = id.saturating_add(1);
-            self.next_withdraw_to_execute = id;
+        if self.current_withdraw_inflight.is_some() {
+            env::panic_str("A pending withdrawal is already in-flight");
+        }
+
+        if let Some(id) = self.peek_next_pending_withdrawal_id() {
+            let pending = self
+                .pending_withdrawals
+                .get(&id)
+                .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
+            self.current_withdraw_inflight = Some(id);
+            env::log_str(&format!("WithdrawalExecutionStarted id={id}"));
+            return self.start_withdraw(
+                pending.expected_assets,
+                &pending.receiver,
+                &pending.owner,
+                pending.escrow_shares,
+            );
         }
 
         PromiseOrValue::Value(())
+    }
+
+    /// Executes one created market withdrawal request in the current Withdrawing op.
+    pub fn allocator_execute_next_market_withdrawal(&mut self, op_id: u64) -> PromiseOrValue<()> {
+        require_at_least(EXECUTE_WITHDRAW_GAS);
+        Self::assert_allocator();
+
+        // Must be in Withdrawing context for the provided op_id
+        let _ctx = match self.ctx_withdrawing(op_id) {
+            Ok(v) => v,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        // Ensure we have a created request to execute
+        let market_index = match self.pending_market_exec.first().copied() {
+            Some(idx) => idx,
+            None => {
+                env::panic_str("No pending market withdrawal request to execute");
+            }
+        };
+
+        let market = match self.resolve_withdraw_market(market_index) {
+            Ok(m) => m,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        PromiseOrValue::Promise(
+            templar_common::market::ext_market::ext(market.clone())
+                .with_static_gas(templar_common::vault::EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
+                .with_unused_gas_weight(0)
+                .execute_next_supply_withdrawal_request()
+                .then(
+                    ext_self::ext(env::current_account_id())
+                        .with_static_gas(AFTER_EXECUTE_NEXT_WITHDRAW_GAS)
+                        // `need` here is informational; we do not track it across the defer
+                        .after_exec_withdraw_req(op_id, market_index, U128(0)),
+                ),
+        )
     }
 
     /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
@@ -892,6 +941,40 @@ impl Contract {
         self.plan = Some(weights.into_iter().collect());
 
         self.start_allocation(total)
+    }
+    // Advance next_withdraw_to_execute to the next present id and return it, or None if none
+    fn peek_next_pending_withdrawal_id(&mut self) -> Option<u64> {
+        let mut id = self.next_withdraw_to_execute;
+        while id < self.next_withdraw_id {
+            if self.pending_withdrawals.get(&id).is_some() {
+                self.next_withdraw_to_execute = id; // head points at a live entry
+                return Some(id);
+            }
+            id = id.saturating_add(1);
+        }
+        self.next_withdraw_to_execute = id; // no entries
+        None
+    }
+
+    // Remove the in-flight pending (success or explicit abort) and advance head past it
+    fn remove_inflight_and_advance_head(&mut self) {
+        if let Some(id) = self.current_withdraw_inflight.take() {
+            let _ = self.pending_withdrawals.remove(&id);
+            self.next_withdraw_to_execute = id.saturating_add(1);
+            env::log_str(&format!("WithdrawalDequeued id={id}"));
+        }
+    }
+
+    // Keep the head pending but clear in-flight so it can be retried later
+    fn park_inflight_head_for_retry(&mut self) {
+        if self.current_withdraw_inflight.is_some() {
+            env::log_str(&format!(
+                "WithdrawalParked id={}",
+                self.current_withdraw_inflight.unwrap()
+            ));
+        }
+        self.current_withdraw_inflight = None;
+        // next_withdraw_to_execute remains pointing at the same id
     }
 }
 
@@ -1449,8 +1532,8 @@ impl Contract {
     fn start_withdraw(
         &mut self,
         amount: u128,
-        receiver: AccountId,
-        owner: AccountId,
+        receiver: &AccountId,
+        owner: &AccountId,
         escrow_shares: u128,
     ) -> PromiseOrValue<()> {
         if amount == 0 {
@@ -1465,13 +1548,15 @@ impl Contract {
         let remaining = amount.saturating_sub(used_idle);
         let collected = used_idle;
 
+        self.pending_market_exec.clear();
+
         self.op_state = OpState::Withdrawing {
             op_id,
             index: Default::default(),
             remaining,
-            receiver,
+            receiver: receiver.clone(),
             collected,
-            owner,
+            owner: owner.clone(),
             escrow_shares,
         };
         self.step_withdraw()
@@ -1548,23 +1633,38 @@ impl Contract {
                     ),
             )
         } else {
-            self.pay_collected(op_id, remaining, receiver, collected, owner, escrow_shares)
+            let requested = collected.saturating_add(remaining);
+            let burn_shares = self.compute_burn_shares(escrow_shares, collected, requested);
+
+            self.pay_collected(
+                op_id,
+                &receiver,
+                collected,
+                &owner,
+                escrow_shares,
+                burn_shares,
+                |_self| {
+                    // Park the head pending: keep escrowed shares, stay in queue, try again later
+                    _self.op_state = OpState::Idle;
+                    _self.park_inflight_head_for_retry();
+                    PromiseOrValue::Value(())
+                },
+            )
         }
     }
 
-    ///  If we collected something, pay it out now and burn proportional shares or pay directly from idle balance
+    ///  If we collected something, pay it out now and burn proportional shares or do something else
     fn pay_collected(
         &mut self,
         op_id: u64,
-        remaining: u128,
-        receiver: AccountId,
+        receiver: &AccountId,
         collected: u128,
-        owner: AccountId,
+        owner: &AccountId,
         escrow_shares: u128,
+        burn_shares: u128,
+        or_else: impl FnOnce(&mut Self) -> PromiseOrValue<()>,
     ) -> PromiseOrValue<()> {
         if collected > 0 {
-            let requested = collected.saturating_add(remaining);
-            let burn_shares = self.compute_burn_shares(escrow_shares, collected, requested);
             self.op_state = OpState::Payout {
                 op_id,
                 receiver: receiver.clone(),
@@ -1579,13 +1679,11 @@ impl Contract {
                     .then(
                         ext_self::ext(env::current_account_id())
                             .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                            .after_send_to_user(op_id, receiver, U128(collected)),
+                            .after_send_to_user(op_id, receiver.clone(), U128(collected)),
                     ),
             )
         } else {
-            // Park the head pending: keep escrowed shares, stay in queue, try again later
-            self.op_state = OpState::Idle;
-            PromiseOrValue::Value(())
+            or_else(self)
         }
     }
 }
