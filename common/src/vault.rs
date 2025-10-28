@@ -68,7 +68,7 @@ pub struct MarketConfiguration {
 
 impl MarketConfiguration {
     /// Size of the market configuration in borsh encoded bytes.
-    pub const fn encoded_size() -> usize {
+    #[must_use] pub const fn encoded_size() -> usize {
         16 + 1 + 8
     }
 }
@@ -146,7 +146,7 @@ pub trait VaultExt {
 }
 
 // Add a 20% buffer to a gas estimate
-pub const fn buffer(size: u64) -> Gas {
+#[must_use] pub const fn buffer(size: u64) -> Gas {
     Gas::from_tgas((size * 6 + 4) / 5)
 }
 
@@ -344,7 +344,7 @@ pub struct PendingWithdrawal {
 }
 
 impl PendingWithdrawal {
-    pub const fn encoded_size() -> usize {
+    #[must_use] pub const fn encoded_size() -> usize {
         storage_bytes_for_account_id() as usize
             + storage_bytes_for_account_id() as usize
             + 16  // escrow_shares: u128
@@ -354,7 +354,7 @@ impl PendingWithdrawal {
 }
 
 // Worst case size encoded for AccountId
-pub const fn storage_bytes_for_account_id() -> u64 {
+#[must_use] pub const fn storage_bytes_for_account_id() -> u64 {
     // 4 bytes for length prefix + worst case size encoded for AccountId
     4 + AccountId::MAX_LEN as u64
 }

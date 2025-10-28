@@ -212,15 +212,15 @@ impl Contract {
                 op_id: op_id.into(),
                 market: market.clone(),
                 index: i,
-                need: need,
+                need,
             }
             .emit();
             self.op_state = OpState::Withdrawing {
                 op_id,
                 index: market_index.saturating_add(1),
-                remaining: remaining,
+                remaining,
                 receiver: received,
-                collected: collected,
+                collected,
                 owner,
                 escrow_shares,
             };
@@ -368,7 +368,7 @@ impl Contract {
                 op_id,
                 index: market_index.saturating_add(1),
                 remaining: remaining_next,
-                receiver: receiver,
+                receiver,
                 collected: collected_next,
                 owner,
                 escrow_shares,
@@ -652,7 +652,7 @@ impl Contract {
         }
     }
 
-    /// Resolve a market for allocation by plan (if present) or supply_queue
+    /// Resolve a market for allocation by plan (if present) or `supply_queue`
     pub(crate) fn resolve_supply_market(&self, market_index: u32) -> Result<AccountId, Error> {
         if let Some(plan) = &self.plan {
             if let Some((m, _)) = plan.get(market_index as usize) {
@@ -666,7 +666,7 @@ impl Contract {
             .ok_or(Error::MissingMarket(market_index))
     }
 
-    /// Resolve a market for withdraw by withdraw_queue
+    /// Resolve a market for withdraw by `withdraw_queue`
     pub(crate) fn resolve_withdraw_market(&self, market_index: u32) -> Result<AccountId, Error> {
         self.withdraw_queue
             .get(market_index)
@@ -681,7 +681,7 @@ pub struct SupplyReconciliation {
     pub remaining: u128,
 }
 
-pub fn reconcile_supply_outcome(
+#[must_use] pub fn reconcile_supply_outcome(
     total_position: &u128,
     before: &u128,
     remaining: &u128,
@@ -703,7 +703,7 @@ pub struct WithdrawReconciliation {
 }
 
 /// Pure reconciliation for withdraw read outcome to enable unit tests
-pub fn reconcile_withdraw_outcome(
+#[must_use] pub fn reconcile_withdraw_outcome(
     before_principal: u128,
     new_principal: u128,
     remaining_total: u128,

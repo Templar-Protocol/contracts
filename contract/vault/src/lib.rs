@@ -18,8 +18,8 @@ use near_sdk::{
     env,
     json_types::{U128, U64},
     near, require, serde_json,
-    store::{IterableMap, LookupMap, Vector},
-    AccountId, BorshStorageKey, Gas, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
+    store::{IterableMap, Vector},
+    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
@@ -36,8 +36,8 @@ use templar_common::{
         ext_self, require_at_least, AllocationMode, AllocationPlan, AllocationWeights, Error,
         Event, MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
         VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_1_CHECK_GAS, AFTER_SUPPLY_ENSURE_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_GAS,
+        AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
         WITHDRAW_GAS,
     },
 };
@@ -405,7 +405,7 @@ impl Contract {
             "Timelock change already pending"
         );
         require!(
-            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&tl),
+            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(tl),
             "Timelock out of bounds"
         );
         if tl > &self.timelock_ns {
@@ -512,7 +512,7 @@ impl Contract {
             );
             Event::SupplyCapRaiseSubmitted {
                 market: market.clone(),
-                new_cap: new_cap,
+                new_cap,
                 valid_at,
             }
             .emit();
@@ -603,7 +603,7 @@ impl Contract {
         let cfg = self
             .markets
             .get_mut(&market)
-            .unwrap_or_else(|| env::panic_str(&format!("Unknown market: {}", market)));
+            .unwrap_or_else(|| env::panic_str(&format!("Unknown market: {market}")));
         require!(
             cfg.removable_at == 0,
             "Removal already pending for this market"
@@ -718,8 +718,7 @@ impl Contract {
                     // Not in current queue: must be included if enabled or holding.
                     env::panic_str(
                         &format!(
-                            "Invariant violation: Withdraw queue must include all enabled or holding markets; missing {}",
-                            id
+                            "Invariant violation: Withdraw queue must include all enabled or holding markets; missing {id}"
                         ),
                     );
                 }
@@ -929,7 +928,7 @@ impl Contract {
                     .clone()
             }),
             underlying_token: self.underlying_asset.clone(),
-            initial_timelock_ns: self.timelock_ns.clone().into(),
+            initial_timelock_ns: self.timelock_ns.into(),
             fee_recipient: self.fee_recipient.clone(),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
@@ -941,7 +940,7 @@ impl Contract {
 
     /// Returns total assets under management = idle balance + sum of market principals.
     pub fn get_total_assets(&self) -> U128 {
-        self.aum.get_total_assets(&self)
+        self.aum.get_total_assets(self)
     }
 
     pub fn get_idle_balance(&self) -> U128 {
@@ -1041,13 +1040,13 @@ impl Contract {
     fn cfg_mut(&mut self, id: &AccountId) -> &mut MarketConfiguration {
         self.markets
             .get_mut(id)
-            .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {}", id)))
+            .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {id}")))
     }
 
     fn cfg(&self, id: &AccountId) -> &MarketConfiguration {
         self.markets
             .get(id)
-            .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {}", id)))
+            .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {id}")))
     }
 
     // Principal (vault-supplied) units currently recorded for a market
@@ -1283,7 +1282,7 @@ impl Contract {
         self.step_allocation()
     }
 
-    /// build a supply transfer_call and chain after_supply_1_check
+    /// build a supply `transfer_call` and chain `after_supply_1_check`
     fn supply_and_then(&self, market: &AccountId, amount: u128, op_id: u64, index: u32) -> Promise {
         self::require_at_least(AFTER_SUPPLY_1_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL));
         self.underlying_asset
@@ -1419,7 +1418,7 @@ impl Contract {
                 return self.step_allocation();
             }
 
-            PromiseOrValue::Promise(self.supply_and_then(&market, to_supply, op_id, index))
+            PromiseOrValue::Promise(self.supply_and_then(market, to_supply, op_id, index))
         } else {
             self.stop_and_exit::<Error>(None)
         }

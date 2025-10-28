@@ -42,7 +42,7 @@ fn c_owner_env(vault_id_fixture: AccountId) -> Contract {
     let c = new_test_contract(&vault_id_fixture);
     let owner = c
         .own_get_owner()
-        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+        .unwrap_or_else(|| env::panic_str("Owner not set"));
     setup_env(&vault_id_fixture, &owner, vec![]);
     c
 }
@@ -146,7 +146,7 @@ fn prop_withdraw_queue_mustnt_have_duplicates(len: usize) {
 }
 
 #[rstest]
-fn fee_accrues_only_on_growth_unit(mut c_vault_env: Contract) {
+fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     let mut c = c_vault_env;
 
     // Seed total supply so fees can mint
@@ -181,7 +181,7 @@ fn fee_accrues_only_on_growth_unit(mut c_vault_env: Contract) {
 }
 
 #[rstest]
-fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(mut c_vault_env: Contract) {
+fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_env: Contract) {
     let mut c = c_vault_env;
 
     let receiver = mk(7);
@@ -215,12 +215,12 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(mut c_vau
 }
 
 #[rstest]
-fn execute_next_withdrawal_request_skips_holes(mut c_owner_env: Contract) {
+fn execute_next_withdrawal_request_skips_holes(c_owner_env: Contract) {
     let mut c = c_owner_env;
     let vault_id = accounts(0);
     let owner = c
         .own_get_owner()
-        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+        .unwrap_or_else(|| env::panic_str("Owner not set"));
 
     println!("vault_id: {vault_id}");
     println!("owner: {owner}");
@@ -299,7 +299,7 @@ fn set_withdraw_queue_must_include_all_holding() {
 }
 
 #[rstest]
-fn execute_supply_wrong_token_refunds_full(mut c_vault_env: Contract) {
+fn execute_supply_wrong_token_refunds_full(c_vault_env: Contract) {
     let mut c = c_vault_env;
 
     let sender = accounts(1);
@@ -320,7 +320,7 @@ fn set_withdraw_queue_must_include_all_enabled() {
     setup_env(
         &vault_id,
         &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+            .unwrap_or_else(|| env::panic_str("Owner not set")),
         vec![],
     );
 
@@ -338,7 +338,7 @@ fn set_withdraw_queue_must_include_all_enabled() {
 }
 
 #[rstest]
-fn start_allocation_reserves_only_amount(mut c_vault_env: Contract) {
+fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
     let mut c = c_vault_env;
 
     // Configure a single market with cap = 80 in the supply queue
@@ -395,7 +395,7 @@ fn queue_allocation_ignores_stale_plan() {
     setup_env(
         &vault_id,
         &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+            .unwrap_or_else(|| env::panic_str("Owner not set")),
         vec![],
     );
 
@@ -433,7 +433,7 @@ fn set_withdraw_queue_disallow_nonzero_position_removal() {
     setup_env(
         &vault_id,
         &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+            .unwrap_or_else(|| env::panic_str("Owner not set")),
         vec![],
     );
 
@@ -624,7 +624,7 @@ fn set_withdraw_queue_disallow_nonzero_cap_removal() {
     setup_env(
         &vault_id,
         &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+            .unwrap_or_else(|| env::panic_str("Owner not set")),
         vec![],
     );
 
@@ -698,7 +698,7 @@ fn set_withdraw_queue_allows_zero_supply_removal() {
     setup_env(
         &vault_id,
         &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string())),
+            .unwrap_or_else(|| env::panic_str("Owner not set")),
         vec![],
     );
 
@@ -968,7 +968,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates() {
     let mut c = new_test_contract(&vault_id);
     let owner = c
         .own_get_owner()
-        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+        .unwrap_or_else(|| env::panic_str("Owner not set"));
     setup_env(&vault_id, &owner, vec![]);
 
     // Seed supply so fee shares can mint
@@ -1021,7 +1021,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
     let mut c = new_test_contract(&vault_id);
     let owner = c
         .own_get_owner()
-        .unwrap_or_else(|| env::panic_str(&"Owner not set".to_string()));
+        .unwrap_or_else(|| env::panic_str("Owner not set"));
     setup_env(&vault_id, &owner, vec![]);
 
     // Seed supply so fee shares can mint
@@ -1107,7 +1107,7 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
 
 #[rstest]
 fn ft_on_transfer_supply_accepts_full_and_mints_shares(
-    mut c_asset_env: Contract,
+    c_asset_env: Contract,
     enabled_market_100: (AccountId, MarketConfiguration),
 ) {
     let mut c = c_asset_env;
@@ -1153,7 +1153,7 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
 
 #[rstest]
 fn ft_on_transfer_supply_partial_refund_when_capped(
-    mut c_asset_env: Contract,
+    c_asset_env: Contract,
     enabled_market_100: (AccountId, MarketConfiguration),
 ) {
     let mut c = c_asset_env;
@@ -1242,7 +1242,7 @@ fn ft_on_transfer_invalid_msg_panics() {
 
 #[rstest]
 fn ft_on_transfer_zero_amount_returns_zero_refund(
-    mut c_vault_env: Contract,
+    c_vault_env: Contract,
     enabled_market_100: (AccountId, MarketConfiguration),
 ) {
     let mut c = c_vault_env;
@@ -1273,7 +1273,7 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
 
 #[rstest]
 fn ft_on_transfer_eager_mode_triggers_allocation(
-    mut c_asset_env: Contract,
+    c_asset_env: Contract,
     enabled_market_100: (AccountId, MarketConfiguration),
 ) {
     let mut c = c_asset_env;
@@ -1811,7 +1811,7 @@ fn skim_rejects_share_token() {
 }
 
 #[rstest]
-fn after_supply_1_check_allocating_not_allocating(mut c_max: Contract) {
+fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
     let mut c = c_max;
 
     c.op_state = OpState::Idle;

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Contract, MarketConfiguration, U128, env, near, require};
 
 /// AUM (Assets Under Management) module
 ///
@@ -147,15 +147,15 @@ impl AUM {
     /// Compute total assets according to the selected AUM model.
     ///
     /// Invariants and expectations:
-    /// - GovernanceAbandonment:
-    ///   * Sums over withdraw_queue only. This is an intentional filter; it encodes
+    /// - `GovernanceAbandonment`:
+    ///   * Sums over `withdraw_queue` only. This is an intentional filter; it encodes
     ///     governance's current support set and excludes written-down markets.
     ///   * If you re-add a market that still holds principal, you must pair this with
-    ///     a last_total_assets bump elsewhere (see paper_aum_undercounting) to avoid
+    ///     a `last_total_assets` bump elsewhere (see `paper_aum_undercounting`) to avoid
     ///     spurious fee minting on reclassification.
     ///
-    /// - BalanceSheet:
-    ///   * Sums over all markets that still have principal. Here we assume supply_queue
+    /// - `BalanceSheet`:
+    ///   * Sums over all markets that still have principal. Here we assume `supply_queue`
     ///     enumerates all configured/held markets. If it does not, replace with an
     ///     iteration over the authoritative positions map (e.g., `config` or `positions`).
     ///   * AUM changes only when principal changes or idle balance changes.
@@ -173,18 +173,18 @@ impl AUM {
         })
     }
 
-    /// Enforce removal policy for omitting a market from the withdraw_queue.
+    /// Enforce removal policy for omitting a market from the `withdraw_queue`.
     ///
     /// This function should be called at the point where an operator attempts to
-    /// remove a market from the withdraw_queue. It enforces model-specific invariants.
+    /// remove a market from the `withdraw_queue`. It enforces model-specific invariants.
     ///
-    /// - GovernanceAbandonment:
+    /// - `GovernanceAbandonment`:
     ///   * If the market still has principal, removal requires that a removal timelock
-    ///     was scheduled (removable_at > 0) and has elapsed (now >= removable_at).
+    ///     was scheduled (`removable_at` > 0) and has elapsed (now >= `removable_at`).
     ///   * Additional guards external to this function are typically required:
     ///     cap == 0 and no pending cap. Enforce those where caps are managed.
     ///
-    /// - BalanceSheet:
+    /// - `BalanceSheet`:
     ///   * Removal is prohibited while any principal remains (> 0).
     ///   * Passing a timelock is necessary but not sufficient; ownership hasn't changed.
     pub fn policy_removal(&self, cfg: &MarketConfiguration, has_supply: &bool) {
@@ -208,19 +208,19 @@ impl AUM {
     /// Handle accounting around potential AUM undercounting when re-adding markets.
     ///
     /// Context:
-    /// - Under GovernanceAbandonment, a market removed from the withdraw_queue is excluded
+    /// - Under `GovernanceAbandonment`, a market removed from the `withdraw_queue` is excluded
     ///   from AUM even if it still holds principal. When that market is later re-added,
     ///   its principal "reappears" in reported AUM. To prevent accidental performance fee
-    ///   minting due purely to reclassification (not economic gain), we bump last_total_assets
+    ///   minting due purely to reclassification (not economic gain), we bump `last_total_assets`
     ///   by the previously excluded principal at re-add time.
     ///
-    /// - Under BalanceSheet, AUM was never reduced during removal attempts, so no bump is
+    /// - Under `BalanceSheet`, AUM was never reduced during removal attempts, so no bump is
     ///   necessary. Fees accrue naturally on realized growth only.
     ///
     /// Safety notes:
-    /// - Only add before_principal that was actually excluded by the prior write-down.
+    /// - Only add `before_principal` that was actually excluded by the prior write-down.
     /// - This adjustment assumes your fee module mints fees on positive delta of
-    ///   (current_total_assets - last_total_assets). If your fee policy differs, audit this path.
+    ///   (`current_total_assets` - `last_total_assets`). If your fee policy differs, audit this path.
     pub fn paper_aum_undercounting(&self, c: &mut Contract, before_principal: &u128) {
         match self {
             AUM::GovernanceAbandonment => {

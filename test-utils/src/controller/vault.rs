@@ -12,7 +12,7 @@ use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use std::{env, ops::Deref};
-use templar_common::vault::*;
+use templar_common::vault::{AllocationWeights, DepositMsg, VaultConfiguration, VaultExt};
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
@@ -209,7 +209,7 @@ impl UnifiedVaultController {
         }
     }
 
-    pub fn new(
+    #[must_use] pub fn new(
         vault: VaultController,
         configuration: VaultConfiguration,
         market: UnifiedMarketController,
@@ -358,7 +358,6 @@ impl UnifiedVaultController {
 
 fn is_debug() -> bool {
     env::var("RUST_LOG")
-        .map(|s| s.contains("debug"))
-        .unwrap_or_default()
+        .is_ok_and(|s| s.contains("debug"))
         || env::var("DEBUG").is_ok()
 }

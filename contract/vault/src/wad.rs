@@ -2,7 +2,7 @@ use core::ops::Div;
 use std::collections::BTreeMap;
 use std::ops::{Add, Sub};
 
-use near_sdk::borsh::schema::{add_definition, Declaration, Definition, Fields};
+use near_sdk::borsh::schema::{add_definition, Declaration, Definition};
 use near_sdk::borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use templar_common::primitive_types::{U256, U512};
 
@@ -13,23 +13,23 @@ pub struct Number(pub U256);
 
 impl Number {
     #[inline]
-    pub fn zero() -> Self {
+    #[must_use] pub fn zero() -> Self {
         Number(U256::zero())
     }
     #[inline]
-    pub fn one() -> Self {
+    #[must_use] pub fn one() -> Self {
         Number(U256::one())
     }
     #[inline]
-    pub fn is_zero(&self) -> bool {
+    #[must_use] pub fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
     #[inline]
-    pub fn is_one(&self) -> bool {
+    #[must_use] pub fn is_one(&self) -> bool {
         self.0 == U256::one()
     }
     #[inline]
-    pub fn as_u128_trunc(self) -> u128 {
+    #[must_use] pub fn as_u128_trunc(self) -> u128 {
         let mut b32 = [0u8; 32];
         self.0.to_little_endian(&mut b32);
         let mut b16 = [0u8; 16];
@@ -43,11 +43,11 @@ impl Number {
         U256::from_little_endian(&b64[..32])
     }
     #[inline]
-    pub fn saturating_add(self, other: Number) -> Number {
+    #[must_use] pub fn saturating_add(self, other: Number) -> Number {
         Number(self.0.saturating_add(other.0))
     }
     #[inline]
-    pub fn saturating_sub(self, other: Number) -> Number {
+    #[must_use] pub fn saturating_sub(self, other: Number) -> Number {
         Number(self.0.saturating_sub(other.0))
     }
     #[inline]
@@ -71,10 +71,10 @@ impl Number {
         let q = prod / d;
         let r = prod % d;
         let base = Number(Self::as_u256_trunc(q));
-        if !r.is_zero() {
-            base.saturating_add(Number::one())
-        } else {
+        if r.is_zero() {
             base
+        } else {
+            base.saturating_add(Number::one())
         }
     }
 }
@@ -180,12 +180,12 @@ impl Wad {
     }
 
     #[inline]
-    pub fn is_zero(&self) -> bool {
+    #[must_use] pub fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
 
     #[inline]
-    pub fn is_one(&self) -> bool {
+    #[must_use] pub fn is_one(&self) -> bool {
         self.0 .0 == U256::from(Self::SCALE)
     }
 
@@ -283,7 +283,7 @@ impl BorshSchema for Wad {
 /// - `total_supply`: current total share supply
 ///
 /// Floors intermediate divisions; returns 0 when no profit, zero fee, zero supply,
-/// or when the fee consumes all assets (cur_total_assets == fee_assets).
+/// or when the fee consumes all assets (`cur_total_assets` == `fee_assets`).
 #[inline]
 #[must_use]
 pub fn compute_fee_shares(
@@ -311,7 +311,7 @@ pub fn compute_fee_shares(
     Number::mul_div_floor(fee_assets, total_supply, denom)
 }
 
-/// Multiplies x by y/Wad::SCALE and floors: floor(x * y / 1e24).
+/// Multiplies x by `y/Wad::SCALE` and floors: floor(x * y / 1e24).
 /// y is a WAD-scaled fraction (1e24 = 100%), and x is an unscaled amount.
 #[inline]
 #[must_use]

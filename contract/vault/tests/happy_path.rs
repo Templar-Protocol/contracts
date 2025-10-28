@@ -22,7 +22,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     vault.init_account(&supply_user).await;
 
     let initial_user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
-    println!("Initial supply_user balance: {}", initial_user_balance);
+    println!("Initial supply_user balance: {initial_user_balance}");
 
     let v = vault.contract().id();
     let amount: U128 = 1000.into();
