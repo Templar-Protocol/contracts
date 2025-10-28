@@ -9,14 +9,10 @@ use near_sdk::{
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_universal_account::{
     authentication::{ExecutionContextProvider, Key},
-    transaction::{Action, Transaction},
     ExecuteArgs, KeyId,
 };
 
-use crate::{
-    app::App, client::near::STORAGE_DEPOSIT_GAS, error::PayloadRejectionReason,
-    route::SimpleResponse, AccountData,
-};
+use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -33,55 +29,6 @@ pub struct RelayRequest {
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayResponse {
     pub transaction_hash: CryptoHash,
-}
-
-fn interacted_contracts_and_gas(
-    app: &App,
-    accounts: &AccountData,
-    payload: &[Transaction],
-) -> Result<(HashSet<AccountId>, near_sdk::Gas), PayloadRejectionReason> {
-    let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
-    let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
-    for transaction in payload {
-        let receiver_id = &transaction.receiver_id;
-        if !accounts.allowed_contract_data.contains_key(receiver_id) {
-            return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
-                account_id: receiver_id.clone(),
-            });
-        }
-        let calls = transaction
-            .actions
-            .iter()
-            .enumerate()
-            .map(|(index, action)| match action {
-                Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
-                    Ok((**call).clone().into())
-                }
-                _ => Err(PayloadRejectionReason::UnsupportedAction { index }),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
-            return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
-                account_id: receiver_id.clone(),
-            });
-        };
-
-        interacted_contract_ids.insert(receiver_id.clone());
-        interacted_contract_ids.extend(app.actions_are_allowed(
-            accounts,
-            receiver_id,
-            contract_data,
-            calls.iter(),
-        )?);
-        if let Some(market_data) = accounts.market_data.get(receiver_id) {
-            interacted_contract_ids.insert(market_data.oracle_id.clone());
-            interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
-            interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
-        }
-        gas += calls.iter().map(|f| f.gas).sum::<u64>();
-    }
-
-    Ok((interacted_contract_ids, near_sdk::Gas::from_gas(gas)))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -151,7 +98,7 @@ pub async fn relay(
     let accounts = app.accounts.read().await;
 
     let (interacted_contract_ids, gas) =
-        match interacted_contracts_and_gas(&app, &accounts, payload) {
+        match app.ua_interacted_contracts_and_gas(&accounts, payload) {
             Ok(a) => a,
             Err(e) => {
                 tracing::info!("Rejecting payload for reason: {e}");
