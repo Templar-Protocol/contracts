@@ -39,7 +39,6 @@ use near_sdk::{
 };
 use templar_common::borrow::BorrowPosition;
 use tokio::time::Instant;
-use tracing::instrument;
 
 /// Error types for RPC operations
 #[derive(Debug, thiserror::Error)]
@@ -128,6 +127,46 @@ impl Network {
     }
 }
 
+/// Contract source metadata as defined by NEP-330
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ContractSourceMetadata {
+    /// Contract version (semver format)
+    pub version: String,
+    /// Link to source code repository
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// Standards implemented by the contract
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standards: Option<Vec<Standard>>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct Standard {
+    pub standard: String,
+    pub version: String,
+}
+
+/// Get contract source metadata (NEP-330)
+///
+/// Returns `None` if the contract doesn't implement NEP-330 or the call fails.
+pub async fn get_contract_version(
+    client: &JsonRpcClient,
+    contract_id: &AccountId,
+) -> Option<String> {
+    let result: Result<ContractSourceMetadata, RpcError> = view(
+        client,
+        contract_id.clone(),
+        "contract_source_metadata",
+        serde_json::json!({}),
+    )
+    .await;
+
+    match result {
+        Ok(metadata) => Some(metadata.version),
+        Err(_) => None,
+    }
+}
+
 /// Get access key data (nonce and block hash) for transaction signing.
 ///
 /// # Arguments
@@ -138,7 +177,7 @@ impl Network {
 /// # Returns
 ///
 /// Tuple of (nonce, block_hash) to use when constructing a transaction
-#[instrument(skip(client), level = "debug")]
+#[tracing::instrument(skip(client), level = "debug")]
 pub async fn get_access_key_data(
     client: &JsonRpcClient,
     signer: &Signer,
@@ -190,28 +229,28 @@ pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
 /// # Returns
 ///
 /// Deserialized response of type T
-#[instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]
+#[tracing::instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]
 pub async fn view<T: DeserializeOwned>(
     client: &JsonRpcClient,
     account_id: AccountId,
     function_name: &str,
     args: impl Serialize,
 ) -> RpcResult<T> {
-    let access_key_query_response = client
+    let response = client
         .call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
             request: QueryRequest::CallFunction {
-                account_id,
+                account_id: account_id.clone(),
                 method_name: function_name.to_owned(),
                 args: serialize_and_encode(&args).into(),
             },
         })
         .await?;
 
-    let QueryResponseKind::CallResult(result) = access_key_query_response.kind else {
+    let QueryResponseKind::CallResult(result) = response.kind else {
         return Err(RpcError::WrongResponseKind(format!(
             "Expected CallResult got {:?}",
-            access_key_query_response.kind
+            response.kind
         )));
     };
 
@@ -236,7 +275,7 @@ pub async fn view<T: DeserializeOwned>(
 /// # Returns
 ///
 /// Final execution status of the transaction
-#[instrument(skip(client, signer), level = "debug")]
+#[tracing::instrument(skip(client, signer), level = "debug")]
 pub async fn send_tx(
     client: &JsonRpcClient,
     signer: &Signer,
@@ -321,7 +360,7 @@ pub async fn send_tx(
 /// # Returns
 ///
 /// Vector of all deployed market accounts
-#[instrument(skip(client), level = "debug")]
+#[tracing::instrument(skip(client), level = "debug")]
 #[allow(clippy::used_underscore_binding)]
 pub async fn list_deployments(
     client: &JsonRpcClient,
@@ -370,7 +409,7 @@ pub async fn list_deployments(
 /// # Returns
 ///
 /// Vector of all deployed market accounts from all registries
-#[instrument(skip(client), level = "debug")]
+#[tracing::instrument(skip(client), level = "debug")]
 pub async fn list_all_deployments(
     client: JsonRpcClient,
     registries: Vec<AccountId>,
@@ -386,4 +425,80 @@ pub async fn list_all_deployments(
         .await?;
 
     Ok(all_markets)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::serde_json::json;
+
+    #[test]
+    fn test_serialize_and_encode() {
+        let data = json!({"key": "value", "number": 42});
+        let encoded = serialize_and_encode(&data);
+
+        // Should be valid JSON bytes
+        assert!(!encoded.is_empty());
+
+        // Should be able to deserialize back
+        let decoded: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded["key"], "value");
+        assert_eq!(decoded["number"], 42);
+    }
+
+    #[test]
+    fn test_serialize_and_encode_empty_object() {
+        let data = json!({});
+        let encoded = serialize_and_encode(&data);
+        assert_eq!(encoded, b"{}");
+    }
+
+    #[test]
+    fn test_serialize_and_encode_array() {
+        let data = json!([1, 2, 3]);
+        let encoded = serialize_and_encode(&data);
+        let decoded: Vec<u32> = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_network_display() {
+        assert_eq!(Network::Mainnet.to_string(), "mainnet");
+        assert_eq!(Network::Testnet.to_string(), "testnet");
+    }
+
+    #[test]
+    fn test_network_rpc_url() {
+        assert_eq!(Network::Mainnet.rpc_url(), NEAR_MAINNET_RPC_URL);
+        assert_eq!(Network::Testnet.rpc_url(), NEAR_TESTNET_RPC_URL);
+    }
+
+    #[test]
+    fn test_network_default() {
+        let network = Network::default();
+        assert_eq!(network.to_string(), "testnet");
+    }
+
+    #[test]
+    fn test_rpc_error_display() {
+        let error = RpcError::WrongResponseKind("unexpected type".to_string());
+        let display = format!("{error}");
+        assert!(display.contains("unexpected type"));
+    }
+
+    #[test]
+    fn test_app_error_from_rpc_error() {
+        let rpc_error = RpcError::WrongResponseKind("test".to_string());
+        let app_error: AppError = rpc_error.into();
+        let display = format!("{app_error}");
+        assert!(display.contains("RPC error"));
+    }
+
+    #[test]
+    fn test_timeout_error_display() {
+        let error = RpcError::TimeoutError(60, 65);
+        let display = format!("{error}");
+        assert!(display.contains("60"));
+        assert!(display.contains("65"));
+    }
 }

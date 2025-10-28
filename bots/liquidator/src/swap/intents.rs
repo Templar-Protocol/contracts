@@ -40,7 +40,7 @@ use near_sdk::{json_types::U128, serde_json, AccountId};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use templar_common::asset::{AssetClass, FungibleAsset};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info};
 
 use crate::rpc::{get_access_key_data, send_tx, AppError, AppResult, Network};
 
@@ -52,20 +52,25 @@ struct SolverQuoteRequest {
     jsonrpc: String,
     id: u64,
     method: String,
-    params: QuoteParams,
+    params: Vec<QuoteParams>,
 }
 
 /// Parameters for quote request.
 #[derive(Debug, Clone, Serialize)]
 struct QuoteParams {
-    /// Input asset identifier in Defuse format (e.g., "near:usdc.near")
+    /// Input asset identifier in Defuse format (e.g., "nep141:usdc.near")
     defuse_asset_identifier_in: String,
     /// Output asset identifier in Defuse format
     defuse_asset_identifier_out: String,
     /// Exact output amount desired (as string)
-    exact_amount_out: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exact_amount_out: Option<String>,
+    /// Exact input amount (as string) - use either this OR exact_amount_out
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exact_amount_in: Option<String>,
     /// Minimum deadline for quote validity in milliseconds
-    min_deadline_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_deadline_ms: Option<u64>,
 }
 
 /// JSON-RPC response from solver relay.
@@ -75,7 +80,7 @@ struct SolverQuoteResponse {
     jsonrpc: String,
     id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<QuoteResult>,
+    result: Option<Vec<QuoteResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<JsonRpcError>,
 }
@@ -84,19 +89,18 @@ struct SolverQuoteResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 struct QuoteResult {
+    /// Unique identifier for the quote
+    quote_hash: String,
+    /// Input asset identifier
+    defuse_asset_identifier_in: String,
+    /// Output asset identifier
+    defuse_asset_identifier_out: String,
     /// Input amount required (as string)
-    input_amount: String,
+    amount_in: String,
     /// Output amount that will be received (as string)
-    output_amount: String,
-    /// Exchange rate
-    #[serde(skip_serializing_if = "Option::is_none")]
-    exchange_rate: Option<String>,
-    /// Solver that provided the quote
-    #[serde(skip_serializing_if = "Option::is_none")]
-    solver_id: Option<String>,
-    /// Quote expiration timestamp
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expires_at_ms: Option<u64>,
+    amount_out: String,
+    /// Quote expiration timestamp (ISO-8601)
+    expiration_time: String,
 }
 
 /// JSON-RPC error object.
@@ -286,18 +290,18 @@ impl IntentsSwap {
     /// Converts a `FungibleAsset` to Defuse asset identifier format.
     ///
     /// Defuse asset identifiers follow the format:
-    /// - NEAR NEP-141: `near:<contract_id>`
-    /// - NEAR NEP-245: `near:<contract_id>/<token_id>`
+    /// - NEAR NEP-141: `nep141:<contract_id>`
+    /// - NEAR NEP-245: `nep245:<contract_id>:<token_id>`
     fn to_defuse_asset_id<A: AssetClass>(asset: &FungibleAsset<A>) -> String {
         match asset.clone().into_nep141() {
-            Some(_) => format!("near:{}", asset.contract_id()),
+            Some(contract_id) => format!("nep141:{contract_id}"),
             None => {
                 // NEP-245
                 if let Some((contract, token_id)) = asset.clone().into_nep245() {
-                    format!("near:{contract}/{token_id}")
+                    format!("nep245:{contract}:{token_id}")
                 } else {
                     // Fallback - should not happen with valid FungibleAsset
-                    format!("near:{}", asset.contract_id())
+                    format!("nep141:{}", asset.contract_id())
                 }
             }
         }
@@ -311,7 +315,7 @@ impl IntentsSwap {
     /// # Returns
     ///
     /// The input amount required to obtain the desired output amount.
-    #[instrument(skip(self), level = "debug")]
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn request_quote_from_solver<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
@@ -325,13 +329,14 @@ impl IntentsSwap {
         let request = SolverQuoteRequest {
             jsonrpc: "2.0".to_string(),
             id: 1,
-            method: "get_quote".to_string(),
-            params: QuoteParams {
+            method: "quote".to_string(),
+            params: vec![QuoteParams {
                 defuse_asset_identifier_in: from_defuse_id.clone(),
                 defuse_asset_identifier_out: to_defuse_id.clone(),
-                exact_amount_out: output_amount.0.to_string(),
-                min_deadline_ms: self.quote_timeout_ms,
-            },
+                exact_amount_out: Some(output_amount.0.to_string()),
+                exact_amount_in: None,
+                min_deadline_ms: Some(self.quote_timeout_ms),
+            }],
         };
 
         info!(
@@ -340,6 +345,11 @@ impl IntentsSwap {
             output = %output_amount.0,
             relay_url = %self.solver_relay_url,
             "Requesting quote from NEAR Intents solver network"
+        );
+
+        debug!(
+            request = ?request,
+            "Sending solver relay request"
         );
 
         // Make HTTP POST request to solver relay
@@ -368,17 +378,26 @@ impl IntentsSwap {
             )));
         }
 
+        // Get response text for debugging
+        let response_text = response.text().await.map_err(|e| {
+            error!(?e, "Failed to read solver relay response");
+            AppError::ValidationError(format!("Failed to read response: {e}"))
+        })?;
+
+        debug!(response = %response_text, "Raw solver relay response");
+
         // Parse JSON-RPC response
-        let solver_response: SolverQuoteResponse = response.json().await.map_err(|e| {
-            error!(?e, "Failed to parse solver relay response");
+        let solver_response: SolverQuoteResponse = serde_json::from_str(&response_text).map_err(|e| {
+            error!(?e, response = %response_text, "Failed to parse solver relay response");
             AppError::ValidationError(format!("Invalid solver relay response: {e}"))
         })?;
 
         // Check for JSON-RPC error
-        if let Some(error) = solver_response.error {
+        if let Some(error) = &solver_response.error {
             error!(
                 code = error.code,
                 message = %error.message,
+                data = ?error.data,
                 "Solver relay returned JSON-RPC error"
             );
             return Err(AppError::ValidationError(format!(
@@ -387,15 +406,50 @@ impl IntentsSwap {
             )));
         }
 
-        // Extract result
-        let result = solver_response.result.ok_or_else(|| {
-            error!("Solver relay response missing result field");
-            AppError::ValidationError("Solver relay response missing result".to_string())
-        })?;
+        // Extract result array - null means no quotes available
+        let quotes = match solver_response.result {
+            Some(quotes) if !quotes.is_empty() => quotes,
+            Some(_) => {
+                error!(
+                    from = %from_defuse_id,
+                    to = %to_defuse_id,
+                    amount = %output_amount.0,
+                    "No quotes available from solver network (empty result)"
+                );
+                return Err(AppError::ValidationError(
+                    "No quotes available from solvers".to_string(),
+                ));
+            }
+            None => {
+                error!(
+                    from = %from_defuse_id,
+                    to = %to_defuse_id,
+                    amount = %output_amount.0,
+                    response = %response_text,
+                    "No quotes available from solver network (null result) - asset pair may not be supported or amount too small"
+                );
+                return Err(AppError::ValidationError(
+                    "No quotes available from solvers - asset pair not supported or no liquidity".to_string(),
+                ));
+            }
+        };
+
+        // Find the best quote (lowest input amount for the desired output)
+        let best_quote = quotes
+            .iter()
+            .min_by_key(|q| {
+                q.amount_in
+                    .parse::<u128>()
+                    .unwrap_or(u128::MAX)
+            })
+            .ok_or_else(|| {
+                error!("Failed to find best quote");
+                AppError::ValidationError("No valid quotes found".to_string())
+            })?;
 
         // Parse input amount from string
-        let input_amount: u128 = result.input_amount.parse().map_err(|e| {
-            error!(?e, amount = %result.input_amount, "Failed to parse input amount");
+        let input_amount: u128 = best_quote.amount_in.parse().map_err(|e| {
+            error!(?e, amount = %best_quote.amount_in, "Failed to parse input amount");
             AppError::ValidationError(format!("Invalid input amount format: {e}"))
         })?;
 
@@ -403,7 +457,8 @@ impl IntentsSwap {
             input_amount = %input_amount,
             output_amount = %output_amount.0,
             exchange_rate = %(input_amount as f64 / output_amount.0 as f64),
-            solver = %result.solver_id.unwrap_or_else(|| "unknown".to_string()),
+            quote_hash = %best_quote.quote_hash,
+            quotes_received = quotes.len(),
             "Quote received from solver network"
         );
 
@@ -465,7 +520,7 @@ impl IntentsSwap {
 
 #[async_trait::async_trait]
 impl SwapProvider for IntentsSwap {
-    #[instrument(skip(self), level = "debug", fields(
+    #[tracing::instrument(skip(self), level = "debug", fields(
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
@@ -490,7 +545,7 @@ impl SwapProvider for IntentsSwap {
         Ok(input_amount)
     }
 
-    #[instrument(skip(self), level = "info", fields(
+    #[tracing::instrument(skip(self), level = "info", fields(
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
@@ -574,13 +629,13 @@ mod tests {
     fn test_defuse_asset_id_conversion() {
         // NEP-141
         let nep141: FungibleAsset<BorrowAsset> = "nep141:usdc.near".parse().unwrap();
-        assert_eq!(IntentsSwap::to_defuse_asset_id(&nep141), "near:usdc.near");
+        assert_eq!(IntentsSwap::to_defuse_asset_id(&nep141), "nep141:usdc.near");
 
         // NEP-245
         let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:eth".parse().unwrap();
         assert_eq!(
             IntentsSwap::to_defuse_asset_id(&nep245),
-            "near:multi.near/eth"
+            "nep245:multi.near:eth"
         );
     }
 

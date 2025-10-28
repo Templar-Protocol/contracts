@@ -24,7 +24,7 @@ use near_primitives::{
 };
 use near_sdk::{json_types::U128, near, serde_json, AccountId};
 use templar_common::asset::{AssetClass, FungibleAsset};
-use tracing::{debug, instrument};
+use tracing::debug;
 
 use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
 
@@ -227,7 +227,7 @@ impl SwapRequestMsg {
 
 #[async_trait::async_trait]
 impl SwapProvider for RheaSwap {
-    #[instrument(skip(self), level = "debug", fields(
+    #[tracing::instrument(skip(self), level = "debug", fields(
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
@@ -257,7 +257,7 @@ impl SwapProvider for RheaSwap {
         Ok(response.amount)
     }
 
-    #[instrument(skip(self), level = "info", fields(
+    #[tracing::instrument(skip(self), level = "info", fields(
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),

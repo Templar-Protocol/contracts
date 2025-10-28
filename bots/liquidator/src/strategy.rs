@@ -18,7 +18,7 @@ use near_sdk::json_types::U128;
 use templar_common::{
     borrow::BorrowPosition, market::MarketConfiguration, oracle::pyth::OracleResponse,
 };
-use tracing::{debug, instrument};
+use tracing::debug;
 
 use crate::LiquidatorResult;
 
@@ -177,7 +177,7 @@ impl PartialLiquidationStrategy {
 }
 
 impl LiquidationStrategy for PartialLiquidationStrategy {
-    #[instrument(skip(self, position, oracle_response, configuration), level = "debug")]
+    #[tracing::instrument(skip(self, position, oracle_response, configuration), level = "debug")]
     fn calculate_liquidation_amount(
         &self,
         position: &BorrowPosition,
@@ -242,7 +242,7 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         Ok(Some(liquidation_amount))
     }
 
-    #[instrument(skip(self), level = "debug")]
+    #[tracing::instrument(skip(self), level = "debug")]
     fn should_liquidate(
         &self,
         swap_input_amount: U128,
@@ -341,7 +341,7 @@ impl FullLiquidationStrategy {
 }
 
 impl LiquidationStrategy for FullLiquidationStrategy {
-    #[instrument(skip(self, position, oracle_response, configuration), level = "debug")]
+    #[tracing::instrument(skip(self, position, oracle_response, configuration), level = "debug")]
     fn calculate_liquidation_amount(
         &self,
         position: &BorrowPosition,
@@ -381,7 +381,7 @@ impl LiquidationStrategy for FullLiquidationStrategy {
         Ok(Some(amount.into()))
     }
 
-    #[instrument(skip(self), level = "debug")]
+    #[tracing::instrument(skip(self), level = "debug")]
     fn should_liquidate(
         &self,
         swap_input_amount: U128,

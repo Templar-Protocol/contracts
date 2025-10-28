@@ -224,6 +224,7 @@ async fn test_liquidator_with_rhea_and_partial_strategy() {
         swap_provider,
         strategy,
         120,
+        false,
     );
 
     assert_eq!(liquidator.market.as_str(), "market.testnet");
@@ -253,6 +254,7 @@ async fn test_liquidator_with_intents_and_full_strategy() {
         swap_provider,
         strategy,
         120,
+        false,
     );
 
     assert_eq!(liquidator.market.as_str(), "market.testnet");
@@ -470,6 +472,7 @@ async fn test_liquidator_creation_validation() {
         swap_provider,
         strategy,
         120,
+        false,
     );
 
     assert_eq!(liquidator.market, market_id);
@@ -840,6 +843,7 @@ async fn test_liquidator_new_constructor() {
         swap_provider,
         strategy,
         120,
+        false,
     );
 
     // Verify all fields are set correctly
@@ -1151,6 +1155,7 @@ async fn test_liquidator_default_gas_estimate() {
         swap_provider,
         strategy,
         120,
+        false,
     );
 
     // The gas cost estimate should be set to the default value (0.01 NEAR)
@@ -1158,4 +1163,193 @@ async fn test_liquidator_default_gas_estimate() {
     assert_eq!(liquidator.timeout, 120);
 
     println!("✓ Liquidator sets default gas cost estimate");
+}
+
+#[test]
+fn test_swap_type_display() {
+    use crate::SwapType;
+
+    let rhea = SwapType::RheaSwap;
+    let intents = SwapType::NearIntents;
+
+    // SwapType should have Debug impl
+    let rhea_debug = format!("{rhea:?}");
+    let intents_debug = format!("{intents:?}");
+
+    assert!(rhea_debug.contains("RheaSwap"));
+    assert!(intents_debug.contains("NearIntents"));
+
+    println!("✓ SwapType Debug format works correctly");
+}
+
+#[test]
+fn test_swap_type_account_id_testnet() {
+    use crate::{rpc::Network, SwapType};
+
+    let rhea = SwapType::RheaSwap;
+    let intents = SwapType::NearIntents;
+
+    let rhea_account = rhea.account_id(Network::Testnet);
+    let intents_account = intents.account_id(Network::Testnet);
+
+    assert!(rhea_account.as_str().contains("testnet"));
+    assert!(intents_account.as_str().contains("testnet"));
+
+    println!("✓ SwapType returns correct testnet account IDs");
+}
+
+#[test]
+fn test_swap_type_account_id_mainnet() {
+    use crate::{rpc::Network, SwapType};
+
+    let rhea = SwapType::RheaSwap;
+    let intents = SwapType::NearIntents;
+
+    let rhea_account = rhea.account_id(Network::Mainnet);
+    let intents_account = intents.account_id(Network::Mainnet);
+
+    assert!(rhea_account.as_str().contains("near") || rhea_account.as_str().contains("ref"));
+    assert_eq!(intents_account.as_str(), "intents.near");
+
+    println!("✓ SwapType returns correct mainnet account IDs");
+}
+
+#[test]
+fn test_liquidator_error_all_variants() {
+    use crate::{rpc::RpcError, LiquidatorError};
+
+    // Test all error variants
+    let errors = vec![
+        LiquidatorError::FetchBorrowStatus(RpcError::WrongResponseKind("test".to_string())),
+        LiquidatorError::SerializeError(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "test",
+        ))),
+        LiquidatorError::GetConfigurationError(RpcError::WrongResponseKind("test".to_string())),
+        LiquidatorError::PriceFetchError(RpcError::WrongResponseKind("test".to_string())),
+        LiquidatorError::AccessKeyDataError(RpcError::WrongResponseKind("test".to_string())),
+        LiquidatorError::LiquidationTransactionError(RpcError::WrongResponseKind(
+            "test".to_string(),
+        )),
+        LiquidatorError::ListBorrowPositionsError(RpcError::WrongResponseKind("test".to_string())),
+        LiquidatorError::FetchBalanceError(RpcError::WrongResponseKind("test".to_string())),
+        LiquidatorError::ListDeploymentsError(RpcError::WrongResponseKind("test".to_string())),
+        LiquidatorError::InsufficientBalance,
+    ];
+
+    for error in errors {
+        let display = format!("{error}");
+        assert!(!display.is_empty());
+    }
+
+    println!("✓ All LiquidatorError variants display correctly");
+}
+
+#[test]
+fn test_swap_provider_supports_assets_edge_cases() {
+    let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+    let signer = create_test_signer();
+
+    let rhea = RheaSwap::new(
+        "dclv2.ref-dev.testnet".parse().unwrap(),
+        client.clone(),
+        signer.clone(),
+    );
+
+    let intents = IntentsSwap::new(client, signer, Network::Testnet);
+
+    // Test same asset
+    let usdc: FungibleAsset<BorrowAsset> = "nep141:usdc.testnet".parse().unwrap();
+    assert!(rhea.supports_assets(&usdc, &usdc));
+    assert!(intents.supports_assets(&usdc, &usdc));
+
+    println!("✓ Swap providers handle same-asset edge case");
+}
+
+#[test]
+fn test_partial_strategy_boundary_values() {
+    // Test with 1% (minimum)
+    let strategy_min = PartialLiquidationStrategy::new(1, 1, 1);
+    assert_eq!(strategy_min.target_percentage, 1);
+    assert_eq!(strategy_min.min_profit_margin_bps, 1);
+    assert_eq!(strategy_min.max_gas_cost_percentage, 1);
+
+    // Test with 100% (maximum)
+    let strategy_max = PartialLiquidationStrategy::new(100, 10000, 100);
+    assert_eq!(strategy_max.target_percentage, 100);
+
+    println!("✓ Partial strategy handles boundary values correctly");
+}
+
+#[test]
+fn test_full_strategy_profitability_zero_costs() {
+    let strategy = FullLiquidationStrategy::aggressive();
+
+    // Zero swap cost, zero gas - should always be profitable
+    let result = strategy
+        .should_liquidate(U128(0), U128(1000), U128(2000), U128(0))
+        .unwrap();
+
+    assert!(result, "Should be profitable with zero costs");
+
+    println!("✓ Full strategy handles zero cost case");
+}
+
+#[test]
+fn test_mock_swap_provider_failure_path() {
+    let failing_provider = MockSwapProvider::new(1.0).with_failure();
+
+    assert_eq!(failing_provider.provider_name(), "Mock Swap Provider");
+    assert!(failing_provider.should_fail);
+
+    println!("✓ Mock swap provider failure mode works");
+}
+
+#[tokio::test]
+async fn test_mock_swap_provider_quote_precision() {
+    let provider = MockSwapProvider::new(2.0);
+    let from: FungibleAsset<BorrowAsset> = "nep141:usdc.testnet".parse().unwrap();
+    let to: FungibleAsset<BorrowAsset> = "nep141:usdt.testnet".parse().unwrap();
+
+    // Request 100 output, with 2.0 exchange rate
+    let quote = provider.quote(&from, &to, U128(100)).await.unwrap();
+
+    // Should get 50 input (100 / 2.0)
+    assert_eq!(quote.0, 50);
+
+    println!("✓ Mock swap provider quote calculation is precise");
+}
+
+#[test]
+fn test_network_clone_and_copy() {
+    use crate::rpc::Network;
+
+    // Network should be Copy and Clone
+    let mainnet = Network::Mainnet;
+    let mainnet_copy = mainnet;
+    let mainnet_clone = mainnet.clone();
+
+    assert_eq!(mainnet.to_string(), mainnet_copy.to_string());
+    assert_eq!(mainnet.to_string(), mainnet_clone.to_string());
+
+    println!("✓ Network enum implements Copy and Clone");
+}
+
+#[test]
+fn test_swap_provider_impl_debug() {
+    let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+    let signer = create_test_signer();
+
+    let rhea = RheaSwap::new(
+        "dclv2.ref-dev.testnet".parse().unwrap(),
+        client.clone(),
+        signer.clone(),
+    );
+
+    let provider = SwapProviderImpl::rhea(rhea);
+    let debug_output = format!("{provider:?}");
+
+    assert!(!debug_output.is_empty());
+
+    println!("✓ SwapProviderImpl has Debug implementation");
 }
