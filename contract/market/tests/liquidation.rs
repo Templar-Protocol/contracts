@@ -129,7 +129,7 @@ async fn successful_liquidation_good_debt_under_mcr(
         "Liquidation should transfer correct amount of tokens",
     );
 
-    let yield_amount = u128::from(price).saturating_sub(borrow_amount).max(10);
+    let yield_amount: u128 = price.saturating_sub(borrow_amount).max(10.into()).into();
 
     // finalize a snapshot
     c.apply_interest(&borrow_user, None, None).await;
@@ -514,7 +514,7 @@ async fn extreme_prices(
         &liquidator_user,
         borrow_user.id(),
         liquidate,
-        (u128::from(price) - 1).into(), // offer too low at first
+        price - 1, // offer too low at first
     )
     .await;
 
@@ -555,15 +555,15 @@ async fn extreme_prices(
     let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(borrow_position_before.get_total_collateral_amount())
-            - u128::from(borrow_position_after.get_total_collateral_amount()),
-        u128::from(liquidate),
+        borrow_position_before.get_total_collateral_amount()
+            - borrow_position_after.get_total_collateral_amount(),
+        liquidate,
         "Position collateral should decrease by the amount purchased by the liquidator"
     );
     assert_eq!(
-        u128::from(borrow_position_before.get_total_borrow_asset_liability())
-            - u128::from(borrow_position_after.get_total_borrow_asset_liability()),
-        u128::from(price),
+        borrow_position_before.get_total_borrow_asset_liability()
+            - borrow_position_after.get_total_borrow_asset_liability(),
+        price,
         "Position liability should decrease by the amount paid by the liquidator, sans fees"
     );
 }
@@ -619,10 +619,8 @@ async fn partial_liquidation(#[future(awt)] worker: Worker<Sandbox>) {
     eprintln!("Pay for collateral: {pay_for_collateral}");
     eprintln!("Collateral to liquidate: {liquidate_collateral}");
 
-    let mut liability = borrow_position.get_total_borrow_asset_liability();
-    liability.split(pay_for_collateral).unwrap();
-    let mut collateral = borrow_position.get_total_collateral_amount();
-    collateral.split(liquidate_collateral).unwrap();
+    let liability = borrow_position.get_total_borrow_asset_liability() - pay_for_collateral;
+    let collateral = borrow_position.get_total_collateral_amount() - liquidate_collateral;
     let new_cr = price_pair
         .valuation(collateral)
         .ratio(price_pair.valuation(liability))

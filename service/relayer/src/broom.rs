@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use tokio::{select, sync::watch};
-use tracing::{debug, warn};
 
 use crate::client::{database::Database, near::Near};
 
+#[tracing::instrument(skip_all, fields(batch_size = %batch_size, delay = ?delay))]
 pub async fn start(
     database: Database,
     near: Near,
@@ -12,6 +12,7 @@ pub async fn start(
     delay: Duration,
     kill: watch::Sender<()>,
 ) {
+    tracing::info!("Starting broom service");
     let batch_size = i64::from(batch_size);
 
     let mut interval = tokio::time::interval(delay);
@@ -20,7 +21,7 @@ pub async fn start(
     loop {
         select! {
             _ = on_kill.changed() => {
-                debug!("Received kill notification.");
+                tracing::debug!("Received kill notification.");
                 break;
             }
             _ = interval.tick() => {
@@ -28,7 +29,7 @@ pub async fn start(
                     .get_pending_transactions(batch_size)
                     .await
                 {
-                    debug!(
+                    tracing::debug!(
                         "Broom processing {} pending transactions...",
                         pending_transactions.len(),
                     );
@@ -40,17 +41,17 @@ pub async fn start(
                         {
                             Ok(s) => s,
                             Err(e) => {
-                                warn!("Failed to fetch transaction status for ({account_id}, {transaction_hash}): {e}");
+                                tracing::warn!("Failed to fetch transaction status for ({account_id}, {transaction_hash}): {e}");
                                 continue;
                             }
                         };
 
                         if let Err(e) = database.record_transaction(&account_id, &status).await {
-                            warn!("Broom error trying to automatically record transaction ({account_id}, {transaction_hash}): {e}");
+                            tracing::warn!("Broom error trying to automatically record transaction ({account_id}, {transaction_hash}): {e}");
                         }
                     }
                 } else {
-                    warn!("Failed to fetch pending transactions.");
+                    tracing::warn!("Failed to fetch pending transactions.");
                 }
             }
         }
