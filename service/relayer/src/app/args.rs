@@ -38,10 +38,6 @@ fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
     Ok(Duration::from_secs(u64::from_str(s)?))
 }
 
-fn gas_from_tgas(s: &str) -> Result<near_sdk::Gas, std::num::ParseIntError> {
-    Ok(near_sdk::Gas::from_tgas(u64::from_str(s)?))
-}
-
 #[derive(Args, Debug, Clone)]
 pub struct Pyth {
     /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
@@ -71,11 +67,10 @@ pub struct Pyth {
     pub oracle_id: AccountId,
     /// How much gas (in units of Tgas) to attach to oracle price update calls.
     #[arg(
-        id = "pyth-update-tgas",
-        long = "pyth-update-tgas",
-        env = "PYTH_UPDATE_TGAS",
-        value_parser = gas_from_tgas,
-        default_value_t = near_sdk::Gas::from_tgas(300)
+        id = "pyth-update-gas",
+        long = "pyth-update-gas",
+        env = "PYTH_UPDATE_GAS",
+        default_value = "300 Tgas"
     )]
     pub update_gas: near_sdk::Gas,
     /// How much NEAR to attach as a deposit to oracle price update calls.
