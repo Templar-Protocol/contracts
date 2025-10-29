@@ -42,7 +42,9 @@ async fn main() {
 
     c.create_supply_withdrawal_request(&supply_user, 1_000)
         .await;
-    let r = c.execute_next_supply_withdrawal_request(&supply_user).await;
+    let r = c
+        .execute_next_supply_withdrawal_request_exec(&supply_user, None)
+        .await;
 
     for receipt in r.receipt_outcomes() {
         eprintln!("{}: {}", receipt.executor_id, receipt.gas_burnt);

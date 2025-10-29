@@ -33,7 +33,7 @@ async fn many_accounts(#[future(awt)] worker: Worker<Sandbox>) {
         let first_supply = first_supply.clone();
         async move {
             while let Some(s) = wq_recv.recv().await {
-                c.execute_next_supply_withdrawal_request(&first_supply)
+                c.execute_next_supply_withdrawal_request(&first_supply, None)
                     .await;
                 s.send(()).unwrap();
             }

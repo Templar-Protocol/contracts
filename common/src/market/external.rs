@@ -10,7 +10,9 @@ use crate::{
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
     supply::SupplyPosition,
-    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
+    withdrawal_queue::{
+        WithdrawalQueueExecutionResult, WithdrawalQueueStatus, WithdrawalRequestStatus,
+    },
 };
 
 use super::{BorrowAssetMetrics, MarketConfiguration};
@@ -120,7 +122,10 @@ pub trait MarketExternalInterface {
     fn cancel_supply_withdrawal_request(&mut self);
 
     /// Attempts to fulfill the first withdrawal request in the queue.
-    fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()>;
+    fn execute_next_supply_withdrawal_request(
+        &mut self,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<WithdrawalQueueExecutionResult>;
 
     /// Retrieves the status of a withdrawal request in the queue.
     fn get_supply_withdrawal_request_status(

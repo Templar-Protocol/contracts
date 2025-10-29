@@ -7,7 +7,7 @@ use crate::{
     asset::{BorrowAsset, BorrowAssetAmount},
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
-    market::{Market, WithdrawalResolution},
+    market::{Market, Withdrawal},
     number::Decimal,
     YEAR_PER_MS,
 };
@@ -341,15 +341,45 @@ impl<'a> SupplyPositionGuard<'a> {
     pub fn record_withdrawal_initial(
         &mut self,
         _proof: YieldAccumulationProof,
-        mut amount: BorrowAssetAmount,
+        requested_amount: BorrowAssetAmount,
         block_timestamp_ms: u64,
-    ) -> WithdrawalResolution {
-        let mut amount_to_remove = amount;
+    ) -> WithdrawalAttempt {
+        //
+        // Check liquidity & eligibility
+        //
 
-        self.position.borrow_asset_deposit.outgoing += amount;
+        let incoming = self.position.total_incoming();
+        let active = self.position.get_deposit().active;
+        let entitled_to_withdraw = incoming + active;
+
+        if entitled_to_withdraw.is_zero() {
+            return WithdrawalAttempt::EmptyPosition;
+        }
+
+        let requested_amount = requested_amount.min(entitled_to_withdraw);
+        let generally_available = self
+            .market
+            .borrow_asset_deposited_active
+            .saturating_sub(self.market.borrowed());
+        let available_to_me = generally_available + incoming;
+        let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
+
+        if can_withdraw_now.is_zero() {
+            return WithdrawalAttempt::NoLiquidity;
+        }
+
+        let withdrawal_amount = requested_amount.min(can_withdraw_now);
+
+        //
+        // Execute removal
+        //
+
+        let mut amount_to_remove = withdrawal_amount;
+
+        self.position.borrow_asset_deposit.outgoing += withdrawal_amount;
 
         amount_to_remove = amount_to_remove.unwrap_sub(
-            self.remove_incoming(amount),
+            self.remove_incoming(withdrawal_amount),
             "Invariant violation: remove_incoming(amount) > amount",
         );
 
@@ -359,41 +389,55 @@ impl<'a> SupplyPositionGuard<'a> {
 
         // The only way to withdraw from a position is if it already has a deposit.
         // Adding a deposit guarantees started_at_block_timestamp_ms != None
-        #[allow(clippy::unwrap_used, reason = "Guaranteed to never panic")]
-        let started_at_block_timestamp_ms =
-            self.0.position.started_at_block_timestamp_ms.unwrap().0;
+        let Some(U64(started_at_block_timestamp_ms)) =
+            self.0.position.started_at_block_timestamp_ms
+        else {
+            env::panic_str("Invariant violation: Position with deposit has no timestamp");
+        };
         let supply_duration = block_timestamp_ms.saturating_sub(started_at_block_timestamp_ms);
 
         let amount_to_fees = self
             .market
             .configuration
             .supply_withdrawal_fee
-            .of(amount, supply_duration)
-            .unwrap_or_else(|| env::panic_str("Fee calculation overflow"));
+            .of(withdrawal_amount, supply_duration)
+            .unwrap_or_else(|| env::panic_str("Fee calculation overflow"))
+            .min(withdrawal_amount);
 
-        amount = amount.saturating_sub(amount_to_fees);
+        let amount_to_account = withdrawal_amount.saturating_sub(amount_to_fees);
 
-        WithdrawalResolution {
+        self.market.borrow_asset_withdrawal_in_flight += amount_to_account;
+
+        let withdrawal = Withdrawal {
             account_id: self.account_id.clone(),
-            amount_to_account: amount,
+            amount_to_account,
             amount_to_fees,
+        };
+
+        if requested_amount > can_withdraw_now {
+            WithdrawalAttempt::Partial {
+                withdrawal,
+                remaining: requested_amount.saturating_sub(can_withdraw_now),
+            }
+        } else {
+            WithdrawalAttempt::Full(withdrawal)
         }
     }
 
-    pub fn record_withdrawal_final(
-        &mut self,
-        withdrawal_resolution: &WithdrawalResolution,
-        success: bool,
-    ) {
-        let amount = withdrawal_resolution.amount_to_account + withdrawal_resolution.amount_to_fees;
+    pub fn record_withdrawal_final(&mut self, withdrawal: &Withdrawal, success: bool) {
+        let amount = withdrawal.amount_to_account + withdrawal.amount_to_fees;
 
         self.position.borrow_asset_deposit.outgoing -= amount;
+        self.market.borrow_asset_withdrawal_in_flight -= withdrawal.amount_to_account;
 
         if success {
+            self.market
+                .record_borrow_asset_protocol_yield(withdrawal.amount_to_fees);
+
             MarketEvent::SupplyWithdrawn {
                 account_id: self.account_id.clone(),
-                borrow_asset_amount_to_account: withdrawal_resolution.amount_to_account,
-                borrow_asset_amount_to_fees: withdrawal_resolution.amount_to_fees,
+                borrow_asset_amount_to_account: withdrawal.amount_to_account,
+                borrow_asset_amount_to_fees: withdrawal.amount_to_fees,
             }
             .emit();
         } else {
@@ -427,4 +471,14 @@ impl<'a> SupplyPositionGuard<'a> {
     pub fn record_yield_withdrawal(&mut self, amount: BorrowAssetAmount) {
         self.0.position.borrow_asset_yield.remove(amount);
     }
+}
+
+pub enum WithdrawalAttempt {
+    Full(Withdrawal),
+    Partial {
+        withdrawal: Withdrawal,
+        remaining: BorrowAssetAmount,
+    },
+    EmptyPosition,
+    NoLiquidity,
 }
