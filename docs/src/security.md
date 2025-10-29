@@ -12,10 +12,7 @@ To report smart contract vulnerabilities, please participate in [our Immunefi bu
 
 ## Security Contact
 
-For security vulnerabilities and sensitive issues:
-
-- **Email**: [security@templarprotocol.com](mailto:security@templarprotocol.com)
-- **Telegram**: [@peer2f00l](https://t.me/peer2f00l)
+For security vulnerabilities and sensitive issues, please email [security@templarprotocol.com](mailto:security@templarprotocol.com).
 
 ## Security Alerts
 
