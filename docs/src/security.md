@@ -14,10 +14,6 @@ To report smart contract vulnerabilities, please participate in [our Immunefi bu
 
 For security vulnerabilities and sensitive issues:
 
-### Smart Contract
-- **Bug bounty**: https://immunefi.com/bug-bounty/templar-protocol/information/
-
-### Other Security
 - **Email**: [security@templarprotocol.com](mailto:security@templarprotocol.com)
 - **Telegram**: [@peer2f00l](https://t.me/peer2f00l)
 
