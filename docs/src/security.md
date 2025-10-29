@@ -34,11 +34,7 @@ Audit reports are available [on GitHub](https://github.com/Templar-Protocol/cont
 
 If you have discovered a security issue, please follow these steps:
 
-<<<<<<< Updated upstream
 1. **Report**: Send vulnerability details to [immunefi bug bounty](https://immunefi.com/bug-bounty/templar-protocol/information/) for smart contract vulnerabilities or [security@templarprotocol.com](mainto:security@templarprotocol.com) for other security issues.
-=======
-1. **Report**: Submit Send vulnerability details to [immunefi bug bounty](https://immunefi.com/bug-bounty/templar-protocol/information/) for smart contract vulnerabilities or [security@templarprotocol.com](mainto:security@templarprotocol.com) for other security issues.
->>>>>>> Stashed changes
 2. **Investigation**: Security team will assess the report.
 3. **Resolution**: Fix development and deployment.
 4. **Public Disclosure**: Coordinated disclosure after fix.
