@@ -4,10 +4,11 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     },
     borrow::{InitialBorrow, InitialLiquidation},
-    market::{LiquidateMsg, WithdrawalResolution},
+    market::{LiquidateMsg, Withdrawal},
     oracle::pyth::OracleResponse,
     price::PricePair,
     self_ext,
+    withdrawal_queue::WithdrawalQueueExecutionResult,
 };
 
 use crate::{Contract, ContractExt, ReturnStyle};
@@ -173,58 +174,26 @@ impl Contract {
     #[private]
     pub fn execute_next_supply_withdrawal_request_01_finalize(
         &mut self,
-        withdrawal_resolution: WithdrawalResolution,
-    ) {
-        self.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account;
-
-        // Withdrawal succeeded: remove the withdrawal request from the queue.
-        // Withdrawal failed but should have succeeded: remove request but still refund.
-        // Withdrawal failed: unlock the queue so they can try again.
-
-        let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
-
+        resolutions: Vec<Withdrawal>,
+        result: WithdrawalQueueExecutionResult,
+    ) -> WithdrawalQueueExecutionResult {
         let snapshot = self.snapshot();
-        if let Some(mut supply_position) =
-            self.supply_position_guard(snapshot, withdrawal_resolution.account_id.clone())
-        {
-            supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
-        }
 
-        // TODO: If this panics, this is BIG BAD, as it means there is
-        // some way to unlock the queue while a withdrawal is in-flight.
-        // So, maybe we should not *actually* panic here, but do some sort of recovery?
-        let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
-            env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
-        });
+        for (i, resolution) in resolutions.iter().enumerate() {
+            let succeeded = matches!(env::promise_result(i as u64), PromiseResult::Successful(_));
 
-        // This is another consistency check: that the account at the
-        // head of the queue cannot change while transfers are
-        // in-flight. This should be maintained by the queue itself.
-        require!(
-            popped_account == withdrawal_resolution.account_id,
-            "Invariant violation: Queue shifted while locked/in-flight.",
-        );
-
-        if withdrawal_succeeded {
-            self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
-
-            if self.cleanup_supply_position(&withdrawal_resolution.account_id) {
-                self.refund_for_storage(
-                    &withdrawal_resolution.account_id,
-                    self.storage_usage_supply_position,
-                );
+            if let Some(mut position) =
+                self.supply_position_guard(snapshot, resolution.account_id.clone())
+            {
+                position.record_withdrawal_final(resolution, succeeded);
             }
-        } else {
-            // Possible reasons for failure:
-            // - MPC signer failure (multichain; TODO).
-            // - If we expected success but it still failed, this means the
-            //   receiving account cannot receive tokens for some reason. For
-            //   NEP-141 tokens, this usually means that the user opted out of
-            //   storage management on that contract and deleted their record.
 
-            env::log_str("The withdrawal request cannot be fulfilled at this time.");
-            self.withdrawal_queue.unlock();
+            if succeeded && self.cleanup_supply_position(&resolution.account_id) {
+                self.refund_for_storage(&resolution.account_id, self.storage_usage_supply_position);
+            }
         }
+
+        result
     }
 
     // ~3.4 TGas
