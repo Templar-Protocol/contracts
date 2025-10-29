@@ -1,8 +1,11 @@
 use near_sdk::{
+    json_types::U64,
     serde_json::{self, json},
     NearToken,
 };
+use near_workspaces::{network::Sandbox, Worker};
 use p256::elliptic_curve::rand_core::OsRng;
+use rstest::rstest;
 use templar_universal_account::{
     authentication::passkey::{
         self,
@@ -12,17 +15,16 @@ use templar_universal_account::{
     },
     encoding::p256::PublicKey,
     transaction::{FunctionCallAction, Transaction},
-    ExecuteArgs, KeyId,
+    ExecuteArgs, ExecutionParameters, KeyId,
 };
 use test_utils::{
-    controller::universal_account::UniversalAccountController, print_execution, ContractController,
-    FtController,
+    controller::universal_account::UniversalAccountController, print_execution, worker,
+    ContractController, FtController,
 };
 
+#[rstest]
 #[tokio::test]
-pub async fn universal_account() {
-    let worker = near_workspaces::sandbox().await.unwrap();
-
+pub async fn universal_account(#[future(awt)] worker: Worker<Sandbox>) {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
     let secret_key = p256::SecretKey::random(&mut OsRng);
@@ -42,12 +44,17 @@ pub async fn universal_account() {
     );
 
     let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let block_height = key_entry.block_height;
 
     assert_eq!(key_entry.index.0, 0);
     assert_eq!(key_entry.nonce.0, 0);
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: key_entry.next(),
+        parameters: ExecutionParameters {
+            block_height,
+            index: U64(0),
+            nonce: U64(1),
+        },
         account_id: uac.contract().id().clone(),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
@@ -76,7 +83,66 @@ pub async fn universal_account() {
         .into(),
     });
 
-    eprintln!("{}", serde_json::to_string_pretty(&payload.parsed).unwrap());
+    let challenge = payload.hash();
+
+    let message: passkey::Message<_> = UncheckedMessage::new_and_sign(
+        &secret_key,
+        payload,
+        AuthenticatorData(Box::new([0xff_u8; 32])),
+        WithRawString::from_parsed(ClientDataJson {
+            r#type: "type".to_string(),
+            challenge: challenge.into(),
+            origin: "origin".to_string(),
+            cross_origin: None,
+            top_origin: None,
+        }),
+    )
+    .try_into()
+    .unwrap();
+
+    let e = uac
+        .execute(
+            &third_party,
+            ExecuteArgs::Passkey {
+                key: Passkey(public_key.clone()),
+                message,
+            },
+        )
+        .await;
+
+    for o in e.outcomes() {
+        assert!(o.is_success(), "Expect success on all receipts: {o:?}");
+    }
+
+    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    assert_eq!(balance.0, 100, "Function call should succeed");
+
+    // Second execution, check nonce advancement
+
+    let payload = WithRawString::from_parsed(Payload {
+        parameters: ExecutionParameters {
+            block_height,
+            index: U64(0),
+            nonce: U64(2),
+        },
+        account_id: uac.contract().id().clone(),
+        payload: vec![Transaction {
+            receiver_id: ft.contract().id().clone(),
+            actions: vec![FunctionCallAction {
+                function_name: "mint".to_string(),
+                arguments: serde_json::to_vec(&json!({
+                    "amount": "100",
+                }))
+                .unwrap()
+                .into(),
+                amount: NearToken::from_near(0),
+                gas: near_sdk::Gas::from_tgas(30),
+            }
+            .into()]
+            .into(),
+        }]
+        .into(),
+    });
 
     let challenge = payload.hash();
 
@@ -109,6 +175,10 @@ pub async fn universal_account() {
 
     print_execution(&e);
 
+    for o in e.outcomes() {
+        assert!(o.is_success(), "Expect success on all receipts: {o:?}");
+    }
+
     let balance = ft.ft_balance_of(uac.contract.id()).await;
-    assert_eq!(balance.0, 100, "Function call should succeed");
+    assert_eq!(balance.0, 200, "Function call should succeed");
 }
