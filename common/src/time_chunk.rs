@@ -61,8 +61,24 @@ pub struct TimeChunk(pub U64);
 #[cfg(test)]
 mod tests {
     use near_sdk::serde_json;
+    use near_sdk::test_utils;
 
     use super::*;
+
+    #[test]
+    fn now() {
+        let context = test_utils::VMContextBuilder::new()
+            .block_timestamp((600_000 * 45 + 12345) * 1_000_000 /* ms -> ns */)
+            .build();
+        near_sdk::testing_env!(context.clone());
+
+        let t = TimeChunkConfiguration::new(600_000);
+        assert_eq!(t.duration_ms(), 600_000);
+        let now = t.now();
+        assert_eq!(now, TimeChunk(U64(45)));
+        let prev = t.previous();
+        assert_eq!(prev, TimeChunk(U64(44)));
+    }
 
     #[test]
     fn v0_deserialization() {
