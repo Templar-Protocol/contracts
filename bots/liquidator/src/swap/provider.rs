@@ -6,12 +6,12 @@
 //! for dynamic dispatch while maintaining type safety.
 
 use near_primitives::views::FinalExecutionStatus;
-use near_sdk::json_types::U128;
+use near_sdk::{json_types::U128, AccountId};
 use templar_common::asset::{AssetClass, FungibleAsset};
 
 use crate::rpc::AppResult;
 
-use super::{intents::IntentsSwap, rhea::RheaSwap, SwapProvider};
+use super::{oneclick::OneClickSwap, rhea::RheaSwap, SwapProvider};
 
 /// Concrete swap provider implementation that can be used for dynamic dispatch.
 ///
@@ -21,8 +21,8 @@ use super::{intents::IntentsSwap, rhea::RheaSwap, SwapProvider};
 pub enum SwapProviderImpl {
     /// Rhea Finance DEX provider
     Rhea(RheaSwap),
-    /// NEAR Intents cross-chain provider
-    Intents(IntentsSwap),
+    /// 1-Click API provider (NEAR Intents)
+    OneClick(OneClickSwap),
 }
 
 impl SwapProviderImpl {
@@ -31,9 +31,9 @@ impl SwapProviderImpl {
         Self::Rhea(provider)
     }
 
-    /// Creates a NEAR Intents provider variant.
-    pub fn intents(provider: IntentsSwap) -> Self {
-        Self::Intents(provider)
+    /// Creates a 1-Click API provider variant.
+    pub fn oneclick(provider: OneClickSwap) -> Self {
+        Self::OneClick(provider)
     }
 }
 
@@ -47,7 +47,7 @@ impl SwapProvider for SwapProviderImpl {
     ) -> AppResult<U128> {
         match self {
             Self::Rhea(provider) => provider.quote(from_asset, to_asset, output_amount).await,
-            Self::Intents(provider) => provider.quote(from_asset, to_asset, output_amount).await,
+            Self::OneClick(provider) => provider.quote(from_asset, to_asset, output_amount).await,
         }
     }
 
@@ -59,14 +59,14 @@ impl SwapProvider for SwapProviderImpl {
     ) -> AppResult<FinalExecutionStatus> {
         match self {
             Self::Rhea(provider) => provider.swap(from_asset, to_asset, amount).await,
-            Self::Intents(provider) => provider.swap(from_asset, to_asset, amount).await,
+            Self::OneClick(provider) => provider.swap(from_asset, to_asset, amount).await,
         }
     }
 
     fn provider_name(&self) -> &'static str {
         match self {
             Self::Rhea(provider) => provider.provider_name(),
-            Self::Intents(provider) => provider.provider_name(),
+            Self::OneClick(provider) => provider.provider_name(),
         }
     }
 
@@ -77,7 +77,18 @@ impl SwapProvider for SwapProviderImpl {
     ) -> bool {
         match self {
             Self::Rhea(provider) => provider.supports_assets(from_asset, to_asset),
-            Self::Intents(provider) => provider.supports_assets(from_asset, to_asset),
+            Self::OneClick(provider) => provider.supports_assets(from_asset, to_asset),
+        }
+    }
+
+    async fn ensure_storage_registration<F: AssetClass>(
+        &self,
+        token_contract: &FungibleAsset<F>,
+        account_id: &AccountId,
+    ) -> AppResult<()> {
+        match self {
+            Self::Rhea(provider) => provider.ensure_storage_registration(token_contract, account_id).await,
+            Self::OneClick(provider) => provider.ensure_storage_registration(token_contract, account_id).await,
         }
     }
 }

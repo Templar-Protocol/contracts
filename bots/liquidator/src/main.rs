@@ -11,7 +11,7 @@ use near_sdk::AccountId;
 use templar_liquidator::{
     rpc::{list_all_deployments, Network},
     strategy::PartialLiquidationStrategy,
-    swap::{intents::IntentsSwap, rhea::RheaSwap, SwapProviderImpl},
+    swap::{oneclick::OneClickSwap, rhea::RheaSwap, SwapProviderImpl},
     Liquidator, LiquidatorError, SwapType,
 };
 use tokio::time::sleep;
@@ -126,9 +126,20 @@ async fn run_bot(args: Args) {
             );
             SwapProviderImpl::rhea(rhea)
         }
-        SwapType::NearIntents => {
-            let intents = IntentsSwap::new(client.clone(), signer.clone(), args.network);
-            SwapProviderImpl::intents(intents)
+        SwapType::OneClickApi => {
+            let api_token = std::env::var("ONECLICK_API_TOKEN").ok();
+            if api_token.is_some() {
+                tracing::info!("Using 1-Click API token (fee reduced to 0%)");
+            } else {
+                tracing::warn!("No 1-Click API token provided - 0.1% fee will apply");
+            }
+            let oneclick = OneClickSwap::new(
+                client.clone(),
+                signer.clone(),
+                None,  // Use default 3% slippage
+                api_token,
+            );
+            SwapProviderImpl::oneclick(oneclick)
         }
     };
 
@@ -171,22 +182,52 @@ async fn run_bot(args: Args) {
                     "Found deployments from registries"
                 );
 
-                markets = all_markets
-                    .into_iter()
-                    .map(|market| {
-                        let liquidator = Liquidator::new(
-                            client.clone(),
-                            signer.clone(),
-                            asset.clone(),
-                            market.clone(),
-                            swap_provider.clone(),
-                            strategy.clone(),
-                            args.timeout,
-                            args.dry_run,
-                        );
-                        (market, liquidator)
-                    })
-                    .collect();
+                // Test each market to filter out unsupported versions
+                let mut supported_markets = HashMap::new();
+                let mut unsupported_markets = Vec::new();
+
+                for market in all_markets {
+                    tracing::debug!(market = %market, "Testing market compatibility");
+
+                    let liquidator = Liquidator::new(
+                        client.clone(),
+                        signer.clone(),
+                        asset.clone(),
+                        market.clone(),
+                        swap_provider.clone(),
+                        strategy.clone(),
+                        args.timeout,
+                        args.dry_run,
+                    );
+
+                    // Try to get market configuration to test if it's supported
+                    match liquidator.test_market_compatibility().await {
+                        Ok(()) => {
+                            tracing::info!(market = %market, "Market is supported and will be monitored");
+                            supported_markets.insert(market, liquidator);
+                        }
+                        Err(_) => {
+                            // Version info already logged by is_market_compatible()
+                            unsupported_markets.push(market);
+                        }
+                    }
+                }
+
+                if !unsupported_markets.is_empty() {
+                    tracing::debug!(
+                        unsupported_count = unsupported_markets.len(),
+                        unsupported = ?unsupported_markets,
+                        "Filtered out unsupported markets"
+                    );
+                }
+
+                tracing::info!(
+                    supported_count = supported_markets.len(),
+                    supported = ?supported_markets.keys().collect::<Vec<_>>(),
+                    "Active markets to monitor"
+                );
+
+                markets = supported_markets;
                 Ok(())
             }
             .instrument(refresh_span)
@@ -239,7 +280,7 @@ async fn run_bot(args: Args) {
                 // Handle errors gracefully
                 match result {
                     Ok(()) => {
-                        tracing::info!(market = %market, "Market scan completed successfully");
+                        tracing::info!(market = %market, "Market scan completed");
                     }
                     Err(e) => {
                         if is_rate_limit_error(&e) {

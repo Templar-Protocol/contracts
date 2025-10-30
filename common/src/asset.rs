@@ -59,9 +59,12 @@ enum FungibleAssetKind {
 impl<T: AssetClass> FungibleAsset<T> {
     /// Really depends on the implementation, but this should suffice, since
     /// normal implementations use < 3TGas.
-    pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
+    /// Increased to 100 TGas to handle ft_transfer_call with complex receivers
+    /// (e.g., 1-Click deposit addresses that need to process the transfer)
+    pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(100);
     /// NEAR Intents implementation uses < 4TGas.
-    pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(7);
+    /// Increased to 100 TGas for consistency with FT transfers
+    pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(100);
 
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
@@ -78,7 +81,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 serde_json::to_vec(&json!({
                    "receiver_id": receiver_id,
                    "token_id": token_id,
-                   "amount": amount,
+                   "amount": u128::from(amount).to_string(),
                 }))
                 .unwrap(),
                 NearToken::from_yoctonear(1),
@@ -94,6 +97,42 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    /// Creates a simple ft_transfer action (no callback).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn transfer_action(
+        &self,
+        receiver_id: &AccountId,
+        amount: FungibleAssetAmount<T>,
+    ) -> FunctionCallAction {
+        let (method_name, args, gas) = match self.kind {
+            FungibleAssetKind::Nep141(_) => (
+                "ft_transfer",
+                json!({
+                    "receiver_id": receiver_id,
+                    "amount": u128::from(amount).to_string(),
+                }),
+                Self::GAS_FT_TRANSFER,
+            ),
+            FungibleAssetKind::Nep245 { ref token_id, .. } => (
+                "mt_transfer",
+                json!({
+                    "receiver_id": receiver_id,
+                    "token_id": token_id,
+                    "amount": u128::from(amount).to_string(),
+                }),
+                Self::GAS_MT_TRANSFER,
+            ),
+        };
+
+        FunctionCallAction {
+            method_name: method_name.to_string(),
+            #[allow(clippy::unwrap_used)]
+            args: serde_json::to_vec(&args).unwrap(),
+            gas: gas.as_gas(),
+            deposit: 1, // 1 yoctoNEAR for security
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn transfer_call_action(
         &self,
@@ -105,7 +144,7 @@ impl<T: AssetClass> FungibleAsset<T> {
             FungibleAssetKind::Nep141(_) => (
                 json!({
                     "receiver_id": receiver_id,
-                    "amount": u128::from(amount),
+                    "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
                 Self::GAS_FT_TRANSFER,
@@ -114,7 +153,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 json!({
                     "receiver_id": receiver_id,
                     "token_id": token_id,
-                    "amount": u128::from(amount),
+                    "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
                 Self::GAS_MT_TRANSFER,

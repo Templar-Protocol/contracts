@@ -142,6 +142,12 @@ done
 # Add RPC_URL if set
 [ -n "$RPC_URL" ] && CMD_ARGS+=("--rpc-url" "$RPC_URL")
 
+# Export ONECLICK_API_TOKEN if set (used by one-click-api provider)
+if [ -n "$ONECLICK_API_TOKEN" ]; then
+    export ONECLICK_API_TOKEN
+    info "Using 1-Click API token (fee reduced to 0%)"
+fi
+
 info "Starting liquidator..."
 echo ""
 exec "$BINARY_PATH" "${CMD_ARGS[@]}"

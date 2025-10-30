@@ -4619,8 +4619,10 @@ name = "templar-liquidator"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "clap",
  "futures",
+ "hex",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",

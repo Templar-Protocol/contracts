@@ -310,6 +310,60 @@ impl SwapProvider for RheaSwap {
         // Rhea currently only supports NEP-141 tokens
         from_asset.clone().into_nep141().is_some() && to_asset.clone().into_nep141().is_some()
     }
+
+    async fn ensure_storage_registration<F: AssetClass>(
+        &self,
+        token_contract: &FungibleAsset<F>,
+        account_id: &AccountId,
+    ) -> AppResult<()> {
+        // Call storage_deposit on the token contract
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+
+        let storage_deposit_action = near_primitives::action::FunctionCallAction {
+            method_name: "storage_deposit".to_string(),
+            args: serde_json::to_vec(&serde_json::json!({
+                "account_id": account_id,
+                "registration_only": true,
+            }))
+            .map_err(|e| AppError::SerializationError(format!("Failed to serialize storage_deposit args: {e}")))?,
+            gas: 10_000_000_000_000, // 10 TGas
+            deposit: 1_250_000_000_000_000_000_000, // 0.00125 NEAR
+        };
+
+        let tx = Transaction::V0(TransactionV0 {
+            nonce,
+            receiver_id: token_contract.contract_id().into(),
+            block_hash,
+            signer_id: self.signer.get_account_id(),
+            public_key: self.signer.public_key().clone(),
+            actions: vec![Action::FunctionCall(Box::new(storage_deposit_action))],
+        });
+
+        match send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx).await {
+            Ok(_) => {
+                debug!(
+                    account = %account_id,
+                    token = %token_contract.contract_id(),
+                    "Storage registration successful"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                // If already registered, that's fine
+                let error_msg = e.to_string();
+                if error_msg.contains("The account") && error_msg.contains("is already registered") {
+                    debug!(
+                        account = %account_id,
+                        token = %token_contract.contract_id(),
+                        "Account already registered"
+                    );
+                    Ok(())
+                } else {
+                    Err(AppError::Rpc(e))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

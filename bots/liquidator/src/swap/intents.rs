@@ -617,6 +617,15 @@ impl SwapProvider for IntentsSwap {
 
         from_supported && to_supported
     }
+
+    async fn ensure_storage_registration<F: AssetClass>(
+        &self,
+        _token_contract: &FungibleAsset<F>,
+        _account_id: &AccountId,
+    ) -> AppResult<()> {
+        // Not implemented - this provider is not currently used
+        Ok(())
+    }
 }
 
 #[cfg(test)]

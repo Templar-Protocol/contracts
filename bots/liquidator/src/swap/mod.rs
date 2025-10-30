@@ -37,6 +37,7 @@
 //! ```
 
 pub mod intents;
+pub mod oneclick;
 pub mod provider;
 pub mod rhea;
 
@@ -44,7 +45,7 @@ pub mod rhea;
 pub use provider::SwapProviderImpl;
 
 use near_primitives::views::FinalExecutionStatus;
-use near_sdk::json_types::U128;
+use near_sdk::{json_types::U128, AccountId};
 use templar_common::asset::{AssetClass, FungibleAsset};
 
 use crate::rpc::AppResult;
@@ -136,4 +137,27 @@ pub trait SwapProvider: Send + Sync {
     ) -> bool {
         true
     }
+
+    /// Ensures an account is registered with a token contract's storage.
+    ///
+    /// This method calls `storage_deposit` on the token contract to register
+    /// the account before it can receive tokens. This is required by NEP-141.
+    ///
+    /// # Arguments
+    ///
+    /// * `token_contract` - The token contract to register with
+    /// * `account_id` - The account to register
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if registration succeeds or the account is already registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AppError` if the registration transaction fails.
+    async fn ensure_storage_registration<F: AssetClass>(
+        &self,
+        token_contract: &FungibleAsset<F>,
+        account_id: &AccountId,
+    ) -> AppResult<()>;
 }

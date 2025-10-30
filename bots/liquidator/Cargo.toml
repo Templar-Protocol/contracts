@@ -11,8 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
 clap = { workspace = true }
 futures = { workspace = true }
+hex = { workspace = true }
 near-crypto = { workspace = true }
 near-jsonrpc-client = { workspace = true }
 near-jsonrpc-primitives = { workspace = true }

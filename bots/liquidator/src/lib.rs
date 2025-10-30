@@ -34,7 +34,7 @@
 //! # }
 //! ```
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, str::FromStr};
 
 use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
@@ -59,7 +59,7 @@ use near_sdk::{
     AccountId,
 };
 use templar_common::{
-    asset::{AssetClass, BorrowAsset, FungibleAsset},
+    asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
     market::{DepositMsg, LiquidateMsg, MarketConfiguration},
     number::Decimal,
@@ -143,8 +143,6 @@ pub struct Liquidator {
     strategy: Box<dyn LiquidationStrategy>,
     /// Transaction timeout in seconds
     timeout: u64,
-    /// Estimated gas cost per liquidation (in yoctoNEAR)
-    gas_cost_estimate: U128,
     /// Dry run mode - scan and log without executing liquidations
     dry_run: bool,
 }
@@ -185,13 +183,26 @@ impl Liquidator {
             swap_provider,
             strategy,
             timeout,
-            gas_cost_estimate: Self::DEFAULT_GAS_COST_ESTIMATE,
             dry_run,
         }
     }
 
-    /// Default gas cost estimate: ~0.01 NEAR
-    const DEFAULT_GAS_COST_ESTIMATE: U128 = U128(10_000_000_000_000_000_000_000);
+    /// Default gas cost estimate in USD
+    /// ~$0.05 USD for a liquidation transaction (conservative estimate for 0.01 NEAR at ~$5)
+    /// This will be converted to borrow asset units based on oracle prices
+    const DEFAULT_GAS_COST_USD: f64 = 0.05;
+
+    /// Tests if the market is compatible and can be monitored.
+    /// This method is public for use during startup market filtering.
+    pub async fn test_market_compatibility(&self) -> LiquidatorResult<()> {
+        let is_compatible = self.is_market_compatible().await?;
+        if !is_compatible {
+            return Err(LiquidatorError::StrategyError(
+                "Market version is not supported".to_string(),
+            ));
+        }
+        Ok(())
+    }
 
     /// Checks if the market contract is compatible by verifying its version via NEP-330.
     /// Returns true if version >= 1.0.0, false otherwise.
@@ -572,6 +583,112 @@ impl Liquidator {
         Ok(all_positions)
     }
 
+    /// Converts USD gas cost estimate to borrow asset units using oracle prices.
+    ///
+    /// Formula: gas_cost_borrow_asset = gas_cost_usd / borrow_asset_usd_price * 10^borrow_decimals
+    ///
+    /// # Arguments
+    ///
+    /// * `gas_cost_usd` - Gas cost in USD (e.g., 0.05 for $0.05)
+    /// * `oracle_response` - Oracle price data containing borrow asset/USD price
+    /// * `configuration` - Market configuration containing borrow asset price ID and decimals
+    ///
+    /// # Returns
+    ///
+    /// Gas cost denominated in borrow asset base units
+    fn convert_gas_cost_to_borrow_asset(
+        &self,
+        gas_cost_usd: f64,
+        oracle_response: &OracleResponse,
+        configuration: &MarketConfiguration,
+    ) -> LiquidatorResult<U128> {
+        // Get borrow asset price from oracle configuration
+        let borrow_price_id = configuration
+            .price_oracle_configuration
+            .borrow_asset_price_id;
+        let borrow_decimals = configuration
+            .price_oracle_configuration
+            .borrow_asset_decimals;
+
+        let borrow_price = oracle_response
+            .get(&borrow_price_id)
+            .and_then(|opt| opt.as_ref())
+            .ok_or_else(|| {
+                LiquidatorError::StrategyError(
+                    "Borrow asset price not found in oracle".to_string(),
+                )
+            })?;
+
+        // Convert price to USD value
+        // Price format: price * 10^expo
+        let borrow_usd = (borrow_price.price.0 as f64) * 10f64.powi(borrow_price.expo);
+
+        // Convert gas cost from USD to borrow asset
+        // gas_cost_borrow = (gas_cost_usd / borrow_usd) * 10^borrow_decimals
+        let gas_cost_borrow = (gas_cost_usd / borrow_usd) * 10f64.powi(borrow_decimals);
+
+        Ok(U128(gas_cost_borrow as u128))
+    }
+
+    /// Converts collateral asset amount to borrow asset units using oracle prices.
+    ///
+    /// Formula: borrow_value = (collateral_amount * collateral_usd_price) / borrow_usd_price
+    ///
+    /// # Arguments
+    ///
+    /// * `collateral_amount` - Amount in collateral asset base units
+    /// * `oracle_response` - Oracle price data containing both asset prices
+    /// * `configuration` - Market configuration containing price IDs and decimals
+    ///
+    /// # Returns
+    ///
+    /// Collateral value denominated in borrow asset base units
+    fn convert_collateral_to_borrow_asset(
+        &self,
+        collateral_amount: U128,
+        oracle_response: &OracleResponse,
+        configuration: &MarketConfiguration,
+    ) -> LiquidatorResult<U128> {
+        let oracle_config = &configuration.price_oracle_configuration;
+
+        // Get collateral price
+        let collateral_price = oracle_response
+            .get(&oracle_config.collateral_asset_price_id)
+            .and_then(|opt| opt.as_ref())
+            .ok_or_else(|| {
+                LiquidatorError::StrategyError(
+                    "Collateral asset price not found in oracle".to_string(),
+                )
+            })?;
+
+        // Get borrow price
+        let borrow_price = oracle_response
+            .get(&oracle_config.borrow_asset_price_id)
+            .and_then(|opt| opt.as_ref())
+            .ok_or_else(|| {
+                LiquidatorError::StrategyError(
+                    "Borrow asset price not found in oracle".to_string(),
+                )
+            })?;
+
+        // Convert prices to f64 for calculation
+        // Price format: price * 10^expo
+        let collateral_usd = (collateral_price.price.0 as f64) * 10f64.powi(collateral_price.expo);
+        let borrow_usd = (borrow_price.price.0 as f64) * 10f64.powi(borrow_price.expo);
+
+        // Convert collateral to borrow asset units
+        // Step 1: Convert collateral to USD value
+        let collateral_amount_f64 = collateral_amount.0 as f64;
+        let collateral_decimals = oracle_config.collateral_asset_decimals;
+        let collateral_value_usd = (collateral_amount_f64 / 10f64.powi(collateral_decimals)) * collateral_usd;
+
+        // Step 2: Convert USD value to borrow asset units
+        let borrow_decimals = oracle_config.borrow_asset_decimals;
+        let borrow_value = (collateral_value_usd / borrow_usd) * 10f64.powi(borrow_decimals);
+
+        Ok(U128(borrow_value as u128))
+    }
+
     /// Gets the balance of a specific asset.
     #[tracing::instrument(skip(self), level = "debug")]
     async fn get_asset_balance<A: AssetClass>(
@@ -704,9 +821,22 @@ impl Liquidator {
             return Ok(LiquidationOutcome::NotLiquidatable);
         };
 
+        // Calculate actual liquidation percentage for logging
+        let target_percentage = self.strategy.max_liquidation_percentage();
+        let total_borrow = position.get_borrow_asset_principal();
+        let total_borrow_u128 = u128::from(total_borrow);
+        let actual_percentage = if total_borrow_u128 > 0 {
+            ((liquidation_amount.0 as f64 / total_borrow_u128 as f64) * 100.0) as u8
+        } else {
+            0
+        };
+
         info!(
             borrower = %borrow_account,
             liquidation_amount = %liquidation_amount.0,
+            total_borrow = %total_borrow_u128,
+            target_percentage = %target_percentage,
+            actual_percentage = %actual_percentage,
             strategy = %self.strategy.strategy_name(),
             available_balance = %available_balance.0,
             "Liquidation amount calculated"
@@ -714,13 +844,38 @@ impl Liquidator {
 
         let borrow_asset = &configuration.borrow_asset;
 
+        // Check NEP-245 borrow asset balance
+        let borrow_asset_balance = self.get_asset_balance(borrow_asset).await?;
+        info!(
+            borrower = %borrow_account,
+            borrow_asset = %borrow_asset,
+            borrow_asset_balance = %borrow_asset_balance.0,
+            liquidation_amount_needed = %liquidation_amount.0,
+            "Checked NEP-245 borrow asset balance"
+        );
+
+        // Check underlying NEP-141 balance if different from borrow asset
+        let underlying_balance = if self.asset.as_ref() != borrow_asset {
+            let balance = self.get_asset_balance(self.asset.as_ref()).await?;
+            info!(
+                borrower = %borrow_account,
+                underlying_asset = %self.asset,
+                underlying_contract = %self.asset.contract_id(),
+                underlying_balance = %balance.0,
+                needed = %liquidation_amount.0,
+                "Checked underlying NEP-141 balance"
+            );
+            balance
+        } else {
+            borrow_asset_balance
+        };
+
         // Determine if we need to swap
         let swap_output_amount = if self.asset.as_ref() == borrow_asset {
-            let asset_balance = self.get_asset_balance(self.asset.as_ref()).await?;
-            if asset_balance >= liquidation_amount {
+            if underlying_balance >= liquidation_amount {
                 U128(0)
             } else {
-                U128(liquidation_amount.0 - asset_balance.0)
+                U128(liquidation_amount.0 - underlying_balance.0)
             }
         } else {
             liquidation_amount
@@ -728,63 +883,130 @@ impl Liquidator {
 
         // Get swap quote if needed
         let swap_input_amount = if swap_output_amount.0 > 0 {
-            tracing::debug!(
+            info!(
+                borrower = %borrow_account,
+                from = %self.asset,
+                to = %borrow_asset,
                 output_amount = %swap_output_amount.0,
-                from_asset = %self.asset,
-                to_asset = %borrow_asset,
-                "Requesting swap quote"
+                provider = %self.swap_provider.provider_name(),
+                "Requesting quote from {}",
+                self.swap_provider.provider_name()
             );
 
-            self.swap_provider
+            let quote = self.swap_provider
                 .quote(self.asset.as_ref(), borrow_asset, swap_output_amount)
                 .await
                 .map_err(|e| {
                     tracing::error!(
+                        borrower = %borrow_account,
                         error = ?e,
                         output_amount = %swap_output_amount.0,
                         "Failed to get swap quote"
                     );
                     LiquidatorError::SwapProviderError(e)
-                })?
+                })?;
+
+            info!(
+                borrower = %borrow_account,
+                input_amount = %quote.0,
+                output_amount = %swap_output_amount.0,
+                provider = %self.swap_provider.provider_name(),
+                "Received quote from {}",
+                self.swap_provider.provider_name()
+            );
+
+            quote
         } else {
             U128(0)
         };
 
-        if swap_input_amount.0 > 0 {
-            tracing::debug!(
-                input_amount = %swap_input_amount.0,
-                output_amount = %swap_output_amount.0,
-                "Swap quote received"
-            );
-        }
+        // Convert expected collateral from collateral asset units to borrow asset units
+        let collateral_amount = U128(position.collateral_asset_deposit.into());
+        let expected_collateral_borrow_units = self
+            .convert_collateral_to_borrow_asset(
+                collateral_amount,
+                &oracle_response,
+                &configuration,
+            )
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to convert collateral value, using raw amount"
+                );
+                collateral_amount
+            });
 
-        // Calculate expected collateral (simplified - in production, use price oracle)
-        let expected_collateral = U128(position.collateral_asset_deposit.into());
+        // Convert gas cost from USD to borrow asset units using oracle
+        let gas_cost_borrow_asset = self
+            .convert_gas_cost_to_borrow_asset(
+                Self::DEFAULT_GAS_COST_USD,
+                &oracle_response,
+                &configuration,
+            )
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to convert gas cost, using fallback estimate"
+                );
+                // Fallback: assume $0.05 at $1 per token = 50000 units (6 decimals)
+                U128(50_000)
+            });
+
+        debug!(
+            collateral_amount = %collateral_amount.0,
+            collateral_value_borrow_units = %expected_collateral_borrow_units.0,
+            gas_cost_usd = %Self::DEFAULT_GAS_COST_USD,
+            gas_cost_borrow_asset = %gas_cost_borrow_asset.0,
+            borrow_asset = %borrow_asset,
+            "Converted collateral and gas cost to borrow asset units"
+        );
 
         // Check profitability using strategy
+        // All values are now in borrow asset units for accurate comparison
         let is_profitable = self.strategy.should_liquidate(
             swap_input_amount,
             liquidation_amount,
-            expected_collateral,
-            self.gas_cost_estimate,
+            expected_collateral_borrow_units,
+            gas_cost_borrow_asset,
         )?;
 
-        debug!(
+        // Calculate detailed costs for logging (all in borrow asset units)
+        let swap_cost = swap_input_amount.0;
+        let gas_cost = gas_cost_borrow_asset.0;
+        let total_cost = swap_cost + gas_cost;
+        let expected_revenue = expected_collateral_borrow_units.0;
+        let net_profit = if expected_revenue > total_cost {
+            expected_revenue - total_cost
+        } else {
+            0
+        };
+        let profit_percentage = if total_cost > 0 {
+            ((net_profit as f64 / total_cost as f64) * 100.0) as u64
+        } else {
+            0
+        };
+
+        info!(
             borrower = %borrow_account,
-            swap_input_amount = %swap_input_amount.0,
-            liquidation_amount = %liquidation_amount.0,
-            expected_collateral = %expected_collateral.0,
-            gas_cost_estimate = %self.gas_cost_estimate.0,
+            swap_cost = %swap_cost,
+            gas_cost = %gas_cost,
+            total_cost = %total_cost,
+            expected_revenue = %expected_revenue,
+            collateral_amount = %collateral_amount.0,
+            net_profit = %net_profit,
+            profit_percentage = %profit_percentage,
             is_profitable = is_profitable,
-            "Profitability check completed"
+            "Profitability analysis completed (all values in borrow asset units)"
         );
 
         if !is_profitable {
             info!(
                 borrower = %borrow_account,
-                swap_input_amount = %swap_input_amount.0,
-                liquidation_amount = %liquidation_amount.0,
-                expected_collateral = %expected_collateral.0,
+                swap_cost = %swap_cost,
+                gas_cost = %gas_cost,
+                total_cost = %total_cost,
+                expected_revenue = %expected_revenue,
+                net_profit = %net_profit,
                 "Liquidation not profitable, skipping"
             );
             return Ok(LiquidationOutcome::Unprofitable);
@@ -846,6 +1068,30 @@ impl Liquidator {
             );
         }
 
+        // Ensure bot account is registered with collateral token contract to receive liquidation proceeds
+        let collateral_asset = FungibleAsset::<CollateralAsset>::from_str(&configuration.collateral_asset.to_string())
+            .map_err(|e| LiquidatorError::StrategyError(format!("Failed to parse collateral asset: {}", e)))?;
+
+        info!(
+            borrower = %borrow_account,
+            collateral_asset = %collateral_asset,
+            bot_account = %self.signer.get_account_id(),
+            "Ensuring bot is registered with collateral token contract"
+        );
+
+        if let Err(e) = self
+            .swap_provider
+            .ensure_storage_registration(&collateral_asset, &self.signer.get_account_id())
+            .await
+        {
+            warn!(
+                borrower = %borrow_account,
+                error = ?e,
+                collateral_asset = %collateral_asset,
+                "Failed to register with collateral token contract, proceeding anyway (may already be registered)"
+            );
+        }
+
         // Execute liquidation
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer)
             .await
@@ -863,7 +1109,8 @@ impl Liquidator {
         info!(
             borrower = %borrow_account,
             liquidation_amount = %liquidation_amount.0,
-            expected_collateral = %expected_collateral.0,
+            expected_collateral_borrow_units = %expected_collateral_borrow_units.0,
+            collateral_amount = %collateral_amount.0,
             "Submitting liquidation transaction"
         );
 
@@ -874,7 +1121,8 @@ impl Liquidator {
                 info!(
                     borrower = %borrow_account,
                     liquidation_amount = %liquidation_amount.0,
-                    expected_collateral = %expected_collateral.0,
+                    expected_collateral_borrow_units = %expected_collateral_borrow_units.0,
+                    collateral_amount = %collateral_amount.0,
                     tx_duration_ms = tx_duration.as_millis(),
                     "✅ Liquidation executed successfully"
                 );
@@ -902,6 +1150,7 @@ impl Liquidator {
     pub async fn run_liquidations(&self, _concurrency: usize) -> LiquidatorResult {
         info!(
             strategy = %self.strategy.strategy_name(),
+            target_percentage = %self.strategy.max_liquidation_percentage(),
             swap_provider = %self.swap_provider.provider_name(),
             "Starting liquidation run"
         );
@@ -1044,8 +1293,8 @@ use clap::ValueEnum;
 pub enum SwapType {
     /// Rhea Finance DEX
     RheaSwap,
-    /// NEAR Intents cross-chain
-    NearIntents,
+    /// 1-Click API (NEAR Intents)
+    OneClickApi,
 }
 
 impl SwapType {
@@ -1061,7 +1310,7 @@ impl SwapType {
                 Network::Mainnet => "dclv2.ref-labs.near".parse().unwrap(),
                 Network::Testnet => "dclv2.ref-dev.testnet".parse().unwrap(),
             },
-            SwapType::NearIntents => match network {
+            SwapType::OneClickApi => match network {
                 Network::Mainnet => "intents.near".parse().unwrap(),
                 Network::Testnet => "intents.testnet".parse().unwrap(),
             },
