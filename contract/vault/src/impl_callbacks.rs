@@ -5,14 +5,14 @@ use crate::{
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{env, json_types::U128, AccountId, NearToken, PromiseError, PromiseOrValue};
-use near_sdk_contract_tools::ft::nep141::GAS_FOR_FT_TRANSFER_CALL;
+use near_sdk_contract_tools::ft::{nep141::GAS_FOR_FT_TRANSFER_CALL, Nep141Burn};
 use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
-        Event, AFTER_EXECUTE_NEXT_WITHDRAW_GAS, AFTER_EXECUTE_NEXT_WITHDRAW_READ_GAS,
-        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_2_READ_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
-        GET_SUPPLY_POSITION_GAS,
+        AllocatingState, Event, PayoutState, WithdrawingState, AFTER_EXECUTE_NEXT_WITHDRAW_GAS,
+        AFTER_EXECUTE_NEXT_WITHDRAW_READ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_2_READ_GAS,
+        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, GET_SUPPLY_POSITION_GAS,
     },
 };
 
@@ -160,11 +160,11 @@ impl Contract {
             self.add_market_to_withdraw_queue(&market, before.0);
         }
 
-        self.op_state = OpState::Allocating {
+        self.op_state = OpState::Allocating(AllocatingState {
             op_id,
             index: market_index.saturating_add(1),
             remaining: remaining_next,
-        };
+        });
         if remaining_next == 0 {
             // All funds allocated successfully
             return self.stop_and_exit(None::<&String>);
@@ -221,7 +221,7 @@ impl Contract {
                 need,
             }
             .emit();
-            self.op_state = OpState::Withdrawing {
+            self.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id,
                 index: market_index.saturating_add(1),
                 remaining,
@@ -229,7 +229,7 @@ impl Contract {
                 collected,
                 owner,
                 escrow_shares,
-            };
+            });
             self.step_withdraw()
         }
     }
@@ -368,7 +368,7 @@ impl Contract {
                 },
             )
         } else {
-            self.op_state = OpState::Withdrawing {
+            self.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id,
                 index: market_index.saturating_add(1),
                 remaining: remaining_next,
@@ -376,7 +376,7 @@ impl Contract {
                 collected: collected_next,
                 owner,
                 escrow_shares,
-            };
+            });
             self.step_withdraw()
         }
     }
@@ -394,14 +394,14 @@ impl Contract {
         amount: U128,
     ) {
         let (owner, escrow_shares, expected_amount, burn_shares) = match &self.op_state {
-            OpState::Payout {
+            OpState::Payout(PayoutState {
                 op_id: current_op,
                 receiver: recv,
                 amount,
                 owner,
                 escrow_shares,
                 burn_shares,
-            } if *current_op == op_id && *recv == receiver => {
+            }) if *current_op == op_id && *recv == receiver => {
                 (owner.clone(), *escrow_shares, *amount, *burn_shares)
             }
             _ => {
@@ -427,9 +427,7 @@ impl Contract {
             // Burn only the proportional shares and refund the remainder to the owner.
             if burn_shares > 0 {
                 // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
-                self.withdraw_unchecked(&env::current_account_id(), burn_shares)
-                    .unwrap_or_else(|e| env::log_str(&e.to_string()));
-                // TODO: emit burn event
+                self.burn(&Nep141Burn::new(burn_shares, &env::current_account_id()));
             }
 
             // Maybe refund any delta to the owner
@@ -487,31 +485,25 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        if let OpState::Allocating {
-            op_id,
-            index,
-            remaining,
-        } = &self.op_state
-        {
-            match msg {
-                None => {
-                    Event::AllocationCompleted { op_id: *op_id }.emit();
-                }
-                Some(m) => {
-                    Event::AllocationStopped {
-                        op_id: (*op_id).into(),
-                        index: *index,
-                        remaining: U128(*remaining),
-                        reason: Some(m.to_string()),
-                    }
-                    .emit();
-                }
+        let s: &AllocatingState = self.op_state.as_ref();
+        match msg {
+            None => {
+                Event::AllocationCompleted { op_id: s.op_id }.emit();
             }
+            Some(m) => {
+                Event::AllocationStopped {
+                    op_id: (s.op_id).into(),
+                    index: s.index,
+                    remaining: U128(s.remaining),
+                    reason: Some(m.to_string()),
+                }
+                .emit();
+            }
+        }
 
-            // Always add back remaining to idle_balance
-            if *remaining > 0 {
-                self.idle_balance = self.idle_balance.saturating_add(*remaining);
-            }
+        // Always add back remaining to idle_balance
+        if s.remaining > 0 {
+            self.idle_balance = self.idle_balance.saturating_add(s.remaining);
         }
         self.plan = None;
         self.op_state = OpState::Idle;
@@ -522,39 +514,25 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        {
-            let (op_id, index, remaining, collected) = match &self.op_state {
-                OpState::Withdrawing {
-                    op_id,
-                    index,
-                    remaining,
-                    collected,
-                    ..
-                } => (*op_id, *index, *remaining, *collected),
-                _ => (0, 0, 0, 0),
-            };
-            Event::WithdrawalStopped {
-                op_id: op_id.into(),
-                index,
-                remaining: U128(remaining),
-                collected: U128(collected),
-                reason: msg.map(std::string::ToString::to_string),
-            }
-            .emit();
+        let s: &WithdrawingState = self.op_state.as_ref();
+
+        Event::WithdrawalStopped {
+            op_id: s.op_id.into(),
+            index: s.index,
+            remaining: U128(s.remaining),
+            collected: U128(s.collected),
+            reason: msg.map(std::string::ToString::to_string),
         }
-        if let Some((owner_acc, escrow)) = match &self.op_state {
-            OpState::Withdrawing {
-                owner,
-                escrow_shares,
-                ..
-            } if *escrow_shares > 0 => Some((owner.clone(), *escrow_shares)),
-            _ => None,
-        } {
-            let self_id = env::current_account_id();
+        .emit();
+
+        let owner = s.owner.clone();
+
+        if s.escrow_shares > 0 {
             #[allow(clippy::expect_used, reason = "No side effects")]
-            self.transfer_unchecked(&self_id, &owner_acc, escrow)
+            self.transfer_unchecked(&env::current_account_id(), &owner, s.escrow_shares)
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
+
         self.remove_inflight_and_advance_head();
         self.op_state = OpState::Idle;
     }
@@ -564,37 +542,19 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        {
-            if let OpState::Payout {
-                op_id,
-                receiver,
-                amount,
-                ..
-            } = &self.op_state
-            {
-                Event::PayoutStopped {
-                    op_id: (*op_id).into(),
-                    receiver: receiver.clone(),
-                    amount: U128(*amount),
-                    reason: msg.map(std::string::ToString::to_string),
-                }
-                .emit();
-            }
+        let s: &PayoutState = self.op_state.as_ref();
+        Event::PayoutStopped {
+            op_id: (s.op_id).into(),
+            receiver: s.receiver.clone(),
+            amount: U128(s.amount),
+            reason: msg.map(std::string::ToString::to_string),
         }
-        if let OpState::Payout {
-            owner,
-            escrow_shares,
-            ..
-        } = &self.op_state
-        {
-            if *escrow_shares > 0 {
-                let self_id = env::current_account_id();
-                let owner_acc = owner.clone();
-                let escrow = *escrow_shares;
-                #[allow(clippy::expect_used, reason = "No side effects")]
-                self.transfer_unchecked(&self_id, &owner_acc, escrow)
-                    .unwrap_or_else(|e| env::log_str(&e.to_string()));
-            }
+        .emit();
+
+        let owner = s.owner.clone();
+        if s.escrow_shares > 0 {
+            self.transfer_unchecked(&env::current_account_id(), &owner, s.escrow_shares)
+                .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
         self.remove_inflight_and_advance_head();
         self.op_state = OpState::Idle;
@@ -604,16 +564,15 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) -> PromiseOrValue<()> {
-        match self.op_state {
-            OpState::Allocating { .. } => self.stop_and_exit_allocating(msg),
-            OpState::Withdrawing { .. } => self.stop_and_exit_withdrawing(msg),
-            OpState::Payout { .. } => self.stop_and_exit_payout(msg),
+        match &self.op_state {
+            OpState::Allocating(_) => self.stop_and_exit_allocating(msg),
+            OpState::Withdrawing(_) => self.stop_and_exit_withdrawing(msg),
+            OpState::Payout(_) => self.stop_and_exit_payout(msg),
             OpState::Idle => {
                 Event::OperationStoppedWhileIdle {
                     reason: msg.map(std::string::ToString::to_string),
                 }
                 .emit();
-                self.op_state = OpState::Idle;
             }
         }
         PromiseOrValue::Value(())
@@ -622,11 +581,11 @@ impl Contract {
     /// Validate current op is Allocating and return (index, remaining)
     pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<(u32, u128), Error> {
         match &self.op_state {
-            OpState::Allocating {
+            OpState::Allocating(AllocatingState {
                 op_id: cur,
                 index,
                 remaining,
-            } if *cur == op_id => Ok((*index, *remaining)),
+            }) if *cur == op_id => Ok((*index, *remaining)),
             _ => Err(Error::NotAllocating),
         }
     }
@@ -637,7 +596,7 @@ impl Contract {
         op_id: u64,
     ) -> Result<(u32, u128, AccountId, u128, AccountId, u128), Error> {
         match &self.op_state {
-            OpState::Withdrawing {
+            OpState::Withdrawing(WithdrawingState {
                 op_id: cur,
                 index,
                 remaining,
@@ -645,7 +604,7 @@ impl Contract {
                 collected,
                 owner,
                 escrow_shares,
-            } if *cur == op_id => Ok((
+            }) if *cur == op_id => Ok((
                 *index,
                 *remaining,
                 receiver.clone(),

@@ -24,7 +24,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{
     ft::{
         nep141::GAS_FOR_FT_TRANSFER_CALL, nep145::Nep145ForceUnregister, ContractMetadata,
-        FungibleToken, Nep141Controller, Nep145 as _, Nep148Controller,
+        FungibleToken, Nep141Controller, Nep141Mint, Nep145 as _, Nep148Controller,
     },
     Owner, Rbac,
 };
@@ -33,10 +33,11 @@ use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
-        ext_self, require_at_least, AllocationMode, AllocationPlan, AllocationWeights, Error,
-        Event, MarketConfiguration, OpState, PendingValue, PendingWithdrawal, TimestampNs,
-        VaultConfiguration, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_1_CHECK_GAS, AFTER_EXECUTE_NEXT_WITHDRAW_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
+        ext_self, require_at_least, AllocatingState, AllocationMode, AllocationPlan,
+        AllocationWeights, Error, Event, MarketConfiguration, OpState, PayoutState, PendingValue,
+        PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
+        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_EXECUTE_NEXT_WITHDRAW_GAS, AFTER_SEND_TO_USER_GAS,
+        AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
         MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
@@ -110,9 +111,6 @@ pub struct Contract {
     mode: AllocationMode,
     plan: Option<AllocationPlan>,
 
-    /// configuration per market (market ID -> MarketConfig)
-    markets: IterableMap<AccountId, MarketConfiguration>,
-
     /// Performance fee
     performance_fee: wad::Wad,
     fee_recipient: AccountId,
@@ -124,8 +122,14 @@ pub struct Contract {
     virtual_shares: u128,
     virtual_assets: u128,
 
+    // FIXME: think about merging markets, pending cap and market_supply
+    /// configuration per market (market ID -> MarketConfig)
+    markets: IterableMap<AccountId, MarketConfiguration>,
     /// Any pending change to the vault's cap, TODO: u256
     pending_cap: IterableMap<AccountId, PendingValue<u128>>,
+    /// vault's supplied principal per market (borrow-asset units)
+    market_supply: IterableMap<AccountId, u128>,
+
     /// Any pending change to the vault's timelock
     pending_timelock: Option<PendingValue<TimestampNs>>,
     /// Any pending change to the vault's guardian
@@ -138,9 +142,6 @@ pub struct Contract {
     /// Ordered list of market IDs for withdrawal prioritytr
     withdraw_queue: Vector<AccountId>,
     current_withdraw_inflight: Option<u64>, // id of the pending withdrawal being executed, if any
-
-    /// vault's supplied principal per market (borrow-asset units)
-    market_supply: IterableMap<AccountId, u128>,
 
     /// underlying held by vault
     idle_balance: u128,
@@ -227,6 +228,7 @@ impl Contract {
             next_op_id: 1,
             mode,
             plan: None,
+            current_withdraw_inflight: None,
 
             // Pending withdrawals init
             pending_withdrawals: IterableMap::new(key!(PendingWithdrawals)),
@@ -249,7 +251,7 @@ impl Contract {
     /// Sets the Curator account. Also grants/removes the Allocator role accordingly.
     pub fn set_curator(&mut self, account: AccountId) {
         Self::require_owner();
-        Self::with_members_of(&Role::Curator, |members| {
+        Self::with_members_of_mut(&Role::Curator, |members| {
             require!(
                 members.len() < 2,
                 "Invariant violation: Cannot have more than one Curator"
@@ -259,21 +261,16 @@ impl Contract {
                 "Curator already set to this account"
             );
             members.iter().for_each(|m| {
-                self.remove_role(&m, &Role::Curator);
-                self.remove_role(&m, &Role::Allocator);
+                self.set_is_allocator(m, false);
             });
+            members.clear();
         });
         Self::add_role(self, &account, &Role::Curator);
-        Self::add_role(self, &account, &Role::Allocator);
         Event::CuratorSet {
             account: account.clone(),
         }
         .emit();
-        Event::AllocatorRoleSet {
-            account,
-            allowed: true,
-        }
-        .emit();
+        self.set_is_allocator(account, true);
     }
 
     /// Grants or revokes the Allocator role for `account`.
@@ -305,10 +302,10 @@ impl Contract {
             "Guardian change already pending"
         );
         if guardian_occupied {
-            let valid_at = env::block_timestamp() + self.timelock_ns;
+            let valid_at_ns = env::block_timestamp() + self.timelock_ns;
             self.pending_guardian = Some(PendingValue {
                 value: new_g,
-                valid_at,
+                valid_at_ns,
             });
         } else {
             Self::add_role(self, &new_g, &Role::Guardian);
@@ -326,12 +323,10 @@ impl Contract {
         let p = self.pending_guardian.clone();
 
         if let Some(p) = &p {
-            require!(env::block_timestamp() >= p.valid_at, "not yet");
-            Self::with_members_of(&Role::Guardian, |members| {
-                members.iter().for_each(|m| {
-                    self.remove_role(&m, &Role::Guardian);
-                });
-                Self::add_role(self, &p.value, &Role::Guardian);
+            p.verify();
+            Self::with_members_of_mut(&Role::Guardian, |members| {
+                members.clear();
+                members.insert(&p.value);
             });
             Event::GuardianSet {
                 account: p.value.clone(),
@@ -424,14 +419,14 @@ impl Contract {
             }
             .emit();
         } else {
-            let valid_at = env::block_timestamp() + self.timelock_ns;
+            let valid_at_ns = env::block_timestamp() + self.timelock_ns;
             self.pending_timelock = Some(PendingValue {
                 value: *tl,
-                valid_at,
+                valid_at_ns,
             });
             Event::TimelockChangeSubmitted {
                 new_ns: new_timelock_ns,
-                valid_at: valid_at.into(),
+                valid_at_ns: valid_at_ns.into(),
             }
             .emit();
         }
@@ -441,10 +436,8 @@ impl Contract {
     pub fn accept_timelock(&mut self) {
         Self::require_owner();
         if let Some(p) = &self.pending_timelock {
-            require!(
-                env::block_timestamp() >= p.valid_at,
-                "Timelock not elapsed yet"
-            );
+            p.verify();
+
             self.timelock_ns = p.value;
             Event::TimelockSet {
                 seconds: p.value.into(),
@@ -511,18 +504,18 @@ impl Contract {
             // If lowering the cap, we can apply the delta immediately
             config.cap = new_cap;
         } else {
-            let valid_at = env::block_timestamp() + self.timelock_ns;
+            let valid_at_ns = env::block_timestamp() + self.timelock_ns;
             self.pending_cap.insert(
                 market.clone(),
                 PendingValue {
                     value: new_cap.0,
-                    valid_at,
+                    valid_at_ns,
                 },
             );
             Event::SupplyCapRaiseSubmitted {
                 market: market.clone(),
                 new_cap,
-                valid_at,
+                valid_at_ns,
             }
             .emit();
         }
@@ -534,15 +527,13 @@ impl Contract {
         Self::assert_curator_or_owner();
         self.ensure_idle();
 
-        let (pending_value, pending_valid_at) = match self.pending_cap.get(&market) {
-            Some(p) => (p.value, p.valid_at),
+        let pending_value = match self.pending_cap.get(&market) {
+            Some(p) => {
+                p.verify();
+                p.value
+            }
             None => env::panic_str("No pending cap change for this market"),
         };
-
-        require!(
-            env::block_timestamp() >= pending_valid_at,
-            "Timelock not elapsed for cap change"
-        );
 
         let was_enabled = self.cfg(&market).enabled;
         let in_queue = self.in_withdraw_queue(&market);
@@ -802,12 +793,14 @@ impl Contract {
                 .pending_withdrawals
                 .get(&id)
                 .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
+            let owner = pending.owner.clone();
+            let receiver = pending.receiver.clone();
             self.current_withdraw_inflight = Some(id);
             env::log_str(&format!("WithdrawalExecutionStarted id={id}"));
             return self.start_withdraw(
                 pending.expected_assets,
-                &pending.receiver,
-                &pending.owner,
+                &receiver,
+                &owner,
                 pending.escrow_shares,
             );
         }
@@ -1272,16 +1265,6 @@ impl Contract {
         EscrowSettlement { to_burn, refund }
     }
 
-    /* ----- Internal: fee, shares ----- */
-    pub fn mint_shares(&mut self, to: &AccountId, amount: u128) {
-        if amount == 0 {
-            return;
-        }
-        #[allow(clippy::expect_used, reason = "No side effects")]
-        self.deposit_unchecked(to, amount)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    }
-
     pub fn internal_accrue_fee(&mut self) {
         // Invariant: Fees are minted only when total_assets() > last_total_assets (no fees on losses/flat).
         let cur = self.get_total_assets().0;
@@ -1293,9 +1276,10 @@ impl Contract {
         );
         if fee_shares > Number::zero() {
             let minted: u128 = fee_shares.into();
-            self.mint_shares(&self.fee_recipient.clone(), minted);
+            let recipient = self.fee_recipient.clone();
+            self.mint(&Nep141Mint::new(minted, &recipient));
             Event::PerformanceFeeAccrued {
-                recipient: self.fee_recipient.clone(),
+                recipient,
                 shares: U128(minted),
             }
             .emit();
@@ -1352,11 +1336,11 @@ impl Contract {
 
         let op_id = self.next_op_id;
         self.next_op_id += 1;
-        self.op_state = OpState::Allocating {
+        self.op_state = OpState::Allocating(AllocatingState {
             op_id,
             index: 0,
             remaining: amount,
-        };
+        });
         Event::AllocationStarted {
             op_id: op_id.into(),
             remaining: U128(amount),
@@ -1441,11 +1425,11 @@ impl Contract {
                     }
                     .emit();
 
-                    self.op_state = OpState::Allocating {
+                    self.op_state = OpState::Allocating(AllocatingState {
                         op_id,
                         index: index + 1,
                         remaining,
-                    };
+                    });
                     return self.step_allocation();
                 }
 
@@ -1493,11 +1477,11 @@ impl Contract {
                 }
                 .emit();
 
-                self.op_state = OpState::Allocating {
+                self.op_state = OpState::Allocating(AllocatingState {
                     op_id,
                     index: index + 1,
                     remaining,
-                };
+                });
                 return self.step_allocation();
             }
 
@@ -1509,11 +1493,11 @@ impl Contract {
 
     fn step_allocation(&mut self) -> PromiseOrValue<()> {
         let (op_id, index, remaining) = match &self.op_state {
-            OpState::Allocating {
+            OpState::Allocating(AllocatingState {
                 op_id,
                 index,
                 remaining,
-            } => (*op_id, *index, *remaining),
+            }) => (*op_id, *index, *remaining),
             _ => return self.stop_and_exit(Some(&Error::NotAllocating)),
         };
 
@@ -1550,7 +1534,7 @@ impl Contract {
 
         self.pending_market_exec.clear();
 
-        self.op_state = OpState::Withdrawing {
+        self.op_state = OpState::Withdrawing(WithdrawingState {
             op_id,
             index: Default::default(),
             remaining,
@@ -1558,14 +1542,14 @@ impl Contract {
             collected,
             owner: owner.clone(),
             escrow_shares,
-        };
+        });
         self.step_withdraw()
     }
 
     fn step_withdraw(&mut self) -> PromiseOrValue<()> {
         let (op_id, index, remaining, receiver, collected, owner, escrow_shares) =
             match &self.op_state {
-                OpState::Withdrawing {
+                OpState::Withdrawing(WithdrawingState {
                     op_id,
                     index,
                     remaining,
@@ -1573,7 +1557,7 @@ impl Contract {
                     collected,
                     owner,
                     escrow_shares,
-                } => (
+                }) => (
                     *op_id,
                     *index,
                     *remaining,
@@ -1586,14 +1570,14 @@ impl Contract {
             };
 
         if remaining == 0 {
-            self.op_state = OpState::Payout {
+            self.op_state = OpState::Payout(PayoutState {
                 op_id,
                 receiver: receiver.clone(),
                 amount: collected,
                 owner: owner.clone(),
                 escrow_shares,
                 burn_shares: escrow_shares,
-            };
+            });
             return PromiseOrValue::Promise(
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())
@@ -1608,7 +1592,7 @@ impl Contract {
             let have = self.market_supply.get(market).unwrap_or(&0);
             let to_request = have.min(&remaining);
             if to_request == &0 {
-                self.op_state = OpState::Withdrawing {
+                self.op_state = OpState::Withdrawing(WithdrawingState {
                     op_id,
                     index: index + 1,
                     remaining,
@@ -1616,7 +1600,7 @@ impl Contract {
                     collected,
                     owner,
                     escrow_shares,
-                };
+                });
                 env::log_str(&format!(
                     "Skipping withdrawal for market {market} (have {have}, remaining {remaining})"
                 ));
@@ -1665,14 +1649,14 @@ impl Contract {
         or_else: impl FnOnce(&mut Self) -> PromiseOrValue<()>,
     ) -> PromiseOrValue<()> {
         if collected > 0 {
-            self.op_state = OpState::Payout {
+            self.op_state = OpState::Payout(PayoutState {
                 op_id,
                 receiver: receiver.clone(),
                 amount: collected,
                 owner: owner.clone(),
                 escrow_shares,
                 burn_shares,
-            };
+            });
             PromiseOrValue::Promise(
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())

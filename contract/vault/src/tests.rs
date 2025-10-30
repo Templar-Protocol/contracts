@@ -21,9 +21,12 @@ use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
 use rstest::{fixture, rstest};
+use templar_common::vault::AllocatingState;
 use templar_common::vault::Error;
 use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
+use templar_common::vault::PayoutState;
+use templar_common::vault::WithdrawingState;
 use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[fixture]
@@ -194,18 +197,17 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     c.idle_balance = 1_000;
 
     // Partial payout scenario: collected/requested = 200/500 => burn 40% of escrowed shares
-    c.op_state = OpState::Payout {
+    c.op_state = OpState::Payout(PayoutState {
         op_id: 1,
         receiver: receiver.clone(),
         amount: 200,
         owner: owner.clone(),
         escrow_shares: 100,
         burn_shares: 40, // precomputed proportional burn for test
-    };
+    });
 
     let supply_before = c.total_supply();
-    let ok = c.after_send_to_user(Ok(()), 1, receiver, U128(200));
-    assert!(ok, "payout must report success");
+    c.after_send_to_user(Ok(()), 1, receiver, U128(200));
     // Idle decreased by payout
     assert_eq!(c.idle_balance, 800);
     // Only burn_shares are burned from total supply
@@ -363,12 +365,12 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
         c.withdraw_queue.push(m1.clone());
     }
     // Force completion and exit op
-    if let crate::OpState::Allocating { op_id, index, .. } = c.op_state.clone() {
-        c.op_state = crate::OpState::Allocating {
+    if let crate::OpState::Allocating(AllocatingState { op_id, index, .. }) = c.op_state.clone() {
+        c.op_state = crate::OpState::Allocating(AllocatingState {
             op_id,
             index,
             remaining: 0,
-        };
+        });
     } else {
         panic!("expected Allocating state");
     }
@@ -659,7 +661,7 @@ fn set_withdraw_queue_disallow_pending_cap_removal() {
         m.clone(),
         templar_common::vault::PendingValue {
             value: 1,
-            valid_at: env::block_timestamp() + 1,
+            valid_at_ns: env::block_timestamp() + 1,
         },
     );
 
@@ -1839,11 +1841,11 @@ fn after_supply_1_check_allocating_not_allocating_index() {
     let op_id = 1;
     let receiver = mk(7);
 
-    c.op_state = OpState::Allocating {
+    c.op_state = OpState::Allocating(AllocatingState {
         op_id,
         index: 0u32,
         remaining: 0u128,
-    };
+    });
 
     c.after_supply_1_check(Ok(U128(1)), op_id + 1, 0, Default::default());
 
@@ -1868,11 +1870,11 @@ fn after_supply_1_check_allocating() {
     let op_id = 1;
     let receiver = mk(7);
 
-    c.op_state = OpState::Allocating {
+    c.op_state = OpState::Allocating(AllocatingState {
         op_id,
         index: 0u32,
         remaining: 0u128,
-    };
+    });
 
     c.after_supply_1_check(Ok(U128(1)), op_id, 0, Default::default());
 
@@ -1890,17 +1892,16 @@ fn after_send_to_user_success_no_escrow() {
     let receiver = mk(7);
 
     c.idle_balance = 1_000;
-    c.op_state = OpState::Payout {
+    c.op_state = OpState::Payout(PayoutState {
         op_id: 1,
         receiver: receiver.clone(),
         amount: 200,
         owner: accounts(1),
         escrow_shares: 0,
         burn_shares: 0,
-    };
+    });
 
-    let ok = c.after_send_to_user(Ok(()), 1, receiver.clone(), U128(200));
-    assert!(ok, "Payout should report success");
+    c.after_send_to_user(Ok(()), 1, receiver.clone(), U128(200));
     assert_eq!(c.idle_balance, 800, "Idle balance must decrease by payout");
     assert!(
         matches!(c.op_state, OpState::Idle),
@@ -1916,7 +1917,7 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
     c.market_supply.insert(market.clone(), 100);
 
     // Withdrawing: need 60, already collected 10; expect position None => new_principal = 0, withdrawn = 100, credited = min(100, 60) = 60
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 42,
         index: 0,
         remaining: 60,
@@ -1924,7 +1925,7 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         collected: 10,
         owner: accounts(1),
         escrow_shares: 50,
-    };
+    });
 
     let res = c.after_exec_withdraw_read(Ok(None), 42, 0, U128(100), U128(60));
 
@@ -1946,7 +1947,7 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
 
     // State should transition to Payout with amount = collected (10) + credited (60) = 70
     match &c.op_state {
-        OpState::Payout { amount, .. } => {
+        OpState::Payout(PayoutState { amount, .. }) => {
             assert_eq!(*amount, 70, "Payout amount must match collected + credited");
         }
         other => panic!("Unexpected state after read: {other:?}"),
@@ -2004,16 +2005,15 @@ fn prop_after_send_to_user_failure_keeps_idle(idle: u128, escrow: u128, amount: 
         c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
             .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
     }
-
     c.idle_balance = idle;
-    c.op_state = OpState::Payout {
+    c.op_state = OpState::Payout(PayoutState {
         op_id: 1,
         receiver: receiver.clone(),
         amount,
         owner: owner.clone(),
         escrow_shares: escrow,
         burn_shares: escrow,
-    };
+    });
 
     let before = c.idle_balance;
     let ok = c.after_send_to_user(
@@ -2022,7 +2022,6 @@ fn prop_after_send_to_user_failure_keeps_idle(idle: u128, escrow: u128, amount: 
         receiver.clone(),
         U128(amount),
     );
-    assert!(!ok, "Payout failure should return false");
     assert_eq!(
         c.idle_balance, before,
         "idle_balance must stay the same on payout failure"
@@ -2048,7 +2047,7 @@ fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
     c.withdraw_queue.push(market.clone());
     c.market_supply.insert(market.clone(), 100);
 
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
         index: 0,
         remaining: need,
@@ -2056,7 +2055,7 @@ fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
         collected,
         owner: accounts(1),
         escrow_shares: 0,
-    };
+    });
 
     let res = c.after_create_withdraw_req(Err(near_sdk::PromiseError::Failed), 7, 0, U128(need));
     match res {
@@ -2065,7 +2064,7 @@ fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
     }
 
     match &c.op_state {
-        OpState::Payout { amount, .. } => {
+        OpState::Payout(PayoutState { amount, .. }) => {
             assert_eq!(*amount, collected, "Payout amount must equal collected");
         }
         other => panic!("Unexpected state: {other:?}"),
@@ -2089,7 +2088,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
 
     let initial_idle = c.idle_balance;
 
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 99,
         index: 0,
         remaining: need,
@@ -2097,7 +2096,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         collected,
         owner: accounts(1),
         escrow_shares: 0,
-    };
+    });
 
     let res = c.after_exec_withdraw_read(
         Err(near_sdk::PromiseError::Failed),
@@ -2122,7 +2121,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     );
 
     match &c.op_state {
-        OpState::Payout { amount, .. } => {
+        OpState::Payout(PayoutState { amount, .. }) => {
             assert_eq!(*amount, collected, "Payout amount must equal collected");
         }
         other => panic!("Unexpected state: {other:?}"),
@@ -2146,7 +2145,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     let real_op = 5u64;
     let real_idx = 0u32;
 
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: real_op,
         index: real_idx,
         remaining: 1,
@@ -2154,7 +2153,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         collected: 1,
         owner: accounts(1),
         escrow_shares: 0,
-    };
+    });
 
     let call_op = if pass_op { real_op } else { real_op + 1 };
     let call_idx = if pass_index { real_idx } else { real_idx + 1 };
@@ -2193,7 +2192,7 @@ fn refund_path_consistency() {
     c.withdraw_queue.push(market);
 
     // Withdrawing state with remaining=0 and collected=0 forces refund path
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 77,
         index: 0,
         remaining: 0,
@@ -2201,7 +2200,7 @@ fn refund_path_consistency() {
         collected: 0,
         owner: owner.clone(),
         escrow_shares: 10,
-    };
+    });
 
     let supply_before = c.total_supply();
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
@@ -2244,11 +2243,11 @@ fn ctx_allocating_ok_and_err() {
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    c.op_state = OpState::Allocating {
+    c.op_state = OpState::Allocating(AllocatingState {
         op_id: 42,
         index: 3,
         remaining: 77,
-    };
+    });
 
     let ok = c.ctx_allocating(42).expect("ctx_allocating should succeed");
     assert_eq!(ok, (3, 77));
@@ -2266,7 +2265,7 @@ fn ctx_withdrawing_ok_and_err() {
     let recv = mk(1);
     let owner = accounts(1);
 
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
         index: 1,
         remaining: 50,
@@ -2274,7 +2273,7 @@ fn ctx_withdrawing_ok_and_err() {
         collected: 5,
         owner: owner.clone(),
         escrow_shares: 10,
-    };
+    });
 
     let (idx, rem, r, coll, o, escrow) = c
         .ctx_withdrawing(7)
@@ -2342,11 +2341,11 @@ fn after_supply_2_read_missing_position_stops() {
     c.supply_queue.push(market);
 
     // Must be in Allocating ctx
-    c.op_state = OpState::Allocating {
+    c.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 0,
         remaining: 10,
-    };
+    });
 
     // Missing position -> stop_and_exit
     let res = c.after_supply_2_read(Ok(None), 1, 0, U128(0), U128(5), U128(5));
@@ -2368,11 +2367,11 @@ fn after_supply_2_read_read_failed_stops() {
     c.supply_queue.push(market);
 
     // Must be in Allocating ctx
-    c.op_state = OpState::Allocating {
+    c.op_state = OpState::Allocating(AllocatingState {
         op_id: 7,
         index: 0,
         remaining: 100,
-    };
+    });
 
     // Read failure -> stop_and_exit
     let res = c.after_supply_2_read(
@@ -2400,7 +2399,7 @@ fn after_create_withdraw_req_success_returns_promise(
     c.withdraw_queue.push(market.clone());
     c.market_supply.insert(market.clone(), 100);
 
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 21,
         index: 0,
         remaining: 60,
@@ -2408,7 +2407,7 @@ fn after_create_withdraw_req_success_returns_promise(
         collected: 10,
         owner: owner.clone(),
         escrow_shares: 5,
-    };
+    });
 
     let res = c.after_create_withdraw_req(Ok(()), 21, 0, U128(60));
     match res {
@@ -2425,7 +2424,7 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
     c.withdraw_queue.push(market.clone());
     c.market_supply.insert(market.clone(), 10);
 
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 33,
         index: 0,
         remaining: 5,
@@ -2433,14 +2432,17 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         collected: 0,
         owner: accounts(1),
         escrow_shares: 0,
-    };
+    });
 
     let res = c.after_exec_withdraw_req(33, 0, U128(5));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to read supply position after exec"),
     }
-    assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
+    assert!(matches!(
+        c.op_state,
+        OpState::Withdrawing(WithdrawingState { .. })
+    ));
 }
 
 #[rstest]
@@ -2455,8 +2457,7 @@ fn after_exec_withdraw_read_advances_when_remaining(
     c.withdraw_queue.push(m1.clone());
     c.withdraw_queue.push(m2.clone());
     c.market_supply.insert(m1.clone(), 10);
-
-    c.op_state = OpState::Withdrawing {
+    c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 0,
         index: 0,
         remaining: 100,
@@ -2464,7 +2465,7 @@ fn after_exec_withdraw_read_advances_when_remaining(
         collected: 0,
         owner: owner.clone(),
         escrow_shares: 0,
-    };
+    });
 
     // Position None => new_principal = 0 => withdrawn = 10 => credited = 10
     let res = c.after_exec_withdraw_read(Ok(None), 0, 0, U128(10), U128(100));
@@ -2478,14 +2479,14 @@ fn after_exec_withdraw_read_advances_when_remaining(
 
     // This works
     match &c.op_state {
-        OpState::Payout {
+        OpState::Payout(PayoutState {
             op_id,
             receiver: r,
             amount,
             owner: o,
             escrow_shares,
             burn_shares,
-        } => {
+        }) => {
             assert_eq!(*op_id, 0);
             assert_eq!(*amount, 10);
             assert_eq!(*escrow_shares, 0);
@@ -2576,14 +2577,14 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
         .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
 
     // Enter Payout with non-zero escrow
-    c.op_state = OpState::Payout {
+    c.op_state = OpState::Payout(PayoutState {
         op_id: 123,
         receiver: receiver.clone(),
         amount: 77,
         owner: owner.clone(),
         escrow_shares: escrow,
         burn_shares: escrow,
-    };
+    });
 
     let supply_before = c.total_supply();
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
@@ -2615,14 +2616,14 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
     receiver: AccountId,
 ) {
     // Enter Payout with zero escrow; no transfers should occur
-    c.op_state = OpState::Payout {
+    c.op_state = OpState::Payout(PayoutState {
         op_id: 7,
         receiver,
         amount: 1,
         owner: owner.clone(),
         escrow_shares: 0,
         burn_shares: 0,
-    };
+    });
 
     let supply_before = c.ft_total_supply();
     let vault_before = c.ft_balance_of(near_sdk::env::current_account_id());

@@ -68,7 +68,8 @@ pub struct MarketConfiguration {
 
 impl MarketConfiguration {
     /// Size of the market configuration in borsh encoded bytes.
-    #[must_use] pub const fn encoded_size() -> usize {
+    #[must_use]
+    pub const fn encoded_size() -> usize {
         16 + 1 + 8
     }
 }
@@ -146,7 +147,8 @@ pub trait VaultExt {
 }
 
 // Add a 20% buffer to a gas estimate
-#[must_use] pub const fn buffer(size: u64) -> Gas {
+#[must_use]
+pub const fn buffer(size: u64) -> Gas {
     Gas::from_tgas((size * 6 + 4) / 5)
 }
 
@@ -227,7 +229,90 @@ pub trait Callbacks {
 pub struct PendingValue<T> {
     pub value: T,
     // Timestamp when this pending value can be finalized
-    pub valid_at: TimestampNs,
+    pub valid_at_ns: TimestampNs,
+}
+
+impl<T> PendingValue<T> {
+    pub fn verify(&self) {
+        require!(
+            near_sdk::env::block_timestamp() >= self.valid_at_ns,
+            "Timelock not elapsed yet"
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh])]
+/// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
+pub struct IdleState;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh])]
+/// Supplying idle underlying to markets according to a plan or queue.
+///
+/// Transitions:
+/// - On completion of allocation: Withdrawing (to satisfy pending user requests) or Idle (if stopped).
+/// - On stop/failure: Idle.
+pub struct AllocatingState {
+    /// Unique operation id used to correlate async callbacks and detect drift.
+    pub op_id: u64,
+    /// Zero-based position within the allocation plan/queue currently being processed.
+    pub index: u32,
+    /// Amount of underlying (in asset units) still to allocate during this operation.
+    pub remaining: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh])]
+/// Collecting liquidity from markets to satisfy a user withdrawal/redeem request.
+///
+/// Transitions:
+/// - Advance within queue: Withdrawing (index increments) while collecting funds.
+/// - When enough is collected to satisfy the request: Payout.
+/// - If the op is stopped or cannot proceed and needs to refund: Idle (escrow_shares refunded).
+pub struct WithdrawingState {
+    /// Unique operation id used to correlate async callbacks and detect drift.
+    pub op_id: u64,
+    /// Zero-based position within the withdraw queue currently being processed.
+    pub index: u32,
+    /// Remaining assets that must still be collected to satisfy the request.
+    pub remaining: u128,
+    /// Assets already collected and held as idle_balance pending payout.
+    pub collected: u128,
+    /// Account that should receive the assets during payout.
+    pub receiver: AccountId,
+    /// The owner whose shares are being redeemed.
+    pub owner: AccountId,
+    /// Shares locked in escrow for this request.
+    /// - Refunded on stop/failure.
+    /// - On payout success, a portion is burned (see burn_shares) and any remainder is refunded.
+    pub escrow_shares: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh])]
+/// Final step that transfers assets to the receiver and settles the share escrow.
+///
+/// Transitions:
+/// - On success or failure: Idle.
+///
+/// Invariant hooks:
+/// - idle_balance decreases only on payout success by `amount`.
+/// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
+/// - On failure, all `escrow_shares` are refunded.
+pub struct PayoutState {
+    /// Unique operation id used to correlate async callbacks and detect drift.
+    pub op_id: u64,
+    /// Receiver of the asset payout.
+    pub receiver: AccountId,
+    /// Amount of assets to transfer out from idle_balance.
+    pub amount: u128,
+    /// The owner whose shares were escrowed for this payout.
+    pub owner: AccountId,
+    /// Total shares currently held in escrow for this operation.
+    pub escrow_shares: u128,
+    /// Portion of `escrow_shares` that will be burned on successful payout.
+    pub burn_shares: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,14 +336,7 @@ pub enum OpState {
     /// Transitions:
     /// - On completion of allocation: Withdrawing (to satisfy pending user requests) or Idle (if stopped).
     /// - On stop/failure: Idle.
-    Allocating {
-        /// Unique operation id used to correlate async callbacks and detect drift.
-        op_id: u64,
-        /// Zero-based position within the allocation plan/queue currently being processed.
-        index: u32,
-        /// Amount of underlying (in asset units) still to allocate during this operation.
-        remaining: u128,
-    },
+    Allocating(AllocatingState),
 
     /// Collecting liquidity from markets to satisfy a user withdrawal/redeem request.
     ///
@@ -266,24 +344,7 @@ pub enum OpState {
     /// - Advance within queue: Withdrawing (index increments) while collecting funds.
     /// - When enough is collected to satisfy the request: Payout.
     /// - If the op is stopped or cannot proceed and needs to refund: Idle (escrow_shares refunded).
-    Withdrawing {
-        /// Unique operation id used to correlate async callbacks and detect drift.
-        op_id: u64,
-        /// Zero-based position within the withdraw queue currently being processed.
-        index: u32,
-        /// Remaining assets that must still be collected to satisfy the request.
-        remaining: u128,
-        /// Assets already collected and held as idle_balance pending payout.
-        collected: u128,
-        /// Account that should receive the assets during payout.
-        receiver: AccountId,
-        /// The owner whose shares are being redeemed.
-        owner: AccountId,
-        /// Shares locked in escrow for this request.
-        /// - Refunded on stop/failure.
-        /// - On payout success, a portion is burned (see burn_shares) and any remainder is refunded.
-        escrow_shares: u128,
-    },
+    Withdrawing(WithdrawingState),
 
     /// Final step that transfers assets to the receiver and settles the share escrow.
     ///
@@ -294,20 +355,67 @@ pub enum OpState {
     /// - idle_balance decreases only on payout success by `amount`.
     /// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
     /// - On failure, all `escrow_shares` are refunded.
-    Payout {
-        /// Unique operation id used to correlate async callbacks and detect drift.
-        op_id: u64,
-        /// Receiver of the asset payout.
-        receiver: AccountId,
-        /// Amount of assets to transfer out from idle_balance.
-        amount: u128,
-        /// The owner whose shares were escrowed for this payout.
-        owner: AccountId,
-        /// Total shares currently held in escrow for this operation.
-        escrow_shares: u128,
-        /// Portion of `escrow_shares` that will be burned on successful payout.
-        burn_shares: u128,
-    },
+    Payout(PayoutState),
+}
+
+impl From<IdleState> for OpState {
+    fn from(_: IdleState) -> Self {
+        OpState::Idle
+    }
+}
+
+impl From<AllocatingState> for OpState {
+    fn from(s: AllocatingState) -> Self {
+        OpState::Allocating(s)
+    }
+}
+
+impl From<WithdrawingState> for OpState {
+    fn from(s: WithdrawingState) -> Self {
+        OpState::Withdrawing(s)
+    }
+}
+
+impl From<PayoutState> for OpState {
+    fn from(s: PayoutState) -> Self {
+        OpState::Payout(s)
+    }
+}
+
+impl AsRef<IdleState> for OpState {
+    fn as_ref(&self) -> &IdleState {
+        match self {
+            OpState::Idle => &IdleState,
+            _ => panic!("OpState::Idle expected"),
+        }
+    }
+}
+
+impl AsRef<AllocatingState> for OpState {
+    fn as_ref(&self) -> &AllocatingState {
+        match self {
+            OpState::Allocating(s) => s,
+            _ => panic!("OpState::Allocating expected"),
+        }
+    }
+}
+
+impl AsRef<WithdrawingState> for OpState {
+    fn as_ref(&self) -> &WithdrawingState {
+        match self {
+            OpState::Withdrawing(s) => s,
+            _ => panic!("OpState::Withdrawing expected"),
+        }
+    }
+}
+
+impl AsRef<PayoutState> for OpState {
+    fn as_ref(&self) -> &PayoutState {
+        match self {
+            OpState::Payout(s) => s,
+            _ => panic!("OpState::Payout expected"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -344,7 +452,8 @@ pub struct PendingWithdrawal {
 }
 
 impl PendingWithdrawal {
-    #[must_use] pub const fn encoded_size() -> usize {
+    #[must_use]
+    pub const fn encoded_size() -> usize {
         storage_bytes_for_account_id() as usize
             + storage_bytes_for_account_id() as usize
             + 16  // escrow_shares: u128
@@ -354,7 +463,8 @@ impl PendingWithdrawal {
 }
 
 // Worst case size encoded for AccountId
-#[must_use] pub const fn storage_bytes_for_account_id() -> u64 {
+#[must_use]
+pub const fn storage_bytes_for_account_id() -> u64 {
     // 4 bytes for length prefix + worst case size encoded for AccountId
     4 + AccountId::MAX_LEN as u64
 }
@@ -456,7 +566,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
-    TimelockChangeSubmitted { new_ns: U64, valid_at: U64 },
+    TimelockChangeSubmitted { new_ns: U64, valid_at_ns: U64 },
     #[event_version("1.0.0")]
     PendingTimelockRevoked,
 
@@ -467,7 +577,7 @@ pub enum Event {
     SupplyCapRaiseSubmitted {
         market: AccountId,
         new_cap: U128,
-        valid_at: u64,
+        valid_at_ns: u64,
     },
     #[event_version("1.0.0")]
     SupplyCapRaiseRevoked { market: AccountId },

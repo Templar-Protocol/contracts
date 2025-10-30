@@ -1,6 +1,7 @@
 use crate::{Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
+use near_sdk_contract_tools::ft::{Nep141Controller as _, Nep141Mint};
 use templar_common::vault::{require_at_least, AllocationMode, DepositMsg, Event, SUPPLY_GAS};
 
 #[allow(clippy::wildcard_imports)]
@@ -126,7 +127,8 @@ impl Contract {
         let refund = deposit - accept;
 
         let shares = self.preview_deposit(U128(accept)).0;
-        self.mint_shares(&sender_id, shares);
+        self.mint(&Nep141Mint::new(shares, &sender_id));
+
         Event::MintedShares {
             amount: shares.into(),
             receiver: sender_id.clone(),
@@ -147,6 +149,7 @@ impl Contract {
                     deposit_accepted: U128(accept),
                 }
                 .emit();
+                self.ensure_idle();
                 self.start_allocation(self.idle_balance);
             }
         }
