@@ -16,9 +16,7 @@ async fn activates_in_next_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
         config(|c| {
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy = InterestRateStrategy::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration {
-                duration_ms: 1.into(),
-            };
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1);
         })
     );
 
