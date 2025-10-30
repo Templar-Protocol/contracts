@@ -13,23 +13,28 @@ pub struct Number(pub U256);
 
 impl Number {
     #[inline]
-    #[must_use] pub fn zero() -> Self {
+    #[must_use]
+    pub fn zero() -> Self {
         Number(U256::zero())
     }
     #[inline]
-    #[must_use] pub fn one() -> Self {
+    #[must_use]
+    pub fn one() -> Self {
         Number(U256::one())
     }
     #[inline]
-    #[must_use] pub fn is_zero(&self) -> bool {
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
     #[inline]
-    #[must_use] pub fn is_one(&self) -> bool {
+    #[must_use]
+    pub fn is_one(&self) -> bool {
         self.0 == U256::one()
     }
     #[inline]
-    #[must_use] pub fn as_u128_trunc(self) -> u128 {
+    #[must_use]
+    pub fn as_u128_trunc(self) -> u128 {
         let mut b32 = [0u8; 32];
         self.0.to_little_endian(&mut b32);
         let mut b16 = [0u8; 16];
@@ -43,11 +48,13 @@ impl Number {
         U256::from_little_endian(&b64[..32])
     }
     #[inline]
-    #[must_use] pub fn saturating_add(self, other: Number) -> Number {
+    #[must_use]
+    pub fn saturating_add(self, other: Number) -> Number {
         Number(self.0.saturating_add(other.0))
     }
     #[inline]
-    #[must_use] pub fn saturating_sub(self, other: Number) -> Number {
+    #[must_use]
+    pub fn saturating_sub(self, other: Number) -> Number {
         Number(self.0.saturating_sub(other.0))
     }
     #[inline]
@@ -157,6 +164,17 @@ impl BorshDeserialize for Number {
     }
 }
 
+impl BorshSchema for Number {
+    fn add_definitions_recursively(definitions: &mut BTreeMap<Declaration, Definition>) {
+        let definition = Definition::Primitive(32);
+        add_definition(Self::declaration(), definition, definitions);
+    }
+
+    fn declaration() -> Declaration {
+        "Number".into()
+    }
+}
+
 /// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Wad(pub Number);
@@ -180,12 +198,14 @@ impl Wad {
     }
 
     #[inline]
-    #[must_use] pub fn is_zero(&self) -> bool {
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
 
     #[inline]
-    #[must_use] pub fn is_one(&self) -> bool {
+    #[must_use]
+    pub fn is_one(&self) -> bool {
         self.0 .0 == U256::from(Self::SCALE)
     }
 
@@ -250,18 +270,6 @@ impl BorshDeserialize for Wad {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let inner = <Number as BorshDeserialize>::deserialize_reader(reader)?;
         Ok(Wad(inner))
-    }
-}
-
-// FIXME: test these
-impl BorshSchema for Number {
-    fn add_definitions_recursively(definitions: &mut BTreeMap<Declaration, Definition>) {
-        let definition = Definition::Primitive(32);
-        add_definition(Self::declaration(), definition, definitions);
-    }
-
-    fn declaration() -> Declaration {
-        "Number".into()
     }
 }
 

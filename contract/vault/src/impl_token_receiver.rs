@@ -80,13 +80,10 @@ impl Nep245Receiver for Contract {
                 require_at_least(SUPPLY_GAS);
                 let token_contract = env::predecessor_account_id();
 
-                if !self.underlying_asset.is_nep245(&token_contract, token_id) {
-                    Event::DepositRejectedWrongAsset {
-                        token: token_contract,
-                    }
-                    .emit();
-                    return PromiseOrValue::Value(vec![amount]);
-                }
+                require!(
+                    self.underlying_asset.is_nep245(&token_contract, token_id),
+                    "Invalid token ID"
+                );
 
                 let refund = self.execute_supply(depositor.clone(), token_contract, amount.into());
 
@@ -104,21 +101,12 @@ impl Contract {
         deposit: u128,
     ) -> u128 {
         // Invariant: Only the underlying token is accepted; others are fully refunded
-        if asset_id != self.underlying_asset.contract_id() {
-            Event::DepositRejectedWrongAsset {
-                token: asset_id.clone(),
-            }
-            .emit();
-            return deposit;
-        };
+        require!(
+            asset_id == self.underlying_asset.contract_id(),
+            "Invalid token ID"
+        );
 
-        if deposit == 0 {
-            Event::DepositRejectedZeroAmount {
-                sender: sender_id.clone(),
-            }
-            .emit();
-            return 0;
-        }
+        require!(deposit > 0, "Deposit amount must be greater than zero");
 
         self.internal_accrue_fee();
 
@@ -127,7 +115,8 @@ impl Contract {
         let refund = deposit - accept;
 
         let shares = self.preview_deposit(U128(accept)).0;
-        self.mint(&Nep141Mint::new(shares, &sender_id));
+        self.mint(&Nep141Mint::new(shares, &sender_id))
+            .expect("Failed to mint shares");
 
         Event::MintedShares {
             amount: shares.into(),

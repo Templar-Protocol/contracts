@@ -683,10 +683,6 @@ pub enum Event {
         token: AccountId,
         recipient: AccountId,
     },
-    #[event_version("1.0.0")]
-    DepositRejectedWrongAsset { token: AccountId },
-    #[event_version("1.0.0")]
-    DepositRejectedZeroAmount { sender: AccountId },
 }
 
 #[cfg(test)]

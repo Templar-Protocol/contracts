@@ -486,25 +486,18 @@ impl Contract {
         msg: Option<&T>,
     ) {
         let s: &AllocatingState = self.op_state.as_ref();
-        match msg {
-            None => {
-                Event::AllocationCompleted { op_id: s.op_id }.emit();
-            }
-            Some(m) => {
-                Event::AllocationStopped {
-                    op_id: (s.op_id).into(),
-                    index: s.index,
-                    remaining: U128(s.remaining),
-                    reason: Some(m.to_string()),
-                }
-                .emit();
-            }
-        }
 
-        // Always add back remaining to idle_balance
-        if s.remaining > 0 {
-            self.idle_balance = self.idle_balance.saturating_add(s.remaining);
-        }
+        msg.map_or(Event::AllocationCompleted { op_id: s.op_id }, |m| {
+            Event::AllocationStopped {
+                op_id: s.op_id.into(),
+                index: s.index,
+                remaining: U128(s.remaining),
+                reason: Some(m.to_string()),
+            }
+        })
+        .emit();
+
+        self.idle_balance = self.idle_balance.saturating_add(s.remaining);
         self.plan = None;
         self.op_state = OpState::Idle;
     }
