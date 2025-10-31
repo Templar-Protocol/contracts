@@ -89,6 +89,9 @@ struct QuoteRequest {
     recipient_type: String,
     /// Deadline as ISO timestamp
     deadline: String,
+    /// Referral identifier (optional, lowercase only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    referral: Option<String>,
     /// Quote waiting time in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
     quote_waiting_time_ms: Option<u64>,
@@ -172,6 +175,8 @@ struct DepositSubmitRequest {
 pub enum SwapStatus {
     /// Waiting for deposit
     PendingDeposit,
+    /// Deposit transaction detected but not yet confirmed
+    KnownDepositTx,
     /// Deposit received, processing swap
     Processing,
     /// Swap completed successfully
@@ -335,29 +340,31 @@ impl OneClickSwap {
         let deadline = chrono::Utc::now() + chrono::Duration::minutes(30);
         let deadline_str = deadline.to_rfc3339();
 
-        // Determine deposit type based on whether we're on NEAR
-        // For NEAR-based assets (including bridged assets via omft.near), use INTENTS
-        let deposit_type =
-            if from_asset_id.starts_with("nep141:") || from_asset_id.starts_with("nep245:") {
-                "INTENTS"
-            } else {
-                "ORIGIN_CHAIN"
-            };
+        // For liquidation bot, we always deposit via NEAR Intents contract
+        // since our bot runs on NEAR and holds NEP-141 tokens.
+        // ORIGIN_CHAIN would be used if we were depositing from another blockchain (e.g., ETH on Ethereum)
+        let deposit_type = "INTENTS";
 
         let request = QuoteRequest {
             dry: false, // We want a real quote with deposit address
             deposit_mode: "SIMPLE".to_string(),
-            swap_type: SwapType::ExactOutput, // We want exact output amount
+            // For liquidation, we need exact output amount (borrow asset to repay debt)
+            // EXACT_OUTPUT: we specify exact amount we want to receive, API tells us how much to send
+            // This ensures we get the precise amount needed to cover the liquidation
+            swap_type: SwapType::ExactOutput,
             slippage_tolerance: self.max_slippage_bps,
             origin_asset: from_asset_id.clone(),
             deposit_type: deposit_type.to_string(),
             destination_asset: to_asset_id.clone(),
             amount: output_amount.0.to_string(),
             refund_to: recipient.clone(),
+            // INTENTS: refunds go back to our NEAR account within Intents contract
             refund_type: "INTENTS".to_string(),
             recipient: recipient.clone(),
+            // INTENTS: swapped tokens delivered to our NEAR account within Intents contract
             recipient_type: "INTENTS".to_string(),
             deadline: deadline_str,
+            referral: Some("templar-liquidator".to_string()), // Track bot usage
             quote_waiting_time_ms: Some(5000), // Wait up to 5 seconds for quote
         };
 
@@ -381,14 +388,18 @@ impl OneClickSwap {
         })?;
 
         if !status.is_success() {
+            let error_msg = match status.as_u16() {
+                400 => format!("Bad Request - Invalid input data: {response_text}"),
+                401 => format!("Unauthorized - JWT token is invalid or missing: {response_text}"),
+                404 => format!("Not Found - Endpoint or resource not found: {response_text}"),
+                _ => format!("Quote request failed with status {status}: {response_text}"),
+            };
             error!(
                 status = %status,
                 response = %response_text,
                 "Quote request failed"
             );
-            return Err(AppError::ValidationError(format!(
-                "Quote request failed: {status} - {response_text}"
-            )));
+            return Err(AppError::ValidationError(error_msg));
         }
 
         let quote_response: QuoteResponse = serde_json::from_str(&response_text).map_err(|e| {
@@ -732,14 +743,18 @@ impl OneClickSwap {
         if !response.status().is_success() {
             let status = response.status();
             let response_text = response.text().await.unwrap_or_default();
+            let error_msg = match status.as_u16() {
+                400 => format!("Bad Request - Invalid deposit data: {response_text}"),
+                401 => format!("Unauthorized - JWT token is invalid: {response_text}"),
+                404 => format!("Not Found - Deposit address not found: {response_text}"),
+                _ => format!("Deposit submission failed with status {status}: {response_text}"),
+            };
             error!(
                 status = %status,
                 response = %response_text,
                 "Deposit submission failed"
             );
-            return Err(AppError::ValidationError(format!(
-                "Deposit submission failed: {status}"
-            )));
+            return Err(AppError::ValidationError(error_msg));
         }
 
         info!("Deposit submitted to 1-Click API");
@@ -784,7 +799,25 @@ impl OneClickSwap {
             };
 
             if !response.status().is_success() {
-                warn!(status = %response.status(), attempt = %attempt, "Status request failed");
+                let status_code = response.status();
+                let error_text = response.text().await.unwrap_or_default();
+                match status_code.as_u16() {
+                    401 => warn!(
+                        attempt = %attempt, 
+                        "Unauthorized - JWT token may be invalid"
+                    ),
+                    404 => warn!(
+                        attempt = %attempt, 
+                        deposit_address = %deposit_address,
+                        "Deposit address not found - swap may not have been initiated yet"
+                    ),
+                    _ => warn!(
+                        status = %status_code, 
+                        attempt = %attempt,
+                        error = %error_text,
+                        "Status request failed"
+                    ),
+                }
                 continue;
             }
 
@@ -822,8 +855,8 @@ impl OneClickSwap {
                     error!(status = ?status_response.status, "Swap failed or refunded");
                     return Ok(status_response.status);
                 }
-                SwapStatus::PendingDeposit | SwapStatus::Processing => {
-                    debug!("Swap still in progress");
+                SwapStatus::PendingDeposit | SwapStatus::KnownDepositTx | SwapStatus::Processing => {
+                    debug!(status = ?status_response.status, "Swap still in progress");
                     // Continue polling
                 }
                 SwapStatus::IncompleteDeposit => {

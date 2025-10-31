@@ -80,7 +80,7 @@ pub struct Args {
     #[arg(long, env = "DRY_RUN", default_value_t = false)]
     pub dry_run: bool,
 
-    /// Collateral strategy: "hold", "`swap_to_primary`", or "`swap_to_target`"
+    /// Collateral strategy: "hold", "swap-to-primary", or "swap-to-borrow"
     #[arg(long, env = "COLLATERAL_STRATEGY", default_value = "hold")]
     pub collateral_strategy: String,
 
@@ -146,31 +146,28 @@ impl Args {
     fn parse_collateral_strategy(&self) -> CollateralStrategy {
         use templar_common::asset::FungibleAsset;
 
-        match self.collateral_strategy.to_lowercase().as_str() {
+        let normalized = self.collateral_strategy.to_lowercase().replace('-', "_");
+
+        match normalized.as_str() {
             "swap_to_primary" => {
-                if let Some(ref primary_asset_str) = self.primary_asset {
-                    // Try to parse as FungibleAsset
-                    if let Ok(primary_asset) = primary_asset_str.parse::<FungibleAsset<_>>() {
-                        tracing::info!(
-                            primary_asset = %primary_asset,
-                            "Using SwapToPrimary strategy"
-                        );
-                        return CollateralStrategy::SwapToPrimary { primary_asset };
-                    }
-                    tracing::error!(
-                        primary_asset = %primary_asset_str,
-                        "Failed to parse primary_asset, falling back to Hold"
-                    );
-                } else {
-                    tracing::error!(
-                        "SwapToPrimary strategy requires PRIMARY_ASSET, falling back to Hold"
-                    );
-                }
-                CollateralStrategy::Hold
+                let Some(ref primary_asset_str) = self.primary_asset else {
+                    panic!("COLLATERAL_STRATEGY=swap-to-primary requires PRIMARY_ASSET to be set");
+                };
+                
+                let primary_asset = primary_asset_str.parse::<FungibleAsset<_>>()
+                    .unwrap_or_else(|_| panic!(
+                        "Failed to parse PRIMARY_ASSET: '{primary_asset_str}'. Expected format: nep141:contract_id or nep245:contract_id:token_id"
+                    ));
+                
+                tracing::info!(
+                    primary_asset = %primary_asset,
+                    "Using SwapToPrimary strategy"
+                );
+                CollateralStrategy::SwapToPrimary { primary_asset }
             }
-            "swap_to_target" => {
-                tracing::info!("Using SwapToTarget strategy");
-                CollateralStrategy::SwapToTarget
+            "swap_to_borrow" => {
+                tracing::info!("Using SwapToBorrow strategy");
+                CollateralStrategy::SwapToBorrow
             }
             "hold" => {
                 tracing::info!("Using Hold strategy (keep collateral as received)");
@@ -178,7 +175,7 @@ impl Args {
             }
             other => {
                 tracing::error!(
-                    strategy = other,
+                    strategy = %other,
                     "Invalid collateral strategy, defaulting to 'hold'"
                 );
                 CollateralStrategy::Hold

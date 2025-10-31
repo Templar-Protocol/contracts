@@ -54,7 +54,7 @@ use std::{
 
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::{json_types::U128, AccountId};
-use templar_common::asset::{BorrowAsset, FungibleAsset};
+use templar_common::asset::{BorrowAsset, CollateralAsset, FungibleAsset};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -133,8 +133,13 @@ pub struct InventoryManager {
     client: JsonRpcClient,
     /// Bot's account ID
     account_id: AccountId,
-    /// Tracked assets and their balances (keyed by asset string representation)
+    /// Tracked borrow assets and their balances (keyed by asset string representation)
     inventory: HashMap<String, (FungibleAsset<BorrowAsset>, InventoryEntry)>,
+    /// Tracked collateral assets (received from liquidations)
+    collateral_inventory: HashMap<String, (FungibleAsset<CollateralAsset>, InventoryEntry)>,
+    /// Liquidation history: maps `collateral_asset` -> `borrow_asset` used to acquire it
+    /// This allows us to swap collateral back to the original borrow asset
+    liquidation_history: HashMap<String, String>,
     /// Minimum refresh interval to avoid excessive RPC calls
     min_refresh_interval: Duration,
     /// Last full refresh timestamp
@@ -153,6 +158,8 @@ impl InventoryManager {
             client,
             account_id,
             inventory: HashMap::new(),
+            collateral_inventory: HashMap::new(),
+            liquidation_history: HashMap::new(),
             min_refresh_interval: Duration::from_secs(30),
             last_full_refresh: None,
         }
@@ -207,7 +214,54 @@ impl InventoryManager {
             discovered = discovered,
             existing = existing,
             total = self.inventory.len(),
-            "Asset discovery complete"
+            "Discovered borrow assets from market configurations"
+        );
+    }
+
+    /// Discovers and tracks collateral assets from market configurations.
+    ///
+    /// This method extracts collateral assets from market configurations and adds them
+    /// to the collateral inventory for tracking. This is used to monitor collateral
+    /// received from liquidations.
+    ///
+    /// # Arguments
+    ///
+    /// * `market_configs` - Iterator of market configurations
+    pub fn discover_collateral_assets<'a>(
+        &mut self,
+        market_configs: impl Iterator<Item = &'a templar_common::market::MarketConfiguration>,
+    ) {
+        let mut discovered = 0;
+        let mut existing = 0;
+
+        for config in market_configs {
+            let asset = config.collateral_asset.clone();
+            let key = asset.to_string();
+
+            if self.collateral_inventory.contains_key(&key) {
+                existing += 1;
+            } else {
+                self.collateral_inventory.insert(
+                    key.clone(),
+                    (
+                        asset.clone(),
+                        InventoryEntry {
+                            balance: U128(0),
+                            reserved: U128(0),
+                            last_updated: Instant::now(),
+                        },
+                    ),
+                );
+                discovered += 1;
+                debug!(asset = %asset, "Discovered new collateral asset");
+            }
+        }
+
+        info!(
+            discovered = discovered,
+            existing = existing,
+            total = self.collateral_inventory.len(),
+            "Discovered collateral assets from market configurations"
         );
     }
 
@@ -280,18 +334,48 @@ impl InventoryManager {
 
         self.last_full_refresh = Some(Instant::now());
 
-        if updated_assets.is_empty() {
+        // Show all borrow assets with non-zero balance
+        let available_assets: Vec<String> = self
+            .inventory
+            .values()
+            .filter_map(|(asset, entry)| {
+                if entry.balance.0 > 0 {
+                    // Extract readable name from asset string
+                    let asset_str = asset.to_string();
+                    let readable_name = if let Some(stripped) = asset_str.strip_prefix("nep141:") {
+                        // For nep141, show just the contract name
+                        stripped.split('.').next().unwrap_or(stripped).to_string()
+                    } else if let Some(stripped) = asset_str.strip_prefix("nep245:") {
+                        // For nep245, show contract and token parts
+                        let parts: Vec<&str> = stripped.split(':').collect();
+                        if parts.len() >= 2 {
+                            // Show the token_id part (usually contains readable info)
+                            parts[1].split('-').next().unwrap_or("unknown").to_string()
+                        } else {
+                            "unknown".to_string()
+                        }
+                    } else {
+                        asset_str.split(':').last().unwrap_or("unknown").to_string()
+                    };
+                    Some(readable_name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if available_assets.is_empty() {
             info!(
                 refreshed = refreshed,
                 errors = errors,
-                "Inventory refresh complete with no balance changes"
+                "Borrow asset inventory refresh complete - no assets with balance"
             );
         } else {
             info!(
                 refreshed = refreshed,
                 errors = errors,
-                updates = updated_assets.join(", "),
-                "Inventory refresh complete with balance changes"
+                available_borrow_assets = available_assets.join(", "),
+                "Borrow asset inventory refresh complete"
             );
         }
 
@@ -457,6 +541,189 @@ impl InventoryManager {
                         .unwrap_or(u64::MAX),
                 })
                 .collect(),
+        }
+    }
+
+    /// Refreshes all collateral asset balances
+    ///
+    /// Similar to `refresh()` but for collateral assets received from liquidations.
+    /// Returns a map of non-zero collateral balances.
+    ///
+    /// # Returns
+    ///
+    /// `HashMap` of asset name to balance for assets with non-zero balance
+    ///
+    /// # Errors
+    ///
+    /// Returns error if fetching fails
+    pub async fn refresh_collateral(&mut self) -> InventoryResult<HashMap<String, U128>> {
+        info!(
+            collateral_asset_count = self.collateral_inventory.len(),
+            "Refreshing collateral inventory"
+        );
+
+        let mut non_zero_balances = HashMap::new();
+        let mut refreshed = 0;
+        let mut errors = 0;
+
+        // Collect assets to query (clone to avoid borrow issues)
+        let assets_to_query: Vec<(String, FungibleAsset<CollateralAsset>)> = self
+            .collateral_inventory
+            .iter()
+            .map(|(key, (asset, _))| (key.clone(), asset.clone()))
+            .collect();
+
+        for (key, asset) in assets_to_query {
+            match self.fetch_collateral_balance(&asset).await {
+                Ok(balance) => {
+                    if let Some((_asset, entry)) = self.collateral_inventory.get_mut(&key) {
+                        entry.update_balance(balance);
+                        refreshed += 1;
+
+                        if balance.0 > 0 {
+                            non_zero_balances.insert(asset.to_string(), balance);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        collateral_asset = %asset,
+                        error = %e,
+                        "Failed to fetch collateral balance"
+                    );
+                    errors += 1;
+                }
+            }
+        }
+
+        if non_zero_balances.is_empty() {
+            info!(
+                refreshed = refreshed,
+                errors = errors,
+                "Collateral asset inventory refresh complete - no holdings"
+            );
+        } else {
+            let assets_str = non_zero_balances
+                .iter()
+                .map(|(asset, balance)| {
+                    // Extract readable name from asset string
+                    let readable_name = if let Some(stripped) = asset.strip_prefix("nep141:") {
+                        stripped.split('.').next().unwrap_or(stripped)
+                    } else if let Some(stripped) = asset.strip_prefix("nep245:") {
+                        let parts: Vec<&str> = stripped.split(':').collect();
+                        if parts.len() >= 2 {
+                            parts[1].split('-').next().unwrap_or("unknown")
+                        } else {
+                            "unknown"
+                        }
+                    } else {
+                        asset.split(':').last().unwrap_or("unknown")
+                    };
+                    format!("{}: {}", readable_name, balance.0)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            info!(
+                refreshed = refreshed,
+                errors = errors,
+                collateral_holdings = assets_str,
+                "Collateral asset inventory refresh complete"
+            );
+        }
+
+        Ok(non_zero_balances)
+    }
+
+    /// Fetches current balance for a collateral asset from blockchain
+    async fn fetch_collateral_balance(
+        &self,
+        asset: &FungibleAsset<CollateralAsset>,
+    ) -> InventoryResult<U128> {
+        let balance_action = asset.balance_of_action(&self.account_id);
+
+        let args: serde_json::Value =
+            serde_json::from_slice(&balance_action.args).map_err(RpcError::DeserializeError)?;
+
+        let balance = view::<U128>(
+            &self.client,
+            asset.contract_id().into(),
+            &balance_action.method_name,
+            args,
+        )
+        .await?;
+
+        Ok(balance)
+    }
+
+    /// Gets collateral inventory for iteration
+    pub fn collateral_holdings(&self) -> Vec<(FungibleAsset<CollateralAsset>, U128)> {
+        self.collateral_inventory
+            .values()
+            .filter_map(|(asset, entry)| {
+                if entry.balance.0 > 0 {
+                    Some((asset.clone(), entry.balance))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Gets current collateral balances without refreshing from RPC
+    /// 
+    /// Returns a `HashMap` of asset string -> balance for assets with non-zero balance.
+    /// This is useful when you just want to check what's in memory without making RPC calls.
+    pub fn get_collateral_balances(&self) -> HashMap<String, U128> {
+        self.collateral_inventory
+            .iter()
+            .filter_map(|(asset_str, (_, entry))| {
+                if entry.balance.0 > 0 {
+                    Some((asset_str.clone(), entry.balance))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Records which borrow asset was used to acquire collateral
+    /// 
+    /// Call this after a successful liquidation to track the relationship
+    /// between borrow and collateral assets for swap-to-borrow strategy.
+    pub fn record_liquidation(
+        &mut self,
+        borrow_asset: &FungibleAsset<BorrowAsset>,
+        collateral_asset: &FungibleAsset<CollateralAsset>,
+    ) {
+        let borrow_str = borrow_asset.to_string();
+        let collateral_str = collateral_asset.to_string();
+        
+        tracing::debug!(
+            borrow = %borrow_str,
+            collateral = %collateral_str,
+            "Recording liquidation history"
+        );
+        
+        self.liquidation_history.insert(collateral_str, borrow_str);
+    }
+
+    /// Gets the borrow asset that was used to acquire a collateral asset
+    /// 
+    /// Returns None if no history exists for this collateral.
+    pub fn get_liquidation_history(&self, collateral_asset: &str) -> Option<&String> {
+        self.liquidation_history.get(collateral_asset)
+    }
+
+    /// Clears liquidation history for a collateral asset after successful swap
+    /// 
+    /// Should be called after swapping collateral back to borrow asset.
+    pub fn clear_liquidation_history(&mut self, collateral_asset: &str) {
+        if self.liquidation_history.remove(collateral_asset).is_some() {
+            tracing::debug!(
+                collateral = %collateral_asset,
+                "Cleared liquidation history after successful swap"
+            );
         }
     }
 }

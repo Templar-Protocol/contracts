@@ -164,8 +164,8 @@ pub enum CollateralStrategy {
         /// Primary asset to swap to
         primary_asset: FungibleAsset<CollateralAsset>,
     },
-    /// Swap collateral back to the same asset used for liquidation
-    SwapToTarget,
+    /// Swap collateral back to borrow assets (assets used for liquidations)
+    SwapToBorrow,
 }
 
 /// Production-grade liquidator with modular architecture.

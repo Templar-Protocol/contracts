@@ -198,6 +198,12 @@ impl LiquidationExecutor {
                             "Liquidation executed successfully (all receipts succeeded)"
                         );
 
+                        // Record liquidation history for swap-to-borrow strategy
+                        self.inventory
+                            .write()
+                            .await
+                            .record_liquidation(borrow_asset, collateral_asset);
+
                         // Handle collateral based on strategy (may swap)
                         self.handle_collateral(
                             borrow_account,
@@ -306,13 +312,13 @@ impl LiquidationExecutor {
                     );
                 }
             }
-            CollateralStrategy::SwapToTarget => {
+            CollateralStrategy::SwapToBorrow => {
                 info!(
                     borrower = %borrow_account,
                     collateral_asset = %collateral_asset,
                     target_asset = %borrow_asset,
                     amount = %collateral_amount.0,
-                    "Swapping collateral back to borrow asset (strategy: SwapToTarget)"
+                    "Swapping collateral back to borrow asset (strategy: SwapToBorrow)"
                 );
 
                 if let Some(ref swap_provider) = self.swap_provider {
@@ -339,18 +345,16 @@ impl LiquidationExecutor {
                                 error = ?e,
                                 "Failed to swap collateral to borrow asset, will hold collateral"
                             );
-                        }
                     }
-                } else {
-                    warn!(
-                        "SwapToTarget strategy configured but no swap provider available, holding collateral"
-                    );
                 }
+            } else {
+                warn!(
+                    "SwapToBorrow strategy configured but no swap provider available, holding collateral"
+                );
             }
         }
     }
-
-    /// Executes a swap using the configured swap provider.
+}    /// Executes a swap using the configured swap provider.
     async fn execute_swap<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,

@@ -22,6 +22,7 @@ use crate::{
     inventory::InventoryManager,
     liquidation_strategy::LiquidationStrategy,
     rpc::{list_all_deployments, view, Network},
+    swap::SwapProvider,
     CollateralStrategy, Liquidator, LiquidatorError,
 };
 
@@ -127,21 +128,18 @@ impl LiquidatorService {
 
         match config.swap_provider.to_lowercase().as_str() {
             "oneclick" => {
-                if let Some(ref api_token) = config.oneclick_api_token {
-                    let oneclick = OneClickSwap::new(
-                        client.clone(),
-                        signer,
-                        None, // Use default slippage
-                        Some(api_token.clone()),
-                    );
-                    tracing::info!("Using 1-Click API swap provider");
-                    Some(SwapProviderImpl::oneclick(oneclick))
+                let oneclick = OneClickSwap::new(
+                    client.clone(),
+                    signer,
+                    None, // Use default slippage
+                    config.oneclick_api_token.clone(),
+                );
+                if config.oneclick_api_token.is_some() {
+                    tracing::info!("Using 1-Click API swap provider with authentication (no fee)");
                 } else {
-                    tracing::error!(
-                        "OneClick provider selected but ONECLICK_API_TOKEN not provided"
-                    );
-                    None
+                    tracing::warn!("Using 1-Click API swap provider WITHOUT authentication (0.1% fee will apply)");
                 }
+                Some(SwapProviderImpl::oneclick(oneclick))
             }
             "rhea" => {
                 if let Some(ref contract_str) = config.rhea_contract {
@@ -225,6 +223,9 @@ impl LiquidatorService {
             // Run liquidation round
             self.run_liquidation_round().await;
 
+            // After liquidation round, check and swap collateral if needed
+            self.swap_collateral_holdings().await;
+
             tracing::info!(
                 interval_seconds = self.config.liquidation_scan_interval,
                 "Liquidation round completed, sleeping before next run"
@@ -234,6 +235,7 @@ impl LiquidatorService {
     }
 
     /// Refresh the market registry (discover and validate markets)
+    #[allow(clippy::too_many_lines)]
     async fn refresh_registry(&mut self) -> Result<(), LiquidatorError> {
         let refresh_span = tracing::debug_span!("registry_refresh");
 
@@ -257,6 +259,44 @@ impl LiquidatorService {
             // Fetch configurations for all markets
             let mut market_configs = Vec::new();
             for market in &all_markets {
+                // First check contract version using NEP-330
+                let version_result = crate::rpc::get_contract_version(&self.client, market).await;
+                
+                if let Some(version) = version_result {
+                    // Parse semver (e.g., "1.2.3" or "0.1.0")
+                    let parts: Vec<&str> = version.split('.').collect();
+                    let is_supported = if let [maj, min, _patch] = parts.as_slice() {
+                        let major = maj.parse::<u32>().unwrap_or(0);
+                        let minor = min.parse::<u32>().unwrap_or(0);
+                        // Require version >= 1.1.0 (when price_oracle_configuration was added)
+                        (major, minor) >= (1, 1)
+                    } else {
+                        tracing::warn!(
+                            market = %market,
+                            version = %version,
+                            "Invalid semver format, skipping"
+                        );
+                        false
+                    };
+                    
+                    if !is_supported {
+                        tracing::info!(
+                            market = %market,
+                            version = %version,
+                            min_version = "1.1.0",
+                            "Skipping market - unsupported contract version"
+                        );
+                        continue;
+                    }
+                } else {
+                    tracing::info!(
+                        market = %market,
+                        "Contract does not implement NEP-330 (contract_source_metadata), skipping"
+                    );
+                    continue;
+                }
+                
+                // Now fetch configuration
                 match view::<templar_common::market::MarketConfiguration>(
                     &self.client,
                     market.clone(),
@@ -288,6 +328,8 @@ impl LiquidatorService {
             {
                 let mut inventory_guard = self.inventory.write().await;
                 inventory_guard.discover_assets(market_configs.iter().map(|(_, config)| config));
+                inventory_guard
+                    .discover_collateral_assets(market_configs.iter().map(|(_, config)| config));
             }
 
             // Create liquidators for each market
@@ -332,12 +374,6 @@ impl LiquidatorService {
                 );
             }
 
-            tracing::info!(
-                supported_count = supported_markets.len(),
-                supported = ?supported_markets.keys().collect::<Vec<_>>(),
-                "Active markets to monitor"
-            );
-
             self.markets = supported_markets;
             Ok(())
         }
@@ -364,6 +400,294 @@ impl LiquidatorService {
         }
         .instrument(inventory_span)
         .await;
+    }
+
+    /// Swaps collateral holdings based on configured strategy
+    ///
+    /// This method:
+    /// 1. Refreshes collateral balances
+    /// 2. Logs current holdings
+    /// 3. If strategy != Hold, swaps collateral to target asset
+    /// 4. Logs new balances after swap
+    ///
+    /// Protected by dry-run flag.
+    #[allow(clippy::too_many_lines)]
+    async fn swap_collateral_holdings(&self) {
+        let swap_span = tracing::debug_span!("collateral_swap");
+
+        async {
+            // Step 1: Get current collateral balances (already up-to-date from liquidations)
+            let collateral_balances = self.inventory.read().await.get_collateral_balances();
+
+            // If no collateral holdings, nothing to do
+            if collateral_balances.is_empty() {
+                tracing::debug!("No collateral holdings to process");
+                return;
+            }
+
+            // Step 2: Check collateral strategy
+            match &self.config.collateral_strategy {
+                CollateralStrategy::Hold => {
+                    tracing::info!("Collateral strategy is Hold - keeping collateral as received");
+                }
+                CollateralStrategy::SwapToPrimary { primary_asset } => {
+                    tracing::info!(
+                        target_asset = %primary_asset,
+                        "Collateral strategy: SwapToPrimary - swapping all collateral to primary asset"
+                    );
+
+                    if self.config.dry_run {
+                        tracing::info!("[DRY RUN] Would swap collateral to primary asset");
+                        return;
+                    }
+
+                    // Execute swaps
+                    if let Some(ref swap_provider) = self.swap_provider {
+                        for (collateral_asset_str, balance) in &collateral_balances {
+                            // Skip if already the primary asset
+                            if collateral_asset_str == &primary_asset.to_string() {
+                                tracing::debug!(
+                                    asset = %collateral_asset_str,
+                                    "Skipping swap - already primary asset"
+                                );
+                                continue;
+                            }
+
+                            // Parse back to CollateralAsset
+                            match collateral_asset_str.parse::<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>() {
+                                Ok(collateral_asset) => {
+                                    self.execute_collateral_swap(
+                                        swap_provider,
+                                        &collateral_asset,
+                                        primary_asset,
+                                        *balance,
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        asset = %collateral_asset_str,
+                                        error = ?e,
+                                        "Failed to parse collateral asset"
+                                    );
+                                }
+                            }
+                        }
+
+                        // Step 3: Refresh and log new balances
+                        tracing::info!("Refreshing balances after collateral swaps");
+                        let _new_borrow_balances =
+                            self.inventory.write().await.refresh().await.ok();
+                        let _new_collateral_balances =
+                            self.inventory.write().await.refresh_collateral().await.ok();
+                    } else {
+                        tracing::warn!("No swap provider configured - cannot swap collateral");
+                    }
+                }
+                CollateralStrategy::SwapToBorrow => {
+                    tracing::info!(
+                        "Collateral strategy: SwapToBorrow - swapping collateral to borrow assets"
+                    );
+
+                    if self.config.dry_run {
+                        tracing::info!("[DRY RUN] Would swap collateral to borrow assets");
+                        return;
+                    }
+
+                    // Execute swaps with intelligent target selection
+                    if let Some(ref swap_provider) = self.swap_provider {
+                        // Build swap plan first (while holding read lock)
+                        let swap_plan: Vec<(String, String, near_sdk::json_types::U128)> = {
+                            let inventory_read = self.inventory.read().await;
+                            
+                            let mut plan = Vec::new();
+                            for (collateral_asset_str, balance) in &collateral_balances {
+                                // Step 1: Check liquidation history first
+                                let target_asset_str = if let Some(target_from_history) = inventory_read.get_liquidation_history(collateral_asset_str) {
+                                    tracing::info!(
+                                        collateral = %collateral_asset_str,
+                                        target = %target_from_history,
+                                        "Using liquidation history to determine swap target"
+                                    );
+                                    target_from_history.clone()
+                                } else {
+                                    // Step 2: No history - use market configuration
+                                    tracing::info!(
+                                        collateral = %collateral_asset_str,
+                                        "No liquidation history - checking market configurations"
+                                    );
+                                    
+                                    // Find all markets that use this collateral asset
+                                    let mut matching_markets: Vec<(String, u128)> = Vec::new();
+                                    for liquidator in self.markets.values() {
+                                        let market_collateral = liquidator.market_config.collateral_asset.to_string();
+                                        if market_collateral == *collateral_asset_str {
+                                            let borrow_asset_str = liquidator.market_config.borrow_asset.to_string();
+                                            let borrow_balance = inventory_read.get_available_balance(&liquidator.market_config.borrow_asset).0;
+                                            matching_markets.push((borrow_asset_str, borrow_balance));
+                                        }
+                                    }
+                                    
+                                    if matching_markets.is_empty() {
+                                        tracing::warn!(
+                                            collateral = %collateral_asset_str,
+                                            "No markets found using this collateral asset"
+                                        );
+                                        continue;
+                                    }
+                                    
+                                    // Use market with highest borrow asset balance
+                                    matching_markets.sort_by(|a, b| b.1.cmp(&a.1));
+                                    let target = &matching_markets[0].0;
+                                    
+                                    if matching_markets.len() > 1 {
+                                        tracing::info!(
+                                            collateral = %collateral_asset_str,
+                                            markets_count = matching_markets.len(),
+                                            selected_target = %target,
+                                            "Multiple markets use this collateral - selected market with highest borrow asset balance"
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            collateral = %collateral_asset_str,
+                                            target = %target,
+                                            "Using market configuration to determine swap target"
+                                        );
+                                    }
+                                    
+                                    target.clone()
+                                };
+                                
+                                // Skip if already the target asset
+                                if collateral_asset_str == &target_asset_str {
+                                    tracing::debug!(
+                                        asset = %collateral_asset_str,
+                                        "Skipping swap - already a borrow asset"
+                                    );
+                                    continue;
+                                }
+                                
+                                plan.push((collateral_asset_str.clone(), target_asset_str, *balance));
+                            }
+                            
+                            plan
+                        }; // inventory_read lock released here
+                        
+                        // Execute swaps (without holding lock)
+                        for (from_str, to_str, amount) in swap_plan {
+                            match (
+                                from_str.parse::<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>(),
+                                to_str.parse::<templar_common::asset::FungibleAsset<templar_common::asset::BorrowAsset>>()
+                            ) {
+                                (Ok(from_asset), Ok(to_asset)) => {
+                                    self.execute_collateral_swap(
+                                        swap_provider,
+                                        &from_asset,
+                                        &to_asset,
+                                        amount,
+                                    )
+                                    .await;
+                                }
+                                _ => {
+                                    tracing::error!(
+                                        from = %from_str,
+                                        to = %to_str,
+                                        "Failed to parse assets for swap"
+                                    );
+                                }
+                            }
+                        }
+
+                        // Step 3: Refresh and log new balances
+                        tracing::info!("Refreshing balances after collateral swaps");
+                        let _new_borrow_balances =
+                            self.inventory.write().await.refresh().await.ok();
+                        let _new_collateral_balances =
+                            self.inventory.write().await.refresh_collateral().await.ok();
+                    } else {
+                        tracing::warn!("No swap provider configured - cannot swap collateral");
+                    }
+                }
+            }
+        }
+        .instrument(swap_span)
+        .await;
+    }
+
+    /// Executes a single collateral-to-borrow swap
+    async fn execute_collateral_swap<F, T>(
+        &self,
+        swap_provider: &crate::swap::SwapProviderImpl,
+        from_asset: &templar_common::asset::FungibleAsset<F>,
+        to_asset: &templar_common::asset::FungibleAsset<T>,
+        amount: near_sdk::json_types::U128,
+    ) where
+        F: templar_common::asset::AssetClass,
+        T: templar_common::asset::AssetClass,
+    {
+        use near_primitives::views::FinalExecutionStatus;
+
+        tracing::info!(
+            from = %from_asset,
+            to = %to_asset,
+            amount = %amount.0,
+            "Swapping collateral to primary asset"
+        );
+
+        // Get swap quote
+        match swap_provider.quote(from_asset, to_asset, amount).await {
+            Ok(required_input) => {
+                tracing::info!(
+                    from = %from_asset,
+                    to = %to_asset,
+                    input_amount = %required_input.0,
+                    output_amount = %amount.0,
+                    "Quote received for collateral swap"
+                );
+
+                // Execute swap
+                match swap_provider.swap(from_asset, to_asset, required_input).await {
+                    Ok(FinalExecutionStatus::SuccessValue(_)) => {
+                        tracing::info!(
+                            from = %from_asset,
+                            to = %to_asset,
+                            amount = %required_input.0,
+                            "Collateral swap completed successfully"
+                        );
+                        
+                        // Clear liquidation history for this collateral after successful swap
+                        self.inventory
+                            .write()
+                            .await
+                            .clear_liquidation_history(&from_asset.to_string());
+                    }
+                    Ok(status) => {
+                        tracing::error!(
+                            from = %from_asset,
+                            to = %to_asset,
+                            status = ?status,
+                            "Collateral swap failed with unexpected status"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            from = %from_asset,
+                            to = %to_asset,
+                            error = %e,
+                            "Collateral swap failed"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    from = %from_asset,
+                    to = %to_asset,
+                    error = %e,
+                    "Failed to get quote for collateral swap"
+                );
+            }
+        }
     }
 
     /// Run a single liquidation round across all markets

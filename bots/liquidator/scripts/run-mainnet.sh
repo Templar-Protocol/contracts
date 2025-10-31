@@ -73,6 +73,13 @@ MAX_GAS_PERCENTAGE="${MAX_GAS_PERCENTAGE:-10}"
 MIN_PROFIT_BPS="${MIN_PROFIT_BPS:-50}"
 DRY_RUN="${DRY_RUN:-true}"
 
+# Collateral strategy configuration
+COLLATERAL_STRATEGY="${COLLATERAL_STRATEGY:-hold}"
+SWAP_PROVIDER="${SWAP_PROVIDER:-oneclick}"
+PRIMARY_ASSET="${PRIMARY_ASSET}"
+ONECLICK_API_TOKEN="${ONECLICK_API_TOKEN}"
+RHEA_CONTRACT="${RHEA_CONTRACT}"
+
 # Build binary if needed
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
 BINARY_PATH="$PROJECT_ROOT/target/debug/liquidator"
@@ -138,6 +145,13 @@ done
 
 # Add RPC_URL if set
 [ -n "$RPC_URL" ] && CMD_ARGS+=("--rpc-url" "$RPC_URL")
+
+# Add collateral strategy arguments
+CMD_ARGS+=("--collateral-strategy" "$COLLATERAL_STRATEGY")
+CMD_ARGS+=("--swap-provider" "$SWAP_PROVIDER")
+[ -n "$PRIMARY_ASSET" ] && CMD_ARGS+=("--primary-asset" "$PRIMARY_ASSET")
+[ -n "$ONECLICK_API_TOKEN" ] && CMD_ARGS+=("--oneclick-api-token" "$ONECLICK_API_TOKEN")
+[ -n "$RHEA_CONTRACT" ] && CMD_ARGS+=("--rhea-contract" "$RHEA_CONTRACT")
 
 info "Starting liquidator..."
 echo ""
