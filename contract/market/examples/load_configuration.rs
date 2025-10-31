@@ -8,6 +8,7 @@ pub fn main() {
     let file_path = &args[1];
     let file_contents = std::fs::read(file_path).unwrap();
     let parsed: MarketConfiguration = serde_json::from_slice(&file_contents).unwrap();
+    parsed.validate().unwrap();
 
     println!(
         "{}",

@@ -4718,6 +4718,7 @@ dependencies = [
 name = "templar-universal-account"
 version = "1.1.0"
 dependencies = [
+ "borsh",
  "hex",
  "near-primitives",
  "near-sdk",
@@ -4728,7 +4729,7 @@ dependencies = [
 
 [[package]]
 name = "templar-universal-account-contract"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "getrandom 0.2.15",
  "near-sdk",

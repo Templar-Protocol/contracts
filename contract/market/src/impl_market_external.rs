@@ -11,8 +11,10 @@ use templar_common::{
     oracle::pyth::OracleResponse,
     self_ext,
     snapshot::Snapshot,
-    supply::SupplyPosition,
-    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
+    supply::{SupplyPosition, WithdrawalAttempt},
+    withdrawal_queue::{
+        WithdrawalQueueExecutionResult, WithdrawalQueueStatus, WithdrawalRequestStatus,
+    },
 };
 
 use crate::{Contract, ContractExt};
@@ -191,40 +193,88 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.remove(&env::predecessor_account_id());
     }
 
-    fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
-        let Some(withdrawal_resolution) = self
-            .try_lock_next_withdrawal_request()
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
-        else {
-            env::log_str("Supply position does not exist: skipping.");
-            return PromiseOrValue::Value(());
+    fn execute_next_supply_withdrawal_request(
+        &mut self,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<WithdrawalQueueExecutionResult> {
+        let batch_limit = batch_limit.unwrap_or(1);
+        let mut batch = Vec::with_capacity(batch_limit.min(self.withdrawal_queue.len()) as usize);
+        let snapshot_proof = self.snapshot();
+        let block_timestamp_ms = env::block_timestamp_ms();
+        let queue_len_start = self.withdrawal_queue.len();
+        let mut depth_cleared = BorrowAssetAmount::zero();
+
+        while let Some((account_id, requested_amount)) = self.withdrawal_queue.peek() {
+            if batch.len() >= batch_limit as usize {
+                break;
+            }
+
+            let withdrawal_attempt = {
+                let Some(mut position_guard) =
+                    self.supply_position_guard(snapshot_proof, account_id.clone())
+                else {
+                    // Somehow the account does not exist. This should not happen,
+                    // but it is recoverable if it does.
+                    self.withdrawal_queue.pop();
+                    depth_cleared += requested_amount;
+                    continue;
+                };
+                let accumulation_proof = position_guard.accumulate_yield();
+                position_guard.record_withdrawal_initial(
+                    accumulation_proof,
+                    requested_amount,
+                    block_timestamp_ms,
+                )
+            };
+
+            match withdrawal_attempt {
+                WithdrawalAttempt::EmptyPosition => {
+                    self.withdrawal_queue.pop();
+                    depth_cleared += requested_amount;
+                    continue;
+                }
+                WithdrawalAttempt::NoLiquidity => {
+                    break;
+                }
+                WithdrawalAttempt::Full(withdrawal) => {
+                    batch.push(withdrawal);
+                    self.withdrawal_queue.pop();
+                    depth_cleared += requested_amount;
+                }
+                WithdrawalAttempt::Partial {
+                    withdrawal,
+                    remaining,
+                } => {
+                    batch.push(withdrawal);
+                    self.withdrawal_queue.mut_head(|a| *a = remaining);
+                    depth_cleared += requested_amount - remaining;
+                    break;
+                }
+            }
+        }
+
+        let result = WithdrawalQueueExecutionResult {
+            depth: depth_cleared,
+            length: queue_len_start - self.withdrawal_queue.len(),
         };
 
-        // There may be loose/untracked funds that the contract controls but
-        // does not account for in internal accounting.
-        let has_sufficient_liquidity = u128::from(self.borrow_asset_deposited_active)
-            .saturating_add(u128::from(self.total_incoming()))
-            .checked_sub(u128::from(self.borrowed()))
-            .is_some();
-
-        require!(
-            has_sufficient_liquidity,
-            "Insufficient liquidity to fulfill the request at this time",
-        );
-
-        self.borrow_asset_withdrawal_in_flight += withdrawal_resolution.amount_to_account;
+        let Some(transfers) = batch
+            .iter()
+            .map(|resolution| {
+                self.configuration
+                    .borrow_asset
+                    .transfer(resolution.account_id.clone(), resolution.amount_to_account)
+            })
+            .reduce(|a, b| a.and(b))
+        else {
+            return PromiseOrValue::Value(result);
+        };
 
         PromiseOrValue::Promise(
-            self.configuration
-                .borrow_asset
-                .transfer(
-                    withdrawal_resolution.account_id.clone(),
-                    withdrawal_resolution.amount_to_account,
-                )
-                .then(
-                    self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
-                        .execute_next_supply_withdrawal_request_01_finalize(withdrawal_resolution),
-                ),
+            transfers.then(
+                self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
+                    .execute_next_supply_withdrawal_request_01_finalize(batch, result),
+            ),
         )
     }
 

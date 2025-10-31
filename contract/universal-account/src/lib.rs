@@ -74,6 +74,7 @@ impl Contract {
         let Some(key_entry) = self.keys.get_mut(&KeyId::Passkey(key.clone())) else {
             env::panic_str("Key does not exist")
         };
+        *key_entry = key_entry.next();
 
         let current_account_id = env::current_account_id();
 
@@ -81,7 +82,7 @@ impl Contract {
             .verify(message)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
         let transactions = message
-            .verify(&current_account_id, &key_entry.next(), |_| true)
+            .verify(&current_account_id, key_entry, |_| true)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         require!(!transactions.is_empty(), "Transaction list is empty");

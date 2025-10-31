@@ -255,6 +255,12 @@ impl MarketConfiguration {
             return Err(error::out_of_bounds("supply_withdrawal_range.minimum"));
         }
 
+        if let Fee::Flat(amount) = self.supply_withdrawal_fee.fee {
+            if amount > self.supply_withdrawal_range.minimum {
+                return Err(error::out_of_bounds("supply_withdrawal_fee.fee"));
+            }
+        }
+
         if self.liquidation_maximum_spread >= 1u32 {
             return Err(error::out_of_bounds("liquidation_maximum_spread"));
         }
@@ -312,7 +318,7 @@ impl MarketConfiguration {
 
     pub fn single_snapshot_maximum_interest(&self) -> Decimal {
         self.borrow_interest_rate_strategy.at(Decimal::ONE)
-            * self.time_chunk_configuration.duration_ms.0
+            * self.time_chunk_configuration.duration_ms()
             * YEAR_PER_MS
     }
 
@@ -336,6 +342,8 @@ mod tests {
         serde_json::{self, json},
     };
     use rstest::rstest;
+
+    use crate::{dec, oracle::pyth::PriceIdentifier};
 
     use super::*;
 
@@ -389,5 +397,46 @@ mod tests {
             "maximum": U128(max),
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn single_snapshot_maximum_interest() {
+        let c = MarketConfiguration {
+            time_chunk_configuration: TimeChunkConfiguration::new(600_000),
+            borrow_asset: FungibleAsset::nep141("borrow.near".parse().unwrap()),
+            collateral_asset: FungibleAsset::nep141("collateral.near".parse().unwrap()),
+            price_oracle_configuration: PriceOracleConfiguration {
+                account_id: "pyth-oracle.near".parse().unwrap(),
+                collateral_asset_price_id: PriceIdentifier([0xcc; 32]),
+                collateral_asset_decimals: 24,
+                borrow_asset_price_id: PriceIdentifier([0xbb; 32]),
+                borrow_asset_decimals: 24,
+                price_maximum_age_s: 60,
+            },
+            borrow_mcr_maintenance: dec!("1.25"),
+            borrow_mcr_liquidation: dec!("1.2"),
+            borrow_asset_maximum_usage_ratio: dec!("0.99"),
+            borrow_origination_fee: Fee::zero(),
+            borrow_interest_rate_strategy: InterestRateStrategy::linear(dec!("0.1"), dec!("0.1"))
+                .unwrap(),
+            borrow_maximum_duration_ms: None,
+            borrow_range: (1, None).try_into().unwrap(),
+            supply_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_fee: TimeBasedFee::zero(),
+            yield_weights: YieldWeights::new_with_supply_weight(9)
+                .with_static("revenue.tmplr.near".parse().unwrap(), 1),
+            protocol_account_id: "revenue.tmplr.near".parse().unwrap(),
+            liquidation_maximum_spread: dec!("0.05"),
+        };
+
+        let actual = c.single_snapshot_maximum_interest();
+
+        let apr = dec!("0.1");
+        let single_snapshot_duration_ms = dec!("600000");
+        let expected =
+            apr * single_snapshot_duration_ms / (1000u32 * 60 * 60 * 24) / dec!("365.2425");
+
+        assert!(actual.abs_diff(expected) < Decimal::ONE.mul_pow10(-34).unwrap());
     }
 }
