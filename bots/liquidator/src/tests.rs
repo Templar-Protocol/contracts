@@ -15,8 +15,10 @@ use near_sdk::{json_types::U128, AccountId};
 use std::sync::Arc;
 
 use crate::{
+    liquidation_strategy::{
+        FullLiquidationStrategy, LiquidationStrategy, PartialLiquidationStrategy,
+    },
     rpc::{AppError, AppResult, Network},
-    strategy::{FullLiquidationStrategy, LiquidationStrategy, PartialLiquidationStrategy},
     swap::{intents::IntentsSwap, rhea::RheaSwap, SwapProvider, SwapProviderImpl},
     Liquidator,
 };

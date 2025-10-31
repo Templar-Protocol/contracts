@@ -30,7 +30,7 @@ use near_primitives::{
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction},
     types::{AccountId, BlockReference},
-    views::{FinalExecutionStatus, QueryRequest, TxExecutionStatus},
+    views::{FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
     near,
@@ -276,12 +276,27 @@ pub async fn view<T: DeserializeOwned>(
 ///
 /// Final execution status of the transaction
 #[tracing::instrument(skip(client, signer), level = "debug")]
+/// Send a signed transaction and wait for finality.
+///
+/// Returns the full execution outcome including all receipts.
+/// Use `check_transaction_success()` to verify if all receipts succeeded.
+///
+/// # Arguments
+///
+/// * `client` - JSON-RPC client instance
+/// * `signer` - Transaction signer
+/// * `timeout` - Maximum seconds to wait for finality
+/// * `tx` - Signed transaction to send
+///
+/// # Returns
+///
+/// Returns `FinalExecutionOutcomeView` containing transaction status and all receipt outcomes
 pub async fn send_tx(
     client: &JsonRpcClient,
     signer: &Signer,
     timeout: u64,
     tx: Transaction,
-) -> RpcResult<FinalExecutionStatus> {
+) -> RpcResult<FinalExecutionOutcomeView> {
     let (tx_hash, _size) = tx.get_hash_and_size();
 
     let called_at = Instant::now();
@@ -343,7 +358,81 @@ pub async fn send_tx(
         return Err(RpcError::NoOutcome(tx_hash.to_string()));
     };
 
-    Ok(outcome.into_outcome().status)
+    Ok(outcome.into_outcome())
+}
+
+/// Checks if a transaction and all its receipts succeeded.
+///
+/// A transaction can have status Success but contain failed receipts.
+/// This function checks both the transaction status and all receipt outcomes.
+///
+/// # Arguments
+///
+/// * `outcome` - The final execution outcome from `send_tx`
+///
+/// # Returns
+///
+/// * `Ok(())` if transaction and all receipts succeeded
+/// * `Err(String)` with error description if any receipt failed
+///
+/// # Errors
+///
+/// Returns an error if the transaction or any receipt failed
+pub fn check_transaction_success(outcome: &FinalExecutionOutcomeView) -> Result<(), String> {
+    use near_primitives::views::ExecutionStatusView;
+
+    // Check main transaction status
+    match &outcome.status {
+        FinalExecutionStatus::Failure(err) => {
+            return Err(format!("Transaction failed: {err:?}"));
+        }
+        FinalExecutionStatus::NotStarted => {
+            return Err("Transaction not started".to_string());
+        }
+        FinalExecutionStatus::Started => {
+            return Err("Transaction still in progress".to_string());
+        }
+        FinalExecutionStatus::SuccessValue(_) => {
+            // Continue to check receipts
+        }
+    }
+
+    // Check all receipt outcomes
+    for receipt in &outcome.receipts_outcome {
+        match &receipt.outcome.status {
+            ExecutionStatusView::Failure(err) => {
+                // Try to extract the actual error message from TxExecutionError
+                let error_msg = extract_error_message(err);
+                return Err(format!("Receipt {} failed: {}", receipt.id, error_msg));
+            }
+            ExecutionStatusView::Unknown => {
+                return Err(format!("Receipt {} status unknown", receipt.id));
+            }
+            ExecutionStatusView::SuccessValue(_) | ExecutionStatusView::SuccessReceiptId(_) => {
+                // This receipt succeeded, continue checking others
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Extracts a human-readable error message from `TxExecutionError`
+fn extract_error_message(err: &near_primitives::errors::TxExecutionError) -> String {
+    use near_primitives::errors::{ActionErrorKind, TxExecutionError};
+
+    match err {
+        TxExecutionError::ActionError(action_err) => {
+            match &action_err.kind {
+                ActionErrorKind::FunctionCallError(fc_err) => {
+                    // Extract the actual contract panic message
+                    format!("{fc_err:?}")
+                }
+                other => format!("{other:?}"),
+            }
+        }
+        TxExecutionError::InvalidTxError(_) => format!("{err:?}"),
+    }
 }
 
 /// List all deployments from a single registry contract.

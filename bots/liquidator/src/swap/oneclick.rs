@@ -71,21 +71,21 @@ struct QuoteRequest {
     swap_type: SwapType,
     /// Slippage tolerance in basis points
     slippage_tolerance: u32,
-    /// Origin asset ID (format: nep141:CONTRACT_ID)
+    /// Origin asset ID (format: `nep141:CONTRACT_ID`)
     origin_asset: String,
-    /// Deposit type: ORIGIN_CHAIN
+    /// Deposit type: `ORIGIN_CHAIN`
     deposit_type: String,
-    /// Destination asset ID (format: nep141:CONTRACT_ID)
+    /// Destination asset ID (format: `nep141:CONTRACT_ID`)
     destination_asset: String,
     /// Amount in smallest unit
     amount: String,
     /// Refund address
     refund_to: String,
-    /// Refund type: ORIGIN_CHAIN
+    /// Refund type: `ORIGIN_CHAIN`
     refund_type: String,
     /// Recipient address
     recipient: String,
-    /// Recipient type: DESTINATION_CHAIN
+    /// Recipient type: `DESTINATION_CHAIN`
     recipient_type: String,
     /// Deadline as ISO timestamp
     deadline: String,
@@ -211,25 +211,25 @@ struct SwapDetails {
     #[serde(default)]
     #[allow(dead_code)]
     near_tx_hashes: Vec<String>,
-    /// Actual input amount (null during PENDING_DEPOSIT)
+    /// Actual input amount (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
     amount_in: Option<String>,
-    /// Formatted input amount (null during PENDING_DEPOSIT)
+    /// Formatted input amount (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
     amount_in_formatted: Option<String>,
-    /// USD value of input amount (null during PENDING_DEPOSIT)
+    /// USD value of input amount (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
     amount_in_usd: Option<String>,
-    /// Actual output amount (null during PENDING_DEPOSIT)
+    /// Actual output amount (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
     amount_out: Option<String>,
-    /// Formatted output amount (null during PENDING_DEPOSIT)
+    /// Formatted output amount (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
     amount_out_formatted: Option<String>,
-    /// USD value of output amount (null during PENDING_DEPOSIT)
+    /// USD value of output amount (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
     amount_out_usd: Option<String>,
-    /// Slippage in basis points (null during PENDING_DEPOSIT)
+    /// Slippage in basis points (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
     slippage: Option<u32>,
     /// Origin chain transaction hashes
@@ -337,11 +337,12 @@ impl OneClickSwap {
 
         // Determine deposit type based on whether we're on NEAR
         // For NEAR-based assets (including bridged assets via omft.near), use INTENTS
-        let deposit_type = if from_asset_id.starts_with("nep141:") || from_asset_id.starts_with("nep245:") {
-            "INTENTS"
-        } else {
-            "ORIGIN_CHAIN"
-        };
+        let deposit_type =
+            if from_asset_id.starts_with("nep141:") || from_asset_id.starts_with("nep245:") {
+                "INTENTS"
+            } else {
+                "ORIGIN_CHAIN"
+            };
 
         let request = QuoteRequest {
             dry: false, // We want a real quote with deposit address
@@ -360,7 +361,7 @@ impl OneClickSwap {
             quote_waiting_time_ms: Some(5000), // Wait up to 5 seconds for quote
         };
 
-        let url = format!("{}/v0/quote", ONECLICK_API_BASE);
+        let url = format!("{ONECLICK_API_BASE}/v0/quote");
         let mut req = self.http_client.post(&url).json(&request);
 
         // Add API token if available
@@ -444,11 +445,11 @@ impl OneClickSwap {
             actions: vec![Action::FunctionCall(Box::new(storage_deposit_action))],
         });
 
-        let status = send_tx(&self.client, &self.signer, self.timeout, tx)
+        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx)
             .await
             .map_err(AppError::from)?;
 
-        match status {
+        match outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
                 info!(
                     account = %account_id,
@@ -466,13 +467,14 @@ impl OneClickSwap {
                 Ok(())
             }
             _ => {
-                warn!(status = ?status, "Unexpected storage deposit status");
+                warn!(status = ?outcome.status, "Unexpected storage deposit status");
                 Ok(())
             }
         }
     }
 
     /// Deposits tokens to the 1-Click deposit address.
+    #[allow(clippy::too_many_lines)]
     async fn deposit_tokens<F: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
@@ -544,7 +546,8 @@ impl OneClickSwap {
         }
 
         // Ensure the deposit address is registered for storage
-        self.ensure_storage_deposit(from_asset, &deposit_account).await?;
+        self.ensure_storage_deposit(from_asset, &deposit_account)
+            .await?;
 
         // Get transaction parameters
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
@@ -567,11 +570,11 @@ impl OneClickSwap {
         let (tx_hash, _) = tx.get_hash_and_size();
         let tx_hash_str = tx_hash.to_string();
 
-        let status = send_tx(&self.client, &self.signer, self.timeout, tx)
+        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx)
             .await
             .map_err(AppError::from)?;
 
-        match &status {
+        match &outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
                 info!("Deposit transaction succeeded");
             }
@@ -580,17 +583,20 @@ impl OneClickSwap {
                     failure = ?failure,
                     "Deposit transaction failed with detailed error"
                 );
-                return Err(AppError::ValidationError(
-                    format!("Deposit transaction failed: {:?}", failure)
-                ));
+                return Err(AppError::ValidationError(format!(
+                    "Deposit transaction failed: {failure:?}"
+                )));
             }
             _ => {
-                warn!(status = ?status, "Unexpected transaction status");
+                warn!(status = ?outcome.status, "Unexpected transaction status");
             }
         };
 
         // Check if the deposit was refunded by fetching transaction outcome and checking receipts
-        match self.check_deposit_refunded(&tx_hash_str, &deposit_account, amount).await {
+        match self
+            .check_deposit_refunded(&tx_hash_str, &deposit_account, amount)
+            .await
+        {
             Ok(true) => {
                 error!(
                     tx_hash = %tx_hash_str,
@@ -598,7 +604,7 @@ impl OneClickSwap {
                     "Deposit was refunded - 1-Click rejected the deposit"
                 );
                 return Err(AppError::ValidationError(
-                    "Deposit was refunded by 1-Click deposit address".to_string()
+                    "Deposit was refunded by 1-Click deposit address".to_string(),
                 ));
             }
             Ok(false) => {
@@ -628,12 +634,13 @@ impl OneClickSwap {
         use near_primitives::views::TxExecutionStatus;
 
         // Parse tx hash
-        let tx_hash_parsed = tx_hash.parse().map_err(|e| {
-            AppError::ValidationError(format!("Invalid tx hash: {e}"))
-        })?;
+        let tx_hash_parsed = tx_hash
+            .parse()
+            .map_err(|e| AppError::ValidationError(format!("Invalid tx hash: {e}")))?;
 
         // Fetch transaction outcome
-        let tx_result = self.client
+        let tx_result = self
+            .client
             .call(RpcTransactionStatusRequest {
                 transaction_info: TransactionInfo::TransactionId {
                     sender_account_id: self.signer.get_account_id(),
@@ -665,7 +672,11 @@ impl OneClickSwap {
                     }
                 }
             }
-            None => return Err(AppError::ValidationError("No execution outcome".to_string())),
+            None => {
+                return Err(AppError::ValidationError(
+                    "No execution outcome".to_string(),
+                ))
+            }
         };
 
         for receipt in receipts {
@@ -673,11 +684,15 @@ impl OneClickSwap {
                 // Check for NEP-141 transfer events
                 if log.contains("EVENT_JSON") && log.contains("ft_transfer") {
                     // Parse the event to check direction
-                    if log.contains(&format!("\"new_owner_id\":\"{}\"", deposit_account)) {
+                    if log.contains(&format!("\"new_owner_id\":\"{deposit_account}\"")) {
                         tokens_sent = true;
                     }
-                    if log.contains(&format!("\"old_owner_id\":\"{}\"", deposit_account))
-                        && log.contains(&format!("\"new_owner_id\":\"{}\"", self.signer.get_account_id())) {
+                    if log.contains(&format!("\"old_owner_id\":\"{deposit_account}\""))
+                        && log.contains(&format!(
+                            "\"new_owner_id\":\"{}\"",
+                            self.signer.get_account_id()
+                        ))
+                    {
                         tokens_returned = true;
                     }
                 }
@@ -702,7 +717,7 @@ impl OneClickSwap {
             memo: memo.map(String::from),
         };
 
-        let url = format!("{}/v0/deposit/submit", ONECLICK_API_BASE);
+        let url = format!("{ONECLICK_API_BASE}/v0/deposit/submit");
         let mut req = self.http_client.post(&url).json(&request);
 
         if let Some(token) = &self.api_token {
@@ -750,9 +765,9 @@ impl OneClickSwap {
         for attempt in 1..=max_attempts {
             tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
 
-            let mut url = format!("{}/v0/status?depositAddress={}", ONECLICK_API_BASE, deposit_address);
+            let mut url = format!("{ONECLICK_API_BASE}/v0/status?depositAddress={deposit_address}");
             if let Some(m) = memo {
-                url.push_str(&format!("&depositMemo={}", m));
+                url.push_str(&format!("&depositMemo={m}"));
             }
 
             let mut req = self.http_client.get(&url);
@@ -820,7 +835,7 @@ impl OneClickSwap {
 
         warn!("Swap status polling timed out");
         Err(AppError::ValidationError(
-            "Swap did not complete within timeout".to_string()
+            "Swap did not complete within timeout".to_string(),
         ))
     }
 }
@@ -870,9 +885,7 @@ impl SwapProvider for OneClickSwap {
         amount: U128,
     ) -> AppResult<FinalExecutionStatus> {
         // Step 1: Get quote with deposit address
-        let quote_response = self
-            .request_quote(from_asset, to_asset, amount)
-            .await?;
+        let quote_response = self.request_quote(from_asset, to_asset, amount).await?;
 
         let deposit_address = &quote_response.quote.deposit_address;
         let memo = quote_response.quote.deposit_memo.as_deref();
@@ -894,15 +907,14 @@ impl SwapProvider for OneClickSwap {
         // Step 4: Poll for completion (wait up to 20 minutes)
         let status = self.poll_swap_status(deposit_address, memo, 1200).await?;
 
-        match status {
-            SwapStatus::Success => {
-                info!("1-Click swap completed successfully");
-                Ok(FinalExecutionStatus::SuccessValue("".as_bytes().to_vec()))
-            }
-            _ => {
-                error!(status = ?status, "Swap did not succeed");
-                Err(AppError::ValidationError(format!("Swap failed with status: {status:?}")))
-            }
+        if status == SwapStatus::Success {
+            info!("1-Click swap completed successfully");
+            Ok(FinalExecutionStatus::SuccessValue("".as_bytes().to_vec()))
+        } else {
+            error!(status = ?status, "Swap did not succeed");
+            Err(AppError::ValidationError(format!(
+                "Swap failed with status: {status:?}"
+            )))
         }
     }
 
@@ -916,6 +928,7 @@ impl SwapProvider for OneClickSwap {
         account_id: &AccountId,
     ) -> AppResult<()> {
         // Delegate to the existing ensure_storage_deposit method
-        self.ensure_storage_deposit(token_contract, account_id).await
+        self.ensure_storage_deposit(token_contract, account_id)
+            .await
     }
 }

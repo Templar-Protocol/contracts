@@ -53,12 +53,16 @@ pub trait LiquidationStrategy: Send + Sync + std::fmt::Debug {
 
     /// Determines if a liquidation should proceed based on profitability.
     ///
+    /// In the inventory-based model, we liquidate using available inventory,
+    /// so there's no swap cost. Profitability is based purely on:
+    /// - Expected collateral value vs liquidation amount
+    /// - Gas cost
+    ///
     /// # Arguments
     ///
-    /// * `swap_input_amount` - Amount of input asset required for swap
     /// * `liquidation_amount` - Amount to be used for liquidation (borrow asset)
-    /// * `expected_collateral` - Expected collateral to receive
-    /// * `gas_cost_estimate` - Estimated gas cost in NEAR
+    /// * `expected_collateral_value` - Expected value of collateral in borrow asset units
+    /// * `gas_cost_estimate` - Estimated gas cost in borrow asset units
     ///
     /// # Returns
     ///
@@ -68,9 +72,8 @@ pub trait LiquidationStrategy: Send + Sync + std::fmt::Debug {
     /// Returns an error if profitability calculations fail.
     fn should_liquidate(
         &self,
-        swap_input_amount: U128,
         liquidation_amount: U128,
-        expected_collateral: U128,
+        expected_collateral_value: U128,
         gas_cost_estimate: U128,
     ) -> LiquidatorResult<bool>;
 
@@ -166,14 +169,6 @@ impl PartialLiquidationStrategy {
             max_gas_cost_percentage: 10, // Max 10% gas cost
         }
     }
-
-    /// Calculates the partial liquidation amount based on target percentage.
-    fn calculate_partial_amount(self, full_amount: U128) -> U128 {
-        #[allow(clippy::cast_lossless)]
-        let percentage = self.target_percentage as u128;
-        let full: u128 = full_amount.into();
-        U128((full * percentage) / 100)
-    }
 }
 
 impl LiquidationStrategy for PartialLiquidationStrategy {
@@ -185,69 +180,89 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         configuration: &MarketConfiguration,
         available_balance: U128,
     ) -> LiquidatorResult<Option<U128>> {
-        // Get the minimum acceptable liquidation amount (full liquidation)
+        // For partial liquidation:
+        // 1. Calculate target collateral (percentage of total)
+        // 2. Calculate minimum borrow amount needed for that collateral
+        // This ensures the liquidation amount matches the collateral we'll request
+
         let price_pair = configuration
             .price_oracle_configuration
             .create_price_pair(oracle_response)?;
 
-        let min_full_amount = configuration
-            .minimum_acceptable_liquidation_amount(position.collateral_asset_deposit, &price_pair);
+        // Calculate target collateral amount (e.g., 50% of total)
+        let total_collateral = position.collateral_asset_deposit;
+        let target_collateral_u128 =
+            u128::from(total_collateral) * u128::from(self.target_percentage) / 100;
+        let target_collateral = templar_common::asset::FungibleAssetAmount::<
+            templar_common::asset::CollateralAsset,
+        >::new(target_collateral_u128);
 
-        let Some(full_amount) = min_full_amount else {
-            debug!("Could not calculate minimum liquidation amount");
+        // Calculate minimum acceptable liquidation amount for this collateral
+        let min_for_target =
+            configuration.minimum_acceptable_liquidation_amount(target_collateral, &price_pair);
+
+        let Some(liquidation_amount) = min_for_target else {
+            tracing::warn!(
+                target_collateral = %target_collateral_u128,
+                "Could not calculate minimum liquidation amount from target collateral"
+            );
             return Ok(None);
         };
 
-        // Calculate partial amount based on target percentage
-        let partial_amount = self.calculate_partial_amount(full_amount.into());
-
         // Ensure we don't exceed available balance
-        let partial_u128: u128 = partial_amount.into();
+        let liquidation_u128: u128 = liquidation_amount.into();
         let available_u128: u128 = available_balance.into();
 
-        let liquidation_amount = if partial_u128 > available_u128 {
+        let final_liquidation_amount = if liquidation_u128 > available_u128 {
             debug!(
-                requested = %partial_u128,
+                requested = %liquidation_u128,
                 available = %available_u128,
                 "Insufficient balance, using available amount"
             );
             available_balance
         } else {
-            partial_amount
+            liquidation_amount.into()
         };
 
-        // Ensure the partial amount is still economically viable
-        // (at least 10% of the full amount, or we're wasting gas)
-        let full_u128: u128 = full_amount.into();
-        let minimum_viable = U128((full_u128 * 10) / 100);
-        let liquidation_u128: u128 = liquidation_amount.into();
-        let min_viable_u128: u128 = minimum_viable.into();
+        // Ensure the amount is still economically viable
+        // (at least 10% of full liquidation, or we're wasting gas)
+        let full_amount =
+            configuration.minimum_acceptable_liquidation_amount(total_collateral, &price_pair);
 
-        if liquidation_u128 < min_viable_u128 {
-            debug!(
-                amount = %liquidation_u128,
-                minimum = %min_viable_u128,
-                "Partial amount too small to be viable"
-            );
-            return Ok(None);
+        if let Some(full) = full_amount {
+            let full_u128: u128 = full.into();
+            let minimum_viable = U128((full_u128 * 10) / 100);
+            let final_u128: u128 = final_liquidation_amount.into();
+            let min_viable_u128: u128 = minimum_viable.into();
+
+            if final_u128 < min_viable_u128 {
+                tracing::warn!(
+                    amount = %final_u128,
+                    minimum_viable = %min_viable_u128,
+                    full_amount = %full_u128,
+                    available_balance = %available_u128,
+                    "Liquidation amount too small to be economically viable (< 10% of full amount)"
+                );
+                return Ok(None);
+            }
         }
 
         debug!(
-            full_amount = %full_u128,
-            partial_amount = %liquidation_u128,
+            target_collateral = %target_collateral_u128,
+            total_collateral = %u128::from(total_collateral),
+            liquidation_amount = %liquidation_u128,
             percentage = %self.target_percentage,
-            "Calculated partial liquidation amount"
+            "Calculated partial liquidation amount for target collateral"
         );
 
-        Ok(Some(liquidation_amount))
+        Ok(Some(final_liquidation_amount))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     fn should_liquidate(
         &self,
-        swap_input_amount: U128,
         liquidation_amount: U128,
-        expected_collateral: U128,
+        expected_collateral_value: U128,
         gas_cost_estimate: U128,
     ) -> LiquidatorResult<bool> {
         // Check gas cost is acceptable
@@ -266,25 +281,30 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
             return Ok(false);
         }
 
-        // Calculate total cost (swap input + gas)
-        let swap_u128: u128 = swap_input_amount.into();
-        let total_cost = swap_u128.saturating_add(gas_cost_u128);
+        // Calculate total cost (liquidation amount + gas)
+        // In inventory model: we spend liquidation_amount from inventory + gas
+        let total_cost = liquidation_u128.saturating_add(gas_cost_u128);
 
         // Calculate minimum acceptable revenue based on profit margin
         let profit_margin_multiplier = 10_000 + self.min_profit_margin_bps;
         let min_revenue = (total_cost * u128::from(profit_margin_multiplier)) / 10_000;
 
-        // Check if expected collateral meets minimum revenue requirement
-        let collateral_u128: u128 = expected_collateral.into();
-        let is_profitable = collateral_u128 >= min_revenue;
+        // Check if expected collateral value meets minimum revenue requirement
+        let collateral_value_u128: u128 = expected_collateral_value.into();
+        let is_profitable = collateral_value_u128 >= min_revenue;
+
+        let net_profit = collateral_value_u128.saturating_sub(total_cost);
 
         debug!(
+            liquidation_amount = %liquidation_u128,
+            gas_cost = %gas_cost_u128,
             total_cost = %total_cost,
-            expected_collateral = %collateral_u128,
+            expected_collateral_value = %collateral_value_u128,
             min_revenue = %min_revenue,
+            net_profit = %net_profit,
             profit_margin_bps = %self.min_profit_margin_bps,
             is_profitable = %is_profitable,
-            "Profitability check"
+            "Profitability check (inventory-based)"
         );
 
         Ok(is_profitable)
@@ -357,6 +377,10 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             .minimum_acceptable_liquidation_amount(position.collateral_asset_deposit, &price_pair);
 
         let Some(amount) = full_amount else {
+            tracing::warn!(
+                collateral_deposit = %position.collateral_asset_deposit,
+                "Could not calculate full liquidation amount from collateral"
+            );
             return Ok(None);
         };
 
@@ -365,10 +389,10 @@ impl LiquidationStrategy for FullLiquidationStrategy {
         let available_u128: u128 = available_balance.into();
 
         if amount_u128 > available_u128 {
-            debug!(
+            tracing::warn!(
                 required = %amount_u128,
                 available = %available_u128,
-                "Insufficient balance for full liquidation"
+                "Insufficient inventory balance for full liquidation"
             );
             return Ok(None);
         }
@@ -384,9 +408,8 @@ impl LiquidationStrategy for FullLiquidationStrategy {
     #[tracing::instrument(skip(self), level = "debug")]
     fn should_liquidate(
         &self,
-        swap_input_amount: U128,
         liquidation_amount: U128,
-        expected_collateral: U128,
+        expected_collateral_value: U128,
         gas_cost_estimate: U128,
     ) -> LiquidatorResult<bool> {
         // Same profitability logic as partial strategy
@@ -405,20 +428,19 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             return Ok(false);
         }
 
-        let swap_u128: u128 = swap_input_amount.into();
-        let total_cost = swap_u128.saturating_add(gas_cost_u128);
+        let total_cost = liquidation_u128.saturating_add(gas_cost_u128);
         let profit_margin_multiplier = 10_000 + self.min_profit_margin_bps;
         let min_revenue = (total_cost * u128::from(profit_margin_multiplier)) / 10_000;
 
-        let collateral_u128: u128 = expected_collateral.into();
-        let is_profitable = collateral_u128 >= min_revenue;
+        let collateral_value_u128: u128 = expected_collateral_value.into();
+        let is_profitable = collateral_value_u128 >= min_revenue;
 
         debug!(
             total_cost = %total_cost,
-            expected_collateral = %collateral_u128,
+            expected_collateral_value = %collateral_value_u128,
             min_revenue = %min_revenue,
             is_profitable = %is_profitable,
-            "Full liquidation profitability check"
+            "Full liquidation profitability check (inventory-based)"
         );
 
         Ok(is_profitable)
@@ -478,26 +500,24 @@ mod tests {
     fn test_profitability_check() {
         let strategy = PartialLiquidationStrategy::new(50, 50, 10); // 0.5% profit margin
 
-        // Profitable case: collateral > (cost * 1.005)
-        // Cost: 1000, Min revenue: 1005, Collateral: 1010
+        // Profitable case: collateral_value > (liquidation_amount + gas) * 1.005
+        // Cost: 1100 (1000 liquidation + 100 gas), Min revenue: 1105, Collateral: 1110
         let is_profitable = strategy
             .should_liquidate(
-                U128(900),  // swap input
-                U128(1000), // liquidation amount (for gas calc)
-                U128(1010), // expected collateral
+                U128(1000), // liquidation amount
+                U128(1110), // expected collateral value
                 U128(100),  // gas cost
             )
             .unwrap();
         assert!(is_profitable, "Should be profitable");
 
-        // Not profitable case: collateral < (cost * 1.005)
-        // Cost: 1000, Min revenue: 1005, Collateral: 1000
+        // Not profitable case: collateral_value < (liquidation_amount + gas) * 1.005
+        // Cost: 1100, Min revenue: 1105, Collateral: 1100
         let is_not_profitable = strategy
             .should_liquidate(
-                U128(900),
-                U128(1000),
-                U128(1000), // collateral too low
-                U128(100),
+                U128(1000), // liquidation amount
+                U128(1100), // collateral value too low
+                U128(100),  // gas cost
             )
             .unwrap();
         assert!(!is_not_profitable, "Should not be profitable");
@@ -510,9 +530,8 @@ mod tests {
         // Gas cost too high: 150 > 10% of 1000
         let too_expensive = strategy
             .should_liquidate(
-                U128(900),
                 U128(1000),  // liquidation amount
-                U128(10000), // high collateral
+                U128(10000), // high collateral value
                 U128(150),   // gas cost > 10%
             )
             .unwrap();
@@ -521,10 +540,9 @@ mod tests {
         // Acceptable gas cost: 50 < 10% of 1000
         let acceptable = strategy
             .should_liquidate(
-                U128(900),
-                U128(1000),
-                U128(10000),
-                U128(50), // gas cost < 10%
+                U128(1000),  // liquidation amount
+                U128(10000), // high collateral value
+                U128(50),    // gas cost < 10%
             )
             .unwrap();
         assert!(acceptable, "Gas cost should be acceptable");

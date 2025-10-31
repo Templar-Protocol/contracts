@@ -289,13 +289,13 @@ impl SwapProvider for RheaSwap {
             ))],
         });
 
-        let status = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx)
+        let outcome = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx)
             .await
             .map_err(AppError::from)?;
 
         debug!("Rhea swap executed successfully");
 
-        Ok(status)
+        Ok(outcome.status)
     }
 
     fn provider_name(&self) -> &'static str {
@@ -325,8 +325,12 @@ impl SwapProvider for RheaSwap {
                 "account_id": account_id,
                 "registration_only": true,
             }))
-            .map_err(|e| AppError::SerializationError(format!("Failed to serialize storage_deposit args: {e}")))?,
-            gas: 10_000_000_000_000, // 10 TGas
+            .map_err(|e| {
+                AppError::SerializationError(format!(
+                    "Failed to serialize storage_deposit args: {e}"
+                ))
+            })?,
+            gas: 10_000_000_000_000,                // 10 TGas
             deposit: 1_250_000_000_000_000_000_000, // 0.00125 NEAR
         };
 
@@ -351,7 +355,8 @@ impl SwapProvider for RheaSwap {
             Err(e) => {
                 // If already registered, that's fine
                 let error_msg = e.to_string();
-                if error_msg.contains("The account") && error_msg.contains("is already registered") {
+                if error_msg.contains("The account") && error_msg.contains("is already registered")
+                {
                     debug!(
                         account = %account_id,
                         token = %token_contract.contract_id(),

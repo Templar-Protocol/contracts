@@ -65,7 +65,7 @@ struct QuoteParams {
     /// Exact output amount desired (as string)
     #[serde(skip_serializing_if = "Option::is_none")]
     exact_amount_out: Option<String>,
-    /// Exact input amount (as string) - use either this OR exact_amount_out
+    /// Exact input amount (as string) - use either this OR `exact_amount_out`
     #[serde(skip_serializing_if = "Option::is_none")]
     exact_amount_in: Option<String>,
     /// Minimum deadline for quote validity in milliseconds
@@ -204,7 +204,9 @@ impl IntentsSwap {
         let http_client = Client::builder()
             .timeout(Duration::from_millis(Self::DEFAULT_QUOTE_TIMEOUT_MS))
             .build()
-            .expect("Failed to create HTTP client");
+            .unwrap_or_else(|e| {
+                panic!("Failed to create HTTP client: {e}");
+            });
 
         Self {
             solver_relay_url: Self::DEFAULT_SOLVER_RELAY_URL.to_string(),
@@ -238,7 +240,9 @@ impl IntentsSwap {
         let http_client = Client::builder()
             .timeout(Duration::from_millis(quote_timeout_ms))
             .build()
-            .expect("Failed to create HTTP client");
+            .unwrap_or_else(|e| {
+                panic!("Failed to create HTTP client: {e}");
+            });
 
         Self {
             solver_relay_url,
@@ -387,10 +391,11 @@ impl IntentsSwap {
         debug!(response = %response_text, "Raw solver relay response");
 
         // Parse JSON-RPC response
-        let solver_response: SolverQuoteResponse = serde_json::from_str(&response_text).map_err(|e| {
-            error!(?e, response = %response_text, "Failed to parse solver relay response");
-            AppError::ValidationError(format!("Invalid solver relay response: {e}"))
-        })?;
+        let solver_response: SolverQuoteResponse =
+            serde_json::from_str(&response_text).map_err(|e| {
+                error!(?e, response = %response_text, "Failed to parse solver relay response");
+                AppError::ValidationError(format!("Invalid solver relay response: {e}"))
+            })?;
 
         // Check for JSON-RPC error
         if let Some(error) = &solver_response.error {
@@ -429,7 +434,8 @@ impl IntentsSwap {
                     "No quotes available from solver network (null result) - asset pair may not be supported or amount too small"
                 );
                 return Err(AppError::ValidationError(
-                    "No quotes available from solvers - asset pair not supported or no liquidity".to_string(),
+                    "No quotes available from solvers - asset pair not supported or no liquidity"
+                        .to_string(),
                 ));
             }
         };
@@ -437,11 +443,7 @@ impl IntentsSwap {
         // Find the best quote (lowest input amount for the desired output)
         let best_quote = quotes
             .iter()
-            .min_by_key(|q| {
-                q.amount_in
-                    .parse::<u128>()
-                    .unwrap_or(u128::MAX)
-            })
+            .min_by_key(|q| q.amount_in.parse::<u128>().unwrap_or(u128::MAX))
             .ok_or_else(|| {
                 error!("Failed to find best quote");
                 AppError::ValidationError("No valid quotes found".to_string())
@@ -453,10 +455,13 @@ impl IntentsSwap {
             AppError::ValidationError(format!("Invalid input amount format: {e}"))
         })?;
 
+        #[allow(clippy::cast_precision_loss)]
+        let exchange_rate = input_amount as f64 / output_amount.0 as f64;
+
         info!(
             input_amount = %input_amount,
             output_amount = %output_amount.0,
-            exchange_rate = %(input_amount as f64 / output_amount.0 as f64),
+            exchange_rate = %exchange_rate,
             quote_hash = %best_quote.quote_hash,
             quotes_received = quotes.len(),
             "Quote received from solver network"
@@ -589,13 +594,13 @@ impl SwapProvider for IntentsSwap {
             ))],
         });
 
-        let status = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx)
+        let outcome = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx)
             .await
             .map_err(AppError::from)?;
 
         debug!("NEAR Intents swap submitted successfully");
 
-        Ok(status)
+        Ok(outcome.status)
     }
 
     fn provider_name(&self) -> &'static str {

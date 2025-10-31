@@ -87,8 +87,16 @@ impl SwapProvider for SwapProviderImpl {
         account_id: &AccountId,
     ) -> AppResult<()> {
         match self {
-            Self::Rhea(provider) => provider.ensure_storage_registration(token_contract, account_id).await,
-            Self::OneClick(provider) => provider.ensure_storage_registration(token_contract, account_id).await,
+            Self::Rhea(provider) => {
+                provider
+                    .ensure_storage_registration(token_contract, account_id)
+                    .await
+            }
+            Self::OneClick(provider) => {
+                provider
+                    .ensure_storage_registration(token_contract, account_id)
+                    .await
+            }
         }
     }
 }

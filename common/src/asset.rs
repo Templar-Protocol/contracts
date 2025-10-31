@@ -59,11 +59,11 @@ enum FungibleAssetKind {
 impl<T: AssetClass> FungibleAsset<T> {
     /// Really depends on the implementation, but this should suffice, since
     /// normal implementations use < 3TGas.
-    /// Increased to 100 TGas to handle ft_transfer_call with complex receivers
+    /// Increased to 100 `TGas` to handle `ft_transfer_call` with complex receivers
     /// (e.g., 1-Click deposit addresses that need to process the transfer)
     pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(100);
     /// NEAR Intents implementation uses < 4TGas.
-    /// Increased to 100 TGas for consistency with FT transfers
+    /// Increased to 100 `TGas` for consistency with FT transfers
     pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(100);
 
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
@@ -97,7 +97,7 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
-    /// Creates a simple ft_transfer action (no callback).
+    /// Creates a simple `ft_transfer` action (no callback).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn transfer_action(
         &self,
