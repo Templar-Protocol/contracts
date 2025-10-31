@@ -79,6 +79,26 @@ pub struct Args {
     /// Dry run mode - scan markets and log liquidation opportunities without executing transactions
     #[arg(long, env = "DRY_RUN", default_value_t = false)]
     pub dry_run: bool,
+
+    /// Collateral strategy: "hold", "`swap_to_primary`", or "`swap_to_target`"
+    #[arg(long, env = "COLLATERAL_STRATEGY", default_value = "hold")]
+    pub collateral_strategy: String,
+
+    /// Primary asset for `SwapToPrimary` strategy (format: nep141:contract.near or usdc)
+    #[arg(long, env = "PRIMARY_ASSET")]
+    pub primary_asset: Option<String>,
+
+    /// Swap provider: "oneclick" or "rhea"
+    #[arg(long, env = "SWAP_PROVIDER", default_value = "oneclick")]
+    pub swap_provider: String,
+
+    /// `OneClick` API token (required for oneclick provider)
+    #[arg(long, env = "ONECLICK_API_TOKEN")]
+    pub oneclick_api_token: Option<String>,
+
+    /// Rhea contract address (required for rhea provider)
+    #[arg(long, env = "RHEA_CONTRACT")]
+    pub rhea_contract: Option<String>,
 }
 
 impl Args {
@@ -122,10 +142,54 @@ impl Args {
         }
     }
 
+    /// Parse collateral strategy from config
+    fn parse_collateral_strategy(&self) -> CollateralStrategy {
+        use templar_common::asset::FungibleAsset;
+
+        match self.collateral_strategy.to_lowercase().as_str() {
+            "swap_to_primary" => {
+                if let Some(ref primary_asset_str) = self.primary_asset {
+                    // Try to parse as FungibleAsset
+                    if let Ok(primary_asset) = primary_asset_str.parse::<FungibleAsset<_>>() {
+                        tracing::info!(
+                            primary_asset = %primary_asset,
+                            "Using SwapToPrimary strategy"
+                        );
+                        return CollateralStrategy::SwapToPrimary { primary_asset };
+                    }
+                    tracing::error!(
+                        primary_asset = %primary_asset_str,
+                        "Failed to parse primary_asset, falling back to Hold"
+                    );
+                } else {
+                    tracing::error!(
+                        "SwapToPrimary strategy requires PRIMARY_ASSET, falling back to Hold"
+                    );
+                }
+                CollateralStrategy::Hold
+            }
+            "swap_to_target" => {
+                tracing::info!("Using SwapToTarget strategy");
+                CollateralStrategy::SwapToTarget
+            }
+            "hold" => {
+                tracing::info!("Using Hold strategy (keep collateral as received)");
+                CollateralStrategy::Hold
+            }
+            other => {
+                tracing::error!(
+                    strategy = other,
+                    "Invalid collateral strategy, defaulting to 'hold'"
+                );
+                CollateralStrategy::Hold
+            }
+        }
+    }
+
     /// Build a `ServiceConfig` from the arguments
     pub fn build_config(&self) -> ServiceConfig {
         let strategy = self.create_strategy();
-        let collateral_strategy = CollateralStrategy::Hold;
+        let collateral_strategy = self.parse_collateral_strategy();
 
         ServiceConfig {
             registries: self.registries.clone(),
@@ -141,6 +205,9 @@ impl Args {
             strategy,
             collateral_strategy,
             dry_run: self.dry_run,
+            swap_provider: self.swap_provider.clone(),
+            oneclick_api_token: self.oneclick_api_token.clone(),
+            rhea_contract: self.rhea_contract.clone(),
         }
     }
 

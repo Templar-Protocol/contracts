@@ -21,7 +21,7 @@ use super::{oneclick::OneClickSwap, rhea::RheaSwap, SwapProvider};
 pub enum SwapProviderImpl {
     /// Rhea Finance DEX provider
     Rhea(RheaSwap),
-    /// 1-Click API provider (NEAR Intents)
+    /// 1-Click API provider (recommended)
     OneClick(OneClickSwap),
 }
 
@@ -31,7 +31,7 @@ impl SwapProviderImpl {
         Self::Rhea(provider)
     }
 
-    /// Creates a 1-Click API provider variant.
+    /// Creates a 1-Click API provider variant (recommended).
     pub fn oneclick(provider: OneClickSwap) -> Self {
         Self::OneClick(provider)
     }

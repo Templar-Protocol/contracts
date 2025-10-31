@@ -2,7 +2,7 @@
 //! Swap provider implementations for liquidation operations.
 //!
 //! This module provides a flexible, extensible architecture for integrating
-//! different swap/exchange protocols (Rhea Finance, NEAR Intents, etc.) used
+//! different swap/exchange protocols (Rhea Finance, 1-Click API, etc.) used
 //! during liquidation operations.
 //!
 //! # Architecture
@@ -36,13 +36,14 @@
 //! # }
 //! ```
 
-pub mod intents;
 pub mod oneclick;
 pub mod provider;
 pub mod rhea;
 
 // Re-export for convenience
+pub use oneclick::OneClickSwap;
 pub use provider::SwapProviderImpl;
+pub use rhea::RheaSwap;
 
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::{json_types::U128, AccountId};

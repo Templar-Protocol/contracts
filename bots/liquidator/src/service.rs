@@ -54,6 +54,12 @@ pub struct ServiceConfig {
     pub collateral_strategy: CollateralStrategy,
     /// Dry run mode - scan without executing
     pub dry_run: bool,
+    /// Swap provider for collateral swaps
+    pub swap_provider: String,
+    /// `OneClick` API token
+    pub oneclick_api_token: Option<String>,
+    /// Rhea contract address
+    pub rhea_contract: Option<String>,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -63,6 +69,7 @@ pub struct LiquidatorService {
     signer: Signer,
     inventory: Arc<RwLock<InventoryManager>>,
     markets: HashMap<AccountId, Liquidator>,
+    swap_provider: Option<crate::swap::SwapProviderImpl>,
 }
 
 impl LiquidatorService {
@@ -86,12 +93,85 @@ impl LiquidatorService {
             config.signer_account.clone(),
         )));
 
+        // Create swap provider based on configuration
+        let swap_provider = Self::create_swap_provider(&config, &client, Arc::new(signer.clone()));
+
         Self {
             config,
             client,
             signer,
             inventory,
             markets: HashMap::new(),
+            swap_provider,
+        }
+    }
+
+    /// Creates a swap provider based on configuration.
+    fn create_swap_provider(
+        config: &ServiceConfig,
+        client: &JsonRpcClient,
+        signer: Arc<near_crypto::Signer>,
+    ) -> Option<crate::swap::SwapProviderImpl> {
+        use crate::swap::{OneClickSwap, RheaSwap, SwapProviderImpl};
+
+        // Only create swap provider if not using Hold strategy
+        if matches!(config.collateral_strategy, CollateralStrategy::Hold) {
+            tracing::info!("Collateral strategy is Hold, no swap provider needed");
+            return None;
+        }
+
+        tracing::info!(
+            swap_provider = %config.swap_provider,
+            "Creating swap provider for collateral strategy"
+        );
+
+        match config.swap_provider.to_lowercase().as_str() {
+            "oneclick" => {
+                if let Some(ref api_token) = config.oneclick_api_token {
+                    let oneclick = OneClickSwap::new(
+                        client.clone(),
+                        signer,
+                        None, // Use default slippage
+                        Some(api_token.clone()),
+                    );
+                    tracing::info!("Using 1-Click API swap provider");
+                    Some(SwapProviderImpl::oneclick(oneclick))
+                } else {
+                    tracing::error!(
+                        "OneClick provider selected but ONECLICK_API_TOKEN not provided"
+                    );
+                    None
+                }
+            }
+            "rhea" => {
+                if let Some(ref contract_str) = config.rhea_contract {
+                    match contract_str.parse::<AccountId>() {
+                        Ok(contract) => {
+                            let rhea = RheaSwap::new(contract, client.clone(), signer);
+                            tracing::info!(contract = %contract_str, "Using Rhea Finance swap provider");
+                            Some(SwapProviderImpl::rhea(rhea))
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                contract = %contract_str,
+                                error = ?e,
+                                "Invalid RHEA_CONTRACT"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    tracing::error!("Rhea provider selected but RHEA_CONTRACT not provided");
+                    None
+                }
+            }
+            other => {
+                tracing::error!(
+                    provider = other,
+                    "Invalid swap provider, must be 'oneclick' or 'rhea'"
+                );
+                None
+            }
         }
     }
 
@@ -230,6 +310,7 @@ impl LiquidatorService {
                     self.config.collateral_strategy.clone(),
                     self.config.transaction_timeout,
                     self.config.dry_run,
+                    self.swap_provider.clone(),
                 );
 
                 // Test market compatibility using scanner

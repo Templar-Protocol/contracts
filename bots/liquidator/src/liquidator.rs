@@ -58,6 +58,7 @@ use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::{json_types::U128, AccountId};
 use templar_common::{
+    asset::{CollateralAsset, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
     market::MarketConfiguration,
     oracle::pyth::OracleResponse,
@@ -158,7 +159,13 @@ pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
 pub enum CollateralStrategy {
     /// Hold collateral as received (default)
     Hold,
-    // Future: SwapToPrimary, SwapToTarget, Custom
+    /// Swap collateral to a primary asset (e.g., USDC)
+    SwapToPrimary {
+        /// Primary asset to swap to
+        primary_asset: FungibleAsset<CollateralAsset>,
+    },
+    /// Swap collateral back to the same asset used for liquidation
+    SwapToTarget,
 }
 
 /// Production-grade liquidator with modular architecture.
@@ -198,6 +205,7 @@ impl Liquidator {
     /// * `collateral_strategy` - Collateral management strategy
     /// * `timeout` - Transaction timeout in seconds
     /// * `dry_run` - If true, scan and log without executing liquidations
+    /// * `swap_provider` - Optional swap provider for collateral swaps
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: &JsonRpcClient,
@@ -209,6 +217,7 @@ impl Liquidator {
         collateral_strategy: CollateralStrategy,
         timeout: u64,
         dry_run: bool,
+        swap_provider: Option<crate::swap::SwapProviderImpl>,
     ) -> Self {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
         let oracle_fetcher = oracle::OracleFetcher::new(client.clone());
@@ -220,6 +229,7 @@ impl Liquidator {
             collateral_strategy,
             timeout,
             dry_run,
+            swap_provider,
         );
 
         Self {
