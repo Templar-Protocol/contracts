@@ -175,6 +175,9 @@ impl BorshSchema for Number {
     }
 }
 
+/// Represents the maximum performance fee that can be charged. 20% (very high)
+pub const MAX_FEE_WAD: u128 = Wad::SCALE / 10 * 2;
+
 /// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Wad(pub Number);
@@ -194,7 +197,7 @@ impl Wad {
     #[inline]
     #[must_use]
     pub fn one() -> Self {
-        Wad(Number(U256::from(Self::SCALE)))
+        Wad::from(Self::SCALE)
     }
 
     #[inline]

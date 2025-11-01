@@ -385,7 +385,7 @@ impl Contract {
             fee_wad != self.performance_fee,
             "Fee already set to this value"
         );
-        require!(fee_wad <= (wad::Wad::one() / 10), "fee too high");
+        require!(fee_wad <= Wad::from(MAX_FEE_WAD), "fee too high");
 
         // Accrue any pending fees with old rate before changing
         self.internal_accrue_fee();
