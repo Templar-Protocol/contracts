@@ -5,26 +5,35 @@ This document explains how the vault works end-to-end: roles and permissions, da
 ## High-level overview
 
 - The vault issues shares over an underlying asset and allocates liquidity into configured markets.
-- Two ordered queues drive behavior:
-  - supply_queue: allocation order for deposits/idle funds to be supplied to markets.
-  - withdraw_queue: priority order to pull liquidity back from markets.
+- Allocation uses a supply_queue for ordering deposits/idle funds into markets.
+- Withdrawals are queue-less (keeper-routed):
+  - Order is chosen per withdrawal execution, not stored.
+  - A keeper/executor (an off-chain bot) or caller-provided hints picks which markets to tap first, based on live conditions.
+  - The contract enforces safety (caps, enabled flags, timelocks) but does not hardcode a single global withdraw order.
 - Operations are asynchronous and guarded by a single state machine (OpState):
   - Idle -> Allocating -> Idle
   - Idle -> Withdrawing -> Payout -> Idle
 - Performance fees accrue by minting fee shares on growth only.
-- Strict invariants ensure queue correctness and safe removal of markets.
+- Strict invariants ensure safety and correct accounting.
+
+## AUM model
+
+- The vault uses a BalanceSheet model by default.
+- Total assets = idle balance + sum of all market principals.
+- Accounting is independent of any withdraw order; price only changes when cash actually moves.
 
 ## Codebase map
 
 - src/lib.rs
   - Main contract entrypoint and storage. Declares the NEP-141 share token via FungibleToken, Owner, and Rbac derives.
-  - Core public API: governance (owner/curator/guardian/timelock), queue setters, allocation entrypoint (allocate), user flows (withdraw/redeem), and utility views (totals, previews, conversions).
-  - Storage: market configs, queues, market_supply, idle_balance, fee config, pending timelocks/guardian, and pending withdrawal FIFO.
+  - Core public API: governance (owner/curator/guardian/timelock), supply_queue setter, allocation entrypoint (allocate), user flows (withdraw/redeem), queue-less withdraw execution (execute_next_withdrawal_request(route), execute_next_market_withdrawal(op_id)), and utility views (totals, previews, conversions).
+  - Storage: market configs, supply_queue (only), market_supply, idle_balance, fee config, pending timelocks/guardian, and pending withdrawal FIFO. There is no on-chain global withdraw order.
   - Op state machine (OpState) and orchestration for allocation and withdraw/payout.
 - src/impl_callbacks.rs
-  - All async callback handlers (after_supply_*, after_create_withdraw_req, after_exec_withdraw_* and after_send_to_user).
-  - Context guards (ctx_allocating/ctx_withdrawing), market resolvers, reconciliation helpers, and stop_and_exit* helpers.
-  - Gas constants for cross-contract calls (GET_SUPPLY_POSITION_GAS, AFTER_*_GAS).
+  - All async callback handlers (after*supply*_, after*create_withdraw_req, after_exec_withdraw*_ and after_send_to_user).
+  - Supports deferred market withdrawal execution via execute_next_market_withdrawal(op_id) when deferment is enabled (default).
+  - Context guards (ctx_allocating/ctx_withdrawing), market resolvers, reconciliation helpers, and stop_and_exit\* helpers.
+  - Gas constants for cross-contract calls (GET*SUPPLY_POSITION_GAS, AFTER*\*\_GAS).
 - src/impl_token_receiver.rs
   - NEP-141 token receiver for deposits. Mints shares on correct token; fully refunds on wrong token (see test execute_supply_wrong_token_refunds_full).
   - Updates idle_balance on deposit; allocation remains separate/async.
@@ -33,7 +42,7 @@ This document explains how the vault works end-to-end: roles and permissions, da
 - src/aux.rs
   - Small helpers and shared utilities used across the contract (kept minimal).
 - src/tests.rs and src/impl_callbacks.rs tests
-  - Invariants and property tests for flows, queues, conversions, and payout correctness.
+  - Invariants and property tests for flows, supply_queue, conversions, queue-less withdrawal routing, and payout correctness.
 - templar_common (external crate)
   - Shared types and cross-contract interfaces: BorrowAsset/FungibleAsset, market::ext_market and messages, vault types (Error, Event, OpState, MarketConfiguration, etc.).
 
@@ -41,25 +50,13 @@ This document explains how the vault works end-to-end: roles and permissions, da
 
 Roles are enforced via RBAC. The Curator is also granted the Allocator role at init.
 
-- Owner
-  - set_curator(account)
-  - set_is_allocator(account, allowed)
-  - submit_guardian(new_g), accept_guardian(), revoke_pending_guardian()
-  - submit_timelock(seconds), accept_timelock(), revoke_pending_timelock()
-  - set_fee_recipient(account), set_performance_fee(fee)
-  - set_skim_recipient(account), skim(token)
-- Curator (Curator also has Allocator)
-  - submit_cap(market, new_cap), accept_cap(market), revoke_pending_cap(market)
-  - submit_market_removal(market), revoke_pending_market_removal(market)
-- Allocator
-  - set_supply_queue(markets)
-  - set_withdraw_queue(markets)
-  - allocate(weights, amount)
-  - execute_next_withdrawal_request()
-- Guardian
-  - revoke_pending_timelock()
+- Owner: full control; can act in place of any role.
+- Curator: manages markets and policy (caps/timelocks/enable/disable). Curator is also implicitly granted Allocator.
+- Guardian: can revoke/cancel pending governance actions (timelock/guardian changes, etc.).
+- Allocator (operational role): allowed to run allocation and withdrawal execution. This is the role your off-chain keeper bot should hold.
 
 Note
+
 - All mutating ops require the vault to be Idle (single-op-at-a-time). Methods enforce this via ensure_idle().
 
 ## External integrations and interfaces
@@ -88,17 +85,17 @@ Note
   - execute_next_supply_withdrawal_request()
 - Deposit message and units
   - Underlying allocation uses DepositMsg::Supply with underlying units.
-- Queue membership
-  - Ensure the market is in withdraw_queue whenever principal > 0; the vault also enforces this on its own after allocation steps.
+- Withdraw routing
+  - There is no withdraw_queue. Routing is provided per withdrawal execution by the keeper/caller; design your adapter to accurately report positions and withdrawability.
 - Safety
-  - The vault tolerates failures by stopping/retrying or refunding escrow; design market adapters to fail fast and re-entrant safe.
+  - The vault tolerates failures by stopping/retrying or refunding escrow; design market adapters to fail fast and be re-entrancy safe.
 
 ## Key storage and concepts
 
 - MarketConfiguration per market: { cap, enabled, removable_at }
 - market_supply[market] = current principal supplied to that market
 - idle_balance = underlying tokens held by the vault
-- supply_queue and withdraw_queue (ordered lists of market AccountIds)
+- supply_queue (ordered list of market AccountIds) for allocation only
 - pending_cap, pending_timelock, pending_guardian with timelock semantics
 - pending_withdrawals FIFO queue (id -> {owner, receiver, escrow_shares, expected_assets, requested_at})
 - Fee/virtual offsets for conversions:
@@ -109,7 +106,7 @@ Note
 ## Conversions and fees
 
 - Views:
-  - get_total_assets() = idle + sum(principal across withdraw_queue markets)
+  - get_total_assets() = idle + sum(principal across all markets)
   - get_total_supply()
   - get_max_deposit() aggregates per-market remaining caps in supply_queue order
   - convert_to_shares(assets), convert_to_assets(shares)
@@ -129,11 +126,11 @@ Note
 - Single-operation state machine, enforced by ensure_idle() on all mutating entrypoints:
   - Idle -> Allocating -> Idle
   - Idle -> Withdrawing -> Payout -> Idle
-- Queue-driven orchestration
-  - supply_queue defines allocation order; withdraw_queue defines liquidity pull priority.
+- Orchestration
+  - Allocation uses supply_queue order; withdrawals are keeper-routed using a per-op route and do not rely on a global on-chain order.
   - Weighted allocation mode uses a temporary in-memory plan (plan) for proportional steps.
 - Consistent stop behavior
-  - Any index/op_id drift or cross-contract error stops the op, reconciles remaining (for allocation), or refunds escrow (for withdrawal), then returns to Idle.
+  - Any index/op_id drift or cross-contract error stops the op, reconciles remaining (for allocation), or refunds/parks escrow (for withdrawal), then returns to Idle.
 
 ## Deposit and mint flow
 
@@ -161,18 +158,21 @@ User deposits underlying and receives vault shares. Allocation into markets is s
 ## Allocation pipeline (Idle -> Allocating -> Idle)
 
 Triggered by Allocator:
+
 - allocate(weights=[], amount=None)
   - Queue-based if weights empty; weighted if provided.
   - total reserved = clamp_allocation_total(requested or idle), subject to get_max_deposit().
   - start_allocation(total) reserves from idle (idle_balance -= total), sets OpState::Allocating { remaining=total, index=0 }, emits AllocationStarted.
 
 Async loop (step_allocation):
+
 - Picks the next market from plan (weighted) or supply_queue (queue-based).
 - Computes room and to_supply, emits AllocationStepPlanned.
 - If to_supply == 0, skips and advances index.
 - Else transfers underlying to market via transfer_call(..., DepositMsg::Supply) and awaits after_supply_1_check.
 
 Callbacks:
+
 - after_supply_1_check:
   - Validates current op and resolves market.
   - If transfer failed, stops and returns remaining back to idle (stop_and_exit_allocating).
@@ -180,10 +180,10 @@ Callbacks:
 - after_supply_2_read:
   - Reads new_principal, computes accepted_event = new_principal - before.
   - Updates market_supply, emits AllocationStepSettled.
-  - Ensures market is in withdraw_queue if principal > 0.
   - Advances index and remaining; loops or exits.
 
 Exit:
+
 - stop_and_exit_allocating(None) emits AllocationCompleted and returns any remaining to idle.
 - Any error stops, returns remaining to idle, clears plan, and goes Idle.
 
@@ -193,14 +193,12 @@ Exit:
 - Reservation and reconciliation
   - start_allocation reserves only the planned amount (idle_balance -= amount).
   - On completion or on any failure, remaining is returned to idle_balance.
-- Market (re)inclusion
-  - If a market’s principal becomes > 0, it is ensured to be present in withdraw_queue. Re-including a market with pre-existing principal adjusts last_total_assets to avoid fee-on-reinclude.
 
-## Withdrawal and redeem flow
+## Withdrawal and redeem flow (queue-less, keeper-routed)
 
-Two phases: user requests (escrow) and allocator executes (pull liquidity, pay out).
+Two phases: user requests (escrow) and keeper-routed execution (pull liquidity, pay out).
 
-1) User request (escrow shares)
+1. User request (escrow shares)
 
 - withdraw(amount, receiver)
   - Computes shares_needed via preview_withdraw and defers to redeem.
@@ -208,88 +206,69 @@ Two phases: user requests (escrow) and allocator executes (pull liquidity, pay o
   - Transfers shares from owner to the vault (escrow) without burning.
   - Converts shares to assets via convert_to_assets (estimated).
   - Emits WithdrawQueued; enqueues pending withdrawal (owner, receiver, escrow_shares, expected_assets).
-  - Does NOT start withdrawal; allocator must call execute_next_withdrawal_request().
+  - Does NOT start withdrawal; keeper (Allocator) must call execute_next_withdrawal_request(route).
 
-2) Allocator executes (Idle -> Withdrawing -> Payout -> Idle)
+2. Execution by Allocator/keeper (Idle -> Withdrawing -> Payout -> Idle)
 
-- execute_next_withdrawal_request():
-  - Pops the next pending withdrawal by id and calls start_withdraw(expected_assets, receiver, owner, escrow_shares).
+- execute_next_withdrawal_request(route: Vec<AccountId>):
+  - Pops the next pending withdrawal by id and calls start_withdraw(expected_assets, receiver, owner, escrow_shares) with the provided per-op route.
+  - Idle-first: collected = min(idle_balance, amount), remaining = amount - collected.
+  - Sets OpState::Withdrawing { index=0, remaining, receiver, collected, owner, escrow_shares }.
 
-start_withdraw:
-- Uses idle-first: collected = min(idle_balance, amount), remaining = amount - collected.
-- Sets OpState::Withdrawing { index=0, remaining, receiver, collected, owner, escrow_shares }.
+- For each market in route:
+  - If remaining == 0, skip to payout.
+  - If market principal is zero, skip to next.
+  - The vault creates a market withdrawal request up to min(remaining, principal) via create_supply_withdrawal_request(...).
+  - By default, requests are created with deferment (defer_market_execute = true). The keeper then calls execute_next_market_withdrawal(op_id) to execute created requests (may be called multiple times).
+  - After execution, the vault queries get_supply_position(...) and reconciles:
+    - credited = min(before - after, remaining)
+    - idle_balance += credited
+    - remaining -= credited; collected += credited
 
-step_withdraw:
-- If remaining == 0:
-  - Switches to OpState::Payout and transfers collected to receiver; after_send_to_user burns escrow proportionally and refunds unused escrow.
-- Else:
-  - Iterates withdraw_queue[index]:
-    - If market principal is zero, skip (advance index).
-    - Else create_supply_withdrawal_request(to_request) -> after_create_withdraw_req -> execute_next_supply_withdrawal_request() -> after_exec_withdraw_req -> read position -> after_exec_withdraw_read.
+- Completion/parking:
+  - If remaining hits zero, the vault pays the receiver and burns the proportional escrowed shares.
+  - If the route is exhausted before need is satisfied, the vault parks the request (escrow remains). The keeper can retry later with a new route.
 
-Callbacks:
-- after_create_withdraw_req:
-  - On failure: advance index; if end-of-queue, transition to Payout/Refund based on collected.
-- after_exec_withdraw_req:
-  - Reads position afterwards to verify change.
-- after_exec_withdraw_read:
-  - Computes credited and updates:
-    - credited = min(before - new, need), remaining_next = rem - credited, collected_next = coll + credited, idle += credited.
-  - If remaining_next == 0:
-    - If collected_next > 0 => Payout
-    - Else refund full escrow and go Idle.
-  - Else advance to next market and continue.
-
-Payout finalization:
-- after_send_to_user:
+- Payout finalization (after_send_to_user):
   - On success:
     - idle_balance -= payout_amount
-    - Burn only the proportional shares and refund the remainder:
-      - burn_shares = compute_burn_shares(escrow_shares, collected, requested_total)
-      - (to_burn, refund_shares) = compute_escrow_settlement(escrow_shares, burn_shares)
-      - burn to_burn from escrow; transfer refund_shares back to owner
+    - Burn only the proportional shares and refund the remainder to the owner.
     - Go Idle.
   - On failure:
     - Refund full escrow to owner; leave idle unchanged; go Idle.
 
-Stop behavior:
-- Any callback receiving stale op_id or mismatched index will gracefully stop the op, refunding escrow (for withdraw) or reconciling remaining (for allocation), and return to Idle.
+Important
 
-- Two-phase withdrawal
-  - User redeem/withdraw: shares are escrowed in the vault account (not burned yet) and a pending withdrawal is queued with an expected_assets estimate.
-  - Operator execute_next_withdrawal_request(): drives the async pipeline to collect assets and pay out.
-- Idle-first payout
-  - The vault first uses idle_balance. Any remaining amount is pulled from markets in withdraw_queue order.
-- On-market withdrawal
-  - For each market: create request, execute next request, then read position to verify principal reduction. Credited amounts increase idle_balance.
-- Payout finalization
-  - On success: idle_balance -= paid amount; burn only the proportional fraction of escrow_shares corresponding to the paid fraction; refund remaining escrow to the owner.
-  - On failure: refund full escrow; idle_balance unchanged.
+- The route applies only to the current withdrawal op and is not stored. There is no persistent withdraw order on-chain.
+- The vault will skip markets with zero principal; it will not exceed principal, and it reconciles actual results after each market call.
+
+## Typical routing policies (off-chain)
+
+- Liquidity-first: withdraw from markets that can return funds immediately (max withdrawable now).
+- Cheapest-first: minimize gas/calls or on-market fees.
+- Risk-aware: prefer healthiest positions; avoid stressed ones unless necessary.
+- Pro-rata: take proportionally from all markets holding principal.
+- Round-robin/aging: fairness over time across markets.
+- Don’t grow risk: prefer markets with cap=0 (being wound down) before touching growth markets.
 
 ## Queues and market management
 
 - set_supply_queue(markets):
   - Requires Idle; rejects duplicates; each market must have cap > 0.
-- set_withdraw_queue(queue):
-  - Requires Idle; rejects duplicates; every enabled or holding market must be present.
-  - Removing a market requires:
-    - cap == 0
-    - no pending cap change
-    - if principal > 0: removable_at set and timelock elapsed
-  - Removing a market also removes its configuration.
+- Note:
+  - There is no withdraw_queue. Withdrawals are routed per operation by the keeper/caller.
 
 - submit_cap(market, new_cap), accept_cap(market):
   - Lowering cap applies immediately (and may disable the market if cap == 0).
   - Raising cap is timelocked; accept after timelock.
-  - Enabling a market ensures it’s present in withdraw_queue.
+  - Enabling/disabling does not affect any on-chain withdraw order (there is none).
 
 - submit_market_removal(market), revoke_pending_market_removal(market):
-  - Start/stop a removal timelock; actual removal occurs via set_withdraw_queue.
-
-- Before removing a market from withdraw_queue:
-  - cap == 0 and no pending cap raise.
+  - Start/stop a removal timelock; actual removal occurs once conditions are met by governance.
+- Removing a market
+  - Requires cap == 0 and no pending cap raise.
   - If principal > 0: removable_at set via submit_market_removal and timelock elapsed.
-- Removing a market deletes its configuration but does not clear market_supply; off-queue principal is intentionally ignored by get_total_assets().
+  - Removing a market deletes its configuration but does not clear market_supply; total assets continue to include remaining principal until withdrawn.
 
 ## Fee policy
 
@@ -305,16 +284,22 @@ Stop behavior:
   - Allocator: allocate(weights, amount)
 - Withdrawals:
   - User: redeem(shares, receiver) or withdraw(amount, receiver)
-  - Allocator: execute_next_withdrawal_request()
+  - Allocator: execute_next_withdrawal_request(route), execute_next_market_withdrawal(op_id)
 - Governance:
   - Owner/Curator/Guardian as listed above.
+
+## API changes (for integrators/keepers)
+
+- execute_next_withdrawal_request now requires a route: Vec<AccountId> (ordered preference for this withdrawal).
+- allocator_execute_next_market_withdrawal(op_id) executes the next created market request when deferment is enabled (default).
+- Curator is granted Allocator by default at initialization; keepers must use an account that has the Allocator role (or be the Curator/Owner).
 
 ## Error handling and stop semantics
 
 - Allocation
   - Any transfer/position read error or state mismatch stops the operation, returns remaining to idle, clears plan, and returns to Idle.
 - Withdrawal
-  - Any state mismatch or market call failure advances to the next market; reaching end-of-queue triggers payout-if-collected or escrow refund.
+  - Any state mismatch or market call failure advances to the next market; reaching end-of-route parks the request for later retries or triggers payout-if-collected.
 - Payout
   - On success: burn proportional escrow and refund the rest; on failure: refund full escrow; in both cases the vault returns to Idle.
 - All stop paths emit structured events for indexing and debugging.
@@ -322,7 +307,7 @@ Stop behavior:
 ## Key invariants
 
 - Single op in flight; ensure_idle() on all mutating entrypoints.
-- Withdraw queue must contain every enabled or holding market.
+- No global withdraw order is stored on-chain; withdrawals are routed per execution.
 - Allocation reservation never exceeds idle or available cap (clamp_allocation_total).
 - Payout success always reduces idle by paid amount and burns only proportional escrow.
 - Fees mint only on positive growth.
@@ -330,14 +315,14 @@ Stop behavior:
 ## Testing and local development
 
 - Unit/property tests cover:
-  - Queue invariants, cap/timelock and market removal rules.
-  - Allocation/withdraw pipelines, payout success/failure, and escrow settlement math.
+  - Cap/timelock rules and market removal.
+  - Allocation pipeline, queue-less withdraw routing, payout success/failure, and escrow settlement math.
   - Fee accrual on growth only, and conversion/preview bounds with virtual offsets.
   - Token receiver behavior (wrong token refund).
 - Running tests:
   - cargo test -p templar-vault
 - Tips:
-  - When integrating a new market, first wire get_supply_position and dry-run the withdraw path to validate reconciliation.
+  - When integrating a new market, first wire get_supply_position and dry-run the withdraw path with a short route to validate reconciliation.
 
 ## Storage management
 
@@ -346,33 +331,32 @@ create new storage entries. We size entries conservatively using AccountId::MAX_
 to avoid relying on runtime storage usage “diffs”.
 
 What the contract pays for
+
 - RBAC storage: role membership (Owner/RBAC lists) is paid by the contract. Callers are not charged
-storage deposits for set_curator, set_is_allocator, or guardian role changes.
+  storage deposits for set_curator, set_is_allocator, or guardian role changes.
 
 Conservative sizing
+
 - AccountId bytes are charged at MAX_LEN to keep pricing simple and deterministic.
 - Map/queue overheads are charged with fixed constants.
 - PendingWithdrawal size is a fixed upper bound of its fields.
 
 When a deposit is required
+
 - submit_cap(market, new_cap)
   - If market is new: config entry + market_supply entry.
   - If raising cap above current: pending_cap entry.
 - accept_cap(market)
-  - If enabling (cap > 0) and the market is not in withdraw_queue: 1 queue slot.
+  - If enabling (cap > 0): no extra storage for withdraw order (none exists).
 - set_supply_queue(markets)
   - Storage for markets added that were not previously in the queue.
-- set_withdraw_queue(queue)
-  - Storage for markets added that were not previously in the queue.
 - allocate(weights, amount)
-  - Up-front deposit to cover potential withdraw_queue insertions for any candidate market in the
-allocation run (supply_queue for queue mode; weighted plan markets for weighted mode).
+  - No storage deposit for withdraw routing (route is ephemeral and provided per execution).
 - withdraw/redeem
   - PendingWithdrawal queue entry per request (escrowed shares are held until payout/refund).
 
 Refund policy
+
 - For simplicity and in line with many Ethereum contracts, we do not refund storage on removals (e.g.,
-queue removals, consumed pending withdrawals, deleted configs). This avoids complexity and edge cases
-around attribution. 
-
-
+  queue removals, consumed pending withdrawals, deleted configs). This avoids complexity and edge cases
+  around attribution.

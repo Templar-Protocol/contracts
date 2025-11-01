@@ -78,7 +78,6 @@ pub fn ensure_market(
     cap: u128,
     enabled: bool,
     supply: u128,
-    in_withdraw: bool,
     in_supply: bool,
     removable_at: u64,
 ) {
@@ -94,9 +93,6 @@ pub fn ensure_market(
             principal: supply,
         },
     );
-    if in_withdraw && !c.withdraw_queue.iter().any(|m| m == &id) {
-        c.withdraw_queue.insert(id.clone());
-    }
     if in_supply && !c.supply_queue.iter().any(|m| m == &id) {
         c.supply_queue.insert(id.clone());
     }

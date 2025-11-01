@@ -9,7 +9,7 @@ use crate::{
     aum::AUM,
     storage_management::{
         require_attached_at_least, require_attached_for_pending_withdrawal,
-        storage_bytes_for_queue_account_id, yocto_for_bytes, yocto_for_new_market,
+        yocto_for_new_market,
     },
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -23,7 +23,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{
     ft::{
         nep141::GAS_FOR_FT_TRANSFER_CALL, nep145::Nep145ForceUnregister, ContractMetadata,
-        FungibleToken, Nep141Controller, Nep141Mint, Nep145 as _, Nep148Controller,
+        FungibleToken, Nep141Controller, Nep141Mint, Nep141Transfer, Nep145 as _, Nep148Controller,
     },
     Owner, Rbac,
 };
@@ -71,10 +71,10 @@ pub enum Role {
     /// Can submit/accept cap changes and market removals, and is implicitly granted the Allocator role.
     Curator,
     /// Safety backstop that can revoke pending governance changes (e.g., timelock/guardian).
-    /// Has no authority to change caps or queues on its own.
+    /// Has no authority to change caps or the supply queue on its own.
     Guardian,
-    /// Operational role for queue maintenance.
-    /// May set the supply/withdraw queues while the vault is Idle; cannot modify caps/timelocks/guardian.
+    /// Operational role for allocation and withdrawal execution.
+    /// May set the supply_queue while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
 }
 
@@ -105,13 +105,13 @@ impl From<MarketConfiguration> for MarketRecord {
 ///
 /// What this contract does (high-level mental model)
 /// - Issues a share token (NEP-141) that represents a vault over an underlying NEP-141 “BorrowAsset”.
-/// - Allocates deposits across “markets” (external contracts) via a supply queue, and withdraws via a withdraw queue.
+/// - Allocates deposits across “markets” (external contracts) via a supply queue; withdrawals are keeper-routed (queue-less).
 /// - Governance uses Owner + RBAC (Curator/Guardian/Allocator) with a timelock for certain changes.
 /// - Withdraw flow escrows shares, builds market-side withdrawal requests, then pays out and burns proportional escrow.
 /// - Performance fees accrue by minting fee shares based on increases in total assets.
 /// Critical invariants the code intends to keep
 /// - Assets accounting is correct: total_assets = idle_balance + sum(all principals in markets).
-/// - Withdraw queue contains every market that either is enabled or still holds principal (until that principal is zero).
+/// - Withdrawals are queue-less and routed per-execution using an ephemeral, keeper-provided route.
 /// - Only one op in flight (op_state); mutating ops require Idle.
 /// - Governance changes obey timelocks; Guardian may revoke pending changes.
 ///
@@ -150,8 +150,6 @@ pub struct Contract {
 
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
-    /// Ordered list of market IDs for withdrawal priority
-    withdraw_queue: BTreeSet<AccountId>,
 
     current_withdraw_inflight: Option<u64>, // id of the pending withdrawal being executed, if any
 
@@ -165,10 +163,11 @@ pub struct Contract {
     next_withdraw_id: u64,
     next_withdraw_to_execute: u64,
 
-    // if true, only create requests during build; executor will run them
-    defer_market_execute: bool,
     // indices of markets with created requests (per withdrawing op)
     pending_market_exec: Vec<u32>,
+
+    // Keeper-provided withdraw route for the current Withdrawing op
+    withdraw_route: Vec<AccountId>,
 }
 
 #[near]
@@ -220,7 +219,7 @@ impl Contract {
 
         let mut contract = Self {
             underlying_asset: underlying_token,
-            aum: AUM::GovernanceAbandonment,
+            aum: AUM::BalanceSheet,
             timelock_ns: initial_timelock_ns.0,
             performance_fee: Default::default(),
             fee_recipient,
@@ -229,7 +228,6 @@ impl Contract {
             pending_timelock: None,
             pending_guardian: None,
             supply_queue: Default::default(),
-            withdraw_queue: Default::default(),
             last_total_assets: 0,
             virtual_shares: 1,
             virtual_assets: 1,
@@ -245,9 +243,10 @@ impl Contract {
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
 
-            // Deferred market execution
-            defer_market_execute: true, // default to “stop executing automatically” per request
             pending_market_exec: Vec::new(),
+
+            // Keeper-provided withdraw route for the current Withdrawing op
+            withdraw_route: Vec::new(),
         };
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
         Owner::init(&mut contract, &owner);
@@ -280,9 +279,12 @@ impl Contract {
         let _ = require_attached_for_pending_withdrawal();
 
         // Move shares into escrow
-        #[allow(clippy::expect_used, reason = "No side effects")]
-        self.transfer_unchecked(&sender, &env::current_account_id(), shares)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        self.transfer(&Nep141Transfer::new(
+            shares,
+            &sender,
+            env::current_account_id(),
+        ))
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         self.internal_accrue_fee();
 
@@ -298,7 +300,7 @@ impl Contract {
 
     /// Executes the next pending withdrawal request, if any, using the existing withdraw pipeline.
     /// This defers creating market-side withdrawal requests until explicitly invoked.
-    pub fn execute_next_withdrawal_request(&mut self) -> PromiseOrValue<()> {
+    pub fn execute_next_withdrawal_request(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
@@ -321,6 +323,7 @@ impl Contract {
                 &receiver,
                 &owner,
                 pending.escrow_shares,
+                route,
             );
         }
 
@@ -643,33 +646,6 @@ impl Contract {
     fn room_of(&self, market: &AccountId) -> u128 {
         self.cap_of(market)
             .saturating_sub(self.principal_of(market))
-    }
-
-    fn in_withdraw_queue(&self, market: &AccountId) -> bool {
-        self.withdraw_queue.iter().any(|m| m == market)
-    }
-
-    // Add market to withdraw_queue and adjust last_total_assets if re-adding with existing principal
-    pub(crate) fn add_market_to_withdraw_queue(
-        &mut self,
-        market: &AccountId,
-        before_principal: u128,
-    ) {
-        if self.in_withdraw_queue(market) {
-            Event::MarketAlreadyInWithdrawQueue {
-                market: market.clone(),
-            }
-            .emit();
-            return;
-        }
-        self.withdraw_queue.insert(market.clone());
-        Event::WithdrawQueueMarketAdded {
-            market: market.clone(),
-        }
-        .emit();
-        self.aum
-            .clone()
-            .paper_aum_undercounting(self, &before_principal);
     }
 
     /// Enqueue a vault-level pending withdrawal request (escrow already taken).
@@ -1024,6 +1000,7 @@ impl Contract {
         receiver: &AccountId,
         owner: &AccountId,
         escrow_shares: u128,
+        route: Vec<AccountId>,
     ) -> PromiseOrValue<()> {
         if amount == 0 {
             return self.stop_and_exit(Some(&Error::ZeroAmount));
@@ -1038,6 +1015,7 @@ impl Contract {
         let collected = used_idle;
 
         self.pending_market_exec.clear();
+        self.withdraw_route = route;
 
         self.op_state = OpState::Withdrawing(WithdrawingState {
             op_id,
@@ -1052,27 +1030,18 @@ impl Contract {
     }
 
     fn step_withdraw(&mut self) -> PromiseOrValue<()> {
-        let (op_id, index, remaining, receiver, collected, owner, escrow_shares) =
-            match &self.op_state {
-                OpState::Withdrawing(WithdrawingState {
-                    op_id,
-                    index,
-                    remaining,
-                    receiver,
-                    collected,
-                    owner,
-                    escrow_shares,
-                }) => (
-                    *op_id,
-                    *index,
-                    *remaining,
-                    receiver.clone(),
-                    *collected,
-                    owner.clone(),
-                    *escrow_shares,
-                ),
-                _ => return self.stop_and_exit(Some(&Error::NotWithdrawing)),
-            };
+        let OpState::Withdrawing(WithdrawingState {
+            op_id,
+            index,
+            remaining,
+            receiver,
+            collected,
+            owner,
+            escrow_shares,
+        }) = self.op_state.clone()
+        else {
+            return self.stop_and_exit(Some(&Error::NotWithdrawing));
+        };
 
         if remaining == 0 {
             self.op_state = OpState::Payout(PayoutState {
@@ -1093,7 +1062,7 @@ impl Contract {
                     ),
             );
         }
-        if let Some(market) = self.withdraw_queue.iter().nth(index as usize) {
+        if let Some(market) = self.withdraw_route.get(index as usize) {
             let have = self.principal_of(market);
             let to_request = have.min(remaining);
             if to_request == 0 {
@@ -1134,6 +1103,7 @@ impl Contract {
                 burn_shares,
                 |_self| {
                     // Park the head pending: keep escrowed shares, stay in queue, try again later
+                    _self.withdraw_route.clear();
                     _self.op_state = OpState::Idle;
                     _self.park_inflight_head_for_retry();
                     PromiseOrValue::Value(())

@@ -263,7 +263,6 @@ impl Contract {
         Self::assert_curator_or_owner();
         self.ensure_idle();
 
-        let in_queue = self.in_withdraw_queue(&market);
 
         let m = self
             .markets
@@ -271,7 +270,6 @@ impl Contract {
             .unwrap_or_else(|| env::panic_str("Config not found"));
 
         let was_enabled = m.cfg.enabled;
-        let before_principal = m.principal;
 
         let pending_value = m
             .pending_cap
@@ -296,19 +294,6 @@ impl Contract {
                 market: market.clone(),
             }
             .emit();
-
-            if in_queue {
-                Event::MarketAlreadyInWithdrawQueue {
-                    market: market.clone(),
-                }
-                .emit();
-            } else {
-                let _ = require_attached_at_least(
-                    yocto_for_bytes(storage_bytes_for_queue_account_id()),
-                    "withdraw queue entry",
-                );
-                self.add_market_to_withdraw_queue(&market, before_principal);
-            }
         }
 
         Event::SupplyCapSet {
@@ -334,11 +319,11 @@ impl Contract {
     }
 
     /// To remove a market entirely, the curator:
-    ///- first sets its cap to 0 (disabling new deposits)
-    ///- then calls submit_market_removal.
-    /// > This starts a timelock (using the vault’s timelock)
-    /// - after which the market can be removed from the withdraw_queue (assuming any funds have been withdrawn)
-    /// Begins the process to remove `market` from the withdraw queue.
+    /// - first sets its cap to 0 (disabling new deposits)
+    /// - then calls submit_market_removal.
+    /// This starts a timelock (using the vault’s timelock),
+    /// after which the market may be disabled/removed once funds have been withdrawn, if any.
+    /// Begins the process to remove `market`.
     /// Requires cap == 0 and no pending cap changes; starts a timelock.
     pub fn submit_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
@@ -407,76 +392,5 @@ impl Contract {
         for m in &markets {
             self.supply_queue.insert(m.clone());
         }
-    }
-    /// For each removed market, we enforce the conditions:
-    /// Cap is 0 (no new deposits).
-    ///
-    /// No pending cap change.
-    ///
-    /// If the vault still has a supply in that market (vault_shares_in_market > 0), the market must have had submit_market_removal called (removable_at set) and the timelock must have passed.
-    /// Sets the ordered withdraw queue.
-    /// Enforces safety invariants and the policy that all enabled/holding markets must be present.
-    #[payable]
-    pub fn set_withdraw_queue(&mut self, queue: Vec<AccountId>) {
-        Self::assert_allocator();
-        self.ensure_idle();
-        require!(
-            queue.len() <= MAX_QUEUE_LEN,
-            "Withdraw queue length exceeds max"
-        );
-
-        let mut seen = HashSet::new();
-        for id in &queue {
-            if !seen.insert(id.clone()) {
-                env::panic_str(&format!("Duplicate market {id}"));
-            }
-        }
-
-        // Snapshot current withdraw queue into a set for membership checks
-        let current: HashSet<AccountId> = self.withdraw_queue.iter().cloned().collect();
-
-        for id in &queue {
-            require!(
-                self.markets.get(id).is_some(),
-                "Policy violation: Unknown market in new queue"
-            );
-        }
-
-        for (id, rec) in self.markets.iter() {
-            let has_supply = rec.principal > 0;
-            if (rec.cfg.enabled || has_supply) && !seen.contains(id) {
-                if current.contains(id) {
-                    // Omission is allowed only when removing an existing queued market AND all safety preconditions hold.
-                    require!(
-                        rec.cfg.cap.0 == 0,
-                        "Policy violation: Cannot remove market with non-zero cap"
-                    );
-                    require!(
-                        rec.pending_cap.is_none(),
-                        "Policy violation: Cannot remove market with pending cap change"
-                    );
-                    self.aum.policy_removal(&rec.cfg, &has_supply);
-                } else {
-                    // Not in current queue: must be included if enabled or holding.
-                    env::panic_str(
-                            &format!(
-                                "Invariant violation: Withdraw queue must include all enabled or holding markets; missing {id}"
-                            ),
-                        );
-                }
-            }
-        }
-
-        let required_yocto = storage_management::yocto_for_queue_additions(&current, &queue);
-        let _ = require_attached_at_least(required_yocto, "withdraw queue update");
-
-        self.withdraw_queue.clear();
-        for id in &queue {
-            self.withdraw_queue.insert(id.clone());
-        }
-        Event::WithdrawQueueUpdated {
-            markets: queue.clone(),
-        }
-        .emit();
     }
 }

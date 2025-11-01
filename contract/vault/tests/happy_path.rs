@@ -86,7 +86,16 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     let user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
 
     vault.withdraw(&supply_user, amount, None).await;
-    vault.execute_next_withdrawal(&vault_curator).await;
+    // Ensure deposits are activated before we attempt to route and execute the withdrawal
+    harvest(&c, &vault).await;
+    // Plan the withdraw route (single market) and execute it via allocator methods
+    let withdraw_route = vec![c.market.contract().id().clone()];
+    let op_id = vault
+        .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
+        .await;
+    vault
+        .allocator_execute_next_market_withdrawal(&vault_curator, op_id)
+        .await;
 
     assert_eq!(
         c.borrow_asset.balance_of(supply_user.id()).await,
@@ -121,7 +130,16 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .withdraw(&supply_user, (amount.0 - borrowed).into(), None)
         .await;
 
-    vault.execute_next_withdrawal(&vault_curator).await;
+    // Ensure deposits are activated before we attempt to route and execute the withdrawal
+    harvest(&c, &vault).await;
+    // Plan the withdraw route (single market) and execute it via allocator methods
+    let withdraw_route = vec![c.market.contract().id().clone()];
+    let op_id = vault
+        .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
+        .await;
+    vault
+        .allocator_execute_next_market_withdrawal(&vault_curator, op_id)
+        .await;
 }
 
 // FIXME: should also do this in allocate on behalf of the vault?

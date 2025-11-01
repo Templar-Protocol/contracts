@@ -127,29 +127,6 @@ fn prop_supply_queue_mustnt_have_duplicates(len: usize) {
     c.set_supply_queue(queue);
 }
 
-#[rstest(len => [2usize, 3, 5])]
-#[should_panic = "Duplicate market"]
-fn prop_withdraw_queue_mustnt_have_duplicates(len: usize) {
-    let mut c = new_test_contract(&mk(0));
-    setup_env(&accounts(0), &accounts(1), vec![]);
-
-    // Build a queue with a duplicate market id
-    let base = 200u32;
-    let dup = mk(base);
-    let mut queue: Vec<AccountId> = Vec::with_capacity(len);
-    if len >= 1 {
-        queue.push(dup.clone());
-    }
-    for i in 1..len.saturating_sub(1) {
-        queue.push(mk(base + i as u32));
-    }
-    if len >= 2 {
-        queue.push(dup);
-    }
-
-    c.set_withdraw_queue(queue);
-}
-
 #[rstest]
 fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     let mut c = c_vault_env;
@@ -260,7 +237,7 @@ fn execute_next_withdrawal_request_skips_holes(c_owner_env: Contract) {
         .insert(3, make(owner.clone(), recv.clone()));
 
     // First call should consume id=1 and advance head to 2
-    let _ = c.execute_next_withdrawal_request();
+    let _ = c.execute_next_withdrawal_request(vec![]);
     assert_eq!(c.next_withdraw_to_execute, 2);
 
     assert_eq!(c.balance_of(&vault_id), 20);
@@ -270,7 +247,7 @@ fn execute_next_withdrawal_request_skips_holes(c_owner_env: Contract) {
     assert_eq!(c.balance_of(&vault_id), 20);
 
     // Second call should consume id=3 and advance head to 4
-    let _ = c.execute_next_withdrawal_request();
+    let _ = c.execute_next_withdrawal_request(vec![]);
     assert_eq!(c.next_withdraw_to_execute, 4);
 }
 
@@ -282,49 +259,6 @@ fn set_supply_queue_rejects_zero_cap() {
 
     // Unknown market => cap treated as 0
     c.set_supply_queue(vec![mk(100)]);
-}
-
-#[test]
-#[should_panic = "Withdraw queue must include all enabled or holding markets"]
-fn set_withdraw_queue_must_include_all_holding() {
-    let mut c = new_test_contract(&mk(0));
-    setup_env(&mk(0), &accounts(1), vec![]);
-
-    let m1 = mk(103);
-    let m2 = mk(104);
-
-    // Both known; m1 has supply > 0
-    c.markets.insert(
-        m1.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            pending_cap: None,
-            principal: 0,
-        },
-    );
-    c.markets.insert(
-        m2.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            pending_cap: None,
-            principal: 0,
-        },
-    );
-    if let Some(rec) = c.markets.get_mut(&m1) {
-        rec.principal = 10;
-    } else {
-        c.markets.insert(
-            m1.clone(),
-            MarketRecord {
-                cfg: MarketConfiguration::default(),
-                pending_cap: None,
-                principal: 10,
-            },
-        );
-    }
-
-    // Missing m1 should panic
-    c.set_withdraw_queue(vec![m2]);
 }
 
 #[rstest]
@@ -339,32 +273,6 @@ fn execute_supply_wrong_token_refunds_full(c_vault_env: Contract) {
     assert_eq!(refund, deposit, "full refund expected for wrong token");
     assert_eq!(c.total_supply(), 0, "no shares should be minted");
     assert_eq!(c.idle_balance, 0, "idle must remain unchanged");
-}
-
-#[test]
-#[should_panic = "Withdraw queue must include all enabled or holding markets"]
-fn set_withdraw_queue_must_include_all_enabled() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    setup_env(
-        &vault_id,
-        &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str("Owner not set")),
-        vec![],
-    );
-
-    let m1 = mk(101);
-    let m2 = mk(102);
-
-    // m1 enabled, m2 disabled; provide both configs
-    let mut cfg1 = MarketConfiguration::default();
-    cfg1.enabled = true;
-    c.markets.insert(m1.clone(), cfg1.into());
-    c.markets
-        .insert(m2.clone(), MarketConfiguration::default().into());
-
-    // Missing m1 should panic
-    c.set_withdraw_queue(vec![m2]);
 }
 
 #[rstest]
@@ -406,9 +314,6 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
                 principal: 80,
             },
         );
-    }
-    if !c.withdraw_queue.iter().any(|x| x == &m1) {
-        c.withdraw_queue.insert(m1.clone());
     }
     // Force completion and exit op
     if let crate::OpState::Allocating(AllocatingState { op_id, index, .. }) = c.op_state.clone() {
@@ -455,7 +360,6 @@ fn queue_allocation_ignores_stale_plan() {
     cfg1.cap = U128(10);
     cfg1.enabled = true;
     c.markets.insert(m1.clone(), cfg1.into());
-    c.withdraw_queue.insert(m1.clone());
     c.supply_queue.insert(m1);
 
     // Stale plan (should be ignored for queue-based allocation)
@@ -471,40 +375,6 @@ fn queue_allocation_ignores_stale_plan() {
         c.plan.is_none(),
         "queue-based allocate must ignore and clear any stale plan"
     );
-}
-
-#[test]
-#[should_panic = "Market still has supply but no removal scheduled"]
-fn set_withdraw_queue_disallow_nonzero_position_removal() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    setup_env(
-        &vault_id,
-        &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str("Owner not set")),
-        vec![],
-    );
-
-    let m1 = mk(4001);
-
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(0); // required precondition to attempt removal
-    cfg.enabled = true;
-    c.markets.insert(
-        m1.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            // Market has non-zero position but no removal scheduled
-            principal: 1,
-        },
-    );
-
-    // Present in current withdraw queue so removal logic executes
-    c.withdraw_queue.insert(m1);
-
-    // Attempting to remove should panic due to non-zero position without removal schedule
-    c.set_withdraw_queue(vec![]);
 }
 
 #[rstest(
@@ -554,54 +424,6 @@ fn compute_escrow_settlement_burns_min_and_refunds_rest() {
 
     let s3: (u128, u128) = Contract::compute_escrow_settlement(0, 50).into();
     assert_eq!(s3, (0u128, 0u128));
-}
-
-#[test]
-fn removing_holding_market_keeps_config_and_supply_on_writedown() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-
-    let m = mk(7001);
-
-    // Market is known, holding > 0, with cap=0 and removal already scheduled.
-    // This satisfies current preconditions in set_withdraw_queue for omission.
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(0);
-    cfg.enabled = true;
-    cfg.removable_at = 1; // scheduled in the past relative to the block timestamp we set below
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: 10,
-        },
-    );
-
-    // Present in current withdraw queue
-    c.withdraw_queue.insert(m.clone());
-
-    // Advance block timestamp so timelock precondition passes
-    set_block_ts(&vault_id, &owner, 2);
-
-    // Remove the market from the queue (new queue empty)
-    c.set_withdraw_queue(vec![]);
-
-    // Markets removed from queue but the config still exists and the supply
-    assert!(c.markets.get(&m).is_some(), "Config should still exist");
-    assert_eq!(
-        c.markets.get(&m).map(|s| s.principal).unwrap_or_default(),
-        10,
-        "Principal remains in market_supply"
-    );
-
-    // Total assets now undercount because get_total_assets sums withdraw_queue only
-    assert_eq!(
-        c.get_total_assets().0,
-        c.idle_balance, // withdraw_queue is empty, so principal is ignored
-        "Total assets should not silently drop due to queue-based accounting"
-    );
 }
 
 #[test]
@@ -670,157 +492,19 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
         &vault_id,
         &owner,
         Some(env::block_timestamp() + 1_000_000_000),
-        Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
+        None,
     );
     c.accept_cap(m.clone());
 
     let cfg1 = &c.markets.get(&m).unwrap().cfg;
     assert_eq!(cfg1.cap.0, raise);
     assert!(cfg1.enabled, "market should be enabled after raise");
-    assert!(
-        c.withdraw_queue.iter().any(|x| x == &m),
-        "market must be in withdraw queue after enabling"
-    );
 
     // Now lower back to 0 (immediate path) and ensure enabled stays true
     c.submit_cap(m.clone(), U128(0));
     let cfg2 = &c.markets.get(&m).unwrap().cfg;
     assert_eq!(cfg2.cap.0, 0);
     assert!(cfg2.enabled, "enabled must remain true on cap=0");
-}
-
-#[test]
-#[should_panic = "Policy violation: Cannot remove market with non-zero cap"]
-fn set_withdraw_queue_disallow_nonzero_cap_removal() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    setup_env(
-        &vault_id,
-        &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str("Owner not set")),
-        vec![],
-    );
-
-    let m = mk(5000);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(1); // non-zero cap
-    cfg.enabled = true; // must be enabled or holding to trigger invariant
-    c.markets.insert(m.clone(), cfg.into());
-    c.withdraw_queue.insert(m.clone());
-
-    // Attempt to remove from queue should panic due to non-zero cap
-    c.set_withdraw_queue(vec![]);
-}
-
-#[test]
-#[should_panic = "Policy violation: Cannot remove market with pending cap change"]
-fn set_withdraw_queue_disallow_pending_cap_removal() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
-
-    let m = mk(5001);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(0);
-    cfg.enabled = true;
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        },
-    );
-    c.withdraw_queue.insert(m.clone());
-
-    // Insert a pending cap change
-    c.markets.get_mut(&m).unwrap().pending_cap = Some(templar_common::vault::PendingValue {
-        value: 1,
-        valid_at_ns: env::block_timestamp() + 1,
-    });
-
-    // Attempt to remove from queue should panic due to pending cap change
-    c.set_withdraw_queue(vec![]);
-}
-
-#[test]
-#[should_panic = "Policy violation: Removal timelock not elapsed for market"]
-fn set_withdraw_queue_disallow_timelock_not_elapsed() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
-
-    let m = mk(5002);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(0);
-    cfg.enabled = true;
-    cfg.removable_at = 10; // in the future relative to block timestamp we set below
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        },
-    );
-    if let Some(rec) = c.markets.get_mut(&m) {
-        rec.principal = 1; // non-zero supply enforces timelock path
-    }
-    c.withdraw_queue.insert(m.clone());
-
-    // Set block timestamp below removable_at so timelock has not elapsed
-    set_block_ts(&vault_id, &owner, 5);
-
-    // Attempt to remove from queue should panic due to timelock not elapsed
-    c.set_withdraw_queue(vec![]);
-}
-
-#[test]
-fn set_withdraw_queue_allows_zero_supply_removal() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    setup_env(
-        &vault_id,
-        &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str("Owner not set")),
-        vec![],
-    );
-
-    let m = mk(5003);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(0);
-    cfg.enabled = true;
-    // removable_at irrelevant when supply is zero
-    c.markets.insert(m.clone(), cfg.into());
-    c.withdraw_queue.insert(m.clone());
-
-    // Supply is zero; removal should be allowed immediately
-    c.set_withdraw_queue(vec![]);
-
-    let ma = c.markets.get(&m);
-    assert!(
-        ma.is_some(),
-        "Config must not be removed for governance writedowns"
-    );
-    // And the queue should be empty
-    assert!(
-        !c.withdraw_queue.iter().any(|x| x == &m),
-        "Withdraw queue must not contain the removed market"
-    );
-}
-
-#[test]
-#[should_panic = "Policy violation: Unknown market in new queue"]
-fn set_withdraw_queue_rejects_unknown_market() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    setup_env(&vault_id, &c.own_get_owner().unwrap(), vec![]);
-
-    // No config for this market
-    let unknown = mk(5999);
-    c.set_withdraw_queue(vec![unknown]);
 }
 
 #[rstest(
@@ -938,7 +622,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     case(0u128, 456u128),
     case(789u128, 1_011u128)
 )]
-fn total_assets_ignores_offqueue_cases(principal: u128, idle: u128) {
+fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
@@ -955,7 +639,7 @@ fn total_assets_ignores_offqueue_cases(principal: u128, idle: u128) {
     );
     c.idle_balance = idle;
 
-    assert_eq!(c.get_total_assets().0, idle);
+    assert_eq!(c.get_total_assets().0, idle.saturating_add(principal));
 }
 
 #[test]
@@ -1734,7 +1418,7 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
         &vault_id,
         &owner,
         Some(env::block_timestamp() + 1_000_000_000),
-        Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
+        None,
     );
     c.accept_cap(m.clone());
 
@@ -1743,10 +1427,6 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
     assert!(
         cfg.enabled,
         "market should be enabled after accepting raise"
-    );
-    assert!(
-        c.withdraw_queue.iter().any(|x| x == &m),
-        "market must be in withdraw queue after enabling"
     );
 }
 
@@ -1845,36 +1525,6 @@ fn governance_set_fee_recipient_no_fee_does_not_accrue() {
 }
 
 #[test]
-fn governance_set_withdraw_queue_happy_path() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
-
-    // Two enabled markets
-    let m1 = mk(9201);
-    let m2 = mk(9202);
-    for m in [&m1, &m2] {
-        let mut cfg = MarketConfiguration::default();
-        cfg.cap = U128(1);
-        cfg.enabled = true;
-        c.markets.insert(m.clone(), cfg.into());
-    }
-
-    set_ctx(
-        &vault_id,
-        &owner,
-        None,
-        Some(2 * yocto_for_bytes(storage_bytes_for_queue_account_id())),
-    );
-    c.set_withdraw_queue(vec![m1.clone(), m2.clone()]);
-
-    assert_eq!(c.withdraw_queue.len(), 2);
-    assert_eq!(c.withdraw_queue.iter().next(), Some(&m1));
-    assert_eq!(c.withdraw_queue.iter().nth(1), Some(&m2));
-}
-
-#[test]
 #[should_panic = "Refusing to skim the underlying token"]
 fn skim_rejects_underlying_token() {
     let vault_id = accounts(0);
@@ -1935,7 +1585,6 @@ fn after_supply_1_check_allocating_not_allocating_index() {
     let mut c = new_test_contract(&vault_id);
 
     let op_id = 1;
-    let receiver = mk(7);
 
     c.op_state = OpState::Allocating(AllocatingState {
         op_id,
@@ -2008,7 +1657,7 @@ fn after_send_to_user_success_no_escrow() {
 fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
     // Prepare a single-market withdraw queue with non-zero principal
     let market = mk(8);
-    c.withdraw_queue.insert(market.clone());
+    c.withdraw_route = vec![market.clone()];
     c.markets.insert(
         market.clone(),
         MarketRecord {
@@ -2147,9 +1796,9 @@ fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    // Single-market queue so advancing index reaches end-of-queue
+    // Single-market route so advancing index reaches end-of-route
     let market = mk(8);
-    c.withdraw_queue.insert(market.clone());
+    c.withdraw_route = vec![market.clone()];
     c.markets.insert(
         market.clone(),
         MarketRecord {
@@ -2195,7 +1844,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     let mut c = new_test_contract(&vault_id);
 
     let market = mk(8);
-    c.withdraw_queue.insert(market.clone());
+    c.withdraw_route = vec![market.clone()];
     c.markets.insert(
         market.clone(),
         MarketRecord {
@@ -2261,7 +1910,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     let mut c = new_test_contract(&vault_id);
 
     let market = mk(8);
-    c.withdraw_queue.insert(market.clone());
+    c.withdraw_route = vec![market.clone()];
     c.markets.insert(
         market.clone(),
         MarketRecord {
@@ -2315,10 +1964,6 @@ fn refund_path_consistency() {
     let owner = accounts(1);
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
         .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
-
-    // Single-market withdraw queue (not used functionally here, just to satisfy path)
-    let market = mk(12);
-    c.withdraw_queue.insert(market);
 
     // Withdrawing state with remaining=0 and collected=0 forces refund path
     c.op_state = OpState::Withdrawing(WithdrawingState {
@@ -2449,8 +2094,7 @@ fn resolve_market_helpers_supply_and_withdraw() {
     ));
 
     // Withdraw resolver uses withdraw_queue
-    c.withdraw_queue.insert(m1.clone());
-    c.withdraw_queue.insert(m2.clone());
+    c.withdraw_route = vec![m1.clone(), m2.clone()];
     assert_eq!(c.resolve_withdraw_market(0).unwrap(), &m1);
     assert_eq!(c.resolve_withdraw_market(1).unwrap(), &m2);
     assert!(matches!(
@@ -2525,7 +2169,7 @@ fn after_create_withdraw_req_success_returns_promise(
     owner: AccountId,
 ) {
     let market = mk(50);
-    c.withdraw_queue.insert(market.clone());
+    c.withdraw_route = vec![market.clone()];
     c.markets.insert(
         market.clone(),
         MarketRecord {
@@ -2547,17 +2191,17 @@ fn after_create_withdraw_req_success_returns_promise(
 
     let res = c.after_create_withdraw_req(Ok(()), 21, 0, U128(60));
     match res {
-        PromiseOrValue::Promise(_) => {}
-        _ => panic!("Expected Promise when create succeeds"),
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) when create succeeds and execution is deferred"),
     }
-    // State remains Withdrawing and will continue via the promise chain
+    // State remains Withdrawing; keeper must call allocator_execute_next_market_withdrawal
     assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
 }
 
 #[rstest]
 fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
     let market = mk(60);
-    c.withdraw_queue.insert(market.clone());
+    c.withdraw_route = vec![market.clone()];
     c.markets.insert(
         market.clone(),
         MarketRecord {
@@ -2597,8 +2241,7 @@ fn after_exec_withdraw_read_advances_when_remaining(
     // Two markets; first has principal to withdraw
     let m1 = mk(70);
     let m2 = mk(71);
-    c.withdraw_queue.insert(m1.clone());
-    c.withdraw_queue.insert(m2.clone());
+    c.withdraw_route = vec![m1.clone(), m2.clone()];
     c.markets.insert(
         m1.clone(),
         MarketRecord {

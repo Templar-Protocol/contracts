@@ -5,14 +5,14 @@ use crate::{
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{env, json_types::U128, AccountId, NearToken, PromiseError, PromiseOrValue};
-use near_sdk_contract_tools::ft::{nep141::GAS_FOR_FT_TRANSFER_CALL, Nep141Burn};
+use near_sdk_contract_tools::ft::{nep141::GAS_FOR_FT_TRANSFER_CALL, Nep141Burn, Nep141Transfer};
 use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
         AllocatingState, Event, PayoutState, WithdrawingState, AFTER_EXECUTE_NEXT_WITHDRAW_GAS,
         AFTER_EXECUTE_NEXT_WITHDRAW_READ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_2_READ_GAS,
-        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, GET_SUPPLY_POSITION_GAS,
+        GET_SUPPLY_POSITION_GAS,
     },
 };
 
@@ -158,11 +158,6 @@ impl Contract {
             rec.principal = new_principal;
         }
 
-        // Invariant: withdraw_queue gains any market with new_principal > 0
-        if new_principal > 0 {
-            self.add_market_to_withdraw_queue(&market, before.0);
-        }
-
         self.op_state = OpState::Allocating(AllocatingState {
             op_id,
             index: market_index.saturating_add(1),
@@ -199,23 +194,9 @@ impl Contract {
         };
 
         if did_create.is_ok() {
-            if self.defer_market_execute {
-                // record the created request and pause; executor will pick it up
-                self.pending_market_exec.push(market_index);
-                return PromiseOrValue::Value(());
-            } else {
-                return PromiseOrValue::Promise(
-                    ext_market::ext(market.clone())
-                        .with_static_gas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
-                        .with_unused_gas_weight(0)
-                        .execute_next_supply_withdrawal_request()
-                        .then(
-                            ext_self::ext(env::current_account_id())
-                                .with_static_gas(AFTER_EXECUTE_NEXT_WITHDRAW_GAS)
-                                .after_exec_withdraw_req(op_id, market_index, need),
-                        ),
-                );
-            }
+            // Always defer execution: record the created request; keeper must call allocator_execute_next_market_withdrawal(op_id)
+            self.pending_market_exec.push(market_index);
+            return PromiseOrValue::Value(());
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -366,7 +347,7 @@ impl Contract {
                     let self_id = env::current_account_id();
                     // We expect the owner to maintain storage accounts, otherwise they will lose access to their funds
                     _self
-                        .transfer_unchecked(&self_id, &owner, escrow_shares)
+                        .transfer(&Nep141Transfer::new(escrow_shares, &self_id, &owner))
                         .expect("Failed to refund escrowed shares");
                     _self.op_state = OpState::Idle;
                     PromiseOrValue::Value(())
@@ -437,23 +418,28 @@ impl Contract {
 
             // Maybe refund any delta to the owner
             if refund > 0 {
-                // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
                 // Note: this should be infallible since we are transferring to an existing owner, and they are unable to unregister from storage
-                #[allow(clippy::expect_used, reason = "No side effects")]
-                self.transfer_unchecked(&env::current_account_id(), &owner, refund)
-                    .unwrap_or_else(|e| env::log_str(&e.to_string()));
-                // TODO: emit Refund event
+                self.transfer(&Nep141Transfer::new(
+                    refund,
+                    &env::current_account_id(),
+                    &owner,
+                ))
+                // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
+                .unwrap_or_else(|e| env::log_str(&e.to_string()));
             }
         } else {
             // On payout failure, refund full escrow to owner and leave idle_balance unchanged
-            self.transfer_unchecked(&env::current_account_id(), &owner, escrow_shares)
-                // If this fails, this is a serious issue as above
-                .unwrap_or_else(|e| env::log_str(&e.to_string()));
+            self.transfer(&Nep141Transfer::new(
+                escrow_shares,
+                &env::current_account_id(),
+                &owner,
+            ))
+            // If this fails, this is a serious issue as above
+            .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
         self.pending_market_exec.clear();
-        self.pending_market_exec.clear();
         self.remove_inflight_and_advance_head();
-        self.pending_market_exec.clear();
+        self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
 
@@ -532,6 +518,7 @@ impl Contract {
         }
 
         self.remove_inflight_and_advance_head();
+        self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
 
@@ -555,6 +542,7 @@ impl Contract {
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
         self.remove_inflight_and_advance_head();
+        self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
 
@@ -626,11 +614,10 @@ impl Contract {
             .ok_or(Error::MissingMarket(market_index))
     }
 
-    /// Resolve a market for withdraw by `withdraw_queue`
+    /// Resolve a market for withdraw by `withdraw_route`
     pub(crate) fn resolve_withdraw_market(&self, market_index: u32) -> Result<&AccountId, Error> {
-        self.withdraw_queue
-            .iter()
-            .nth(market_index as usize)
+        self.withdraw_route
+            .get(market_index as usize)
             .ok_or(Error::MissingMarket(market_index))
     }
 }
