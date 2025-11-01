@@ -9,6 +9,7 @@ use crate::storage_management::yocto_for_pending_cap;
 use crate::test_utils::*;
 use crate::wad::compute_fee_shares;
 use crate::Contract;
+use crate::Wad;
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
 use near_sdk::serde_json;
@@ -994,7 +995,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates() {
     let recipient = c.fee_recipient.clone();
     let bal_before = c.balance_of(&recipient);
 
-    c.set_performance_fee(U128(u128::from(crate::wad::Wad::one() / 100)));
+    c.set_performance_fee(crate::wad::Wad::one() / 100);
 
     assert_eq!(
         c.balance_of(&recipient),
@@ -1047,7 +1048,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
     let recipient = c.fee_recipient.clone();
     let bal_before = c.balance_of(&recipient);
 
-    c.set_performance_fee(U128(u128::from(crate::wad::Wad::one() / 200))); // 0.5%
+    c.set_performance_fee(Wad::one() / 200); // 0.5%
 
     assert_eq!(
         c.balance_of(&recipient),

@@ -4,11 +4,13 @@ use std::ops::{Add, Sub};
 
 use near_sdk::borsh::schema::{add_definition, Declaration, Definition};
 use near_sdk::borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
-use templar_common::primitive_types::{U256, U512};
+use near_sdk::serde::{Deserialize, Serialize};
+use primitive_types::{U256, U512};
 
 pub type WIDE = U512;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Number(pub U256);
 
 impl Number {
@@ -36,7 +38,7 @@ impl Number {
     #[must_use]
     pub fn as_u128_trunc(self) -> u128 {
         let mut b32 = [0u8; 32];
-        self.0.to_little_endian(&mut b32);
+        self.0.write_as_little_endian(&mut b32);
         let mut b16 = [0u8; 16];
         b16.copy_from_slice(&b32[..16]);
         u128::from_le_bytes(b16)
@@ -44,7 +46,7 @@ impl Number {
     #[inline]
     fn as_u256_trunc(q: U512) -> U256 {
         let mut b64 = [0u8; 64];
-        q.to_little_endian(&mut b64);
+        q.write_as_little_endian(&mut b64);
         U256::from_little_endian(&b64[..32])
     }
     #[inline]
@@ -150,7 +152,7 @@ impl BorshSerialize for Number {
     #[inline]
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         let mut b32 = [0u8; 32];
-        self.0.to_little_endian(&mut b32);
+        self.0.write_as_little_endian(&mut b32);
         writer.write_all(&b32)
     }
 }
@@ -179,7 +181,8 @@ impl BorshSchema for Number {
 pub const MAX_FEE_WAD: u128 = Wad::SCALE / 10 * 2;
 
 /// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde", transparent)]
 pub struct Wad(pub Number);
 
 impl Wad {
@@ -264,7 +267,7 @@ impl Div<Number> for Wad {
 impl BorshSerialize for Wad {
     #[inline]
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        self.0.serialize(writer)
+        BorshSerialize::serialize(&self.0, writer)
     }
 }
 

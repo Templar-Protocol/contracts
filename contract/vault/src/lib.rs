@@ -376,22 +376,17 @@ impl Contract {
     }
 
     /// Sets the performance fee as a WAD fraction (1e24 = 100%). Accrues fees at the old rate first.
-    pub fn set_performance_fee(&mut self, fee: U128) {
+    pub fn set_performance_fee(&mut self, fee: Wad) {
         Self::require_owner();
 
-        let fee_wad = wad::Wad::from(fee.0);
-
-        require!(
-            fee_wad != self.performance_fee,
-            "Fee already set to this value"
-        );
-        require!(fee_wad <= Wad::from(MAX_FEE_WAD), "fee too high");
+        require!(fee != self.performance_fee, "Fee already set to this value");
+        require!(fee <= Wad::from(MAX_FEE_WAD), "fee too high");
 
         // Accrue any pending fees with old rate before changing
         self.internal_accrue_fee();
-        self.performance_fee = fee_wad;
+        self.performance_fee = fee;
         Event::PerformanceFeeSet {
-            fee: U128(u128::from(fee_wad)),
+            fee: U128(u128::from(fee)),
         }
         .emit();
     }
