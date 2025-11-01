@@ -55,7 +55,7 @@ pub enum DepositMsg {
 }
 
 /// Confrete configuration for a market.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 #[near]
 pub struct MarketConfiguration {
     /// Supply cap for this market (in underlying asset units)
@@ -224,15 +224,15 @@ pub trait Callbacks {
     fn after_skim_balance(&mut self, token: AccountId, recipient: AccountId) -> bool;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[near]
-pub struct PendingValue<T> {
+pub struct PendingValue<T: core::fmt::Debug> {
     pub value: T,
     // Timestamp when this pending value can be finalized
     pub valid_at_ns: TimestampNs,
 }
 
-impl<T> PendingValue<T> {
+impl<T: core::fmt::Debug> PendingValue<T> {
     pub fn verify(&self) {
         require!(
             near_sdk::env::block_timestamp() >= self.valid_at_ns,

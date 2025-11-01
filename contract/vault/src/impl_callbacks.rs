@@ -58,7 +58,7 @@ impl Contract {
                 self.stop_and_exit(Some(&Error::MarketTransferFailed))
             }
             Ok(accepted) => {
-                let before = self.market_supply.get(&market).unwrap_or(&0);
+                let before = self.principal_of(market);
 
                 PromiseOrValue::Promise(
                     ext_market::ext(market.clone())
@@ -71,7 +71,7 @@ impl Contract {
                                 .after_supply_2_read(
                                     op_id,
                                     market_index,
-                                    U128(*before),
+                                    U128(before),
                                     attempted,
                                     accepted,
                                 ),
@@ -103,7 +103,8 @@ impl Contract {
         let market = match self.resolve_supply_market(market_index) {
             Ok(m) => m,
             Err(e) => return self.stop_and_exit(Some(&e)),
-        };
+        }
+        .clone();
 
         let SupplyReconciliation {
             new_principal,
@@ -153,7 +154,9 @@ impl Contract {
         }
         .emit();
 
-        self.market_supply.insert(market.clone(), new_principal);
+        if let Some(rec) = self.markets.get_mut(&market) {
+            rec.principal = new_principal;
+        }
 
         // Invariant: withdraw_queue gains any market with new_principal > 0
         if new_principal > 0 {
@@ -256,7 +259,7 @@ impl Contract {
         };
 
         // Verify actual withdrawal by reading market position after execution
-        let before = *self.market_supply.get(&market).unwrap_or(&0);
+        let before = self.principal_of(market);
         PromiseOrValue::Promise(
             ext_market::ext(market.clone())
                 .with_static_gas(GET_SUPPLY_POSITION_GAS)
@@ -335,7 +338,9 @@ impl Contract {
             collected_ctx,
         );
 
-        self.market_supply.insert(market.clone(), new_principal);
+        if let Some(rec) = self.markets.get_mut(&market.clone()) {
+            rec.principal = new_principal;
+        }
         if idle_delta > 0 {
             self.idle_balance = self.idle_balance.saturating_add(idle_delta);
         }
@@ -610,24 +615,22 @@ impl Contract {
     }
 
     /// Resolve a market for allocation by plan (if present) or `supply_queue`
-    pub(crate) fn resolve_supply_market(&self, market_index: u32) -> Result<AccountId, Error> {
-        if let Some(plan) = &self.plan {
-            if let Some((m, _)) = plan.get(market_index as usize) {
-                return Ok(m.clone());
-            }
-            return Err(Error::MissingMarket(market_index));
-        }
-        self.supply_queue
-            .get(market_index)
-            .cloned()
+    pub(crate) fn resolve_supply_market(&self, market_index: u32) -> Result<&AccountId, Error> {
+        self.plan
+            .as_ref()
+            .and_then(|plan| {
+                plan.get(market_index as usize)
+                    .map(|(m, _)| m)
+                    .or(self.supply_queue.iter().nth(market_index as usize))
+            })
             .ok_or(Error::MissingMarket(market_index))
     }
 
     /// Resolve a market for withdraw by `withdraw_queue`
-    pub(crate) fn resolve_withdraw_market(&self, market_index: u32) -> Result<AccountId, Error> {
+    pub(crate) fn resolve_withdraw_market(&self, market_index: u32) -> Result<&AccountId, Error> {
         self.withdraw_queue
-            .get(market_index)
-            .cloned()
+            .iter()
+            .nth(market_index as usize)
             .ok_or(Error::MissingMarket(market_index))
     }
 }

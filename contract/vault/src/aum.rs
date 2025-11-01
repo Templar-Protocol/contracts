@@ -167,9 +167,9 @@ impl AUM {
                 })
             }
             AUM::BalanceSheet => c
-                .market_supply
+                .markets
                 .iter()
-                .fold(c.idle_balance, |prev, (_, p)| prev.saturating_add(*p)),
+                .fold(c.idle_balance, |prev, (_, rec)| prev.saturating_add(rec.principal)),
         })
     }
 

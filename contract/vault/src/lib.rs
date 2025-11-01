@@ -1,7 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     num::NonZeroU8,
 };
 
@@ -59,8 +59,6 @@ mod test_utils;
 pub enum StorageKey {
     Config,
     PendingCaps,
-    SupplyQueue,
-    WithdrawQueue,
     MarketSupply,
     PendingWithdrawals,
 }
@@ -78,6 +76,24 @@ pub enum Role {
     /// Operational role for queue maintenance.
     /// May set the supply/withdraw queues while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
+}
+
+#[near(serializers = [borsh])]
+#[derive(Debug, Clone, Default)]
+pub struct MarketRecord {
+    pub cfg: MarketConfiguration,
+    pub pending_cap: Option<PendingValue<u128>>,
+    pub principal: u128,
+}
+
+impl From<MarketConfiguration> for MarketRecord {
+    fn from(cfg: MarketConfiguration) -> Self {
+        Self {
+            cfg,
+            pending_cap: None,
+            principal: 0,
+        }
+    }
 }
 
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
@@ -122,13 +138,8 @@ pub struct Contract {
     virtual_shares: u128,
     virtual_assets: u128,
 
-    // FIXME: think about merging markets, pending cap and market_supply
-    /// configuration per market (market ID -> MarketConfig)
-    markets: IterableMap<AccountId, MarketConfiguration>,
-    /// Any pending change to the vault's cap, TODO: u256
-    pending_cap: IterableMap<AccountId, PendingValue<u128>>,
-    /// vault's supplied principal per market (borrow-asset units)
-    market_supply: IterableMap<AccountId, u128>,
+    // Merged market record: cfg + pending_cap + principal
+    markets: IterableMap<AccountId, MarketRecord>,
 
     /// Any pending change to the vault's timelock
     pending_timelock: Option<PendingValue<TimestampNs>>,
@@ -138,9 +149,10 @@ pub struct Contract {
     timelock_ns: TimestampNs,
 
     /// Ordered list of market IDs for deposit allocation
-    supply_queue: Vector<AccountId>,
-    /// Ordered list of market IDs for withdrawal prioritytr
-    withdraw_queue: Vector<AccountId>,
+    supply_queue: BTreeSet<AccountId>,
+    /// Ordered list of market IDs for withdrawal priority
+    withdraw_queue: BTreeSet<AccountId>,
+
     current_withdraw_inflight: Option<u64>, // id of the pending withdrawal being executed, if any
 
     /// underlying held by vault
@@ -214,12 +226,10 @@ impl Contract {
             fee_recipient,
             skim_recipient,
             markets: IterableMap::new(key!(Config)),
-            pending_cap: IterableMap::new(key!(PendingCaps)),
             pending_timelock: None,
             pending_guardian: None,
-            supply_queue: Vector::new(key!(SupplyQueue)),
-            withdraw_queue: Vector::new(key!(WithdrawQueue)),
-            market_supply: IterableMap::new(key!(MarketSupply)),
+            supply_queue: Default::default(),
+            withdraw_queue: Default::default(),
             last_total_assets: 0,
             virtual_shares: 1,
             virtual_assets: 1,
@@ -463,30 +473,30 @@ impl Contract {
         if self.markets.get(&market).is_none() {
             required_deposit = required_deposit.saturating_add(yocto_for_new_market());
         }
-        let current_cap = self.markets.get(&market).map_or(0, |c| c.cap.0);
+        let current_cap = self.markets.get(&market).map_or(0, |r| r.cfg.cap.0);
         if new_cap.0 > current_cap {
             required_deposit = required_deposit.saturating_add(yocto_for_pending_cap());
         }
         require_attached_at_least(required_deposit, "submit_cap");
 
         require!(
-            self.pending_cap.get(&market).is_none(),
+            self.markets
+                .get(&market)
+                .and_then(|r| r.pending_cap.as_ref())
+                .is_none(),
             "Policy violation: A cap change is already pending for this market"
         );
 
         let config = match self.markets.get_mut(&market) {
             None => {
-                self.markets
-                    .insert(market.clone(), MarketConfiguration::default());
+                self.markets.insert(market.clone(), MarketRecord::default());
                 Event::MarketCreated {
                     market: market.clone(),
                 }
                 .emit();
-                // Pre-allocate a market_supply record (principal=0) so allocations don't create storage later
-                self.market_supply.insert(market.clone(), 0);
                 self.cfg_mut(&market)
             }
-            Some(config) => config,
+            Some(config) => &mut config.cfg,
         };
 
         require!(
@@ -500,13 +510,12 @@ impl Contract {
             config.cap = new_cap;
         } else {
             let valid_at_ns = env::block_timestamp() + self.timelock_ns;
-            self.pending_cap.insert(
-                market.clone(),
-                PendingValue {
+            if let Some(rec) = self.markets.get_mut(&market) {
+                rec.pending_cap = Some(PendingValue {
                     value: new_cap.0,
                     valid_at_ns,
-                },
-            );
+                });
+            }
             Event::SupplyCapRaiseSubmitted {
                 market: market.clone(),
                 new_cap,
@@ -522,11 +531,14 @@ impl Contract {
         Self::assert_curator_or_owner();
         self.ensure_idle();
 
-        let pending_value = match self.pending_cap.get(&market) {
-            Some(p) => {
-                p.verify();
-                p.value
-            }
+        let pending_value = match self.markets.get(&market) {
+            Some(rec) => match rec.pending_cap.as_ref() {
+                Some(p) => {
+                    p.verify();
+                    p.value
+                }
+                None => env::panic_str("No pending cap change for this market"),
+            },
             None => env::panic_str("No pending cap change for this market"),
         };
 
@@ -534,16 +546,18 @@ impl Contract {
         let in_queue = self.in_withdraw_queue(&market);
         let before_principal = self.principal_of(&market);
 
-        let cfg = self.cfg_mut(&market);
-        cfg.cap = pending_value.into();
+        let rec = self
+            .markets
+            .get_mut(&market)
+            .unwrap_or_else(|| env::panic_str("Config not found"));
+        rec.cfg.cap = pending_value.into();
         if pending_value > 0 {
-            if !cfg.enabled {
-                cfg.enabled = true;
+            if !rec.cfg.enabled {
+                rec.cfg.enabled = true;
             }
-            cfg.removable_at = 0;
+            rec.cfg.removable_at = 0;
         }
 
-        // If we just enabled the market, ensure it's in the withdraw queue
         if pending_value > 0 && !was_enabled {
             Event::MarketEnabled {
                 market: market.clone(),
@@ -570,19 +584,19 @@ impl Contract {
         }
         .emit();
 
-        // Finally, clear the pending cap record
-        self.pending_cap.remove(&market);
+        self.markets.get_mut(&market).unwrap().pending_cap = None;
     }
 
     /// Revokes any pending cap change for `market`.
     pub fn revoke_pending_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        if self.pending_cap.get(&market).is_some() {
-            self.pending_cap.remove(&market);
-            Event::SupplyCapRaiseRevoked {
-                market: market.clone(),
+        if let Some(rec) = self.markets.get_mut(&market) {
+            if rec.pending_cap.take().is_some() {
+                Event::SupplyCapRaiseRevoked {
+                    market: market.clone(),
+                }
+                .emit();
             }
-            .emit();
         }
     }
 
@@ -595,34 +609,35 @@ impl Contract {
     /// Requires cap == 0 and no pending cap changes; starts a timelock.
     pub fn submit_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        let cfg = self
+        let rec = self
             .markets
             .get_mut(&market)
             .unwrap_or_else(|| env::panic_str(&format!("Unknown market: {market}")));
         require!(
-            cfg.removable_at == 0,
+            rec.cfg.removable_at == 0,
             "Removal already pending for this market"
         );
         require!(
-            cfg.cap.0 == 0,
+            rec.cfg.cap.0 == 0,
             "Cannot remove market with non-zero cap (disable deposits first)"
         );
-        require!(cfg.enabled, "Market not enabled or already removed");
+        require!(rec.cfg.enabled, "Market not enabled or already removed");
         require!(
-            self.pending_cap.get(&market).is_none(),
+            rec.pending_cap.is_none(),
             "Cap change pending for this market"
         );
-        cfg.removable_at = env::block_timestamp() + self.timelock_ns;
+        rec.cfg.removable_at = env::block_timestamp() + self.timelock_ns;
         Event::MarketRemovalSubmitted {
             market: market.clone(),
-            removable_at: cfg.removable_at.into(),
+            removable_at: rec.cfg.removable_at.into(),
         }
         .emit();
     }
+
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        if let Some(cfg) = self.markets.get_mut(&market) {
+        if let Some(cfg) = self.markets.get_mut(&market).map(|c| &mut c.cfg) {
             cfg.removable_at = 0;
         }
         Event::MarketRemovalRevoked { market }.emit();
@@ -645,7 +660,7 @@ impl Contract {
         }
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
-            let cap = self.markets.get(m).map_or(0, |c| c.cap.into());
+            let cap = self.markets.get(m).map_or(0, |r| r.cfg.cap.into());
             require!(cap > 0, "unauthorized market");
         }
 
@@ -657,7 +672,7 @@ impl Contract {
         self.supply_queue.clear();
 
         for m in &markets {
-            self.supply_queue.push(m.clone());
+            self.supply_queue.insert(m.clone());
         }
     }
 
@@ -695,20 +710,20 @@ impl Contract {
             );
         }
 
-        for (id, cfg) in self.markets.iter() {
-            let has_supply = *self.market_supply.get(id).unwrap_or(&0) > 0;
-            if (cfg.enabled || has_supply) && !seen.contains(id) {
+        for (id, rec) in self.markets.iter() {
+            let has_supply = rec.principal > 0;
+            if (rec.cfg.enabled || has_supply) && !seen.contains(id) {
                 if current.contains(id) {
                     // Omission is allowed only when removing an existing queued market AND all safety preconditions hold.
                     require!(
-                        cfg.cap.0 == 0,
+                        rec.cfg.cap.0 == 0,
                         "Policy violation: Cannot remove market with non-zero cap"
                     );
                     require!(
-                        self.pending_cap.get(id).is_none(),
+                        rec.pending_cap.is_none(),
                         "Policy violation: Cannot remove market with pending cap change"
                     );
-                    self.aum.policy_removal(cfg, &has_supply);
+                    self.aum.policy_removal(&rec.cfg, &has_supply);
                 } else {
                     // Not in current queue: must be included if enabled or holding.
                     env::panic_str(
@@ -725,7 +740,7 @@ impl Contract {
 
         self.withdraw_queue.clear();
         for id in &queue {
-            self.withdraw_queue.push(id.clone());
+            self.withdraw_queue.insert(id.clone());
         }
         Event::WithdrawQueueUpdated {
             markets: queue.clone(),
@@ -1028,10 +1043,7 @@ impl Contract {
             .supply_queue
             .iter()
             .fold(0u128, |acc, m| match self.markets.get(m) {
-                Some(cfg) if cfg.cap.0 > 0 => {
-                    let cur = *self.market_supply.get(m).unwrap_or(&0);
-                    acc + cfg.cap.0.saturating_sub(cur)
-                }
+                Some(rec) if rec.cfg.cap.0 > 0 => acc + rec.cfg.cap.0.saturating_sub(rec.principal),
                 _ => acc,
             });
         U128(total)
@@ -1109,24 +1121,28 @@ impl From<EscrowSettlement> for (u128, u128) {
 /* ----- Private Helpers ----- */
 impl Contract {
     fn cfg_mut(&mut self, id: &AccountId) -> &mut MarketConfiguration {
-        self.markets
+        &mut self
+            .markets
             .get_mut(id)
             .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {id}")))
+            .cfg
     }
 
     fn cfg(&self, id: &AccountId) -> &MarketConfiguration {
-        self.markets
+        &self
+            .markets
             .get(id)
             .unwrap_or_else(|| env::panic_str(&format!("Config not found for market {id}")))
+            .cfg
     }
 
     // Principal (vault-supplied) units currently recorded for a market
     fn principal_of(&self, market: &AccountId) -> u128 {
-        *self.market_supply.get(market).unwrap_or(&0)
+        self.markets.get(market).map_or(0, |r| r.principal)
     }
 
     fn cap_of(&self, market: &AccountId) -> u128 {
-        self.markets.get(market).map_or(0, |c| c.cap.0)
+        self.markets.get(market).map_or(0, |r| r.cfg.cap.0)
     }
 
     // Remaining room until cap for a market
@@ -1152,7 +1168,7 @@ impl Contract {
             .emit();
             return;
         }
-        self.withdraw_queue.push(market.clone());
+        self.withdraw_queue.insert(market.clone());
         Event::WithdrawQueueMarketAdded {
             market: market.clone(),
         }
@@ -1445,7 +1461,7 @@ impl Contract {
         index: u32,
         remaining: u128,
     ) -> PromiseOrValue<()> {
-        if let Some(market) = self.supply_queue.get(index) {
+        if let Some(market) = self.supply_queue.iter().nth(index as usize) {
             let room = self.room_of(market);
             let to_supply = room.min(remaining);
 
@@ -1583,10 +1599,10 @@ impl Contract {
                     ),
             );
         }
-        if let Some(market) = self.withdraw_queue.get(index) {
-            let have = self.market_supply.get(market).unwrap_or(&0);
-            let to_request = have.min(&remaining);
-            if to_request == &0 {
+        if let Some(market) = self.withdraw_queue.iter().nth(index as usize) {
+            let have = self.principal_of(market);
+            let to_request = have.min(remaining);
+            if to_request == 0 {
                 self.op_state = OpState::Withdrawing(WithdrawingState {
                     op_id,
                     index: index + 1,
@@ -1604,11 +1620,11 @@ impl Contract {
             PromiseOrValue::Promise(
                 templar_common::market::ext_market::ext(market.clone())
                     .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
-                    .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(*to_request)))
+                    .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)))
                     .then(
                         ext_self::ext(env::current_account_id())
                             .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
-                            .after_create_withdraw_req(op_id, index, U128(*to_request)),
+                            .after_create_withdraw_req(op_id, index, U128(to_request)),
                     ),
             )
         } else {

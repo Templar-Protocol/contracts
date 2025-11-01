@@ -86,15 +86,19 @@ pub fn ensure_market(
     cfg.cap = near_sdk::json_types::U128(cap);
     cfg.enabled = enabled;
     cfg.removable_at = removable_at;
-    c.markets.insert(id.clone(), cfg);
-    if supply > 0 {
-        c.market_supply.insert(id.clone(), supply);
-    }
+    c.markets.insert(
+        id.clone(),
+        crate::MarketRecord {
+            cfg,
+            pending_cap: None,
+            principal: supply,
+        },
+    );
     if in_withdraw && !c.withdraw_queue.iter().any(|m| m == &id) {
-        c.withdraw_queue.push(id.clone());
+        c.withdraw_queue.insert(id.clone());
     }
     if in_supply && !c.supply_queue.iter().any(|m| m == &id) {
-        c.supply_queue.push(id.clone());
+        c.supply_queue.insert(id.clone());
     }
 }
 
