@@ -838,7 +838,7 @@ impl Contract {
     }
 
     /// build a supply `transfer_call` and chain `after_supply_1_check`
-    fn supply_and_then(&self, market: &AccountId, amount: u128, op_id: u64, index: u32) -> Promise {
+    fn supply_and_then(&self, market: &AccountId, amount: u128, op_id: u64, index: u32, remaining_before: u128) -> Promise {
         self::require_at_least(AFTER_SUPPLY_1_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL));
         self.underlying_asset
             .transfer_call(
@@ -854,7 +854,7 @@ impl Contract {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(AFTER_SUPPLY_1_CHECK_GAS)
-                    .supply_01_handle_transfer(op_id, index, U128(amount)),
+                    .supply_01_handle_transfer(market.clone(), op_id, index, U128(amount), U128(remaining_before)),
             )
     }
 
@@ -920,7 +920,7 @@ impl Contract {
                     return self.step_allocation();
                 }
 
-                PromiseOrValue::Promise(self.supply_and_then(&market_id, to_supply, op_id, index))
+                PromiseOrValue::Promise(self.supply_and_then(&market_id, to_supply, op_id, index, remaining))
             } else {
                 // Plan exhausted; stop and reconcile remaining in stop_and_exit
                 self.stop_and_exit::<Error>(None)
@@ -972,7 +972,7 @@ impl Contract {
                 return self.step_allocation();
             }
 
-            PromiseOrValue::Promise(self.supply_and_then(market, to_supply, op_id, index))
+            PromiseOrValue::Promise(self.supply_and_then(market, to_supply, op_id, index, remaining))
         } else {
             self.stop_and_exit::<Error>(None)
         }

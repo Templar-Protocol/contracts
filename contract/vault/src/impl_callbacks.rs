@@ -28,20 +28,15 @@ impl Contract {
     #[private]
     pub fn supply_01_handle_transfer(
         &mut self,
-        // NOTE: we can't rely on this as a `true` value of accepted, so we are taking a belt-and-braces approach of
-        // querying the supply position
         #[callback_result] accepted: Result<U128, PromiseError>,
+        market: AccountId,
         op_id: u64,
         market_index: u32,
         attempted: U128,
+        remaining_before: U128,
     ) -> PromiseOrValue<()> {
         if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
-        };
-
-        let market = match self.resolve_supply_market(market_index) {
-            Ok(m) => m,
-            Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         match accepted {
@@ -56,7 +51,7 @@ impl Contract {
                 self.stop_and_exit(Some(&Error::MarketTransferFailed))
             }
             Ok(accepted) => {
-                let before = self.principal_of(market);
+                let before = self.principal_of(&market);
 
                 PromiseOrValue::Promise(
                     ext_market::ext(market.clone())
@@ -67,11 +62,13 @@ impl Contract {
                             Self::ext(env::current_account_id())
                                 .with_static_gas(SUPPLY_02_POSITION_READ_GAS)
                                 .supply_02_position_read(
+                                    market.clone(),
                                     op_id,
                                     market_index,
                                     U128(before),
                                     attempted,
                                     accepted,
+                                    remaining_before,
                                 ),
                         ),
                 )
@@ -83,13 +80,15 @@ impl Contract {
     pub fn supply_02_position_read(
         &mut self,
         #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
+        market: AccountId,
         op_id: u64,
         market_index: u32,
         before: U128,
         attempted: U128,
         accepted: U128,
+        remaining_before: U128,
     ) -> PromiseOrValue<()> {
-        let (i, remaining_ctx) = match self.ctx_allocating(op_id) {
+        let (i, _remaining_ctx) = match self.ctx_allocating(op_id) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
@@ -97,12 +96,6 @@ impl Contract {
         if i != market_index {
             return self.stop_and_exit(Some(&Error::IndexDrifted(i, market_index)));
         }
-
-        let market = match self.resolve_supply_market(market_index) {
-            Ok(m) => m,
-            Err(e) => return self.stop_and_exit(Some(&e)),
-        }
-        .clone();
 
         let SupplyReconciliation {
             new_principal,
@@ -112,7 +105,7 @@ impl Contract {
             Ok(Some(position)) => reconcile_supply_outcome(
                 &position.get_deposit().total().into(),
                 &before.0,
-                &remaining_ctx,
+                &remaining_before.0,
             ),
             Ok(None) => {
                 Event::AllocationPositionMissing {
@@ -588,18 +581,6 @@ impl Contract {
             OpState::Withdrawing(s) if s.op_id == op_id => Ok(s),
             _ => Err(Error::NotWithdrawing),
         }
-    }
-
-    /// Resolve a market for allocation by plan (if present) or `supply_queue`
-    pub(crate) fn resolve_supply_market(&self, market_index: u32) -> Result<&AccountId, Error> {
-        self.plan
-            .as_ref()
-            .and_then(|plan| {
-                plan.get(market_index as usize)
-                    .map(|(m, _)| m)
-                    .or(self.supply_queue.iter().nth(market_index as usize))
-            })
-            .ok_or(Error::MissingMarket(market_index))
     }
 
     /// Resolve a market for withdraw by `withdraw_route`

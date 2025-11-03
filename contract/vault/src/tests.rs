@@ -1517,7 +1517,14 @@ fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
 
     c.op_state = OpState::Idle;
 
-    c.supply_01_handle_transfer(Ok(U128(1)), 0, 2, Default::default());
+    c.supply_01_handle_transfer(
+        Ok(U128(1)),
+        accounts(1),
+        0,
+        2,
+        Default::default(),
+        Default::default(),
+    );
 
     assert_eq!(c.op_state, OpState::Idle);
     assert_eq!(c.plan, None);
@@ -1545,7 +1552,14 @@ fn after_supply_1_check_allocating_not_allocating_index() {
         remaining: 0u128,
     });
 
-    c.supply_01_handle_transfer(Ok(U128(1)), op_id + 1, 0, Default::default());
+    c.supply_01_handle_transfer(
+        Ok(U128(1)),
+        accounts(1),
+        op_id + 1,
+        0,
+        Default::default(),
+        Default::default(),
+    );
 
     assert_eq!(c.op_state, OpState::Idle);
     assert_eq!(c.plan, None);
@@ -1573,9 +1587,23 @@ fn after_supply_1_check_allocating() {
         remaining: 0u128,
     });
 
-    c.supply_01_handle_transfer(Ok(U128(1)), op_id, 0, Default::default());
+    c.supply_01_handle_transfer(
+        Ok(U128(1)),
+        accounts(3),
+        op_id,
+        0,
+        Default::default(),
+        Default::default(),
+    );
 
-    assert_eq!(c.op_state, OpState::Idle);
+    assert_eq!(
+        c.op_state,
+        OpState::Allocating(AllocatingState {
+            op_id,
+            index: 0,
+            remaining: 0u128
+        })
+    );
     assert_eq!(c.plan, None);
 }
 
@@ -2024,31 +2052,9 @@ fn resolve_market_helpers_supply_and_withdraw() {
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    // Prepare markets
+    // Withdraw resolver uses withdraw_route only
     let m1 = mk(1001);
     let m2 = mk(1002);
-
-    // Supply: plan takes precedence
-    c.plan = Some(vec![(m2.clone(), 1u128)]);
-    c.supply_queue.insert(m1.clone());
-    c.supply_queue.insert(m2.clone());
-
-    assert_eq!(c.resolve_supply_market(0).unwrap(), &m2);
-    assert!(matches!(
-        c.resolve_supply_market(1),
-        Err(Error::MissingMarket(1))
-    ));
-
-    // Without plan, use queue
-    c.plan = None;
-    assert_eq!(c.resolve_supply_market(0).unwrap(), &m1);
-    assert_eq!(c.resolve_supply_market(1).unwrap(), &m2);
-    assert!(matches!(
-        c.resolve_supply_market(2),
-        Err(Error::MissingMarket(2))
-    ));
-
-    // Withdraw resolver uses withdraw_queue
     c.withdraw_route = vec![m1.clone(), m2.clone()];
     assert_eq!(c.resolve_withdraw_market(0).unwrap(), &m1);
     assert_eq!(c.resolve_withdraw_market(1).unwrap(), &m2);
@@ -2066,7 +2072,7 @@ fn after_supply_2_read_missing_position_stops() {
 
     // Resolve market via supply_queue
     let market = mk(42);
-    c.supply_queue.insert(market);
+    c.supply_queue.insert(market.clone());
 
     // Must be in Allocating ctx
     c.op_state = OpState::Allocating(AllocatingState {
@@ -2076,7 +2082,8 @@ fn after_supply_2_read_missing_position_stops() {
     });
 
     // Missing position -> stop_and_exit
-    let res = c.supply_02_position_read(Ok(None), 1, 0, U128(0), U128(5), U128(5));
+    let res =
+        c.supply_02_position_read(Ok(None), market, 1, 0, U128(0), U128(5), U128(5), U128(10));
     match res {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Expected Value on missing position"),
@@ -2104,11 +2111,13 @@ fn after_supply_2_read_read_failed_stops() {
     // Read failure -> stop_and_exit
     let res = c.supply_02_position_read(
         Err(near_sdk::PromiseError::Failed),
+        accounts(3),
         7,
         0,
         U128(0),
         U128(10),
         U128(10),
+        U128(100),
     );
     match res {
         PromiseOrValue::Value(()) => {}
