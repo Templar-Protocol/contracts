@@ -209,6 +209,9 @@ impl Contract {
 
     /// Submits a change to a market's supply cap.
     /// Decreases apply immediately; increases are subject to the governance timelock.
+    ///
+    /// # Panics
+    /// If the market does not exist.
     #[payable]
     pub fn submit_cap(&mut self, market: AccountId, new_cap: U128) {
         Self::assert_curator_or_owner();
@@ -221,7 +224,9 @@ impl Contract {
                     market: market.clone(),
                 }
                 .emit();
-                self.markets.get_mut(&market).unwrap()
+                self.markets
+                    .get_mut(&market)
+                    .unwrap_or_else(|| env::panic_str("Config not found"))
             }
             Some(m) => m,
         };
@@ -259,6 +264,8 @@ impl Contract {
     }
 
     /// Accepts a pending cap increase for `market` once the timelock has elapsed.
+    /// # Panics
+    /// If the market does not exist.
     #[payable]
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
@@ -271,15 +278,13 @@ impl Contract {
 
         let was_enabled = m.cfg.enabled;
 
-        let pending_value = m
-            .pending_cap
-            .as_ref()
-            .map(|pending_cap| {
+        let pending_value = m.pending_cap.as_ref().map_or_else(
+            || env::panic_str("No pending cap change for this market"),
+            |pending_cap| {
                 pending_cap.verify();
                 pending_cap.value
-            })
-            .unwrap_or_else(|| env::panic_str("No pending cap change for this market"));
-
+            },
+        );
         m.cfg.cap = pending_value.into();
 
         if pending_value > 0 {
@@ -302,7 +307,10 @@ impl Contract {
         }
         .emit();
 
-        self.markets.get_mut(&market).unwrap().pending_cap = None;
+        self.markets
+            .get_mut(&market)
+            .unwrap_or_else(|| env::panic_str("Config not found"))
+            .pending_cap = None;
     }
 
     /// Revokes any pending cap change for `market`.
@@ -383,7 +391,7 @@ impl Contract {
         }
 
         // Compute and require storage for additions (no refunds for removals in this pass)
-        let current: HashSet<AccountId> = self.supply_queue.iter().cloned().collect();
+        let current: BTreeSet<AccountId> = self.supply_queue.iter().cloned().collect();
         let required_yocto = storage_management::yocto_for_queue_additions(&current, &markets);
         let _ = require_attached_at_least(required_yocto, "supply queue update");
 

@@ -116,7 +116,7 @@ impl Contract {
 
         let shares = self.preview_deposit(U128(accept)).0;
         self.mint(&Nep141Mint::new(shares, &sender_id))
-            .expect("Failed to mint shares");
+            .unwrap_or_else(|_| env::panic_str("Failed to mint shares"));
 
         Event::MintedShares {
             amount: shares.into(),

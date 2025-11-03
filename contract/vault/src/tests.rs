@@ -1667,10 +1667,7 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
     }
 
     assert_eq!(
-        c.markets
-            .get(&market)
-            .map(|r| r.principal)
-            .unwrap_or(u128::MAX),
+        c.markets.get(&market).map_or(u128::MAX, |r| r.principal),
         0,
         "Market principal should be updated to 0"
     );
@@ -1861,10 +1858,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     }
 
     assert_eq!(
-        c.markets
-            .get(&market)
-            .map(|r| r.principal)
-            .unwrap_or(u128::MAX),
+        c.markets.get(&market).map_or(u128::MAX, |r| r.principal),
         before,
         "principal must remain unchanged on read failure"
     );

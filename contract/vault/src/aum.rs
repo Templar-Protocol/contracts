@@ -2,7 +2,7 @@ use near_sdk::near;
 
 use super::{Contract, U128};
 
-//// AUM (Assets Under Management)
+/// AUM (Assets Under Management)
 ///
 /// BalanceSheet model only: total assets are the sum of idle_balance and all market principals.
 /// There is no governance-scoped AUM filtering; accounting changes only when cash actually moves.

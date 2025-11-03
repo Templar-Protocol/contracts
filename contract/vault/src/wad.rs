@@ -70,6 +70,8 @@ impl Number {
         let q = prod / U512::from(denom.0);
         Number(Self::as_u256_trunc(q))
     }
+
+    #[allow(clippy::many_single_char_names)]
     #[inline]
     #[must_use]
     pub fn mul_div_ceil(x: Number, y: Number, denom: Number) -> Number {

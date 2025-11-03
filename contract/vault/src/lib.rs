@@ -329,7 +329,11 @@ impl Contract {
 
     /// Executes one created market withdrawal request in the current Withdrawing op.
     /// Allocator only.
-    pub fn execute_next_market_withdrawal(&mut self, op_id: U64) -> PromiseOrValue<()> {
+    pub fn execute_next_market_withdrawal(
+        &mut self,
+        op_id: U64,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
 
@@ -338,11 +342,8 @@ impl Contract {
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        let market_index = match self.pending_market_exec.first().copied() {
-            Some(idx) => idx,
-            None => {
-                env::panic_str("No pending market withdrawal request to execute");
-            }
+        let Some(market_index) = self.pending_market_exec.first().copied() else {
+            env::panic_str("No pending market withdrawal request to execute");
         };
 
         let market = match self.resolve_withdraw_market(market_index) {
@@ -354,7 +355,7 @@ impl Contract {
             templar_common::market::ext_market::ext(market.clone())
                 .with_static_gas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
                 .with_unused_gas_weight(0)
-                .execute_next_supply_withdrawal_request()
+                .execute_next_supply_withdrawal_request(batch_limit)
                 .then(
                     Self::ext(env::current_account_id())
                         .with_static_gas(EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS)
@@ -477,11 +478,11 @@ impl Contract {
 
     // Keep the head pending but clear in-flight so it can be retried later
     fn park_inflight_head_for_retry(&mut self) {
-        if self.current_withdraw_inflight.is_some() {
-            env::log_str(&format!(
-                "WithdrawalParked id={}",
-                self.current_withdraw_inflight.unwrap()
-            ));
+        if let Some(current_withdraw_inflight) = self.current_withdraw_inflight {
+            Event::WithdrawalParked {
+                id: current_withdraw_inflight.into(),
+            }
+            .emit();
         }
         self.current_withdraw_inflight = None;
     }
@@ -490,6 +491,10 @@ impl Contract {
 /* ----- Views ----- */
 #[near]
 impl Contract {
+    /// Panics
+    /// - If the owner is not set
+    /// - If the curator is not set
+    /// - If the guardian is not set
     #[allow(clippy::expect_used, reason = "No side effects")]
     pub fn get_configuration(&self) -> VaultConfiguration {
         let meta = self.get_metadata();
@@ -525,7 +530,7 @@ impl Contract {
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
             symbol: meta.symbol,
-            decimals: NonZeroU8::new(meta.decimals).unwrap(),
+            decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
             mode: self.mode.clone(),
         }
     }
@@ -766,7 +771,9 @@ impl Contract {
         if fee_shares > Number::zero() {
             let minted: u128 = fee_shares.into();
             let recipient = self.fee_recipient.clone();
-            self.mint(&Nep141Mint::new(minted, &recipient));
+            let _ = self
+                .mint(&Nep141Mint::new(minted, &recipient))
+                .inspect_err(|e| env::log_str(&format!("Failed to mint {e}")));
             Event::PerformanceFeeAccrued {
                 recipient,
                 shares: U128(minted),
@@ -838,7 +845,14 @@ impl Contract {
     }
 
     /// build a supply `transfer_call` and chain `after_supply_1_check`
-    fn supply_and_then(&self, market: &AccountId, amount: u128, op_id: u64, index: u32, remaining_before: u128) -> Promise {
+    fn supply_and_then(
+        &self,
+        market: &AccountId,
+        amount: u128,
+        op_id: u64,
+        index: u32,
+        remaining_before: u128,
+    ) -> Promise {
         self::require_at_least(AFTER_SUPPLY_1_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL));
         self.underlying_asset
             .transfer_call(
@@ -854,7 +868,13 @@ impl Contract {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(AFTER_SUPPLY_1_CHECK_GAS)
-                    .supply_01_handle_transfer(market.clone(), op_id, index, U128(amount), U128(remaining_before)),
+                    .supply_01_handle_transfer(
+                        market.clone(),
+                        op_id,
+                        index,
+                        U128(amount),
+                        U128(remaining_before),
+                    ),
             )
     }
 
@@ -920,7 +940,9 @@ impl Contract {
                     return self.step_allocation();
                 }
 
-                PromiseOrValue::Promise(self.supply_and_then(&market_id, to_supply, op_id, index, remaining))
+                PromiseOrValue::Promise(
+                    self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
+                )
             } else {
                 // Plan exhausted; stop and reconcile remaining in stop_and_exit
                 self.stop_and_exit::<Error>(None)
@@ -972,7 +994,9 @@ impl Contract {
                 return self.step_allocation();
             }
 
-            PromiseOrValue::Promise(self.supply_and_then(market, to_supply, op_id, index, remaining))
+            PromiseOrValue::Promise(
+                self.supply_and_then(market, to_supply, op_id, index, remaining),
+            )
         } else {
             self.stop_and_exit::<Error>(None)
         }
@@ -1106,10 +1130,10 @@ impl Contract {
                 &owner,
                 escrow_shares,
                 burn_shares,
-                |_self| {
-                    _self.withdraw_route.clear();
-                    _self.op_state = OpState::Idle;
-                    _self.park_inflight_head_for_retry();
+                |self_| {
+                    self_.withdraw_route.clear();
+                    self_.op_state = OpState::Idle;
+                    self_.park_inflight_head_for_retry();
                     PromiseOrValue::Value(())
                 },
             )

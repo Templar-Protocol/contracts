@@ -220,7 +220,7 @@ impl<T: core::fmt::Debug> PendingValue<T> {
         require!(
             near_sdk::env::block_timestamp() >= self.valid_at_ns,
             "Timelock not elapsed yet"
-        )
+        );
     }
 }
 
@@ -436,9 +436,9 @@ pub struct PendingWithdrawal {
 
 impl PendingWithdrawal {
     #[must_use]
-    pub const fn encoded_size() -> usize {
-        storage_bytes_for_account_id() as usize
-            + storage_bytes_for_account_id() as usize
+    pub fn encoded_size() -> u64 {
+        storage_bytes_for_account_id()
+            + storage_bytes_for_account_id()
             + 16  // escrow_shares: u128
             + 16  // expected_assets: u128
             + 8 // requested_at: u64
@@ -576,6 +576,8 @@ pub enum Event {
     #[event_version("1.0.0")]
     WithdrawDequeued { index: U64 },
     #[event_version("1.0.0")]
+    WithdrawalParked { id: U64 },
+    #[event_version("1.0.0")]
     MarketRemovalSubmitted {
         market: AccountId,
         removable_at: U64,
@@ -711,7 +713,7 @@ mod tests {
                 requested_at: 5
             })
             .unwrap()
-            .len(),
+            .len() as u64,
             PendingWithdrawal::encoded_size()
         );
     }

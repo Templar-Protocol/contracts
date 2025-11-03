@@ -186,7 +186,7 @@ impl Contract {
         if did_create.is_ok() {
             // Always defer execution: record the created request; keeper must call execute_next_market_withdrawal(op_id)
             self.pending_market_exec.push(market_index);
-            return PromiseOrValue::Value(());
+            PromiseOrValue::Value(())
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -200,7 +200,7 @@ impl Contract {
                 index: market_index.saturating_add(1),
                 remaining: ctx.remaining,
                 receiver: ctx.receiver.clone(),
-                collected: ctx.collected.clone(),
+                collected: ctx.collected,
                 owner: ctx.owner.clone(),
                 escrow_shares: ctx.escrow_shares,
             });
@@ -255,6 +255,9 @@ impl Contract {
     /// - If remaining == 0, transition to Payout; otherwise continue Withdrawing on next market.
     /// - Later in after_send_to_user, idle_balance is decremented on successful transfer to the user.
     /// - On transfer failure, idle_balance stays unchanged and escrowed shares are refunded to the owner.
+    ///
+    /// # Panics
+    /// - If the market is not found.
     #[private]
     pub fn execute_withdraw_02_reconcile_position(
         &mut self,
@@ -337,18 +340,18 @@ impl Contract {
                 &ctx.owner,
                 ctx.escrow_shares,
                 ctx.escrow_shares,
-                |_self| {
+                |self_| {
                     // Nothing collected; refund escrowed shares
                     let self_id = env::current_account_id();
                     // We expect the owner to maintain storage accounts, otherwise they will lose access to their funds
-                    _self
+                    self_
                         .transfer(&Nep141Transfer::new(
                             ctx.escrow_shares,
                             &self_id,
                             &ctx.owner,
                         ))
-                        .expect("Failed to refund escrowed shares");
-                    _self.op_state = OpState::Idle;
+                        .unwrap_or_else(|_| env::panic_str("Failed to refund escrowed shares"));
+                    self_.op_state = OpState::Idle;
                     PromiseOrValue::Value(())
                 },
             )
@@ -412,7 +415,9 @@ impl Contract {
             // Burn only the proportional shares and refund the remainder to the owner.
             if burn_shares > 0 {
                 // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
-                self.burn(&Nep141Burn::new(burn_shares, &env::current_account_id()));
+                let _ = self
+                    .burn(&Nep141Burn::new(burn_shares, env::current_account_id()))
+                    .inspect_err(|e| env::log_str(&format!("Failed to burn {e}")));
             }
 
             // Maybe refund any delta to the owner
@@ -420,7 +425,7 @@ impl Contract {
                 // Note: this should be infallible since we are transferring to an existing owner, and they are unable to unregister from storage
                 self.transfer(&Nep141Transfer::new(
                     refund,
-                    &env::current_account_id(),
+                    env::current_account_id(),
                     &owner,
                 ))
                 // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
@@ -430,7 +435,7 @@ impl Contract {
             // On payout failure, refund full escrow to owner and leave idle_balance unchanged
             self.transfer(&Nep141Transfer::new(
                 escrow_shares,
-                &env::current_account_id(),
+                env::current_account_id(),
                 &owner,
             ))
             // If this fails, this is a serious issue as above
