@@ -90,11 +90,16 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     harvest(&c, &vault).await;
     // Plan the withdraw route (single market) and execute it via allocator methods
     let withdraw_route = vec![c.market.contract().id().clone()];
-    let op_id = vault
+    vault
         .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
         .await;
+    let op_id = vault
+        .vault
+        .get_withdrawing_op_id()
+        .await
+        .expect("Failed to get withdrawing op id");
     vault
-        .allocator_execute_next_market_withdrawal(&vault_curator, op_id)
+        .execute_next_market_withdrawal(&vault_curator, op_id)
         .await;
 
     assert_eq!(
@@ -134,11 +139,16 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     harvest(&c, &vault).await;
     // Plan the withdraw route (single market) and execute it via allocator methods
     let withdraw_route = vec![c.market.contract().id().clone()];
-    let op_id = vault
+    vault
         .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
         .await;
+    let op_id = vault
+        .vault
+        .get_withdrawing_op_id()
+        .await
+        .expect("Failed to get withdrawing operation ID");
     vault
-        .allocator_execute_next_market_withdrawal(&vault_curator, op_id)
+        .execute_next_market_withdrawal(&vault_curator, op_id)
         .await;
 }
 

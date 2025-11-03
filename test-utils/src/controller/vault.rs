@@ -62,8 +62,11 @@ impl VaultController {
         #[view] pub fn get_total_supply() -> U128;
         #[view] pub fn get_max_deposit() -> U128;
         #[view] pub fn get_idle_balance() -> U128;
-        #[view] pub fn list_supply_queue(offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
-        #[view] pub fn list_withdraw_queue(offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
+        #[view] pub fn get_withdrawing_op_id() -> Option<U64>;
+        #[view] pub fn get_current_withdraw_request_id() -> Option<U64>;
+        #[view] pub fn has_pending_market_withdrawal() -> bool;
+
+
         #[view] pub fn get_market_supply(market: &AccountId) -> U128;
         #[view] pub fn get_next_op_id() -> u64;
         #[view] pub fn convert_to_shares(assets: U128) -> U128;
@@ -86,7 +89,10 @@ impl VaultController {
         pub fn withdraw(amount: U128, receiver: AccountId);
 
         #[call(exec, tgas(300))]
-        pub fn execute_next_withdrawal_request();
+        pub fn execute_next_withdrawal_request(route: Vec<AccountId>);
+
+        #[call(exec, tgas(300))]
+        pub fn execute_next_market_withdrawal(op_id: u64);
 
         #[call(exec, tgas(300), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn redeem(shares: U128, receiver: AccountId);
@@ -209,7 +215,8 @@ impl UnifiedVaultController {
         }
     }
 
-    #[must_use] pub fn new(
+    #[must_use]
+    pub fn new(
         vault: VaultController,
         configuration: VaultConfiguration,
         market: UnifiedMarketController,
@@ -233,7 +240,6 @@ impl UnifiedVaultController {
 
         self.vault.storage_deposit(account, bounds.min).await;
         self.market.storage_deposits(account).await;
-        // FIXME: we should set the queue for this too!
     }
 
     pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
@@ -302,8 +308,30 @@ impl UnifiedVaultController {
         e
     }
 
-    pub async fn execute_next_withdrawal(&self, allocator: &Account) -> ExecutionSuccess {
-        let e = self.vault.execute_next_withdrawal_request(allocator).await;
+    pub async fn execute_next_withdrawal(
+        &self,
+        allocator: &Account,
+        route: Vec<AccountId>,
+    ) -> ExecutionSuccess {
+        let e = self
+            .vault
+            .execute_next_withdrawal_request(allocator, route)
+            .await;
+        if self.debug {
+            print_execution(&e);
+        }
+        e
+    }
+
+    pub async fn execute_next_market_withdrawal(
+        &self,
+        allocator: &Account,
+        op_id: U64,
+    ) -> ExecutionSuccess {
+        let e = self
+            .vault
+            .execute_next_market_withdrawal(allocator, op_id)
+            .await;
         if self.debug {
             print_execution(&e);
         }
@@ -357,7 +385,5 @@ impl UnifiedVaultController {
 }
 
 fn is_debug() -> bool {
-    env::var("RUST_LOG")
-        .is_ok_and(|s| s.contains("debug"))
-        || env::var("DEBUG").is_ok()
+    env::var("RUST_LOG").is_ok_and(|s| s.contains("debug")) || env::var("DEBUG").is_ok()
 }

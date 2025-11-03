@@ -8,8 +8,7 @@ use std::{
 use crate::{
     aum::AUM,
     storage_management::{
-        require_attached_at_least, require_attached_for_pending_withdrawal,
-        yocto_for_new_market,
+        require_attached_at_least, require_attached_for_pending_withdrawal, yocto_for_new_market,
     },
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -32,12 +31,12 @@ use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
-        ext_self, require_at_least, AllocatingState, AllocationMode, AllocationPlan,
-        AllocationWeights, Error, Event, MarketConfiguration, OpState, PayoutState, PendingValue,
-        PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_EXECUTE_NEXT_WITHDRAW_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        require_at_least, AllocatingState, AllocationMode, AllocationPlan, AllocationWeights,
+        Error, Event, MarketConfiguration, OpState, PayoutState, PendingValue, PendingWithdrawal,
+        TimestampNs, VaultConfiguration, WithdrawingState, AFTER_CREATE_WITHDRAW_REQ_GAS,
+        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
+        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -103,24 +102,23 @@ impl From<MarketConfiguration> for MarketRecord {
 /// Vault contract that issues shares over an underlying fungible asset and allocates liquidity
 /// across configured markets. Implements 4626-like deposit/withdraw semantics.
 ///
-/// What this contract does (high-level mental model)
+/// What this contract does
 /// - Issues a share token (NEP-141) that represents a vault over an underlying NEP-141 “BorrowAsset”.
-/// - Allocates deposits across “markets” (external contracts) via a supply queue; withdrawals are keeper-routed (queue-less).
+/// - Allocates deposits across “markets” via a supply queue; withdrawals are keeper-routed via a queueless mechanism.
 /// - Governance uses Owner + RBAC (Curator/Guardian/Allocator) with a timelock for certain changes.
 /// - Withdraw flow escrows shares, builds market-side withdrawal requests, then pays out and burns proportional escrow.
 /// - Performance fees accrue by minting fee shares based on increases in total assets.
-/// Critical invariants the code intends to keep
+/// Critical invariants
 /// - Assets accounting is correct: total_assets = idle_balance + sum(all principals in markets).
-/// - Withdrawals are queue-less and routed per-execution using an ephemeral, keeper-provided route.
 /// - Only one op in flight (op_state); mutating ops require Idle.
 /// - Governance changes obey timelocks; Guardian may revoke pending changes.
 ///
-/// Note: RBAC storage (role membership) is paid by the contract; callers are not charged deposits for RBAC changes.
+/// Note: RBAC storage is paid by the contract; callers are not charged deposits for RBAC changes.
 pub struct Contract {
     /// The underlying asset that the vault manages
     underlying_asset: FungibleAsset<BorrowAsset>,
 
-    /// The process in which the vault calculates its assets under management (AUM)
+    /// The process in which the vault calculates its assets under management
     aum: AUM,
 
     /// The mode in which the allocator will operate
@@ -151,7 +149,8 @@ pub struct Contract {
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
 
-    current_withdraw_inflight: Option<u64>, // id of the pending withdrawal being executed, if any
+    // id of the pending withdrawal being executed, if any
+    current_withdraw_inflight: Option<u64>,
 
     /// underlying held by vault
     idle_balance: u128,
@@ -237,15 +236,10 @@ impl Contract {
             mode,
             plan: None,
             current_withdraw_inflight: None,
-
-            // Pending withdrawals init
             pending_withdrawals: IterableMap::new(key!(PendingWithdrawals)),
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
-
             pending_market_exec: Vec::new(),
-
-            // Keeper-provided withdraw route for the current Withdrawing op
             withdraw_route: Vec::new(),
         };
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
@@ -278,7 +272,6 @@ impl Contract {
 
         let _ = require_attached_for_pending_withdrawal();
 
-        // Move shares into escrow
         self.transfer(&Nep141Transfer::new(
             shares,
             &sender,
@@ -298,7 +291,7 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes the next pending withdrawal request, if any, using the existing withdraw pipeline.
+    /// Executes the next pending withdrawal request
     /// This defers creating market-side withdrawal requests until explicitly invoked.
     pub fn execute_next_withdrawal_request(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
@@ -331,17 +324,16 @@ impl Contract {
     }
 
     /// Executes one created market withdrawal request in the current Withdrawing op.
-    pub fn allocator_execute_next_market_withdrawal(&mut self, op_id: u64) -> PromiseOrValue<()> {
+    /// Allocator only.
+    pub fn execute_next_market_withdrawal(&mut self, op_id: U64) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
 
-        // Must be in Withdrawing context for the provided op_id
-        let _ctx = match self.ctx_withdrawing(op_id) {
+        let _ctx = match self.ctx_withdrawing(op_id.into()) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        // Ensure we have a created request to execute
         let market_index = match self.pending_market_exec.first().copied() {
             Some(idx) => idx,
             None => {
@@ -356,14 +348,13 @@ impl Contract {
 
         PromiseOrValue::Promise(
             templar_common::market::ext_market::ext(market.clone())
-                .with_static_gas(templar_common::vault::EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
+                .with_static_gas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
                 .with_unused_gas_weight(0)
                 .execute_next_supply_withdrawal_request()
                 .then(
-                    ext_self::ext(env::current_account_id())
-                        .with_static_gas(AFTER_EXECUTE_NEXT_WITHDRAW_GAS)
-                        // `need` here is informational; we do not track it across the defer
-                        .after_exec_withdraw_req(op_id, market_index, U128(0)),
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS)
+                        .execute_withdraw_01_fetch_position(op_id.into(), market_index, U128(0)),
                 ),
         )
     }
@@ -388,9 +379,9 @@ impl Contract {
             .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
             .ft_balance_of(env::current_account_id())
             .then(
-                ext_self::ext(env::current_account_id())
+                Self::ext(env::current_account_id())
                     .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
-                    .after_skim_balance(token, self.skim_recipient.clone()),
+                    .skim_01_read_balance(token, self.skim_recipient.clone()),
             )
     }
 
@@ -430,7 +421,6 @@ impl Contract {
             return self.start_allocation(total);
         }
 
-        // Non-empty weights: validate and build plan.
         let weights = weights
             .into_iter()
             .map(|(m, w)| (m, u128::from(w)))
@@ -463,12 +453,12 @@ impl Contract {
         let mut id = self.next_withdraw_to_execute;
         while id < self.next_withdraw_id {
             if self.pending_withdrawals.get(&id).is_some() {
-                self.next_withdraw_to_execute = id; // head points at a live entry
+                self.next_withdraw_to_execute = id;
                 return Some(id);
             }
             id = id.saturating_add(1);
         }
-        self.next_withdraw_to_execute = id; // no entries
+        self.next_withdraw_to_execute = id;
         None
     }
 
@@ -490,7 +480,6 @@ impl Contract {
             ));
         }
         self.current_withdraw_inflight = None;
-        // next_withdraw_to_execute remains pointing at the same id
     }
 }
 
@@ -616,6 +605,21 @@ impl Contract {
     /// Returns 0 if total supply is zero.
     pub fn preview_redeem(&self, shares: U128) -> U128 {
         self.convert_to_assets(shares)
+    }
+
+    pub fn get_withdrawing_op_id(&self) -> Option<U64> {
+        match &self.op_state {
+            OpState::Withdrawing(WithdrawingState { op_id, .. }) => Some((*op_id).into()),
+            _ => None,
+        }
+    }
+
+    pub fn has_pending_market_withdrawal(&self) -> bool {
+        !self.pending_market_exec.is_empty()
+    }
+
+    pub fn get_current_withdraw_request_id(&self) -> Option<U64> {
+        self.current_withdraw_inflight.map(Into::into)
     }
 }
 
@@ -812,7 +816,6 @@ impl Contract {
             amount <= self.idle_balance,
             "Policy violation: reserve amount must be <= idle_balance"
         );
-        // Deduct from idle_balance upfront
         self.idle_balance -= amount;
 
         let op_id = self.next_op_id;
@@ -845,10 +848,9 @@ impl Contract {
                 ),
             )
             .then(
-                ext_self::ext(env::current_account_id())
+                Self::ext(env::current_account_id())
                     .with_static_gas(AFTER_SUPPLY_1_CHECK_GAS)
-                    // .with_unused_gas_weight(0)
-                    .after_supply_1_check(op_id, index, U128(amount)),
+                    .supply_01_handle_transfer(op_id, index, U128(amount)),
             )
     }
 
@@ -983,7 +985,6 @@ impl Contract {
         };
 
         if remaining == 0 {
-            // All funds allocated successfully
             return self.stop_and_exit::<Error>(None);
         }
 
@@ -1056,9 +1057,9 @@ impl Contract {
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())
                     .then(
-                        ext_self::ext(env::current_account_id())
+                        Self::ext(env::current_account_id())
                             .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                            .after_send_to_user(op_id, receiver, U128(collected)),
+                            .payment_01_reconcile_idle_or_refund(op_id, receiver, U128(collected)),
                     ),
             );
         }
@@ -1085,9 +1086,9 @@ impl Contract {
                     .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
                     .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)))
                     .then(
-                        ext_self::ext(env::current_account_id())
+                        Self::ext(env::current_account_id())
                             .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
-                            .after_create_withdraw_req(op_id, index, U128(to_request)),
+                            .withdraw_01_handle_create_request(op_id, index, U128(to_request)),
                     ),
             )
         } else {
@@ -1102,7 +1103,6 @@ impl Contract {
                 escrow_shares,
                 burn_shares,
                 |_self| {
-                    // Park the head pending: keep escrowed shares, stay in queue, try again later
                     _self.withdraw_route.clear();
                     _self.op_state = OpState::Idle;
                     _self.park_inflight_head_for_retry();
@@ -1112,7 +1112,7 @@ impl Contract {
         }
     }
 
-    ///  If we collected something, pay it out now and burn proportional shares or do something else
+    /// If we collected something, pay it out now and burn proportional shares or do something else
     fn pay_collected(
         &mut self,
         op_id: u64,
@@ -1136,9 +1136,13 @@ impl Contract {
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())
                     .then(
-                        ext_self::ext(env::current_account_id())
+                        Self::ext(env::current_account_id())
                             .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                            .after_send_to_user(op_id, receiver.clone(), U128(collected)),
+                            .payment_01_reconcile_idle_or_refund(
+                                op_id,
+                                receiver.clone(),
+                                U128(collected),
+                            ),
                     ),
             )
         } else {

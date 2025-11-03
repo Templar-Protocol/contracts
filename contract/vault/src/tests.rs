@@ -186,7 +186,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     });
 
     let supply_before = c.total_supply();
-    c.after_send_to_user(Ok(()), 1, receiver, U128(200));
+    c.payment_01_reconcile_idle_or_refund(Ok(()), 1, receiver, U128(200));
     // Idle decreased by payout
     assert_eq!(c.idle_balance, 800);
     // Only burn_shares are burned from total supply
@@ -1564,7 +1564,7 @@ fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
 
     c.op_state = OpState::Idle;
 
-    c.after_supply_1_check(Ok(U128(1)), 0, 2, Default::default());
+    c.supply_01_handle_transfer(Ok(U128(1)), 0, 2, Default::default());
 
     assert_eq!(c.op_state, OpState::Idle);
     assert_eq!(c.plan, None);
@@ -1592,7 +1592,7 @@ fn after_supply_1_check_allocating_not_allocating_index() {
         remaining: 0u128,
     });
 
-    c.after_supply_1_check(Ok(U128(1)), op_id + 1, 0, Default::default());
+    c.supply_01_handle_transfer(Ok(U128(1)), op_id + 1, 0, Default::default());
 
     assert_eq!(c.op_state, OpState::Idle);
     assert_eq!(c.plan, None);
@@ -1620,7 +1620,7 @@ fn after_supply_1_check_allocating() {
         remaining: 0u128,
     });
 
-    c.after_supply_1_check(Ok(U128(1)), op_id, 0, Default::default());
+    c.supply_01_handle_transfer(Ok(U128(1)), op_id, 0, Default::default());
 
     assert_eq!(c.op_state, OpState::Idle);
     assert_eq!(c.plan, None);
@@ -1645,7 +1645,7 @@ fn after_send_to_user_success_no_escrow() {
         burn_shares: 0,
     });
 
-    c.after_send_to_user(Ok(()), 1, receiver.clone(), U128(200));
+    c.payment_01_reconcile_idle_or_refund(Ok(()), 1, receiver.clone(), U128(200));
     assert_eq!(c.idle_balance, 800, "Idle balance must decrease by payout");
     assert!(
         matches!(c.op_state, OpState::Idle),
@@ -1678,7 +1678,7 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         escrow_shares: 50,
     });
 
-    let res = c.after_exec_withdraw_read(Ok(None), 42, 0, U128(100), U128(60));
+    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 42, 0, U128(100), U128(60));
 
     match res {
         PromiseOrValue::Promise(_p) => {}
@@ -1715,7 +1715,7 @@ fn after_skim_balance_zero_noop() {
 
     let mut c = new_test_contract(&vault_id);
 
-    let res = c.after_skim_balance(Ok(U128(0)), mk(10), mk(11));
+    let res = c.skim_01_read_balance(Ok(U128(0)), mk(10), mk(11));
     match res {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Skim with zero balance must be a no-op"),
@@ -1730,7 +1730,7 @@ fn after_skim_balance_positive_returns_promise() {
     let mut c = new_test_contract(&vault_id);
 
     // Positive balance -> Promise to ft_transfer
-    let res = c.after_skim_balance(Ok(U128(123)), mk(10), mk(11));
+    let res = c.skim_01_read_balance(Ok(U128(123)), mk(10), mk(11));
     match res {
         PromiseOrValue::Promise(_) => { //NOTE: one day we will be able to read the promise
              //definition :<
@@ -1770,7 +1770,7 @@ fn prop_after_send_to_user_failure_keeps_idle(idle: u128, escrow: u128, amount: 
     });
 
     let before = c.idle_balance;
-    c.after_send_to_user(
+    c.payment_01_reconcile_idle_or_refund(
         Err(near_sdk::PromiseError::Failed),
         1,
         receiver.clone(),
@@ -1818,7 +1818,8 @@ fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
         escrow_shares: 0,
     });
 
-    let res = c.after_create_withdraw_req(Err(near_sdk::PromiseError::Failed), 7, 0, U128(need));
+    let res =
+        c.withdraw_01_handle_create_request(Err(near_sdk::PromiseError::Failed), 7, 0, U128(need));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise after skipping to payout at end-of-queue"),
@@ -1866,7 +1867,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         escrow_shares: 0,
     });
 
-    let res = c.after_exec_withdraw_read(
+    let res = c.execute_withdraw_02_reconcile_position(
         Err(near_sdk::PromiseError::Failed),
         99,
         0,
@@ -1936,7 +1937,8 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     let call_op = if pass_op { real_op } else { real_op + 1 };
     let call_idx = if pass_index { real_idx } else { real_idx + 1 };
 
-    let r = c.after_exec_withdraw_read(Ok(None), call_op, call_idx, U128(10), U128(1));
+    let r =
+        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_idx, U128(10), U128(1));
     if let (true, true) = (pass_op, pass_index) {
         assert!(
             !matches!(c.op_state, OpState::Idle),
@@ -1981,7 +1983,7 @@ fn refund_path_consistency() {
     let owner_before = c.balance_of(&owner);
 
     // Read result with need=0 ensures credited=0; triggers refund branch
-    let res = c.after_exec_withdraw_read(Ok(None), 77, 0, U128(0), U128(0));
+    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 77, 0, U128(0), U128(0));
     match res {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Expected Value(()) on immediate escrow refund"),
@@ -2049,15 +2051,15 @@ fn ctx_withdrawing_ok_and_err() {
         escrow_shares: 10,
     });
 
-    let (idx, rem, r, coll, o, escrow) = c
+    let ctx = c
         .ctx_withdrawing(7)
         .expect("ctx_withdrawing should succeed");
-    assert_eq!(idx, 1);
-    assert_eq!(rem, 50);
-    assert_eq!(r, recv);
-    assert_eq!(coll, 5);
-    assert_eq!(o, owner);
-    assert_eq!(escrow, 10);
+    assert_eq!(ctx.index, 1);
+    assert_eq!(ctx.remaining, 50);
+    assert_eq!(ctx.receiver, recv);
+    assert_eq!(ctx.collected, 5);
+    assert_eq!(ctx.owner, owner);
+    assert_eq!(ctx.escrow_shares, 10);
 
     // Wrong op_id => error
     assert!(c.ctx_withdrawing(8).is_err());
@@ -2121,7 +2123,7 @@ fn after_supply_2_read_missing_position_stops() {
     });
 
     // Missing position -> stop_and_exit
-    let res = c.after_supply_2_read(Ok(None), 1, 0, U128(0), U128(5), U128(5));
+    let res = c.supply_02_position_read(Ok(None), 1, 0, U128(0), U128(5), U128(5));
     match res {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Expected Value on missing position"),
@@ -2147,7 +2149,7 @@ fn after_supply_2_read_read_failed_stops() {
     });
 
     // Read failure -> stop_and_exit
-    let res = c.after_supply_2_read(
+    let res = c.supply_02_position_read(
         Err(near_sdk::PromiseError::Failed),
         7,
         0,
@@ -2189,12 +2191,12 @@ fn after_create_withdraw_req_success_returns_promise(
         escrow_shares: 5,
     });
 
-    let res = c.after_create_withdraw_req(Ok(()), 21, 0, U128(60));
+    let res = c.withdraw_01_handle_create_request(Ok(()), 21, 0, U128(60));
     match res {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Expected Value(()) when create succeeds and execution is deferred"),
     }
-    // State remains Withdrawing; keeper must call allocator_execute_next_market_withdrawal
+    // State remains Withdrawing; keeper must call execute_next_market_withdrawal
     assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
 }
 
@@ -2221,7 +2223,7 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         escrow_shares: 0,
     });
 
-    let res = c.after_exec_withdraw_req(33, 0, U128(5));
+    let res = c.execute_withdraw_01_fetch_position(33, 0, U128(5));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to read supply position after exec"),
@@ -2261,7 +2263,7 @@ fn after_exec_withdraw_read_advances_when_remaining(
     });
 
     // Position None => new_principal = 0 => withdrawn = 10 => credited = 10
-    let res = c.after_exec_withdraw_read(Ok(None), 0, 0, U128(10), U128(100));
+    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 0, 0, U128(10), U128(100));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to continue withdraw steps"),

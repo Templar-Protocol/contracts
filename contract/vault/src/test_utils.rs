@@ -6,6 +6,7 @@ pub use near_sdk::{
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
 };
 use near_sdk_contract_tools::ft::Nep141Controller as _;
+use near_sdk_contract_tools::ft::Nep145;
 use test_utils::vault_configuration;
 
 pub fn mk(n: u32) -> AccountId {
@@ -42,15 +43,36 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     let underlying_token_id = mk(6);
 
     let cfg = vault_configuration(
-        owner,
-        curator,
-        guardian,
-        underlying_token_id,
-        skim_recipient,
-        fee_recipient,
+        owner.clone(),
+        curator.clone(),
+        guardian.clone(),
+        underlying_token_id.clone(),
+        skim_recipient.clone(),
+        fee_recipient.clone(),
     );
 
-    Contract::new(cfg)
+    let mut builder = VMContextBuilder::new();
+    builder.current_account_id(vault_id.clone());
+    builder.predecessor_account_id(vault_id.clone());
+    builder.signer_account_id(vault_id.clone());
+    builder.attached_deposit(NearToken::from_near(1));
+    testing_env!(
+        builder.build(),
+        test_vm_config(),
+        RuntimeFeesConfig::test(),
+        Default::default(),
+        vec![]
+    );
+    let mut c = Contract::new(cfg);
+    c.storage_deposit(Some(owner), None);
+    c.storage_deposit(Some(curator), None);
+    c.storage_deposit(Some(guardian), None);
+    c.storage_deposit(Some(fee_recipient), None);
+    c.storage_deposit(Some(skim_recipient), None);
+    c.storage_deposit(Some(underlying_token_id), None);
+
+    setup_env(vault_id, vault_id, vec![]);
+    c
 }
 /// Set the block timestamp and keep caller/predecessor consistent for tests
 pub fn set_block_ts(vault_id: &AccountId, signer: &AccountId, ts: u64) {

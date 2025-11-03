@@ -175,15 +175,16 @@ pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas =
 
 // TODO: rename
 const AFTER_EXECUTE_NEXT_WITHDRAW: u64 = 5 + 5 + AFTER_SEND_TO_USER;
-pub const AFTER_EXECUTE_NEXT_WITHDRAW_READ_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
+pub const EXECUTE_WITHDRAW_02_RECONCILE_POSITION_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
 
 // todo: rename
 const AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 =
     GET_SUPPLY_POSITION + AFTER_EXECUTE_NEXT_WITHDRAW;
-pub const AFTER_EXECUTE_NEXT_WITHDRAW_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
+pub const EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS: Gas =
+    buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
 const AFTER_SUPPLY_2_READ: u64 = 5;
-pub const AFTER_SUPPLY_2_READ_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
+pub const SUPPLY_02_POSITION_READ_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
 pub const AFTER_SUPPLY_1_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
 
 // NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
@@ -204,24 +205,6 @@ pub fn require_at_least(needed: Gas) {
         gas >= needed,
         format!("Insufficient gas: {}, needed: {needed}", gas)
     );
-}
-
-#[near_sdk::ext_contract(ext_self)]
-pub trait Callbacks {
-    fn after_supply_1_check(&mut self, op_id: u64, market_index: u32, attempted: U128) -> bool;
-    fn after_supply_2_read(
-        &mut self,
-        op_id: u64,
-        market_index: u32,
-        before: U128,
-        attempted: U128,
-        accepted: U128,
-    ) -> bool;
-    fn after_create_withdraw_req(&mut self, op_id: u64, market_index: u32, need: U128) -> bool;
-    fn after_exec_withdraw_req(&mut self, op_id: u64, market_index: u32, need: U128) -> bool;
-    fn after_exec_withdraw_read(&mut self, op_id: u64, market_index: u32, before: U128, need: U128);
-    fn after_send_to_user(&mut self, op_id: u64, receiver: AccountId, amount: U128) -> bool;
-    fn after_skim_balance(&mut self, token: AccountId, recipient: AccountId) -> bool;
 }
 
 #[derive(Clone, Debug)]
