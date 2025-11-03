@@ -1,5 +1,7 @@
 use near_sdk::{env, json_types::U64, near};
 
+use crate::panic_str;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 pub enum V0 {
