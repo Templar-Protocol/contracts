@@ -3,12 +3,12 @@ use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset::{BorrowAssetAmount, CollateralAssetAmount, ReturnStyle},
     market::DepositMsg,
-    panic_str, self_ext,
+    self_ext,
 };
 
-use crate::{Contract, ContractExt, ReturnStyle};
+use crate::{Contract, ContractExt};
 
 #[near]
 impl FungibleTokenReceiver for Contract {
@@ -21,13 +21,13 @@ impl FungibleTokenReceiver for Contract {
         const RETURN_STYLE: ReturnStyle = ReturnStyle::Nep141FtTransferCall;
 
         let msg = near_sdk::serde_json::from_str::<DepositMsg>(&msg)
-            .unwrap_or_else(|_| panic_str("Invalid deposit msg"));
+            .unwrap_or_else(|_| templar_common::panic_with_message("Invalid deposit msg"));
 
         let asset_id = env::predecessor_account_id();
 
         let use_borrow_asset = || {
             if !self.configuration.borrow_asset.is_nep141(&asset_id) {
-                panic_str("Unsupported borrow asset");
+                templar_common::panic_with_message("Unsupported borrow asset");
             }
 
             BorrowAssetAmount::new(amount.0)
@@ -35,7 +35,7 @@ impl FungibleTokenReceiver for Contract {
 
         let use_collateral_asset = || {
             if !self.configuration.collateral_asset.is_nep141(&asset_id) {
-                panic_str("Unsupported collateral asset");
+                templar_common::panic_with_message("Unsupported collateral asset");
             }
 
             CollateralAssetAmount::new(amount.0)
@@ -122,7 +122,7 @@ impl Nep245Receiver for Contract {
         let _ = sender_id;
 
         let msg = near_sdk::serde_json::from_str::<DepositMsg>(&msg)
-            .unwrap_or_else(|_| panic_str("Invalid deposit msg"));
+            .unwrap_or_else(|_| templar_common::panic_with_message("Invalid deposit msg"));
 
         let contract_id = env::predecessor_account_id();
 
@@ -145,7 +145,7 @@ impl Nep245Receiver for Contract {
                 .borrow_asset
                 .is_nep245(&contract_id, token_id)
             {
-                panic_str("Unsupported borrow asset");
+                templar_common::panic_with_message("Unsupported borrow asset");
             }
 
             BorrowAssetAmount::new(amount.0)
@@ -157,7 +157,7 @@ impl Nep245Receiver for Contract {
                 .collateral_asset
                 .is_nep245(&contract_id, token_id)
             {
-                panic_str("Unsupported collateral asset");
+                templar_common::panic_with_message("Unsupported collateral asset");
             }
 
             CollateralAssetAmount::new(amount.0)

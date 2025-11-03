@@ -11,6 +11,10 @@
 # OS
 .DS_Store
 
+# Environment files
+.env
+.env.local
+
 # documentation site
 _site/
 
@@ -19,3 +23,4 @@ _site/
 **/corpus
 **/fuzz*.log
 **/coverage
+.aider*

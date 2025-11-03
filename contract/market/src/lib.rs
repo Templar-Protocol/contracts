@@ -2,14 +2,11 @@
 
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, near, serde_json, AccountId, BorshStorageKey, PanicOnDefault};
+use near_sdk::{env, near, AccountId, BorshStorageKey, PanicOnDefault};
 use near_sdk_contract_tools::standard::nep145::{
     Nep145Controller, Nep145ForceUnregister, StorageBalanceBounds,
 };
-use templar_common::{
-    market::{Market, MarketConfiguration},
-    panic_str,
-};
+use templar_common::market::{Market, MarketConfiguration};
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -81,7 +78,7 @@ impl Contract {
             account_id,
             env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
         )
-        .unwrap_or_else(|e| panic_str(&format!("Storage error: {e}")));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&format!("Storage error: {e}")));
     }
 
     fn refund_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
@@ -89,13 +86,13 @@ impl Contract {
             account_id,
             env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
         )
-        .unwrap_or_else(|e| panic_str(&format!("Storage error: {e}")));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&format!("Storage error: {e}")));
     }
 }
 
 impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {
     fn hook<R>(_: &mut Self, _: &Nep145ForceUnregister, _: impl FnOnce(&mut Self) -> R) -> R {
-        panic_str("force unregistration is not supported")
+        templar_common::panic_with_message("force unregistration is not supported")
     }
 }
 
@@ -116,25 +113,6 @@ impl DerefMut for Contract {
 mod impl_helper;
 mod impl_market_external;
 mod impl_token_receiver;
-
-#[derive(Clone, Debug)]
-#[near(serializers = [json])]
-pub enum ReturnStyle {
-    Nep141FtTransferCall,
-    Nep245MtTransferCall,
-}
-
-impl ReturnStyle {
-    pub fn serialize(
-        &self,
-        amount: templar_common::asset::FungibleAssetAmount<impl templar_common::asset::AssetClass>,
-    ) -> serde_json::Value {
-        match self {
-            Self::Nep141FtTransferCall => serde_json::json!(amount),
-            Self::Nep245MtTransferCall => serde_json::json!([amount]),
-        }
-    }
-}
 
 #[cfg(target_arch = "wasm32")]
 mod custom_getrandom {

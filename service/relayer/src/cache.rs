@@ -5,7 +5,10 @@ use std::{
 };
 
 use near_crypto::PublicKey;
-use near_jsonrpc_client::{errors::JsonRpcError, methods::query::RpcQueryError};
+use near_jsonrpc_client::{
+    errors::JsonRpcError,
+    methods::{self, query::RpcQueryError},
+};
 use near_primitives::hash::CryptoHash;
 use near_sdk::{AccountId, NearToken};
 use tokio::{
@@ -14,6 +17,8 @@ use tokio::{
 };
 
 use crate::client::near::Near;
+
+type ProtocolConfiguration = Arc<methods::EXPERIMENTAL_protocol_config::RpcProtocolConfigResponse>;
 
 #[derive(Debug)]
 struct CacheRecord<T> {
@@ -79,17 +84,21 @@ pub struct Cache {
     request: mpsc::Sender<CacheRequest>,
 }
 
+#[tracing::instrument(skip_all, name = "cache_service")]
 async fn start(
     mut recv: mpsc::Receiver<CacheRequest>,
     near: Near,
     cache_config: crate::app::args::Cache,
     kill: watch::Sender<()>,
 ) {
+    tracing::info!("Starting cache service");
     let mut gas_price = CacheRecord::empty();
+    let mut protocol_config = CacheRecord::<ProtocolConfiguration>::empty();
     let mut nonce = HashMap::<(AccountId, PublicKey), CacheRecord<u64>>::new();
     let block_hash = Arc::new(RwLock::new(CryptoHash::new()));
 
     let update_gas = || async { near.fetch_gas_price().await };
+    let update_protocol_config = || async { near.fetch_protocol_config().await.map(Arc::new) };
     let update_nonce = |(account_id, public_key)| {
         || async {
             let fetch_nonce = near.fetch_nonce(account_id, public_key).await?;
@@ -120,9 +129,11 @@ async fn start(
                 };
                 match request {
                     CacheRequest::GasPrice(sender) => {
+                        tracing::trace!("Processing gas price cache request");
                         let fresh = gas_price.fetch(update_gas, cache_config.gas_price_refresh).await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(price) = fresh {
+                            tracing::trace!(price = %price, "Sending fresh gas price");
                             sender.send(*price).unwrap();
                         } else if let Some(price) = gas_price.stale() {
                             tracing::warn!("Failed to fetch gas price, sending stale value.");
@@ -132,13 +143,30 @@ async fn start(
                             exec_kill("Failed to fetch gas price, no stale value cached.");
                         }
                     }
+                    CacheRequest::ProtocolConfiguration(sender) => {
+                        tracing::trace!("Processing protocol config cache request");
+                        let fresh = protocol_config.fetch(update_protocol_config, cache_config.gas_price_refresh).await;
+                        #[allow(clippy::unwrap_used)]
+                        if let Ok(config) = fresh {
+                            tracing::trace!(protocol_config = ?config, "Sending fresh protocol config");
+                            sender.send(config.clone()).unwrap();
+                        } else if let Some(config) = protocol_config.stale() {
+                            tracing::warn!("Failed to fetch protocol config, sending stale value.");
+                            sender.send(config.clone()).unwrap();
+                        } else {
+                            // We should only ever *not* have a stale value on startup, so this should be a "fail-fast" case.
+                            exec_kill("Failed to fetch protocol config, no stale value cached.");
+                        }
+                    }
                     CacheRequest::Nonce { key, sender } => {
+                        tracing::trace!(account_id = %key.0, "Processing nonce cache request");
                         let entry = nonce.entry(key.clone()).or_insert_with(CacheRecord::empty);
                         let fresh = entry
                             .fetch_update(update_nonce(key.clone()), cache_config.nonce_refresh, |n| *n += 1)
                             .await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(nonce) = fresh {
+                            tracing::trace!(nonce = %nonce, "Sending fresh nonce");
                             sender.send((*nonce, *block_hash.read().await)).unwrap();
                         } else if let Some(nonce) = entry.update_stale(|n| *n += 1) {
                             tracing::warn!(
@@ -169,6 +197,7 @@ impl Cache {
 
 enum CacheRequest {
     GasPrice(oneshot::Sender<NearToken>),
+    ProtocolConfiguration(oneshot::Sender<ProtocolConfiguration>),
     Nonce {
         key: (AccountId, PublicKey),
         sender: oneshot::Sender<(u64, CryptoHash)>,
@@ -181,6 +210,15 @@ impl Cache {
         let (send, recv) = oneshot::channel();
         self.request
             .send(CacheRequest::GasPrice(send))
+            .await
+            .unwrap();
+        recv.await.unwrap()
+    }
+
+    pub async fn protocol_configuration(&self) -> ProtocolConfiguration {
+        let (send, recv) = oneshot::channel();
+        self.request
+            .send(CacheRequest::ProtocolConfiguration(send))
             .await
             .unwrap();
         recv.await.unwrap()

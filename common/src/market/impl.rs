@@ -6,18 +6,16 @@ use near_sdk::{
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    asset_op,
     borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
-    market::{MarketConfiguration, WithdrawalResolution},
+    market::MarketConfiguration,
     number::Decimal,
-    panic_str,
     snapshot::Snapshot,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
-    withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
+    withdrawal_queue::WithdrawalQueue,
     YEAR_PER_MS,
 };
 
@@ -66,7 +64,7 @@ pub struct Market {
 impl Market {
     pub fn new(prefix: impl IntoStorageKey, configuration: MarketConfiguration) -> Self {
         if let Err(e) = configuration.validate() {
-            panic_str(&e.to_string());
+            crate::panic_with_message(&e.to_string());
         }
 
         let prefix = prefix.into_storage_key();
@@ -111,19 +109,15 @@ impl Market {
     }
 
     pub fn borrowed(&self) -> BorrowAssetAmount {
-        let mut total = self.borrow_asset_borrowed;
-        asset_op!(total += self.borrow_asset_borrowed_in_flight);
-        total
+        self.borrow_asset_borrowed + self.borrow_asset_borrowed_in_flight
     }
 
     pub fn total_incoming(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposited_incoming.iter().fold(
-            BorrowAssetAmount::zero(),
-            |mut total_incoming, incoming| {
-                asset_op!(total_incoming += incoming.amount);
-                total_incoming
-            },
-        )
+        self.borrow_asset_deposited_incoming
+            .iter()
+            .fold(BorrowAssetAmount::zero(), |total_incoming, incoming| {
+                total_incoming + incoming.amount
+            })
     }
 
     pub fn incoming_at(&self, snapshot_index: u32) -> BorrowAssetAmount {
@@ -146,8 +140,7 @@ impl Market {
         let current_snapshot_index = self.finalized_snapshots.len();
         let incoming = self.incoming_at(current_snapshot_index);
 
-        let mut active = self.borrow_asset_deposited_active;
-        asset_op!(active += incoming);
+        let active = self.borrow_asset_deposited_active + incoming;
 
         let borrowed = self.borrowed();
 
@@ -193,7 +186,7 @@ impl Market {
         for i in 0..self.borrow_asset_deposited_incoming.len() {
             let incoming = &self.borrow_asset_deposited_incoming[i];
             if incoming.activate_at_snapshot_index == current_snapshot_index {
-                asset_op!(self.borrow_asset_deposited_active += incoming.amount);
+                self.borrow_asset_deposited_active += incoming.amount;
                 self.borrow_asset_deposited_incoming.remove(i);
                 break;
             }
@@ -319,38 +312,6 @@ impl Market {
             .is_some()
     }
 
-    /// # Errors
-    /// - If the withdrawal queue is already locked.
-    /// - If the withdrawal queue is empty.
-    pub fn try_lock_next_withdrawal_request(
-        &mut self,
-    ) -> Result<Option<WithdrawalResolution>, WithdrawalQueueLockError> {
-        let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
-
-        let proof = self.snapshot();
-        let Some((amount, mut supply_position)) = self
-            .supply_position_guard(proof, account_id)
-            .and_then(|supply_position| {
-                // Cap withdrawal amount to deposit amount at most.
-                let amount = supply_position.total_deposit().min(requested_amount);
-
-                (!amount.is_zero()).then_some((amount, supply_position))
-            })
-        else {
-            // The amount that the entry is eligible to withdraw is zero, so skip it.
-            self.withdrawal_queue
-                .try_pop()
-                .unwrap_or_else(|| panic_str("Inconsistent state")); // we just locked the queue
-            return Ok(None);
-        };
-
-        let proof = supply_position.accumulate_yield();
-        let resolution =
-            supply_position.record_withdrawal_initial(proof, amount, env::block_timestamp_ms());
-
-        Ok(Some(resolution))
-    }
-
     pub fn record_borrow_asset_protocol_yield(&mut self, amount: BorrowAssetAmount) {
         let mut yield_record = self
             .static_yield
@@ -369,7 +330,7 @@ impl Market {
             return;
         }
 
-        asset_op!(self.current_yield_distribution += amount);
+        self.current_yield_distribution += amount;
     }
 
     /// Accumulate static yield for an account.

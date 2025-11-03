@@ -1,11 +1,7 @@
 # Security
 
-Send security reports to [security@templarprotocol.com](mailto:security@templarprotocol.com) or contact [@peer2f00l on Telegram](https://t.me/peer2f00l).
+Smart contract vulnerabilities should be reported to [the Immunefi program](https://immunefi.com/bug-bounty/templar-protocol).
 
-## Alerts
+Additional security reports may be made via email to [security@templarprotocol.com](mailto:security@templarprotocol.com).
 
-Important security notices will be posted on the official Discord server, Telegram channel, and X (Twitter) account.
-
-## Audit reports
-
-Audit reports will be published when available.
+For more information, please refer to [the security guide](https://docs.templarfi.org/guide/security.html).

@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-  "bots",
   "common",
   "contract/*",
   "fuzz",
@@ -15,7 +14,7 @@ members = [
 license = "MIT"
 repository = "https://github.com/Templar-Protocol/contracts"
 edition = "2021"
-version = "1.1.0"
+version = "1.2.0"
 
 [workspace.dependencies]
 anyhow = "1.0.95"
@@ -28,11 +27,15 @@ futures = "0.3.31"
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
+itertools = "0.14.0"
 libfuzzer-sys = "0.4"
+near-account-id = "1.1.4"
+near-chain-configs = "0.31.1"
 near-contract-standards = "5.17.2"
 near-crypto = "0.31.1"
 near-jsonrpc-client = "0.18.0"
 near-jsonrpc-primitives = "0.31.1"
+near-parameters = "0.31.1"
 near-primitives = "0.31.1"
 near-sdk = { version = "5.17.2", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
@@ -43,6 +46,7 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
+templar-vault-contract = { path = "./contract/vault" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }

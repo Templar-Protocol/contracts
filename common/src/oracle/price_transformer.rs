@@ -1,6 +1,6 @@
 use near_sdk::{
     json_types::{Base64VecU8, U64},
-    near, AccountId, Gas, NearToken, Promise,
+    near, AccountId, Gas,
 };
 
 use crate::number::Decimal;
@@ -40,7 +40,7 @@ pub struct Call {
 }
 
 impl Call {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     #[allow(clippy::unwrap_used)]
     pub fn new(
         account_id: &near_sdk::AccountIdRef,
@@ -56,7 +56,7 @@ impl Call {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     pub fn new_simple(account_id: &near_sdk::AccountIdRef, method_name: impl Into<String>) -> Self {
         Self::new(
             account_id,
@@ -66,13 +66,22 @@ impl Call {
         )
     }
 
-    pub fn promise(&self) -> Promise {
-        Promise::new(self.account_id.clone()).function_call(
+    pub fn promise(&self) -> near_sdk::Promise {
+        near_sdk::Promise::new(self.account_id.clone()).function_call(
             self.method_name.clone(),
             self.args.0.clone(),
-            NearToken::from_near(0),
+            near_sdk::NearToken::from_near(0),
             Gas::from_gas(self.gas.0),
         )
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
+    pub fn rpc_call(&self) -> near_primitives::views::QueryRequest {
+        near_primitives::views::QueryRequest::CallFunction {
+            account_id: self.account_id.clone(),
+            method_name: self.method_name.clone(),
+            args: self.args.0.clone().into(),
+        }
     }
 }
 

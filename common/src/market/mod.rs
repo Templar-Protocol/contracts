@@ -6,7 +6,6 @@ use near_sdk::{near, AccountId};
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
     number::Decimal,
-    panic_str,
 };
 mod configuration;
 pub use configuration::{MarketConfiguration, ValidAmountRange, APY_LIMIT};
@@ -59,7 +58,7 @@ impl YieldWeights {
         self.r#static
             .values()
             .try_fold(self.supply, |a, b| a.checked_add(*b))
-            .unwrap_or_else(|| panic_str("Total weight overflow"))
+            .unwrap_or_else(|| crate::panic_with_message("Total weight overflow"))
     }
 
     pub fn static_share(&self, account_id: &AccountId) -> Decimal {
@@ -99,7 +98,7 @@ pub struct LiquidateMsg {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
-pub struct WithdrawalResolution {
+pub struct Withdrawal {
     pub account_id: AccountId,
     pub amount_to_account: BorrowAssetAmount,
     pub amount_to_fees: BorrowAssetAmount,

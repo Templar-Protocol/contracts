@@ -60,8 +60,8 @@ async fn allow_sufficient_collateralization_during_liquidation(
         .collateral_asset_deposit;
 
     assert_eq!(
-        u128::from(collateral_before) + 2_000_000,
-        collateral_after.into(),
+        collateral_before + 2_000_000,
+        collateral_after,
         "Collateralization should be allowed if it brings the position out of liquidation",
     );
 }

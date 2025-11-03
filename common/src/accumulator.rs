@@ -36,13 +36,12 @@ impl<T: AssetClass> Accumulator<T> {
         self.next_snapshot_index = next_snapshot_index;
     }
 
-    pub fn remove(&mut self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
-        self.total.split(amount)
+    pub fn remove(&mut self, amount: FungibleAssetAmount<T>) {
+        self.total -= amount;
     }
 
-    pub fn add_once(&mut self, amount: FungibleAssetAmount<T>) -> Option<()> {
-        self.total.join(amount)?;
-        Some(())
+    pub fn add_once(&mut self, amount: FungibleAssetAmount<T>) {
+        self.total += amount;
     }
 
     pub fn accumulate(
@@ -52,19 +51,18 @@ impl<T: AssetClass> Accumulator<T> {
             fraction_as_u128_dividend: fraction,
             next_snapshot_index,
         }: AccumulationRecord<T>,
-    ) -> Option<()> {
+    ) {
         require!(
             next_snapshot_index >= self.next_snapshot_index,
             "Invariant violation: Asset accumulations cannot occur retroactively.",
         );
         let (fraction, carry) = self.fraction_as_u128_dividend.0.overflowing_add(fraction);
         if carry {
-            amount.join(1u128)?;
+            amount += 1;
         }
-        self.add_once(amount)?;
+        self.add_once(amount);
         self.fraction_as_u128_dividend.0 = fraction;
         self.next_snapshot_index = next_snapshot_index;
-        Some(())
     }
 }
 

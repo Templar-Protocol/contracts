@@ -19,6 +19,7 @@ A selection of available markets is shown below:
 | [`iethwbtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethwbtc-iethusdc.v1.tmplr.near) | wBTC on Ethererum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
 | [`ibtc-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/ibtc-usdc-1.v1.tmplr.near) | Native BTC (via NEAR Intents) | USDC on NEAR |
 | [`stnear-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/stnear-usdc-1.v1.tmplr.near) | stNEAR on NEAR | USDC on NEAR |
+| [`ixlm-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/ixlm-ixlmusdc.v1.tmplr.near) | Native XLM (via NEAR Intents) | USDC on XLM (via NEAR Intents) |
 
 ### Contract Verification
 

@@ -2,17 +2,17 @@ use near_sdk::{env, near, require, serde_json, AccountId, Gas, Promise, PromiseR
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+        ReturnStyle,
     },
-    asset_op,
     borrow::{InitialBorrow, InitialLiquidation},
-    market::{LiquidateMsg, WithdrawalResolution},
+    market::{LiquidateMsg, Withdrawal},
     oracle::pyth::OracleResponse,
-    panic_str,
     price::PricePair,
     self_ext,
+    withdrawal_queue::WithdrawalQueueExecutionResult,
 };
 
-use crate::{Contract, ContractExt, ReturnStyle};
+use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {
@@ -20,7 +20,7 @@ impl Contract {
         self.configuration
             .price_oracle_configuration
             .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| panic_str(&e.to_string()))
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
     }
 
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
@@ -64,7 +64,7 @@ impl Contract {
         let snapshot = self.snapshot();
         let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
         if !borrow_position.inner().liquidation_lock.is_zero() {
-            panic_str("Cannot add collateral while liquidation locked");
+            templar_common::panic_with_message("Cannot add collateral while liquidation locked");
         }
         let proof = borrow_position.accumulate_interest();
         borrow_position.record_collateral_asset_deposit(proof, amount);
@@ -98,7 +98,7 @@ impl Contract {
         // Returns the amount that should be returned to the borrower.
         borrow_position
             .record_repay(proof, amount)
-            .unwrap_or_else(|e| panic_str(&e.to_string()))
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
     }
 }
 
@@ -122,7 +122,9 @@ impl Contract {
 
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
         else {
-            panic_str("No borrower record. Please deposit collateral first.");
+            templar_common::panic_with_message(
+                "No borrower record. Please deposit collateral first.",
+            );
         };
 
         let interest = borrow_position.accumulate_interest();
@@ -135,7 +137,7 @@ impl Contract {
                 &price_pair,
                 env::block_timestamp_ms(),
             )
-            .unwrap_or_else(|e| panic_str(&e.to_string()));
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         drop(borrow_position);
 
@@ -155,7 +157,9 @@ impl Contract {
     pub fn borrow_02_finalize(&mut self, account_id: AccountId, initial_borrow: InitialBorrow) {
         let snapshot = self.snapshot();
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
-            panic_str("Invariant violation: borrow position does not exist after transfer.");
+            templar_common::panic_with_message(
+                "Invariant violation: borrow position does not exist after transfer.",
+            );
         };
 
         let proof = borrow_position.accumulate_interest();
@@ -175,60 +179,26 @@ impl Contract {
     #[private]
     pub fn execute_next_supply_withdrawal_request_01_finalize(
         &mut self,
-        withdrawal_resolution: WithdrawalResolution,
-    ) {
-        asset_op!(
-            self.borrow_asset_withdrawal_in_flight -= withdrawal_resolution.amount_to_account
-        );
-
-        // Withdrawal succeeded: remove the withdrawal request from the queue.
-        // Withdrawal failed but should have succeeded: remove request but still refund.
-        // Withdrawal failed: unlock the queue so they can try again.
-
-        let withdrawal_succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
-
+        resolutions: Vec<Withdrawal>,
+        result: WithdrawalQueueExecutionResult,
+    ) -> WithdrawalQueueExecutionResult {
         let snapshot = self.snapshot();
-        if let Some(mut supply_position) =
-            self.supply_position_guard(snapshot, withdrawal_resolution.account_id.clone())
-        {
-            supply_position.record_withdrawal_final(&withdrawal_resolution, withdrawal_succeeded);
-        }
 
-        // TODO: If this panics, this is BIG BAD, as it means there is
-        // some way to unlock the queue while a withdrawal is in-flight.
-        // So, maybe we should not *actually* panic here, but do some sort of recovery?
-        let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
-            panic_str("Invariant violation: Withdrawal queue should have been locked.")
-        });
+        for (i, resolution) in resolutions.iter().enumerate() {
+            let succeeded = matches!(env::promise_result(i as u64), PromiseResult::Successful(_));
 
-        // This is another consistency check: that the account at the
-        // head of the queue cannot change while transfers are
-        // in-flight. This should be maintained by the queue itself.
-        require!(
-            popped_account == withdrawal_resolution.account_id,
-            "Invariant violation: Queue shifted while locked/in-flight.",
-        );
-
-        if withdrawal_succeeded {
-            self.record_borrow_asset_protocol_yield(withdrawal_resolution.amount_to_fees);
-
-            if self.cleanup_supply_position(&withdrawal_resolution.account_id) {
-                self.refund_for_storage(
-                    &withdrawal_resolution.account_id,
-                    self.storage_usage_supply_position,
-                );
+            if let Some(mut position) =
+                self.supply_position_guard(snapshot, resolution.account_id.clone())
+            {
+                position.record_withdrawal_final(resolution, succeeded);
             }
-        } else {
-            // Possible reasons for failure:
-            // - MPC signer failure (multichain; TODO).
-            // - If we expected success but it still failed, this means the
-            //   receiving account cannot receive tokens for some reason. For
-            //   NEP-141 tokens, this usually means that the user opted out of
-            //   storage management on that contract and deleted their record.
 
-            env::log_str("The withdrawal request cannot be fulfilled at this time.");
-            self.withdrawal_queue.unlock();
+            if succeeded && self.cleanup_supply_position(&resolution.account_id) {
+                self.refund_for_storage(&resolution.account_id, self.storage_usage_supply_position);
+            }
         }
+
+        result
     }
 
     // ~3.4 TGas
@@ -285,13 +255,15 @@ impl Contract {
             .configuration
             .price_oracle_configuration
             .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| panic_str(&e.to_string()));
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         let result = {
             let snapshot = self.snapshot();
             let mut borrow_position = self
                 .borrow_position_guard(snapshot, msg.account_id.clone())
-                .unwrap_or_else(|| panic_str("Borrow position does not exist"));
+                .unwrap_or_else(|| {
+                    templar_common::panic_with_message("Borrow position does not exist")
+                });
 
             let proof = borrow_position.accumulate_interest();
 
@@ -303,7 +275,7 @@ impl Contract {
                     &price_pair,
                     env::block_timestamp_ms(),
                 )
-                .unwrap_or_else(|e| panic_str(&e.to_string()))
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
         };
 
         self.configuration
@@ -350,7 +322,9 @@ impl Contract {
         let mut borrow_position = self
             .borrow_position_guard(snapshot, account_id)
             .unwrap_or_else(|| {
-                panic_str("Invariant violation: Liquidation of nonexistent position.")
+                templar_common::panic_with_message(
+                    "Invariant violation: Liquidation of nonexistent position.",
+                )
             });
 
         let proof = borrow_position.accumulate_interest();
@@ -375,7 +349,9 @@ impl Contract {
         let snapshot = self.snapshot();
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
         else {
-            panic_str("No borrower record. Please deposit collateral first.");
+            templar_common::panic_with_message(
+                "No borrower record. Please deposit collateral first.",
+            );
         };
 
         let proof = borrow_position.accumulate_interest();
@@ -412,7 +388,7 @@ impl Contract {
 
         let snapshot = self.snapshot();
         let Some(mut position) = self.borrow_position_guard(snapshot, account_id.clone()) else {
-            panic_str(
+            templar_common::panic_with_message(
                 "Invariant violation: Borrow position must exist after collateral withdrawal.",
             );
         };
@@ -437,12 +413,12 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
     ) {
-        let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
-            panic_str("Invariant violation: static yield entry must exist during callback")
-        });
-
         if matches!(env::promise_result(0), PromiseResult::Failed) {
+            let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
+                env::panic_str("Invariant violation: static yield entry must exist during callback")
+            });
             yield_record.add_once(amount);
+            self.static_yield.insert(&account_id, &yield_record);
         }
     }
 }

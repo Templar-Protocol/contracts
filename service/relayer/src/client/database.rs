@@ -7,7 +7,6 @@ use near_primitives::{
 use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
 use tokio::sync::watch;
-use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct Database {
@@ -125,10 +124,12 @@ impl Database {
     /// # Errors
     ///
     /// - Query errors
+    #[tracing::instrument(skip(self), fields(limit = %limit))]
     pub async fn get_pending_transactions(
         &self,
         limit: i64,
     ) -> Result<Vec<(AccountId, CryptoHash)>, sqlx::Error> {
+        tracing::debug!("Fetching pending transactions");
         let results = sqlx::query!(
             "
 SELECT
@@ -190,6 +191,12 @@ LIMIT
     /// - Account does not exist
     /// - Pending transaction already exists
     /// - Insufficient allowance
+    #[tracing::instrument(skip(self), fields(
+        account_id = %account_id,
+        allowance_lock_gas = %allowance_lock_gas,
+        allowance_lock_inner = %allowance_lock_inner,
+        transaction_hash = %transaction_hash
+    ))]
     pub async fn set_pending_transaction(
         &self,
         account_id: &AccountIdRef,
@@ -197,6 +204,7 @@ LIMIT
         allowance_lock_inner: NearToken,
         transaction_hash: CryptoHash,
     ) -> Result<(), error::SetPendingTransactionError> {
+        tracing::debug!("Setting pending transaction");
         let mut tx = self.connection.begin().await?;
 
         let account = sqlx::query!(
@@ -359,17 +367,28 @@ WHERE
     /// - Account does not exist
     /// - Pending transaction does not exist
     /// - Query errors
+    #[tracing::instrument(skip(self, status), fields(
+        account_id = %account_id,
+        transaction_hash = %status.transaction.hash,
+        success = matches!(status.status, FinalExecutionStatus::SuccessValue(_))
+    ))]
     pub async fn record_transaction(
         &self,
         account_id: &AccountIdRef,
         status: &FinalExecutionOutcomeView,
     ) -> Result<(), error::RecordTransactionError> {
+        tracing::info!("Recording transaction result");
         let allowance_spent_gas =
             NearToken::from_yoctonear(status.transaction_outcome.outcome.tokens_burnt);
 
         let success = matches!(status.status, FinalExecutionStatus::SuccessValue(_));
 
         let transaction_hash = status.transaction.hash;
+
+        tracing::debug!(
+            allowance_spent_gas = %allowance_spent_gas,
+            "Transaction tokens burnt"
+        );
 
         self.finalize_pending_transaction(
             account_id,
@@ -445,7 +464,7 @@ WHERE
         if result.rows_affected() == 0 {
             tx.rollback().await?;
 
-            warn!("Failed to unlock allowance for {account_id}");
+            tracing::warn!("Failed to unlock allowance for {account_id}");
             let account = sqlx::query!(
                 "
 SELECT

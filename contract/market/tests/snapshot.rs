@@ -79,6 +79,7 @@ async fn multiple_snapshots_show_progression(#[future(awt)] worker: Worker<Sandb
 
     c.supply_and_harvest_until_activation(&supply_user, 3_000_000)
         .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     // First period: collateralize
     c.collateralize(&user, 1_000_000).await;

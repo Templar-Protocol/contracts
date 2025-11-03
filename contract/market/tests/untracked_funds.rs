@@ -24,7 +24,6 @@ async fn cannot_borrow_untracked_funds(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Insufficient liquidity to fulfill the request at this time"]
 async fn cannot_withdraw_untracked_funds(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
@@ -43,7 +42,19 @@ async fn cannot_withdraw_untracked_funds(#[future(awt)] worker: Worker<Sandbox>)
     let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
     c.create_supply_withdrawal_request(&supply_user, 10_000)
         .await;
-    c.execute_next_supply_withdrawal_request(&supply_user).await;
+    c.execute_next_supply_withdrawal_request(&supply_user, None)
+        .await;
     let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
-    assert_eq!(balance_before + 10_000, balance_after);
+    assert_eq!(balance_before + 2_000, balance_after);
+
+    let queue_status = c.get_supply_withdrawal_queue_status().await;
+    assert_eq!(queue_status.depth, 8_000.into());
+    assert_eq!(queue_status.length, 1);
+    let request_status = c
+        .get_supply_withdrawal_request_status(supply_user.id())
+        .await
+        .unwrap();
+    assert_eq!(request_status.amount, 8_000.into());
+    assert_eq!(request_status.depth, 0.into());
+    assert_eq!(request_status.index, 0);
 }

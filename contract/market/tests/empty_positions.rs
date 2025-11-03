@@ -17,7 +17,8 @@ async fn empty_positions_are_removed(#[future(awt)] worker: Worker<Sandbox>) {
     assert!(c.get_supply_position(supply_user.id()).await.is_some());
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
-    c.execute_next_supply_withdrawal_request(&supply_user).await;
+    c.execute_next_supply_withdrawal_request(&supply_user, None)
+        .await;
     assert!(c.get_supply_position(supply_user.id()).await.is_none());
 
     tokio::join!(
@@ -38,6 +39,7 @@ async fn empty_positions_are_removed(#[future(awt)] worker: Worker<Sandbox>) {
     );
 
     c.create_supply_withdrawal_request(&supply_user, 1000).await;
-    c.execute_next_supply_withdrawal_request(&supply_user).await;
+    c.execute_next_supply_withdrawal_request(&supply_user, None)
+        .await;
     assert!(c.get_supply_position(supply_user.id()).await.is_none());
 }

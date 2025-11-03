@@ -35,13 +35,11 @@ async fn borrow_within_maximum_usage_ratio(
 
     assert_eq!(balance_before + amount, balance_after);
     assert_eq!(
-        u128::from(
-            c.get_borrow_position(borrow_user.id())
-                .await
-                .unwrap()
-                .get_borrow_asset_principal()
-        ),
-        amount,
+        c.get_borrow_position(borrow_user.id())
+            .await
+            .unwrap()
+            .get_borrow_asset_principal(),
+        amount.into(),
     );
 }
 

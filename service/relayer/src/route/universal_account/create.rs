@@ -57,13 +57,20 @@ pub struct CreateResponse {
 }
 
 #[allow(clippy::too_many_lines)]
+#[tracing::instrument(
+    name = "create_universal_account",
+    skip(app, request),
+    fields(key = tracing::field::Empty)
+)]
 pub async fn create(
     State(app): State<App>,
     Json(request): Json<CreateRequest>,
 ) -> SimpleResponse<CreateResponse> {
+    tracing::info!("Creating universal account");
     let CreateRequest::Passkey(message) = request;
 
     let key = message.payload_unchecked().payload_unchecked().key.clone();
+    tracing::Span::current().record("key", tracing::field::display(&key.0));
 
     let verified_signature = match key.verify(message) {
         Ok(p) => p,

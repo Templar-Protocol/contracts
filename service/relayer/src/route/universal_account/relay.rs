@@ -30,6 +30,14 @@ pub struct RelayResponse {
 }
 
 #[allow(clippy::too_many_lines)]
+#[tracing::instrument(
+    name = "relay_universal_account",
+    skip(app, args),
+    fields(
+        account_id = %account_id,
+        storage_deposit_count = %storage_deposit.len()
+    )
+)]
 pub async fn relay(
     State(app): State<App>,
     Json(RelayRequest {
@@ -38,6 +46,7 @@ pub async fn relay(
         storage_deposit,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
+    tracing::info!("Processing universal account relay");
     let ExecuteArgs::Passkey {
         ref key,
         ref message,
@@ -96,6 +105,35 @@ pub async fn relay(
     let mut eligible_for_storage_deposit = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
+        if receiver_id == &account_id {
+            // Reflexive action - allow all.
+            let protocol_config = app.cache.protocol_configuration().await;
+            // One exception: recursive "execute" call, since that could be used to bypass gas restrictions.
+            // There is not a good use-case for this anyways, so it should be okay to reject wholesale.
+            for a in &transaction.actions {
+                match a {
+                    Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. }
+                        if call.function_name == "execute" =>
+                    {
+                        tracing::info!("Rejecting recursive `execute` call.");
+                        return SimpleResponse::Rejected {
+                            reason: "Recursive `execute` call".to_string(),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+
+            gas += transaction
+                .actions
+                .iter()
+                .map(|a| a.gas_cost(receiver_id, true, &protocol_config))
+                .reduce(|a, b| a.saturating_add(b))
+                .unwrap_or(near_sdk::Gas::from_gas(0))
+                .as_gas();
+            tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
+            continue;
+        }
         if !accounts.allowed_contract_data.contains_key(receiver_id) {
             tracing::info!("Unknown receiver {receiver_id}");
             return SimpleResponse::Rejected {
@@ -133,6 +171,12 @@ pub async fn relay(
             };
         eligible_for_storage_deposit.insert(receiver_id.clone());
         eligible_for_storage_deposit.extend(additional_interactions.into_iter());
+        if let Some(market_data) = accounts.market_data.get(receiver_id) {
+            eligible_for_storage_deposit.insert(market_data.oracle_id.clone());
+            eligible_for_storage_deposit.insert(market_data.borrow_asset.contract_id().to_owned());
+            eligible_for_storage_deposit
+                .insert(market_data.collateral_asset.contract_id().to_owned());
+        }
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
 
