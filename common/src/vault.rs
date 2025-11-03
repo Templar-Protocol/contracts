@@ -574,6 +574,8 @@ pub enum Event {
     #[event_version("1.0.0")]
     WithdrawQueueMarketAdded { market: AccountId },
     #[event_version("1.0.0")]
+    WithdrawDequeued { index: U64 },
+    #[event_version("1.0.0")]
     MarketRemovalSubmitted {
         market: AccountId,
         removable_at: U64,

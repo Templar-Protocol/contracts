@@ -1,15 +1,13 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     num::NonZeroU8,
 };
 
 use crate::{
     aum::AUM,
-    storage_management::{
-        require_attached_at_least, require_attached_for_pending_withdrawal, yocto_for_new_market,
-    },
+    storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -137,8 +135,8 @@ pub struct Contract {
     virtual_shares: u128,
     virtual_assets: u128,
 
-    // Merged market record: cfg + pending_cap + principal
-    markets: IterableMap<AccountId, MarketRecord>,
+    // Merged market record: cfg + pending_cap + principal (single persisted map; no per-entry storage keys)
+    markets: BTreeMap<AccountId, MarketRecord>,
 
     /// Any pending change to the vault's timelock
     pending_timelock: Option<PendingValue<TimestampNs>>,
@@ -224,7 +222,7 @@ impl Contract {
             performance_fee: Default::default(),
             fee_recipient,
             skim_recipient,
-            markets: IterableMap::new(key!(Config)),
+            markets: BTreeMap::new(),
             pending_timelock: None,
             pending_guardian: None,
             supply_queue: Default::default(),
@@ -473,7 +471,7 @@ impl Contract {
         if let Some(id) = self.current_withdraw_inflight.take() {
             let _ = self.pending_withdrawals.remove(&id);
             self.next_withdraw_to_execute = id.saturating_add(1);
-            env::log_str(&format!("WithdrawalDequeued id={id}"));
+            Event::WithdrawDequeued { index: id.into() }.emit();
         }
     }
 

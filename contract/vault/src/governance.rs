@@ -124,7 +124,9 @@ impl Contract {
             account: account.clone(),
         }
         .emit();
-        self.storage_deposit(Some(account.clone()), Some(true));
+        if self.storage_balance_of(account.clone()).is_none() {
+            self.storage_deposit(Some(account.clone()), Some(true));
+        }
 
         self.fee_recipient = account;
     }
@@ -214,7 +216,6 @@ impl Contract {
 
         let mkt = match self.markets.get_mut(&market) {
             None => {
-                let _ = require_attached_at_least(yocto_for_new_market(), "submit_cap");
                 self.markets.insert(market.clone(), MarketRecord::default());
                 Event::MarketCreated {
                     market: market.clone(),
@@ -262,7 +263,6 @@ impl Contract {
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
         self.ensure_idle();
-
 
         let m = self
             .markets
