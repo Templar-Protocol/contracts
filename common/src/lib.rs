@@ -18,6 +18,7 @@ pub mod vault;
 pub mod withdrawal_queue;
 
 pub use primitive_types;
+pub use schemars;
 
 /// Approximation of `1 / (1000 * 60 * 60 * 24 * 365.2425)`.
 ///

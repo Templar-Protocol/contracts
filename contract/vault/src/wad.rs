@@ -6,6 +6,7 @@ use near_sdk::borsh::schema::{add_definition, Declaration, Definition};
 use near_sdk::borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use primitive_types::{U256, U512};
+use templar_common::schemars::JsonSchema;
 
 pub type WIDE = U512;
 
@@ -177,6 +178,21 @@ impl BorshSchema for Number {
     }
 }
 
+impl JsonSchema for Number {
+    fn schema_name() -> String {
+        "Number".to_string()
+    }
+
+    fn json_schema(
+        generator: &mut templar_common::schemars::r#gen::SchemaGenerator,
+    ) -> templar_common::schemars::schema::Schema {
+        let mut g = generator.subschema_for::<[u8; 32]>().into_object();
+        g.metadata().description = Some("256-bit Unsigned Integer".to_string());
+        g.string().pattern = Some("^(0|[1-9][0-9]{0,77})$".to_string());
+        g.into()
+    }
+}
+
 /// Represents the maximum performance fee that can be charged. 20% (very high)
 pub const MAX_FEE_WAD: u128 = Wad::SCALE / 10 * 2;
 
@@ -287,6 +303,22 @@ impl BorshSchema for Wad {
 
     fn declaration() -> Declaration {
         "Wad".into()
+    }
+}
+
+impl JsonSchema for Wad {
+    fn schema_name() -> String {
+        "Wad".to_string()
+    }
+
+    fn json_schema(
+        generator: &mut templar_common::schemars::r#gen::SchemaGenerator,
+    ) -> templar_common::schemars::schema::Schema {
+        let mut schema = generator.subschema_for::<Number>().into_object();
+        schema.metadata().description =
+            Some("Wad fixed faction back by 256-bit unsigned integer".to_string());
+        schema.string().pattern = Some("^(0|[1-9][0-9]{0,77})$".to_string());
+        schema.into()
     }
 }
 
