@@ -1,8 +1,8 @@
-#![allow(clippy::wildcard_imports)]
+#![allow(clippy::pedantic)]
 
 use near_sdk::{json_types::U128, Gas};
 use rand::Rng as _;
-use test_utils::*;
+use test_utils::{setup_test, ContractController};
 
 #[tokio::main]
 async fn main() {

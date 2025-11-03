@@ -1,4 +1,4 @@
-use std::u64;
+#![allow(clippy::pedantic)]
 
 use crate::impl_callbacks::reconcile_supply_outcome;
 use crate::impl_callbacks::WithdrawReconciliation;
@@ -63,9 +63,11 @@ fn c_asset_env(vault_id_fixture: AccountId) -> Contract {
 #[fixture]
 fn enabled_market_100() -> (AccountId, MarketConfiguration) {
     let m = mk(9001);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(100);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(100),
+        enabled: true,
+        removable_at: 0,
+    };
     (m, cfg)
 }
 
@@ -228,9 +230,11 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
 
     // Configure a single market with cap = 80 in the supply queue
     let m1 = mk(2000);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(80);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(80),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(
         m1.clone(),
         MarketRecord {
@@ -303,9 +307,11 @@ fn queue_allocation_ignores_stale_plan() {
     let m1 = mk(3001);
     let m2 = mk(3002);
 
-    let mut cfg1 = MarketConfiguration::default();
-    cfg1.cap = U128(10);
-    cfg1.enabled = true;
+    let cfg1 = MarketConfiguration {
+        cap: U128(10),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(m1.clone(), cfg1.into());
     c.supply_queue.insert(m1);
 
@@ -334,9 +340,11 @@ fn queue_allocation_ignores_stale_plan() {
 fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, expect: u128) {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);
-    let c = new_test_contract(&vault_id);
 
-    assert_eq!(c.compute_burn_shares(escrow, collected, requested), expect);
+    assert_eq!(
+        Contract::compute_burn_shares(escrow, collected, requested),
+        expect
+    );
 }
 
 #[test]
@@ -384,9 +392,11 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
     let m = mk(8001);
 
     // Seed a known, enabled market with cap > 0
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(10);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(10),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(
         m.clone(),
         MarketRecord {
@@ -539,9 +549,11 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     let mut c = new_test_contract(&vault_id);
 
     let m = mk(1);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(cap);
-    cfg.enabled = cap > 0;
+    let cfg = MarketConfiguration {
+        cap: U128(cap),
+        enabled: cap > 0,
+        removable_at: 0,
+    };
     c.markets.insert(
         m.clone(),
         MarketRecord {
@@ -938,9 +950,11 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
 
     // Provide a market (not used due to wrong token)
     let m = mk(9003);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(100);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(100),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(m.clone(), cfg.into());
     c.supply_queue.insert(m);
 
@@ -989,7 +1003,6 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
     c.supply_queue.insert(m);
 
     let sender: AccountId = c.underlying_asset.contract_id().into();
-    let bal_before = c.balance_of(&sender);
 
     c.ft_on_transfer(
         sender.clone(),
@@ -1138,9 +1151,11 @@ fn governance_set_curator_grants_allocator() {
 
     // Prepare a market to exercise allocator permission
     let m1 = mk(9101);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(1);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(1),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(m1.clone(), cfg.into());
 
     let new_cur = accounts(3);
@@ -1169,9 +1184,11 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
 
     // Market to operate on
     let m1 = mk(9102);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(1);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(1),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(m1.clone(), cfg.into());
 
     // Grant Allocator role
@@ -1202,9 +1219,12 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
 
     // Market to attempt on
     let m1 = mk(9103);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(1);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(1),
+        enabled: true,
+        removable_at: 0,
+    };
+
     c.markets.insert(m1.clone(), cfg.into());
 
     // Revoke Allocator role; subsequent queue op by grantee should panic due to lack of rights
@@ -1335,9 +1355,11 @@ fn governance_submit_cap_immediate_decrease() {
     setup_env(&vault_id, &owner, vec![]);
 
     let m = mk(9104);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(10);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(10),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(m.clone(), cfg.into());
 
     c.submit_cap(m.clone(), U128(3));
@@ -1404,9 +1426,11 @@ fn governance_submit_and_revoke_market_removal() {
 
     c.timelock_ns = 1;
     let m = mk(9107);
-    let mut cfg = MarketConfiguration::default();
-    cfg.cap = U128(0);
-    cfg.enabled = true;
+    let cfg = MarketConfiguration {
+        cap: U128(0),
+        enabled: true,
+        removable_at: 0,
+    };
     c.markets.insert(m.clone(), cfg.into());
 
     // Submit removal (schedules timelock)

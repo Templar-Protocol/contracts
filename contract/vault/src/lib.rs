@@ -219,13 +219,13 @@ impl Contract {
             underlying_asset: underlying_token,
             aum: AUM::BalanceSheet,
             timelock_ns: initial_timelock_ns.0,
-            performance_fee: Default::default(),
+            performance_fee: Wad::default(),
             fee_recipient,
             skim_recipient,
             markets: BTreeMap::new(),
             pending_timelock: None,
             pending_guardian: None,
-            supply_queue: Default::default(),
+            supply_queue: BTreeSet::default(),
             last_total_assets: 0,
             virtual_shares: 1,
             virtual_assets: 1,
@@ -491,7 +491,7 @@ impl Contract {
 /* ----- Views ----- */
 #[near]
 impl Contract {
-    /// Panics
+    /// # Panics
     /// - If the owner is not set
     /// - If the curator is not set
     /// - If the guardian is not set
@@ -713,12 +713,7 @@ impl Contract {
     }
 
     // Pure helper to compute how many escrowed shares to burn on partial payout
-    fn compute_burn_shares(
-        &self,
-        escrow_shares: u128,
-        collected: u128,
-        requested_total: u128,
-    ) -> u128 {
+    fn compute_burn_shares(escrow_shares: u128, collected: u128, requested_total: u128) -> u128 {
         mul_div_floor(
             escrow_shares.into(),
             collected.into(),
@@ -1121,7 +1116,7 @@ impl Contract {
             )
         } else {
             let requested = collected.saturating_add(remaining);
-            let burn_shares = self.compute_burn_shares(escrow_shares, collected, requested);
+            let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);
 
             self.pay_collected(
                 op_id,
@@ -1140,6 +1135,7 @@ impl Contract {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// If we collected something, pay it out now and burn proportional shares or do something else
     fn pay_collected(
         &mut self,

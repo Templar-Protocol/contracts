@@ -64,7 +64,7 @@ impl Nep245Receiver for Contract {
     /// Returns a one-element vector with the unused amount to refund to the sender.
     fn mt_on_transfer(
         &mut self,
-        _sender_id: AccountId,
+        #[allow(clippy::used_underscore_binding)] _sender_id: AccountId,
         previous_owner_ids: Vec<AccountId>,
         token_ids: Vec<TokenId>,
         amounts: Vec<U128>,

@@ -1,11 +1,13 @@
+#![allow(clippy::all)]
+
+use std::collections::HashMap;
+
 use crate::Contract;
-use near_sdk::env;
 use near_sdk::NearToken;
 pub use near_sdk::{
     test_utils::{accounts, VMContextBuilder},
     test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
 };
-use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::ft::Nep145;
 use test_utils::vault_configuration;
 
@@ -26,7 +28,7 @@ pub fn setup_env(
         builder.build(),
         test_vm_config(),
         RuntimeFeesConfig::test(),
-        Default::default(),
+        HashMap::default(),
         promise_results
     );
 }
@@ -60,7 +62,7 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
         builder.build(),
         test_vm_config(),
         RuntimeFeesConfig::test(),
-        Default::default(),
+        HashMap::default(),
         vec![]
     );
     let mut c = Contract::new(cfg);
@@ -91,38 +93,4 @@ pub fn set_ctx(vault_id: &AccountId, signer: &AccountId, ts: Option<u64>, deposi
         ctx.attached_deposit(NearToken::from_yoctonear(amount));
     }
     testing_env!(ctx.build());
-}
-
-/// Ensure a market exists with given configuration and optionally adds to queues and supply
-pub fn ensure_market(
-    c: &mut crate::Contract,
-    id: AccountId,
-    cap: u128,
-    enabled: bool,
-    supply: u128,
-    in_supply: bool,
-    removable_at: u64,
-) {
-    let mut cfg = templar_common::vault::MarketConfiguration::default();
-    cfg.cap = near_sdk::json_types::U128(cap);
-    cfg.enabled = enabled;
-    cfg.removable_at = removable_at;
-    c.markets.insert(
-        id.clone(),
-        crate::MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: supply,
-        },
-    );
-    if in_supply && !c.supply_queue.iter().any(|m| m == &id) {
-        c.supply_queue.insert(id.clone());
-    }
-}
-
-/// Seed shares into the vault's own account (used for escrow/burn tests)
-pub fn seed_vault_shares(c: &mut crate::Contract, shares: u128) {
-    #[allow(clippy::expect_used, reason = "test helper")]
-    c.deposit_unchecked(&near_sdk::env::current_account_id(), shares)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 }

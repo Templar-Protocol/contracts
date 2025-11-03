@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::fmt::Display;
 
 use crate::{near, Contract, ContractExt, Error, EscrowSettlement, Nep141Controller, OpState};
@@ -76,6 +78,7 @@ impl Contract {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[private]
     pub fn supply_02_position_read(
         &mut self,

@@ -33,7 +33,7 @@ pub fn yocto_for_ft_account() -> u128 {
 pub fn storage_bytes_for_pending_withdrawal() -> u64 {
     // Key is u64 id -> 8 bytes
     let key = 8u64;
-    let val = PendingWithdrawal::encoded_size() as u64;
+    let val = PendingWithdrawal::encoded_size();
     MAP_ENTRY_OVERHEAD + key + val
 }
 

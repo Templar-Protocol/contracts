@@ -125,15 +125,19 @@ async fn withdrawal_minimum_greater_than_supply_minimum() {
 #[should_panic = "Smart contract panicked: Invalid configuration field `supply_withdrawal_fee.fee`: out of bounds"]
 async fn withdrawal_fee_greater_than_withdrawal_minimum() {
     let worker = near_workspaces::sandbox().await.unwrap();
-    setup_everything(&worker, |c| {
-        c.supply_range = (2, None).try_into().unwrap();
-        c.supply_withdrawal_range = (2, None).try_into().unwrap();
-        c.supply_withdrawal_fee = TimeBasedFee {
-            fee: Fee::Flat(100.into()),
-            duration: 100.into(),
-            behavior: TimeBasedFeeFunction::Linear,
-        };
-    })
+    setup_everything(
+        &worker,
+        |c| {
+            c.supply_range = (2, None).try_into().unwrap();
+            c.supply_withdrawal_range = (2, None).try_into().unwrap();
+            c.supply_withdrawal_fee = TimeBasedFee {
+                fee: Fee::Flat(100.into()),
+                duration: 100.into(),
+                behavior: TimeBasedFeeFunction::Linear,
+            };
+        },
+        |_c| {},
+    )
     .await;
 }
 

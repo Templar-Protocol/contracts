@@ -1,3 +1,5 @@
+#![allow(clippy::all, clippy::pedantic)]
+
 use near_sdk::json_types::U128;
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
@@ -152,18 +154,12 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .await;
 }
 
-// FIXME: should also do this in allocate on behalf of the vault?
 pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
     // Wait for activation.
-    while !c
-        .get_supply_position(vault.contract().id())
-        .await
-        .unwrap()
-        .get_deposit()
-        .incoming
-        .is_empty()
-    {
-        // TODO: should also do this in allocate
+    while let Some(position) = c.get_supply_position(vault.contract().id()).await {
+        if position.get_deposit().incoming.is_empty() {
+            break;
+        }
         c.harvest_yield(vault.contract().as_account(), None, None)
             .await;
     }
