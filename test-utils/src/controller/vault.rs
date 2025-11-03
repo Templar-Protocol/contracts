@@ -92,7 +92,7 @@ impl VaultController {
         pub fn execute_next_withdrawal_request(route: Vec<AccountId>);
 
         #[call(exec, tgas(300))]
-        pub fn execute_next_market_withdrawal(op_id: u64);
+        pub fn execute_next_market_withdrawal(op_id: U64);
 
         #[call(exec, tgas(300), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn redeem(shares: U128, receiver: AccountId);

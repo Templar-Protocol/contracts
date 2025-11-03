@@ -17,12 +17,13 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, serde_json,
     store::IterableMap,
-    AccountId, BorshStorageKey, IntoStorageKey, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, BorshStorageKey, IntoStorageKey, NearToken, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
         nep141::GAS_FOR_FT_TRANSFER_CALL, nep145::Nep145ForceUnregister, ContractMetadata,
-        FungibleToken, Nep141Controller, Nep141Mint, Nep141Transfer, Nep145 as _, Nep148Controller,
+        FungibleToken, Nep141Controller, Nep141Mint, Nep141Transfer, Nep145 as _, Nep145Controller,
+        Nep148Controller, StorageBalanceBounds,
     },
     Owner, Rbac,
 };
@@ -242,12 +243,17 @@ impl Contract {
             pending_market_exec: Vec::new(),
             withdraw_route: Vec::new(),
         };
+
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
         Owner::init(&mut contract, &owner);
         Rbac::add_role(&mut contract, &curator, &Role::Curator);
         Rbac::add_role(&mut contract, &curator, &Role::Allocator);
         Rbac::add_role(&mut contract, &guardian, &Role::Guardian);
 
+        contract.set_storage_balance_bounds(&StorageBalanceBounds {
+            min: NearToken::from_millinear(2),
+            max: None,
+        });
         contract
     }
 
