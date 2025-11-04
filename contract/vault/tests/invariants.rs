@@ -25,18 +25,14 @@ async fn state_machine_is_locked_when_another_op_is_running(
 ) {
     setup_test!(
         worker
-        extract(vault, c, vault_curator)
+        extract(vault, c, vault_owner)
         accounts(supply_user, borrow_user)
     );
     let amount = 1000;
-    let m = c.market.contract().id().clone();
     vault.supply(&supply_user, amount).await;
 
-    let queue = vec![m.clone()];
-    tokio::join!(
-        vault.allocate(&vault_curator, vec![], Some(amount.into())),
-        vault.submit_cap(&vault_curator, m.clone(), (amount * 2).into()),
-        vault.set_supply_queue(&vault_curator, &queue),
-        vault.allocate(&vault_curator, vec![], Some(amount.into())),
-    );
+    futures::future::select_all(
+        (0..100).map(|_| Box::pin(vault.allocate(&vault_owner, vec![], Some(1.into())))),
+    )
+    .await;
 }
