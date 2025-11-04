@@ -341,24 +341,34 @@ impl Contract {
         };
         let inflow = ab.saturating_sub(bb);
 
-        // Only credit what we actually received on-chain, capped by the market's reported principal drop
+        // Compute effective principal drop we can book (conservative on shortfall)
         let creditable = core::cmp::min(principal_drop, inflow);
 
+        // Log mismatch cases and emit an event if market overpays (yield with principal)
         if principal_drop > inflow {
             env::log_str(&format!(
                 "WithdrawalInflowMismatch market={} op_id={} index={} principal_drop={} inflow={}",
                 market, op_id, market_index, principal_drop, inflow
             ));
+        } else if inflow > principal_drop {
+            let extra = inflow.saturating_sub(principal_drop);
+            Event::WithdrawalOverpayCredited {
+                op_id: op_id.into(),
+                market: market.clone(),
+                index: market_index,
+                extra: U128(extra),
+            }
+            .emit();
         }
 
-        // Effective new principal keeps accounting consistent with credited inflow
+        // Update principal by the amount we can safely credit, and always credit the full inflow to idle
         let eff_new_principal = before_p.saturating_sub(creditable);
 
         if let Some(rec) = self.markets.get_mut(&market) {
             rec.principal = eff_new_principal;
         }
-        if creditable > 0 {
-            self.idle_balance = self.idle_balance.saturating_add(creditable);
+        if inflow > 0 {
+            self.idle_balance = self.idle_balance.saturating_add(inflow);
         }
 
         // Settle pending market exec entry only if fully credited
@@ -379,6 +389,12 @@ impl Contract {
             ..
         } = reconcile_withdraw_outcome(before_p, eff_new_principal, ctx.remaining, ctx.collected);
 
+        // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
+        let extra = inflow.saturating_sub(principal_drop);
+        let extra_payout = core::cmp::min(extra, remaining_next);
+        let mut remaining_next = remaining_next.saturating_sub(extra_payout);
+        let mut collected_next = collected_next.saturating_add(extra_payout);
+
         if remaining_next == 0 {
             return self.pay_collected(
                 op_id,
@@ -396,7 +412,9 @@ impl Contract {
                             &self_id,
                             &ctx.owner,
                         ))
-                        .unwrap_or_else(|_| env::panic_str("Failed to refund escrowed shares"));
+                        .unwrap_or_else(|e| {
+                            env::panic_str(&format!("Failed to refund escrowed shares {e}"))
+                        });
                     self_.pending_market_exec.clear();
                     self_.remove_inflight_and_advance_head();
                     self_.withdraw_route.clear();

@@ -1683,7 +1683,8 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         escrow_shares: 50,
     });
 
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 42, 0, U128(100), U128(60), U128(0));
+    let res =
+        c.execute_withdraw_02_reconcile_position(Ok(None), 42, 0, U128(100), U128(60), U128(0));
 
     match res {
         PromiseOrValue::Promise(_p) => {}
@@ -1695,10 +1696,10 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         Ok(U128(100)), // observed after_balance
         42,
         0,
-        U128(100),     // before_principal
-        U128(0),       // new_principal reported by market
-        U128(60),      // need
-        U128(0),       // before_balance snapshot
+        U128(100), // before_principal
+        U128(0),   // new_principal reported by market
+        U128(60),  // need
+        U128(0),   // before_balance snapshot
     );
 
     match res2 {
@@ -1951,8 +1952,14 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     let call_op = if pass_op { real_op } else { real_op + 1 };
     let call_idx = if pass_index { real_idx } else { real_idx + 1 };
 
-    let r =
-        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_idx, U128(10), U128(1), U128(0));
+    let r = c.execute_withdraw_02_reconcile_position(
+        Ok(None),
+        call_op,
+        call_idx,
+        U128(10),
+        U128(1),
+        U128(0),
+    );
     if let (true, true) = (pass_op, pass_index) {
         assert!(
             !matches!(c.op_state, OpState::Idle),
@@ -2007,10 +2014,10 @@ fn refund_path_consistency() {
         Ok(U128(0)), // no inflow observed
         77,
         0,
-        U128(0),     // before_principal
-        U128(0),     // new_principal reported
-        U128(0),     // need
-        U128(0),     // before_balance
+        U128(0), // before_principal
+        U128(0), // new_principal reported
+        U128(0), // need
+        U128(0), // before_balance
     );
     match res2 {
         PromiseOrValue::Value(()) => {}
@@ -2272,7 +2279,8 @@ fn after_exec_withdraw_read_advances_when_remaining(
     });
 
     // Position None => new_principal = 0 => withdrawn = 10 => credited = 10
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 0, 0, U128(10), U128(100), U128(0));
+    let res =
+        c.execute_withdraw_02_reconcile_position(Ok(None), 0, 0, U128(10), U128(100), U128(0));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to continue withdraw steps"),
@@ -2283,10 +2291,10 @@ fn after_exec_withdraw_read_advances_when_remaining(
         Ok(U128(10)), // after_balance
         0,
         0,
-        U128(10),     // before_principal
-        U128(0),      // new_principal reported
-        U128(100),    // need
-        U128(0),      // before_balance
+        U128(10),  // before_principal
+        U128(0),   // new_principal reported
+        U128(100), // need
+        U128(0),   // before_balance
     );
     match res2 {
         PromiseOrValue::Promise(_) => {}

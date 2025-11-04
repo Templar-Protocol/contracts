@@ -677,6 +677,13 @@ pub enum Event {
         before: U128,
         need: U128,
     },
+    #[event_version("1.0.0")]
+    WithdrawalOverpayCredited {
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        extra: U128,
+    },
 }
 
 #[cfg(test)]
