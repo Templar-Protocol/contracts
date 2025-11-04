@@ -1683,11 +1683,27 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         escrow_shares: 50,
     });
 
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 42, 0, U128(100), U128(60));
+    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 42, 0, U128(100), U128(60), U128(0));
 
     match res {
         PromiseOrValue::Promise(_p) => {}
-        _ => panic!("Expected a Promise to send payout"),
+        _ => panic!("Expected a Promise to proceed to balance settlement"),
+    }
+
+    // Simulate the after-balance callback to settle crediting using actual inflow
+    let res2 = c.execute_withdraw_03_settle(
+        Ok(U128(100)), // observed after_balance
+        42,
+        0,
+        U128(100),     // before_principal
+        U128(0),       // new_principal reported by market
+        U128(60),      // need
+        U128(0),       // before_balance snapshot
+    );
+
+    match res2 {
+        PromiseOrValue::Promise(_p) => {}
+        _ => panic!("Expected a Promise to send payout after settlement"),
     }
 
     assert_eq!(
@@ -1875,10 +1891,11 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         0,
         U128(before),
         U128(need),
+        U128(0),
     );
     match res {
-        PromiseOrValue::Promise(_) => {}
-        _ => panic!("Expected Promise to send payout at end-of-queue"),
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) due to read failure and stop"),
     }
 
     assert_eq!(
@@ -1891,12 +1908,10 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         "idle_balance must not change when nothing credited"
     );
 
-    match &c.op_state {
-        OpState::Payout(PayoutState { amount, .. }) => {
-            assert_eq!(*amount, collected, "Payout amount must equal collected");
-        }
-        other => panic!("Unexpected state: {other:?}"),
-    }
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "Vault must go Idle on read failure"
+    );
 }
 
 /// Property: Callbacks must match current op_id or index; otherwise stop and go Idle
@@ -1937,7 +1952,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     let call_idx = if pass_index { real_idx } else { real_idx + 1 };
 
     let r =
-        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_idx, U128(10), U128(1));
+        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_idx, U128(10), U128(1), U128(0));
     if let (true, true) = (pass_op, pass_index) {
         assert!(
             !matches!(c.op_state, OpState::Idle),
@@ -1982,8 +1997,22 @@ fn refund_path_consistency() {
     let owner_before = c.balance_of(&owner);
 
     // Read result with need=0 ensures credited=0; triggers refund branch
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 77, 0, U128(0), U128(0));
+    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 77, 0, U128(0), U128(0), U128(0));
     match res {
+        PromiseOrValue::Promise(_) => {}
+        _ => panic!("Expected Promise to proceed to balance settlement"),
+    }
+
+    let res2 = c.execute_withdraw_03_settle(
+        Ok(U128(0)), // no inflow observed
+        77,
+        0,
+        U128(0),     // before_principal
+        U128(0),     // new_principal reported
+        U128(0),     // need
+        U128(0),     // before_balance
+    );
+    match res2 {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Expected Value(()) on immediate escrow refund"),
     }
@@ -2203,7 +2232,7 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         escrow_shares: 0,
     });
 
-    let res = c.execute_withdraw_01_fetch_position(33, 0, U128(5));
+    let res = c.execute_withdraw_01_fetch_position(33, 0, U128(5), U128(0));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to read supply position after exec"),
@@ -2243,10 +2272,25 @@ fn after_exec_withdraw_read_advances_when_remaining(
     });
 
     // Position None => new_principal = 0 => withdrawn = 10 => credited = 10
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 0, 0, U128(10), U128(100));
+    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 0, 0, U128(10), U128(100), U128(0));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to continue withdraw steps"),
+    }
+
+    // Settle with observed inflow equal to the reported principal drop (10)
+    let res2 = c.execute_withdraw_03_settle(
+        Ok(U128(10)), // after_balance
+        0,
+        0,
+        U128(10),     // before_principal
+        U128(0),      // new_principal reported
+        U128(100),    // need
+        U128(0),      // before_balance
+    );
+    match res2 {
+        PromiseOrValue::Promise(_) => {}
+        _ => panic!("Expected Promise to proceed to payout after advancing"),
     }
 
     // Idle credited, state advanced to next index with remaining reduced

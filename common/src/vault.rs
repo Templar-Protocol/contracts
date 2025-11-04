@@ -668,6 +668,15 @@ pub enum Event {
         token: AccountId,
         recipient: AccountId,
     },
+
+    #[event_version("1.0.0")]
+    WithdrawalPositionMissing {
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        before: U128,
+        need: U128,
+    },
 }
 
 #[cfg(test)]

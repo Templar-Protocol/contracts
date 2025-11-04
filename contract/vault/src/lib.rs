@@ -353,14 +353,17 @@ impl Contract {
         };
 
         PromiseOrValue::Promise(
-            templar_common::market::ext_market::ext(market.clone())
-                .with_static_gas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS)
-                .with_unused_gas_weight(0)
-                .execute_next_supply_withdrawal_request(batch_limit)
+            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                .with_static_gas(Gas::from_tgas(5))
+                .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
                         .with_static_gas(EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS)
-                        .execute_withdraw_01_fetch_position(op_id.into(), market_index, U128(0)),
+                        .execute_withdraw_00_before_balance(
+                            op_id.into(),
+                            market_index,
+                            batch_limit,
+                        ),
                 ),
         )
     }
