@@ -189,15 +189,13 @@ pub const AFTER_SUPPLY_1_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUP
 
 // NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);
-pub const ALLOCATE_GAS: Gas = buffer(28);
-
+pub const ALLOCATE_GAS: Gas = buffer(20);
 pub const WITHDRAW_GAS: Gas = buffer(4);
-
 pub const EXECUTE_WITHDRAW_GAS: Gas = buffer(9);
+pub const SUBMIT_CAP_GAS: Gas = buffer(3);
+
 const AFTER_SEND_TO_USER: u64 = 5;
 pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(AFTER_SEND_TO_USER);
-
-pub const SUBMIT_CAP_GAS: Gas = buffer(3);
 
 pub fn require_at_least(needed: Gas) {
     let gas = env::prepaid_gas();
