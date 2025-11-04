@@ -108,6 +108,10 @@ impl Contract {
 
         require!(deposit > 0, "Deposit amount must be greater than zero");
 
+        if matches!(self.op_state, OpState::Payout(_)) {
+            env::panic_str("Cannot deposit during payout");
+        }
+
         self.internal_accrue_fee();
 
         let max = self.get_max_deposit().0;
