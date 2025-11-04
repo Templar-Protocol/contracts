@@ -1080,6 +1080,8 @@ impl Contract {
                 escrow_shares,
                 burn_shares: escrow_shares,
             });
+            require!(self.idle_balance >= collected, "idle underflow in payout");
+            self.idle_balance -= collected;
             return PromiseOrValue::Promise(
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())
@@ -1160,6 +1162,8 @@ impl Contract {
                 escrow_shares,
                 burn_shares,
             });
+            require!(self.idle_balance >= collected, "idle underflow in payout");
+            self.idle_balance -= collected;
             PromiseOrValue::Promise(
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())

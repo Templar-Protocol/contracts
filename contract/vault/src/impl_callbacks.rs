@@ -24,7 +24,7 @@ use templar_common::{
 /// - Payout -> Idle (success or failure)
 ///
 /// Invariants:
-/// - idle_balance increases only when funds are received and decreases only on payout success.
+/// - idle_balance increases only when funds are received and is pre-decremented when payout is initiated (restored on failure).
 /// - escrow_shares are refunded on stop/failure or partially burned/refunded on payout success.
 #[near]
 impl Contract {
@@ -519,8 +519,8 @@ impl Contract {
 
     /// Cash flow:
     /// - Runs in Payout context after funds were credited in after_exec_withdraw_read.
-    /// - On success: idle_balance -= amount; burn a portion of escrow_shares and refund the rest to the owner.
-    /// - On failure: refund full escrow_shares to the owner and keep idle_balance unchanged (funds remain in vault).
+    /// - On success: idle_balance was pre-decremented before transfer; burn a portion of escrow_shares and refund the rest to the owner.
+    /// - On failure: refund full escrow_shares to the owner and restore idle_balance (funds remain in vault).
     #[private]
     pub fn payment_01_reconcile_idle_or_refund(
         &mut self,
@@ -552,8 +552,7 @@ impl Contract {
         };
 
         if result.is_ok() {
-            // On payout success, idle_balance -= payout_amount.
-            self.idle_balance = self.idle_balance.saturating_sub(expected_amount);
+            // On payout success, idle_balance was already decremented before transfer.
 
             let EscrowSettlement {
                 to_burn: burn_shares,
@@ -580,7 +579,8 @@ impl Contract {
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
             }
         } else {
-            // On payout failure, refund full escrow to owner and leave idle_balance unchanged
+            // On payout failure, refund full escrow to owner and restore idle_balance
+            self.idle_balance = self.idle_balance.saturating_add(expected_amount);
             self.transfer(&Nep141Transfer::new(
                 escrow_shares,
                 env::current_account_id(),
