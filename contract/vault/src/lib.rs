@@ -274,6 +274,7 @@ impl Contract {
         let sender = env::predecessor_account_id();
 
         require!(shares > 0, "Invalid shares");
+        require!(assets > 0, "Dust redeem would yield 0 assets");
 
         let _ = require_attached_for_pending_withdrawal();
 
@@ -314,6 +315,14 @@ impl Contract {
                 .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
+
+            if pending.expected_assets == 0 {
+                // Skip dust request to avoid wedging the queue
+                self.current_withdraw_inflight = Some(id);
+                self.remove_inflight_and_advance_head();
+                return self.execute_next_withdrawal_request(route);
+            }
+
             self.current_withdraw_inflight = Some(id);
             env::log_str(&format!("WithdrawalExecutionStarted id={id}"));
             return self.start_withdraw(
@@ -818,7 +827,9 @@ impl Contract {
 
     fn start_allocation(&mut self, amount: u128) -> PromiseOrValue<()> {
         if amount == 0 {
-            return self.stop_and_exit(Some(&Error::ZeroAmount));
+            // Dust request: clear the head and stay Idle to avoid wedging the queue
+            self.remove_inflight_and_advance_head();
+            return PromiseOrValue::Value(());
         }
         self.ensure_idle();
 
