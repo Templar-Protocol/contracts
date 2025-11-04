@@ -15,7 +15,8 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, serde_json,
     store::IterableMap,
-    AccountId, BorshStorageKey, IntoStorageKey, NearToken, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, BorshStorageKey, Gas, IntoStorageKey, NearToken, PanicOnDefault, Promise,
+    PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
@@ -381,11 +382,11 @@ impl Contract {
         self.ensure_idle();
 
         ext_ft_core::ext(token.clone())
-            .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+            .with_static_gas(Gas::from_tgas(3))
             .ft_balance_of(env::current_account_id())
             .then(
                 Self::ext(env::current_account_id())
-                    .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                    .with_static_gas(Gas::from_tgas(10))
                     .skim_01_read_balance(token, self.skim_recipient.clone()),
             )
     }

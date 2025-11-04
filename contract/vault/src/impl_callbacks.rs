@@ -4,7 +4,7 @@ use std::fmt::Display;
 
 use crate::{near, Contract, ContractExt, Error, EscrowSettlement, Nep141Controller, OpState};
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{env, json_types::U128, AccountId, NearToken, PromiseError, PromiseOrValue};
+use near_sdk::{env, json_types::U128, AccountId, Gas, NearToken, PromiseError, PromiseOrValue};
 use near_sdk_contract_tools::ft::{nep141::GAS_FOR_FT_TRANSFER_CALL, Nep141Burn, Nep141Transfer};
 use templar_common::{
     market::ext_market,
@@ -472,7 +472,7 @@ impl Contract {
         PromiseOrValue::Promise(
             ext_ft_core::ext(token)
                 .with_attached_deposit(NearToken::from_yoctonear(1))
-                .with_static_gas(GAS_FOR_FT_TRANSFER_CALL)
+                .with_static_gas(Gas::from_tgas(5))
                 .ft_transfer(recipient, U128(amount), None),
         )
     }
