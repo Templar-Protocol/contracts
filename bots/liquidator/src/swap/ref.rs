@@ -23,11 +23,11 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{json_types::U128, near, serde_json, AccountId};
+use near_sdk::{json_types::U128, serde_json, AccountId};
 use templar_common::asset::{AssetClass, FungibleAsset};
 use tracing::{debug, info, warn};
 
-use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
+use crate::rpc::{get_access_key_data, send_tx, AppError, AppResult};
 
 use super::SwapProvider;
 
@@ -47,6 +47,8 @@ pub struct RefSwap {
     pub wnear_contract: AccountId,
     /// Maximum acceptable slippage in basis points (default: 50 = 0.5%)
     pub max_slippage_bps: u32,
+    /// Ref Finance indexer URL for fetching pools
+    pub indexer_url: String,
 }
 
 impl RefSwap {
@@ -77,6 +79,7 @@ impl RefSwap {
             signer,
             wnear_contract: "wrap.near".parse().unwrap(),
             max_slippage_bps: Self::DEFAULT_MAX_SLIPPAGE_BPS,
+            indexer_url: "https://indexer.ref.finance".to_string(),
         }
     }
 
@@ -99,186 +102,228 @@ impl RefSwap {
         Ok(())
     }
 
-    /// Gets a quote for a single-hop swap.
-    async fn get_single_hop_quote(
-        &self,
-        pool_id: u64,
-        token_in: &AccountId,
-        token_out: &AccountId,
-        amount_in: U128,
-    ) -> AppResult<U128> {
-        let request = GetReturnRequest {
-            pool_id,
-            token_in: token_in.clone(),
-            amount_in,
-            token_out: token_out.clone(),
-        };
+    /// Finds the best pool for swapping between two tokens by querying the contract.
+    /// Returns pool_id if found, otherwise None.
+    async fn find_best_pool(&self, token_in: &AccountId, token_out: &AccountId) -> AppResult<Option<u64>> {
+        #[derive(serde::Deserialize)]
+        struct PoolInfo {
+            token_account_ids: Vec<AccountId>,
+            shares_total_supply: String,
+        }
 
-        let output_amount: U128 = view(&self.client, self.contract.clone(), "get_return", &request).await?;
+        use near_jsonrpc_client::methods::query::RpcQueryRequest;
+        use near_primitives::types::{BlockReference, Finality};
+        use near_primitives::views::QueryRequest;
 
-        debug!(
-            pool_id,
-            token_in = %token_in,
-            token_out = %token_out,
-            amount_in = %amount_in.0,
-            amount_out = %output_amount.0,
-            "Single-hop quote received"
-        );
+        // Check common pool ranges first (pools are mostly created in order)
+        // Most liquid/active pools are in earlier IDs
+        let search_ranges = vec![
+            (0, 500),     // Very early pools with high liquidity
+            (500, 1500),  // Common token pairs
+            (1500, 2500), // More established pairs
+            (2500, 3500), // Even more pairs
+            (3500, 4500), // Stable pools including stNEAR/wNEAR (3879)
+            (4500, 5500), // Recent pools
+            (5500, 6700), // Very recent pools (cover all 6660 pools)
+        ];
 
-        Ok(output_amount)
-    }
-
-    /// Finds a pool for the given token pair.
-    ///
-    /// Searches through pools to find a matching pair.
-    /// Searches up to 500 pools to cover most available pairs.
-    async fn find_pool(
-        &self,
-        token_in: &AccountId,
-        token_out: &AccountId,
-    ) -> AppResult<Option<u64>> {
-        // Search in batches of 100, up to 500 pools total
-        const BATCH_SIZE: u64 = 100;
-        const MAX_POOLS: u64 = 500;
-        
-        debug!(
-            token_in = %token_in,
-            token_out = %token_out,
-            "Searching for pool"
-        );
-
-        for batch_start in (0..MAX_POOLS).step_by(BATCH_SIZE as usize) {
-            let request = GetPoolsRequest {
-                from_index: batch_start,
-                limit: BATCH_SIZE,
-            };
-
-            let pools: Vec<PoolInfo> = match view(&self.client, self.contract.clone(), "get_pools", &request).await {
-                Ok(p) => p,
-                Err(e) => {
-                    debug!(error = ?e, batch_start, "Failed to fetch pool batch");
-                    break; // No more pools available
-                }
-            };
-
-            if pools.is_empty() {
-                break; // No more pools
-            }
-
-            for (index, pool) in pools.iter().enumerate() {
-                let pool_id = batch_start + index as u64;
+        for (start, end) in search_ranges {
+            let batch_size = 100;
+            let mut from_index = start;
+            
+            while from_index < end {
+                let limit = std::cmp::min(batch_size, end - from_index);
                 
-                if let Some(tokens) = &pool.token_account_ids {
-                    if tokens.len() == 2 &&
-                       ((tokens[0] == *token_in && tokens[1] == *token_out) ||
-                        (tokens[0] == *token_out && tokens[1] == *token_in))
+                let args = serde_json::json!({
+                    "from_index": from_index,
+                    "limit": limit
+                });
+                
+                let request = RpcQueryRequest {
+                    block_reference: BlockReference::Finality(Finality::Final),
+                    request: QueryRequest::CallFunction {
+                        account_id: self.contract.clone(),
+                        method_name: "get_pools".to_string(),
+                        args: args.to_string().into_bytes().into(),
+                    },
+                };
+
+                let response = self.client
+                    .call(request)
+                    .await
+                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {}", e)))?;
+
+                let result = match response.kind {
+                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) => result.result,
+                    _ => return Err(AppError::ValidationError("Unexpected response type".to_string())),
+                };
+
+                let pools: Vec<PoolInfo> = serde_json::from_slice(&result)
+                    .map_err(|e| AppError::SerializationError(format!("Failed to parse pools: {}", e)))?;
+
+                if pools.is_empty() {
+                    break;
+                }
+
+                // Search for matching pool in this batch
+                for (idx, pool) in pools.iter().enumerate() {
+                    let pool_id = from_index + idx as u64;
+                    if pool.token_account_ids.len() == 2
+                        && ((pool.token_account_ids[0] == *token_in && pool.token_account_ids[1] == *token_out)
+                            || (pool.token_account_ids[0] == *token_out && pool.token_account_ids[1] == *token_in))
+                        && pool.shares_total_supply != "0"
                     {
-                        info!(
-                            pool_id,
-                            token_in = %token_in,
-                            token_out = %token_out,
-                            "Found direct pool"
-                        );
+                        info!(pool_id, "Found direct pool");
                         return Ok(Some(pool_id));
                     }
                 }
+
+                from_index += limit;
             }
         }
 
-        warn!(
+        info!(
             token_in = %token_in,
             token_out = %token_out,
-            "No direct pool found (searched {} pools)",
-            MAX_POOLS
+            "No direct pool found after scanning common ranges"
         );
         Ok(None)
     }
 
-    /// Attempts to find a two-hop path through wNEAR.
-    ///
-    /// Returns (pool1_id, pool2_id) if both pools exist.
-    async fn find_two_hop_path(
-        &self,
-        token_in: &AccountId,
-        token_out: &AccountId,
-    ) -> AppResult<Option<(u64, u64)>> {
-        // Check if we have pools: token_in <-> wNEAR and wNEAR <-> token_out
-        let pool1 = self.find_pool(token_in, &self.wnear_contract).await?;
-        let pool2 = self.find_pool(&self.wnear_contract, token_out).await?;
+    /// Finds a two-hop route through wNEAR by querying the contract.
+    /// Returns (pool1_id, pool2_id) if found.
+    async fn find_two_hop_route(&self, token_in: &AccountId, token_out: &AccountId) -> AppResult<Option<(u64, u64)>> {
+        #[derive(serde::Deserialize)]
+        struct PoolInfo {
+            token_account_ids: Vec<AccountId>,
+            shares_total_supply: String,
+        }
 
-        match (pool1, pool2) {
-            (Some(p1), Some(p2)) => {
-                info!(
-                    pool1 = p1,
-                    pool2 = p2,
-                    "Found two-hop path: {} -> wNEAR -> {}",
-                    token_in,
-                    token_out
-                );
-                Ok(Some((p1, p2)))
-            }
-            _ => {
-                debug!("No two-hop path found through wNEAR");
-                Ok(None)
+        use near_jsonrpc_client::methods::query::RpcQueryRequest;
+        use near_primitives::types::{BlockReference, Finality};
+        use near_primitives::views::QueryRequest;
+
+        let mut pool1_opt: Option<u64> = None;
+        let mut pool2_opt: Option<u64> = None;
+
+        // Search common pool ranges where wNEAR pairs are likely to be
+        let search_ranges = vec![
+            (0, 500),     // Very early, high liquidity wNEAR pairs
+            (500, 1500),  // Common pairs including stNEAR/wNEAR around 535
+            (1500, 2500), // More established pairs
+            (2500, 3500), // Even more pairs
+            (3500, 4500), // Stable pools
+            (4500, 5500), // Recent pools
+            (5500, 6700), // Very recent pools (cover all 6660 pools)
+        ];
+
+        for (start, end) in search_ranges {
+            let batch_size = 100;
+            let mut from_index = start;
+            
+            while from_index < end {
+                let limit = std::cmp::min(batch_size, end - from_index);
+                
+                let args = serde_json::json!({
+                    "from_index": from_index,
+                    "limit": limit
+                });
+                
+                let request = RpcQueryRequest {
+                    block_reference: BlockReference::Finality(Finality::Final),
+                    request: QueryRequest::CallFunction {
+                        account_id: self.contract.clone(),
+                        method_name: "get_pools".to_string(),
+                        args: args.to_string().into_bytes().into(),
+                    },
+                };
+
+                let response = self.client
+                    .call(request)
+                    .await
+                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {}", e)))?;
+
+                let result = match response.kind {
+                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) => result.result,
+                    _ => return Err(AppError::ValidationError("Unexpected response type".to_string())),
+                };
+
+                let pools: Vec<PoolInfo> = serde_json::from_slice(&result)
+                    .map_err(|e| AppError::SerializationError(format!("Failed to parse pools: {}", e)))?;
+
+                if pools.is_empty() {
+                    break;
+                }
+
+                // Search for wNEAR routes in this batch
+                for (idx, pool) in pools.iter().enumerate() {
+                    let pool_id = from_index + idx as u64;
+                    
+                    if pool.token_account_ids.len() == 2 && pool.shares_total_supply != "0" {
+                        // Check for pool1: token_in -> wNEAR
+                        if pool1_opt.is_none()
+                            && ((pool.token_account_ids[0] == *token_in && pool.token_account_ids[1] == self.wnear_contract)
+                                || (pool.token_account_ids[0] == self.wnear_contract && pool.token_account_ids[1] == *token_in))
+                        {
+                            pool1_opt = Some(pool_id);
+                            info!(pool_id, "Found pool1: {} -> wNEAR", token_in);
+                        }
+                        
+                        // Check for pool2: wNEAR -> token_out
+                        if pool2_opt.is_none()
+                            && ((pool.token_account_ids[0] == self.wnear_contract && pool.token_account_ids[1] == *token_out)
+                                || (pool.token_account_ids[0] == *token_out && pool.token_account_ids[1] == self.wnear_contract))
+                        {
+                            pool2_opt = Some(pool_id);
+                            info!(pool_id, "Found pool2: wNEAR -> {}", token_out);
+                        }
+                        
+                        // If we found both pools, we're done
+                        if pool1_opt.is_some() && pool2_opt.is_some() {
+                            let (p1, p2) = (pool1_opt.unwrap(), pool2_opt.unwrap());
+                            info!(pool1 = p1, pool2 = p2, "Found two-hop route through wNEAR");
+                            return Ok(Some((p1, p2)));
+                        }
+                    }
+                }
+
+                from_index += limit;
             }
         }
+
+        info!(
+            token_in = %token_in,
+            token_out = %token_out,
+            wnear = %self.wnear_contract,
+            pool1_found = pool1_opt.is_some(),
+            pool2_found = pool2_opt.is_some(),
+            "No two-hop route found through wNEAR in common ranges"
+        );
+        Ok(None)
     }
 }
 
-/// Request for getting a swap quote from a single pool.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-struct GetReturnRequest {
-    /// Pool ID to swap through
-    pool_id: u64,
-    /// Input token contract ID
-    token_in: AccountId,
-    /// Input amount
-    amount_in: U128,
-    /// Output token contract ID
-    token_out: AccountId,
-}
-
-/// Request for getting multiple pools.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-struct GetPoolsRequest {
-    /// Starting index
-    from_index: u64,
-    /// Number of pools to fetch
-    limit: u64,
-}
-
-/// Pool information returned by get_pools.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct PoolInfo {
-    /// Pool type and parameters
-    #[serde(flatten)]
-    pool_kind: serde_json::Value,
-    /// Token account IDs in the pool
-    token_account_ids: Option<Vec<AccountId>>,
-    /// Total fee charged by the pool (in basis points)
-    total_fee: Option<u32>,
-    /// Shares total supply
-    shares_total_supply: Option<U128>,
-}
-
-/// Swap action for executing swaps.
+/// Swap action for Ref Finance v2 swaps.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct SwapAction {
     /// Pool ID to swap through
     pool_id: u64,
     /// Input token
     token_in: AccountId,
-    /// Output token (None for final output)
-    token_out: Option<AccountId>,
-    /// Minimum amount out (for slippage protection)
-    min_amount_out: U128,
+    /// Output token
+    token_out: AccountId,
+    /// Amount to swap (as string, optional for intermediate hops)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amount_in: Option<String>,
+    /// Minimum amount out (for slippage protection, as string)
+    min_amount_out: String,
 }
 
 /// Swap request message for ft_transfer_call.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct SwapMsg {
+    /// Force parameter (0 for normal operation)
+    force: u8,
     /// Swap actions to execute
     actions: Vec<SwapAction>,
 }
@@ -289,37 +334,20 @@ impl SwapProvider for RefSwap {
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
-        output_amount = %output_amount.0
+        output_amount = %_output_amount.0
     ))]
     async fn quote<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        output_amount: U128,
+        _output_amount: U128,
     ) -> AppResult<U128> {
         Self::validate_nep141_assets(from_asset, to_asset)?;
 
-        let token_in = from_asset.contract_id();
-        let token_out = to_asset.contract_id();
-
-        // Try to find a direct pool first
-        let token_in_owned: AccountId = token_in.into();
-        let token_out_owned: AccountId = token_out.into();
-        
-        if let Some(pool_id) = self.find_pool(&token_in_owned, &token_out_owned).await? {
-            // For quote, we need to reverse-calculate input from desired output
-            // This is complex, so for now we'll return an error
-            // TODO: Implement reverse quote calculation
-            warn!("Reverse quote calculation not yet implemented for Ref Finance");
-            return Err(AppError::ValidationError(
-                "Reverse quote calculation not yet implemented".to_string(),
-            ));
-        }
-
-        // Try two-hop routing through wNEAR
-        info!("No direct pool found, attempting two-hop routing through wNEAR");
+        // Smart router doesn't provide a quote API - it finds routes during execution
+        // Return error indicating quoting not supported
         Err(AppError::ValidationError(
-            "Two-hop routing not yet implemented".to_string(),
+            "Quote not supported for smart router - use direct swap instead".to_string(),
         ))
     }
 
@@ -350,81 +378,90 @@ impl SwapProvider for RefSwap {
             "Attempting Ref Finance swap"
         );
         
-        // Try direct pool first
-        let swap_msg = if let Some(pool_id) = self.find_pool(&token_in_owned, &token_out_owned).await? {
-            // Direct single-hop swap
-            info!(pool_id, "Using direct pool for swap");
-            
-            let expected_output = self.get_single_hop_quote(pool_id, &token_in_owned, &token_out_owned, amount).await?;
+        // Try to find direct pool first
+        let pool_id_opt = self.find_best_pool(&token_in_owned, &token_out_owned).await?;
+
+        let (swap_msg, intermediate_token) = if let Some(pool_id) = pool_id_opt {
+            // Direct swap
             let min_amount_out = U128::from(
-                expected_output.0 * (10000 - self.max_slippage_bps as u128) / 10000
+                amount.0 * (10000 - self.max_slippage_bps as u128) / 10000
             );
 
             debug!(
-                expected_output = %expected_output.0,
+                pool_id,
                 min_amount_out = %min_amount_out.0,
                 slippage_bps = self.max_slippage_bps,
-                "Calculated slippage protection (direct)"
+                "Using direct pool"
             );
 
-            SwapMsg {
+            let msg = SwapMsg {
+                force: 0,
                 actions: vec![SwapAction {
                     pool_id,
                     token_in: token_in_owned.clone(),
-                    token_out: None, // None means final output
-                    min_amount_out,
+                    token_out: token_out_owned.clone(),
+                    amount_in: None,
+                    min_amount_out: min_amount_out.0.to_string(),
                 }],
-            }
-        } else if let Some((pool1, pool2)) = self.find_two_hop_path(&token_in_owned, &token_out_owned).await? {
-            // Two-hop swap through wNEAR
-            info!(pool1, pool2, "Using two-hop path through wNEAR");
-            
-            // For two-hop, we need to calculate intermediate amounts
-            // First hop: token_in -> wNEAR
-            let wnear_amount = self.get_single_hop_quote(pool1, &token_in_owned, &self.wnear_contract, amount).await?;
-            
-            // Second hop: wNEAR -> token_out
-            let expected_output = self.get_single_hop_quote(pool2, &self.wnear_contract, &token_out_owned, wnear_amount).await?;
-            
-            // Apply slippage to final output
+            };
+
+            (msg, None)
+        } else {
+            // Try two-hop routing through wNEAR
+            let (pool1, pool2) = self.find_two_hop_route(&token_in_owned, &token_out_owned)
+                .await?
+                .ok_or_else(|| AppError::ValidationError(
+                    format!("No swap path found for {} -> {} (tried direct and wNEAR routing)", token_in_owned, token_out_owned)
+                ))?;
+
             let min_amount_out = U128::from(
-                expected_output.0 * (10000 - self.max_slippage_bps as u128) / 10000
+                amount.0 * (10000 - self.max_slippage_bps as u128) / 10000
             );
 
             debug!(
-                wnear_intermediate = %wnear_amount.0,
-                expected_output = %expected_output.0,
+                pool1,
+                pool2,
                 min_amount_out = %min_amount_out.0,
                 slippage_bps = self.max_slippage_bps,
-                "Calculated slippage protection (two-hop)"
+                "Using two-hop route through wNEAR"
             );
 
-            // Build two-hop swap actions
-            SwapMsg {
+            let msg = SwapMsg {
+                force: 0,
                 actions: vec![
                     SwapAction {
                         pool_id: pool1,
                         token_in: token_in_owned.clone(),
-                        token_out: Some(self.wnear_contract.clone()), // Intermediate output
-                        min_amount_out: U128(1), // Don't restrict intermediate amount
+                        token_out: self.wnear_contract.clone(),
+                        amount_in: None,
+                        min_amount_out: "1".to_string(), // Don't restrict intermediate amount
                     },
                     SwapAction {
                         pool_id: pool2,
                         token_in: self.wnear_contract.clone(),
-                        token_out: None, // Final output
-                        min_amount_out, // Apply slippage protection here
+                        token_out: token_out_owned.clone(),
+                        amount_in: None,
+                        min_amount_out: min_amount_out.0.to_string(),
                     },
                 ],
-            }
-        } else {
-            return Err(AppError::ValidationError(format!(
-                "No swap path found for {token_in_owned} -> {token_out_owned} (tried direct and wNEAR routing)"
-            )));
+            };
+
+            (msg, Some(self.wnear_contract.clone()))
         };
 
         let msg_string = serde_json::to_string(&swap_msg).map_err(|e| {
             AppError::SerializationError(format!("Failed to serialize swap message: {e}"))
         })?;
+
+        // Register storage for output token and intermediate token if needed
+        let our_account = self.signer.get_account_id();
+        self.ensure_storage_registration(to_asset, &our_account).await?;
+        
+        if let Some(intermediate) = intermediate_token {
+            // Register for wNEAR as intermediate token - use CollateralAsset type
+            let wnear_asset: FungibleAsset<templar_common::asset::CollateralAsset> = FungibleAsset::nep141(intermediate);
+            self.ensure_storage_registration(&wnear_asset, &our_account).await?;
+        }
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 

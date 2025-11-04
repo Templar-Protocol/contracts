@@ -19,7 +19,7 @@
 //! - `inventory`: Asset balance tracking and management
 //! - `strategy`: Liquidation amount calculations
 //! - `rebalancer`: Post-liquidation inventory rebalancing with metrics
-//! - `swap`: Swap provider implementations (1-Click API, Rhea)
+//! - `swap`: Swap provider implementations (Ref Finance, 1-Click API)
 //!
 //! # Example
 //!

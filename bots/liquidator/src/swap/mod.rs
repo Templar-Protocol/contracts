@@ -2,7 +2,7 @@
 //! Swap provider implementations for liquidation operations.
 //!
 //! This module provides a flexible, extensible architecture for integrating
-//! different swap/exchange protocols (Rhea Finance, 1-Click API, etc.) used
+//! different swap/exchange protocols (Ref Finance, 1-Click API, etc.) used
 //! during liquidation operations.
 //!
 //! # Architecture
@@ -16,13 +16,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use templar_bots::swap::{SwapProvider, rhea::RheaSwap};
+//! use templar_bots::swap::{SwapProvider, RefSwap};
 //! use near_jsonrpc_client::JsonRpcClient;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
-//! let swap_provider = RheaSwap::new(
-//!     "dclv2.ref-dev.testnet".parse()?,
+//! let swap_provider = RefSwap::new(
+//!     "v2.ref-finance.near".parse()?,
 //!     client,
 //!     signer,
 //! );
@@ -39,13 +39,11 @@
 pub mod oneclick;
 pub mod provider;
 pub mod r#ref;
-pub mod rhea;
 
 // Re-export for convenience
 pub use oneclick::OneClickSwap;
 pub use provider::SwapProviderImpl;
 pub use r#ref::RefSwap;
-pub use rhea::RheaSwap;
 
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::{json_types::U128, AccountId};

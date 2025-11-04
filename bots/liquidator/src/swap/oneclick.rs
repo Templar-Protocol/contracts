@@ -489,16 +489,19 @@ impl OneClickSwap {
                 Ok(())
             }
             FinalExecutionStatus::Failure(failure) => {
-                // Storage deposit can fail if already registered - that's OK
-                warn!(
+                // Storage deposit can fail if:
+                // 1. Already registered (common)
+                // 2. Contract doesn't support storage_deposit (NEP-245 multi-tokens)
+                // Both cases are fine - we can proceed with the transfer
+                debug!(
                     account = %account_id,
                     failure = ?failure,
-                    "Storage deposit failed (may already be registered)"
+                    "Storage deposit failed (likely already registered or not required)"
                 );
                 Ok(())
             }
             _ => {
-                warn!(status = ?outcome.status, "Unexpected storage deposit status");
+                debug!(status = ?outcome.status, "Unexpected storage deposit status");
                 Ok(())
             }
         }
@@ -581,8 +584,16 @@ impl OneClickSwap {
         }
 
         // Ensure the deposit address is registered for storage
-        self.ensure_storage_deposit(from_asset, &deposit_account)
-            .await?;
+        // Skip for NEP-245 tokens (they handle storage internally)
+        if from_asset.clone().into_nep141().is_some() {
+            self.ensure_storage_deposit(from_asset, &deposit_account)
+                .await?;
+        } else {
+            debug!(
+                token = %from_asset.contract_id(),
+                "Skipping storage_deposit for NEP-245 token (handles storage internally)"
+            );
+        }
 
         // Get transaction parameters
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;

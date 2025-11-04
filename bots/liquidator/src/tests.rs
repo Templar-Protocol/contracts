@@ -4,7 +4,7 @@
 //! These tests verify:
 //! - Partial liquidation strategies
 //! - Full liquidation strategies
-//! - Multiple swap providers (Rhea, NEAR Intents)
+//! - Multiple swap providers (Ref Finance, 1-Click API)
 //! - Profitability calculations
 //! - Error handling
 
@@ -19,7 +19,7 @@ use crate::{
         FullLiquidationStrategy, LiquidationStrategy, PartialLiquidationStrategy,
     },
     rpc::{AppError, AppResult, Network},
-    swap::{intents::IntentsSwap, rhea::RheaSwap, SwapProvider, SwapProviderImpl},
+    swap::{intents::IntentsSwap, RefSwap, SwapProvider, SwapProviderImpl},
     Liquidator,
 };
 use templar_common::asset::{AssetClass, BorrowAsset, FungibleAsset};
@@ -158,23 +158,23 @@ async fn test_liquidator_v2_creation_with_full_strategy() {
 }
 
 #[tokio::test]
-async fn test_rhea_swap_provider_integration() {
+async fn test_ref_swap_provider_integration() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
+    let ref_swap = RefSwap::new("v2.ref-finance.near".parse().unwrap(), client, signer);
 
-    assert_eq!(rhea.provider_name(), "RheaSwap");
-    assert_eq!(rhea.fee_tier, RheaSwap::DEFAULT_FEE_TIER);
+    assert_eq!(ref_swap.provider_name(), "RefSwap");
+    assert_eq!(ref_swap.fee_tier, RefSwap::DEFAULT_FEE_TIER);
 
     // Test asset support
     let nep141: FungibleAsset<BorrowAsset> = "nep141:usdc.near".parse().unwrap();
     let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:eth".parse().unwrap();
 
-    assert!(rhea.supports_assets(&nep141, &nep141));
-    assert!(!rhea.supports_assets(&nep141, &nep245));
+    assert!(ref_swap.supports_assets(&nep141, &nep141));
+    assert!(!ref_swap.supports_assets(&nep141, &nep245));
 
-    println!("✓ RheaSwap provider configured correctly");
+    println!("✓ RefSwap provider configured correctly");
 }
 
 #[tokio::test]
@@ -200,7 +200,7 @@ async fn test_intents_swap_provider_integration() {
 }
 
 #[tokio::test]
-async fn test_liquidator_with_rhea_and_partial_strategy() {
+async fn test_liquidator_with_ref_and_partial_strategy() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
     let market_id: AccountId = "market.testnet".parse().unwrap();
@@ -209,13 +209,13 @@ async fn test_liquidator_with_rhea_and_partial_strategy() {
         "usdc.testnet".parse().unwrap(),
     ));
 
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let ref_swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
 
-    let swap_provider = SwapProviderImpl::rhea(rhea);
+    let swap_provider = SwapProviderImpl::ref_finance(ref_swap);
     let strategy = Box::new(PartialLiquidationStrategy::new(50, 50, 10));
 
     let liquidator = Liquidator::new(
@@ -230,7 +230,7 @@ async fn test_liquidator_with_rhea_and_partial_strategy() {
     );
 
     assert_eq!(liquidator.market.as_str(), "market.testnet");
-    println!("✓ Liquidator with RheaSwap and 50% partial strategy created");
+    println!("✓ Liquidator with RefSwap and 50% partial strategy created");
 }
 
 #[tokio::test]
@@ -369,8 +369,8 @@ async fn test_multiple_swap_providers() {
     let signer = create_test_signer();
 
     // Create different swap providers
-    let rhea = SwapProviderImpl::rhea(RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let ref_swap = SwapProviderImpl::ref_finance(RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     ));
@@ -381,10 +381,10 @@ async fn test_multiple_swap_providers() {
         Network::Testnet,
     ));
 
-    assert_eq!(rhea.provider_name(), "RheaSwap");
+    assert_eq!(ref_swap.provider_name(), "RefSwap");
     assert_eq!(intents.provider_name(), "NEAR Intents");
 
-    println!("✓ RheaSwap provider created");
+    println!("✓ RefSwap provider created");
     println!("✓ NEAR Intents provider created");
 }
 
@@ -417,21 +417,21 @@ fn test_invalid_percentage_too_high() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_swap_provider_impl_rhea_wrapper() {
+async fn test_swap_provider_impl_ref_wrapper() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
+    let ref_swap = RefSwap::new("v2.ref-finance.near".parse().unwrap(), client, signer);
 
-    let provider = SwapProviderImpl::rhea(rhea);
+    let provider = SwapProviderImpl::ref_finance(ref_swap);
 
-    assert_eq!(provider.provider_name(), "RheaSwap");
+    assert_eq!(provider.provider_name(), "RefSwap");
 
     // Test asset support through wrapper
     let nep141: FungibleAsset<BorrowAsset> = "nep141:usdc.near".parse().unwrap();
     assert!(provider.supports_assets(&nep141, &nep141));
 
-    println!("✓ SwapProviderImpl Rhea wrapper works correctly");
+    println!("✓ SwapProviderImpl Ref Finance wrapper works correctly");
 }
 
 #[tokio::test]
@@ -457,13 +457,13 @@ async fn test_liquidator_creation_validation() {
         "usdc.testnet".parse().unwrap(),
     ));
 
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let ref_swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
 
-    let swap_provider = SwapProviderImpl::rhea(rhea);
+    let swap_provider = SwapProviderImpl::ref_finance(ref_swap);
     let strategy = Box::new(PartialLiquidationStrategy::new(50, 50, 10));
 
     let liquidator = Liquidator::new(
@@ -485,12 +485,12 @@ async fn test_liquidator_creation_validation() {
 fn test_swap_type_account_ids() {
     use crate::SwapType;
 
-    // Test RheaSwap account IDs
-    let rhea_mainnet = SwapType::RheaSwap.account_id(Network::Mainnet);
-    assert_eq!(rhea_mainnet.as_str(), "dclv2.ref-labs.near");
+    // Test RefSwap account IDs
+    let ref_mainnet = SwapType::RefSwap.account_id(Network::Mainnet);
+    assert_eq!(ref_mainnet.as_str(), "v2.ref-finance.near");
 
-    let rhea_testnet = SwapType::RheaSwap.account_id(Network::Testnet);
-    assert_eq!(rhea_testnet.as_str(), "dclv2.ref-dev.testnet");
+    let ref_testnet = SwapType::RefSwap.account_id(Network::Testnet);
+    assert_eq!(ref_testnet.as_str(), "v2.ref-finance.near");
 
     // Test NEAR Intents account IDs
     let intents_mainnet = SwapType::NearIntents.account_id(Network::Mainnet);
@@ -696,9 +696,9 @@ async fn test_cross_asset_type_support() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    // Rhea - only NEP-141
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    // Ref Finance - only NEP-141
+    let ref_swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
@@ -707,20 +707,20 @@ async fn test_cross_asset_type_support() {
     let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:eth".parse().unwrap();
 
     assert!(
-        rhea.supports_assets(&nep141, &nep141),
-        "Rhea should support NEP-141 to NEP-141"
+        ref_swap.supports_assets(&nep141, &nep141),
+        "Ref Finance should support NEP-141 to NEP-141"
     );
     assert!(
-        !rhea.supports_assets(&nep141, &nep245),
-        "Rhea should not support NEP-141 to NEP-245"
+        !ref_swap.supports_assets(&nep141, &nep245),
+        "Ref Finance should not support NEP-141 to NEP-245"
     );
     assert!(
-        !rhea.supports_assets(&nep245, &nep141),
-        "Rhea should not support NEP-245 to NEP-141"
+        !ref_swap.supports_assets(&nep245, &nep141),
+        "Ref Finance should not support NEP-245 to NEP-141"
     );
     assert!(
-        !rhea.supports_assets(&nep245, &nep245),
-        "Rhea should not support NEP-245 to NEP-245"
+        !ref_swap.supports_assets(&nep245, &nep245),
+        "Ref Finance should not support NEP-245 to NEP-245"
     );
 
     // Intents - supports both
@@ -795,22 +795,22 @@ async fn test_provider_name_consistency() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea_provider = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let ref_provider = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
 
     let intents_provider = IntentsSwap::new(client.clone(), signer.clone(), Network::Testnet);
 
-    assert_eq!(rhea_provider.provider_name(), "RheaSwap");
+    assert_eq!(ref_provider.provider_name(), "RefSwap");
     assert_eq!(intents_provider.provider_name(), "NEAR Intents");
 
     // Test through wrapper
-    let rhea_wrapped = SwapProviderImpl::rhea(rhea_provider);
+    let ref_wrapped = SwapProviderImpl::ref_finance(ref_provider);
     let intents_wrapped = SwapProviderImpl::intents(intents_provider);
 
-    assert_eq!(rhea_wrapped.provider_name(), "RheaSwap");
+    assert_eq!(ref_wrapped.provider_name(), "RefSwap");
     assert_eq!(intents_wrapped.provider_name(), "NEAR Intents");
 
     println!("✓ Provider names are consistent across direct and wrapped access");
@@ -829,12 +829,12 @@ async fn test_liquidator_new_constructor() {
         "usdc.testnet".parse().unwrap(),
     ));
 
-    let swap = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
-    let swap_provider = SwapProviderImpl::rhea(swap);
+    let swap_provider = SwapProviderImpl::ref_finance(swap);
     let strategy = Box::new(PartialLiquidationStrategy::new(50, 50, 10));
 
     let liquidator = Liquidator::new(
@@ -859,14 +859,14 @@ async fn test_liquidator_new_constructor() {
 fn test_swap_type_debug_format() {
     use crate::SwapType;
 
-    let rhea = SwapType::RheaSwap;
+    let ref_swap = SwapType::RefSwap;
     let intents = SwapType::NearIntents;
 
     // Test Debug formatting
-    let rhea_debug = format!("{rhea:?}");
+    let ref_debug = format!("{ref_swap:?}");
     let intents_debug = format!("{intents:?}");
 
-    assert!(rhea_debug.contains("RheaSwap"));
+    assert!(ref_debug.contains("RefSwap"));
     assert!(intents_debug.contains("NearIntents"));
 
     println!("✓ SwapType Debug format works correctly");
@@ -898,28 +898,28 @@ fn test_full_strategy_new_constructor() {
 }
 
 #[tokio::test]
-async fn test_rhea_swap_with_custom_slippage() {
+async fn test_ref_swap_with_custom_slippage() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
-    let rhea_contract: AccountId = "dclv2.ref-dev.testnet".parse().unwrap();
+    let ref_contract: AccountId = "v2.ref-finance.near".parse().unwrap();
 
-    // Create RheaSwap with custom fee tier
+    // Create RefSwap with custom fee tier
     let custom_fee = 500; // 0.05% fee tier
-    let rhea = RheaSwap::with_fee_tier(
-        rhea_contract.clone(),
+    let ref_swap = RefSwap::with_fee_tier(
+        ref_contract.clone(),
         client.clone(),
         signer.clone(),
         custom_fee,
     );
 
-    assert_eq!(rhea.fee_tier, custom_fee);
-    assert_eq!(rhea.contract, rhea_contract);
+    assert_eq!(ref_swap.fee_tier, custom_fee);
+    assert_eq!(ref_swap.contract, ref_contract);
 
     // Test default creation
-    let rhea_default = RheaSwap::new(rhea_contract, client, signer);
-    assert_eq!(rhea_default.fee_tier, RheaSwap::DEFAULT_FEE_TIER);
+    let ref_default = RefSwap::new(ref_contract, client, signer);
+    assert_eq!(ref_default.fee_tier, RefSwap::DEFAULT_FEE_TIER);
 
-    println!("✓ RheaSwap custom and default fee tiers work correctly");
+    println!("✓ RefSwap custom and default fee tiers work correctly");
 }
 
 #[test]
@@ -992,21 +992,21 @@ async fn test_intents_supports_both_nep_standards() {
 }
 
 #[tokio::test]
-async fn test_rhea_only_supports_nep141() {
+async fn test_ref_only_supports_nep141() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
-    let rhea = RheaSwap::new("dclv2.ref-dev.testnet".parse().unwrap(), client, signer);
+    let ref_swap = RefSwap::new("v2.ref-finance.near".parse().unwrap(), client, signer);
 
     let nep141: FungibleAsset<BorrowAsset> = "nep141:usdc.near".parse().unwrap();
     let nep245: FungibleAsset<BorrowAsset> = "nep245:multi.near:eth".parse().unwrap();
 
     // Only NEP-141 to NEP-141 supported
-    assert!(rhea.supports_assets(&nep141, &nep141));
-    assert!(!rhea.supports_assets(&nep141, &nep245));
-    assert!(!rhea.supports_assets(&nep245, &nep141));
-    assert!(!rhea.supports_assets(&nep245, &nep245));
+    assert!(ref_swap.supports_assets(&nep141, &nep141));
+    assert!(!ref_swap.supports_assets(&nep141, &nep245));
+    assert!(!ref_swap.supports_assets(&nep245, &nep141));
+    assert!(!ref_swap.supports_assets(&nep245, &nep245));
 
-    println!("✓ RheaSwap correctly restricts to NEP-141 only");
+    println!("✓ RefSwap correctly restricts to NEP-141 only");
 }
 
 #[test]
@@ -1070,12 +1070,12 @@ async fn test_swap_provider_impl_cloning() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let ref_swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
-    let provider = SwapProviderImpl::rhea(rhea);
+    let provider = SwapProviderImpl::ref_finance(ref_swap);
 
     // Test that SwapProviderImpl is Clone
     let cloned = provider.clone();
@@ -1112,10 +1112,10 @@ fn test_intents_default_constants() {
 }
 
 #[test]
-fn test_rhea_default_fee_tier() {
-    assert_eq!(RheaSwap::DEFAULT_FEE_TIER, 2000);
+fn test_ref_default_fee_tier() {
+    assert_eq!(RefSwap::DEFAULT_FEE_TIER, 2000);
 
-    println!("✓ RheaSwap default fee tier is correct");
+    println!("✓ RefSwap default fee tier is correct");
 }
 
 #[test]
@@ -1141,12 +1141,12 @@ async fn test_liquidator_default_gas_estimate() {
         "usdc.testnet".parse().unwrap(),
     ));
 
-    let swap = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
-    let swap_provider = SwapProviderImpl::rhea(swap);
+    let swap_provider = SwapProviderImpl::ref_finance(swap);
     let strategy = Box::new(PartialLiquidationStrategy::new(50, 50, 10));
 
     let liquidator = Liquidator::new(
@@ -1171,14 +1171,14 @@ async fn test_liquidator_default_gas_estimate() {
 fn test_swap_type_display() {
     use crate::SwapType;
 
-    let rhea = SwapType::RheaSwap;
+    let ref_swap = SwapType::RefSwap;
     let intents = SwapType::NearIntents;
 
     // SwapType should have Debug impl
-    let rhea_debug = format!("{rhea:?}");
+    let ref_debug = format!("{ref_swap:?}");
     let intents_debug = format!("{intents:?}");
 
-    assert!(rhea_debug.contains("RheaSwap"));
+    assert!(ref_debug.contains("RefSwap"));
     assert!(intents_debug.contains("NearIntents"));
 
     println!("✓ SwapType Debug format works correctly");
@@ -1188,13 +1188,13 @@ fn test_swap_type_display() {
 fn test_swap_type_account_id_testnet() {
     use crate::{rpc::Network, SwapType};
 
-    let rhea = SwapType::RheaSwap;
+    let ref_swap = SwapType::RefSwap;
     let intents = SwapType::NearIntents;
 
-    let rhea_account = rhea.account_id(Network::Testnet);
+    let ref_account = ref_swap.account_id(Network::Testnet);
     let intents_account = intents.account_id(Network::Testnet);
 
-    assert!(rhea_account.as_str().contains("testnet"));
+    assert!(ref_account.as_str().contains("testnet"));
     assert!(intents_account.as_str().contains("testnet"));
 
     println!("✓ SwapType returns correct testnet account IDs");
@@ -1204,13 +1204,13 @@ fn test_swap_type_account_id_testnet() {
 fn test_swap_type_account_id_mainnet() {
     use crate::{rpc::Network, SwapType};
 
-    let rhea = SwapType::RheaSwap;
+    let ref_swap = SwapType::RefSwap;
     let intents = SwapType::NearIntents;
 
-    let rhea_account = rhea.account_id(Network::Mainnet);
+    let ref_account = ref_swap.account_id(Network::Mainnet);
     let intents_account = intents.account_id(Network::Mainnet);
 
-    assert!(rhea_account.as_str().contains("near") || rhea_account.as_str().contains("ref"));
+    assert!(ref_account.as_str().contains("near") || ref_account.as_str().contains("ref"));
     assert_eq!(intents_account.as_str(), "intents.near");
 
     println!("✓ SwapType returns correct mainnet account IDs");
@@ -1252,8 +1252,8 @@ fn test_swap_provider_supports_assets_edge_cases() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let ref_swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
@@ -1262,7 +1262,7 @@ fn test_swap_provider_supports_assets_edge_cases() {
 
     // Test same asset
     let usdc: FungibleAsset<BorrowAsset> = "nep141:usdc.testnet".parse().unwrap();
-    assert!(rhea.supports_assets(&usdc, &usdc));
+    assert!(ref_swap.supports_assets(&usdc, &usdc));
     assert!(intents.supports_assets(&usdc, &usdc));
 
     println!("✓ Swap providers handle same-asset edge case");
@@ -1342,13 +1342,13 @@ fn test_swap_provider_impl_debug() {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let signer = create_test_signer();
 
-    let rhea = RheaSwap::new(
-        "dclv2.ref-dev.testnet".parse().unwrap(),
+    let ref_swap = RefSwap::new(
+        "v2.ref-finance.near".parse().unwrap(),
         client.clone(),
         signer.clone(),
     );
 
-    let provider = SwapProviderImpl::rhea(rhea);
+    let provider = SwapProviderImpl::ref_finance(ref_swap);
     let debug_output = format!("{provider:?}");
 
     assert!(!debug_output.is_empty());

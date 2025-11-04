@@ -10,7 +10,7 @@
 //! - Intelligent swap routing (liquidation history + market configuration)
 //! - Multiple rebalancing strategies (Hold, SwapToPrimary, SwapToBorrow)
 //! - Comprehensive metrics (success rate, latency, amounts)
-//! - Swap provider abstraction (1-Click API, Rhea)
+//! - Swap provider abstraction (1-Click API, Ref Finance)
 
 use std::{
     sync::Arc,
@@ -95,13 +95,13 @@ impl RebalanceMetrics {
 /// received collateral based on the configured rebalancing strategy.
 ///
 /// Uses intelligent routing:
-/// - Rhea Finance for NEP-141 tokens (NEAR-native like stNEAR, USDC)
+/// - Ref Finance for NEP-141 tokens (NEAR-native like stNEAR, USDC)
 /// - 1-Click API for NEP-245 tokens (cross-chain like BTC, ETH USDC)
 pub struct InventoryRebalancer {
     /// Shared inventory manager
     inventory: Arc<RwLock<InventoryManager>>,
-    /// Rhea swap provider for NEP-141 tokens
-    rhea_provider: Option<SwapProviderImpl>,
+    /// Ref Finance swap provider for NEP-141 tokens
+    ref_provider: Option<SwapProviderImpl>,
     /// OneClick swap provider for NEP-245 tokens
     oneclick_provider: Option<SwapProviderImpl>,
     /// Rebalancing strategy
@@ -116,14 +116,14 @@ impl InventoryRebalancer {
     /// Creates a new inventory rebalancer with intelligent routing
     pub fn new(
         inventory: Arc<RwLock<InventoryManager>>,
-        rhea_provider: Option<SwapProviderImpl>,
+        ref_provider: Option<SwapProviderImpl>,
         oneclick_provider: Option<SwapProviderImpl>,
         strategy: CollateralStrategy,
         dry_run: bool,
     ) -> Self {
         Self {
             inventory,
-            rhea_provider,
+            ref_provider,
             oneclick_provider,
             strategy,
             metrics: RebalanceMetrics::default(),
@@ -200,7 +200,7 @@ impl InventoryRebalancer {
         collateral_balances: &std::collections::HashMap<String, U128>,
         primary_asset: &FungibleAsset<CollateralAsset>,
     ) {
-        if self.rhea_provider.is_none() && self.oneclick_provider.is_none() {
+        if self.ref_provider.is_none() && self.oneclick_provider.is_none() {
             warn!("No swap providers configured - cannot swap collateral");
             return;
         }
@@ -252,7 +252,7 @@ impl InventoryRebalancer {
         collateral_balances: &std::collections::HashMap<String, U128>,
         markets: &[&Liquidator],
     ) {
-        if self.rhea_provider.is_none() && self.oneclick_provider.is_none() {
+        if self.ref_provider.is_none() && self.oneclick_provider.is_none() {
             warn!("No swap providers configured - cannot swap collateral");
             return;
         }
@@ -263,8 +263,8 @@ impl InventoryRebalancer {
 
             let mut plan = Vec::new();
             for (collateral_asset_str, balance) in collateral_balances {
-                // TEST MODE: Only swap 20% of collateral to test the flow
-                let test_percentage = 20u128;
+                // TEST MODE: Only swap 33% of collateral to test the flow
+                let test_percentage = 33u128;
                 
                 let test_amount = U128(balance.0 * test_percentage / 100);
 
@@ -382,7 +382,7 @@ impl InventoryRebalancer {
     /// Execute a single swap with metrics tracking (generic over asset types)
     ///
     /// Intelligently routes to the correct provider:
-    /// - NEP-141 → NEP-141: Uses Rhea Finance
+    /// - NEP-141 → NEP-141: Uses Ref Finance (may map native tokens to bridged equivalents)
     /// - NEP-245 → NEP-245: Uses 1-Click API
     async fn execute_swap<F, T>(
         &mut self,
@@ -404,10 +404,10 @@ impl InventoryRebalancer {
             }
             None => {
                 self.metrics.swaps_failed += 1;
-                error!(
+                info!(
                     from = %from_asset,
                     to = %to_asset,
-                    "No suitable swap provider available for these assets"
+                    "No swap provider available - collateral will be held in inventory"
                 );
                 return;
             }
@@ -440,43 +440,56 @@ impl InventoryRebalancer {
         //     return;
         // }
 
-        // Get quote
-        let required_input = match swap_provider.quote(from_asset, to_asset, amount).await {
-            Ok(input) => {
-                info!(
-                    from = %from_asset,
-                    to = %to_asset,
-                    input_amount = %input.0,
-                    output_amount = %amount.0,
-                    "Quote received"
-                );
-                input
-            }
-            Err(e) => {
-                self.metrics.swaps_failed += 1;
-                error!(
-                    from = %from_asset,
-                    to = %to_asset,
-                    error = %e,
-                    "Failed to get swap quote"
-                );
-                return;
+        // Get quote or use full amount for input-based swaps (Ref Finance)
+        let input_amount = if swap_provider.provider_name() == "RefFinance" {
+            // Ref Finance swaps based on input amount, not output
+            // Just use the full available amount
+            info!(
+                from = %from_asset,
+                to = %to_asset,
+                amount = %amount.0,
+                "Using full available amount for input-based swap (RefFinance)"
+            );
+            amount
+        } else {
+            // For output-based swaps (like 1-Click), get quote for required input
+            match swap_provider.quote(from_asset, to_asset, amount).await {
+                Ok(input) => {
+                    info!(
+                        from = %from_asset,
+                        to = %to_asset,
+                        input_amount = %input.0,
+                        output_amount = %amount.0,
+                        "Quote received"
+                    );
+                    input
+                }
+                Err(e) => {
+                    self.metrics.swaps_failed += 1;
+                    error!(
+                        from = %from_asset,
+                        to = %to_asset,
+                        error = %e,
+                        "Failed to get swap quote"
+                    );
+                    return;
+                }
             }
         };
 
         // Execute swap
-        match swap_provider.swap(from_asset, to_asset, required_input).await {
+        match swap_provider.swap(from_asset, to_asset, input_amount).await {
             Ok(FinalExecutionStatus::SuccessValue(_)) => {
                 let latency = swap_start.elapsed().as_millis();
                 self.metrics.swaps_successful += 1;
-                self.metrics.total_input_amount += required_input.0;
+                self.metrics.total_input_amount += input_amount.0;
                 self.metrics.total_output_amount += amount.0;
                 self.metrics.total_latency_ms += latency;
 
                 info!(
                     from = %from_asset,
                     to = %to_asset,
-                    input = %required_input.0,
+                    input = %input_amount.0,
                     output = %amount.0,
                     latency_ms = latency,
                     "Swap completed successfully"
@@ -512,9 +525,12 @@ impl InventoryRebalancer {
     /// Selects the appropriate swap provider based on asset types.
     ///
     /// Routing logic:
-    /// - Both NEP-141: Use Rhea Finance (NEAR-native DEX)
+    /// - Both NEP-141: Use Ref Finance (NEAR-native DEX)
     /// - Both NEP-245: Use 1-Click API (cross-chain via Intents)
     /// - Mixed: Not supported
+    ///
+    /// Note: For Ref Finance, native NEAR tokens are automatically mapped to their
+    /// bridged equivalents (e.g., Circle USDC → Bridged USDC from Ethereum)
     fn select_provider<F, T>(
         &self,
         from_asset: &FungibleAsset<F>,
@@ -530,14 +546,16 @@ impl InventoryRebalancer {
         let to_is_nep245 = to_asset.clone().into_nep245().is_some();
 
         match (from_is_nep141, from_is_nep245, to_is_nep141, to_is_nep245) {
-            // NEP-141 → NEP-141: Use Rhea
+            // NEP-141 → NEP-141: Check if Ref Finance supports these specific tokens
             (true, false, true, false) => {
+                // Ref Finance smart router can handle any NEP-141 token pair
+                // It will find routes automatically or fail if no pools exist
                 debug!(
                     from = %from_asset,
                     to = %to_asset,
-                    "Routing NEP-141 → NEP-141 swap to Rhea Finance"
+                    "Routing NEP-141 → NEP-141 swap to Ref Finance smart router"
                 );
-                self.rhea_provider.as_ref()
+                self.ref_provider.as_ref()
             }
             // NEP-245 → NEP-245: Use 1-Click
             (false, true, false, true) => {
