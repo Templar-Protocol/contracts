@@ -209,19 +209,23 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
             return Ok(None);
         };
 
-        // Ensure we don't exceed available balance
+        // Add a small buffer (0.1%) to account for rounding differences
         let liquidation_u128: u128 = liquidation_amount.into();
+        let buffer = (liquidation_u128 * 1) / 1000; // 0.1% buffer
+        let liquidation_with_buffer = liquidation_u128.saturating_add(buffer.max(1));
+
+        // Ensure we don't exceed available balance
         let available_u128: u128 = available_balance.into();
 
-        let final_liquidation_amount = if liquidation_u128 > available_u128 {
+        let final_liquidation_amount = if liquidation_with_buffer > available_u128 {
             debug!(
-                requested = %liquidation_u128,
+                requested = %liquidation_with_buffer,
                 available = %available_u128,
                 "Insufficient balance, using available amount"
             );
             available_balance
         } else {
-            liquidation_amount.into()
+            U128(liquidation_with_buffer)
         };
 
         // Ensure the amount is still economically viable
@@ -250,9 +254,11 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         debug!(
             target_collateral = %target_collateral_u128,
             total_collateral = %u128::from(total_collateral),
-            liquidation_amount = %liquidation_u128,
+            liquidation_amount = %liquidation_with_buffer,
+            base_amount = %liquidation_u128,
+            buffer = %buffer,
             percentage = %self.target_percentage,
-            "Calculated partial liquidation amount for target collateral"
+            "Calculated partial liquidation amount with buffer"
         );
 
         Ok(Some(final_liquidation_amount))
@@ -384,13 +390,18 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             return Ok(None);
         };
 
-        // Check if we have enough balance
+        // Add a small buffer (0.1%) to account for rounding differences
+        // between bot calculation and contract calculation
         let amount_u128: u128 = amount.into();
+        let buffer = (amount_u128 * 1) / 1000; // 0.1% buffer
+        let amount_with_buffer = amount_u128.saturating_add(buffer.max(1));
+
+        // Check if we have enough balance
         let available_u128: u128 = available_balance.into();
 
-        if amount_u128 > available_u128 {
+        if amount_with_buffer > available_u128 {
             tracing::warn!(
-                required = %amount_u128,
+                required = %amount_with_buffer,
                 available = %available_u128,
                 "Insufficient inventory balance for full liquidation"
             );
@@ -398,11 +409,13 @@ impl LiquidationStrategy for FullLiquidationStrategy {
         }
 
         debug!(
-            amount = %amount_u128,
-            "Calculated full liquidation amount"
+            amount = %amount_with_buffer,
+            base_amount = %amount_u128,
+            buffer = %buffer,
+            "Calculated full liquidation amount with buffer"
         );
 
-        Ok(Some(amount.into()))
+        Ok(Some(U128(amount_with_buffer)))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

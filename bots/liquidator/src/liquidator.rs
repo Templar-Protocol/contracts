@@ -218,10 +218,10 @@ impl Liquidator {
         market: AccountId,
         market_config: MarketConfiguration,
         strategy: Arc<dyn LiquidationStrategy>,
-        collateral_strategy: CollateralStrategy,
+        _collateral_strategy: CollateralStrategy,
         timeout: u64,
         dry_run: bool,
-        swap_provider: Option<crate::swap::SwapProviderImpl>,
+        _swap_provider: Option<crate::swap::SwapProviderImpl>,
     ) -> Self {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
         let oracle_fetcher = oracle::OracleFetcher::new(client.clone());
@@ -230,10 +230,8 @@ impl Liquidator {
             signer,
             inventory.clone(),
             market.clone(),
-            collateral_strategy,
             timeout,
             dry_run,
-            swap_provider,
         );
 
         Self {
@@ -302,7 +300,25 @@ impl Liquidator {
             );
         }
 
-        // Step 2: Calculate liquidation amount using strategy
+        // Step 2: Calculate liquidatable collateral first
+        // We need to know the actual liquidatable amount before calculating liquidation_amount
+        let price_pair = self.market_config
+            .price_oracle_configuration
+            .create_price_pair(&oracle_response)?;
+        let liquidatable_collateral = position.liquidatable_collateral(
+            &price_pair,
+            self.market_config.borrow_mcr_liquidation,
+            self.market_config.liquidation_maximum_spread,
+        );
+
+        debug!(
+            borrower = %borrow_account,
+            liquidatable_collateral = %u128::from(liquidatable_collateral),
+            total_collateral = %u128::from(position.collateral_asset_deposit),
+            "Calculated liquidatable collateral"
+        );
+
+        // Step 3: Calculate liquidation amount based on liquidatable collateral (not total)
         let available_balance = self
             .executor
             .inventory()
@@ -317,8 +333,12 @@ impl Liquidator {
             "Calculating liquidation amount"
         );
 
+        // Create a temporary position with liquidatable collateral for strategy calculation
+        let mut adjusted_position = position.clone();
+        adjusted_position.collateral_asset_deposit = liquidatable_collateral;
+
         let Some(liquidation_amount) = self.strategy.calculate_liquidation_amount(
-            &position,
+            &adjusted_position,
             &oracle_response,
             &self.market_config,
             available_balance,
@@ -328,7 +348,8 @@ impl Liquidator {
                 borrower = %borrow_account,
                 available_balance = %available_balance.0,
                 borrow_asset = %self.market_config.borrow_asset,
-                collateral_deposit = %position.collateral_asset_deposit,
+                liquidatable_collateral = %u128::from(liquidatable_collateral),
+                total_collateral = %u128::from(position.collateral_asset_deposit),
                 "Cannot calculate liquidation amount (check: sufficient inventory, position viability, min 10% of full amount)"
             );
             return Ok(LiquidationOutcome::NotLiquidatable);
@@ -340,21 +361,19 @@ impl Liquidator {
             "Calculated liquidation amount"
         );
 
-        // Step 3: Calculate collateral amount that corresponds to the liquidation amount
-        // The strategy already calculated liquidation_amount as the minimum needed for target collateral
-        // Simply calculate target collateral as percentage of total
+        // Step 4: Calculate collateral amount that corresponds to the liquidation amount
+        // The strategy already calculated liquidation_amount based on liquidatable collateral
 
-        // Calculate target collateral as percentage of total
-        let total_collateral = position.collateral_asset_deposit;
+        // Calculate target collateral as percentage of liquidatable amount
         let target_percentage_decimal =
             Decimal::from(u64::from(self.strategy.max_liquidation_percentage()))
                 / Decimal::from(100u64);
         let target_collateral_decimal =
-            Decimal::from(u128::from(total_collateral)) * target_percentage_decimal;
+            Decimal::from(u128::from(liquidatable_collateral)) * target_percentage_decimal;
         let target_collateral_u128 = target_collateral_decimal.to_u128_floor().unwrap_or(0);
 
-        // Use the target collateral, capped at available
-        let collateral_amount = U128(target_collateral_u128.min(u128::from(total_collateral)));
+        // Use the target collateral, capped at liquidatable amount
+        let collateral_amount = U128(target_collateral_u128.min(u128::from(liquidatable_collateral)));
 
         // Calculate expected value for profitability
         let expected_collateral_value =
@@ -365,14 +384,15 @@ impl Liquidator {
             )
             .unwrap_or(collateral_amount);
 
-        debug!(
+        info!(
             borrower = %borrow_account,
             liquidation_amount = %liquidation_amount.0,
-            target_collateral = %collateral_amount.0,
+            collateral_amount = %collateral_amount.0,
+            liquidatable_collateral = %u128::from(liquidatable_collateral),
             total_collateral = %u128::from(position.collateral_asset_deposit),
             estimated_collateral_value = %expected_collateral_value.0,
             target_percentage = %self.strategy.max_liquidation_percentage(),
-            "Calculated target collateral for partial liquidation"
+            "Calculated target collateral based on liquidatable amount"
         );
 
         // Step 4: Check profitability
