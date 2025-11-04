@@ -52,10 +52,6 @@ pub struct Args {
     #[arg(long, env = "REGISTRY_REFRESH_INTERVAL", default_value_t = 3600)]
     pub registry_refresh_interval: u64,
 
-    /// Inventory refresh interval in seconds
-    #[arg(long, env = "INVENTORY_REFRESH_INTERVAL", default_value_t = 300)]
-    pub inventory_refresh_interval: u64,
-
     /// Concurrency for liquidations
     #[arg(short, long, env = "CONCURRENCY", default_value_t = 10)]
     pub concurrency: usize,
@@ -88,17 +84,15 @@ pub struct Args {
     #[arg(long, env = "PRIMARY_ASSET")]
     pub primary_asset: Option<String>,
 
-    /// Swap provider: "oneclick" or "rhea"
-    #[arg(long, env = "SWAP_PROVIDER", default_value = "oneclick")]
-    pub swap_provider: String,
-
-    /// `OneClick` API token (required for oneclick provider)
+    /// `OneClick` API token (for NEP-245 cross-chain swaps, optional, reduces fee from 0.1% to 0%)
     #[arg(long, env = "ONECLICK_API_TOKEN")]
     pub oneclick_api_token: Option<String>,
 
-    /// Rhea contract address (required for rhea provider)
-    #[arg(long, env = "RHEA_CONTRACT")]
-    pub rhea_contract: Option<String>,
+    /// Ref Finance contract address (for NEP-141 NEAR-native swaps)
+    /// Mainnet: v2.ref-finance.near
+    /// Testnet: v2.ref-dev.testnet
+    #[arg(long, env = "REF_CONTRACT")]
+    pub ref_contract: Option<String>,
 }
 
 impl Args {
@@ -197,14 +191,12 @@ impl Args {
             transaction_timeout: self.transaction_timeout,
             liquidation_scan_interval: self.liquidation_scan_interval,
             registry_refresh_interval: self.registry_refresh_interval,
-            inventory_refresh_interval: self.inventory_refresh_interval,
             concurrency: self.concurrency,
             strategy,
             collateral_strategy,
             dry_run: self.dry_run,
-            swap_provider: self.swap_provider.clone(),
             oneclick_api_token: self.oneclick_api_token.clone(),
-            rhea_contract: self.rhea_contract.clone(),
+            ref_contract: self.ref_contract.clone(),
         }
     }
 

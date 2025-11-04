@@ -11,7 +11,7 @@ use templar_common::asset::{AssetClass, FungibleAsset};
 
 use crate::rpc::AppResult;
 
-use super::{oneclick::OneClickSwap, rhea::RheaSwap, SwapProvider};
+use super::{oneclick::OneClickSwap, r#ref::RefSwap, rhea::RheaSwap, SwapProvider};
 
 /// Concrete swap provider implementation that can be used for dynamic dispatch.
 ///
@@ -19,19 +19,26 @@ use super::{oneclick::OneClickSwap, rhea::RheaSwap, SwapProvider};
 /// allowing it to be used where dynamic dispatch is needed.
 #[derive(Debug, Clone)]
 pub enum SwapProviderImpl {
-    /// Rhea Finance DEX provider
+    /// Ref Finance classic AMM provider (v2.ref-finance.near)
+    RefFinance(RefSwap),
+    /// Rhea Finance DCL provider (dclv2.ref-labs.near)
     Rhea(RheaSwap),
-    /// 1-Click API provider (recommended)
+    /// 1-Click API provider for NEP-245 cross-chain swaps
     OneClick(OneClickSwap),
 }
 
 impl SwapProviderImpl {
+    /// Creates a Ref Finance provider variant.
+    pub fn ref_finance(provider: RefSwap) -> Self {
+        Self::RefFinance(provider)
+    }
+
     /// Creates a Rhea swap provider variant.
     pub fn rhea(provider: RheaSwap) -> Self {
         Self::Rhea(provider)
     }
 
-    /// Creates a 1-Click API provider variant (recommended).
+    /// Creates a 1-Click API provider variant.
     pub fn oneclick(provider: OneClickSwap) -> Self {
         Self::OneClick(provider)
     }
@@ -46,6 +53,7 @@ impl SwapProvider for SwapProviderImpl {
         output_amount: U128,
     ) -> AppResult<U128> {
         match self {
+            Self::RefFinance(provider) => provider.quote(from_asset, to_asset, output_amount).await,
             Self::Rhea(provider) => provider.quote(from_asset, to_asset, output_amount).await,
             Self::OneClick(provider) => provider.quote(from_asset, to_asset, output_amount).await,
         }
@@ -58,6 +66,7 @@ impl SwapProvider for SwapProviderImpl {
         amount: U128,
     ) -> AppResult<FinalExecutionStatus> {
         match self {
+            Self::RefFinance(provider) => provider.swap(from_asset, to_asset, amount).await,
             Self::Rhea(provider) => provider.swap(from_asset, to_asset, amount).await,
             Self::OneClick(provider) => provider.swap(from_asset, to_asset, amount).await,
         }
@@ -65,6 +74,7 @@ impl SwapProvider for SwapProviderImpl {
 
     fn provider_name(&self) -> &'static str {
         match self {
+            Self::RefFinance(provider) => provider.provider_name(),
             Self::Rhea(provider) => provider.provider_name(),
             Self::OneClick(provider) => provider.provider_name(),
         }
@@ -76,6 +86,7 @@ impl SwapProvider for SwapProviderImpl {
         to_asset: &FungibleAsset<T>,
     ) -> bool {
         match self {
+            Self::RefFinance(provider) => provider.supports_assets(from_asset, to_asset),
             Self::Rhea(provider) => provider.supports_assets(from_asset, to_asset),
             Self::OneClick(provider) => provider.supports_assets(from_asset, to_asset),
         }
@@ -87,6 +98,11 @@ impl SwapProvider for SwapProviderImpl {
         account_id: &AccountId,
     ) -> AppResult<()> {
         match self {
+            Self::RefFinance(provider) => {
+                provider
+                    .ensure_storage_registration(token_contract, account_id)
+                    .await
+            }
             Self::Rhea(provider) => {
                 provider
                     .ensure_storage_registration(token_contract, account_id)

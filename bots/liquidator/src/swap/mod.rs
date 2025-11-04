@@ -38,11 +38,13 @@
 
 pub mod oneclick;
 pub mod provider;
+pub mod r#ref;
 pub mod rhea;
 
 // Re-export for convenience
 pub use oneclick::OneClickSwap;
 pub use provider::SwapProviderImpl;
+pub use r#ref::RefSwap;
 pub use rhea::RheaSwap;
 
 use near_primitives::views::FinalExecutionStatus;

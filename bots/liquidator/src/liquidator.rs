@@ -18,6 +18,8 @@
 //! - `profitability`: Cost/profit calculations
 //! - `inventory`: Asset balance tracking and management
 //! - `strategy`: Liquidation amount calculations
+//! - `rebalancer`: Post-liquidation inventory rebalancing with metrics
+//! - `swap`: Swap provider implementations (1-Click API, Rhea)
 //!
 //! # Example
 //!
@@ -74,6 +76,7 @@ pub mod inventory;
 pub mod liquidation_strategy;
 pub mod oracle;
 pub mod profitability;
+pub mod rebalancer;
 pub mod rpc;
 pub mod scanner;
 pub mod service;
@@ -85,6 +88,7 @@ pub use executor::LiquidationExecutor;
 pub use inventory::InventoryManager;
 pub use oracle::OracleFetcher;
 pub use profitability::ProfitabilityCalculator;
+pub use rebalancer::{InventoryRebalancer, RebalanceMetrics};
 pub use scanner::MarketScanner;
 pub use service::{LiquidatorService, ServiceConfig};
 

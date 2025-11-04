@@ -336,6 +336,14 @@ impl OneClickSwap {
         let to_asset_id = Self::to_oneclick_asset_id(to_asset);
         let recipient = self.signer.get_account_id().to_string();
 
+        info!(
+            from_contract = %from_asset.contract_id(),
+            to_contract = %to_asset.contract_id(),
+            from_oneclick_id = %from_asset_id,
+            to_oneclick_id = %to_asset_id,
+            "Converting assets to 1-Click format"
+        );
+
         // Calculate deadline (30 minutes from now)
         let deadline = chrono::Utc::now() + chrono::Duration::minutes(30);
         let deadline_str = deadline.to_rfc3339();
@@ -348,15 +356,15 @@ impl OneClickSwap {
         let request = QuoteRequest {
             dry: false, // We want a real quote with deposit address
             deposit_mode: "SIMPLE".to_string(),
-            // For liquidation, we need exact output amount (borrow asset to repay debt)
-            // EXACT_OUTPUT: we specify exact amount we want to receive, API tells us how much to send
-            // This ensures we get the precise amount needed to cover the liquidation
-            swap_type: SwapType::ExactOutput,
+            // For post-liquidation swaps, we use EXACT_INPUT because we're swapping
+            // the collateral we HAVE (received from liquidation), not requesting a specific output.
+            // EXACT_INPUT: we specify exact amount we want to swap, API tells us how much we'll receive
+            swap_type: SwapType::ExactInput,
             slippage_tolerance: self.max_slippage_bps,
             origin_asset: from_asset_id.clone(),
             deposit_type: deposit_type.to_string(),
             destination_asset: to_asset_id.clone(),
-            amount: output_amount.0.to_string(),
+            amount: output_amount.0.to_string(),  // Actually the input amount we're swapping
             refund_to: recipient.clone(),
             // INTENTS: refunds go back to our NEAR account within Intents contract
             refund_type: "INTENTS".to_string(),
@@ -369,6 +377,16 @@ impl OneClickSwap {
         };
 
         let url = format!("{ONECLICK_API_BASE}/v0/quote");
+
+        // Log the full request for debugging
+        info!(
+            origin_asset = %request.origin_asset,
+            destination_asset = %request.destination_asset,
+            amount = %request.amount,
+            swap_type = ?request.swap_type,
+            "Sending quote request to 1-Click API"
+        );
+
         let mut req = self.http_client.post(&url).json(&request);
 
         // Add API token if available
@@ -410,6 +428,8 @@ impl OneClickSwap {
         info!(
             amount_in = %quote_response.quote.amount_in,
             amount_out = %quote_response.quote.amount_out,
+            min_amount_in = %quote_response.quote.min_amount_in,
+            min_amount_out = %quote_response.quote.min_amount_out,
             deposit_address = %quote_response.quote.deposit_address,
             time_estimate = %quote_response.quote.time_estimate,
             "Quote received from 1-Click API"
@@ -544,6 +564,10 @@ impl OneClickSwap {
                         deposit_account = %deposit_account,
                         "Implicit account created successfully"
                     );
+
+                    // Wait for account creation to propagate (1-2 blocks)
+                    // This prevents race conditions with storage registration
+                    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
                 }
                 Err(e) => {
                     // If account already exists, that's fine
@@ -885,23 +909,32 @@ impl SwapProvider for OneClickSwap {
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        output_amount: U128,
+        output_amount: U128,  // NOTE: For EXACT_INPUT, this is actually the input amount
     ) -> AppResult<U128> {
         let quote_response = self
             .request_quote(from_asset, to_asset, output_amount)
             .await?;
 
+        // With EXACT_INPUT: amount_in is what we send, amount_out is what we'll receive
+        // The trait returns the "required input" but for EXACT_INPUT, we already know the input
+        // So we return the input amount (which should match what we requested)
         let input_amount: u128 = quote_response.quote.amount_in.parse().map_err(|e| {
             error!(?e, amount = %quote_response.quote.amount_in, "Failed to parse input amount");
             AppError::ValidationError(format!("Invalid input amount: {e}"))
         })?;
 
+        let output_amount_received: u128 = quote_response.quote.amount_out.parse().map_err(|e| {
+            error!(?e, amount = %quote_response.quote.amount_out, "Failed to parse output amount");
+            AppError::ValidationError(format!("Invalid output amount: {e}"))
+        })?;
+
         debug!(
             input_amount = %input_amount,
-            output_amount = %output_amount.0,
-            "1-Click quote received"
+            output_amount = %output_amount_received,
+            "1-Click quote received (EXACT_INPUT mode)"
         );
 
+        // Return the input amount (should match what caller requested)
         Ok(U128(input_amount))
     }
 
@@ -953,6 +986,16 @@ impl SwapProvider for OneClickSwap {
 
     fn provider_name(&self) -> &'static str {
         "1-Click API (NEAR Intents)"
+    }
+
+    fn supports_assets<F: AssetClass, T: AssetClass>(
+        &self,
+        from_asset: &FungibleAsset<F>,
+        to_asset: &FungibleAsset<T>,
+    ) -> bool {
+        // 1-Click API only supports NEP-245 (NEAR Intents) tokens
+        // These are cross-chain assets wrapped in the intents.near contract
+        from_asset.clone().into_nep245().is_some() && to_asset.clone().into_nep245().is_some()
     }
 
     async fn ensure_storage_registration<F: AssetClass>(

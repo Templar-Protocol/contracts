@@ -65,7 +65,6 @@ REGISTRIES="${REGISTRY_ACCOUNT_IDS:-v1.tmplr.near}"
 LIQUIDATION_STRATEGY="${LIQUIDATION_STRATEGY:-partial}"
 LIQUIDATION_SCAN_INTERVAL="${LIQUIDATION_SCAN_INTERVAL:-600}"
 REGISTRY_REFRESH_INTERVAL="${REGISTRY_REFRESH_INTERVAL:-3600}"
-INVENTORY_REFRESH_INTERVAL="${INVENTORY_REFRESH_INTERVAL:-300}"
 CONCURRENCY="${CONCURRENCY:-10}"
 PARTIAL_PERCENTAGE="${PARTIAL_PERCENTAGE:-50}"
 TRANSACTION_TIMEOUT="${TRANSACTION_TIMEOUT:-60}"
@@ -75,10 +74,11 @@ DRY_RUN="${DRY_RUN:-true}"
 
 # Collateral strategy configuration
 COLLATERAL_STRATEGY="${COLLATERAL_STRATEGY:-hold}"
-SWAP_PROVIDER="${SWAP_PROVIDER:-oneclick}"
 PRIMARY_ASSET="${PRIMARY_ASSET}"
+
+# Swap provider configuration (both providers will be initialized automatically)
 ONECLICK_API_TOKEN="${ONECLICK_API_TOKEN}"
-RHEA_CONTRACT="${RHEA_CONTRACT}"
+REF_CONTRACT="${REF_CONTRACT:-v2.ref-finance.near}"  # Mainnet default
 
 # Build binary if needed
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
@@ -129,7 +129,6 @@ CMD_ARGS=(
     "--liquidation-strategy" "$LIQUIDATION_STRATEGY"
     "--liquidation-scan-interval" "$LIQUIDATION_SCAN_INTERVAL"
     "--registry-refresh-interval" "$REGISTRY_REFRESH_INTERVAL"
-    "--inventory-refresh-interval" "$INVENTORY_REFRESH_INTERVAL"
     "--concurrency" "$CONCURRENCY"
     "--partial-percentage" "$PARTIAL_PERCENTAGE"
     "--min-profit-bps" "$MIN_PROFIT_BPS"
@@ -148,10 +147,9 @@ done
 
 # Add collateral strategy arguments
 CMD_ARGS+=("--collateral-strategy" "$COLLATERAL_STRATEGY")
-CMD_ARGS+=("--swap-provider" "$SWAP_PROVIDER")
 [ -n "$PRIMARY_ASSET" ] && CMD_ARGS+=("--primary-asset" "$PRIMARY_ASSET")
 [ -n "$ONECLICK_API_TOKEN" ] && CMD_ARGS+=("--oneclick-api-token" "$ONECLICK_API_TOKEN")
-[ -n "$RHEA_CONTRACT" ] && CMD_ARGS+=("--rhea-contract" "$RHEA_CONTRACT")
+[ -n "$REF_CONTRACT" ] && CMD_ARGS+=("--ref-contract" "$REF_CONTRACT")
 
 info "Starting liquidator..."
 echo ""

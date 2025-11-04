@@ -303,7 +303,9 @@ impl<T: AssetClass> std::str::FromStr for FungibleAsset<T> {
     type Err = FungibleAssetParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split(':').collect();
+        // Use splitn to limit splits - important for NEP-245 where token_id can contain colons
+        // e.g., "nep245:intents.near:nep141:btc.omft.near" should split into 3 parts max
+        let parts: Vec<&str> = s.splitn(3, ':').collect();
 
         match parts.as_slice() {
             ["nep141", contract_id] => {
