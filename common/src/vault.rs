@@ -450,12 +450,36 @@ pub const fn storage_bytes_for_account_id() -> u64 {
     4 + AccountId::MAX_LEN as u64
 }
 
+#[derive(Clone, Debug)]
+#[near(serializers = [borsh, json])]
+pub enum IdleBalanceDelta {
+    Increase(U128),
+    Decrease(U128),
+}
+
+impl IdleBalanceDelta {
+    pub fn apply(&self, balance: u128) -> u128 {
+        let new = match self {
+            IdleBalanceDelta::Increase(amount) => balance.saturating_add(amount.0),
+            IdleBalanceDelta::Decrease(amount) => balance.saturating_sub(amount.0),
+        };
+        Event::IdleBalanceUpdated {
+            prev: U128::from(balance),
+            delta: self.clone(),
+        }
+        .emit();
+        new
+    }
+}
+
 #[near(event_json(standard = "templar-vault"))]
 pub enum Event {
     #[event_version("1.0.0")]
     MintedShares { amount: U128, receiver: AccountId },
     #[event_version("1.0.0")]
     AllocationStarted { op_id: U64, remaining: U128 },
+    #[event_version("1.0.0")]
+    IdleBalanceUpdated { prev: U128, delta: IdleBalanceDelta },
 
     // Allocation lifecycle (plan/request)
     #[event_version("1.0.0")]
@@ -626,7 +650,6 @@ pub enum Event {
         market: AccountId,
         index: u32,
         before: U128,
-        need: U128,
     },
 
     #[event_version("1.0.0")]
@@ -675,7 +698,14 @@ pub enum Event {
         market: AccountId,
         index: u32,
         before: U128,
-        need: U128,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalInflowMismatch {
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        delta: U128,
+        inflow: U128,
     },
     #[event_version("1.0.0")]
     WithdrawalOverpayCredited {

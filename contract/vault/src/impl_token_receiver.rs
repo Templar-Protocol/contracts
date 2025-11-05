@@ -2,7 +2,9 @@ use crate::{Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
 use near_sdk_contract_tools::ft::{Nep141Controller as _, Nep141Mint};
-use templar_common::vault::{require_at_least, AllocationMode, DepositMsg, Event, SUPPLY_GAS};
+use templar_common::vault::{
+    require_at_least, AllocationMode, DepositMsg, Event, IdleBalanceDelta, SUPPLY_GAS,
+};
 
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
@@ -128,7 +130,7 @@ impl Contract {
         }
         .emit();
 
-        self.idle_balance = self.idle_balance.saturating_add(accept);
+        self.update_idle_balance(IdleBalanceDelta::Increase(accept.into()));
         self.last_total_assets = self.last_total_assets.saturating_add(accept);
 
         if let AllocationMode::Eager { min_batch } = self.mode {

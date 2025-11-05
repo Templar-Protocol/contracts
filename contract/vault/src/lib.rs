@@ -32,11 +32,12 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
         require_at_least, AllocatingState, AllocationMode, AllocationPlan, AllocationWeights,
-        Error, Event, MarketConfiguration, OpState, PayoutState, PendingValue, PendingWithdrawal,
-        TimestampNs, VaultConfiguration, WithdrawingState, AFTER_CREATE_WITHDRAW_REQ_GAS,
-        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
-        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState, PendingValue,
+        PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
+        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
+        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -356,9 +357,8 @@ impl Contract {
             env::panic_str("No pending market withdrawal request to execute");
         };
 
-        let market = match self.resolve_withdraw_market(market_index) {
-            Ok(m) => m,
-            Err(e) => return self.stop_and_exit(Some(&e)),
+        if let Err(e) = self.resolve_withdraw_market(market_index) {
+            return self.stop_and_exit(Some(&e));
         };
 
         PromiseOrValue::Promise(
@@ -368,7 +368,7 @@ impl Contract {
                 .then(
                     Self::ext(env::current_account_id())
                         .with_static_gas(EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS)
-                        .execute_withdraw_00_before_balance(
+                        .execute_withdraw_01_call_market_fetch_position(
                             op_id.into(),
                             market_index,
                             batch_limit,
@@ -837,7 +837,7 @@ impl Contract {
             amount <= self.idle_balance,
             "Policy violation: reserve amount must be <= idle_balance"
         );
-        self.idle_balance -= amount;
+        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
 
         let op_id = self.next_op_id;
         self.next_op_id += 1;
@@ -1092,7 +1092,8 @@ impl Contract {
                 burn_shares: escrow_shares,
             });
             require!(self.idle_balance >= collected, "idle underflow in payout");
-            self.idle_balance -= collected;
+            self.update_idle_balance(IdleBalanceDelta::Decrease(collected.into()));
+
             return PromiseOrValue::Promise(
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())
@@ -1174,7 +1175,8 @@ impl Contract {
                 burn_shares,
             });
             require!(self.idle_balance >= collected, "idle underflow in payout");
-            self.idle_balance -= collected;
+            self.update_idle_balance(IdleBalanceDelta::Decrease(collected.into()));
+
             PromiseOrValue::Promise(
                 self.underlying_asset
                     .transfer(receiver.clone(), U128(collected).into())
