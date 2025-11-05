@@ -11,12 +11,11 @@ if [ -z "$NETWORK" ]; then
     NETWORK="testnet"
 fi
 
-# cd "${SCRIPT_DIR}/../../contract/market"
+cd "${SCRIPT_DIR}/../../../contract/market"
 
-# echo "Building market"
+echo "Building market"
 
-# cargo near build reproducible-wasm
-
+cargo near build reproducible-wasm
 
 echo "Generating Borsh arguments"
 
