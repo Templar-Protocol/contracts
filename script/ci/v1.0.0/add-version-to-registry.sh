@@ -22,7 +22,7 @@ echo "Generating Borsh arguments"
 ARGS_FILE=$(mktemp "/tmp/args-XXXXXX")
 trap "rm -f $ARGS_FILE" EXIT
 
-cargo run --package test-utils --example registry_add_version_args -- "${VERSION_KEY}" > $ARGS_FILE
+cargo run --package test-utils --example registry_add_version_args -- templar_market_contract "${VERSION_KEY}" > $ARGS_FILE
 
 
 echo "Creating new version on registry"
