@@ -35,9 +35,8 @@ use templar_common::{
         Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState, PendingValue,
         PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
         AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
-        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
+        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -57,9 +56,6 @@ mod test_utils;
 #[derive(BorshStorageKey)]
 /// Internal storage keys used by persistent collections.
 pub enum StorageKey {
-    Config,
-    PendingCaps,
-    MarketSupply,
     PendingWithdrawals,
 }
 
@@ -204,19 +200,6 @@ impl Contract {
             "timelock bounds"
         );
 
-        let prefix = b"v";
-        // TODO: this is copied from market, make a helper
-        let prefix = prefix.into_storage_key();
-        macro_rules! key {
-            ($key: ident) => {
-                [
-                    prefix.as_slice(),
-                    StorageKey::$key.into_storage_key().as_slice(),
-                ]
-                .concat()
-            };
-        }
-
         let mut contract = Self {
             underlying_asset: underlying_token,
             aum: AUM::BalanceSheet,
@@ -237,7 +220,13 @@ impl Contract {
             mode,
             plan: None,
             current_withdraw_inflight: None,
-            pending_withdrawals: IterableMap::new(key!(PendingWithdrawals)),
+            pending_withdrawals: IterableMap::new(
+                [
+                    b'v'.into_storage_key().as_slice(),
+                    StorageKey::PendingWithdrawals.into_storage_key().as_slice(),
+                ]
+                .concat(),
+            ),
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
             pending_market_exec: Vec::new(),
