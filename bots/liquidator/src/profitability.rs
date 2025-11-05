@@ -345,6 +345,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_default_gas_cost_constant() {
         // Verify the default gas cost constant is reasonable
         assert!(ProfitabilityCalculator::DEFAULT_GAS_COST_USD > 0.0);
