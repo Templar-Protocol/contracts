@@ -1,18 +1,7 @@
-// SPDX-License-Identifier: MIT
-//! Ref Finance (v2.ref-finance.near) swap provider implementation.
+//! Ref Finance swap provider for NEP-141 tokens.
 //!
-//! This provider integrates with Ref Finance's classic AMM contract for NEP-141 token swaps.
-//! It supports single-hop and multi-hop routing through wNEAR as an intermediate token.
-//!
-//! # Architecture
-//!
-//! - Single-hop: token_in → token_out (direct pool)
-//! - Two-hop: token_in → wNEAR → token_out (for pairs without direct pools)
-//!
-//! # Pool Discovery
-//!
-//! Pools are discovered by querying the contract's `get_pools` method and caching
-//! relevant pool IDs for the token pairs we need.
+//! Integrates with Ref Finance AMM contract for token swaps with automatic routing
+//! through wNEAR for pairs without direct pools.
 
 use std::sync::Arc;
 
@@ -25,71 +14,50 @@ use near_primitives::{
 };
 use near_sdk::{json_types::U128, serde_json, AccountId};
 use templar_common::asset::{AssetClass, FungibleAsset};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::rpc::{get_access_key_data, send_tx, AppError, AppResult};
 
 use super::SwapProvider;
 
-/// Ref Finance classic AMM swap provider.
-///
-/// This provider integrates with the v2.ref-finance.near contract for NEP-141 swaps.
-/// Supports smart routing through wNEAR as an intermediate token.
+/// Ref/Rhea Finance swap provider for NEP-141 tokens.
 #[derive(Debug, Clone)]
 pub struct RefSwap {
-    /// Ref Finance contract account ID (v2.ref-finance.near on mainnet)
+    /// Ref Finance contract account ID
     pub contract: AccountId,
-    /// JSON-RPC client for NEAR blockchain interaction
+    /// JSON-RPC client
     pub client: JsonRpcClient,
     /// Transaction signer
     pub signer: Arc<Signer>,
     /// wNEAR contract for routing
     pub wnear_contract: AccountId,
-    /// Maximum acceptable slippage in basis points (default: 50 = 0.5%)
+    /// Maximum slippage in basis points
     pub max_slippage_bps: u32,
-    /// Ref Finance indexer URL for fetching pools
+    /// Ref Finance indexer URL
     pub indexer_url: String,
 }
 
 impl RefSwap {
-    /// Creates a new Ref Finance swap provider.
-    ///
-    /// # Arguments
-    ///
-    /// * `contract` - The Ref Finance contract account ID (v2.ref-finance.near on mainnet)
-    /// * `client` - JSON-RPC client for blockchain communication
-    /// * `signer` - Transaction signer
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use templar_bots::swap::ref_swap::RefSwap;
-    /// # use near_jsonrpc_client::JsonRpcClient;
-    /// # use std::sync::Arc;
-    /// let swap = RefSwap::new(
-    ///     "v2.ref-finance.near".parse().unwrap(),
-    ///     JsonRpcClient::connect("https://rpc.mainnet.near.org"),
-    ///     signer,
-    /// );
-    /// ```
+    /// Creates a new Ref Finance swap provider
     pub fn new(contract: AccountId, client: JsonRpcClient, signer: Arc<Signer>) -> Self {
+        #[allow(clippy::expect_used)]
         Self {
             contract,
             client,
             signer,
-            wnear_contract: "wrap.near".parse().unwrap(),
+            wnear_contract: "wrap.near".parse().expect("wrap.near is a valid AccountId"),
             max_slippage_bps: Self::DEFAULT_MAX_SLIPPAGE_BPS,
             indexer_url: "https://indexer.ref.finance".to_string(),
         }
     }
 
-    /// Default maximum slippage tolerance (0.5% = 50 basis points)
+    /// Default slippage tolerance (0.5%)
     pub const DEFAULT_MAX_SLIPPAGE_BPS: u32 = 50;
 
-    /// Default transaction timeout in seconds
+    /// Default transaction timeout
     const DEFAULT_TIMEOUT: u64 = 30;
 
-    /// Validates that both assets are NEP-141 tokens.
+    /// Validates that both assets are NEP-141 tokens
     fn validate_nep141_assets<F: AssetClass, T: AssetClass>(
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
@@ -103,8 +71,12 @@ impl RefSwap {
     }
 
     /// Finds the best pool for swapping between two tokens by querying the contract.
-    /// Returns pool_id if found, otherwise None.
-    async fn find_best_pool(&self, token_in: &AccountId, token_out: &AccountId) -> AppResult<Option<u64>> {
+    /// Returns `pool_id` if found, otherwise None.
+    async fn find_best_pool(
+        &self,
+        token_in: &AccountId,
+        token_out: &AccountId,
+    ) -> AppResult<Option<u64>> {
         #[derive(serde::Deserialize)]
         struct PoolInfo {
             token_account_ids: Vec<AccountId>,
@@ -115,30 +87,29 @@ impl RefSwap {
         use near_primitives::types::{BlockReference, Finality};
         use near_primitives::views::QueryRequest;
 
-        // Check common pool ranges first (pools are mostly created in order)
-        // Most liquid/active pools are in earlier IDs
+        // Search common pool ranges for direct pairs
         let search_ranges = vec![
-            (0, 500),     // Very early pools with high liquidity
-            (500, 1500),  // Common token pairs
-            (1500, 2500), // More established pairs
-            (2500, 3500), // Even more pairs
-            (3500, 4500), // Stable pools including stNEAR/wNEAR (3879)
-            (4500, 5500), // Recent pools
-            (5500, 6700), // Very recent pools (cover all 6660 pools)
+            (0, 500),
+            (500, 1500),
+            (1500, 2500),
+            (2500, 3500),
+            (3500, 4500),
+            (4500, 5500),
+            (5500, 6700),
         ];
 
         for (start, end) in search_ranges {
             let batch_size = 100;
             let mut from_index = start;
-            
+
             while from_index < end {
                 let limit = std::cmp::min(batch_size, end - from_index);
-                
+
                 let args = serde_json::json!({
                     "from_index": from_index,
                     "limit": limit
                 });
-                
+
                 let request = RpcQueryRequest {
                     block_reference: BlockReference::Finality(Finality::Final),
                     request: QueryRequest::CallFunction {
@@ -148,18 +119,24 @@ impl RefSwap {
                     },
                 };
 
-                let response = self.client
-                    .call(request)
-                    .await
-                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {}", e)))?;
+                let response = self.client.call(request).await.map_err(|e| {
+                    AppError::ValidationError(format!("Failed to query pools: {e}"))
+                })?;
 
                 let result = match response.kind {
-                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) => result.result,
-                    _ => return Err(AppError::ValidationError("Unexpected response type".to_string())),
+                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(
+                        result,
+                    ) => result.result,
+                    _ => {
+                        return Err(AppError::ValidationError(
+                            "Unexpected response type".to_string(),
+                        ))
+                    }
                 };
 
-                let pools: Vec<PoolInfo> = serde_json::from_slice(&result)
-                    .map_err(|e| AppError::SerializationError(format!("Failed to parse pools: {}", e)))?;
+                let pools: Vec<PoolInfo> = serde_json::from_slice(&result).map_err(|e| {
+                    AppError::SerializationError(format!("Failed to parse pools: {e}"))
+                })?;
 
                 if pools.is_empty() {
                     break;
@@ -169,8 +146,10 @@ impl RefSwap {
                 for (idx, pool) in pools.iter().enumerate() {
                     let pool_id = from_index + idx as u64;
                     if pool.token_account_ids.len() == 2
-                        && ((pool.token_account_ids[0] == *token_in && pool.token_account_ids[1] == *token_out)
-                            || (pool.token_account_ids[0] == *token_out && pool.token_account_ids[1] == *token_in))
+                        && ((pool.token_account_ids[0] == *token_in
+                            && pool.token_account_ids[1] == *token_out)
+                            || (pool.token_account_ids[0] == *token_out
+                                && pool.token_account_ids[1] == *token_in))
                         && pool.shares_total_supply != "0"
                     {
                         info!(pool_id, "Found direct pool");
@@ -191,8 +170,12 @@ impl RefSwap {
     }
 
     /// Finds a two-hop route through wNEAR by querying the contract.
-    /// Returns (pool1_id, pool2_id) if found.
-    async fn find_two_hop_route(&self, token_in: &AccountId, token_out: &AccountId) -> AppResult<Option<(u64, u64)>> {
+    /// Returns (`pool1_id`, `pool2_id`) if found.
+    async fn find_two_hop_route(
+        &self,
+        token_in: &AccountId,
+        token_out: &AccountId,
+    ) -> AppResult<Option<(u64, u64)>> {
         #[derive(serde::Deserialize)]
         struct PoolInfo {
             token_account_ids: Vec<AccountId>,
@@ -206,29 +189,29 @@ impl RefSwap {
         let mut pool1_opt: Option<u64> = None;
         let mut pool2_opt: Option<u64> = None;
 
-        // Search common pool ranges where wNEAR pairs are likely to be
+        // Search common pool ranges for liquid wNEAR pairs
         let search_ranges = vec![
-            (0, 500),     // Very early, high liquidity wNEAR pairs
-            (500, 1500),  // Common pairs including stNEAR/wNEAR around 535
-            (1500, 2500), // More established pairs
-            (2500, 3500), // Even more pairs
-            (3500, 4500), // Stable pools
-            (4500, 5500), // Recent pools
-            (5500, 6700), // Very recent pools (cover all 6660 pools)
+            (0, 500),
+            (500, 1500),
+            (1500, 2500),
+            (2500, 3500),
+            (3500, 4500),
+            (4500, 5500),
+            (5500, 6700),
         ];
 
         for (start, end) in search_ranges {
             let batch_size = 100;
             let mut from_index = start;
-            
+
             while from_index < end {
                 let limit = std::cmp::min(batch_size, end - from_index);
-                
+
                 let args = serde_json::json!({
                     "from_index": from_index,
                     "limit": limit
                 });
-                
+
                 let request = RpcQueryRequest {
                     block_reference: BlockReference::Finality(Finality::Final),
                     request: QueryRequest::CallFunction {
@@ -238,18 +221,24 @@ impl RefSwap {
                     },
                 };
 
-                let response = self.client
-                    .call(request)
-                    .await
-                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {}", e)))?;
+                let response = self.client.call(request).await.map_err(|e| {
+                    AppError::ValidationError(format!("Failed to query pools: {e}"))
+                })?;
 
                 let result = match response.kind {
-                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) => result.result,
-                    _ => return Err(AppError::ValidationError("Unexpected response type".to_string())),
+                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(
+                        result,
+                    ) => result.result,
+                    _ => {
+                        return Err(AppError::ValidationError(
+                            "Unexpected response type".to_string(),
+                        ))
+                    }
                 };
 
-                let pools: Vec<PoolInfo> = serde_json::from_slice(&result)
-                    .map_err(|e| AppError::SerializationError(format!("Failed to parse pools: {}", e)))?;
+                let pools: Vec<PoolInfo> = serde_json::from_slice(&result).map_err(|e| {
+                    AppError::SerializationError(format!("Failed to parse pools: {e}"))
+                })?;
 
                 if pools.is_empty() {
                     break;
@@ -258,29 +247,32 @@ impl RefSwap {
                 // Search for wNEAR routes in this batch
                 for (idx, pool) in pools.iter().enumerate() {
                     let pool_id = from_index + idx as u64;
-                    
+
                     if pool.token_account_ids.len() == 2 && pool.shares_total_supply != "0" {
                         // Check for pool1: token_in -> wNEAR
                         if pool1_opt.is_none()
-                            && ((pool.token_account_ids[0] == *token_in && pool.token_account_ids[1] == self.wnear_contract)
-                                || (pool.token_account_ids[0] == self.wnear_contract && pool.token_account_ids[1] == *token_in))
+                            && ((pool.token_account_ids[0] == *token_in
+                                && pool.token_account_ids[1] == self.wnear_contract)
+                                || (pool.token_account_ids[0] == self.wnear_contract
+                                    && pool.token_account_ids[1] == *token_in))
                         {
                             pool1_opt = Some(pool_id);
                             info!(pool_id, "Found pool1: {} -> wNEAR", token_in);
                         }
-                        
+
                         // Check for pool2: wNEAR -> token_out
                         if pool2_opt.is_none()
-                            && ((pool.token_account_ids[0] == self.wnear_contract && pool.token_account_ids[1] == *token_out)
-                                || (pool.token_account_ids[0] == *token_out && pool.token_account_ids[1] == self.wnear_contract))
+                            && ((pool.token_account_ids[0] == self.wnear_contract
+                                && pool.token_account_ids[1] == *token_out)
+                                || (pool.token_account_ids[0] == *token_out
+                                    && pool.token_account_ids[1] == self.wnear_contract))
                         {
                             pool2_opt = Some(pool_id);
                             info!(pool_id, "Found pool2: wNEAR -> {}", token_out);
                         }
-                        
+
                         // If we found both pools, we're done
-                        if pool1_opt.is_some() && pool2_opt.is_some() {
-                            let (p1, p2) = (pool1_opt.unwrap(), pool2_opt.unwrap());
+                        if let (Some(p1), Some(p2)) = (pool1_opt, pool2_opt) {
                             info!(pool1 = p1, pool2 = p2, "Found two-hop route through wNEAR");
                             return Ok(Some((p1, p2)));
                         }
@@ -297,34 +289,27 @@ impl RefSwap {
             wnear = %self.wnear_contract,
             pool1_found = pool1_opt.is_some(),
             pool2_found = pool2_opt.is_some(),
-            "No two-hop route found through wNEAR in common ranges"
+            "No two-hop route found"
         );
         Ok(None)
     }
 }
 
-/// Swap action for Ref Finance v2 swaps.
+/// Swap action for Ref Finance swaps
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct SwapAction {
-    /// Pool ID to swap through
     pool_id: u64,
-    /// Input token
     token_in: AccountId,
-    /// Output token
     token_out: AccountId,
-    /// Amount to swap (as string, optional for intermediate hops)
     #[serde(skip_serializing_if = "Option::is_none")]
     amount_in: Option<String>,
-    /// Minimum amount out (for slippage protection, as string)
     min_amount_out: String,
 }
 
-/// Swap request message for ft_transfer_call.
+/// Swap request message
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct SwapMsg {
-    /// Force parameter (0 for normal operation)
     force: u8,
-    /// Swap actions to execute
     actions: Vec<SwapAction>,
 }
 
@@ -344,10 +329,8 @@ impl SwapProvider for RefSwap {
     ) -> AppResult<U128> {
         Self::validate_nep141_assets(from_asset, to_asset)?;
 
-        // Smart router doesn't provide a quote API - it finds routes during execution
-        // Return error indicating quoting not supported
         Err(AppError::ValidationError(
-            "Quote not supported for smart router - use direct swap instead".to_string(),
+            "Quote not supported - use direct swap instead".to_string(),
         ))
     }
 
@@ -370,22 +353,23 @@ impl SwapProvider for RefSwap {
 
         let token_in_owned: AccountId = token_in.into();
         let token_out_owned: AccountId = token_out.into();
-        
+
         info!(
             from_contract = %token_in_owned,
             to_contract = %token_out_owned,
             amount = %amount.0,
             "Attempting Ref Finance swap"
         );
-        
+
         // Try to find direct pool first
-        let pool_id_opt = self.find_best_pool(&token_in_owned, &token_out_owned).await?;
+        let pool_id_opt = self
+            .find_best_pool(&token_in_owned, &token_out_owned)
+            .await?;
 
         let (swap_msg, intermediate_token) = if let Some(pool_id) = pool_id_opt {
             // Direct swap
-            let min_amount_out = U128::from(
-                amount.0 * (10000 - self.max_slippage_bps as u128) / 10000
-            );
+            let min_amount_out =
+                U128::from(amount.0 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
 
             debug!(
                 pool_id,
@@ -408,15 +392,17 @@ impl SwapProvider for RefSwap {
             (msg, None)
         } else {
             // Try two-hop routing through wNEAR
-            let (pool1, pool2) = self.find_two_hop_route(&token_in_owned, &token_out_owned)
+            let (pool1, pool2) = self
+                .find_two_hop_route(&token_in_owned, &token_out_owned)
                 .await?
-                .ok_or_else(|| AppError::ValidationError(
-                    format!("No swap path found for {} -> {} (tried direct and wNEAR routing)", token_in_owned, token_out_owned)
-                ))?;
+                .ok_or_else(|| {
+                    AppError::ValidationError(format!(
+                        "No swap path found for {token_in_owned} -> {token_out_owned}"
+                    ))
+                })?;
 
-            let min_amount_out = U128::from(
-                amount.0 * (10000 - self.max_slippage_bps as u128) / 10000
-            );
+            let min_amount_out =
+                U128::from(amount.0 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
 
             debug!(
                 pool1,
@@ -434,7 +420,7 @@ impl SwapProvider for RefSwap {
                         token_in: token_in_owned.clone(),
                         token_out: self.wnear_contract.clone(),
                         amount_in: None,
-                        min_amount_out: "1".to_string(), // Don't restrict intermediate amount
+                        min_amount_out: "1".to_string(),
                     },
                     SwapAction {
                         pool_id: pool2,
@@ -455,12 +441,14 @@ impl SwapProvider for RefSwap {
 
         // Register storage for output token and intermediate token if needed
         let our_account = self.signer.get_account_id();
-        self.ensure_storage_registration(to_asset, &our_account).await?;
-        
+        self.ensure_storage_registration(to_asset, &our_account)
+            .await?;
+
         if let Some(intermediate) = intermediate_token {
-            // Register for wNEAR as intermediate token - use CollateralAsset type
-            let wnear_asset: FungibleAsset<templar_common::asset::CollateralAsset> = FungibleAsset::nep141(intermediate);
-            self.ensure_storage_registration(&wnear_asset, &our_account).await?;
+            let wnear_asset: FungibleAsset<templar_common::asset::CollateralAsset> =
+                FungibleAsset::nep141(intermediate);
+            self.ensure_storage_registration(&wnear_asset, &our_account)
+                .await?;
         }
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
@@ -495,7 +483,6 @@ impl SwapProvider for RefSwap {
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
     ) -> bool {
-        // Ref Finance only supports NEP-141 tokens
         from_asset.clone().into_nep141().is_some() && to_asset.clone().into_nep141().is_some()
     }
 

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! RPC utilities for interacting with NEAR blockchain.
 //!
 //! This module provides helper functions for common NEAR RPC operations:
@@ -93,7 +92,7 @@ pub const DEFAULT_GAS: u64 = Gas::from_tgas(300).as_gas();
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Network configuration for NEAR
-#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 #[near(serializers = [serde_json::json])]
 pub enum Network {
     /// NEAR mainnet
@@ -257,25 +256,6 @@ pub async fn view<T: DeserializeOwned>(
     Ok(serde_json::from_slice(&result.result)?)
 }
 
-/// Send a signed transaction to NEAR with retry logic.
-///
-/// This function handles:
-/// - Transaction signing
-/// - Timeout handling with exponential backoff
-/// - Automatic retry on timeout errors
-/// - Transaction status polling
-///
-/// # Arguments
-///
-/// * `client` - JSON-RPC client instance
-/// * `signer` - Signer to sign the transaction
-/// * `timeout` - Maximum time to wait in seconds
-/// * `tx` - Unsigned transaction to send
-///
-/// # Returns
-///
-/// Final execution status of the transaction
-#[tracing::instrument(skip(client, signer), level = "debug")]
 /// Send a signed transaction and wait for finality.
 ///
 /// Returns the full execution outcome including all receipts.
@@ -286,11 +266,12 @@ pub async fn view<T: DeserializeOwned>(
 /// * `client` - JSON-RPC client instance
 /// * `signer` - Transaction signer
 /// * `timeout` - Maximum seconds to wait for finality
-/// * `tx` - Signed transaction to send
+/// * `tx` - Unsigned transaction to send
 ///
 /// # Returns
 ///
 /// Returns `FinalExecutionOutcomeView` containing transaction status and all receipt outcomes
+#[tracing::instrument(skip(client, signer), level = "debug")]
 pub async fn send_tx(
     client: &JsonRpcClient,
     signer: &Signer,

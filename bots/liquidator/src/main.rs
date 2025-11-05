@@ -1,6 +1,10 @@
 use templar_liquidator::{Args, LiquidatorService};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+// Include NEAR VM stubs for native builds
+#[cfg(not(target_arch = "wasm32"))]
+mod near_stubs;
+
 #[tokio::main]
 async fn main() {
     // Initialize tracing

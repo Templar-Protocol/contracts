@@ -1,30 +1,8 @@
 #!/bin/bash
-# SPDX-License-Identifier: MIT
-#
-# Run Templar liquidator on mainnet.
-# Default settings run in DRY RUN mode (DRY_RUN=true).
-#
 # USAGE:
 #   cp .env.example .env
 #   # Edit .env: set SIGNER_ACCOUNT_ID and SIGNER_KEY
 #   ./scripts/run-mainnet.sh
-#
-# CONFIGURATION:
-#   All settings loaded from .env file. Required variables:
-#   - SIGNER_ACCOUNT_ID: Your NEAR account (e.g., liquidator.near)
-#   - SIGNER_KEY: Account private key (ed25519:...)
-#
-#   Optional overrides available - see .env.example for full list.
-#
-# SAFETY:
-#   Default DRY_RUN=true prevents any liquidations (scan and log only).
-#   For production: Set DRY_RUN=false and MIN_PROFIT_BPS=50-200 (0.5-2%)
-#
-# CONTRACT ADDRESSES:
-#   See: ../../docs/src/deployments.md
-#   - Registry: v1.tmplr.near
-#   - Oracle: pyth-oracle.near
-#   - USDC: nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1
 
 set -e
 
@@ -80,6 +58,10 @@ PRIMARY_ASSET="${PRIMARY_ASSET}"
 ONECLICK_API_TOKEN="${ONECLICK_API_TOKEN}"
 REF_CONTRACT="${REF_CONTRACT:-v2.ref-finance.near}"  # Mainnet default
 
+# Market filtering configuration
+ALLOWED_COLLATERAL_ASSETS="${ALLOWED_COLLATERAL_ASSETS}"
+IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
+
 # Build binary if needed
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
 BINARY_PATH="$PROJECT_ROOT/target/debug/liquidator"
@@ -104,6 +86,15 @@ echo "  Registries:           $REGISTRIES"
 echo "  Liquidation Strategy: $LIQUIDATION_STRATEGY"
 echo "  Min Profit:           ${MIN_PROFIT_BPS} bps"
 echo "  Dry Run:              $DRY_RUN"
+
+# Show market filtering if configured
+if [ -n "$ALLOWED_COLLATERAL_ASSETS" ]; then
+    echo "  Allowed Assets:       $ALLOWED_COLLATERAL_ASSETS"
+fi
+if [ -n "$IGNORED_COLLATERAL_ASSETS" ]; then
+    echo "  Ignored Assets:       $IGNORED_COLLATERAL_ASSETS"
+fi
+
 echo ""
 
 if [ "$DRY_RUN" = "true" ]; then
@@ -150,6 +141,21 @@ CMD_ARGS+=("--collateral-strategy" "$COLLATERAL_STRATEGY")
 [ -n "$PRIMARY_ASSET" ] && CMD_ARGS+=("--primary-asset" "$PRIMARY_ASSET")
 [ -n "$ONECLICK_API_TOKEN" ] && CMD_ARGS+=("--oneclick-api-token" "$ONECLICK_API_TOKEN")
 [ -n "$REF_CONTRACT" ] && CMD_ARGS+=("--ref-contract" "$REF_CONTRACT")
+
+# Add market filtering arguments
+if [ -n "$ALLOWED_COLLATERAL_ASSETS" ]; then
+    IFS=',' read -ra ASSETS <<< "$ALLOWED_COLLATERAL_ASSETS"
+    for asset in "${ASSETS[@]}"; do
+        CMD_ARGS+=("--allowed-collateral-assets" "$asset")
+    done
+fi
+
+if [ -n "$IGNORED_COLLATERAL_ASSETS" ]; then
+    IFS=',' read -ra ASSETS <<< "$IGNORED_COLLATERAL_ASSETS"
+    for asset in "${ASSETS[@]}"; do
+        CMD_ARGS+=("--ignored-collateral-assets" "$asset")
+    done
+fi
 
 info "Starting liquidator..."
 echo ""

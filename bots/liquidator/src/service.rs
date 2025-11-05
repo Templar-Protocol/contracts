@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Liquidator service lifecycle management.
 //!
 //! This module handles the bot's main operational loop including:
@@ -37,7 +36,7 @@ pub struct ServiceConfig {
     pub signer_account: AccountId,
     /// Network to operate on
     pub network: Network,
-    /// Custom RPC URL (overrides default network RPC)
+    /// RPC URL
     pub rpc_url: Option<String>,
     /// Transaction timeout in seconds
     pub transaction_timeout: u64,
@@ -53,10 +52,14 @@ pub struct ServiceConfig {
     pub collateral_strategy: CollateralStrategy,
     /// Dry run mode - scan without executing
     pub dry_run: bool,
-    /// `OneClick` API token (for cross-chain NEP-245 swaps)
+    /// `OneClick` API token for swap authentication
     pub oneclick_api_token: Option<String>,
-    /// Ref Finance contract address (for NEAR-native NEP-141 swaps)
+    /// Ref Finance contract address for NEP-141 swaps
     pub ref_contract: Option<String>,
+    /// Collateral asset allowlist for market filtering
+    pub allowed_collateral_assets: Vec<String>,
+    /// Collateral assets to ignore in market filtering
+    pub ignored_collateral_assets: Vec<String>,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -66,7 +69,8 @@ pub struct LiquidatorService {
     signer: Signer,
     inventory: Arc<RwLock<InventoryManager>>,
     markets: HashMap<AccountId, Liquidator>,
-    ref_provider: Option<crate::swap::SwapProviderImpl>,
+    /// Swap provider used by rebalancer
+    #[allow(dead_code)]
     oneclick_provider: Option<crate::swap::SwapProviderImpl>,
     rebalancer: InventoryRebalancer,
 }
@@ -92,13 +96,13 @@ impl LiquidatorService {
             config.signer_account.clone(),
         )));
 
-        // Create both swap providers for intelligent routing
-        let (ref_provider, oneclick_provider) = Self::create_swap_providers(&config, &client, Arc::new(signer.clone()));
+        // Create swap provider for rebalancer
+        let (_, oneclick_provider) =
+            Self::create_swap_providers(&config, &client, Arc::new(signer.clone()));
 
-        // Create inventory rebalancer with both providers
+        // Initialize rebalancer with swap provider
         let rebalancer = InventoryRebalancer::new(
             inventory.clone(),
-            ref_provider.clone(),
             oneclick_provider.clone(),
             config.collateral_strategy.clone(),
             config.dry_run,
@@ -110,36 +114,38 @@ impl LiquidatorService {
             signer,
             inventory,
             markets: HashMap::new(),
-            ref_provider,
             oneclick_provider,
             rebalancer,
         }
     }
 
-    /// Creates both swap providers (Ref Finance for NEP-141, OneClick for NEP-245).
+    /// Creates swap providers for collateral rebalancing
     fn create_swap_providers(
         config: &ServiceConfig,
         client: &JsonRpcClient,
         signer: Arc<near_crypto::Signer>,
-    ) -> (Option<crate::swap::SwapProviderImpl>, Option<crate::swap::SwapProviderImpl>) {
+    ) -> (
+        Option<crate::swap::SwapProviderImpl>,
+        Option<crate::swap::SwapProviderImpl>,
+    ) {
         use crate::swap::{OneClickSwap, RefSwap, SwapProviderImpl};
 
-        // If Hold strategy, no swap providers needed
+        // No swap providers needed for Hold strategy
         if matches!(config.collateral_strategy, CollateralStrategy::Hold) {
             tracing::info!("Collateral strategy is Hold, no swap providers needed");
             return (None, None);
         }
 
-        tracing::info!("Creating swap providers for intelligent routing");
+        tracing::info!("Creating swap providers for collateral rebalancing");
 
-        // Create Ref Finance provider for NEP-141 tokens
+        // Initialize Ref Finance provider for NEP-141 tokens
         let ref_provider = if let Some(ref contract_str) = config.ref_contract {
             match contract_str.parse::<AccountId>() {
                 Ok(contract) => {
                     let ref_swap = RefSwap::new(contract.clone(), client.clone(), signer.clone());
                     tracing::info!(
                         contract = %contract,
-                        "Ref Finance provider created for NEP-141 tokens (stNEAR, USDC, etc.)"
+                        "Ref Finance provider initialized"
                     );
                     Some(SwapProviderImpl::ref_finance(ref_swap))
                 }
@@ -154,24 +160,25 @@ impl LiquidatorService {
             }
         } else {
             tracing::warn!(
-                "REF_CONTRACT not configured - NEP-141 collateral (stNEAR, etc.) will be held, not swapped\n\
-                 Set REF_CONTRACT=v2.ref-finance.near (mainnet) or v2.ref-labs.near (testnet)"
+                "REF_CONTRACT not configured - set to v2.ref-finance.near (mainnet) or v2.ref-labs.near (testnet)"
             );
             None
         };
 
-        // Create OneClick provider for NEP-245 tokens
+        // Initialize OneClick provider for NEP-245 and NEP-141 tokens
         let oneclick_provider = {
             let oneclick = OneClickSwap::new(
                 client.clone(),
                 signer,
-                None, // Use default slippage
+                None,
                 config.oneclick_api_token.clone(),
             );
             if config.oneclick_api_token.is_some() {
-                tracing::info!("1-Click API provider created with authentication (for NEP-245 tokens, no fee)");
+                tracing::info!("1-Click API provider initialized with authentication");
             } else {
-                tracing::warn!("1-Click API provider created WITHOUT authentication (for NEP-245 tokens, 0.1% fee applies)");
+                tracing::warn!(
+                    "1-Click API provider initialized without authentication (0.1% fee applies)"
+                );
             }
             Some(SwapProviderImpl::oneclick(oneclick))
         };
@@ -223,14 +230,14 @@ impl LiquidatorService {
             // Run liquidation round
             self.run_liquidation_round().await;
 
-            // Refresh collateral inventory after liquidations (may have received collateral)
+            // Refresh collateral inventory after liquidations
             match self.inventory.write().await.refresh_collateral().await {
                 Ok(balances) => {
                     let count = balances.len();
                     if count > 0 {
                         tracing::info!(
                             collateral_asset_count = count,
-                            "Collateral inventory refreshed after liquidation round"
+                            "Collateral inventory refreshed"
                         );
                     }
                 }
@@ -242,25 +249,90 @@ impl LiquidatorService {
                 }
             }
 
-            // After liquidation round, rebalance inventory based on collateral strategy
-            let market_refs: Vec<&Liquidator> = self.markets.values().collect();
-            self.rebalancer.rebalance(&market_refs).await;
+            // Rebalance inventory based on collateral strategy
+            self.rebalancer.rebalance().await;
 
             tracing::info!(
                 interval_seconds = self.config.liquidation_scan_interval,
-                "Liquidation round completed, sleeping before next run"
+                "Round completed, sleeping before next run"
             );
             sleep(Duration::from_secs(self.config.liquidation_scan_interval)).await;
         }
     }
 
-    /// Refresh the market registry (discover and validate markets)
+    /// Check if a market should be processed based on asset filtering rules.
+    ///
+    /// Returns (`should_process`, `reason_if_filtered`).
+    fn should_process_market(
+        &self,
+        config: &templar_common::market::MarketConfiguration,
+    ) -> (bool, Option<String>) {
+        let collateral_str = config.collateral_asset.to_string();
+
+        // Helper to extract underlying token from NEP-245 wrappers
+        let asset_matches = |asset: &str, pattern: &str| -> bool {
+            if asset == pattern {
+                return true;
+            }
+
+            // NEP-245 format: nep245:contract:token_id
+            // Extract underlying token (e.g., nep141:btc.omft.near from nep245:intents.near:nep141:btc.omft.near)
+            if asset.starts_with("nep245:") {
+                if let Some(token_id_start) = asset.find(':').and_then(|first| {
+                    asset[first + 1..]
+                        .find(':')
+                        .map(|second| first + 1 + second + 1)
+                }) {
+                    return &asset[token_id_start..] == pattern;
+                }
+            }
+
+            false
+        };
+
+        // Check ignore list
+        if !self.config.ignored_collateral_assets.is_empty() {
+            for ignored_asset in &self.config.ignored_collateral_assets {
+                if asset_matches(&collateral_str, ignored_asset) {
+                    return (
+                        false,
+                        Some(format!(
+                            "collateral '{collateral_str}' matches ignore pattern '{ignored_asset}'"
+                        )),
+                    );
+                }
+            }
+        }
+
+        // Check allow list
+        if !self.config.allowed_collateral_assets.is_empty() {
+            let is_allowed = self
+                .config
+                .allowed_collateral_assets
+                .iter()
+                .any(|allowed_asset| asset_matches(&collateral_str, allowed_asset));
+
+            if !is_allowed {
+                return (
+                    false,
+                    Some(format!("collateral '{collateral_str}' not in allowlist")),
+                );
+            }
+        }
+
+        (true, None)
+    }
+
+    /// Refresh the market registry
     #[allow(clippy::too_many_lines)]
     async fn refresh_registry(&mut self) -> Result<(), LiquidatorError> {
         let refresh_span = tracing::debug_span!("registry_refresh");
 
         async {
-            tracing::info!("Refreshing registry deployments");
+            tracing::info!(
+                registries = ?self.config.registries,
+                "Refreshing registry deployments"
+            );
 
             let all_markets = list_all_deployments(
                 self.client.clone(),
@@ -279,17 +351,16 @@ impl LiquidatorService {
             // Fetch configurations for all markets
             let mut market_configs = Vec::new();
             for market in &all_markets {
-                // First check contract version using NEP-330
+                // Check contract version using NEP-330
                 let version_result = crate::rpc::get_contract_version(&self.client, market).await;
-                
+
                 if let Some(version) = version_result {
-                    // Parse semver (e.g., "1.2.3" or "0.1.0")
+                    // Parse semver and verify compatibility
                     let parts: Vec<&str> = version.split('.').collect();
                     let is_supported = if let [maj, min, _patch] = parts.as_slice() {
                         let major = maj.parse::<u32>().unwrap_or(0);
                         let minor = min.parse::<u32>().unwrap_or(0);
-                        // Require version >= 1.1.0 (when price_oracle_configuration was added)
-                        (major, minor) >= (1, 1)
+                        (major, minor) >= (1, 0)
                     } else {
                         tracing::warn!(
                             market = %market,
@@ -298,25 +369,25 @@ impl LiquidatorService {
                         );
                         false
                     };
-                    
+
                     if !is_supported {
                         tracing::info!(
                             market = %market,
                             version = %version,
-                            min_version = "1.1.0",
-                            "Skipping market - unsupported contract version"
+                            min_required = "1.0.0",
+                            "Skipping market - unsupported version"
                         );
                         continue;
                     }
                 } else {
                     tracing::info!(
                         market = %market,
-                        "Contract does not implement NEP-330 (contract_source_metadata), skipping"
+                        "Contract missing NEP-330 metadata, skipping"
                     );
                     continue;
                 }
-                
-                // Now fetch configuration
+
+                // Fetch market configuration
                 match view::<templar_common::market::MarketConfiguration>(
                     &self.client,
                     market.clone(),
@@ -332,7 +403,20 @@ impl LiquidatorService {
                             collateral_asset = %config.collateral_asset,
                             "Fetched market configuration"
                         );
-                        market_configs.push((market.clone(), config));
+
+                        // Apply market filtering rules
+                        let (should_process, filter_reason) = self.should_process_market(&config);
+
+                        if should_process {
+                            market_configs.push((market.clone(), config));
+                        } else {
+                            tracing::info!(
+                                market = %market,
+                                collateral_asset = %config.collateral_asset,
+                                reason = filter_reason.unwrap_or_default(),
+                                "Market filtered out"
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -372,10 +456,10 @@ impl LiquidatorService {
                     self.config.collateral_strategy.clone(),
                     self.config.transaction_timeout,
                     self.config.dry_run,
-                    None, // Swapping is now handled by rebalancer post-liquidation
+                    None,
                 );
 
-                // Test market compatibility using scanner
+                // Test market compatibility
                 match liquidator.scanner().test_market_compatibility().await {
                     Ok(()) => {
                         supported_markets.insert(market, liquidator);
@@ -409,7 +493,10 @@ impl LiquidatorService {
             // Refresh borrow assets
             match self.inventory.write().await.refresh().await {
                 Ok(refreshed) => {
-                    tracing::debug!(refreshed_count = refreshed, "Borrow inventory refresh completed");
+                    tracing::debug!(
+                        refreshed_count = refreshed,
+                        "Borrow inventory refresh completed"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -422,7 +509,6 @@ impl LiquidatorService {
         .instrument(inventory_span)
         .await;
     }
-
 
     /// Run a single liquidation round across all markets
     async fn run_liquidation_round(&self) {

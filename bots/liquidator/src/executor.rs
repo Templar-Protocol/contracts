@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Liquidation transaction executor module.
 //!
 //! Handles the creation and submission of liquidation transactions,
@@ -138,15 +137,6 @@ impl LiquidationExecutor {
             liquidation_amount = %liquidation_amount.0,
             borrow_asset = %borrow_asset,
             "Reserved inventory for liquidation"
-        );
-
-        // Note: We assume the bot is already registered with the collateral token contract.
-        // Registration should be done during initialization.
-        debug!(
-            borrower = %borrow_account,
-            collateral_asset = %collateral_asset,
-            bot_account = %self.signer.get_account_id(),
-            "Bot will receive collateral (registration assumed complete)"
         );
 
         // Execute liquidation transaction

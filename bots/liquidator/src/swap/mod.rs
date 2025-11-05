@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Swap provider implementations for liquidation operations.
 //!
 //! This module provides a flexible, extensible architecture for integrating

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Oracle price fetching module.
 //!
 //! Handles fetching prices from various oracle types including:

@@ -1,22 +1,12 @@
-// SPDX-License-Identifier: MIT
-//! 1-Click API swap provider implementation for NEAR Intents.
+//! 1-Click API swap provider for NEAR Intents.
 //!
-//! This module implements swap functionality using the 1-Click API, which provides
-//! a simpler interface to NEAR Intents compared to direct contract interaction.
+//! Provides swap functionality using the 1-Click API, which simplifies
+//! NEAR Intents cross-chain swaps through a REST interface.
 //!
-//! # Architecture
-//!
-//! The 1-Click API works in three phases:
-//! 1. Quote: Request a quote and receive a deposit address
-//! 2. Deposit: Transfer tokens to the deposit address
-//! 3. Poll: Monitor swap status until completion
-//!
-//! # Benefits over direct intents.near integration
-//!
-//! - Simpler API with REST endpoints instead of contract calls
-//! - Better status tracking and error messages
-//! - Handles cross-chain complexity internally
-//! - Provides deposit addresses for easier integration
+//! ## Three-phase process:
+//! 1. **Quote**: Request quote and receive deposit address
+//! 2. **Deposit**: Transfer tokens to deposit address
+//! 3. **Poll**: Monitor swap status until completion
 
 use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
@@ -236,7 +226,7 @@ struct SwapDetails {
     amount_out_usd: Option<String>,
     /// Slippage in basis points (`null` during `PENDING_DEPOSIT`)
     #[allow(dead_code)]
-    slippage: Option<u32>,
+    slippage: Option<i32>,
     /// Origin chain transaction hashes
     #[serde(default)]
     #[allow(dead_code)]
@@ -364,7 +354,7 @@ impl OneClickSwap {
             origin_asset: from_asset_id.clone(),
             deposit_type: deposit_type.to_string(),
             destination_asset: to_asset_id.clone(),
-            amount: output_amount.0.to_string(),  // Actually the input amount we're swapping
+            amount: output_amount.0.to_string(), // Actually the input amount we're swapping
             refund_to: recipient.clone(),
             // INTENTS: refunds go back to our NEAR account within Intents contract
             refund_type: "INTENTS".to_string(),
@@ -373,7 +363,7 @@ impl OneClickSwap {
             recipient_type: "INTENTS".to_string(),
             deadline: deadline_str,
             referral: Some("templar-liquidator".to_string()), // Track bot usage
-            quote_waiting_time_ms: Some(5000), // Wait up to 5 seconds for quote
+            quote_waiting_time_ms: Some(5000),                // Wait up to 5 seconds for quote
         };
 
         let url = format!("{ONECLICK_API_BASE}/v0/quote");
@@ -838,16 +828,16 @@ impl OneClickSwap {
                 let error_text = response.text().await.unwrap_or_default();
                 match status_code.as_u16() {
                     401 => warn!(
-                        attempt = %attempt, 
+                        attempt = %attempt,
                         "Unauthorized - JWT token may be invalid"
                     ),
                     404 => warn!(
-                        attempt = %attempt, 
+                        attempt = %attempt,
                         deposit_address = %deposit_address,
                         "Deposit address not found - swap may not have been initiated yet"
                     ),
                     _ => warn!(
-                        status = %status_code, 
+                        status = %status_code,
                         attempt = %attempt,
                         error = %error_text,
                         "Status request failed"
@@ -890,7 +880,9 @@ impl OneClickSwap {
                     error!(status = ?status_response.status, "Swap failed or refunded");
                     return Ok(status_response.status);
                 }
-                SwapStatus::PendingDeposit | SwapStatus::KnownDepositTx | SwapStatus::Processing => {
+                SwapStatus::PendingDeposit
+                | SwapStatus::KnownDepositTx
+                | SwapStatus::Processing => {
                     debug!(status = ?status_response.status, "Swap still in progress");
                     // Continue polling
                 }
@@ -920,7 +912,7 @@ impl SwapProvider for OneClickSwap {
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        output_amount: U128,  // NOTE: For EXACT_INPUT, this is actually the input amount
+        output_amount: U128, // NOTE: For EXACT_INPUT, this is actually the input amount
     ) -> AppResult<U128> {
         let quote_response = self
             .request_quote(from_asset, to_asset, output_amount)
@@ -981,8 +973,8 @@ impl SwapProvider for OneClickSwap {
         // Step 3: Notify 1-Click of deposit
         self.submit_deposit(&tx_hash, deposit_address, memo).await?;
 
-        // Step 4: Poll for completion (wait up to 20 minutes)
-        let status = self.poll_swap_status(deposit_address, memo, 1200).await?;
+        // Step 4: Poll for completion (wait up to 4 minutes)
+        let status = self.poll_swap_status(deposit_address, memo, 240).await?;
 
         if status == SwapStatus::Success {
             info!("1-Click swap completed successfully");

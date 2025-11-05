@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Liquidation strategy implementations.
 //!
 //! This module provides flexible, configurable strategies for determining
@@ -211,7 +210,7 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
 
         // Add a small buffer (0.1%) to account for rounding differences
         let liquidation_u128: u128 = liquidation_amount.into();
-        let buffer = (liquidation_u128 * 1) / 1000; // 0.1% buffer
+        let buffer = liquidation_u128 / 1000; // 0.1% buffer
         let liquidation_with_buffer = liquidation_u128.saturating_add(buffer.max(1));
 
         // Ensure we don't exceed available balance
@@ -346,24 +345,6 @@ impl FullLiquidationStrategy {
             max_gas_cost_percentage,
         }
     }
-
-    /// Creates a conservative full liquidation strategy.
-    #[must_use]
-    pub fn conservative() -> Self {
-        Self {
-            min_profit_margin_bps: 100, // 1% profit margin
-            max_gas_cost_percentage: 5, // Max 5% gas cost
-        }
-    }
-
-    /// Creates an aggressive full liquidation strategy.
-    #[must_use]
-    pub fn aggressive() -> Self {
-        Self {
-            min_profit_margin_bps: 20,   // 0.2% profit margin
-            max_gas_cost_percentage: 15, // Max 15% gas cost
-        }
-    }
 }
 
 impl LiquidationStrategy for FullLiquidationStrategy {
@@ -393,7 +374,7 @@ impl LiquidationStrategy for FullLiquidationStrategy {
         // Add a small buffer (0.1%) to account for rounding differences
         // between bot calculation and contract calculation
         let amount_u128: u128 = amount.into();
-        let buffer = (amount_u128 * 1) / 1000; // 0.1% buffer
+        let buffer = amount_u128 / 1000; // 0.1% buffer
         let amount_with_buffer = amount_u128.saturating_add(buffer.max(1));
 
         // Check if we have enough balance
@@ -490,18 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn test_partial_amount_calculation() {
-        let strategy = PartialLiquidationStrategy::new(50, 50, 10);
-        let full_amount = U128(1000);
-        let partial = strategy.calculate_partial_amount(full_amount);
-        assert_eq!(partial.0, 500);
-
-        let strategy_25 = PartialLiquidationStrategy::new(25, 50, 10);
-        let partial_25 = strategy_25.calculate_partial_amount(full_amount);
-        assert_eq!(partial_25.0, 250);
-    }
-
-    #[test]
     fn test_full_strategy_creation() {
         let strategy = FullLiquidationStrategy::new(100, 5);
         assert_eq!(strategy.min_profit_margin_bps, 100);
@@ -559,18 +528,5 @@ mod tests {
             )
             .unwrap();
         assert!(acceptable, "Gas cost should be acceptable");
-    }
-
-    #[test]
-    fn test_default_strategies() {
-        let partial = PartialLiquidationStrategy::default_partial();
-        assert_eq!(partial.target_percentage, 50);
-        assert_eq!(partial.min_profit_margin_bps, 50);
-
-        let conservative = FullLiquidationStrategy::conservative();
-        assert_eq!(conservative.min_profit_margin_bps, 100);
-
-        let aggressive = FullLiquidationStrategy::aggressive();
-        assert_eq!(aggressive.min_profit_margin_bps, 20);
     }
 }

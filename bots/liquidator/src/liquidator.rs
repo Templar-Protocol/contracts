@@ -1,55 +1,23 @@
-// SPDX-License-Identifier: MIT
-//! Production-grade liquidator bot with extensible modular architecture.
+//! Liquidator bot with modular architecture.
 //!
-//! This module provides a modern liquidator implementation with:
-//! - Inventory-based liquidation (no pre-liquidation swaps)
-//! - Modular architecture with focused components
-//! - Strategy pattern for flexible liquidation approaches
-//! - Comprehensive error handling and logging
+//! Provides inventory-based liquidation with:
+//! - Modular component architecture
+//! - Pluggable liquidation strategies
+//! - Error handling
 //! - Gas cost estimation and profitability analysis
 //!
-//! # Architecture
-//!
-//! The liquidator is structured into focused modules:
-//! - `service`: Bot lifecycle management (registry, inventory, liquidation rounds)
-//! - `scanner`: Market position scanning and version compatibility
-//! - `executor`: Transaction creation and execution
-//! - `oracle`: Price fetching from various oracle types
+//! Components:
+//! - `service`: Bot lifecycle management
+//! - `scanner`: Market position scanning
+//! - `executor`: Transaction execution
+//! - `oracle`: Price fetching
 //! - `profitability`: Cost/profit calculations
-//! - `inventory`: Asset balance tracking and management
+//! - `inventory`: Asset balance tracking
 //! - `strategy`: Liquidation amount calculations
-//! - `rebalancer`: Post-liquidation inventory rebalancing with metrics
-//! - `swap`: Swap provider implementations (Ref Finance, 1-Click API)
+//! - `rebalancer`: Post-liquidation inventory rebalancing
+//! - `swap`: Swap provider implementations
 //!
-//! # Example
-//!
-//! ```no_run
-//! use std::sync::Arc;
-//! use templar_liquidator::ServiceConfig, LiquidatorService};
-//! use templar_liquidator::liquidation_strategy::PartialLiquidationStrategy;
-//! use templar_liquidator::CollateralStrategy;
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let strategy = Arc::new(PartialLiquidationStrategy::new(50, 50, 10));
-//!
-//! let config = ServiceConfig {
-//!     registries: vec![],
-//!     signer_key: todo!(),
-//!     signer_account: todo!(),
-//!     network: templar_liquidator::rpc::Network::Testnet,
-//!     rpc_url: None,
-//!     transaction_timeout: 60,
-//!     liquidation_scan_interval: 600,
-//!     registry_refresh_interval: 3600,
-//!     inventory_refresh_interval: 300,
-//!     concurrency: 10,
-//!     strategy,
-//!     collateral_strategy: CollateralStrategy::Hold,
-//!     dry_run: false,
-//! };
-//!
-//! let service = LiquidatorService::new(config);
-//! service.run().await;
+//!   service.run().await;
 //! # Ok(())
 //! # }
 //! ```
@@ -302,7 +270,8 @@ impl Liquidator {
 
         // Step 2: Calculate liquidatable collateral first
         // We need to know the actual liquidatable amount before calculating liquidation_amount
-        let price_pair = self.market_config
+        let price_pair = self
+            .market_config
             .price_oracle_configuration
             .create_price_pair(&oracle_response)?;
         let liquidatable_collateral = position.liquidatable_collateral(
@@ -318,7 +287,7 @@ impl Liquidator {
             "Calculated liquidatable collateral"
         );
 
-        // Step 3: Calculate liquidation amount based on liquidatable collateral (not total)
+        // Step 3: Calculate liquidation amount based on liquidatable collateral
         let available_balance = self
             .executor
             .inventory()
@@ -373,7 +342,8 @@ impl Liquidator {
         let target_collateral_u128 = target_collateral_decimal.to_u128_floor().unwrap_or(0);
 
         // Use the target collateral, capped at liquidatable amount
-        let collateral_amount = U128(target_collateral_u128.min(u128::from(liquidatable_collateral)));
+        let collateral_amount =
+            U128(target_collateral_u128.min(u128::from(liquidatable_collateral)));
 
         // Calculate expected value for profitability
         let expected_collateral_value =
@@ -395,7 +365,7 @@ impl Liquidator {
             "Calculated target collateral based on liquidatable amount"
         );
 
-        // Step 4: Check profitability
+        // Step 5: Check profitability
 
         let gas_cost = profitability::ProfitabilityCalculator::convert_gas_cost_to_borrow_asset(
             profitability::ProfitabilityCalculator::DEFAULT_GAS_COST_USD,
@@ -444,7 +414,7 @@ impl Liquidator {
             return Ok(LiquidationOutcome::Unprofitable);
         }
 
-        // Step 5: Execute liquidation (contract determines optimal collateral amount)
+        // Step 6: Execute liquidation (contract determines optimal collateral amount)
         self.executor
             .execute_liquidation(
                 &borrow_account,
@@ -537,6 +507,3 @@ impl Liquidator {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

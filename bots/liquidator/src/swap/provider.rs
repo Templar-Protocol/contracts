@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Concrete swap provider enum for dynamic dispatch.
 //!
 //! Since the `SwapProvider` trait has generic methods, it cannot be made into

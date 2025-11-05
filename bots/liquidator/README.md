@@ -1,137 +1,113 @@
 # Templar Liquidator Bot
 
-Production-grade liquidation bot for Templar Protocol. Monitors lending markets and liquidates under-collateralized positions.
+Automated liquidation bot for Templar Protocol lending markets.
+
+## What is a Liquidator?
+
+Lending protocols allow users to borrow assets against collateral. When collateral value drops below required levels, positions become **under-collateralized** and risky for the protocol. Liquidators protect the protocol by:
+
+1. **Monitoring** borrower positions continuously
+2. **Identifying** under-collateralized positions (health factor < 1)
+3. **Executing** liquidations by repaying debt and receiving collateral at a discount
+4. **Maintaining** protocol solvency and protecting lenders
+
+This bot uses an **inventory-based model**: it maintains balances of borrow assets, liquidates positions when profitable, receives collateral, and optionally rebalances inventory through automated swaps.
 
 ## Quick Start
 
+### Docker (Recommended)
+
 ```bash
 cp .env.example .env
-nano .env  # Set LIQUIDATOR_ACCOUNT and LIQUIDATOR_PRIVATE_KEY
-./scripts/run-mainnet.sh
+nano .env  # Configure credentials
+make build && make run
+```
+
+### Native
+
+```bash
+cp .env.example .env
+nano .env
+cargo run --release
 ```
 
 ## Configuration
 
-**Required:** `LIQUIDATOR_ACCOUNT`, `LIQUIDATOR_PRIVATE_KEY` (in `.env`)
+See `.env.example` for all options.
 
-**Pre-configured:** Registry `v1.tmplr.near`, USDC asset, NEAR Intents swap (see [deployments.md](../../docs/src/deployments.md))
+### Required
 
-All options in `.env.example` with mainnet defaults.
+```bash
+SIGNER_ACCOUNT_ID=liquidator.near
+SIGNER_KEY=ed25519:...
+REGISTRY_ACCOUNT_IDS=v1.tmplr.near
+```
 
-## CLI Arguments
+### Liquidation
 
-**Required:**
-- `--registries` - Registry contracts
-- `--signer-key` - Private key (`ed25519:...`)
-- `--signer-account` - NEAR account
-- `--asset` - Liquidation asset (`nep141:<token>` or `nep245:<contract>:<token_id>`)
-- `--swap` - Swap provider: `rhea-swap` or `near-intents`
+```bash
+LIQUIDATION_STRATEGY=partial    # partial | full
+PARTIAL_PERCENTAGE=50           # 1-100 (if partial)
+MIN_PROFIT_BPS=50              # Minimum profit (basis points)
+```
 
-**Optional:**
-- `--network` - `testnet`/`mainnet` (default: `testnet`)
-- `--dry-run` - Scan and log without executing (default: `true`)
-- `--timeout` - RPC timeout seconds (default: `60`)
-- `--interval` - Seconds between runs (default: `600`)
-- `--registry-refresh-interval` - Registry refresh seconds (default: `3600`)
-- `--concurrency` - Concurrent liquidations (default: `10`)
-- `--partial-percentage` - Liquidation % 1-100 (default: `50`)
-- `--min-profit-bps` - Min profit basis points (default: `50`)
-- `--max-gas-percentage` - Max gas % (default: `10`)
-- `--log-json` - JSON output (default: `false`)
+### Collateral Strategy
 
-## Features
+```bash
+COLLATERAL_STRATEGY=hold  # hold | swap-to-primary | swap-to-borrow
+# PRIMARY_ASSET=nep141:usdc.near  # Required for swap-to-primary
+```
 
-- **Strategies**: Partial (default, 40-60% gas savings) or Full liquidation
-- **Swap Providers**: RheaSwap (DEX) or NEAR Intents (cross-chain)
-- **Profitability**: Validates gas costs + profit margin before execution
-- **Monitoring**: Tracing framework with structured logging
-- **Concurrent**: Configurable concurrency for high throughput
-- **Version Detection**: Automatically skips outdated market contracts by checking code hash
+- **hold** - Keep collateral as received
+- **swap-to-primary** - Convert all to specified asset
+- **swap-to-borrow** - Route back to borrow assets
 
-## How It Works
+### Market Filtering
 
-1. Discovers markets from registries
-2. Monitors borrower positions continuously
-3. Fetches oracle prices (Pyth)
-4. Validates liquidation profitability
-5. Swaps assets if needed
-6. Executes liquidation via `ft_transfer_call`
+```bash
+# Process only specific collateral assets
+ALLOWED_COLLATERAL_ASSETS=nep141:btc.omft.near,nep141:wrap.near
+
+# Ignore specific collateral assets
+IGNORED_COLLATERAL_ASSETS=nep141:meta-pool.near
+```
+
+### Intervals
+
+```bash
+LIQUIDATION_SCAN_INTERVAL=600   # Seconds between scans
+REGISTRY_REFRESH_INTERVAL=3600  # Seconds between registry updates
+```
+
+## Docker Commands
+
+```bash
+make build    # Build image
+make run      # Run (dry-run mode)
+make logs     # View logs
+make stop     # Stop container
+make help     # Show all commands
+```
 
 ## Production Deployment
 
-1. Test with dry-run: `DRY_RUN=true ./scripts/run-mainnet.sh` (default)
-2. Fund account with USDC
-3. Set `DRY_RUN=false` and `MIN_PROFIT_BPS=50-200` (0.5-2%)
-4. Enable `LOG_JSON=true`
-
-**Funding:** Transfer USDC to bot account. Balance shared across all markets. Swap collateral back to USDC as needed.
-
-## Monitoring
-
-**Log Levels:**
-```bash
-RUST_LOG=info,templar_liquidator=debug ./liquidator [...]
-```
-
-**JSON Output:**
-```bash
-./liquidator --log-json --registries v1.tmplr.near [...]
-```
-
-**Monitor:** Liquidations/hour, success rate, swap performance, RPC response times
-
-## Contract Version Management
-
-The bot automatically detects and skips incompatible market contracts by checking code hashes:
-
-- **Compatible Hashes**: List in `src/lib.rs` `COMPATIBLE_CONTRACT_HASHES`
-- **Supported Versions**:
-  - `66koB114bcvVDAtiKK7fhkZNUwLSTr2P5W6GwSgpdbmA` - templar-alpha.near registry
-  - `mnDdmVzCejRwe6J7v981vYixroptYJJuLAzLXYZB5YD` - v1.tmplr.near registry
-  - `3wnUgNWhm9S7ku3bLH5mruogiBWAdpJXJCzKNonYXZrW` - Additional version
-- **Behavior**: Markets with unlisted hashes are logged and skipped
-- **Adding Support**: Add new hash to the array when contracts are upgraded or new registries added
-
-This supports multiple contract versions across different registries without maintaining a blocklist.
-
-## Swap Providers
-
-**Rhea Finance:** `dclv2.ref-finance.near` - Concentrated liquidity, NEP-141 only, 0.2% default fee
-
-**NEAR Intents:** `intents.near` - Cross-chain solver, 120+ assets, NEP-141 & NEP-245
-
-## Scripts
-
-- `./scripts/run-mainnet.sh` - Mainnet runner (observation mode by default)
-- `./scripts/run-testnet.sh` - Testnet runner (observation mode by default)
-
-## Testing
-
-```bash
-cargo test -p templar-liquidator
-cargo llvm-cov --package templar-liquidator --lib --tests
-```
-
-Coverage: ~39% (88 tests, strategy-focused)
+1. Configure `.env` with production credentials
+2. Fund account with borrow assets for target markets
+3. Test: `DRY_RUN=true make run && make logs`
+4. Deploy: `DRY_RUN=false make prod`
 
 ## Building
 
 ```bash
-cargo build -p templar-liquidator --bin liquidator
-cargo build --release -p templar-liquidator --bin liquidator
+cargo build --release
+./target/release/liquidator --help
 ```
 
-## Security
+## Documentation
 
-- Slippage protection on swaps
-- Gas cost limits prevent unprofitable liquidations
-- Balance validation before operations
-- Timeout handling for stuck transactions
-- Private keys via environment variables only
+- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Architecture and development guide
+- [.env.example](./.env.example) - Full configuration reference
 
-## Performance
+## License
 
-- Concurrency: 10 concurrent liquidations
-- Batching: 100 positions/page, 500 markets/registry
-- Partial liquidations: 40-60% gas savings
-- Early exit profitability checks
+MIT

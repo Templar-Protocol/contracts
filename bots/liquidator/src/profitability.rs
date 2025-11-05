@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Profitability calculation module.
 //!
 //! Handles cost/profit calculations for liquidations including:
@@ -180,5 +179,175 @@ impl ProfitabilityCalculator {
         );
 
         (net_profit, profit_percentage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::json_types::U128;
+
+    use super::ProfitabilityCalculator;
+
+    #[test]
+    fn test_calculate_profit_metrics_basic() {
+        let liquidation_amount = U128(1000);
+        let expected_collateral = U128(1200); // 20% profit before gas
+        let gas_cost = U128(50);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        // Net profit: 1200 - (1000 + 50) = 150
+        assert_eq!(net_profit, 150);
+        // Profit %: (150 / 1050) * 100 = 14%
+        assert_eq!(profit_pct, 14);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_zero_profit() {
+        let liquidation_amount = U128(1000);
+        let expected_collateral = U128(1000);
+        let gas_cost = U128(0);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        assert_eq!(net_profit, 0);
+        assert_eq!(profit_pct, 0);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_loss() {
+        let liquidation_amount = U128(1000);
+        let expected_collateral = U128(900); // 10% loss
+        let gas_cost = U128(50);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        // Loss scenario: 900 - 1050 = -150, but saturating_sub makes it 0
+        assert_eq!(net_profit, 0);
+        assert_eq!(profit_pct, 0);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_high_profit() {
+        let liquidation_amount = U128(1000);
+        let expected_collateral = U128(2000); // 100% profit before gas
+        let gas_cost = U128(100);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        // Net profit: 2000 - 1100 = 900
+        assert_eq!(net_profit, 900);
+        // Profit %: (900 / 1100) * 100 = 81%
+        assert_eq!(profit_pct, 81);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_zero_cost() {
+        let liquidation_amount = U128(0);
+        let expected_collateral = U128(1000);
+        let gas_cost = U128(0);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        assert_eq!(net_profit, 1000);
+        // Division by zero protected, returns 0
+        assert_eq!(profit_pct, 0);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_with_gas() {
+        let liquidation_amount = U128(10_000);
+        let expected_collateral = U128(11_500);
+        let gas_cost = U128(500);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        // Net profit: 11500 - (10000 + 500) = 1000
+        assert_eq!(net_profit, 1000);
+        // Profit %: (1000 / 10500) * 100 = 9%
+        assert_eq!(profit_pct, 9);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_large_amounts() {
+        let liquidation_amount = U128(1_000_000_000_000); // 1T units
+        let expected_collateral = U128(1_100_000_000_000); // 10% profit
+        let gas_cost = U128(1_000_000_000); // 1B units
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        // Should handle large numbers
+        assert!(net_profit > 0);
+        assert!(profit_pct < 100);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_minimal_profit() {
+        let liquidation_amount = U128(10_000);
+        let expected_collateral = U128(10_101); // ~1% profit
+        let gas_cost = U128(100);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        // Net profit: 10101 - 10100 = 1
+        assert_eq!(net_profit, 1);
+        // Profit %: very small, likely rounds to 0
+        assert_eq!(profit_pct, 0);
+    }
+
+    #[test]
+    fn test_calculate_profit_metrics_percentage_rounding() {
+        let liquidation_amount = U128(1000);
+        let expected_collateral = U128(1550); // 55% profit before gas
+        let gas_cost = U128(0);
+
+        let (net_profit, profit_pct) = ProfitabilityCalculator::calculate_profit_metrics(
+            liquidation_amount,
+            expected_collateral,
+            gas_cost,
+        );
+
+        assert_eq!(net_profit, 550);
+        // Profit %: (550 / 1000) * 100 = 55%
+        assert_eq!(profit_pct, 55);
+    }
+
+    #[test]
+    fn test_default_gas_cost_constant() {
+        // Verify the default gas cost constant is reasonable
+        assert!(ProfitabilityCalculator::DEFAULT_GAS_COST_USD > 0.0);
+        assert!(ProfitabilityCalculator::DEFAULT_GAS_COST_USD < 1.0);
     }
 }

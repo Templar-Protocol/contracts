@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Market position scanner module.
 //!
 //! Handles scanning markets for borrow positions and checking liquidation status.
@@ -135,7 +134,7 @@ impl MarketScanner {
         }
     }
 
-    /// Tests if the market is compatible (version >= 1.0.0).
+    /// Tests if the market is compatible.
     /// Returns Ok(()) if compatible, Err otherwise.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn test_market_compatibility(&self) -> LiquidatorResult<()> {
@@ -149,7 +148,7 @@ impl MarketScanner {
     }
 
     /// Checks if the market contract is compatible by verifying its version via NEP-330.
-    /// Returns true if version >= 1.0.0, false otherwise.
+    /// Returns true if version >= min_version, false otherwise.
     #[tracing::instrument(skip(self), level = "debug")]
     async fn is_market_compatible(&self) -> LiquidatorResult<bool> {
         use crate::rpc::get_contract_version;

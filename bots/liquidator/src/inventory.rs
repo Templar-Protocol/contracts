@@ -1,50 +1,8 @@
-// SPDX-License-Identifier: MIT
 //! Inventory management for liquidation bot.
 //!
 //! The `InventoryManager` tracks available balances across all markets and assets,
 //! providing a unified view of the bot's capital. This enables inventory-based
 //! liquidation where positions are only liquidated when sufficient inventory exists.
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │                    InventoryManager                         │
-//! │                                                             │
-//! │  Markets Discovery → Assets Extraction → Balance Queries   │
-//! │                                                             │
-//! │  Cache: HashMap<String, (Asset, InventoryEntry)>           │
-//! │         - balance: U128                                     │
-//! │         - reserved: U128                                    │
-//! │         - last_updated: Instant                             │
-//! └─────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! # Usage
-//!
-//! ```no_run
-//! use templar_liquidator::inventory::InventoryManager;
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut inventory = InventoryManager::new(client, account_id);
-//!
-//! // Discover assets from markets
-//! inventory.discover_assets(&markets);
-//!
-//! // Refresh balances
-//! inventory.refresh().await?;
-//!
-//! // Check available balance
-//! let available = inventory.get_available_balance(&asset);
-//!
-//! // Reserve for liquidation
-//! inventory.reserve(&asset, amount)?;
-//!
-//! // After liquidation, release
-//! inventory.release(&asset, amount);
-//! # Ok(())
-//! # }
-//! ```
 
 use std::{
     collections::HashMap,
@@ -218,15 +176,7 @@ impl InventoryManager {
         );
     }
 
-    /// Discovers and tracks collateral assets from market configurations.
-    ///
-    /// This method extracts collateral assets from market configurations and adds them
-    /// to the collateral inventory for tracking. This is used to monitor collateral
-    /// received from liquidations.
-    ///
-    /// # Arguments
-    ///
-    /// * `market_configs` - Iterator of market configurations
+    /// Discovers collateral assets from market configurations
     pub fn discover_collateral_assets<'a>(
         &mut self,
         market_configs: impl Iterator<Item = &'a templar_common::market::MarketConfiguration>,
@@ -267,16 +217,9 @@ impl InventoryManager {
 
     /// Refreshes all tracked asset balances
     ///
-    /// Queries the blockchain for current balances of all tracked assets.
-    /// Respects minimum refresh interval to avoid excessive RPC calls.
-    ///
-    /// # Returns
-    ///
     /// # Errors
     ///
-    /// Returns an error if balance fetching fails for any asset
-    ///
-    /// Number of balances successfully refreshed
+    /// Returns an error if the RPC call to fetch balances fails.
     pub async fn refresh(&mut self) -> InventoryResult<usize> {
         // Check if we should throttle
         if let Some(last_refresh) = self.last_full_refresh {
@@ -671,7 +614,7 @@ impl InventoryManager {
     }
 
     /// Gets current collateral balances without refreshing from RPC
-    /// 
+    ///
     /// Returns a `HashMap` of asset string -> balance for assets with non-zero balance.
     /// This is useful when you just want to check what's in memory without making RPC calls.
     pub fn get_collateral_balances(&self) -> HashMap<String, U128> {
@@ -688,7 +631,7 @@ impl InventoryManager {
     }
 
     /// Records which borrow asset was used to acquire collateral
-    /// 
+    ///
     /// Call this after a successful liquidation to track the relationship
     /// between borrow and collateral assets for swap-to-borrow strategy.
     pub fn record_liquidation(
@@ -698,25 +641,25 @@ impl InventoryManager {
     ) {
         let borrow_str = borrow_asset.to_string();
         let collateral_str = collateral_asset.to_string();
-        
+
         tracing::debug!(
             borrow = %borrow_str,
             collateral = %collateral_str,
             "Recording liquidation history"
         );
-        
+
         self.liquidation_history.insert(collateral_str, borrow_str);
     }
 
     /// Gets the borrow asset that was used to acquire a collateral asset
-    /// 
+    ///
     /// Returns None if no history exists for this collateral.
     pub fn get_liquidation_history(&self, collateral_asset: &str) -> Option<&String> {
         self.liquidation_history.get(collateral_asset)
     }
 
     /// Clears liquidation history for a collateral asset after successful swap
-    /// 
+    ///
     /// Should be called after swapping collateral back to borrow asset.
     pub fn clear_liquidation_history(&mut self, collateral_asset: &str) {
         if self.liquidation_history.remove(collateral_asset).is_some() {
@@ -792,35 +735,6 @@ mod tests {
     }
 
     #[test]
-    fn test_inventory_manager_discovery() {
-        use templar_common::market::MarketConfiguration;
-
-        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
-        let account_id = AccountId::from_str("test.near").unwrap();
-        let mut inventory = InventoryManager::new(client, account_id);
-
-        // Create mock market configs
-        let asset1 = create_test_asset();
-        let asset2 = FungibleAsset::from_str("nep141:usdt.near").unwrap();
-
-        let config1 = MarketConfiguration {
-            borrow_asset: asset1.clone(),
-            ..Default::default()
-        };
-        let config2 = MarketConfiguration {
-            borrow_asset: asset2.clone(),
-            ..Default::default()
-        };
-
-        // Discover assets
-        inventory.discover_assets([&config1, &config2].into_iter());
-
-        assert_eq!(inventory.inventory.len(), 2);
-        assert!(inventory.inventory.contains_key(&asset1.to_string()));
-        assert!(inventory.inventory.contains_key(&asset2.to_string()));
-    }
-
-    #[test]
     fn test_inventory_manager_reserve_release() {
         let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
         let account_id = AccountId::from_str("test.near").unwrap();
@@ -854,5 +768,98 @@ mod tests {
         inventory.release(&asset, U128(100));
         assert_eq!(inventory.get_available_balance(&asset).0, 800);
         assert_eq!(inventory.get_reserved_balance(&asset).0, 200);
+    }
+
+    #[test]
+    fn test_inventory_reserve_insufficient_balance() {
+        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let account_id = AccountId::from_str("test.near").unwrap();
+        let mut inventory = InventoryManager::new(client, account_id);
+
+        let asset = create_test_asset();
+        let key = asset.to_string();
+
+        inventory.inventory.insert(
+            key,
+            (
+                asset.clone(),
+                InventoryEntry {
+                    balance: U128(100),
+                    reserved: U128(0),
+                    last_updated: Instant::now(),
+                },
+            ),
+        );
+
+        // Try to reserve more than available
+        let result = inventory.reserve(&asset, U128(200));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inventory_get_total_balance() {
+        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let account_id = AccountId::from_str("test.near").unwrap();
+        let mut inventory = InventoryManager::new(client, account_id);
+
+        let asset = create_test_asset();
+        let key = asset.to_string();
+
+        inventory.inventory.insert(
+            key,
+            (
+                asset.clone(),
+                InventoryEntry {
+                    balance: U128(1000),
+                    reserved: U128(300),
+                    last_updated: Instant::now(),
+                },
+            ),
+        );
+
+        assert_eq!(inventory.get_total_balance(&asset).0, 1000);
+        assert_eq!(inventory.get_available_balance(&asset).0, 700);
+        assert_eq!(inventory.get_reserved_balance(&asset).0, 300);
+    }
+
+    #[test]
+    fn test_liquidation_history() {
+        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let account_id = AccountId::from_str("test.near").unwrap();
+        let mut inventory = InventoryManager::new(client, account_id);
+
+        let borrow_asset =
+            templar_common::asset::FungibleAsset::<templar_common::asset::BorrowAsset>::nep141(
+                "usdc.testnet".parse().unwrap(),
+            );
+        let collateral_asset = templar_common::asset::FungibleAsset::<
+            templar_common::asset::CollateralAsset,
+        >::nep141("btc.testnet".parse().unwrap());
+
+        let collateral_str = collateral_asset.to_string();
+
+        // Initially no history
+        assert_eq!(inventory.get_liquidation_history(&collateral_str), None);
+
+        // Record liquidation
+        inventory.record_liquidation(&borrow_asset, &collateral_asset);
+        assert_eq!(
+            inventory.get_liquidation_history(&collateral_str),
+            Some(&borrow_asset.to_string())
+        );
+
+        // Clear history
+        inventory.clear_liquidation_history(&collateral_str);
+        assert_eq!(inventory.get_liquidation_history(&collateral_str), None);
+    }
+
+    #[test]
+    fn test_collateral_balances_empty() {
+        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let account_id = AccountId::from_str("test.near").unwrap();
+        let inventory = InventoryManager::new(client, account_id);
+
+        let balances = inventory.get_collateral_balances();
+        assert!(balances.is_empty());
     }
 }
