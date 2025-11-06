@@ -57,19 +57,19 @@ enum FungibleAssetKind {
 }
 
 impl<T: AssetClass> FungibleAsset<T> {
-    /// Gas for simple transfers (ft_transfer)
+    /// Gas for simple transfers (`ft_transfer`)
     pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
-    
-    /// Gas for simple NEP-245 transfers (mt_transfer)
+
+    /// Gas for simple NEP-245 transfers (`mt_transfer`)
     pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(10);
-    
-    /// Gas for transfer_call operations (includes callback to receiver)
-    /// NEP-141 ft_transfer_call: Transfer + receiver callback execution
+
+    /// Gas for `transfer_call` operations (includes callback to receiver)
+    /// NEP-141 `ft_transfer_call`: Transfer + receiver callback execution
     /// Needs extra gas for the receiver contract logic (e.g., market liquidation)
     pub const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(100);
-    
-    /// Gas for NEP-245 mt_transfer_call operations
-    /// NEAR Intents mt_transfer_call: Transfer + receiver callback + collateral transfer back
+
+    /// Gas for NEP-245 `mt_transfer_call` operations
+    /// NEAR Intents `mt_transfer_call`: Transfer + receiver callback + collateral transfer back
     pub const GAS_MT_TRANSFER_CALL: Gas = Gas::from_tgas(150);
 
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
