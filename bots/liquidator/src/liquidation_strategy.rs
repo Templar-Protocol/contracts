@@ -112,8 +112,6 @@ pub struct PartialLiquidationStrategy {
     pub target_percentage: u8,
     /// Minimum profit margin in basis points (e.g., 50 = 0.5%)
     pub min_profit_margin_bps: u32,
-    /// Maximum gas cost as percentage of liquidation value (e.g., 10 = 10%)
-    pub max_gas_cost_percentage: u8,
 }
 
 impl PartialLiquidationStrategy {
@@ -123,7 +121,6 @@ impl PartialLiquidationStrategy {
     ///
     /// * `target_percentage` - Target liquidation percentage (1-100)
     /// * `min_profit_margin_bps` - Minimum profit margin in basis points
-    /// * `max_gas_cost_percentage` - Maximum gas cost as percentage of value
     ///
     /// # Panics
     ///
@@ -134,28 +131,19 @@ impl PartialLiquidationStrategy {
     /// ```
     /// use templar_bots::strategy::PartialLiquidationStrategy;
     ///
-    /// // Liquidate 50% of position, require 0.5% profit margin, max 5% gas cost
-    /// let strategy = PartialLiquidationStrategy::new(50, 50, 5);
+    /// // Liquidate 50% of position, require 0.5% profit margin
+    /// let strategy = PartialLiquidationStrategy::new(50, 50);
     /// ```
     #[must_use]
-    pub fn new(
-        target_percentage: u8,
-        min_profit_margin_bps: u32,
-        max_gas_cost_percentage: u8,
-    ) -> Self {
+    pub fn new(target_percentage: u8, min_profit_margin_bps: u32) -> Self {
         assert!(
             target_percentage > 0 && target_percentage <= 100,
             "Target percentage must be between 1 and 100"
-        );
-        assert!(
-            max_gas_cost_percentage <= 100,
-            "Max gas cost percentage must be <= 100"
         );
 
         Self {
             target_percentage,
             min_profit_margin_bps,
-            max_gas_cost_percentage,
         }
     }
 
@@ -164,8 +152,7 @@ impl PartialLiquidationStrategy {
     pub fn default_partial() -> Self {
         Self {
             target_percentage: 50,
-            min_profit_margin_bps: 50,   // 0.5% profit margin
-            max_gas_cost_percentage: 10, // Max 10% gas cost
+            min_profit_margin_bps: 50, // 0.5% profit margin
         }
     }
 }
@@ -270,24 +257,10 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         expected_collateral_value: U128,
         gas_cost_estimate: U128,
     ) -> LiquidatorResult<bool> {
-        // Check gas cost is acceptable
-        let liquidation_u128: u128 = liquidation_amount.into();
-        #[allow(clippy::cast_lossless)]
-        let max_gas_cost = (liquidation_u128 * self.max_gas_cost_percentage as u128) / 100;
-
-        let gas_cost_u128: u128 = gas_cost_estimate.into();
-
-        if gas_cost_u128 > max_gas_cost {
-            debug!(
-                gas_cost = %gas_cost_u128,
-                max_allowed = %max_gas_cost,
-                "Gas cost too high"
-            );
-            return Ok(false);
-        }
-
         // Calculate total cost (liquidation amount + gas)
         // In inventory model: we spend liquidation_amount from inventory + gas
+        let liquidation_u128: u128 = liquidation_amount.into();
+        let gas_cost_u128: u128 = gas_cost_estimate.into();
         let total_cost = liquidation_u128.saturating_add(gas_cost_u128);
 
         // Calculate minimum acceptable revenue based on profit margin
@@ -332,17 +305,14 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
 pub struct FullLiquidationStrategy {
     /// Minimum profit margin in basis points
     pub min_profit_margin_bps: u32,
-    /// Maximum gas cost as percentage of liquidation value
-    pub max_gas_cost_percentage: u8,
 }
 
 impl FullLiquidationStrategy {
     /// Creates a new full liquidation strategy.
     #[must_use]
-    pub fn new(min_profit_margin_bps: u32, max_gas_cost_percentage: u8) -> Self {
+    pub fn new(min_profit_margin_bps: u32) -> Self {
         Self {
             min_profit_margin_bps,
-            max_gas_cost_percentage,
         }
     }
 }
@@ -408,19 +378,7 @@ impl LiquidationStrategy for FullLiquidationStrategy {
     ) -> LiquidatorResult<bool> {
         // Same profitability logic as partial strategy
         let liquidation_u128: u128 = liquidation_amount.into();
-        #[allow(clippy::cast_lossless)]
-        let max_gas_cost = (liquidation_u128 * self.max_gas_cost_percentage as u128) / 100;
-
         let gas_cost_u128: u128 = gas_cost_estimate.into();
-
-        if gas_cost_u128 > max_gas_cost {
-            debug!(
-                gas_cost = %gas_cost_u128,
-                max_allowed = %max_gas_cost,
-                "Gas cost too high for full liquidation"
-            );
-            return Ok(false);
-        }
 
         let total_cost = liquidation_u128.saturating_add(gas_cost_u128);
         let profit_margin_multiplier = 10_000 + self.min_profit_margin_bps;
@@ -429,10 +387,15 @@ impl LiquidationStrategy for FullLiquidationStrategy {
         let collateral_value_u128: u128 = expected_collateral_value.into();
         let is_profitable = collateral_value_u128 >= min_revenue;
 
+        let net_profit = collateral_value_u128.saturating_sub(total_cost);
+
         debug!(
+            liquidation_amount = %liquidation_u128,
+            gas_cost = %gas_cost_u128,
             total_cost = %total_cost,
             expected_collateral_value = %collateral_value_u128,
             min_revenue = %min_revenue,
+            net_profit = %net_profit,
             is_profitable = %is_profitable,
             "Full liquidation profitability check (inventory-based)"
         );
@@ -451,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_partial_strategy_creation() {
-        let strategy = PartialLiquidationStrategy::new(50, 50, 10);
+        let strategy = PartialLiquidationStrategy::new(50, 50);
         assert_eq!(strategy.target_percentage, 50);
         assert_eq!(strategy.min_profit_margin_bps, 50);
         assert_eq!(strategy.strategy_name(), "Partial Liquidation");
@@ -461,18 +424,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "Target percentage must be between 1 and 100")]
     fn test_partial_strategy_invalid_percentage() {
-        let _ = PartialLiquidationStrategy::new(0, 50, 10);
+        let _ = PartialLiquidationStrategy::new(0, 50);
     }
 
     #[test]
     #[should_panic(expected = "Target percentage must be between 1 and 100")]
     fn test_partial_strategy_percentage_too_high() {
-        let _ = PartialLiquidationStrategy::new(101, 50, 10);
+        let _ = PartialLiquidationStrategy::new(101, 50);
     }
 
     #[test]
     fn test_full_strategy_creation() {
-        let strategy = FullLiquidationStrategy::new(100, 5);
+        let strategy = FullLiquidationStrategy::new(100);
         assert_eq!(strategy.min_profit_margin_bps, 100);
         assert_eq!(strategy.strategy_name(), "Full Liquidation");
         assert_eq!(strategy.max_liquidation_percentage(), 100);
@@ -480,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_profitability_check() {
-        let strategy = PartialLiquidationStrategy::new(50, 50, 10); // 0.5% profit margin
+        let strategy = PartialLiquidationStrategy::new(50, 50); // 0.5% profit margin
 
         // Profitable case: collateral_value > (liquidation_amount + gas) * 1.005
         // Cost: 1100 (1000 liquidation + 100 gas), Min revenue: 1105, Collateral: 1110
@@ -505,28 +468,6 @@ mod tests {
         assert!(!is_not_profitable, "Should not be profitable");
     }
 
-    #[test]
-    fn test_gas_cost_check() {
-        let strategy = PartialLiquidationStrategy::new(50, 50, 10); // Max 10% gas
-
-        // Gas cost too high: 150 > 10% of 1000
-        let too_expensive = strategy
-            .should_liquidate(
-                U128(1000),  // liquidation amount
-                U128(10000), // high collateral value
-                U128(150),   // gas cost > 10%
-            )
-            .unwrap();
-        assert!(!too_expensive, "Gas cost should be too high");
-
-        // Acceptable gas cost: 50 < 10% of 1000
-        let acceptable = strategy
-            .should_liquidate(
-                U128(1000),  // liquidation amount
-                U128(10000), // high collateral value
-                U128(50),    // gas cost < 10%
-            )
-            .unwrap();
-        assert!(acceptable, "Gas cost should be acceptable");
-    }
+    // Note: Gas cost check removed - gas costs are negligible on NEAR
+    // (typically < 0.1% of liquidation value even with 150 TGas at $100 NEAR)
 }

@@ -57,14 +57,20 @@ enum FungibleAssetKind {
 }
 
 impl<T: AssetClass> FungibleAsset<T> {
-    /// Really depends on the implementation, but this should suffice, since
-    /// normal implementations use < 3TGas.
-    /// Increased to 100 `TGas` to handle `ft_transfer_call` with complex receivers
-    /// (e.g., 1-Click deposit addresses that need to process the transfer)
-    pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(100);
-    /// NEAR Intents implementation uses < 4TGas.
-    /// Increased to 100 `TGas` for consistency with FT transfers
-    pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(100);
+    /// Gas for simple transfers (ft_transfer)
+    pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
+    
+    /// Gas for simple NEP-245 transfers (mt_transfer)
+    pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(10);
+    
+    /// Gas for transfer_call operations (includes callback to receiver)
+    /// NEP-141 ft_transfer_call: Transfer + receiver callback execution
+    /// Needs extra gas for the receiver contract logic (e.g., market liquidation)
+    pub const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(100);
+    
+    /// Gas for NEP-245 mt_transfer_call operations
+    /// NEAR Intents mt_transfer_call: Transfer + receiver callback + collateral transfer back
+    pub const GAS_MT_TRANSFER_CALL: Gas = Gas::from_tgas(150);
 
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
@@ -147,7 +153,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                     "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
-                Self::GAS_FT_TRANSFER,
+                Self::GAS_FT_TRANSFER_CALL,
             ),
             FungibleAssetKind::Nep245 { ref token_id, .. } => (
                 json!({
@@ -156,7 +162,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                     "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
-                Self::GAS_MT_TRANSFER,
+                Self::GAS_MT_TRANSFER_CALL,
             ),
         };
 

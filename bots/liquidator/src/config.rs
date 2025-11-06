@@ -56,7 +56,7 @@ pub struct Args {
     pub concurrency: usize,
 
     /// Liquidation strategy: "partial" or "full"
-    #[arg(long, env = "LIQUIDATION_STRATEGY", default_value = "full")]
+    #[arg(long, env = "LIQUIDATION_STRATEGY", default_value = "partial")]
     pub liquidation_strategy: String,
 
     /// Partial liquidation percentage (1-100, only used with partial strategy)
@@ -66,10 +66,6 @@ pub struct Args {
     /// Minimum profit margin in basis points
     #[arg(long, env = "MIN_PROFIT_BPS", default_value_t = 50)]
     pub min_profit_bps: u32,
-
-    /// Maximum gas cost percentage
-    #[arg(long, env = "MAX_GAS_PERCENTAGE", default_value_t = 10)]
-    pub max_gas_percentage: u8,
 
     /// Dry run mode - scan without executing transactions
     #[arg(long, env = "DRY_RUN", default_value_t = false)]
@@ -111,10 +107,7 @@ impl Args {
         match self.liquidation_strategy.to_lowercase().as_str() {
             "full" => {
                 tracing::info!("Using FullLiquidationStrategy (100% liquidation)");
-                Arc::new(FullLiquidationStrategy::new(
-                    self.min_profit_bps,
-                    self.max_gas_percentage,
-                ))
+                Arc::new(FullLiquidationStrategy::new(self.min_profit_bps))
             }
             "partial" => {
                 tracing::info!(
@@ -124,7 +117,6 @@ impl Args {
                 Arc::new(PartialLiquidationStrategy::new(
                     self.partial_percentage,
                     self.min_profit_bps,
-                    self.max_gas_percentage,
                 ))
             }
             other => {
@@ -132,10 +124,7 @@ impl Args {
                     strategy = other,
                     "Invalid liquidation strategy, defaulting to 'full'"
                 );
-                Arc::new(FullLiquidationStrategy::new(
-                    self.min_profit_bps,
-                    self.max_gas_percentage,
-                ))
+                Arc::new(FullLiquidationStrategy::new(self.min_profit_bps))
             }
         }
     }
@@ -258,7 +247,6 @@ mod tests {
             liquidation_strategy: "partial".to_string(),
             partial_percentage: 50,
             min_profit_bps: 100,
-            max_gas_percentage: 10,
             dry_run: false,
             collateral_strategy: "hold".to_string(),
             primary_asset: None,

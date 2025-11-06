@@ -97,9 +97,21 @@ export RUST_LOG="debug,templar_accumulator=trace"  # Development
 
 ## Cost Considerations
 
-- Gas per call: ~300 TGas
-- Cost per call: ~0.03 NEAR
-- Example: 100 positions every 10 min = ~432 NEAR/day
+**Gas Usage:**
+- Each `apply_interest()` call uses ~3.3 TGas in average
+- Cost per call: ~0.0003 NEAR
+- View calls (fetching positions) are free
+
+**Daily Cost Estimates:**
+| Positions/Day | NEAR Cost | USD Cost ($5 NEAR) |
+|---------------|-----------|---------------------|
+| 100 | 0.03 | $0.15 |
+| 1,000 | 0.3 | $1.50 |
+| 10,000 | 3.0 | $15.00 |
+
+**Notes:**
+- Actual gas usage varies by position complexity
+- NEAR refunds unused gas automatically
 
 **Optimize:**
 - Increase accumulation interval

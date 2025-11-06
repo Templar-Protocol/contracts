@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   liquidator:
     build:
@@ -30,7 +28,6 @@ services:
       "--registry-refresh-interval", "${REGISTRY_REFRESH_INTERVAL:-3600}",
       "--concurrency", "${CONCURRENCY:-10}",
       "--transaction-timeout", "${TRANSACTION_TIMEOUT:-60}",
-      "--max-gas-percentage", "${MAX_GAS_PERCENTAGE:-10}",
       "--collateral-strategy", "${COLLATERAL_STRATEGY:-hold}",
       # "--oneclick-api-token", "${ONECLICK_API_TOKEN}",
       # "--ref-contract", "${REF_CONTRACT:-v2.ref-finance.near}",

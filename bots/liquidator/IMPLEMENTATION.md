@@ -164,7 +164,6 @@ NETWORK=mainnet
 LIQUIDATION_STRATEGY=partial  # partial | full
 PARTIAL_PERCENTAGE=50
 MIN_PROFIT_BPS=50
-MAX_GAS_PERCENTAGE=10
 ```
 
 **Collateral:**
@@ -298,7 +297,7 @@ expected_collateral_value = liquidated_amount * liquidation_bonus
 profit = expected_collateral_value - liquidated_amount - gas_cost
 min_profit = liquidated_amount * (min_profit_bps / 10000)
 
-profitable = profit >= min_profit && gas_cost <= max_gas_percentage * liquidated_amount
+profitable = profit >= min_profit
 ```
 
 ## Key Files
