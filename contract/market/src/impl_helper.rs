@@ -402,12 +402,12 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
     ) {
-        let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
-            env::panic_str("Invariant violation: static yield entry must exist during callback")
-        });
-
         if matches!(env::promise_result(0), PromiseResult::Failed) {
+            let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
+                env::panic_str("Invariant violation: static yield entry must exist during callback")
+            });
             yield_record.add_once(amount);
+            self.static_yield.insert(&account_id, &yield_record);
         }
     }
 }
