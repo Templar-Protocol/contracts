@@ -66,7 +66,7 @@ impl RebalanceMetrics {
     /// Log metrics summary
     pub fn log_summary(&self) {
         if self.swaps_attempted == 0 {
-            info!("No collateral swaps needed - inventory already balanced");
+            info!("No collateral swaps attempted - no liquidation history found");
             return;
         }
 

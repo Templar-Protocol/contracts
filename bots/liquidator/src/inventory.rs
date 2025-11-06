@@ -548,22 +548,7 @@ impl InventoryManager {
         } else {
             let assets_str = non_zero_balances
                 .iter()
-                .map(|(asset, balance)| {
-                    // Extract readable name from asset string
-                    let readable_name = if let Some(stripped) = asset.strip_prefix("nep141:") {
-                        stripped.split('.').next().unwrap_or(stripped)
-                    } else if let Some(stripped) = asset.strip_prefix("nep245:") {
-                        let parts: Vec<&str> = stripped.split(':').collect();
-                        if parts.len() >= 2 {
-                            parts[1].split('-').next().unwrap_or("unknown")
-                        } else {
-                            "unknown"
-                        }
-                    } else {
-                        asset.split(':').last().unwrap_or("unknown")
-                    };
-                    format!("{}: {}", readable_name, balance.0)
-                })
+                .map(|(asset, balance)| format!("{}: {}", asset, balance.0))
                 .collect::<Vec<_>>()
                 .join(", ");
 
