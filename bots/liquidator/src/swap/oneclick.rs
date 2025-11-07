@@ -525,9 +525,7 @@ impl OneClickSwap {
             actions: vec![Action::FunctionCall(Box::new(storage_deposit_action))],
         });
 
-        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx)
-            .await
-            .map_err(AppError::from)?;
+        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx).await?;
 
         match outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
@@ -656,9 +654,7 @@ impl OneClickSwap {
         let (tx_hash, _) = tx.get_hash_and_size();
         let tx_hash_str = tx_hash.to_string();
 
-        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx)
-            .await
-            .map_err(AppError::from)?;
+        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx).await?;
 
         match &outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
