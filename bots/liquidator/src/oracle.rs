@@ -29,20 +29,60 @@ use crate::{
 /// - Applying price transformations
 pub struct OracleFetcher {
     client: JsonRpcClient,
+    /// Cache of which oracles are LST oracles (`oracle_account` -> `underlying_oracle`)
+    lst_oracle_cache: std::sync::Arc<tokio::sync::RwLock<HashMap<AccountId, Option<AccountId>>>>,
 }
 
 impl OracleFetcher {
     /// Creates a new oracle fetcher.
     pub fn new(client: JsonRpcClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            lst_oracle_cache: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Checks if the oracle is an LST oracle by attempting to fetch its underlying oracle ID.
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn is_lst_oracle(&self, oracle: &AccountId) -> LiquidatorResult<Option<AccountId>> {
+        // Check cache first
+        {
+            let cache = self.lst_oracle_cache.read().await;
+            if let Some(cached) = cache.get(oracle) {
+                return Ok(cached.clone());
+            }
+        }
+
+        // Try to fetch underlying oracle ID
+        let underlying_oracle: Result<AccountId, _> =
+            view(&self.client, oracle.clone(), "oracle_id", json!({})).await;
+
+        let result = if let Ok(underlying) = underlying_oracle {
+            debug!(
+                oracle = %oracle,
+                underlying = %underlying,
+                "Detected LST oracle"
+            );
+            Some(underlying)
+        } else {
+            debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
+            None
+        };
+
+        // Cache the result
+        {
+            let mut cache = self.lst_oracle_cache.write().await;
+            cache.insert(oracle.clone(), result.clone());
+        }
+
+        Ok(result)
     }
 
     /// Fetches current oracle prices.
     ///
-    /// Tries multiple methods in order:
-    /// 1. `list_ema_prices_unsafe` (Pyth oracle, potentially stale but fast)
-    /// 2. `list_ema_prices_no_older_than` (Pyth oracle with age validation)
-    /// 3. LST oracle approach with transformers
+    /// Detects oracle type and uses the appropriate method:
+    /// - LST oracles: Fetch from underlying oracle and apply transformers
+    /// - Pyth oracles: Direct fetch with `list_ema_prices_unsafe` or `list_ema_prices_no_older_than`
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn get_oracle_prices(
         &self,
@@ -50,7 +90,19 @@ impl OracleFetcher {
         price_ids: &[PriceIdentifier],
         age: u32,
     ) -> LiquidatorResult<OracleResponse> {
-        // Try `list_ema_prices_unsafe` first (Pyth oracle)
+        // Check if this is an LST oracle upfront
+        if let Some(underlying_oracle) = self.is_lst_oracle(&oracle).await? {
+            debug!(
+                oracle = %oracle,
+                underlying = %underlying_oracle,
+                "Using LST oracle approach with transformers"
+            );
+            return self
+                .get_oracle_prices_with_transformers(oracle, price_ids, age, underlying_oracle)
+                .await;
+        }
+
+        // Standard Pyth oracle - try unsafe method first (faster)
         let result: Result<OracleResponse, _> = view(
             &self.client,
             oracle.clone(),
@@ -64,17 +116,6 @@ impl OracleFetcher {
             Err(e) => {
                 let error_msg = format!("{e:?}");
                 debug!("First oracle call failed for {}: {}", oracle, error_msg);
-
-                // Check if oracle creates promises in view calls
-                if error_msg.contains("ProhibitedInView") {
-                    debug!(
-                        oracle = %oracle,
-                        "Oracle creates promises in view calls, trying LST oracle approach"
-                    );
-                    return self
-                        .get_oracle_prices_with_transformers(oracle, price_ids, age)
-                        .await;
-                }
 
                 // If method not found, try the standard method with age validation
                 if error_msg.contains("MethodNotFound") || error_msg.contains("MethodResolveError")
@@ -99,21 +140,7 @@ impl OracleFetcher {
                             );
                             Ok(response)
                         }
-                        Err(fallback_err) => {
-                            let fallback_error_msg = format!("{fallback_err:?}");
-
-                            // Check if fallback also fails with ProhibitedInView
-                            if fallback_error_msg.contains("ProhibitedInView") {
-                                debug!(
-                                    oracle = %oracle,
-                                    "Fallback also creates promises, trying LST oracle approach"
-                                );
-                                return self
-                                    .get_oracle_prices_with_transformers(oracle, price_ids, age)
-                                    .await;
-                            }
-                            Err(LiquidatorError::PriceFetchError(fallback_err))
-                        }
+                        Err(fallback_err) => Err(LiquidatorError::PriceFetchError(fallback_err)),
                     }
                 } else {
                     Err(LiquidatorError::PriceFetchError(e))
@@ -129,10 +156,12 @@ impl OracleFetcher {
         lst_oracle: AccountId,
         price_ids: &[PriceIdentifier],
         age: u32,
+        underlying_oracle: AccountId,
     ) -> LiquidatorResult<OracleResponse> {
         info!(
             oracle = %lst_oracle,
-            "Detected LST oracle, fetching transformers and applying manually"
+            underlying = %underlying_oracle,
+            "Fetching LST oracle prices with transformers"
         );
 
         // Get transformers for each price ID
@@ -172,27 +201,13 @@ impl OracleFetcher {
             }
         }
 
-        // Get underlying oracle account ID
-        let underlying_oracle: AccountId =
-            match view(&self.client, lst_oracle.clone(), "oracle_id", json!({})).await {
-                Ok(oracle_id) => oracle_id,
-                Err(e) => {
-                    warn!(
-                        oracle = %lst_oracle,
-                        error = %e,
-                        "Failed to get underlying oracle ID, skipping market"
-                    );
-                    return Ok(HashMap::new());
-                }
-            };
-
         debug!(
             underlying_oracle = %underlying_oracle,
             underlying_price_ids = ?underlying_price_ids,
             "Fetching prices from underlying Pyth oracle"
         );
 
-        // Fetch prices from underlying Pyth oracle (use Box::pin to avoid infinite recursion)
+        // Fetch prices from underlying Pyth oracle
         let mut underlying_prices =
             Box::pin(self.get_oracle_prices(underlying_oracle.clone(), &underlying_price_ids, age))
                 .await?;

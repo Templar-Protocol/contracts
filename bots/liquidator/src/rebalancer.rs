@@ -12,7 +12,9 @@ use std::{sync::Arc, time::Instant};
 
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::json_types::U128;
-use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
+use templar_common::asset::{
+    AssetClass, BorrowAsset, CollateralAsset, FungibleAsset, FungibleAssetAmount,
+};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn, Instrument};
 
@@ -33,8 +35,6 @@ pub struct RebalanceMetrics {
     pub swaps_failed: u64,
     /// Total input amount swapped (in smallest units)
     pub total_input_amount: u128,
-    /// Total output amount received (in smallest units)
-    pub total_output_amount: u128,
     /// Total swap latency in milliseconds
     pub total_latency_ms: u128,
     /// NEP-245 tokens skipped (not swappable)
@@ -129,18 +129,18 @@ impl InventoryRebalancer {
         let swap_span = tracing::debug_span!("collateral_swap_round");
 
         async {
-            // Get current collateral balances
-            let collateral_balances = self.inventory.read().await.get_collateral_balances();
+            // Get pending swap amounts (only liquidated collateral, not entire balance)
+            let collateral_balances = self.inventory.read().await.get_pending_swap_amounts();
 
             if collateral_balances.is_empty() {
-                debug!("No collateral holdings to process");
+                debug!("No liquidated collateral pending swap");
                 return;
             }
 
             info!(
                 collateral_count = collateral_balances.len(),
                 strategy = ?self.strategy,
-                "Starting inventory rebalancing"
+                "Starting inventory rebalancing for liquidated collateral"
             );
 
             // Execute swaps based on strategy
@@ -202,8 +202,12 @@ impl InventoryRebalancer {
             // Parse asset
             match collateral_asset_str.parse::<FungibleAsset<CollateralAsset>>() {
                 Ok(collateral_asset) => {
-                    self.execute_swap(&collateral_asset, primary_asset, *balance)
-                        .await;
+                    self.execute_swap(
+                        &collateral_asset,
+                        primary_asset,
+                        FungibleAssetAmount::from(*balance),
+                    )
+                    .await;
                 }
                 Err(e) => {
                     error!(
@@ -238,16 +242,30 @@ impl InventoryRebalancer {
                     "Checking liquidation history for swap target"
                 );
 
+                // Parse collateral asset
+                let Ok(collateral_asset) =
+                    collateral_asset_str.parse::<templar_common::asset::FungibleAsset<
+                        templar_common::asset::CollateralAsset,
+                    >>()
+                else {
+                    warn!(
+                        collateral = %collateral_asset_str,
+                        "Failed to parse collateral asset, skipping"
+                    );
+                    continue;
+                };
+
                 // Only swap if we have liquidation history
                 let target_asset_str = if let Some(target) =
-                    inventory_read.get_liquidation_history(collateral_asset_str)
+                    inventory_read.get_liquidation_history(&collateral_asset)
                 {
+                    let target_str = target.to_string();
                     info!(
                         collateral = %collateral_asset_str,
-                        target = %target,
+                        target = %target_str,
                         "Found liquidation history"
                     );
-                    target.clone()
+                    target_str
                 } else {
                     debug!(
                         collateral = %collateral_asset_str,
@@ -286,7 +304,8 @@ impl InventoryRebalancer {
                 to_str.parse::<FungibleAsset<BorrowAsset>>(),
             ) {
                 (Ok(from_asset), Ok(to_asset)) => {
-                    self.execute_swap(&from_asset, &to_asset, amount).await;
+                    self.execute_swap(&from_asset, &to_asset, FungibleAssetAmount::from(amount))
+                        .await;
                 }
                 _ => {
                     error!(
@@ -301,13 +320,12 @@ impl InventoryRebalancer {
 
     /// Execute a swap with metrics tracking
     #[allow(clippy::too_many_lines)]
-    async fn execute_swap<F, T>(
+    async fn execute_swap<T>(
         &mut self,
-        from_asset: &FungibleAsset<F>,
+        from_asset: &FungibleAsset<CollateralAsset>,
         to_asset: &FungibleAsset<T>,
-        amount: U128,
+        input_amount: FungibleAssetAmount<CollateralAsset>,
     ) where
-        F: AssetClass,
         T: AssetClass,
     {
         self.metrics.swaps_attempted += 1;
@@ -331,7 +349,7 @@ impl InventoryRebalancer {
         info!(
             from = %from_asset,
             to = %to_asset,
-            amount = %amount.0,
+            input_amount = %u128::from(input_amount),
             provider = %provider_name,
             "Starting swap execution"
         );
@@ -353,63 +371,33 @@ impl InventoryRebalancer {
             info!(
                 from = %from_asset,
                 to = %to_asset,
-                amount = %amount.0,
+                input_amount = %u128::from(input_amount),
                 provider = %provider_name,
                 "[DRY RUN] Skipping swap"
             );
             return;
         }
 
-        // Get quote or use full amount for input-based swaps
-        let input_amount = if swap_provider.provider_name() == "RefFinance" {
-            // Ref Finance uses input amount, not output
-            info!(
-                from = %from_asset,
-                to = %to_asset,
-                amount = %amount.0,
-                "Using full amount for input-based swap"
-            );
-            amount
-        } else {
-            // For output-based swaps, get quote
-            match swap_provider.quote(from_asset, to_asset, amount).await {
-                Ok(input) => {
-                    info!(
-                        from = %from_asset,
-                        to = %to_asset,
-                        input_amount = %input.0,
-                        output_amount = %amount.0,
-                        "Quote received"
-                    );
-                    input
-                }
-                Err(e) => {
-                    self.metrics.swaps_failed += 1;
-                    error!(
-                        from = %from_asset,
-                        to = %to_asset,
-                        error = %e,
-                        "Failed to get swap quote"
-                    );
-                    return;
-                }
-            }
-        };
+        // Execute swap with input amount (all providers use input-based swaps for rebalancing)
+        info!(
+            from = %from_asset,
+            to = %to_asset,
+            input_amount = %u128::from(input_amount),
+            "Executing input-based swap"
+        );
 
         // Execute swap
         match swap_provider.swap(from_asset, to_asset, input_amount).await {
             Ok(FinalExecutionStatus::SuccessValue(_)) => {
                 let latency = swap_start.elapsed().as_millis();
                 self.metrics.swaps_successful += 1;
-                self.metrics.total_input_amount += input_amount.0;
-                self.metrics.total_output_amount += amount.0;
+                self.metrics.total_input_amount += u128::from(input_amount);
                 self.metrics.total_latency_ms += latency;
 
                 info!(
                     from = %from_asset,
                     to = %to_asset,
-                    input = %input_amount.0,
-                    output = %amount.0,
+                    input = %u128::from(input_amount),
                     latency_ms = latency,
                     "Swap completed successfully"
                 );
@@ -418,7 +406,7 @@ impl InventoryRebalancer {
                 self.inventory
                     .write()
                     .await
-                    .clear_liquidation_history(&from_asset.to_string());
+                    .clear_liquidation_history(from_asset);
             }
             Ok(status) => {
                 self.metrics.swaps_failed += 1;

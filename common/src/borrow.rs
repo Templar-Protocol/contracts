@@ -338,7 +338,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                     .0
                     .checked_sub(prev_end_timestamp_ms)
                     .unwrap_or_else(|| {
-                        env::panic_str(&format!(
+                        crate::panic_with_message(&format!(
                             "Invariant violation: Snapshot timestamp decrease at time chunk #{}.",
                             u64::from(snapshot.time_chunk.0),
                         ))

@@ -15,11 +15,16 @@
 
 use near_sdk::json_types::U128;
 use templar_common::{
-    borrow::BorrowPosition, market::MarketConfiguration, oracle::pyth::OracleResponse,
+    asset::CollateralAssetAmount, borrow::BorrowPosition, market::MarketConfiguration,
+    oracle::pyth::OracleResponse,
 };
 use tracing::debug;
 
 use crate::LiquidatorResult;
+
+/// Minimum liquidation amount for 6-decimal tokens (e.g., USDC, USDT)
+/// This represents approximately $0.02 USD for stablecoins
+const MIN_LIQUIDATION_AMOUNT_6_DECIMALS: u128 = 20_000;
 
 /// Core trait for liquidation strategies.
 ///
@@ -179,9 +184,7 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         let total_collateral = position.collateral_asset_deposit;
         let target_collateral_u128 =
             u128::from(total_collateral) * u128::from(self.target_percentage) / 100;
-        let target_collateral = templar_common::asset::FungibleAssetAmount::<
-            templar_common::asset::CollateralAsset,
-        >::new(target_collateral_u128);
+        let target_collateral = CollateralAssetAmount::from(target_collateral_u128);
 
         // Calculate minimum acceptable liquidation amount for this collateral
         let min_for_target =
@@ -214,27 +217,18 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
             U128(liquidation_with_buffer)
         };
 
-        // Ensure the amount is still economically viable
-        // (at least 10% of full liquidation, or we're wasting gas)
-        let full_amount =
-            configuration.minimum_acceptable_liquidation_amount(total_collateral, &price_pair);
+        // Ensure the amount is economically viable (at least ~$0.02 USD value)
+        // This prevents wasting gas on dust liquidations
+        let final_u128: u128 = final_liquidation_amount.into();
 
-        if let Some(full) = full_amount {
-            let full_u128: u128 = full.into();
-            let minimum_viable = U128((full_u128 * 10) / 100);
-            let final_u128: u128 = final_liquidation_amount.into();
-            let min_viable_u128: u128 = minimum_viable.into();
-
-            if final_u128 < min_viable_u128 {
-                tracing::warn!(
-                    amount = %final_u128,
-                    minimum_viable = %min_viable_u128,
-                    full_amount = %full_u128,
-                    available_balance = %available_u128,
-                    "Liquidation amount too small to be economically viable (< 10% of full amount)"
-                );
-                return Ok(None);
-            }
+        if final_u128 < MIN_LIQUIDATION_AMOUNT_6_DECIMALS {
+            tracing::warn!(
+                amount = %final_u128,
+                minimum_threshold = %MIN_LIQUIDATION_AMOUNT_6_DECIMALS,
+                available_balance = %available_u128,
+                "Liquidation amount too small to be economically viable (< $0.02)"
+            );
+            return Ok(None);
         }
 
         debug!(

@@ -5,16 +5,16 @@
 //! - Inventory refresh (updating asset balances)
 //! - Liquidation rounds (scanning and executing liquidations)
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use near_crypto::{InMemorySigner, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
-use tokio::{sync::RwLock, time::sleep};
+use tokio::{
+    select,
+    sync::RwLock,
+    time::{interval, sleep, Duration as TokioDuration, MissedTickBehavior},
+};
 use tracing::Instrument;
 
 use crate::{
@@ -160,7 +160,7 @@ impl LiquidatorService {
             }
         } else {
             tracing::warn!(
-                "REF_CONTRACT not configured - set to v2.ref-finance.near (mainnet) or v2.ref-labs.near (testnet)"
+                "REF_CONTRACT not configured - set to v2.ref-finance.near (mainnet) or ref-finance-101.testnet"
             );
             None
         };
@@ -188,75 +188,99 @@ impl LiquidatorService {
 
     /// Run the service event loop
     pub async fn run(mut self) {
-        let registry_refresh_interval = Duration::from_secs(self.config.registry_refresh_interval);
+        // Create intervals for periodic tasks
+        let mut registry_interval = interval(TokioDuration::from_secs(
+            self.config.registry_refresh_interval,
+        ));
+        registry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let mut next_registry_refresh = Instant::now();
+        let mut liquidation_interval = interval(TokioDuration::from_secs(
+            self.config.liquidation_scan_interval,
+        ));
+        liquidation_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        // Run initial registry refresh immediately
+        match self.refresh_registry().await {
+            Ok(()) => {
+                tracing::info!("Initial registry refresh completed successfully");
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "Initial registry refresh failed, will retry later"
+                );
+            }
+        }
+
+        // Reset the registry interval to start timing from now
+        registry_interval.reset();
 
         loop {
-            // Refresh market registry
-            if Instant::now() >= next_registry_refresh {
-                match self.refresh_registry().await {
-                    Ok(()) => {
-                        tracing::info!("Registry refresh completed successfully");
-                        next_registry_refresh = Instant::now() + registry_refresh_interval;
-                    }
-                    Err(e) => {
-                        if is_rate_limit_error(&e) {
-                            tracing::error!(
-                                error = %e,
-                                "Rate limit hit during registry refresh, will retry in 60 seconds"
-                            );
-                            next_registry_refresh = Instant::now() + Duration::from_secs(60);
-                        } else {
-                            tracing::error!(
-                                error = %e,
-                                "Registry refresh failed, will retry in 5 minutes"
-                            );
-                            next_registry_refresh = Instant::now() + Duration::from_secs(300);
+            select! {
+                _ = registry_interval.tick() => {
+                    match self.refresh_registry().await {
+                        Ok(()) => {
+                            tracing::info!("Registry refresh completed successfully");
                         }
+                        Err(e) => {
+                            if is_rate_limit_error(&e) {
+                                tracing::error!(
+                                    error = %e,
+                                    "Rate limit hit during registry refresh, will retry in 60 seconds"
+                                );
+                                // Reset interval to retry in 60 seconds
+                                registry_interval.reset_after(TokioDuration::from_secs(60));
+                            } else {
+                                tracing::error!(
+                                    error = %e,
+                                    "Registry refresh failed, will retry in 5 minutes"
+                                );
+                                // Reset interval to retry in 5 minutes
+                                registry_interval.reset_after(TokioDuration::from_secs(300));
+                            }
 
-                        if self.markets.is_empty() {
-                            tracing::warn!("No markets available yet, waiting before retry");
-                            sleep(Duration::from_secs(10)).await;
-                            continue;
+                            if self.markets.is_empty() {
+                                tracing::warn!("No markets available yet, skipping liquidation round");
+                                continue;
+                            }
                         }
                     }
                 }
-            }
+                _ = liquidation_interval.tick() => {
+                    // Refresh borrow asset inventory before liquidations
+                    self.refresh_inventory().await;
 
-            // Refresh borrow asset inventory before liquidations
-            self.refresh_inventory().await;
+                    // Run liquidation round
+                    self.run_liquidation_round().await;
 
-            // Run liquidation round
-            self.run_liquidation_round().await;
-
-            // Refresh collateral inventory after liquidations
-            match self.inventory.write().await.refresh_collateral().await {
-                Ok(balances) => {
-                    let count = balances.len();
-                    if count > 0 {
-                        tracing::info!(
-                            collateral_asset_count = count,
-                            "Collateral inventory refreshed"
-                        );
+                    // Refresh collateral inventory after liquidations
+                    match self.inventory.write().await.refresh_collateral().await {
+                        Ok(balances) => {
+                            let count = balances.len();
+                            if count > 0 {
+                                tracing::info!(
+                                    collateral_asset_count = count,
+                                    "Collateral inventory refreshed"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = ?e,
+                                "Failed to refresh collateral inventory"
+                            );
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = ?e,
-                        "Failed to refresh collateral inventory"
+
+                    // Rebalance inventory based on collateral strategy
+                    self.rebalancer.rebalance().await;
+
+                    tracing::info!(
+                        interval_seconds = self.config.liquidation_scan_interval,
+                        "Liquidation round completed"
                     );
                 }
             }
-
-            // Rebalance inventory based on collateral strategy
-            self.rebalancer.rebalance().await;
-
-            tracing::info!(
-                interval_seconds = self.config.liquidation_scan_interval,
-                "Round completed, sleeping before next run"
-            );
-            sleep(Duration::from_secs(self.config.liquidation_scan_interval)).await;
         }
     }
 
@@ -392,7 +416,7 @@ impl LiquidatorService {
                     &self.client,
                     market.clone(),
                     "get_configuration",
-                    serde_json::json!({}),
+                    near_sdk::serde_json::json!({}),
                 )
                 .await
                 {

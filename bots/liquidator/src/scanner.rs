@@ -113,7 +113,8 @@ impl MarketScanner {
 
     /// Checks if a position is liquidatable.
     ///
-    /// Returns (`is_liquidatable`, reason)
+    /// Returns `Some(reason)` if the position is liquidatable with the liquidation reason,
+    /// or `None` if the position is not liquidatable.
     ///
     /// # Errors
     ///
@@ -122,35 +123,26 @@ impl MarketScanner {
         &self,
         account_id: &AccountId,
         oracle_response: &OracleResponse,
-    ) -> LiquidatorResult<(bool, Option<String>)> {
+    ) -> LiquidatorResult<Option<String>> {
         let status = self
             .get_borrow_status(account_id, oracle_response)
             .await
             .map_err(LiquidatorError::FetchBorrowStatus)?;
 
         match status {
-            Some(BorrowStatus::Liquidation(reason)) => Ok((true, Some(format!("{reason:?}")))),
-            Some(_) | None => Ok((false, None)),
+            Some(BorrowStatus::Liquidation(reason)) => Ok(Some(format!("{reason:?}"))),
+            Some(_) | None => Ok(None),
         }
     }
 
-    /// Tests if the market is compatible.
-    /// Returns Ok(()) if compatible, Err otherwise.
+    /// Tests if the market is compatible by verifying its version via NEP-330.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the market version is not supported, including the
+    /// actual version and minimum required version in the error message.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn test_market_compatibility(&self) -> LiquidatorResult<()> {
-        let is_compatible = self.is_market_compatible().await?;
-        if !is_compatible {
-            return Err(LiquidatorError::StrategyError(
-                "Market version is not supported".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Checks if the market contract is compatible by verifying its version via NEP-330.
-    /// Returns true if version >= min_version, false otherwise.
-    #[tracing::instrument(skip(self), level = "debug")]
-    async fn is_market_compatible(&self) -> LiquidatorResult<bool> {
         use crate::rpc::get_contract_version;
 
         let Some(version_string) = get_contract_version(&self.client, &self.market).await else {
@@ -158,7 +150,7 @@ impl MarketScanner {
                 market = %self.market,
                 "Contract does not implement NEP-330 (contract_source_metadata), assuming compatible"
             );
-            return Ok(true);
+            return Ok(());
         };
 
         // Parse semver (e.g., "1.2.3" or "0.1.0")
@@ -174,7 +166,7 @@ impl MarketScanner {
                 version = %version_string,
                 "Invalid semver format, assuming compatible"
             );
-            return Ok(true);
+            return Ok(());
         };
 
         let is_compatible = (major, minor, patch) >= Self::MIN_SUPPORTED_VERSION;
@@ -185,15 +177,19 @@ impl MarketScanner {
                 version = %version_string,
                 "Market is compatible and supported"
             );
+            Ok(())
         } else {
+            let (min_major, min_minor, min_patch) = Self::MIN_SUPPORTED_VERSION;
+            let error_msg = format!(
+                "Market version {version_string} is not supported (minimum required: {min_major}.{min_minor}.{min_patch})"
+            );
             info!(
                 market = %self.market,
                 version = %version_string,
-                min_version = "1.0.0",
+                min_version = %format!("{min_major}.{min_minor}.{min_patch}"),
                 "Skipping market - unsupported contract version"
             );
+            Err(LiquidatorError::StrategyError(error_msg))
         }
-
-        Ok(is_compatible)
     }
 }

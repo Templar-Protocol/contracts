@@ -45,8 +45,8 @@ pub use provider::SwapProviderImpl;
 pub use r#ref::RefSwap;
 
 use near_primitives::views::FinalExecutionStatus;
-use near_sdk::{json_types::U128, AccountId};
-use templar_common::asset::{AssetClass, FungibleAsset};
+use near_sdk::AccountId;
+use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 
 use crate::rpc::AppResult;
 
@@ -88,8 +88,8 @@ pub trait SwapProvider: Send + Sync {
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        output_amount: U128,
-    ) -> AppResult<U128>;
+        output_amount: FungibleAssetAmount<T>,
+    ) -> AppResult<FungibleAssetAmount<F>>;
 
     /// Executes a swap operation.
     ///
@@ -113,7 +113,7 @@ pub trait SwapProvider: Send + Sync {
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        amount: U128,
+        amount: FungibleAssetAmount<F>,
     ) -> AppResult<FinalExecutionStatus>;
 
     /// Returns the name of the swap provider for logging and debugging.

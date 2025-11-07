@@ -135,9 +135,9 @@ export RUST_LOG="debug,templar_accumulator=trace"  # Development
 ## Troubleshooting
 
 **No accumulations:**
-- Check borrow positions exist: `near view market.testnet list_borrow_positions '{"offset": 0, "count": 10}'`
+- Check borrow positions exist: `near contract call-function as-read-only market.testnet list_borrow_positions json-args '{"offset": 0, "count": 10}' network-config testnet now`
 - Verify bot running: `systemctl status accumulator`
-- Check balance: `near state accumulator.testnet`
+- Check balance: `near account view-account-summary accumulator.testnet network-config testnet now`
 
 **High failure rate:**
 - Increase `--timeout` (default: 60s)

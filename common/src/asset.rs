@@ -14,7 +14,7 @@ use near_sdk::{
     AccountId, AccountIdRef, Gas, NearToken, Promise,
 };
 
-use crate::number::Decimal;
+use crate::{number::Decimal, panic_with_message};
 
 /// Assets may be configuread as one of the supported asset types.
 ///
@@ -61,7 +61,7 @@ impl<T: AssetClass> FungibleAsset<T> {
     pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
 
     /// Gas for simple NEP-245 transfers (`mt_transfer`)
-    pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(10);
+    pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(7);
 
     /// Gas for `transfer_call` operations (includes callback to receiver)
     /// NEP-141 `ft_transfer_call`: Transfer + receiver callback execution
@@ -353,13 +353,13 @@ mod sealed {
 }
 pub trait AssetClass: sealed::Sealed + Copy + Clone + Send + Sync + std::fmt::Debug {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct CollateralAsset;
 impl sealed::Sealed for CollateralAsset {}
 impl AssetClass for CollateralAsset {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}
@@ -433,7 +433,7 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
                 .amount
                 .0
                 .checked_add(other.into().amount.0)
-                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic overflow: {message}")))
+                .unwrap_or_else(|| panic_with_message(&format!("Arithmetic overflow: {message}")))
                 .into(),
             ..self
         }
@@ -462,7 +462,7 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
                 .amount
                 .0
                 .checked_sub(other.into().amount.0)
-                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic underflow: {message}")))
+                .unwrap_or_else(|| panic_with_message(&format!("Arithmetic underflow: {message}")))
                 .into(),
             ..self
         }

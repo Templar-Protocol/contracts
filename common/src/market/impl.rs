@@ -64,7 +64,7 @@ pub struct Market {
 impl Market {
     pub fn new(prefix: impl IntoStorageKey, configuration: MarketConfiguration) -> Self {
         if let Err(e) = configuration.validate() {
-            env::panic_str(&e.to_string());
+            crate::panic_with_message(&e.to_string());
         }
 
         let prefix = prefix.into_storage_key();

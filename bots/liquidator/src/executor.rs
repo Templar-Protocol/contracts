@@ -9,10 +9,12 @@ use near_primitives::{
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
-use near_sdk::{json_types::U128, serde_json, AccountId};
+use near_sdk::{json_types::U128, AccountId};
 use std::sync::Arc;
 use templar_common::{
-    asset::{BorrowAsset, CollateralAsset, FungibleAsset},
+    asset::{
+        BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+    },
     market::{DepositMsg, LiquidateMsg},
 };
 use tracing::{debug, error, info};
@@ -79,7 +81,7 @@ impl LiquidationExecutor {
         nonce: u64,
         block_hash: CryptoHash,
     ) -> LiquidatorResult<Transaction> {
-        let msg = serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
+        let msg = near_sdk::serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
             account_id: borrow_account.clone(),
             amount: collateral_amount.map(Into::into),
         }))?;
@@ -110,16 +112,16 @@ impl LiquidationExecutor {
         borrow_account: &AccountId,
         borrow_asset: &FungibleAsset<BorrowAsset>,
         collateral_asset: &FungibleAsset<CollateralAsset>,
-        liquidation_amount: U128,
-        collateral_amount: U128,
-        expected_collateral_value: U128,
+        liquidation_amount: BorrowAssetAmount,
+        collateral_amount: CollateralAssetAmount,
+        expected_collateral_value: BorrowAssetAmount,
     ) -> LiquidatorResult<LiquidationOutcome> {
         // Dry run mode - log and skip execution
         if self.dry_run {
             info!(
                 borrower = %borrow_account,
-                liquidation_amount = %liquidation_amount.0,
-                collateral_amount = %collateral_amount.0,
+                liquidation_amount = %u128::from(liquidation_amount),
+                collateral_amount = %u128::from(collateral_amount),
                 borrow_asset = %borrow_asset,
                 "DRY RUN: Liquidatable position found, skipping execution (dry run mode enabled)"
             );
@@ -134,7 +136,7 @@ impl LiquidationExecutor {
 
         info!(
             borrower = %borrow_account,
-            liquidation_amount = %liquidation_amount.0,
+            liquidation_amount = %u128::from(liquidation_amount),
             borrow_asset = %borrow_asset,
             "Reserved inventory for liquidation"
         );
@@ -147,17 +149,17 @@ impl LiquidationExecutor {
         let tx = self.create_transfer_tx(
             borrow_asset,
             borrow_account,
-            liquidation_amount,
-            Some(collateral_amount), // Request specific collateral amount calculated by strategy
+            U128::from(liquidation_amount),
+            Some(U128::from(collateral_amount)), // Request specific collateral amount calculated by strategy
             nonce,
             block_hash,
         )?;
 
         info!(
             borrower = %borrow_account,
-            liquidation_amount = %liquidation_amount.0,
-            expected_collateral_value = %expected_collateral_value.0,
-            collateral_amount = %collateral_amount.0,
+            liquidation_amount = %u128::from(liquidation_amount),
+            expected_collateral_value = %u128::from(expected_collateral_value),
+            collateral_amount = %u128::from(collateral_amount),
             "Submitting liquidation transaction"
         );
 
@@ -173,24 +175,25 @@ impl LiquidationExecutor {
                     Ok(()) => {
                         info!(
                             borrower = %borrow_account,
-                            liquidation_amount = %liquidation_amount.0,
-                            expected_collateral_value = %expected_collateral_value.0,
-                            collateral_amount = %collateral_amount.0,
+                            liquidation_amount = %u128::from(liquidation_amount),
+                            expected_collateral_value = %u128::from(expected_collateral_value),
+                            collateral_amount = %u128::from(collateral_amount),
                             tx_duration_ms = tx_duration.as_millis(),
                             "Liquidation executed successfully (all receipts succeeded)"
                         );
 
-                        // Record liquidation history for swap-to-borrow strategy
-                        self.inventory
-                            .write()
-                            .await
-                            .record_liquidation(borrow_asset, collateral_asset);
+                        // Record liquidation history and pending swap amount for rebalancing
+                        self.inventory.write().await.record_liquidation(
+                            borrow_asset,
+                            collateral_asset,
+                            U128::from(collateral_amount),
+                        );
 
                         // Collateral is now in inventory - rebalancer will handle any swaps
                         debug!(
                             borrower = %borrow_account,
                             collateral_asset = %collateral_asset,
-                            amount = %collateral_amount.0,
+                            amount = %u128::from(collateral_amount),
                             "Collateral added to inventory"
                         );
 
@@ -205,7 +208,7 @@ impl LiquidationExecutor {
 
                         error!(
                             borrower = %borrow_account,
-                            liquidation_amount = %liquidation_amount.0,
+                            liquidation_amount = %u128::from(liquidation_amount),
                             error = %error_msg,
                             tx_hash = %outcome.transaction_outcome.id,
                             "Liquidation transaction had failed receipt, inventory released"
@@ -223,7 +226,7 @@ impl LiquidationExecutor {
 
                 error!(
                     borrower = %borrow_account,
-                    liquidation_amount = %liquidation_amount.0,
+                    liquidation_amount = %u128::from(liquidation_amount),
                     error = ?e,
                     "Liquidation RPC call failed, inventory released"
                 );

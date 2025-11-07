@@ -5,8 +5,8 @@
 //! for dynamic dispatch while maintaining type safety.
 
 use near_primitives::views::FinalExecutionStatus;
-use near_sdk::{json_types::U128, AccountId};
-use templar_common::asset::{AssetClass, FungibleAsset};
+use near_sdk::AccountId;
+use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 
 use crate::rpc::AppResult;
 
@@ -42,8 +42,8 @@ impl SwapProvider for SwapProviderImpl {
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        output_amount: U128,
-    ) -> AppResult<U128> {
+        output_amount: FungibleAssetAmount<T>,
+    ) -> AppResult<FungibleAssetAmount<F>> {
         match self {
             Self::RefFinance(provider) => provider.quote(from_asset, to_asset, output_amount).await,
             Self::OneClick(provider) => provider.quote(from_asset, to_asset, output_amount).await,
@@ -54,7 +54,7 @@ impl SwapProvider for SwapProviderImpl {
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        amount: U128,
+        amount: FungibleAssetAmount<F>,
     ) -> AppResult<FinalExecutionStatus> {
         match self {
             Self::RefFinance(provider) => provider.swap(from_asset, to_asset, amount).await,

@@ -27,6 +27,7 @@ futures = "0.3.31"
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
+near-account-id = "1.1.4"
 near-contract-standards = "5.17.2"
 near-crypto = "0.31.1"
 near-jsonrpc-client = "0.18.0"

@@ -2,7 +2,7 @@
 //!
 //! This module handles CLI argument parsing and service configuration creation.
 
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use clap::Parser;
 use near_sdk::AccountId;
@@ -13,6 +13,89 @@ use crate::{
     service::ServiceConfig,
     CollateralStrategy,
 };
+
+/// Liquidation strategy argument type for CLI parsing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiquidationStrategyArg {
+    /// Full liquidation (100%)
+    Full,
+    /// Partial liquidation (percentage specified separately)
+    Partial,
+}
+
+impl FromStr for LiquidationStrategyArg {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "full" => Ok(Self::Full),
+            "partial" => Ok(Self::Partial),
+            _ => Err(format!(
+                "Invalid liquidation strategy: '{s}'. Valid options: 'full', 'partial'"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for LiquidationStrategyArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => write!(f, "full"),
+            Self::Partial => write!(f, "partial"),
+        }
+    }
+}
+
+/// Collateral strategy argument type for CLI parsing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollateralStrategyArg {
+    /// Hold collateral as received
+    Hold,
+    /// Swap collateral to a primary asset (requires `primary_asset` config)
+    SwapToPrimary,
+    /// Swap collateral back to borrow assets
+    SwapToBorrow,
+}
+
+impl FromStr for CollateralStrategyArg {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Normalize: convert to lowercase and replace hyphens with underscores
+        let normalized = s.to_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "hold" => Ok(Self::Hold),
+            "swap_to_primary" => Ok(Self::SwapToPrimary),
+            "swap_to_borrow" => Ok(Self::SwapToBorrow),
+            _ => Err(format!(
+                "Invalid collateral strategy: '{s}'. Valid options: 'hold', 'swap-to-primary', 'swap-to-borrow'"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for CollateralStrategyArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hold => write!(f, "hold"),
+            Self::SwapToPrimary => write!(f, "swap-to-primary"),
+            Self::SwapToBorrow => write!(f, "swap-to-borrow"),
+        }
+    }
+}
+
+/// Validator function for `partial_percentage` range
+fn validate_percentage(s: &str) -> Result<u8, String> {
+    let value: u8 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
+    if value == 0 || value > 100 {
+        return Err(format!(
+            "Partial percentage must be between 1 and 100, got {value}"
+        ));
+    }
+    Ok(value)
+}
 
 /// Command-line arguments for the liquidator bot.
 #[derive(Debug, Clone, Parser)]
@@ -57,10 +140,10 @@ pub struct Args {
 
     /// Liquidation strategy: "partial" or "full"
     #[arg(long, env = "LIQUIDATION_STRATEGY", default_value = "partial")]
-    pub liquidation_strategy: String,
+    pub liquidation_strategy: LiquidationStrategyArg,
 
     /// Partial liquidation percentage (1-100, only used with partial strategy)
-    #[arg(long, env = "PARTIAL_PERCENTAGE", default_value_t = 50)]
+    #[arg(long, env = "PARTIAL_PERCENTAGE", value_parser = validate_percentage, default_value = "50")]
     pub partial_percentage: u8,
 
     /// Minimum profit margin in basis points
@@ -73,7 +156,7 @@ pub struct Args {
 
     /// Collateral strategy: "hold", "swap-to-primary", or "swap-to-borrow"
     #[arg(long, env = "COLLATERAL_STRATEGY", default_value = "hold")]
-    pub collateral_strategy: String,
+    pub collateral_strategy: CollateralStrategyArg,
 
     /// Primary asset for `SwapToPrimary` strategy
     #[arg(long, env = "PRIMARY_ASSET")]
@@ -104,12 +187,12 @@ impl Args {
 
     /// Create a liquidation strategy from the arguments
     pub fn create_strategy(&self) -> Arc<dyn crate::liquidation_strategy::LiquidationStrategy> {
-        match self.liquidation_strategy.to_lowercase().as_str() {
-            "full" => {
+        match self.liquidation_strategy {
+            LiquidationStrategyArg::Full => {
                 tracing::info!("Using FullLiquidationStrategy (100% liquidation)");
                 Arc::new(FullLiquidationStrategy::new(self.min_profit_bps))
             }
-            "partial" => {
+            LiquidationStrategyArg::Partial => {
                 tracing::info!(
                     percentage = self.partial_percentage,
                     "Using PartialLiquidationStrategy"
@@ -119,13 +202,6 @@ impl Args {
                     self.min_profit_bps,
                 ))
             }
-            other => {
-                tracing::error!(
-                    strategy = other,
-                    "Invalid liquidation strategy, defaulting to 'full'"
-                );
-                Arc::new(FullLiquidationStrategy::new(self.min_profit_bps))
-            }
         }
     }
 
@@ -133,10 +209,8 @@ impl Args {
     fn parse_collateral_strategy(&self) -> CollateralStrategy {
         use templar_common::asset::FungibleAsset;
 
-        let normalized = self.collateral_strategy.to_lowercase().replace('-', "_");
-
-        match normalized.as_str() {
-            "swap_to_primary" => {
+        match self.collateral_strategy {
+            CollateralStrategyArg::SwapToPrimary => {
                 let Some(ref primary_asset_str) = self.primary_asset else {
                     panic!("COLLATERAL_STRATEGY=swap-to-primary requires PRIMARY_ASSET to be set");
                 };
@@ -152,19 +226,12 @@ impl Args {
                 );
                 CollateralStrategy::SwapToPrimary { primary_asset }
             }
-            "swap_to_borrow" => {
+            CollateralStrategyArg::SwapToBorrow => {
                 tracing::info!("Using SwapToBorrow strategy");
                 CollateralStrategy::SwapToBorrow
             }
-            "hold" => {
+            CollateralStrategyArg::Hold => {
                 tracing::info!("Using Hold strategy (keep collateral as received)");
-                CollateralStrategy::Hold
-            }
-            other => {
-                tracing::error!(
-                    strategy = %other,
-                    "Invalid collateral strategy, defaulting to 'hold'"
-                );
                 CollateralStrategy::Hold
             }
         }
@@ -244,11 +311,11 @@ mod tests {
             liquidation_scan_interval: 600,
             registry_refresh_interval: 3600,
             concurrency: 10,
-            liquidation_strategy: "partial".to_string(),
+            liquidation_strategy: LiquidationStrategyArg::Partial,
             partial_percentage: 50,
             min_profit_bps: 100,
             dry_run: false,
-            collateral_strategy: "hold".to_string(),
+            collateral_strategy: CollateralStrategyArg::Hold,
             primary_asset: None,
             oneclick_api_token: None,
             ref_contract: None,
@@ -260,7 +327,7 @@ mod tests {
     #[test]
     fn test_parse_collateral_strategy_swap_to_primary() {
         let mut args = create_test_args();
-        args.collateral_strategy = "swap-to-primary".to_string();
+        args.collateral_strategy = CollateralStrategyArg::SwapToPrimary;
         args.primary_asset = Some("nep141:usdc.testnet".to_string());
 
         let strategy = args.parse_collateral_strategy();
@@ -270,7 +337,7 @@ mod tests {
     #[test]
     fn test_parse_collateral_strategy_swap_to_borrow() {
         let mut args = create_test_args();
-        args.collateral_strategy = "swap-to-borrow".to_string();
+        args.collateral_strategy = CollateralStrategyArg::SwapToBorrow;
 
         let strategy = args.parse_collateral_strategy();
         assert!(matches!(strategy, CollateralStrategy::SwapToBorrow));
@@ -279,7 +346,7 @@ mod tests {
     #[test]
     fn test_parse_collateral_strategy_hold() {
         let mut args = create_test_args();
-        args.collateral_strategy = "hold".to_string();
+        args.collateral_strategy = CollateralStrategyArg::Hold;
 
         let strategy = args.parse_collateral_strategy();
         assert!(matches!(strategy, CollateralStrategy::Hold));
@@ -288,7 +355,7 @@ mod tests {
     #[test]
     fn test_create_strategy_full() {
         let mut args = create_test_args();
-        args.liquidation_strategy = "full".to_string();
+        args.liquidation_strategy = LiquidationStrategyArg::Full;
         args.min_profit_bps = 200;
 
         let strategy = args.create_strategy();
@@ -299,7 +366,7 @@ mod tests {
     #[test]
     fn test_create_strategy_partial() {
         let mut args = create_test_args();
-        args.liquidation_strategy = "partial".to_string();
+        args.liquidation_strategy = LiquidationStrategyArg::Partial;
         args.partial_percentage = 75;
         args.min_profit_bps = 150;
 
@@ -342,26 +409,63 @@ mod tests {
     }
 
     #[test]
-    fn test_collateral_strategy_normalization() {
-        let mut args = create_test_args();
-
+    fn test_collateral_strategy_parsing() {
         // Test hyphenated version
-        args.collateral_strategy = "swap-to-borrow".to_string();
-        let strategy1 = args.parse_collateral_strategy();
-        assert!(matches!(strategy1, CollateralStrategy::SwapToBorrow));
+        let result1 = "swap-to-borrow".parse::<CollateralStrategyArg>();
+        assert!(result1.is_ok());
+        assert_eq!(result1.unwrap(), CollateralStrategyArg::SwapToBorrow);
 
         // Test underscored version
-        args.collateral_strategy = "swap_to_borrow".to_string();
-        let strategy2 = args.parse_collateral_strategy();
-        assert!(matches!(strategy2, CollateralStrategy::SwapToBorrow));
+        let result2 = "swap_to_borrow".parse::<CollateralStrategyArg>();
+        assert!(result2.is_ok());
+        assert_eq!(result2.unwrap(), CollateralStrategyArg::SwapToBorrow);
+
+        // Test case insensitivity
+        let result3 = "HOLD".parse::<CollateralStrategyArg>();
+        assert!(result3.is_ok());
+        assert_eq!(result3.unwrap(), CollateralStrategyArg::Hold);
     }
 
     #[test]
-    fn test_invalid_strategy_defaults_to_hold() {
-        let mut args = create_test_args();
-        args.collateral_strategy = "invalid_strategy".to_string();
+    fn test_invalid_collateral_strategy() {
+        let result = "invalid_strategy".parse::<CollateralStrategyArg>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid collateral strategy"));
+    }
 
-        let strategy = args.parse_collateral_strategy();
-        assert!(matches!(strategy, CollateralStrategy::Hold));
+    #[test]
+    fn test_liquidation_strategy_parsing() {
+        // Test valid strategies
+        assert_eq!(
+            "partial".parse::<LiquidationStrategyArg>().unwrap(),
+            LiquidationStrategyArg::Partial
+        );
+        assert_eq!(
+            "full".parse::<LiquidationStrategyArg>().unwrap(),
+            LiquidationStrategyArg::Full
+        );
+        assert_eq!(
+            "FULL".parse::<LiquidationStrategyArg>().unwrap(),
+            LiquidationStrategyArg::Full
+        );
+
+        // Test invalid strategy
+        let result = "invalid".parse::<LiquidationStrategyArg>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid liquidation strategy"));
+    }
+
+    #[test]
+    fn test_percentage_validation() {
+        // Valid percentages
+        assert_eq!(validate_percentage("1").unwrap(), 1);
+        assert_eq!(validate_percentage("50").unwrap(), 50);
+        assert_eq!(validate_percentage("100").unwrap(), 100);
+
+        // Invalid percentages
+        assert!(validate_percentage("0").is_err());
+        assert!(validate_percentage("101").is_err());
+        assert!(validate_percentage("abc").is_err());
+        assert!(validate_percentage("-5").is_err());
     }
 }

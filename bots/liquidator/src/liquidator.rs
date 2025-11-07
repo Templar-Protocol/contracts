@@ -319,7 +319,7 @@ impl Liquidator {
                 borrow_asset = %self.market_config.borrow_asset,
                 liquidatable_collateral = %u128::from(liquidatable_collateral),
                 total_collateral = %u128::from(position.collateral_asset_deposit),
-                "Cannot calculate liquidation amount (check: sufficient inventory, position viability, min 10% of full amount)"
+                "Cannot calculate liquidation amount (check: sufficient inventory, position viability, minimum value threshold)"
             );
             return Ok(LiquidationOutcome::NotLiquidatable);
         };
@@ -420,9 +420,9 @@ impl Liquidator {
                 &borrow_account,
                 &self.market_config.borrow_asset,
                 &self.market_config.collateral_asset,
-                liquidation_amount,
-                collateral_amount,
-                expected_collateral_value,
+                templar_common::asset::BorrowAssetAmount::from(liquidation_amount.0),
+                templar_common::asset::CollateralAssetAmount::from(collateral_amount.0),
+                templar_common::asset::BorrowAssetAmount::from(expected_collateral_value.0),
             )
             .await
     }

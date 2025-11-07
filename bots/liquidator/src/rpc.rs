@@ -33,8 +33,8 @@ use near_primitives::{
 };
 use near_sdk::{
     near,
-    serde::{de::DeserializeOwned, Serialize},
-    serde_json, Gas,
+    serde::{de::DeserializeOwned, Deserialize, Serialize},
+    Gas,
 };
 use templar_common::borrow::BorrowPosition;
 use tokio::time::Instant;
@@ -56,7 +56,7 @@ pub enum RpcError {
     SendTransactionError(#[from] JsonRpcError<RpcTransactionError>),
     /// Failed to deserialize response
     #[error("Failed to deserialize response: {0}")]
-    DeserializeError(#[from] serde_json::Error),
+    DeserializeError(#[from] near_sdk::serde_json::Error),
     /// Timeout exceeded
     #[error("Timeout exceeded after {0}s (waited {1}s)")]
     TimeoutError(u64, u64),
@@ -88,12 +88,15 @@ pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 /// Default gas for transactions. 300 `TGas`.
 pub const DEFAULT_GAS: u64 = Gas::from_tgas(300).as_gas();
 
+/// Default timeout for view call requests (seconds)
+const VIEW_CALL_TIMEOUT_SECS: u64 = 30;
+
 /// Maximum interval between transaction status polls
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Network configuration for NEAR
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-#[near(serializers = [serde_json::json])]
+#[near(serializers = [near_sdk::serde_json::json])]
 pub enum Network {
     /// NEAR mainnet
     Mainnet,
@@ -127,7 +130,7 @@ impl Network {
 }
 
 /// Contract source metadata as defined by NEP-330
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContractSourceMetadata {
     /// Contract version (semver format)
     pub version: String,
@@ -139,7 +142,7 @@ pub struct ContractSourceMetadata {
     pub standards: Option<Vec<Standard>>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Standard {
     pub standard: String,
     pub version: String,
@@ -156,7 +159,7 @@ pub async fn get_contract_version(
         client,
         contract_id.clone(),
         "contract_source_metadata",
-        serde_json::json!({}),
+        near_sdk::serde_json::json!({}),
     )
     .await;
 
@@ -213,7 +216,7 @@ pub async fn get_access_key_data(
 /// Panics if serialization fails (which should never happen for valid types)
 #[allow(clippy::expect_used, reason = "We know the serialization will succeed")]
 pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
-    serde_json::to_vec(&data).expect("Failed to serialize data")
+    near_sdk::serde_json::to_vec(&data).expect("Failed to serialize data")
 }
 
 /// Call a view method on a NEAR contract.
@@ -228,23 +231,29 @@ pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
 /// # Returns
 ///
 /// Deserialized response of type T
-#[tracing::instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]
+#[tracing::instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?near_sdk::serde_json::to_string(&args)))]
 pub async fn view<T: DeserializeOwned>(
     client: &JsonRpcClient,
     account_id: AccountId,
     function_name: &str,
     args: impl Serialize,
 ) -> RpcResult<T> {
-    let response = client
-        .call(RpcQueryRequest {
+    // Add timeout for view calls to prevent hanging
+    let timeout_duration = tokio::time::Duration::from_secs(VIEW_CALL_TIMEOUT_SECS);
+
+    let response = tokio::time::timeout(
+        timeout_duration,
+        client.call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
             request: QueryRequest::CallFunction {
                 account_id: account_id.clone(),
                 method_name: function_name.to_owned(),
                 args: serialize_and_encode(&args).into(),
             },
-        })
-        .await?;
+        }),
+    )
+    .await
+    .map_err(|_| RpcError::TimeoutError(VIEW_CALL_TIMEOUT_SECS, VIEW_CALL_TIMEOUT_SECS))??;
 
     let QueryResponseKind::CallResult(result) = response.kind else {
         return Err(RpcError::WrongResponseKind(format!(
@@ -253,7 +262,7 @@ pub async fn view<T: DeserializeOwned>(
         )));
     };
 
-    Ok(serde_json::from_slice(&result.result)?)
+    Ok(near_sdk::serde_json::from_slice(&result.result)?)
 }
 
 /// Send a signed transaction and wait for finality.
@@ -443,7 +452,7 @@ pub async fn list_deployments(
     let mut current_offset = 0;
 
     loop {
-        let params = serde_json::json!({
+        let params = near_sdk::serde_json::json!({
             "offset": current_offset,
             "count": page_size,
         });
@@ -511,7 +520,8 @@ mod tests {
         assert!(!encoded.is_empty());
 
         // Should be able to deserialize back
-        let decoded: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        let decoded: near_sdk::serde_json::Value =
+            near_sdk::serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded["key"], "value");
         assert_eq!(decoded["number"], 42);
     }
@@ -527,7 +537,7 @@ mod tests {
     fn test_serialize_and_encode_array() {
         let data = json!([1, 2, 3]);
         let encoded = serialize_and_encode(&data);
-        let decoded: Vec<u32> = serde_json::from_slice(&encoded).unwrap();
+        let decoded: Vec<u32> = near_sdk::serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded, vec![1, 2, 3]);
     }
 

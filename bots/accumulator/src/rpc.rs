@@ -35,7 +35,7 @@ use near_primitives::{
 use near_sdk::{
     near,
     serde::{de::DeserializeOwned, Serialize},
-    serde_json, Gas,
+    Gas,
 };
 use templar_common::borrow::BorrowPosition;
 use tokio::time::Instant;
@@ -58,7 +58,7 @@ pub enum RpcError {
     SendTransactionError(#[from] JsonRpcError<RpcTransactionError>),
     /// Failed to deserialize response
     #[error("Failed to deserialize response: {0}")]
-    DeserializeError(#[from] serde_json::Error),
+    DeserializeError(#[from] near_sdk::serde_json::Error),
     /// Timeout exceeded
     #[error("Timeout exceeded after {0}s (waited {1}s)")]
     TimeoutError(u64, u64),
@@ -95,7 +95,7 @@ const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Network configuration for NEAR
 #[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
-#[near(serializers = [serde_json::json])]
+#[near(serializers = [near_sdk::serde_json::json])]
 pub enum Network {
     /// NEAR mainnet
     Mainnet,
@@ -175,7 +175,7 @@ pub async fn get_access_key_data(
 /// Panics if serialization fails (which should never happen for valid types)
 #[allow(clippy::expect_used, reason = "We know the serialization will succeed")]
 pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
-    serde_json::to_vec(&data).expect("Failed to serialize data")
+    near_sdk::serde_json::to_vec(&data).expect("Failed to serialize data")
 }
 
 /// Call a view method on a NEAR contract.
@@ -190,7 +190,7 @@ pub fn serialize_and_encode(data: impl Serialize) -> Vec<u8> {
 /// # Returns
 ///
 /// Deserialized response of type T
-#[instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?serde_json::to_string(&args)))]
+#[instrument(skip_all, level = "debug", fields(account_id = %account_id, method_name = %function_name, args = ?near_sdk::serde_json::to_string(&args)))]
 pub async fn view<T: DeserializeOwned>(
     client: &JsonRpcClient,
     account_id: AccountId,
@@ -215,7 +215,7 @@ pub async fn view<T: DeserializeOwned>(
         )));
     };
 
-    Ok(serde_json::from_slice(&result.result)?)
+    Ok(near_sdk::serde_json::from_slice(&result.result)?)
 }
 
 /// Send a signed transaction to NEAR with retry logic.
@@ -334,7 +334,7 @@ pub async fn list_deployments(
     let mut current_offset = 0;
 
     loop {
-        let params = serde_json::json!({
+        let params = near_sdk::serde_json::json!({
             "offset": current_offset,
             "count": page_size,
         });

@@ -11,8 +11,11 @@ use std::{
 };
 
 use near_jsonrpc_client::JsonRpcClient;
-use near_sdk::{json_types::U128, AccountId};
-use templar_common::asset::{BorrowAsset, CollateralAsset, FungibleAsset};
+use near_sdk::{json_types::U128, serde::Serialize, AccountId};
+use templar_common::asset::{
+    BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+    FungibleAssetAmount,
+};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -39,41 +42,46 @@ pub enum InventoryError {
 
 /// Entry tracking a single asset's inventory
 #[derive(Debug, Clone)]
-struct InventoryEntry {
+struct InventoryEntry<T: templar_common::asset::AssetClass> {
     /// Total balance
-    balance: U128,
+    balance: FungibleAssetAmount<T>,
     /// Amount reserved for pending liquidations
-    reserved: U128,
+    reserved: FungibleAssetAmount<T>,
     /// Last time this balance was updated
     last_updated: Instant,
 }
 
-impl InventoryEntry {
+impl<T: templar_common::asset::AssetClass> InventoryEntry<T> {
     /// Get available (unreserved) balance
-    fn available(&self) -> U128 {
-        U128(self.balance.0.saturating_sub(self.reserved.0))
+    fn available(&self) -> FungibleAssetAmount<T> {
+        FungibleAssetAmount::from(
+            u128::from(self.balance).saturating_sub(u128::from(self.reserved)),
+        )
     }
 
     /// Reserve amount for liquidation
-    fn reserve(&mut self, amount: U128) -> InventoryResult<()> {
-        let available = self.available().0;
-        if amount.0 > available {
+    fn reserve(&mut self, amount: FungibleAssetAmount<T>) -> InventoryResult<()> {
+        let available = u128::from(self.available());
+        let amount_u128 = u128::from(amount);
+        if amount_u128 > available {
             return Err(InventoryError::InsufficientBalance {
-                required: amount.0,
+                required: amount_u128,
                 available,
             });
         }
-        self.reserved.0 = self.reserved.0.saturating_add(amount.0);
+        self.reserved =
+            FungibleAssetAmount::from(u128::from(self.reserved).saturating_add(amount_u128));
         Ok(())
     }
 
     /// Release reserved amount
-    fn release(&mut self, amount: U128) {
-        self.reserved.0 = self.reserved.0.saturating_sub(amount.0);
+    fn release(&mut self, amount: FungibleAssetAmount<T>) {
+        self.reserved =
+            FungibleAssetAmount::from(u128::from(self.reserved).saturating_sub(u128::from(amount)));
     }
 
     /// Update balance after refresh
-    fn update_balance(&mut self, new_balance: U128) {
+    fn update_balance(&mut self, new_balance: FungibleAssetAmount<T>) {
         self.balance = new_balance;
         self.last_updated = Instant::now();
     }
@@ -91,13 +99,16 @@ pub struct InventoryManager {
     client: JsonRpcClient,
     /// Bot's account ID
     account_id: AccountId,
-    /// Tracked borrow assets and their balances (keyed by asset string representation)
-    inventory: HashMap<String, (FungibleAsset<BorrowAsset>, InventoryEntry)>,
+    /// Tracked borrow assets and their balances
+    inventory: HashMap<FungibleAsset<BorrowAsset>, InventoryEntry<BorrowAsset>>,
     /// Tracked collateral assets (received from liquidations)
-    collateral_inventory: HashMap<String, (FungibleAsset<CollateralAsset>, InventoryEntry)>,
+    collateral_inventory: HashMap<FungibleAsset<CollateralAsset>, InventoryEntry<CollateralAsset>>,
     /// Liquidation history: maps `collateral_asset` -> `borrow_asset` used to acquire it
     /// This allows us to swap collateral back to the original borrow asset
-    liquidation_history: HashMap<String, String>,
+    liquidation_history: HashMap<FungibleAsset<CollateralAsset>, FungibleAsset<BorrowAsset>>,
+    /// Pending swap amounts: tracks collateral received from liquidations awaiting swap
+    /// Maps `collateral_asset` -> cumulative amount pending swap
+    pending_swaps: HashMap<String, U128>,
     /// Minimum refresh interval to avoid excessive RPC calls
     min_refresh_interval: Duration,
     /// Last full refresh timestamp
@@ -118,6 +129,7 @@ impl InventoryManager {
             inventory: HashMap::new(),
             collateral_inventory: HashMap::new(),
             liquidation_history: HashMap::new(),
+            pending_swaps: HashMap::new(),
             min_refresh_interval: Duration::from_secs(30),
             last_full_refresh: None,
         }
@@ -147,21 +159,17 @@ impl InventoryManager {
 
         for config in market_configs {
             let asset = config.borrow_asset.clone();
-            let key = asset.to_string();
 
-            if self.inventory.contains_key(&key) {
+            if self.inventory.contains_key(&asset) {
                 existing += 1;
             } else {
                 self.inventory.insert(
-                    key.clone(),
-                    (
-                        asset.clone(),
-                        InventoryEntry {
-                            balance: U128(0),
-                            reserved: U128(0),
-                            last_updated: Instant::now(),
-                        },
-                    ),
+                    asset.clone(),
+                    InventoryEntry {
+                        balance: BorrowAssetAmount::from(0),
+                        reserved: BorrowAssetAmount::from(0),
+                        last_updated: Instant::now(),
+                    },
                 );
                 discovered += 1;
                 debug!(asset = %asset, "Discovered new asset");
@@ -186,21 +194,17 @@ impl InventoryManager {
 
         for config in market_configs {
             let asset = config.collateral_asset.clone();
-            let key = asset.to_string();
 
-            if self.collateral_inventory.contains_key(&key) {
+            if self.collateral_inventory.contains_key(&asset) {
                 existing += 1;
             } else {
                 self.collateral_inventory.insert(
-                    key.clone(),
-                    (
-                        asset.clone(),
-                        InventoryEntry {
-                            balance: U128(0),
-                            reserved: U128(0),
-                            last_updated: Instant::now(),
-                        },
-                    ),
+                    asset.clone(),
+                    InventoryEntry {
+                        balance: CollateralAssetAmount::from(0),
+                        reserved: CollateralAssetAmount::from(0),
+                        last_updated: Instant::now(),
+                    },
                 );
                 discovered += 1;
                 debug!(asset = %asset, "Discovered new collateral asset");
@@ -240,18 +244,15 @@ impl InventoryManager {
         let mut updated_assets = Vec::new();
 
         // Collect assets to query (clone to avoid borrow issues)
-        let assets_to_query: Vec<(String, FungibleAsset<BorrowAsset>)> = self
-            .inventory
-            .iter()
-            .map(|(key, (asset, _))| (key.clone(), asset.clone()))
-            .collect();
+        let assets_to_query: Vec<FungibleAsset<BorrowAsset>> =
+            self.inventory.keys().cloned().collect();
 
-        for (key, asset) in assets_to_query {
+        for asset in assets_to_query {
             match self.fetch_balance(&asset).await {
                 Ok(balance) => {
-                    if let Some((_asset, entry)) = self.inventory.get_mut(&key) {
-                        let old_balance = entry.balance.0;
-                        entry.update_balance(balance);
+                    if let Some(entry) = self.inventory.get_mut(&asset) {
+                        let old_balance = u128::from(entry.balance);
+                        entry.update_balance(BorrowAssetAmount::from(balance.0));
                         refreshed += 1;
 
                         if balance.0 != old_balance {
@@ -280,9 +281,9 @@ impl InventoryManager {
         // Show all borrow assets with non-zero balance
         let available_assets: Vec<String> = self
             .inventory
-            .values()
+            .iter()
             .filter_map(|(asset, entry)| {
-                if entry.balance.0 > 0 {
+                if u128::from(entry.balance) > 0 {
                     // Extract readable name from asset string
                     let asset_str = asset.to_string();
                     let readable_name = if let Some(stripped) = asset_str.strip_prefix("nep141:") {
@@ -339,14 +340,13 @@ impl InventoryManager {
         asset: &FungibleAsset<BorrowAsset>,
     ) -> InventoryResult<()> {
         let balance = self.fetch_balance(asset).await?;
-        let key = asset.to_string();
 
-        if let Some((_asset, entry)) = self.inventory.get_mut(&key) {
-            entry.update_balance(balance);
+        if let Some(entry) = self.inventory.get_mut(asset) {
+            entry.update_balance(BorrowAssetAmount::from(balance.0));
             debug!(
                 asset = %asset,
                 balance = balance.0,
-                available = entry.available().0,
+                available = u128::from(entry.available()),
                 "Asset balance refreshed"
             );
         } else {
@@ -360,8 +360,9 @@ impl InventoryManager {
     async fn fetch_balance(&self, asset: &FungibleAsset<BorrowAsset>) -> InventoryResult<U128> {
         let balance_action = asset.balance_of_action(&self.account_id);
 
-        let args: serde_json::Value =
-            serde_json::from_slice(&balance_action.args).map_err(RpcError::DeserializeError)?;
+        let args: near_sdk::serde_json::Value =
+            near_sdk::serde_json::from_slice(&balance_action.args)
+                .map_err(RpcError::DeserializeError)?;
 
         let balance = view::<U128>(
             &self.client,
@@ -384,26 +385,29 @@ impl InventoryManager {
     ///
     /// Available balance, or 0 if asset not tracked
     pub fn get_available_balance(&self, asset: &FungibleAsset<BorrowAsset>) -> U128 {
-        let key = asset.to_string();
-        self.inventory
-            .get(&key)
-            .map_or(U128(0), |(_, entry)| entry.available())
+        U128::from(u128::from(
+            self.inventory
+                .get(asset)
+                .map_or(BorrowAssetAmount::from(0), |entry| entry.available()),
+        ))
     }
 
     /// Gets total balance (including reserved) for an asset
     pub fn get_total_balance(&self, asset: &FungibleAsset<BorrowAsset>) -> U128 {
-        let key = asset.to_string();
-        self.inventory
-            .get(&key)
-            .map_or(U128(0), |(_, entry)| entry.balance)
+        U128::from(u128::from(
+            self.inventory
+                .get(asset)
+                .map_or(BorrowAssetAmount::from(0), |entry| entry.balance),
+        ))
     }
 
     /// Gets reserved balance for an asset
     pub fn get_reserved_balance(&self, asset: &FungibleAsset<BorrowAsset>) -> U128 {
-        let key = asset.to_string();
-        self.inventory
-            .get(&key)
-            .map_or(U128(0), |(_, entry)| entry.reserved)
+        U128::from(u128::from(
+            self.inventory
+                .get(asset)
+                .map_or(BorrowAssetAmount::from(0), |entry| entry.reserved),
+        ))
     }
 
     /// Reserves balance for a liquidation
@@ -419,21 +423,20 @@ impl InventoryManager {
     pub fn reserve(
         &mut self,
         asset: &FungibleAsset<BorrowAsset>,
-        amount: U128,
+        amount: BorrowAssetAmount,
     ) -> InventoryResult<()> {
-        let key = asset.to_string();
-        let (asset_ref, entry) = self
+        let entry = self
             .inventory
-            .get_mut(&key)
+            .get_mut(asset)
             .ok_or_else(|| InventoryError::AssetNotTracked(asset.to_string()))?;
 
         entry.reserve(amount)?;
 
         debug!(
-            asset = %asset_ref,
-            amount = amount.0,
-            available = entry.available().0,
-            reserved = entry.reserved.0,
+            asset = %asset,
+            amount = u128::from(amount),
+            available = u128::from(entry.available()),
+            reserved = u128::from(entry.reserved),
             "Reserved balance"
         );
 
@@ -446,16 +449,15 @@ impl InventoryManager {
     ///
     /// * `asset` - Asset to release
     /// * `amount` - Amount to release
-    pub fn release(&mut self, asset: &FungibleAsset<BorrowAsset>, amount: U128) {
-        let key = asset.to_string();
-        if let Some((asset_ref, entry)) = self.inventory.get_mut(&key) {
+    pub fn release(&mut self, asset: &FungibleAsset<BorrowAsset>, amount: BorrowAssetAmount) {
+        if let Some(entry) = self.inventory.get_mut(asset) {
             entry.release(amount);
 
             debug!(
-                asset = %asset_ref,
-                amount = amount.0,
-                available = entry.available().0,
-                reserved = entry.reserved.0,
+                asset = %asset,
+                amount = u128::from(amount),
+                available = u128::from(entry.available()),
+                reserved = u128::from(entry.reserved),
                 "Released balance"
             );
         }
@@ -463,10 +465,7 @@ impl InventoryManager {
 
     /// Gets all tracked assets
     pub fn tracked_assets(&self) -> Vec<FungibleAsset<BorrowAsset>> {
-        self.inventory
-            .values()
-            .map(|(asset, _)| asset.clone())
-            .collect()
+        self.inventory.keys().cloned().collect()
     }
 
     /// Gets snapshot of current inventory state for logging
@@ -474,12 +473,12 @@ impl InventoryManager {
         InventorySnapshot {
             entries: self
                 .inventory
-                .values()
+                .iter()
                 .map(|(asset, entry)| InventorySnapshotEntry {
                     asset: asset.to_string(),
-                    total: entry.balance.0,
-                    available: entry.available().0,
-                    reserved: entry.reserved.0,
+                    total: u128::from(entry.balance),
+                    available: u128::from(entry.available()),
+                    reserved: u128::from(entry.reserved),
                     last_updated_ago_ms: u64::try_from(entry.last_updated.elapsed().as_millis())
                         .unwrap_or(u64::MAX),
                 })
@@ -510,17 +509,14 @@ impl InventoryManager {
         let mut errors = 0;
 
         // Collect assets to query (clone to avoid borrow issues)
-        let assets_to_query: Vec<(String, FungibleAsset<CollateralAsset>)> = self
-            .collateral_inventory
-            .iter()
-            .map(|(key, (asset, _))| (key.clone(), asset.clone()))
-            .collect();
+        let assets_to_query: Vec<FungibleAsset<CollateralAsset>> =
+            self.collateral_inventory.keys().cloned().collect();
 
-        for (key, asset) in assets_to_query {
+        for asset in assets_to_query {
             match self.fetch_collateral_balance(&asset).await {
                 Ok(balance) => {
-                    if let Some((_asset, entry)) = self.collateral_inventory.get_mut(&key) {
-                        entry.update_balance(balance);
+                    if let Some(entry) = self.collateral_inventory.get_mut(&asset) {
+                        entry.update_balance(CollateralAssetAmount::from(balance.0));
                         refreshed += 1;
 
                         if balance.0 > 0 {
@@ -570,8 +566,9 @@ impl InventoryManager {
     ) -> InventoryResult<U128> {
         let balance_action = asset.balance_of_action(&self.account_id);
 
-        let args: serde_json::Value =
-            serde_json::from_slice(&balance_action.args).map_err(RpcError::DeserializeError)?;
+        let args: near_sdk::serde_json::Value =
+            near_sdk::serde_json::from_slice(&balance_action.args)
+                .map_err(RpcError::DeserializeError)?;
 
         let balance = view::<U128>(
             &self.client,
@@ -587,10 +584,11 @@ impl InventoryManager {
     /// Gets collateral inventory for iteration
     pub fn collateral_holdings(&self) -> Vec<(FungibleAsset<CollateralAsset>, U128)> {
         self.collateral_inventory
-            .values()
+            .iter()
             .filter_map(|(asset, entry)| {
-                if entry.balance.0 > 0 {
-                    Some((asset.clone(), entry.balance))
+                let balance_u128 = u128::from(entry.balance);
+                if balance_u128 > 0 {
+                    Some((asset.clone(), U128(balance_u128)))
                 } else {
                     None
                 }
@@ -605,9 +603,10 @@ impl InventoryManager {
     pub fn get_collateral_balances(&self) -> HashMap<String, U128> {
         self.collateral_inventory
             .iter()
-            .filter_map(|(asset_str, (_, entry))| {
-                if entry.balance.0 > 0 {
-                    Some((asset_str.clone(), entry.balance))
+            .filter_map(|(asset, entry)| {
+                let balance_u128 = u128::from(entry.balance);
+                if balance_u128 > 0 {
+                    Some((asset.to_string(), U128(balance_u128)))
                 } else {
                     None
                 }
@@ -615,54 +614,94 @@ impl InventoryManager {
             .collect()
     }
 
-    /// Records which borrow asset was used to acquire collateral
+    /// Records which borrow asset was used to acquire collateral and tracks pending swap amount
     ///
     /// Call this after a successful liquidation to track the relationship
     /// between borrow and collateral assets for swap-to-borrow strategy.
+    ///
+    /// # Arguments
+    ///
+    /// * `borrow_asset` - Borrow asset used for liquidation
+    /// * `collateral_asset` - Collateral asset received
+    /// * `collateral_amount` - Amount of collateral received (cumulative if multiple liquidations)
     pub fn record_liquidation(
         &mut self,
         borrow_asset: &FungibleAsset<BorrowAsset>,
         collateral_asset: &FungibleAsset<CollateralAsset>,
+        collateral_amount: U128,
     ) {
         let borrow_str = borrow_asset.to_string();
         let collateral_str = collateral_asset.to_string();
 
+        // Track liquidation history for swap-to-borrow strategy
+        self.liquidation_history
+            .insert(collateral_asset.clone(), borrow_asset.clone());
+
+        // Accumulate pending swap amount (in case of multiple liquidations before swap)
+        let current_pending = self
+            .pending_swaps
+            .get(&collateral_str)
+            .map_or(0, |amount| amount.0);
+        let new_pending = current_pending.saturating_add(collateral_amount.0);
+        self.pending_swaps
+            .insert(collateral_str.clone(), U128(new_pending));
+
         tracing::debug!(
             borrow = %borrow_str,
             collateral = %collateral_str,
-            "Recording liquidation history"
+            amount = %collateral_amount.0,
+            total_pending = %new_pending,
+            "Recorded liquidation and pending swap amount"
         );
-
-        self.liquidation_history.insert(collateral_str, borrow_str);
     }
 
     /// Gets the borrow asset that was used to acquire a collateral asset
     ///
     /// Returns None if no history exists for this collateral.
-    pub fn get_liquidation_history(&self, collateral_asset: &str) -> Option<&String> {
+    pub fn get_liquidation_history(
+        &self,
+        collateral_asset: &FungibleAsset<CollateralAsset>,
+    ) -> Option<&FungibleAsset<BorrowAsset>> {
         self.liquidation_history.get(collateral_asset)
     }
 
-    /// Clears liquidation history for a collateral asset after successful swap
+    /// Gets pending swap amounts for collateral assets
+    ///
+    /// Returns only the amounts tracked from liquidations, not total balance.
+    /// This is used by the rebalancer to swap only liquidated collateral.
+    pub fn get_pending_swap_amounts(&self) -> HashMap<String, U128> {
+        self.pending_swaps
+            .iter()
+            .filter(|(_, amount)| amount.0 > 0)
+            .map(|(asset, amount)| (asset.clone(), *amount))
+            .collect()
+    }
+
+    /// Clears liquidation history and pending swap amount for a collateral asset
     ///
     /// Should be called after swapping collateral back to borrow asset.
-    pub fn clear_liquidation_history(&mut self, collateral_asset: &str) {
-        if self.liquidation_history.remove(collateral_asset).is_some() {
+    pub fn clear_liquidation_history(&mut self, collateral_asset: &FungibleAsset<CollateralAsset>) {
+        let collateral_str = collateral_asset.to_string();
+        let history_cleared = self.liquidation_history.remove(collateral_asset).is_some();
+        let pending_cleared = self.pending_swaps.remove(&collateral_str);
+
+        if history_cleared || pending_cleared.is_some() {
             tracing::debug!(
-                collateral = %collateral_asset,
-                "Cleared liquidation history after successful swap"
+                collateral = %collateral_str,
+                pending_amount = ?pending_cleared,
+                "Cleared liquidation history and pending swap amount after successful swap"
             );
         }
     }
 }
 
 /// Snapshot of inventory state for logging/metrics
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InventorySnapshot {
     pub entries: Vec<InventorySnapshotEntry>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InventorySnapshotEntry {
     pub asset: String,
     pub total: u128,
@@ -685,38 +724,38 @@ mod tests {
 
     #[test]
     fn test_inventory_entry_reserve_release() {
-        let mut entry = InventoryEntry {
-            balance: U128(1000),
-            reserved: U128(0),
+        let mut entry: InventoryEntry<BorrowAsset> = InventoryEntry {
+            balance: BorrowAssetAmount::from(1000),
+            reserved: BorrowAssetAmount::from(0),
             last_updated: Instant::now(),
         };
 
         // Initial state
-        assert_eq!(entry.available().0, 1000);
+        assert_eq!(u128::from(entry.available()), 1000);
 
         // Reserve 300
-        entry.reserve(U128(300)).unwrap();
-        assert_eq!(entry.available().0, 700);
-        assert_eq!(entry.reserved.0, 300);
+        entry.reserve(BorrowAssetAmount::from(300)).unwrap();
+        assert_eq!(u128::from(entry.available()), 700);
+        assert_eq!(u128::from(entry.reserved), 300);
 
         // Reserve another 200
-        entry.reserve(U128(200)).unwrap();
-        assert_eq!(entry.available().0, 500);
-        assert_eq!(entry.reserved.0, 500);
+        entry.reserve(BorrowAssetAmount::from(200)).unwrap();
+        assert_eq!(u128::from(entry.available()), 500);
+        assert_eq!(u128::from(entry.reserved), 500);
 
         // Try to reserve more than available
-        let result = entry.reserve(U128(600));
+        let result = entry.reserve(BorrowAssetAmount::from(600));
         assert!(result.is_err());
 
         // Release 300
-        entry.release(U128(300));
-        assert_eq!(entry.available().0, 800);
-        assert_eq!(entry.reserved.0, 200);
+        entry.release(BorrowAssetAmount::from(300));
+        assert_eq!(u128::from(entry.available()), 800);
+        assert_eq!(u128::from(entry.reserved), 200);
 
         // Release remaining
-        entry.release(U128(200));
-        assert_eq!(entry.available().0, 1000);
-        assert_eq!(entry.reserved.0, 0);
+        entry.release(BorrowAssetAmount::from(200));
+        assert_eq!(u128::from(entry.available()), 1000);
+        assert_eq!(u128::from(entry.reserved), 0);
     }
 
     #[test]
@@ -726,31 +765,29 @@ mod tests {
         let mut inventory = InventoryManager::new(client, account_id);
 
         let asset = create_test_asset();
-        let key = asset.to_string();
 
         // Add asset manually
         inventory.inventory.insert(
-            key.clone(),
-            (
-                asset.clone(),
-                InventoryEntry {
-                    balance: U128(1000),
-                    reserved: U128(0),
-                    last_updated: Instant::now(),
-                },
-            ),
+            asset.clone(),
+            InventoryEntry {
+                balance: BorrowAssetAmount::from(1000),
+                reserved: BorrowAssetAmount::from(0),
+                last_updated: Instant::now(),
+            },
         );
 
         // Check available balance
         assert_eq!(inventory.get_available_balance(&asset).0, 1000);
 
         // Reserve 300
-        inventory.reserve(&asset, U128(300)).unwrap();
+        inventory
+            .reserve(&asset, BorrowAssetAmount::from(300))
+            .unwrap();
         assert_eq!(inventory.get_available_balance(&asset).0, 700);
         assert_eq!(inventory.get_reserved_balance(&asset).0, 300);
 
         // Release 100
-        inventory.release(&asset, U128(100));
+        inventory.release(&asset, BorrowAssetAmount::from(100));
         assert_eq!(inventory.get_available_balance(&asset).0, 800);
         assert_eq!(inventory.get_reserved_balance(&asset).0, 200);
     }
@@ -762,22 +799,18 @@ mod tests {
         let mut inventory = InventoryManager::new(client, account_id);
 
         let asset = create_test_asset();
-        let key = asset.to_string();
 
         inventory.inventory.insert(
-            key,
-            (
-                asset.clone(),
-                InventoryEntry {
-                    balance: U128(100),
-                    reserved: U128(0),
-                    last_updated: Instant::now(),
-                },
-            ),
+            asset.clone(),
+            InventoryEntry {
+                balance: BorrowAssetAmount::from(100),
+                reserved: BorrowAssetAmount::from(0),
+                last_updated: Instant::now(),
+            },
         );
 
         // Try to reserve more than available
-        let result = inventory.reserve(&asset, U128(200));
+        let result = inventory.reserve(&asset, BorrowAssetAmount::from(200));
         assert!(result.is_err());
     }
 
@@ -788,18 +821,14 @@ mod tests {
         let mut inventory = InventoryManager::new(client, account_id);
 
         let asset = create_test_asset();
-        let key = asset.to_string();
 
         inventory.inventory.insert(
-            key,
-            (
-                asset.clone(),
-                InventoryEntry {
-                    balance: U128(1000),
-                    reserved: U128(300),
-                    last_updated: Instant::now(),
-                },
-            ),
+            asset.clone(),
+            InventoryEntry {
+                balance: BorrowAssetAmount::from(1000),
+                reserved: BorrowAssetAmount::from(300),
+                last_updated: Instant::now(),
+            },
         );
 
         assert_eq!(inventory.get_total_balance(&asset).0, 1000);
@@ -824,18 +853,24 @@ mod tests {
         let collateral_str = collateral_asset.to_string();
 
         // Initially no history
-        assert_eq!(inventory.get_liquidation_history(&collateral_str), None);
+        assert_eq!(inventory.get_liquidation_history(&collateral_asset), None);
 
-        // Record liquidation
-        inventory.record_liquidation(&borrow_asset, &collateral_asset);
+        // Record liquidation with amount
+        inventory.record_liquidation(&borrow_asset, &collateral_asset, U128(1000));
         assert_eq!(
-            inventory.get_liquidation_history(&collateral_str),
-            Some(&borrow_asset.to_string())
+            inventory.get_liquidation_history(&collateral_asset),
+            Some(&borrow_asset)
         );
 
-        // Clear history
-        inventory.clear_liquidation_history(&collateral_str);
-        assert_eq!(inventory.get_liquidation_history(&collateral_str), None);
+        // Check pending swap amount
+        let pending = inventory.get_pending_swap_amounts();
+        assert_eq!(pending.get(&collateral_str), Some(&U128(1000)));
+
+        // Clear history (should also clear pending amount)
+        inventory.clear_liquidation_history(&collateral_asset);
+        assert_eq!(inventory.get_liquidation_history(&collateral_asset), None);
+        let pending_after = inventory.get_pending_swap_amounts();
+        assert_eq!(pending_after.get(&collateral_str), None);
     }
 
     #[test]

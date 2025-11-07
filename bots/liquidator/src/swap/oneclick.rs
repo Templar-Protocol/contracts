@@ -11,15 +11,18 @@
 use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::views::FinalExecutionStatus;
-use near_sdk::json_types::U128;
-use serde::{Deserialize, Serialize};
+use near_sdk::{
+    json_types::U128,
+    serde::{Deserialize, Serialize},
+};
 use std::sync::Arc;
-use templar_common::asset::{AssetClass, FungibleAsset};
+use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 use tracing::{debug, error, info, warn};
 
-use crate::rpc::{get_access_key_data, send_tx, AppError, AppResult};
+use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
 use crate::swap::SwapProvider;
 
+use near_account_id::AccountType;
 use near_primitives::{
     action::Action,
     transaction::{Transaction, TransactionV0},
@@ -35,6 +38,12 @@ pub const DEFAULT_MAX_SLIPPAGE_BPS: u32 = 300;
 /// Default transaction timeout in seconds
 const DEFAULT_TIMEOUT: u64 = 120;
 
+/// Polling interval for swap status checks in seconds
+const POLL_INTERVAL_SECONDS: u64 = 10;
+
+/// Maximum time to wait for swap completion in seconds (4 minutes)
+const MAX_SWAP_WAIT_SECONDS: u64 = 240;
+
 /// Swap type for the 1-Click API
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -47,6 +56,16 @@ pub enum SwapType {
     FlexInput,
     /// Any input amount
     AnyInput,
+}
+
+/// Storage balance bounds from NEP-145
+#[derive(Debug, Deserialize)]
+struct StorageBalanceBounds {
+    /// Minimum storage deposit required
+    min: U128,
+    /// Maximum storage deposit allowed (optional)
+    #[allow(dead_code)]
+    max: Option<U128>,
 }
 
 /// Quote request for the 1-Click API
@@ -320,7 +339,7 @@ impl OneClickSwap {
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        output_amount: U128,
+        input_amount: FungibleAssetAmount<F>,
     ) -> AppResult<QuoteResponse> {
         let from_asset_id = Self::to_oneclick_asset_id(from_asset);
         let to_asset_id = Self::to_oneclick_asset_id(to_asset);
@@ -354,7 +373,7 @@ impl OneClickSwap {
             origin_asset: from_asset_id.clone(),
             deposit_type: deposit_type.to_string(),
             destination_asset: to_asset_id.clone(),
-            amount: output_amount.0.to_string(), // Actually the input amount we're swapping
+            amount: u128::from(input_amount).to_string(), // Input amount we're swapping
             refund_to: recipient.clone(),
             // INTENTS: refunds go back to our NEAR account within Intents contract
             refund_type: "INTENTS".to_string(),
@@ -396,10 +415,17 @@ impl OneClickSwap {
         })?;
 
         if !status.is_success() {
-            let error_msg = match status.as_u16() {
-                400 => format!("Bad Request - Invalid input data: {response_text}"),
-                401 => format!("Unauthorized - JWT token is invalid or missing: {response_text}"),
-                404 => format!("Not Found - Endpoint or resource not found: {response_text}"),
+            use reqwest::StatusCode;
+            let error_msg = match status {
+                StatusCode::BAD_REQUEST => {
+                    format!("Bad Request - Invalid input data: {response_text}")
+                }
+                StatusCode::UNAUTHORIZED => {
+                    format!("Unauthorized - JWT token is invalid or missing: {response_text}")
+                }
+                StatusCode::NOT_FOUND => {
+                    format!("Not Found - Endpoint or resource not found: {response_text}")
+                }
                 _ => format!("Quote request failed with status {status}: {response_text}"),
             };
             error!(
@@ -410,10 +436,11 @@ impl OneClickSwap {
             return Err(AppError::ValidationError(error_msg));
         }
 
-        let quote_response: QuoteResponse = serde_json::from_str(&response_text).map_err(|e| {
-            error!(?e, response = %response_text, "Failed to parse quote response");
-            AppError::ValidationError(format!("Invalid quote response: {e}"))
-        })?;
+        let quote_response: QuoteResponse = near_sdk::serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!(?e, response = %response_text, "Failed to parse quote response");
+                AppError::ValidationError(format!("Invalid quote response: {e}"))
+            })?;
 
         info!(
             amount_in = %quote_response.quote.amount_in,
@@ -435,7 +462,9 @@ impl OneClickSwap {
         account_id: &AccountId,
     ) -> AppResult<()> {
         use near_primitives::transaction::{Action, FunctionCallAction};
-        use near_sdk::NearToken;
+        use near_sdk::Gas;
+
+        const MAX_REASONABLE_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
 
         info!(
             token = %token_contract.contract_id(),
@@ -443,18 +472,48 @@ impl OneClickSwap {
             "Registering storage deposit for account"
         );
 
+        // Query storage_balance_bounds to get minimum deposit required
+        let bounds: StorageBalanceBounds = view(
+            &self.client,
+            token_contract.contract_id().into(),
+            "storage_balance_bounds",
+            near_sdk::serde_json::json!({}),
+        )
+        .await
+        .map_err(|e| {
+            error!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
+            AppError::Rpc(e)
+        })?;
+
+        let min_deposit = bounds.min.0;
+
+        // Validate minimum deposit is reasonable (less than 0.1 NEAR)
+        if min_deposit > MAX_REASONABLE_DEPOSIT {
+            return Err(AppError::ValidationError(format!(
+                "Storage deposit minimum ({min_deposit} yoctoNEAR) exceeds reasonable limit ({MAX_REASONABLE_DEPOSIT} yoctoNEAR / 0.1 NEAR)"
+            )));
+        }
+
+        #[allow(clippy::cast_precision_loss)]
+        let min_deposit_near = min_deposit as f64 / 1e24;
+
+        info!(
+            token = %token_contract.contract_id(),
+            min_deposit_near = %min_deposit_near,
+            "Using storage deposit minimum from contract"
+        );
+
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-        // Call storage_deposit with 0.00125 NEAR (typical storage cost)
         let storage_deposit_action = FunctionCallAction {
             method_name: "storage_deposit".to_string(),
-            args: serde_json::to_vec(&serde_json::json!({
+            args: near_sdk::serde_json::to_vec(&near_sdk::serde_json::json!({
                 "account_id": account_id,
                 "registration_only": true,
             }))
             .map_err(|e| AppError::ValidationError(format!("Failed to serialize args: {e}")))?,
-            gas: 10_000_000_000_000, // 10 TGas
-            deposit: NearToken::from_millinear(1_250).as_yoctonear(), // 0.00125 NEAR
+            gas: Gas::from_tgas(10).as_gas(),
+            deposit: min_deposit,
         };
 
         let tx = Transaction::V0(TransactionV0 {
@@ -514,23 +573,14 @@ impl OneClickSwap {
         );
 
         // Parse deposit address as NEAR account ID
-        // For INTENTS depositType, this is a 64-char hex implicit account
-        let deposit_account: AccountId = if deposit_address.len() == 64 {
-            // Implicit account - just use the hex string as-is
-            deposit_address.to_string().try_into().map_err(|e| {
-                error!(?e, deposit_address = %deposit_address, "Invalid implicit account");
-                AppError::ValidationError(format!("Invalid implicit account: {e}"))
-            })?
-        } else {
-            deposit_address.parse().map_err(|e| {
-                error!(?e, deposit_address = %deposit_address, "Invalid deposit address");
-                AppError::ValidationError(format!("Invalid deposit address: {e}"))
-            })?
-        };
+        let deposit_account: AccountId = deposit_address.parse().map_err(|e| {
+            error!(?e, deposit_address = %deposit_address, "Invalid deposit address");
+            AppError::ValidationError(format!("Invalid deposit address: {e}"))
+        })?;
 
-        // For implicit accounts (64-char hex), we need to ensure they exist first
+        // For implicit accounts, we need to ensure they exist first
         // by sending a small amount of NEAR to create the account
-        if deposit_address.len() == 64 {
+        if deposit_account.get_account_type() == AccountType::NearImplicitAccount {
             info!(
                 deposit_account = %deposit_account,
                 "Creating implicit account with NEAR transfer"
@@ -538,7 +588,7 @@ impl OneClickSwap {
 
             let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-            // Send 0.01 NEAR to create the implicit account
+            // Send 1 yoctoNEAR to create the implicit account (minimum amount needed)
             let create_account_tx = Transaction::V0(TransactionV0 {
                 nonce,
                 receiver_id: deposit_account.clone(),
@@ -546,7 +596,7 @@ impl OneClickSwap {
                 signer_id: self.signer.get_account_id(),
                 public_key: self.signer.public_key().clone(),
                 actions: vec![Action::Transfer(near_primitives::action::TransferAction {
-                    deposit: 10_000_000_000_000_000_000_000, // 0.01 NEAR
+                    deposit: 1, // 1 yoctoNEAR
                 })],
             });
 
@@ -633,17 +683,19 @@ impl OneClickSwap {
             .check_deposit_refunded(&tx_hash_str, &deposit_account, amount)
             .await
         {
-            Ok(true) => {
+            Ok(Some(refund_amount)) => {
                 error!(
                     tx_hash = %tx_hash_str,
                     deposit_account = %deposit_account,
+                    refund_amount = %refund_amount.0,
                     "Deposit was refunded - 1-Click rejected the deposit"
                 );
-                return Err(AppError::ValidationError(
-                    "Deposit was refunded by 1-Click deposit address".to_string(),
-                ));
+                return Err(AppError::ValidationError(format!(
+                    "Deposit was refunded by 1-Click deposit address (amount: {})",
+                    refund_amount.0
+                )));
             }
-            Ok(false) => {
+            Ok(None) => {
                 info!(tx_hash = %tx_hash_str, "Deposit was accepted (not refunded)");
             }
             Err(e) => {
@@ -659,13 +711,13 @@ impl OneClickSwap {
 
     /// Checks if a deposit was refunded by examining transaction receipts.
     ///
-    /// Returns true if the full amount was refunded back to sender.
+    /// Returns the amount refunded if the deposit was rejected, or None if successful.
     async fn check_deposit_refunded(
         &self,
         tx_hash: &str,
         deposit_account: &AccountId,
         _amount: U128,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<U128>> {
         use near_jsonrpc_client::methods::tx::{RpcTransactionStatusRequest, TransactionInfo};
         use near_primitives::views::TxExecutionStatus;
 
@@ -689,9 +741,9 @@ impl OneClickSwap {
 
         // Check receipt outcomes for token transfers
         // If we see a transfer TO deposit_account followed by a transfer FROM deposit_account
-        // back to us with the same amount, it was refunded
+        // back to us, extract the refund amount
         let mut tokens_sent = false;
-        let mut tokens_returned = false;
+        let mut refund_amount: Option<U128> = None;
 
         // Get receipts from the transaction result
         let receipts = match &tx_result.final_execution_outcome {
@@ -719,7 +771,7 @@ impl OneClickSwap {
             for log in &receipt.outcome.logs {
                 // Check for NEP-141 transfer events
                 if log.contains("EVENT_JSON") && log.contains("ft_transfer") {
-                    // Parse the event to check direction
+                    // Parse the event to check direction and extract amount
                     if log.contains(&format!("\"new_owner_id\":\"{deposit_account}\"")) {
                         tokens_sent = true;
                     }
@@ -729,14 +781,37 @@ impl OneClickSwap {
                             self.signer.get_account_id()
                         ))
                     {
-                        tokens_returned = true;
+                        // Extract amount from the event JSON
+                        // Format: EVENT_JSON:{"standard":"nep141",...,"data":[{"amount":"..."}]}
+                        if let Some(amount_str) = Self::extract_transfer_amount(log) {
+                            if let Ok(amount_value) = amount_str.parse::<u128>() {
+                                refund_amount = Some(U128(amount_value));
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // If both sent and returned, it was refunded
-        Ok(tokens_sent && tokens_returned)
+        // Return refund amount if both sent and returned
+        if tokens_sent && refund_amount.is_some() {
+            Ok(refund_amount)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Extracts the transfer amount from a NEP-141 `EVENT_JSON` log entry.
+    fn extract_transfer_amount(log: &str) -> Option<String> {
+        // Format: EVENT_JSON:{"standard":"nep141",...,"data":[{"amount":"12345",...}]}
+        // Find the "amount" field value
+        if let Some(amount_start) = log.find(r#""amount":""#) {
+            let amount_start = amount_start + r#""amount":""#.len();
+            if let Some(amount_end) = log[amount_start..].find('"') {
+                return Some(log[amount_start..amount_start + amount_end].to_string());
+            }
+        }
+        None
     }
 
     /// Notifies 1-Click API of the deposit.
@@ -766,12 +841,19 @@ impl OneClickSwap {
         })?;
 
         if !response.status().is_success() {
+            use reqwest::StatusCode;
             let status = response.status();
             let response_text = response.text().await.unwrap_or_default();
-            let error_msg = match status.as_u16() {
-                400 => format!("Bad Request - Invalid deposit data: {response_text}"),
-                401 => format!("Unauthorized - JWT token is invalid: {response_text}"),
-                404 => format!("Not Found - Deposit address not found: {response_text}"),
+            let error_msg = match status {
+                StatusCode::BAD_REQUEST => {
+                    format!("Bad Request - Invalid deposit data: {response_text}")
+                }
+                StatusCode::UNAUTHORIZED => {
+                    format!("Unauthorized - JWT token is invalid: {response_text}")
+                }
+                StatusCode::NOT_FOUND => {
+                    format!("Not Found - Deposit address not found: {response_text}")
+                }
                 _ => format!("Deposit submission failed with status {status}: {response_text}"),
             };
             error!(
@@ -793,8 +875,7 @@ impl OneClickSwap {
         memo: Option<&str>,
         max_wait_seconds: u64,
     ) -> AppResult<SwapStatus> {
-        let poll_interval = 10; // Poll every 10 seconds
-        let max_attempts = max_wait_seconds / poll_interval;
+        let max_attempts = max_wait_seconds / POLL_INTERVAL_SECONDS;
 
         info!(
             deposit_address = %deposit_address,
@@ -803,7 +884,7 @@ impl OneClickSwap {
         );
 
         for attempt in 1..=max_attempts {
-            tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECONDS)).await;
 
             let mut url = format!("{ONECLICK_API_BASE}/v0/status?depositAddress={deposit_address}");
             if let Some(m) = memo {
@@ -824,14 +905,15 @@ impl OneClickSwap {
             };
 
             if !response.status().is_success() {
+                use reqwest::StatusCode;
                 let status_code = response.status();
                 let error_text = response.text().await.unwrap_or_default();
-                match status_code.as_u16() {
-                    401 => warn!(
+                match status_code {
+                    StatusCode::UNAUTHORIZED => warn!(
                         attempt = %attempt,
                         "Unauthorized - JWT token may be invalid"
                     ),
-                    404 => warn!(
+                    StatusCode::NOT_FOUND => warn!(
                         attempt = %attempt,
                         deposit_address = %deposit_address,
                         "Deposit address not found - swap may not have been initiated yet"
@@ -857,7 +939,9 @@ impl OneClickSwap {
 
             debug!(response = %response_text, "Raw status response");
 
-            let status_response: StatusResponse = match serde_json::from_str(&response_text) {
+            let status_response: StatusResponse = match near_sdk::serde_json::from_str(
+                &response_text,
+            ) {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(?e, response = %response_text, attempt = %attempt, "Failed to parse status response");
@@ -906,52 +990,35 @@ impl SwapProvider for OneClickSwap {
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
-        output_amount = %output_amount.0
+        output_amount = %output_amount
     ))]
     async fn quote<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        output_amount: U128, // NOTE: For EXACT_INPUT, this is actually the input amount
-    ) -> AppResult<U128> {
-        let quote_response = self
-            .request_quote(from_asset, to_asset, output_amount)
-            .await?;
+        output_amount: FungibleAssetAmount<T>,
+    ) -> AppResult<FungibleAssetAmount<F>> {
+        // Silence unused warnings - parameters needed for tracing
+        let _ = (from_asset, to_asset, output_amount);
 
-        // With EXACT_INPUT: amount_in is what we send, amount_out is what we'll receive
-        // The trait returns the "required input" but for EXACT_INPUT, we already know the input
-        // So we return the input amount (which should match what we requested)
-        let input_amount: u128 = quote_response.quote.amount_in.parse().map_err(|e| {
-            error!(?e, amount = %quote_response.quote.amount_in, "Failed to parse input amount");
-            AppError::ValidationError(format!("Invalid input amount: {e}"))
-        })?;
-
-        let output_amount_received: u128 = quote_response.quote.amount_out.parse().map_err(|e| {
-            error!(?e, amount = %quote_response.quote.amount_out, "Failed to parse output amount");
-            AppError::ValidationError(format!("Invalid output amount: {e}"))
-        })?;
-
-        debug!(
-            input_amount = %input_amount,
-            output_amount = %output_amount_received,
-            "1-Click quote received (EXACT_INPUT mode)"
-        );
-
-        // Return the input amount (should match what caller requested)
-        Ok(U128(input_amount))
+        // OneClick uses EXACT_INPUT mode, so output-based quotes are not supported.
+        // For the rebalancer use case, call swap() directly with the input amount.
+        Err(AppError::ValidationError(
+            "OneClick provider only supports EXACT_INPUT swaps. Use swap() directly with input amount.".to_string()
+        ))
     }
 
     #[tracing::instrument(skip(self), level = "info", fields(
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
-        amount = %amount.0
+        amount = %amount
     ))]
     async fn swap<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        amount: U128,
+        amount: FungibleAssetAmount<F>,
     ) -> AppResult<FinalExecutionStatus> {
         // Step 1: Get quote with deposit address
         let quote_response = self.request_quote(from_asset, to_asset, amount).await?;
@@ -973,8 +1040,10 @@ impl SwapProvider for OneClickSwap {
         // Step 3: Notify 1-Click of deposit
         self.submit_deposit(&tx_hash, deposit_address, memo).await?;
 
-        // Step 4: Poll for completion (wait up to 4 minutes)
-        let status = self.poll_swap_status(deposit_address, memo, 240).await?;
+        // Step 4: Poll for completion
+        let status = self
+            .poll_swap_status(deposit_address, memo, MAX_SWAP_WAIT_SECONDS)
+            .await?;
 
         if status == SwapStatus::Success {
             info!("1-Click swap completed successfully");

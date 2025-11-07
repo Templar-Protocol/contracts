@@ -35,7 +35,9 @@ impl TimeChunkConfiguration {
     pub fn duration_ms(&self) -> u64 {
         match self {
             TimeChunkConfiguration::V0(V0::BlockTimestampMs { divisor }) => divisor.0,
-            TimeChunkConfiguration::V0(_) => env::panic_str("Unsupported time chunk configuration"),
+            TimeChunkConfiguration::V0(_) => {
+                crate::panic_with_message("Unsupported time chunk configuration")
+            }
             TimeChunkConfiguration::V1(v1) => v1.duration_ms.0,
         }
     }

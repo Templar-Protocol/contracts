@@ -12,13 +12,27 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     views::FinalExecutionStatus,
 };
-use near_sdk::{json_types::U128, serde_json, AccountId};
-use templar_common::asset::{AssetClass, FungibleAsset};
+use near_sdk::{
+    json_types::U128,
+    serde::{Deserialize, Serialize},
+    AccountId, Gas,
+};
+use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 use tracing::{debug, info};
 
-use crate::rpc::{get_access_key_data, send_tx, AppError, AppResult};
+use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
 
 use super::SwapProvider;
+
+/// Storage balance bounds from NEP-145
+#[derive(Debug, Deserialize)]
+struct StorageBalanceBounds {
+    /// Minimum storage deposit required
+    min: U128,
+    /// Maximum storage deposit allowed (optional)
+    #[allow(dead_code)]
+    max: Option<U128>,
+}
 
 /// Ref/Rhea Finance swap provider for NEP-141 tokens.
 #[derive(Debug, Clone)]
@@ -77,7 +91,7 @@ impl RefSwap {
         token_in: &AccountId,
         token_out: &AccountId,
     ) -> AppResult<Option<u64>> {
-        #[derive(serde::Deserialize)]
+        #[derive(Deserialize)]
         struct PoolInfo {
             token_account_ids: Vec<AccountId>,
             shares_total_supply: String,
@@ -105,7 +119,7 @@ impl RefSwap {
             while from_index < end {
                 let limit = std::cmp::min(batch_size, end - from_index);
 
-                let args = serde_json::json!({
+                let args = near_sdk::serde_json::json!({
                     "from_index": from_index,
                     "limit": limit
                 });
@@ -134,9 +148,10 @@ impl RefSwap {
                     }
                 };
 
-                let pools: Vec<PoolInfo> = serde_json::from_slice(&result).map_err(|e| {
-                    AppError::SerializationError(format!("Failed to parse pools: {e}"))
-                })?;
+                let pools: Vec<PoolInfo> =
+                    near_sdk::serde_json::from_slice(&result).map_err(|e| {
+                        AppError::SerializationError(format!("Failed to parse pools: {e}"))
+                    })?;
 
                 if pools.is_empty() {
                     break;
@@ -176,7 +191,7 @@ impl RefSwap {
         token_in: &AccountId,
         token_out: &AccountId,
     ) -> AppResult<Option<(u64, u64)>> {
-        #[derive(serde::Deserialize)]
+        #[derive(Deserialize)]
         struct PoolInfo {
             token_account_ids: Vec<AccountId>,
             shares_total_supply: String,
@@ -207,7 +222,7 @@ impl RefSwap {
             while from_index < end {
                 let limit = std::cmp::min(batch_size, end - from_index);
 
-                let args = serde_json::json!({
+                let args = near_sdk::serde_json::json!({
                     "from_index": from_index,
                     "limit": limit
                 });
@@ -236,9 +251,10 @@ impl RefSwap {
                     }
                 };
 
-                let pools: Vec<PoolInfo> = serde_json::from_slice(&result).map_err(|e| {
-                    AppError::SerializationError(format!("Failed to parse pools: {e}"))
-                })?;
+                let pools: Vec<PoolInfo> =
+                    near_sdk::serde_json::from_slice(&result).map_err(|e| {
+                        AppError::SerializationError(format!("Failed to parse pools: {e}"))
+                    })?;
 
                 if pools.is_empty() {
                     break;
@@ -296,7 +312,7 @@ impl RefSwap {
 }
 
 /// Swap action for Ref Finance swaps
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SwapAction {
     pool_id: u64,
     token_in: AccountId,
@@ -307,7 +323,7 @@ struct SwapAction {
 }
 
 /// Swap request message
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SwapMsg {
     force: u8,
     actions: Vec<SwapAction>,
@@ -319,14 +335,14 @@ impl SwapProvider for RefSwap {
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
-        output_amount = %_output_amount.0
+        output_amount = %_output_amount
     ))]
     async fn quote<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        _output_amount: U128,
-    ) -> AppResult<U128> {
+        _output_amount: FungibleAssetAmount<T>,
+    ) -> AppResult<FungibleAssetAmount<F>> {
         Self::validate_nep141_assets(from_asset, to_asset)?;
 
         Err(AppError::ValidationError(
@@ -338,13 +354,13 @@ impl SwapProvider for RefSwap {
         provider = %self.provider_name(),
         from = %from_asset.to_string(),
         to = %to_asset.to_string(),
-        amount = %amount.0
+        amount = %amount
     ))]
     async fn swap<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
-        amount: U128,
+        amount: FungibleAssetAmount<F>,
     ) -> AppResult<FinalExecutionStatus> {
         Self::validate_nep141_assets(from_asset, to_asset)?;
 
@@ -357,7 +373,7 @@ impl SwapProvider for RefSwap {
         info!(
             from_contract = %token_in_owned,
             to_contract = %token_out_owned,
-            amount = %amount.0,
+            amount = %amount,
             "Attempting Ref Finance swap"
         );
 
@@ -368,8 +384,9 @@ impl SwapProvider for RefSwap {
 
         let (swap_msg, intermediate_token) = if let Some(pool_id) = pool_id_opt {
             // Direct swap
+            let amount_u128 = u128::from(amount);
             let min_amount_out =
-                U128::from(amount.0 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
+                U128::from(amount_u128 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
 
             debug!(
                 pool_id,
@@ -401,8 +418,9 @@ impl SwapProvider for RefSwap {
                     ))
                 })?;
 
+            let amount_u128 = u128::from(amount);
             let min_amount_out =
-                U128::from(amount.0 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
+                U128::from(amount_u128 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
 
             debug!(
                 pool1,
@@ -435,7 +453,7 @@ impl SwapProvider for RefSwap {
             (msg, Some(self.wnear_contract.clone()))
         };
 
-        let msg_string = serde_json::to_string(&swap_msg).map_err(|e| {
+        let msg_string = near_sdk::serde_json::to_string(&swap_msg).map_err(|e| {
             AppError::SerializationError(format!("Failed to serialize swap message: {e}"))
         })?;
 
@@ -461,13 +479,11 @@ impl SwapProvider for RefSwap {
             signer_id: self.signer.get_account_id(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(
-                from_asset.transfer_call_action(&self.contract, amount.into(), &msg_string),
+                from_asset.transfer_call_action(&self.contract, amount, &msg_string),
             ))],
         });
 
-        let outcome = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx)
-            .await
-            .map_err(AppError::from)?;
+        let outcome = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx).await?;
 
         info!("Ref Finance swap executed successfully");
 
@@ -491,12 +507,44 @@ impl SwapProvider for RefSwap {
         token_contract: &FungibleAsset<F>,
         account_id: &AccountId,
     ) -> AppResult<()> {
-        // Call storage_deposit on the token contract
+        const MAX_REASONABLE_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
+
+        // Query storage_balance_bounds to get minimum deposit required
+        let bounds: StorageBalanceBounds = view(
+            &self.client,
+            token_contract.contract_id().into(),
+            "storage_balance_bounds",
+            near_sdk::serde_json::json!({}),
+        )
+        .await
+        .map_err(|e| {
+            debug!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
+            AppError::Rpc(e)
+        })?;
+
+        let min_deposit = bounds.min.0;
+
+        // Validate minimum deposit is reasonable (less than 0.1 NEAR)
+        if min_deposit > MAX_REASONABLE_DEPOSIT {
+            return Err(AppError::ValidationError(format!(
+                "Storage deposit minimum ({min_deposit} yoctoNEAR) exceeds reasonable limit ({MAX_REASONABLE_DEPOSIT} yoctoNEAR / 0.1 NEAR)"
+            )));
+        }
+
+        #[allow(clippy::cast_precision_loss)]
+        let min_deposit_near = min_deposit as f64 / 1e24;
+
+        debug!(
+            token = %token_contract.contract_id(),
+            min_deposit_near = %min_deposit_near,
+            "Using storage deposit minimum from contract"
+        );
+
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
         let storage_deposit_action = near_primitives::action::FunctionCallAction {
             method_name: "storage_deposit".to_string(),
-            args: serde_json::to_vec(&serde_json::json!({
+            args: near_sdk::serde_json::to_vec(&near_sdk::serde_json::json!({
                 "account_id": account_id,
                 "registration_only": true,
             }))
@@ -505,8 +553,8 @@ impl SwapProvider for RefSwap {
                     "Failed to serialize storage_deposit args: {e}"
                 ))
             })?,
-            gas: 10_000_000_000_000,                // 10 TGas
-            deposit: 1_250_000_000_000_000_000_000, // 0.00125 NEAR
+            gas: Gas::from_tgas(10).as_gas(),
+            deposit: min_deposit,
         };
 
         let tx = Transaction::V0(TransactionV0 {
