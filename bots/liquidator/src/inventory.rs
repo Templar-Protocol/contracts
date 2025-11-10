@@ -693,7 +693,8 @@ impl InventoryManager {
                 "Cleared pending swap amount (zero balance)"
             );
         } else {
-            self.pending_swaps.insert(collateral_str.clone(), new_amount);
+            self.pending_swaps
+                .insert(collateral_str.clone(), new_amount);
             tracing::debug!(
                 collateral = %collateral_str,
                 amount = %new_amount.0,
