@@ -19,33 +19,6 @@ pub type ActualIdx = u32;
 pub type AllocationWeights = Vec<(AccountId, U128)>;
 pub type AllocationPlan = Vec<(AccountId, u128)>;
 
-#[derive(Clone, Debug, Default)]
-#[near(serializers = [json, borsh])]
-pub enum AllocationMode {
-    /// When eager makes sense
-    ///
-    ///  • Retail/auto-pilot vaults: users expect deposits to “start earning” immediately without an active allocator.
-    ///  • Small/simple vaults: stable caps/ordering, few markets; operational simplicity > fine-grained control.
-    ///  • Integrations that assume quick deployment of idle assets.
-    ///
-    /// Risks/trade-offs of eager
-    ///
-    ///  • Gas burden on depositors: ft_transfer_call into your vault must carry enough gas for multi-hop allocation.
-    ///    Under-provisioned gas leads to partial allocations and extra callbacks.
-    ///  • Timing control: depositors implicitly decide when allocation runs, which can fight the allocator’s planned rebalancing
-    ///    cadence.
-    ///  • Thrashing: many small deposits can trigger many allocation passes.
-    ///  • Current code is “eager-ish but incomplete”: it only auto-starts when Idle, and does not auto-restart after the op. Deposits
-    ///    that arrive during an allocation stay idle until someone triggers another pass.
-    ///
-    /// Behaviour
-    /// • On deposit: if Idle and idle_balance ≥ min_batch, start_allocation(idle_balance).
-    /// • Eager allocation can still honor a per-op plan if one is set (plan wins); otherwise fall back to supply_queue order.
-    Eager { min_batch: U128 },
-    #[default]
-    Lazy,
-}
-
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
 #[near(serializers = [json])]
@@ -78,8 +51,6 @@ impl MarketConfiguration {
 #[derive(Clone)]
 #[near(serializers = [json, borsh])]
 pub struct VaultConfiguration {
-    /// The allocation mode for this vault.
-    pub mode: AllocationMode,
     /// The account that owns this vault.
     pub owner: AccountId,
     /// The account that can submit allocation plans. See [AllocationMode].
