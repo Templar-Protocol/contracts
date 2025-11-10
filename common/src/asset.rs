@@ -14,7 +14,7 @@ use near_sdk::{
     AccountId, AccountIdRef, Gas, NearToken, Promise,
 };
 
-use crate::number::Decimal;
+use crate::{number::Decimal, panic_with_message};
 
 /// Assets may be configuread as one of the supported asset types.
 ///
@@ -57,11 +57,20 @@ enum FungibleAssetKind {
 }
 
 impl<T: AssetClass> FungibleAsset<T> {
-    /// Really depends on the implementation, but this should suffice, since
-    /// normal implementations use < 3TGas.
+    /// Gas for simple transfers (`ft_transfer`)
     pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
-    /// NEAR Intents implementation uses < 4TGas.
+
+    /// Gas for simple NEP-245 transfers (`mt_transfer`)
     pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(7);
+
+    /// Gas for `transfer_call` operations (includes callback to receiver)
+    /// NEP-141 `ft_transfer_call`: Transfer + receiver callback execution
+    /// Needs extra gas for the receiver contract logic (e.g., market liquidation)
+    pub const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(100);
+
+    /// Gas for NEP-245 `mt_transfer_call` operations
+    /// NEAR Intents `mt_transfer_call`: Transfer + receiver callback + collateral transfer back
+    pub const GAS_MT_TRANSFER_CALL: Gas = Gas::from_tgas(150);
 
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
@@ -94,6 +103,42 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    /// Creates a simple `ft_transfer` action (no callback).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn transfer_action(
+        &self,
+        receiver_id: &AccountId,
+        amount: FungibleAssetAmount<T>,
+    ) -> FunctionCallAction {
+        let (method_name, args, gas) = match self.kind {
+            FungibleAssetKind::Nep141(_) => (
+                "ft_transfer",
+                json!({
+                    "receiver_id": receiver_id,
+                    "amount": u128::from(amount).to_string(),
+                }),
+                Self::GAS_FT_TRANSFER,
+            ),
+            FungibleAssetKind::Nep245 { ref token_id, .. } => (
+                "mt_transfer",
+                json!({
+                    "receiver_id": receiver_id,
+                    "token_id": token_id,
+                    "amount": u128::from(amount).to_string(),
+                }),
+                Self::GAS_MT_TRANSFER,
+            ),
+        };
+
+        FunctionCallAction {
+            method_name: method_name.to_string(),
+            #[allow(clippy::unwrap_used)]
+            args: serde_json::to_vec(&args).unwrap(),
+            gas: gas.as_gas(),
+            deposit: 1, // 1 yoctoNEAR for security
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn transfer_call_action(
         &self,
@@ -105,19 +150,19 @@ impl<T: AssetClass> FungibleAsset<T> {
             FungibleAssetKind::Nep141(_) => (
                 json!({
                     "receiver_id": receiver_id,
-                    "amount": u128::from(amount),
+                    "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
-                Self::GAS_FT_TRANSFER,
+                Self::GAS_FT_TRANSFER_CALL,
             ),
             FungibleAssetKind::Nep245 { ref token_id, .. } => (
                 json!({
                     "receiver_id": receiver_id,
                     "token_id": token_id,
-                    "amount": u128::from(amount),
+                    "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
-                Self::GAS_MT_TRANSFER,
+                Self::GAS_MT_TRANSFER_CALL,
             ),
         };
 
@@ -264,7 +309,9 @@ impl<T: AssetClass> std::str::FromStr for FungibleAsset<T> {
     type Err = FungibleAssetParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split(':').collect();
+        // Use splitn to limit splits - important for NEP-245 where token_id can contain colons
+        // e.g., "nep245:intents.near:nep141:btc.omft.near" should split into 3 parts max
+        let parts: Vec<&str> = s.splitn(3, ':').collect();
 
         match parts.as_slice() {
             ["nep141", contract_id] => {
@@ -306,13 +353,13 @@ mod sealed {
 }
 pub trait AssetClass: sealed::Sealed + Copy + Clone + Send + Sync + std::fmt::Debug {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct CollateralAsset;
 impl sealed::Sealed for CollateralAsset {}
 impl AssetClass for CollateralAsset {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}
@@ -386,7 +433,7 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
                 .amount
                 .0
                 .checked_add(other.into().amount.0)
-                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic overflow: {message}")))
+                .unwrap_or_else(|| panic_with_message(&format!("Arithmetic overflow: {message}")))
                 .into(),
             ..self
         }
@@ -415,7 +462,7 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
                 .amount
                 .0
                 .checked_sub(other.into().amount.0)
-                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic underflow: {message}")))
+                .unwrap_or_else(|| panic_with_message(&format!("Arithmetic underflow: {message}")))
                 .into(),
             ..self
         }

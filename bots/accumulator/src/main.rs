@@ -3,10 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use clap::Parser;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
-use templar_bots::{
-    accumulator::{Accumulator, Args},
-    list_all_deployments,
-};
+use templar_accumulator::{rpc::list_all_deployments, Accumulator, Args};
 use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 

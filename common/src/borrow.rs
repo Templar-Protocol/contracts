@@ -63,7 +63,9 @@ pub struct BorrowPosition {
     borrow_asset_principal: BorrowAssetAmount,
     pub interest: Accumulator<BorrowAsset>,
     pub fees: BorrowAssetAmount,
+    #[serde(default)]
     borrow_asset_in_flight: BorrowAssetAmount,
+    #[serde(default)]
     collateral_asset_in_flight: CollateralAssetAmount,
     pub liquidation_lock: CollateralAssetAmount,
 }
@@ -336,7 +338,7 @@ impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
                     .0
                     .checked_sub(prev_end_timestamp_ms)
                     .unwrap_or_else(|| {
-                        env::panic_str(&format!(
+                        crate::panic_with_message(&format!(
                             "Invariant violation: Snapshot timestamp decrease at time chunk #{}.",
                             u64::from(snapshot.time_chunk.0),
                         ))
