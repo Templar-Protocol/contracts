@@ -46,41 +46,9 @@ impl std::fmt::Display for LiquidationStrategyArg {
     }
 }
 
-/// Collateral strategy argument type for CLI parsing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollateralStrategyArg {
-    /// Hold collateral as received
-    Hold,
-    /// Swap collateral to a primary asset (requires `primary_asset` config)
-    SwapToPrimary,
-    /// Swap collateral back to borrow assets
-    SwapToBorrow,
-}
-
-impl FromStr for CollateralStrategyArg {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Normalize: convert to lowercase and replace hyphens with underscores
-        let normalized = s.to_lowercase().replace('-', "_");
-        match normalized.as_str() {
-            "hold" => Ok(Self::Hold),
-            "swap_to_primary" => Ok(Self::SwapToPrimary),
-            "swap_to_borrow" => Ok(Self::SwapToBorrow),
-            _ => Err(format!(
-                "Invalid collateral strategy: '{s}'. Valid options: 'hold', 'swap-to-primary', 'swap-to-borrow'"
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for CollateralStrategyArg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Hold => write!(f, "hold"),
-            Self::SwapToPrimary => write!(f, "swap-to-primary"),
-            Self::SwapToBorrow => write!(f, "swap-to-borrow"),
-        }
+impl Default for LiquidationStrategyArg {
+    fn default() -> Self {
+        Self::Partial
     }
 }
 
@@ -139,7 +107,7 @@ pub struct Args {
     pub concurrency: usize,
 
     /// Liquidation strategy: "partial" or "full"
-    #[arg(long, env = "LIQUIDATION_STRATEGY", default_value = "partial")]
+    #[arg(long, env = "LIQUIDATION_STRATEGY", default_value_t = LiquidationStrategyArg::default())]
     pub liquidation_strategy: LiquidationStrategyArg,
 
     /// Partial liquidation percentage (1-100, only used with partial strategy)
@@ -156,7 +124,7 @@ pub struct Args {
 
     /// Collateral strategy: "hold", "swap-to-primary", or "swap-to-borrow"
     #[arg(long, env = "COLLATERAL_STRATEGY", default_value = "hold")]
-    pub collateral_strategy: CollateralStrategyArg,
+    pub collateral_strategy: String,
 
     /// Primary asset for `SwapToPrimary` strategy
     #[arg(long, env = "PRIMARY_ASSET")]
@@ -209,8 +177,11 @@ impl Args {
     fn parse_collateral_strategy(&self) -> CollateralStrategy {
         use templar_common::asset::FungibleAsset;
 
-        match self.collateral_strategy {
-            CollateralStrategyArg::SwapToPrimary => {
+        // Normalize: convert to lowercase and replace hyphens with underscores
+        let normalized = self.collateral_strategy.to_lowercase().replace('-', "_");
+
+        match normalized.as_str() {
+            "swap_to_primary" => {
                 let Some(ref primary_asset_str) = self.primary_asset else {
                     panic!("COLLATERAL_STRATEGY=swap-to-primary requires PRIMARY_ASSET to be set");
                 };
@@ -226,14 +197,18 @@ impl Args {
                 );
                 CollateralStrategy::SwapToPrimary { primary_asset }
             }
-            CollateralStrategyArg::SwapToBorrow => {
+            "swap_to_borrow" => {
                 tracing::info!("Using SwapToBorrow strategy");
                 CollateralStrategy::SwapToBorrow
             }
-            CollateralStrategyArg::Hold => {
+            "hold" => {
                 tracing::info!("Using Hold strategy (keep collateral as received)");
                 CollateralStrategy::Hold
             }
+            _ => panic!(
+                "Invalid collateral strategy: '{}'. Valid options: 'hold', 'swap-to-primary', 'swap-to-borrow'",
+                self.collateral_strategy
+            ),
         }
     }
 
@@ -242,19 +217,54 @@ impl Args {
         let strategy = self.create_strategy();
         let collateral_strategy = self.parse_collateral_strategy();
 
+        // Parse collateral asset filters
+        let allowed_collateral_assets: Vec<_> = self
+            .allowed_collateral_assets
+            .iter()
+            .filter_map(|s| {
+                s.parse::<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>()
+                    .map_err(|e| {
+                        tracing::warn!(
+                            asset = %s,
+                            error = ?e,
+                            "Failed to parse allowed collateral asset, skipping"
+                        );
+                        e
+                    })
+                    .ok()
+            })
+            .collect();
+
+        let ignored_collateral_assets: Vec<_> = self
+            .ignored_collateral_assets
+            .iter()
+            .filter_map(|s| {
+                s.parse::<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>()
+                    .map_err(|e| {
+                        tracing::warn!(
+                            asset = %s,
+                            error = ?e,
+                            "Failed to parse ignored collateral asset, skipping"
+                        );
+                        e
+                    })
+                    .ok()
+            })
+            .collect();
+
         // Log market filtering
-        if self.allowed_collateral_assets.is_empty() {
+        if allowed_collateral_assets.is_empty() {
             tracing::info!("Market filtering: processing all assets");
         } else {
             tracing::info!(
-                allowed_assets = ?self.allowed_collateral_assets,
+                allowed_assets = ?allowed_collateral_assets,
                 "Market filtering enabled with allowlist"
             );
         }
 
-        if !self.ignored_collateral_assets.is_empty() {
+        if !ignored_collateral_assets.is_empty() {
             tracing::info!(
-                ignored_assets = ?self.ignored_collateral_assets,
+                ignored_assets = ?ignored_collateral_assets,
                 "Market filtering: ignoring specified assets"
             );
         }
@@ -274,8 +284,8 @@ impl Args {
             dry_run: self.dry_run,
             oneclick_api_token: self.oneclick_api_token.clone(),
             ref_contract: self.ref_contract.clone(),
-            allowed_collateral_assets: self.allowed_collateral_assets.clone(),
-            ignored_collateral_assets: self.ignored_collateral_assets.clone(),
+            allowed_collateral_assets,
+            ignored_collateral_assets,
         }
     }
 
@@ -315,7 +325,7 @@ mod tests {
             partial_percentage: 50,
             min_profit_bps: 100,
             dry_run: false,
-            collateral_strategy: CollateralStrategyArg::Hold,
+            collateral_strategy: "hold".to_string(),
             primary_asset: None,
             oneclick_api_token: None,
             ref_contract: None,
@@ -327,7 +337,7 @@ mod tests {
     #[test]
     fn test_parse_collateral_strategy_swap_to_primary() {
         let mut args = create_test_args();
-        args.collateral_strategy = CollateralStrategyArg::SwapToPrimary;
+        args.collateral_strategy = "swap-to-primary".to_string();
         args.primary_asset = Some("nep141:usdc.testnet".to_string());
 
         let strategy = args.parse_collateral_strategy();
@@ -337,7 +347,7 @@ mod tests {
     #[test]
     fn test_parse_collateral_strategy_swap_to_borrow() {
         let mut args = create_test_args();
-        args.collateral_strategy = CollateralStrategyArg::SwapToBorrow;
+        args.collateral_strategy = "swap-to-borrow".to_string();
 
         let strategy = args.parse_collateral_strategy();
         assert!(matches!(strategy, CollateralStrategy::SwapToBorrow));
@@ -346,7 +356,7 @@ mod tests {
     #[test]
     fn test_parse_collateral_strategy_hold() {
         let mut args = create_test_args();
-        args.collateral_strategy = CollateralStrategyArg::Hold;
+        args.collateral_strategy = "hold".to_string();
 
         let strategy = args.parse_collateral_strategy();
         assert!(matches!(strategy, CollateralStrategy::Hold));
@@ -406,31 +416,6 @@ mod tests {
     fn test_network_display() {
         assert_eq!(Network::Mainnet.to_string(), "mainnet");
         assert_eq!(Network::Testnet.to_string(), "testnet");
-    }
-
-    #[test]
-    fn test_collateral_strategy_parsing() {
-        // Test hyphenated version
-        let result1 = "swap-to-borrow".parse::<CollateralStrategyArg>();
-        assert!(result1.is_ok());
-        assert_eq!(result1.unwrap(), CollateralStrategyArg::SwapToBorrow);
-
-        // Test underscored version
-        let result2 = "swap_to_borrow".parse::<CollateralStrategyArg>();
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap(), CollateralStrategyArg::SwapToBorrow);
-
-        // Test case insensitivity
-        let result3 = "HOLD".parse::<CollateralStrategyArg>();
-        assert!(result3.is_ok());
-        assert_eq!(result3.unwrap(), CollateralStrategyArg::Hold);
-    }
-
-    #[test]
-    fn test_invalid_collateral_strategy() {
-        let result = "invalid_strategy".parse::<CollateralStrategyArg>();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid collateral strategy"));
     }
 
     #[test]

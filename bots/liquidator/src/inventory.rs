@@ -108,7 +108,7 @@ pub struct InventoryManager {
     liquidation_history: HashMap<FungibleAsset<CollateralAsset>, FungibleAsset<BorrowAsset>>,
     /// Pending swap amounts: tracks collateral received from liquidations awaiting swap
     /// Maps `collateral_asset` -> cumulative amount pending swap
-    pending_swaps: HashMap<String, U128>,
+    pending_swaps: HashMap<FungibleAsset<CollateralAsset>, U128>,
     /// Minimum refresh interval to avoid excessive RPC calls
     min_refresh_interval: Duration,
     /// Last full refresh timestamp
@@ -160,19 +160,19 @@ impl InventoryManager {
         for config in market_configs {
             let asset = config.borrow_asset.clone();
 
-            if self.inventory.contains_key(&asset) {
-                existing += 1;
-            } else {
-                self.inventory.insert(
-                    asset.clone(),
-                    InventoryEntry {
+            match self.inventory.entry(asset.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    existing += 1;
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(InventoryEntry {
                         balance: BorrowAssetAmount::from(0),
                         reserved: BorrowAssetAmount::from(0),
                         last_updated: Instant::now(),
-                    },
-                );
-                discovered += 1;
-                debug!(asset = %asset, "Discovered new asset");
+                    });
+                    discovered += 1;
+                    debug!(asset = %asset, "Discovered new asset");
+                }
             }
         }
 
@@ -195,19 +195,19 @@ impl InventoryManager {
         for config in market_configs {
             let asset = config.collateral_asset.clone();
 
-            if self.collateral_inventory.contains_key(&asset) {
-                existing += 1;
-            } else {
-                self.collateral_inventory.insert(
-                    asset.clone(),
-                    InventoryEntry {
+            match self.collateral_inventory.entry(asset.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    existing += 1;
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(InventoryEntry {
                         balance: CollateralAssetAmount::from(0),
                         reserved: CollateralAssetAmount::from(0),
                         last_updated: Instant::now(),
-                    },
-                );
-                discovered += 1;
-                debug!(asset = %asset, "Discovered new collateral asset");
+                    });
+                    discovered += 1;
+                    debug!(asset = %asset, "Discovered new collateral asset");
+                }
             }
         }
 
@@ -283,28 +283,28 @@ impl InventoryManager {
             .inventory
             .iter()
             .filter_map(|(asset, entry)| {
-                if u128::from(entry.balance) > 0 {
-                    // Extract readable name from asset string
-                    let asset_str = asset.to_string();
-                    let readable_name = if let Some(stripped) = asset_str.strip_prefix("nep141:") {
-                        // For nep141, show just the contract name
-                        stripped.split('.').next().unwrap_or(stripped).to_string()
-                    } else if let Some(stripped) = asset_str.strip_prefix("nep245:") {
-                        // For nep245, show contract and token parts
-                        let parts: Vec<&str> = stripped.split(':').collect();
-                        if parts.len() >= 2 {
-                            // Show the token_id part (usually contains readable info)
-                            parts[1].split('-').next().unwrap_or("unknown").to_string()
-                        } else {
-                            "unknown".to_string()
-                        }
-                    } else {
-                        asset_str.split(':').last().unwrap_or("unknown").to_string()
-                    };
-                    Some(readable_name)
-                } else {
-                    None
+                if u128::from(entry.balance) == 0 {
+                    return None;
                 }
+
+                // Extract readable name from asset string
+                let asset_str = asset.to_string();
+                let readable_name = if let Some(stripped) = asset_str.strip_prefix("nep141:") {
+                    // For nep141, show just the contract name
+                    stripped.split('.').next().unwrap_or(stripped).to_string()
+                } else if let Some(stripped) = asset_str.strip_prefix("nep245:") {
+                    // For nep245, show contract and token parts
+                    let parts: Vec<&str> = stripped.split(':').collect();
+                    if parts.len() >= 2 {
+                        // Show the token_id part (usually contains readable info)
+                        parts[1].split('-').next().unwrap_or("unknown").to_string()
+                    } else {
+                        "unknown".to_string()
+                    }
+                } else {
+                    asset_str.split(':').last().unwrap_or("unknown").to_string()
+                };
+                Some(readable_name)
             })
             .collect();
 
@@ -630,9 +630,6 @@ impl InventoryManager {
         collateral_asset: &FungibleAsset<CollateralAsset>,
         collateral_amount: U128,
     ) {
-        let borrow_str = borrow_asset.to_string();
-        let collateral_str = collateral_asset.to_string();
-
         // Track liquidation history for swap-to-borrow strategy
         self.liquidation_history
             .insert(collateral_asset.clone(), borrow_asset.clone());
@@ -640,15 +637,15 @@ impl InventoryManager {
         // Accumulate pending swap amount (in case of multiple liquidations before swap)
         let current_pending = self
             .pending_swaps
-            .get(&collateral_str)
+            .get(collateral_asset)
             .map_or(0, |amount| amount.0);
         let new_pending = current_pending.saturating_add(collateral_amount.0);
         self.pending_swaps
-            .insert(collateral_str.clone(), U128(new_pending));
+            .insert(collateral_asset.clone(), U128(new_pending));
 
         tracing::debug!(
-            borrow = %borrow_str,
-            collateral = %collateral_str,
+            borrow = %borrow_asset,
+            collateral = %collateral_asset,
             amount = %collateral_amount.0,
             total_pending = %new_pending,
             "Recorded liquidation and pending swap amount"
@@ -673,7 +670,7 @@ impl InventoryManager {
         self.pending_swaps
             .iter()
             .filter(|(_, amount)| amount.0 > 0)
-            .map(|(asset, amount)| (asset.clone(), *amount))
+            .map(|(asset, amount)| (asset.to_string(), *amount))
             .collect()
     }
 
@@ -685,18 +682,17 @@ impl InventoryManager {
         collateral_asset: &FungibleAsset<CollateralAsset>,
         new_amount: U128,
     ) {
-        let collateral_str = collateral_asset.to_string();
         if new_amount.0 == 0 {
-            self.pending_swaps.remove(&collateral_str);
+            self.pending_swaps.remove(collateral_asset);
             tracing::debug!(
-                collateral = %collateral_str,
+                collateral = %collateral_asset,
                 "Cleared pending swap amount (zero balance)"
             );
         } else {
             self.pending_swaps
-                .insert(collateral_str.clone(), new_amount);
+                .insert(collateral_asset.clone(), new_amount);
             tracing::debug!(
-                collateral = %collateral_str,
+                collateral = %collateral_asset,
                 amount = %new_amount.0,
                 "Updated pending swap amount"
             );
@@ -707,13 +703,12 @@ impl InventoryManager {
     ///
     /// Should be called after swapping collateral back to borrow asset.
     pub fn clear_liquidation_history(&mut self, collateral_asset: &FungibleAsset<CollateralAsset>) {
-        let collateral_str = collateral_asset.to_string();
         let history_cleared = self.liquidation_history.remove(collateral_asset).is_some();
-        let pending_cleared = self.pending_swaps.remove(&collateral_str);
+        let pending_cleared = self.pending_swaps.remove(collateral_asset);
 
         if history_cleared || pending_cleared.is_some() {
             tracing::debug!(
-                collateral = %collateral_str,
+                collateral = %collateral_asset,
                 pending_amount = ?pending_cleared,
                 "Cleared liquidation history and pending swap amount after successful swap"
             );

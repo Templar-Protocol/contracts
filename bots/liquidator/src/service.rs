@@ -57,9 +57,11 @@ pub struct ServiceConfig {
     /// Ref Finance contract address for NEP-141 swaps
     pub ref_contract: Option<String>,
     /// Collateral asset allowlist for market filtering
-    pub allowed_collateral_assets: Vec<String>,
+    pub allowed_collateral_assets:
+        Vec<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>,
     /// Collateral assets to ignore in market filtering
-    pub ignored_collateral_assets: Vec<String>,
+    pub ignored_collateral_assets:
+        Vec<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -291,38 +293,15 @@ impl LiquidatorService {
         &self,
         config: &templar_common::market::MarketConfiguration,
     ) -> (bool, Option<String>) {
-        let collateral_str = config.collateral_asset.to_string();
-
-        // Helper to extract underlying token from NEP-245 wrappers
-        let asset_matches = |asset: &str, pattern: &str| -> bool {
-            if asset == pattern {
-                return true;
-            }
-
-            // NEP-245 format: nep245:contract:token_id
-            // Extract underlying token (e.g., nep141:btc.omft.near from nep245:intents.near:nep141:btc.omft.near)
-            if asset.starts_with("nep245:") {
-                if let Some(token_id_start) = asset.find(':').and_then(|first| {
-                    asset[first + 1..]
-                        .find(':')
-                        .map(|second| first + 1 + second + 1)
-                }) {
-                    return &asset[token_id_start..] == pattern;
-                }
-            }
-
-            false
-        };
+        let collateral_asset = &config.collateral_asset;
 
         // Check ignore list
         if !self.config.ignored_collateral_assets.is_empty() {
             for ignored_asset in &self.config.ignored_collateral_assets {
-                if asset_matches(&collateral_str, ignored_asset) {
+                if collateral_asset == ignored_asset {
                     return (
                         false,
-                        Some(format!(
-                            "collateral '{collateral_str}' matches ignore pattern '{ignored_asset}'"
-                        )),
+                        Some(format!("collateral '{collateral_asset}' is in ignore list")),
                     );
                 }
             }
@@ -334,12 +313,12 @@ impl LiquidatorService {
                 .config
                 .allowed_collateral_assets
                 .iter()
-                .any(|allowed_asset| asset_matches(&collateral_str, allowed_asset));
+                .any(|allowed_asset| collateral_asset == allowed_asset);
 
             if !is_allowed {
                 return (
                     false,
-                    Some(format!("collateral '{collateral_str}' not in allowlist")),
+                    Some(format!("collateral '{collateral_asset}' not in allowlist")),
                 );
             }
         }
