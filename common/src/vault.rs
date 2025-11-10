@@ -19,19 +19,6 @@ pub type ActualIdx = u32;
 pub type AllocationWeights = Vec<(AccountId, U128)>;
 pub type AllocationPlan = Vec<(AccountId, u128)>;
 
-#[derive(Clone, Debug, Default)]
-#[near(serializers = [json, borsh])]
-pub enum AllocationMode {
-    /// Eager allocation mode.
-    ///
-    /// Deposits can automatically trigger allocation when the vault is idle
-    /// and the idle balance is at least `min_batch`. See implementation for
-    /// the exact conditions and behaviour.
-    Eager { min_batch: U128 },
-    #[default]
-    Lazy,
-}
-
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
 #[near(serializers = [json])]
@@ -56,8 +43,6 @@ pub struct MarketConfiguration {
 #[derive(Clone)]
 #[near(serializers = [json, borsh])]
 pub struct VaultConfiguration {
-    /// The allocation mode for this vault.
-    pub mode: AllocationMode,
     /// The account that owns this vault.
     pub owner: AccountId,
     /// The account that can submit allocation plans. See [AllocationMode].
@@ -256,6 +241,8 @@ pub struct AllocatingState {
     pub index: u32,
     /// Amount of underlying (in asset units) still to allocate during this operation.
     pub remaining: u128,
+    /// Plan for allocation.
+    pub plan: Vec<(AccountId, u128)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

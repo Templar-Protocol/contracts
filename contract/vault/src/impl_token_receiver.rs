@@ -140,22 +140,6 @@ impl Contract {
         self.update_idle_balance(IdleBalanceDelta::Increase(accept.into()));
         self.last_total_assets = self.last_total_assets.saturating_add(accept);
 
-        if let AllocationMode::Eager { min_batch } = self.mode {
-            if matches!(self.op_state, OpState::Idle) && self.idle_balance >= min_batch.0 {
-                // Invariant: no overlapping operations
-                let op_id = self.next_op_id;
-                Event::AllocationEagerTriggered {
-                    op_id: op_id.into(),
-                    idle_balance: U128(self.idle_balance),
-                    min_batch,
-                    deposit_accepted: U128(accept),
-                }
-                .emit();
-                self.ensure_idle();
-                self.start_allocation(self.idle_balance);
-            }
-        }
-
         refund
     }
 }

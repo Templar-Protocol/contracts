@@ -14,7 +14,7 @@ use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, Event, IdleBalanceDelta, PayoutState, WithdrawingState,
+        AllocatingState, AllocationPlan, Event, IdleBalanceDelta, PayoutState, WithdrawingState,
         EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_03_SETTLE_GAS,
         GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
     },
@@ -95,13 +95,13 @@ impl Contract {
         accepted: U128,
         remaining_before: U128,
     ) -> PromiseOrValue<()> {
-        let (i, _remaining_ctx) = match self.ctx_allocating(op_id) {
+        let (i, _, plan) = match self.ctx_allocating(op_id) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        if i != market_index {
-            return self.stop_and_exit(Some(&Error::IndexDrifted(i, market_index)));
+        if i != &market_index {
+            return self.stop_and_exit(Some(&Error::IndexDrifted(*i, market_index)));
         }
 
         let SupplyReconciliation {
@@ -154,6 +154,8 @@ impl Contract {
         }
         .emit();
 
+        let plan = plan.iter().filter(|m| m.0 != market).cloned().collect();
+
         if let Some(rec) = self.markets.get_mut(&market) {
             rec.principal = new_principal;
         }
@@ -162,6 +164,7 @@ impl Contract {
             op_id,
             index: market_index.saturating_add(1),
             remaining: remaining_next,
+            plan,
         });
         if remaining_next == 0 {
             return self.stop_and_exit(None::<&String>);
@@ -569,7 +572,6 @@ impl Contract {
 
         self.update_idle_balance(IdleBalanceDelta::Increase(s.remaining.into()));
 
-        self.plan = None;
         self.op_state = OpState::Idle;
     }
 
@@ -645,13 +647,17 @@ impl Contract {
     }
 
     /// Validate current op is Allocating and return (index, remaining)
-    pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<(u32, u128), Error> {
+    pub(crate) fn ctx_allocating(
+        &self,
+        op_id: u64,
+    ) -> Result<(&u32, &u128, &AllocationPlan), Error> {
         match &self.op_state {
             OpState::Allocating(AllocatingState {
                 op_id: cur,
                 index,
                 remaining,
-            }) if *cur == op_id => Ok((*index, *remaining)),
+                plan,
+            }) if *cur == op_id => Ok((index, remaining, plan)),
             _ => Err(Error::NotAllocating),
         }
     }
