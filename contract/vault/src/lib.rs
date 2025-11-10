@@ -1121,6 +1121,20 @@ impl Contract {
         let collected = used_idle;
         (remaining, collected)
     }
+
+    fn with_pending_market_position(
+        &mut self,
+        market_index: u32,
+        and: impl FnOnce(&mut Self, usize),
+    ) {
+        if let Some(pos) = self
+            .pending_market_exec
+            .iter()
+            .position(|&idx| idx == market_index)
+        {
+            and(self, pos);
+        }
+    }
 }
 
 impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {
