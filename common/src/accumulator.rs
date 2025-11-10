@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn default_accumulator() {
         let a = Accumulator::<crate::asset::BorrowAsset>::default();
-        
+
         assert_eq!(a.get_total(), 0.into());
         assert_eq!(a.get_next_snapshot_index(), 0);
     }
