@@ -689,7 +689,8 @@ impl Contract {
             .saturating_sub(self.principal_of(market))
     }
 
-    /// Enqueue a vault-level pending withdrawal request (escrow already taken).
+    /// Enqueue a vault-level pending withdrawal request.
+    /// At this point the escrow shares are already taken.
     fn enqueue_pending_withdrawal(
         &mut self,
         owner: &AccountId,
@@ -721,6 +722,46 @@ impl Contract {
             requested_at: requested_at.into(),
         }
         .emit();
+    }
+
+    fn create_withdraw_request_for_market(
+        &mut self,
+        op_id: u64,
+        index: u32,
+        remaining: u128,
+        receiver: &AccountId,
+        collected: u128,
+        owner: &AccountId,
+        escrow_shares: u128,
+        market: AccountId,
+    ) -> PromiseOrValue<()> {
+        let have = self.principal_of(&market);
+        let to_request = have.min(remaining);
+        if to_request == 0 {
+            self.op_state = OpState::Withdrawing(WithdrawingState {
+                op_id,
+                index: index + 1,
+                remaining,
+                receiver: receiver.clone(),
+                collected,
+                owner: owner.clone(),
+                escrow_shares,
+            });
+            env::log_str(&format!(
+                "Skipping withdrawal for market {market} (have {have}, remaining {remaining})"
+            ));
+            return self.step_withdraw();
+        }
+        PromiseOrValue::Promise(
+            ext_market::ext(market.clone())
+                .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
+                .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)))
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
+                        .withdraw_01_handle_create_request(op_id, index, U128(to_request)),
+                ),
+        )
     }
 
     /// Computes fee-aware effective totals for conversions, mimicking `MetaMorpho`:
@@ -1063,7 +1104,8 @@ impl Contract {
         let op_id = self.next_op_id;
         self.next_op_id += 1;
 
-        // Invariant: Idle-first reservation does not mutate idle_balance until payout succeeds.
+        // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
+        // TODO: think we have a func for this
         let used_idle = self.idle_balance.min(amount);
         let remaining = amount.saturating_sub(used_idle);
         let collected = used_idle;
@@ -1098,60 +1140,31 @@ impl Contract {
         };
 
         if remaining == 0 {
-            self.op_state = OpState::Payout(PayoutState {
+            self.pay(
                 op_id,
-                receiver: receiver.clone(),
-                amount: collected,
-                owner: owner.clone(),
+                &receiver,
+                collected,
+                &owner,
                 escrow_shares,
-                burn_shares: escrow_shares,
-            });
-            require!(self.idle_balance >= collected, "idle underflow in payout");
-            self.update_idle_balance(IdleBalanceDelta::Decrease(collected.into()));
-
-            return PromiseOrValue::Promise(
-                self.underlying_asset
-                    .transfer(receiver.clone(), U128(collected).into())
-                    .then(
-                        Self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                            .payment_01_reconcile_idle_or_refund(op_id, receiver, U128(collected)),
-                    ),
+                escrow_shares,
             );
         }
         if let Some(market) = self.withdraw_route.get(index as usize) {
-            let have = self.principal_of(market);
-            let to_request = have.min(remaining);
-            if to_request == 0 {
-                self.op_state = OpState::Withdrawing(WithdrawingState {
-                    op_id,
-                    index: index + 1,
-                    remaining,
-                    receiver,
-                    collected,
-                    owner,
-                    escrow_shares,
-                });
-                env::log_str(&format!(
-                    "Skipping withdrawal for market {market} (have {have}, remaining {remaining})"
-                ));
-                return self.step_withdraw();
-            }
-            PromiseOrValue::Promise(
-                templar_common::market::ext_market::ext(market.clone())
-                    .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
-                    .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)))
-                    .then(
-                        Self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
-                            .withdraw_01_handle_create_request(op_id, index, U128(to_request)),
-                    ),
+            self.create_withdraw_request_for_market(
+                op_id,
+                index,
+                remaining,
+                &receiver,
+                collected,
+                &owner,
+                escrow_shares,
+                market.clone(),
             )
         } else {
             let requested = collected.saturating_add(remaining);
             let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);
 
-            self.pay_collected(
+            self.pay_or_else(
                 op_id,
                 &receiver,
                 collected,
@@ -1170,44 +1183,52 @@ impl Contract {
 
     #[allow(clippy::too_many_arguments)]
     /// If we collected something, pay it out now and burn proportional shares or do something else
-    fn pay_collected(
+    fn pay_or_else(
         &mut self,
         op_id: u64,
         receiver: &AccountId,
-        collected: u128,
+        amount: u128,
         owner: &AccountId,
         escrow_shares: u128,
         burn_shares: u128,
         or_else: impl FnOnce(&mut Self) -> PromiseOrValue<()>,
     ) -> PromiseOrValue<()> {
-        if collected > 0 {
-            self.op_state = OpState::Payout(PayoutState {
-                op_id,
-                receiver: receiver.clone(),
-                amount: collected,
-                owner: owner.clone(),
-                escrow_shares,
-                burn_shares,
-            });
-            require!(self.idle_balance >= collected, "idle underflow in payout");
-            self.update_idle_balance(IdleBalanceDelta::Decrease(collected.into()));
-
-            PromiseOrValue::Promise(
-                self.underlying_asset
-                    .transfer(receiver.clone(), U128(collected).into())
-                    .then(
-                        Self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                            .payment_01_reconcile_idle_or_refund(
-                                op_id,
-                                receiver.clone(),
-                                U128(collected),
-                            ),
-                    ),
-            )
+        if amount > 0 {
+            self.pay(op_id, receiver, amount, owner, escrow_shares, burn_shares)
         } else {
             or_else(self)
         }
+    }
+
+    fn pay(
+        &mut self,
+        op_id: u64,
+        receiver: &AccountId,
+        amount: u128,
+        owner: &AccountId,
+        escrow_shares: u128,
+        burn_shares: u128,
+    ) -> PromiseOrValue<()> {
+        self.op_state = OpState::Payout(PayoutState {
+            op_id,
+            receiver: receiver.clone(),
+            amount,
+            owner: owner.clone(),
+            escrow_shares,
+            burn_shares,
+        });
+        require!(self.idle_balance >= amount, "idle underflow in payout");
+        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
+
+        PromiseOrValue::Promise(
+            self.underlying_asset
+                .transfer(receiver.clone(), U128(amount).into())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(AFTER_SEND_TO_USER_GAS)
+                        .payment_01_reconcile_idle_or_refund(op_id, receiver.clone(), U128(amount)),
+                ),
+        )
     }
 }
 
