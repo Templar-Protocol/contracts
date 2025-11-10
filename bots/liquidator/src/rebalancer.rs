@@ -183,7 +183,10 @@ impl InventoryRebalancer {
             return;
         }
 
-        for (collateral_asset_str, balance) in collateral_balances {
+        // Get actual on-chain balances for verification
+        let actual_balances = self.inventory.read().await.get_collateral_balances();
+
+        for (collateral_asset_str, pending_balance) in collateral_balances {
             // Skip if already the primary asset
             if collateral_asset_str == &primary_asset.to_string() {
                 debug!(
@@ -193,10 +196,36 @@ impl InventoryRebalancer {
                 continue;
             }
 
+            // Verify actual balance matches pending amount
+            let actual_balance = actual_balances
+                .get(collateral_asset_str)
+                .map_or(0, |b| b.0);
+
+            if actual_balance == 0 {
+                warn!(
+                    collateral = %collateral_asset_str,
+                    pending = %pending_balance.0,
+                    "No actual balance found - tokens may have been transferred externally. Skipping swap."
+                );
+                continue;
+            }
+
+            // Use the minimum of pending and actual to avoid "insufficient balance" errors
+            let swap_amount = std::cmp::min(pending_balance.0, actual_balance);
+            if swap_amount < pending_balance.0 {
+                warn!(
+                    collateral = %collateral_asset_str,
+                    pending = %pending_balance.0,
+                    actual = %actual_balance,
+                    swap = %swap_amount,
+                    "Actual balance is less than pending - using actual balance for swap"
+                );
+            }
+
             info!(
                 collateral = %collateral_asset_str,
-                total_balance = %balance.0,
-                "Preparing to swap full collateral balance to primary asset"
+                swap_amount = %swap_amount,
+                "Preparing to swap collateral balance to primary asset"
             );
 
             // Parse asset
@@ -205,7 +234,7 @@ impl InventoryRebalancer {
                     self.execute_swap(
                         &collateral_asset,
                         primary_asset,
-                        FungibleAssetAmount::from(*balance),
+                        FungibleAssetAmount::from(U128(swap_amount)),
                     )
                     .await;
                 }
@@ -232,13 +261,16 @@ impl InventoryRebalancer {
 
         // Build swap plan (while holding read lock)
         let swap_plan: Vec<(String, String, U128)> = {
-            let inventory_read = self.inventory.read().await;
+            let mut inventory_write = self.inventory.write().await;
+
+            // Get actual on-chain balances for verification
+            let actual_balances = inventory_write.get_collateral_balances();
 
             let mut plan = Vec::new();
-            for (collateral_asset_str, balance) in collateral_balances {
+            for (collateral_asset_str, pending_balance) in collateral_balances {
                 info!(
                     collateral = %collateral_asset_str,
-                    total_balance = %balance.0,
+                    pending_balance = %pending_balance.0,
                     "Checking liquidation history for swap target"
                 );
 
@@ -255,14 +287,44 @@ impl InventoryRebalancer {
                     continue;
                 };
 
+                // Verify actual balance matches pending amount
+                let actual_balance = actual_balances
+                    .get(collateral_asset_str)
+                    .map_or(0, |b| b.0);
+
+                if actual_balance == 0 {
+                    warn!(
+                        collateral = %collateral_asset_str,
+                        pending = %pending_balance.0,
+                        "No actual balance found - tokens may have been transferred externally or by previous swap. Clearing pending swap record."
+                    );
+                    inventory_write.clear_liquidation_history(&collateral_asset);
+                    continue;
+                }
+
+                // Use the minimum of pending and actual to avoid "insufficient balance" errors
+                let swap_amount = std::cmp::min(pending_balance.0, actual_balance);
+                if swap_amount < pending_balance.0 {
+                    warn!(
+                        collateral = %collateral_asset_str,
+                        pending = %pending_balance.0,
+                        actual = %actual_balance,
+                        swap = %swap_amount,
+                        "Actual balance is less than pending - updating pending amount to match actual balance"
+                    );
+                    // Update pending_swaps to reflect actual balance
+                    inventory_write.update_pending_swap_amount(&collateral_asset, U128(actual_balance));
+                }
+
                 // Only swap if we have liquidation history
                 let target_asset_str = if let Some(target) =
-                    inventory_read.get_liquidation_history(&collateral_asset)
+                    inventory_write.get_liquidation_history(&collateral_asset)
                 {
                     let target_str = target.to_string();
                     info!(
                         collateral = %collateral_asset_str,
                         target = %target_str,
+                        swap_amount = %swap_amount,
                         "Found liquidation history"
                     );
                     target_str
@@ -283,11 +345,11 @@ impl InventoryRebalancer {
                     continue;
                 }
 
-                plan.push((collateral_asset_str.clone(), target_asset_str, *balance));
+                plan.push((collateral_asset_str.clone(), target_asset_str, U128(swap_amount)));
             }
 
             plan
-        }; // Read lock released
+        }; // Write lock released
 
         // Execute swaps with parsed assets
         for (from_str, to_str, amount) in swap_plan {

@@ -677,6 +677,31 @@ impl InventoryManager {
             .collect()
     }
 
+    /// Updates the pending swap amount for a collateral asset
+    ///
+    /// Used when actual balance is less than pending amount to keep records in sync.
+    pub fn update_pending_swap_amount(
+        &mut self,
+        collateral_asset: &FungibleAsset<CollateralAsset>,
+        new_amount: U128,
+    ) {
+        let collateral_str = collateral_asset.to_string();
+        if new_amount.0 == 0 {
+            self.pending_swaps.remove(&collateral_str);
+            tracing::debug!(
+                collateral = %collateral_str,
+                "Cleared pending swap amount (zero balance)"
+            );
+        } else {
+            self.pending_swaps.insert(collateral_str.clone(), new_amount);
+            tracing::debug!(
+                collateral = %collateral_str,
+                amount = %new_amount.0,
+                "Updated pending swap amount"
+            );
+        }
+    }
+
     /// Clears liquidation history and pending swap amount for a collateral asset
     ///
     /// Should be called after swapping collateral back to borrow asset.

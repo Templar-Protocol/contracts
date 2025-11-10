@@ -87,7 +87,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 serde_json::to_vec(&json!({
                    "receiver_id": receiver_id,
                    "token_id": token_id,
-                   "amount": u128::from(amount).to_string(),
+                   "amount": amount,
                 }))
                 .unwrap(),
                 NearToken::from_yoctonear(1),
