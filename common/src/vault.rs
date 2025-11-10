@@ -414,6 +414,39 @@ impl AsRef<PayoutState> for OpState {
     }
 }
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub struct Delta {
+    pub market: AccountId,
+    pub amount: U128,
+}
+
+impl Delta {
+    pub fn validate(&self) {
+        require!(self.amount.0 > 0, "Delta amount must be greater than zero")
+    }
+}
+
+// + Supply: forward-supply idle assets to a market
+// - Withdraw: ONLY creates a supply-withdrawal request in the market; does not execute it.
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum AllocationDelta {
+    Supply(Delta),
+    Withdraw(Delta),
+    Harvest(Delta),
+}
+
+impl AsRef<Delta> for AllocationDelta {
+    fn as_ref(&self) -> &Delta {
+        match self {
+            AllocationDelta::Supply(d) => d,
+            AllocationDelta::Withdraw(d) => d,
+            AllocationDelta::Harvest(d) => d,
+        }
+    }
+}
+
 #[derive(Debug)]
 #[near(serializers = [json])]
 pub enum Error {

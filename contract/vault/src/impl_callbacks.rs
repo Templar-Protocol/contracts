@@ -391,7 +391,7 @@ impl Contract {
         let collected_next = collected_next.saturating_add(extra_payout);
 
         if remaining_next == 0 {
-            return self.pay_collected(
+            return self.pay_or_else(
                 op_id,
                 &ctx.receiver,
                 collected_next,
