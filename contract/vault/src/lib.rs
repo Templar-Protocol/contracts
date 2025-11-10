@@ -909,42 +909,36 @@ impl Contract {
             )
     }
 
-    // Step allocation when a weighted plan is present.
-    fn step_allocation_with_plan(
-        &mut self,
-        op_id: u64,
-        index: u32,
-        remaining: u128,
-    ) -> PromiseOrValue<()> {
-        if let Some(plan) = &self.plan {
-            let idx = index as usize;
-            if let Some((market, weight)) = plan.get(idx) {
-                let market_id = market.clone();
+    fn step_allocation(&mut self) -> PromiseOrValue<()> {
+        let (op_id, index, remaining, plan) = match &self.op_state {
+            OpState::Allocating(AllocatingState {
+                op_id,
+                index,
+                remaining,
+                plan,
+            }) => (*op_id, *index, *remaining, plan.clone()),
+            _ => return self.stop_and_exit(Some(&Error::NotAllocating)),
+        };
 
-                // Sum weights of remaining markets in the plan (including current)
-                let mut sum_w: u128 = 0;
-                for (_, w) in plan.iter().skip(idx) {
-                    sum_w = sum_w.saturating_add(*w);
-                }
+        if remaining == 0 {
+            return self.stop_and_exit::<Error>(None);
+        }
 
-                // Compute weighted target for this step. For the last market (or zero sum), take all remaining.
-                let target = if sum_w == 0 || idx + 1 == plan.len() {
-                    remaining
-                } else {
-                    mul_div_floor(remaining.into(), (*weight).into(), sum_w.into()).into()
-                };
+        let idx = index as usize;
+        if let Some((market, amount)) = plan.get(idx) {
+            let market_id = market.clone();
 
-                let room = self.room_of(&market_id);
-                let to_supply = room.min(target);
+            let room = self.room_of(&market_id);
+            let to_supply = room.min(*amount);
 
-                Event::AllocationStepPlanned {
-                    op_id: op_id.into(),
-                    index,
-                    market: market_id.clone(),
-                    target: U128(target),
-                    room: U128(room),
-                    to_supply: U128(to_supply),
-                    remaining_before: U128(remaining),
+            Event::AllocationStepPlanned {
+                op_id: op_id.into(),
+                index,
+                market: market_id.clone(),
+                target: U128(*amount),
+                room: U128(room),
+                to_supply: U128(to_supply),
+                remaining_before: U128(remaining),
                     planned: true,
                 }
                 .emit();
@@ -964,93 +958,20 @@ impl Contract {
                     .emit();
 
                     self.op_state = OpState::Allocating(AllocatingState {
-                        op_id,
-                        index: index + 1,
-                        remaining,
-                    });
-                    return self.step_allocation();
-                }
+                    op_id,
+                    index: index + 1,
+                    remaining,
+                    plan: plan.into_iter().filter(|m| m.0 != market_id).collect(),
+                });
+                return self.step_allocation();
+            }
 
                 PromiseOrValue::Promise(
                     self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
                 )
             } else {
-                // Plan exhausted; stop and reconcile remaining in stop_and_exit
-                self.stop_and_exit::<Error>(None)
-            }
-        } else {
-            self.stop_and_exit(Some(&Error::NotAllocating))
-        }
-    }
-
-    // Step allocation using the supply_queue order.
-    fn step_allocation_from_queue(
-        &mut self,
-        op_id: u64,
-        index: u32,
-        remaining: u128,
-    ) -> PromiseOrValue<()> {
-        if let Some(market) = self.supply_queue.iter().nth(index as usize) {
-            let room = self.room_of(market);
-            let to_supply = room.min(remaining);
-
-            // Emit planned step event (queue-based)
-            Event::AllocationStepPlanned {
-                op_id: op_id.into(),
-                index,
-                market: market.clone(),
-                target: U128(remaining),
-                room: U128(room),
-                to_supply: U128(to_supply),
-                remaining_before: U128(remaining),
-                planned: false,
-            }
-            .emit();
-
-            if to_supply == 0 {
-                Event::AllocationStepSkipped {
-                    op_id: op_id.into(),
-                    index,
-                    market: market.clone(),
-                    reason: "no-room".to_string(),
-                    remaining: U128(remaining),
-                }
-                .emit();
-
-                self.op_state = OpState::Allocating(AllocatingState {
-                    op_id,
-                    index: index + 1,
-                    remaining,
-                });
-                return self.step_allocation();
-            }
-
-            PromiseOrValue::Promise(
-                self.supply_and_then(market, to_supply, op_id, index, remaining),
-            )
-        } else {
+            // Plan exhausted; stop and reconcile remaining in stop_and_exit
             self.stop_and_exit::<Error>(None)
-        }
-    }
-
-    fn step_allocation(&mut self) -> PromiseOrValue<()> {
-        let (op_id, index, remaining) = match &self.op_state {
-            OpState::Allocating(AllocatingState {
-                op_id,
-                index,
-                remaining,
-            }) => (*op_id, *index, *remaining),
-            _ => return self.stop_and_exit(Some(&Error::NotAllocating)),
-        };
-
-        if remaining == 0 {
-            return self.stop_and_exit::<Error>(None);
-        }
-
-        if self.plan.is_some() {
-            self.step_allocation_with_plan(op_id, index, remaining)
-        } else {
-            self.step_allocation_from_queue(op_id, index, remaining)
         }
     }
 
