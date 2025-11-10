@@ -120,10 +120,6 @@ pub struct Contract {
     /// The process in which the vault calculates its assets under management
     aum: AUM,
 
-    /// The mode in which the allocator will operate
-    mode: AllocationMode,
-    plan: Option<AllocationPlan>,
-
     /// Performance fee
     performance_fee: wad::Wad,
     fee_recipient: AccountId,
@@ -194,7 +190,6 @@ impl Contract {
             name,
             symbol,
             decimals,
-            mode,
         } = configuration;
 
         require!(
@@ -219,8 +214,6 @@ impl Contract {
             idle_balance: 0,
             op_state: OpState::Idle,
             next_op_id: 1,
-            mode,
-            plan: None,
             current_withdraw_inflight: None,
             pending_withdrawals: IterableMap::new(
                 [
@@ -415,31 +408,37 @@ impl Contract {
                 let total = self.clamp_allocation_total(Some(delta.amount.0));
                 let plan = vec![(delta.market, total)];
 
-                self.plan = Some(plan.clone());
                 Event::AllocationPlanSet {
                     op_id: self.next_op_id.into(),
                     total: U128(total),
                     plan: plan
-                        .into_iter()
+                        .iter()
+                        .cloned()
                         .map(|(market, amount)| (market, amount.into()))
                         .collect(),
                 }
                 .emit();
 
-                self.start_allocation(total)
+                self.start_allocation(total, plan)
             }
             AllocationDelta::Withdraw(delta) => {
-                // This is a vault-driven withdrawal from a market; no shares will be burned
-                let escrow_shares = 0;
-                // The vault will be the receiver and owner of the assets on payout
-                let receiver_and_owner = env::current_account_id();
-                // This will create withdraw requests, however, start_withdraw and step_withdraw are overloaded
-                self.start_withdraw(
-                    delta.amount.0,
-                    &receiver_and_owner,
-                    &receiver_and_owner,
-                    escrow_shares,
-                    vec![delta.market],
+                require_at_least(CREATE_WITHDRAW_REQ_GAS);
+
+                let to_request = self.principal_of(&delta.market).min(delta.amount.0);
+                require!(to_request > 0, "Insufficient principal");
+
+                // TODO: proper event
+                env::log_str(&format!(
+                    "DeltaWithdrawRequestCreated market={} amount={}",
+                    delta.market, to_request
+                ));
+
+                PromiseOrValue::Promise(
+                    ext_market::ext(delta.market.clone())
+                        .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
+                        .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(
+                            to_request,
+                        ))),
                 )
             }
             AllocationDelta::Harvest(delta) => todo!(),
@@ -846,7 +845,7 @@ impl Contract {
         }
     }
 
-    fn start_allocation(&mut self, amount: u128) -> PromiseOrValue<()> {
+    fn start_allocation(&mut self, amount: u128, plan: AllocationPlan) -> PromiseOrValue<()> {
         if amount == 0 {
             // Dust request: clear the head and stay Idle to avoid wedging the queue
             self.remove_inflight_and_advance_head();
@@ -866,6 +865,7 @@ impl Contract {
             op_id,
             index: 0,
             remaining: amount,
+            plan,
         });
         Event::AllocationStarted {
             op_id: op_id.into(),

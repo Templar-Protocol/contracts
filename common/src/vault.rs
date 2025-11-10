@@ -212,6 +212,8 @@ pub struct AllocatingState {
     pub index: u32,
     /// Amount of underlying (in asset units) still to allocate during this operation.
     pub remaining: u128,
+    /// Plan for allocation.
+    pub plan: Vec<(AccountId, u128)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
