@@ -60,13 +60,17 @@ pub enum LiquidationReason {
 pub struct BorrowPosition {
     pub started_at_block_timestamp_ms: Option<U64>,
     pub collateral_asset_deposit: CollateralAssetAmount,
+    #[serde(default)]
     borrow_asset_principal: BorrowAssetAmount,
+    #[serde(default)]
     pub interest: Accumulator<BorrowAsset>,
+    #[serde(default)]
     pub fees: BorrowAssetAmount,
     #[serde(default)]
     borrow_asset_in_flight: BorrowAssetAmount,
     #[serde(default)]
     collateral_asset_in_flight: CollateralAssetAmount,
+    #[serde(default)]
     pub liquidation_lock: CollateralAssetAmount,
 }
 
