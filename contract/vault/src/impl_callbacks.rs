@@ -184,7 +184,6 @@ impl Contract {
 
         if did_create.is_ok() {
             self.pending_market_exec.push(market_index);
-            PromiseOrValue::Value(())
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -193,17 +192,8 @@ impl Contract {
                 need,
             }
             .emit();
-            self.op_state = OpState::Withdrawing(WithdrawingState {
-                op_id,
-                index: market_index.saturating_add(1),
-                remaining: ctx.remaining,
-                receiver: ctx.receiver.clone(),
-                collected: ctx.collected,
-                owner: ctx.owner.clone(),
-                escrow_shares: ctx.escrow_shares,
-            });
-            self.step_withdraw()
         }
+        PromiseOrValue::Value(())
     }
 
     #[private]
@@ -339,6 +329,10 @@ impl Contract {
         );
         let extra = inflow.saturating_sub(principal_delta);
 
+        self.with_pending_market_position(market_index, |self_, pos| {
+            self_.pending_market_exec.remove(pos);
+        });
+
         match principal_delta.cmp(&inflow) {
             Ordering::Greater => {
                 Event::WithdrawalInflowMismatch {
@@ -371,7 +365,11 @@ impl Contract {
             self.update_idle_balance(IdleBalanceDelta::Increase(inflow.into()));
         }
 
-        self.try_settle_pending_market_exec(market_index, creditable, principal_delta);
+        self.with_pending_market_position(market_index, |self_, pos| {
+            if creditable == principal_delta {
+                self_.pending_market_exec.remove(pos);
+            }
+        });
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -697,24 +695,6 @@ impl Contract {
         self.withdraw_route
             .get(market_index as usize)
             .ok_or(Error::MissingMarket(market_index))
-    }
-
-    // Settle pending market exec entry only if fully credited
-    pub fn try_settle_pending_market_exec(
-        &mut self,
-        market_index: u32,
-        creditable: u128,
-        principal_drop: u128,
-    ) {
-        if let Some(pos) = self
-            .pending_market_exec
-            .iter()
-            .position(|&idx| idx == market_index)
-        {
-            if creditable == principal_drop {
-                self.pending_market_exec.remove(pos);
-            }
-        }
     }
 
     #[must_use]
