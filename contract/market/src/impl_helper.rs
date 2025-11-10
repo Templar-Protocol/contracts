@@ -415,7 +415,9 @@ impl Contract {
     ) {
         if matches!(env::promise_result(0), PromiseResult::Failed) {
             let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
-                env::panic_str("Invariant violation: static yield entry must exist during callback")
+                templar_common::panic_with_message(
+                    "Invariant violation: static yield entry must exist during callback",
+                )
             });
             yield_record.add_once(amount);
             self.static_yield.insert(&account_id, &yield_record);

@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use near_sdk::{collections::LookupMap, near, AccountId, BorshStorageKey, IntoStorageKey};
 
-use crate::{asset::BorrowAssetAmount, panic_str};
+use crate::asset::BorrowAssetAmount;
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]

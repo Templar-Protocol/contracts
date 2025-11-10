@@ -104,7 +104,6 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn transfer_call(
         &self,

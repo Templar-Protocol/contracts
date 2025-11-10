@@ -47,7 +47,7 @@ fn c_owner_env(vault_id_fixture: AccountId) -> Contract {
     let c = new_test_contract(&vault_id_fixture);
     let owner = c
         .own_get_owner()
-        .unwrap_or_else(|| env::panic_str("Owner not set"));
+        .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
     setup_env(&vault_id_fixture, &owner, vec![]);
     c
 }
@@ -90,7 +90,7 @@ fn c_max(vault_id: AccountId) -> Contract {
         &vault_id,
         vec![PromiseResult::Successful(
             near_sdk::serde_json::to_vec(&U128(u128::MAX))
-                .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
         )],
     );
     new_test_contract(&vault_id)
@@ -136,7 +136,7 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     // Seed total supply so fees can mint
     let user = accounts(1);
     c.deposit_unchecked(&user, 1_000)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_000;
 
     // Set fee to 10%
@@ -173,7 +173,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
 
     // Seed escrow into vault account (shares held by vault)
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Seed idle to cover payout
     c.idle_balance = 1_000;
 
@@ -301,7 +301,7 @@ fn queue_allocation_ignores_stale_plan() {
     setup_env(
         &vault_id,
         &c.own_get_owner()
-            .unwrap_or_else(|| env::panic_str("Owner not set")),
+            .unwrap_or_else(|| templar_common::panic_with_message("Owner not set")),
         vec![],
     );
 
@@ -612,7 +612,7 @@ fn set_fee_recipient_accrues_before_switch() {
 
     // Seed supply so fee shares can mint
     c.deposit_unchecked(&accounts(1), 1_000)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=1000, current=1500
     c.idle_balance = 1_500;
     c.last_total_assets = 1_000;
@@ -663,7 +663,7 @@ fn set_fee_recipient_accrues_before_switch_variant() {
 
     // Seed supply so fee shares can mint
     c.deposit_unchecked(&accounts(2), 2_000)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=2000, current=2400
     c.idle_balance = 2_400;
     c.last_total_assets = 2_000;
@@ -711,12 +711,12 @@ fn set_performance_fee_accrues_with_old_rate_then_updates() {
     let mut c = new_test_contract(&vault_id);
     let owner = c
         .own_get_owner()
-        .unwrap_or_else(|| env::panic_str("Owner not set"));
+        .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
     setup_env(&vault_id, &owner, vec![]);
 
     // Seed supply so fee shares can mint
     c.deposit_unchecked(&accounts(1), 1_000)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=1000, current=1500
     c.idle_balance = 1_500;
     c.last_total_assets = 1_000;
@@ -764,12 +764,12 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
     let mut c = new_test_contract(&vault_id);
     let owner = c
         .own_get_owner()
-        .unwrap_or_else(|| env::panic_str("Owner not set"));
+        .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
     setup_env(&vault_id, &owner, vec![]);
 
     // Seed supply so fee shares can mint
     c.deposit_unchecked(&accounts(2), 2_000)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=2000, current=2400
     c.idle_balance = 2_400;
     c.last_total_assets = 2_000;
@@ -819,7 +819,7 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
 
     // Seed supply so total_supply > 0
     c.deposit_unchecked(&accounts(1), 1_000)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Loss scenario: last=1000, current=800
     c.idle_balance = 800;
     c.last_total_assets = 1_000;
@@ -1479,7 +1479,7 @@ fn governance_set_fee_recipient_no_fee_does_not_accrue() {
 
     // Seed supply and simulate profit, but fee = 0
     c.deposit_unchecked(&owner, 1_000)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_500;
     c.last_total_assets = 1_000;
     c.performance_fee = Wad::zero();
@@ -1564,7 +1564,7 @@ fn after_supply_1_check_allocating_not_allocating_index() {
         &vault_id,
         vec![PromiseResult::Successful(
             near_sdk::serde_json::to_vec(&U128(u128::MAX))
-                .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
         )],
     );
 
@@ -1599,7 +1599,7 @@ fn after_supply_1_check_allocating() {
         &vault_id,
         vec![PromiseResult::Successful(
             near_sdk::serde_json::to_vec(&U128(u128::MAX))
-                .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string())),
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
         )],
     );
 
@@ -1918,7 +1918,7 @@ fn refund_path_consistency() {
     // Seed escrowed shares into the vault's own account
     let owner = accounts(1);
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
-        .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
     // Withdrawing state with remaining=0 and collected=0 forces refund path
     let op_id = 77;
@@ -2339,7 +2339,7 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
 
     // Seed escrowed shares into the vault's own account
     c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
-        .unwrap_or_else(|e| near_sdk::env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
     // Enter Payout with non-zero escrow
     c.op_state = OpState::Payout(PayoutState {
