@@ -30,13 +30,15 @@ use near_sdk_contract_tools::{owner::Owner, rbac};
 use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
+    market::ext_market,
     vault::{
-        require_at_least, AllocatingState, AllocationMode, AllocationPlan, AllocationWeights,
-        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState, PendingValue,
-        PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
-        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        require_at_least, AllocatingState, AllocationDelta, AllocationMode, AllocationPlan,
+        AllocationWeights, Error, Event, IdleBalanceDelta, MarketConfiguration, OpState,
+        PayoutState, PendingValue, PendingWithdrawal, TimestampNs, VaultConfiguration,
+        WithdrawingState, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
+        AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -402,57 +404,46 @@ impl Contract {
     ///
     ///
     /// NOTE: When we rewrite this we should use a delta based approach
-    #[payable]
-    pub fn allocate(
-        &mut self,
-        weights: AllocationWeights,
-        amount: Option<U128>,
-    ) -> PromiseOrValue<()> {
-        require_at_least(ALLOCATE_GAS);
+    pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
         Self::assert_allocator();
         self.ensure_idle();
+        delta.as_ref().validate();
 
-        let total = self.clamp_allocation_total(amount.map(|x| x.0));
+        match delta {
+            AllocationDelta::Supply(delta) => {
+                require_at_least(ALLOCATE_GAS);
+                let total = self.clamp_allocation_total(Some(delta.amount.0));
+                let plan = vec![(delta.market, total)];
 
-        if weights.is_empty() {
-            if total == 0 {
-                return self.stop_and_exit(Some(&Error::ZeroAmount));
+                self.plan = Some(plan.clone());
+                Event::AllocationPlanSet {
+                    op_id: self.next_op_id.into(),
+                    total: U128(total),
+                    plan: plan
+                        .into_iter()
+                        .map(|(market, amount)| (market, amount.into()))
+                        .collect(),
+                }
+                .emit();
+
+                self.start_allocation(total)
             }
-            let op_id = self.next_op_id;
-            Event::AllocationRequestedQueue {
-                op_id: op_id.into(),
-                total: U128(total),
+            AllocationDelta::Withdraw(delta) => {
+                // This is a vault-driven withdrawal from a market; no shares will be burned
+                let escrow_shares = 0;
+                // The vault will be the receiver and owner of the assets on payout
+                let receiver_and_owner = env::current_account_id();
+                // This will create withdraw requests, however, start_withdraw and step_withdraw are overloaded
+                self.start_withdraw(
+                    delta.amount.0,
+                    &receiver_and_owner,
+                    &receiver_and_owner,
+                    escrow_shares,
+                    vec![delta.market],
+                )
             }
-            .emit();
-            self.plan = None;
-            return self.start_allocation(total);
+            AllocationDelta::Harvest(delta) => todo!(),
         }
-
-        let weights = weights
-            .into_iter()
-            .map(|(m, w)| (m, u128::from(w)))
-            .collect::<HashMap<_, _>>();
-
-        let sum_weights: u128 = weights.values().sum();
-        if sum_weights == 0 {
-            env::panic_str("Sum of weights is zero");
-        }
-        if total == 0 {
-            env::panic_str("No funds to allocate");
-        }
-
-        let op_id = self.next_op_id;
-        let weights_for_event: Vec<(AccountId, U128)> =
-            weights.iter().map(|(m, w)| (m.clone(), U128(*w))).collect();
-        Event::AllocationPlanSet {
-            op_id: op_id.into(),
-            total: U128(total),
-            plan: weights_for_event,
-        }
-        .emit();
-        self.plan = Some(weights.into_iter().collect());
-
-        self.start_allocation(total)
     }
 
     // Advance next_withdraw_to_execute to the next present id and return it, or None if none
@@ -1079,10 +1070,7 @@ impl Contract {
         self.next_op_id += 1;
 
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
-        // TODO: think we have a func for this
-        let used_idle = self.idle_balance.min(amount);
-        let remaining = amount.saturating_sub(used_idle);
-        let collected = used_idle;
+        let (remaining, collected_from_idle) = self.idle_delta(amount);
 
         self.pending_market_exec.clear();
         self.withdraw_route = route;
@@ -1092,7 +1080,7 @@ impl Contract {
             index: Default::default(),
             remaining,
             receiver: receiver.clone(),
-            collected,
+            collected: collected_from_idle,
             owner: owner.clone(),
             escrow_shares,
         });
@@ -1114,6 +1102,7 @@ impl Contract {
         };
 
         if remaining == 0 {
+            // Already fully covered by idle => payout
             self.pay(
                 op_id,
                 &receiver,
@@ -1203,6 +1192,13 @@ impl Contract {
                         .payment_01_reconcile_idle_or_refund(op_id, receiver.clone(), U128(amount)),
                 ),
         )
+    }
+
+    fn idle_delta(&mut self, amount: u128) -> (u128, u128) {
+        let used_idle = self.idle_balance.min(amount);
+        let remaining = amount.saturating_sub(used_idle);
+        let collected = used_idle;
+        (remaining, collected)
     }
 }
 
