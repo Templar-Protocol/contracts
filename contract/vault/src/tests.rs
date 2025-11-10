@@ -309,7 +309,7 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
 
     // Reserve only the amount to allocate (intended behavior)
     let total = c.get_max_deposit().0.min(c.idle_balance);
-    c.start_allocation(total);
+    c.start_allocation(total, vec![]);
 
     // Emulate allocation completing successfully: 80 moved to market
     if let Some(rec) = c.markets.get_mut(&m1) {
@@ -324,11 +324,15 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
         );
     }
     // Force completion and exit op
-    if let crate::OpState::Allocating(AllocatingState { op_id, index, .. }) = c.op_state.clone() {
+    if let crate::OpState::Allocating(AllocatingState {
+        op_id, index, plan, ..
+    }) = c.op_state.clone()
+    {
         c.op_state = crate::OpState::Allocating(AllocatingState {
             op_id,
             index,
             remaining: 0,
+            plan,
         });
     } else {
         panic!("expected Allocating state");
