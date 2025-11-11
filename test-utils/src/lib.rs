@@ -159,7 +159,6 @@ pub fn vault_configuration(
         name: "Vault".to_string(),
         symbol: "VAULT".to_string(),
         decimals: NonZero::new(24).unwrap(),
-        mode: templar_common::vault::AllocationMode::Lazy,
     }
 }
 
