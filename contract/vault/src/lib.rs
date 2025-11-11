@@ -32,13 +32,12 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     market::ext_market,
     vault::{
-        require_at_least, AllocatingState, AllocationDelta, AllocationMode, AllocationPlan,
-        AllocationWeights, Error, Event, IdleBalanceDelta, MarketConfiguration, OpState,
-        PayoutState, PendingValue, PendingWithdrawal, TimestampNs, VaultConfiguration,
-        WithdrawingState, AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS,
-        AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
+        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingValue,
+        PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
+        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -116,22 +115,29 @@ impl From<MarketConfiguration> for MarketRecord {
 pub struct Contract {
     /// The underlying asset that the vault manages
     underlying_asset: FungibleAsset<BorrowAsset>,
-
     /// The process in which the vault calculates its assets under management
     aum: AUM,
-
     /// Performance fee
-    performance_fee: wad::Wad,
+    performance_fee: Wad,
+    /// The recipient of performance fees
     fee_recipient: AccountId,
+    /// The recipient of any skimmed tokens that are erroneously held by the vault
     skim_recipient: AccountId,
     /// Last recorded total assets (for fee accrual)
     last_total_assets: u128,
+    /// Vaults liquidity buffer
+    idle_balance: u128,
 
-    // Virtual offsets used only in conversions/previews to harden edge cases
+    /// The vault's operation state
+    op_state: OpState,
+    /// The next operation id
+    next_op_id: u64,
+
+    /// Virtual offsets used only in conversions/previews to harden edge cases
     virtual_shares: u128,
     virtual_assets: u128,
 
-    // Merged market record: cfg + pending_cap + principal (single persisted map; no per-entry storage keys)
+    /// Markets controlled by the vault
     markets: BTreeMap<AccountId, MarketRecord>,
 
     /// Any pending change to the vault's timelock
@@ -144,14 +150,8 @@ pub struct Contract {
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
 
-    // id of the pending withdrawal being executed, if any
+    // Id of the pending withdrawal being executed, if any
     current_withdraw_inflight: Option<u64>,
-
-    /// underlying held by vault
-    idle_balance: u128,
-    op_state: OpState,
-    next_op_id: u64,
-
     /// Pending withdrawals queue (vault-level, FIFO by id)
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_id: u64,
@@ -224,7 +224,7 @@ impl Contract {
             ),
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
-            market_execution_lock: Vec::new(),
+            market_execution_lock: Locker::new(),
             withdraw_route: Vec::new(),
         };
 
@@ -547,7 +547,6 @@ impl Contract {
             name: meta.name,
             symbol: meta.symbol,
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
-            mode: self.mode.clone(),
         }
     }
 
@@ -730,13 +729,14 @@ impl Contract {
     pub fn compute_effective_totals(
         cur_assets: Number,
         last_total_assets: Number,
-        performance_fee: wad::Wad,
+        performance_fee: Wad,
         total_supply: Number,
         virtual_shares: Number,
         virtual_assets: Number,
     ) -> (Number, Number) {
         let fee_shares =
             compute_fee_shares(cur_assets, last_total_assets, performance_fee, total_supply);
+        // Bump by fake virtual assets to bypass inflation attacks
         let new_total_supply = total_supply
             .saturating_add(fee_shares)
             .saturating_add(virtual_shares);
@@ -954,9 +954,7 @@ impl Contract {
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
         let (remaining, collected_from_idle) = self.idle_delta(amount);
 
-        self.market_execution_lock.clear();
         self.withdraw_route = route;
-
         self.op_state = OpState::Withdrawing(WithdrawingState {
             op_id,
             index: Default::default(),
