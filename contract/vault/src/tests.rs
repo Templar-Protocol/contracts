@@ -1581,6 +1581,7 @@ fn after_supply_1_check_allocating_not_allocating_index() {
         op_id,
         index: 0u32,
         remaining: 0u128,
+        plan: Default::default(),
     });
 
     c.supply_01_handle_transfer(
@@ -1616,6 +1617,7 @@ fn after_supply_1_check_allocating() {
         op_id,
         index: 0u32,
         remaining: 0u128,
+        plan: Default::default(),
     });
 
     c.supply_01_handle_transfer(
@@ -1632,6 +1634,7 @@ fn after_supply_1_check_allocating() {
         OpState::Allocating(AllocatingState {
             op_id,
             index: 0,
+            plan: Default::default(),
             remaining: 0u128
         })
     );
@@ -1996,6 +1999,7 @@ fn ctx_allocating_ok_and_err() {
         op_id: 42,
         index: 3,
         remaining: 77,
+        plan: Default::default(),
     });
 
     let ok = c.ctx_allocating(42).expect("ctx_allocating should succeed");
@@ -2071,6 +2075,7 @@ fn after_supply_2_read_missing_position_stops() {
         op_id: 1,
         index: 0,
         remaining: 10,
+        plan: Default::default(),
     });
 
     // Missing position -> stop_and_exit
@@ -2098,6 +2103,7 @@ fn after_supply_2_read_read_failed_stops() {
         op_id: 7,
         index: 0,
         remaining: 100,
+        plan: Default::default(),
     });
 
     // Read failure -> stop_and_exit
