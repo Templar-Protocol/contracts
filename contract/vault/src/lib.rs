@@ -168,15 +168,6 @@ pub struct Contract {
 impl Contract {
     #[allow(clippy::unwrap_used, reason = "Infallible")]
     #[init]
-    /// Initializes a new vault.
-    /// - `owner_id`: account that controls Owner-only actions.
-    /// - `curator_id`: manages markets and is also granted the Allocator role.
-    /// - `guardian_id`: can revoke pending governance actions.
-    /// - `underlying_token_id`: NEP-141 underlying asset managed by the vault.
-    /// - `initial_timelock_sec`: governance timelock in seconds.
-    /// - `fee_recipient`: account to receive performance fees.
-    /// - `skim_recipient`: account to receive skimmed tokens.
-    /// - `name`/`symbol`/`decimals`: metadata for the share token.
     #[must_use]
     pub fn new(configuration: VaultConfiguration) -> Self {
         let VaultConfiguration {
@@ -282,9 +273,9 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes the next pending withdrawal request
-    /// This defers creating market-side withdrawal requests until explicitly invoked.
-    pub fn execute_next_withdrawal_request(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
+    /// Executes the withdraw route provided by the allocator
+    /// If `route` is empty, try to settle with the idle balance
+    pub fn execute_withdrawal(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
@@ -305,11 +296,10 @@ impl Contract {
                 // Skip dust request to avoid wedging the queue
                 self.current_withdraw_inflight = Some(id);
                 self.remove_inflight_and_advance_head();
-                return self.execute_next_withdrawal_request(route);
+                return self.execute_withdrawal(route);
             }
 
             self.current_withdraw_inflight = Some(id);
-            env::log_str(&format!("WithdrawalExecutionStarted id={id}"));
             return self.start_withdraw(
                 pending.expected_assets,
                 &receiver,
@@ -322,24 +312,25 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes one created market withdrawal request in the current Withdrawing op.
-    /// Allocator only.
-    pub fn execute_next_market_withdrawal(
+    /// Allocator-only. Progress the current Withdrawing op by executing the market at `market_index`
+    /// from the `withdraw_route`. Use when offchain signals the vault is next in the market queue.
+    pub fn execute_market_withdrawal(
         &mut self,
         op_id: U64,
+        market_index: u32,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
 
-        let _ctx = match self.ctx_withdrawing(op_id.into()) {
-            Ok(v) => v,
+        let ctx = match self.ctx_withdrawing(op_id.0) {
+            Ok(s) => s.clone(),
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         if let Err(e) = self.resolve_withdraw_market(market_index) {
             return self.stop_and_exit(Some(&e));
-        };
+        }
 
         self.market_execution_lock.lock(market_index);
 
@@ -465,7 +456,7 @@ impl Contract {
                         ))),
                 )
             }
-            AllocationDelta::Harvest(delta) => todo!(),
+            AllocationDelta::Harvest(delta) => todo!("Implement Harvest"),
         }
     }
 
@@ -900,25 +891,25 @@ impl Contract {
                 room: U128(room),
                 to_supply: U128(to_supply),
                 remaining_before: U128(remaining),
-                    planned: true,
+                planned: true,
+            }
+            .emit();
+
+            if to_supply == 0 {
+                Event::AllocationStepSkipped {
+                    op_id: op_id.into(),
+                    index,
+                    market: market_id.clone(),
+                    reason: if room == 0 {
+                        "no-room".to_string()
+                    } else {
+                        "zero-target".to_string()
+                    },
+                    remaining: U128(remaining),
                 }
                 .emit();
 
-                if to_supply == 0 {
-                    Event::AllocationStepSkipped {
-                        op_id: op_id.into(),
-                        index,
-                        market: market_id.clone(),
-                        reason: if room == 0 {
-                            "no-room".to_string()
-                        } else {
-                            "zero-target".to_string()
-                        },
-                        remaining: U128(remaining),
-                    }
-                    .emit();
-
-                    self.op_state = OpState::Allocating(AllocatingState {
+                self.op_state = OpState::Allocating(AllocatingState {
                     op_id,
                     index: index + 1,
                     remaining,
@@ -927,10 +918,10 @@ impl Contract {
                 return self.step_allocation();
             }
 
-                PromiseOrValue::Promise(
-                    self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
-                )
-            } else {
+            PromiseOrValue::Promise(
+                self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
+            )
+        } else {
             // Plan exhausted; stop and reconcile remaining in stop_and_exit
             self.stop_and_exit::<Error>(None)
         }

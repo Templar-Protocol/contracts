@@ -1,3 +1,5 @@
+use templar_common::vault::MAX_QUEUE_LEN;
+
 use super::*;
 
 #[near]
