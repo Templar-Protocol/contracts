@@ -405,6 +405,27 @@ impl AsRef<Delta> for AllocationDelta {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct EscrowSettlement {
+    pub to_burn: u128,
+    pub refund: u128,
+}
+
+impl EscrowSettlement {
+    pub fn new(escrow_shares: u128, burn_shares: u128) -> Self {
+        let to_burn = burn_shares.min(escrow_shares);
+        let refund = escrow_shares.saturating_sub(to_burn);
+
+        Self { to_burn, refund }
+    }
+}
+
+impl From<EscrowSettlement> for (u128, u128) {
+    fn from(tuple: EscrowSettlement) -> Self {
+        (tuple.to_burn, tuple.refund)
+    }
+}
+
 #[derive(Debug)]
 #[near(serializers = [json])]
 pub enum Error {
