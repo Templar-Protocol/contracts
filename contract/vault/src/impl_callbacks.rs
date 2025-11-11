@@ -384,9 +384,9 @@ impl Contract {
         );
 
         // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
-        let extra_payout = extra.min(remaining_next);
-        let remaining_next = remaining_next.saturating_sub(extra_payout);
-        let collected_next = collected_next.saturating_add(extra_payout);
+
+        let (_, remaining_next, collected_next) =
+            determine_payout_delta(remaining_next, collected_next, extra);
 
         if remaining_next == 0 {
             return self.pay_or_else(
@@ -761,13 +761,25 @@ pub fn reconcile_withdraw_outcome(
 ) -> WithdrawReconciliation {
     let withdrawn = before_principal.saturating_sub(new_principal);
     let idle_delta = withdrawn;
-    let payout_delta = withdrawn.min(remaining_total);
-    let remaining_next = remaining_total.saturating_sub(payout_delta);
-    let collected_next = collected_total.saturating_add(payout_delta);
+
+    let (payout_delta, remaining_next, collected_next) =
+        determine_payout_delta(remaining_total, collected_total, withdrawn);
+
     WithdrawReconciliation {
         payout_delta,
         remaining_next,
         collected_next,
         idle_delta,
     }
+}
+
+pub fn determine_payout_delta(
+    remaining_total: u128,
+    collected_total: u128,
+    withdrawn: u128,
+) -> (u128, u128, u128) {
+    let payout_delta = withdrawn.min(remaining_total);
+    let remaining_next = remaining_total.saturating_sub(payout_delta);
+    let collected_next = collected_total.saturating_add(payout_delta);
+    (payout_delta, remaining_next, collected_next)
 }
