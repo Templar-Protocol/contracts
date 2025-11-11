@@ -861,8 +861,6 @@ impl Contract {
 
     fn start_allocation(&mut self, amount: u128, plan: AllocationPlan) -> PromiseOrValue<()> {
         if amount == 0 {
-            // Dust request: clear the head and stay Idle to avoid wedging the queue
-            self.remove_inflight_and_advance_head();
             return PromiseOrValue::Value(());
         }
         self.ensure_idle();
