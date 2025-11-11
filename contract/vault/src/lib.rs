@@ -367,6 +367,26 @@ impl Contract {
         )
     }
 
+    /// Allocator/Curator/Owner only. Cancels the current in-flight withdrawal:
+    /// - Refunds escrowed shares to the owner
+    /// - Releases the current market execution lock
+    /// - Clears withdraw state and dequeues the pending request (advance head)
+    ///
+    /// If the vault is not currently Withdrawing, this is a no-op.
+    pub fn cancel_in_flight_withdrawal(&mut self) -> PromiseOrValue<()> {
+        Self::assert_allocator();
+
+        match &self.op_state {
+            OpState::Withdrawing(_) => {
+                // stop_and_exit_withdrawing refunds escrow, unlocks current index, clears route,
+                // dequeues the inflight request and sets the vault back to Idle.
+                self.stop_and_exit_withdrawing::<&str>(None);
+                PromiseOrValue::Value(())
+            }
+            _ => PromiseOrValue::Value(()),
+        }
+    }
+
     /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
     pub fn skim(&mut self, token: AccountId) -> Promise {
         Self::require_owner();
