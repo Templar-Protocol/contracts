@@ -344,6 +344,13 @@ impl Contract {
         };
 
         self.market_execution_lock.lock(market_index);
+
+        if ctx.index != market_index {
+            self.op_state = OpState::Withdrawing(WithdrawingState {
+                index: market_index,
+                ..ctx
+            });
+        }
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
                 .with_static_gas(Gas::from_tgas(5))
