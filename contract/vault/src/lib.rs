@@ -995,7 +995,11 @@ impl Contract {
             );
         }
         if self.withdraw_route.get(index as usize).is_some() {
-            // FIXME: emit an event NeedsExecution(blah)
+            Event::WithdrawExecutionRequired {
+                op_id: op_id.into(),
+                market_index: index,
+            }
+            .emit();
             return PromiseOrValue::Value(());
         } else {
             let requested = collected.saturating_add(remaining);
