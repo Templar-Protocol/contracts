@@ -628,7 +628,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     MarketRemovalRevoked { market: AccountId },
     #[event_version("1.0.0")]
-    WithdrawQueueUpdated { markets: Vec<AccountId> },
+    WithdrawExecutionRequired { op_id: U64, market_index: u32 },
 
     // User flows
     #[event_version("1.0.0")]
@@ -737,6 +737,7 @@ pub enum Event {
     },
 }
 
+#[near(serializers = [borsh, serde])]
 pub struct Locker {
     to_lock: Vec<u32>,
 }
@@ -767,6 +768,12 @@ impl Locker {
         }
         .emit();
         self.to_lock.retain(|&x| x != i);
+    }
+
+    /// Clears the lock status for all markets.
+    /// This method should be used with caution as it will unlock all markets
+    pub fn clear(&mut self) {
+        self.to_lock.clear();
     }
 
     pub fn is_locked(&self, i: u32) -> bool {
