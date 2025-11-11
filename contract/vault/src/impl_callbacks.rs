@@ -401,7 +401,7 @@ impl Contract {
                         .unwrap_or_else(|e| {
                             env::panic_str(&format!("Failed to refund escrowed shares {e}"))
                         });
-                    self_.remove_inflight_and_advance_head();
+                    self_.pop_head();
                     self_.withdraw_route.clear();
                     self_.op_state = OpState::Idle;
                     PromiseOrValue::Value(())
@@ -491,7 +491,7 @@ impl Contract {
             // If this fails, this is a serious issue as above
             .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
-        self.remove_inflight_and_advance_head();
+        self.pop_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
@@ -572,7 +572,7 @@ impl Contract {
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
 
-        self.remove_inflight_and_advance_head();
+        self.pop_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
@@ -598,7 +598,7 @@ impl Contract {
         }
 
         self.market_execution_lock.clear();
-        self.remove_inflight_and_advance_head();
+        self.pop_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
