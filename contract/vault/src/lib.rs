@@ -337,10 +337,6 @@ impl Contract {
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        let Some(market_index) = self.pending_market_exec.first().copied() else {
-            env::panic_str("No pending market withdrawal request to execute");
-        };
-
         if let Err(e) = self.resolve_withdraw_market(market_index) {
             return self.stop_and_exit(Some(&e));
         };
