@@ -577,17 +577,11 @@ pub enum Event {
         reason: Option<String>,
     },
 
-    // Eager
-    #[event_version("1.0.0")]
-    AllocationEagerTriggered {
-        op_id: U64,
-        idle_balance: U128,
-        min_batch: U128,
-        deposit_accepted: U128,
-    },
-
     #[event_version("1.0.0")]
     PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
+
+    #[event_version("1.0.0")]
+    LockChange { is_locked: bool, market_index: u32 },
 
     // Admin and configuration events
     #[event_version("1.0.0")]
@@ -752,4 +746,88 @@ pub enum Event {
         index: u32,
         extra: U128,
     },
+}
+
+pub struct Locker {
+    to_lock: Vec<u32>,
+}
+
+impl Locker {
+    pub fn new() -> Self {
+        Locker {
+            to_lock: Vec::new(),
+        }
+    }
+
+    pub fn lock(&mut self, i: u32) {
+        if self.is_locked(i) {
+            env::panic_str("Market is locked for index");
+        }
+        Event::LockChange {
+            is_locked: true,
+            market_index: i,
+        }
+        .emit();
+        self.to_lock.push(i);
+    }
+
+    pub fn unlock(&mut self, i: u32) {
+        Event::LockChange {
+            is_locked: false,
+            market_index: i,
+        }
+        .emit();
+        self.to_lock.retain(|&x| x != i);
+    }
+
+    pub fn is_locked(&self, i: u32) -> bool {
+        self.to_lock.contains(&i)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    const _: [(); MarketConfiguration::encoded_size()] = [(); 25];
+    const _EXPECTED_FROM_TYPES: usize =
+        core::mem::size_of::<u128>() + core::mem::size_of::<bool>() + core::mem::size_of::<u64>();
+    const _: [(); MarketConfiguration::encoded_size()] = [(); _EXPECTED_FROM_TYPES];
+
+    #[test]
+    fn encoded_size_is_25() {
+        assert_eq!(MarketConfiguration::encoded_size(), 25);
+    }
+
+    #[test]
+    fn encoded_size_market_matches_field_sizes() {
+        assert_eq!(
+            MarketConfiguration::encoded_size(),
+            borsh::to_vec(&MarketConfiguration::default())
+                .unwrap()
+                .len(),
+        );
+    }
+
+    #[test]
+    fn encoded_size_pending_withdrawal_matches_field_sizes() {
+        // let 64 byte account id
+        let s = "abc1abc2abc3abc4abc5abc6abc7abc8abc9abc0abc1abc2abc3abc4abc5abc6";
+        assert_eq!(s.len(), 64);
+        let account = AccountId::from_str(s).unwrap();
+        assert_eq!(account.len(), 64);
+        assert_eq!(
+            borsh::to_vec(&PendingWithdrawal {
+                owner: account.clone(),
+                receiver: account.clone(),
+                escrow_shares: 3,
+                expected_assets: 4,
+                requested_at: 5
+            })
+            .unwrap()
+            .len() as u64,
+            PendingWithdrawal::encoded_size()
+        );
+    }
 }
