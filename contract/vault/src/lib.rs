@@ -150,11 +150,8 @@ pub struct Contract {
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
 
-    // Id of the pending withdrawal being executed, if any
-    current_withdraw_inflight: Option<u64>,
     /// Pending withdrawals queue (vault-level, FIFO by id)
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
-    next_withdraw_id: u64,
     next_withdraw_to_execute: u64,
 
     // indices of markets with created requests (per withdrawing op)
@@ -205,7 +202,6 @@ impl Contract {
             idle_balance: 0,
             op_state: OpState::Idle,
             next_op_id: 1,
-            current_withdraw_inflight: None,
             pending_withdrawals: IterableMap::new(
                 [
                     b'v'.into_storage_key().as_slice(),
@@ -213,7 +209,6 @@ impl Contract {
                 ]
                 .concat(),
             ),
-            next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
             market_execution_lock: Locker::new(),
             withdraw_route: Vec::new(),
@@ -280,9 +275,6 @@ impl Contract {
         self.ensure_idle();
         Self::assert_allocator();
 
-        if self.current_withdraw_inflight.is_some() {
-            env::panic_str("A pending withdrawal is already in-flight");
-        }
 
         if let Some(id) = self.peek_next_pending_withdrawal_id() {
             let pending = self
@@ -294,12 +286,10 @@ impl Contract {
 
             if pending.expected_assets == 0 {
                 // Skip dust request to avoid wedging the queue
-                self.current_withdraw_inflight = Some(id);
-                self.remove_inflight_and_advance_head();
+                self.pop_head();
                 return self.execute_withdrawal(route);
             }
 
-            self.current_withdraw_inflight = Some(id);
             return self.start_withdraw(
                 pending.expected_assets,
                 &receiver,
@@ -460,38 +450,36 @@ impl Contract {
         }
     }
 
-    // Advance next_withdraw_to_execute to the next present id and return it, or None if none
-    fn peek_next_pending_withdrawal_id(&mut self) -> Option<u64> {
-        let mut id = self.next_withdraw_to_execute;
-        while id < self.next_withdraw_id {
-            if self.pending_withdrawals.get(&id).is_some() {
-                self.next_withdraw_to_execute = id;
-                return Some(id);
-            }
-            id = id.saturating_add(1);
-        }
-        self.next_withdraw_to_execute = id;
-        None
+    // Derive queue tail = head + pending.len()
+    fn queue_tail(&self) -> u64 {
+        self.next_withdraw_to_execute + (self.pending_withdrawals.len() as u64)
     }
 
-    // Remove the in-flight pending (success or explicit abort) and advance head past it
-    fn remove_inflight_and_advance_head(&mut self) {
-        if let Some(id) = self.current_withdraw_inflight.take() {
-            let _ = self.pending_withdrawals.remove(&id);
-            self.next_withdraw_to_execute = id.saturating_add(1);
-            Event::WithdrawDequeued { index: id.into() }.emit();
+    // Return the current head id if queue is non-empty
+    fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
+        let tail = self.queue_tail();
+        if self.next_withdraw_to_execute < tail {
+            Some(self.next_withdraw_to_execute)
+        } else {
+            None
         }
     }
 
-    // Keep the head pending but clear in-flight so it can be retried later
-    fn park_inflight_head_for_retry(&mut self) {
-        if let Some(current_withdraw_inflight) = self.current_withdraw_inflight {
-            Event::WithdrawalParked {
-                id: current_withdraw_inflight.into(),
-            }
-            .emit();
+    // Remove the head pending withdrawal and advance the queue head
+    fn pop_head(&mut self) {
+        let id = self.next_withdraw_to_execute;
+        let removed = self.pending_withdrawals.remove(&id);
+        require!(removed.is_some(), "queue corrupt: head missing");
+        self.next_withdraw_to_execute = id.saturating_add(1);
+        Event::WithdrawDequeued { index: id.into() }.emit();
+    }
+
+    // Keep the head pending and emit telemetry; can be retried later
+    fn park_head_for_retry(&mut self) {
+        Event::WithdrawalParked {
+            id: self.next_withdraw_to_execute.into(),
         }
-        self.current_withdraw_inflight = None;
+        .emit();
     }
 }
 
@@ -634,7 +622,12 @@ impl Contract {
     }
 
     pub fn get_current_withdraw_request_id(&self) -> Option<U64> {
-        self.current_withdraw_inflight.map(Into::into)
+        match &self.op_state {
+            OpState::Withdrawing(_) | OpState::Payout(_) => {
+                Some(self.next_withdraw_to_execute.into())
+            }
+            _ => None,
+        }
     }
 }
 
@@ -664,8 +657,7 @@ impl Contract {
         escrow_shares: u128,
         expected_assets: u128,
     ) {
-        let id = self.next_withdraw_id;
-        self.next_withdraw_id = self.next_withdraw_id.saturating_add(1);
+        let id = self.queue_tail();
         let requested_at = env::block_timestamp();
 
         self.pending_withdrawals.insert(
@@ -1004,7 +996,7 @@ impl Contract {
                 |self_| {
                     self_.withdraw_route.clear();
                     self_.op_state = OpState::Idle;
-                    self_.park_inflight_head_for_retry();
+                    self_.park_head_for_retry();
                     PromiseOrValue::Value(())
                 },
             )
