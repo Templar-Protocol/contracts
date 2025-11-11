@@ -60,9 +60,8 @@ pub enum LiquidationReason {
 pub struct BorrowPosition {
     pub started_at_block_timestamp_ms: Option<U64>,
     pub collateral_asset_deposit: CollateralAssetAmount,
-    #[serde(default)]
     borrow_asset_principal: BorrowAssetAmount,
-    #[serde(default)]
+    #[serde(alias = "borrow_asset_fees")]
     pub interest: Accumulator<BorrowAsset>,
     #[serde(default)]
     pub fees: BorrowAssetAmount,
@@ -813,5 +812,123 @@ impl<'a> BorrowPositionGuard<'a> {
             collateral_asset_liquidated: initial_liquidation.liquidated,
         }
         .emit();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::serde_json;
+
+    #[test]
+    fn test_borrow_position_deserialize_new_format() {
+        // New market format with interest field
+        let json = r#"{
+            "started_at_block_timestamp_ms": "1699564800000",
+            "collateral_asset_deposit": "1000000000000000000000000",
+            "borrow_asset_principal": "100000000",
+            "interest": {
+                "total": "0",
+                "fraction_as_u128_dividend": "0",
+                "next_snapshot_index": 42,
+                "pending_estimate": "0"
+            },
+            "fees": "500000",
+            "borrow_asset_in_flight": "50000000",
+            "collateral_asset_in_flight": "0",
+            "liquidation_lock": "0"
+        }"#;
+
+        let position: BorrowPosition =
+            serde_json::from_str(json).expect("Failed to deserialize new format");
+        assert_eq!(position.fees, BorrowAssetAmount::new(500_000));
+        assert_eq!(
+            position.get_borrow_asset_principal(),
+            BorrowAssetAmount::new(50_000_000 + 100_000_000)
+        );
+    }
+
+    #[test]
+    fn test_borrow_position_deserialize_old_format_with_borrow_asset_fees() {
+        // Old market format with borrow_asset_fees instead of interest
+        let json = r#"{
+            "started_at_block_timestamp_ms": "1699564800000",
+            "collateral_asset_deposit": "1000000000000000000000000",
+            "borrow_asset_principal": "100000000",
+            "borrow_asset_fees": {
+                "total": "0",
+                "fraction_as_u128_dividend": "0",
+                "next_snapshot_index": 42,
+                "pending_estimate": "0"
+            },
+            "fees": "500000",
+            "borrow_asset_in_flight": "0",
+            "collateral_asset_in_flight": "0",
+            "liquidation_lock": "0"
+        }"#;
+
+        let position: BorrowPosition =
+            serde_json::from_str(json).expect("Failed to deserialize old format");
+        assert_eq!(position.fees, BorrowAssetAmount::new(500_000));
+        assert_eq!(
+            position.get_borrow_asset_principal(),
+            BorrowAssetAmount::new(100_000_000)
+        );
+    }
+
+    #[test]
+    fn test_borrow_position_deserialize_mixed_old_new_format() {
+        // Mixed format: old field name for interest (borrow_asset_fees), new field names for others
+        let json = r#"{
+            "started_at_block_timestamp_ms": "1699564800000",
+            "collateral_asset_deposit": "1000000000000000000000000",
+            "borrow_asset_principal": "100000000",
+            "borrow_asset_fees": {
+                "total": "0",
+                "fraction_as_u128_dividend": "0",
+                "next_snapshot_index": 42,
+                "pending_estimate": "0"
+            },
+            "fees": "500000",
+            "borrow_asset_in_flight": "0",
+            "collateral_asset_in_flight": "0",
+            "liquidation_lock": "0"
+        }"#;
+
+        let position: BorrowPosition =
+            serde_json::from_str(json).expect("Failed to deserialize mixed format");
+        assert_eq!(position.fees, BorrowAssetAmount::new(500_000));
+        assert_eq!(
+            position.get_borrow_asset_principal(),
+            BorrowAssetAmount::new(100_000_000)
+        );
+        assert_eq!(
+            position.get_total_collateral_amount(),
+            CollateralAssetAmount::new(1_000_000_000_000_000_000_000_000)
+        );
+    }
+
+    #[test]
+    fn test_borrow_position_deserialize_defaults() {
+        // Minimal JSON with only required fields, others should use defaults
+        let json = r#"{
+            "collateral_asset_deposit": "1000000000000000000000000",
+            "borrow_asset_principal": "100000000",
+            "interest": {
+                "total": "0",
+                "fraction_as_u128_dividend": "0",
+                "next_snapshot_index": 42,
+                "pending_estimate": "0"
+            }
+        }"#;
+
+        let position: BorrowPosition =
+            serde_json::from_str(json).expect("Failed to deserialize with defaults");
+        assert_eq!(position.started_at_block_timestamp_ms, None);
+        assert_eq!(position.fees, BorrowAssetAmount::new(0));
+        assert_eq!(
+            position.get_total_collateral_amount(),
+            CollateralAssetAmount::new(1_000_000_000_000_000_000_000_000)
+        );
     }
 }

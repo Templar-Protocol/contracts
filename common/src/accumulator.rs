@@ -13,17 +13,6 @@ pub struct Accumulator<T: AssetClass> {
     pub pending_estimate: FungibleAssetAmount<T>,
 }
 
-impl<T: AssetClass> Default for Accumulator<T> {
-    fn default() -> Self {
-        Self {
-            total: 0.into(),
-            fraction_as_u128_dividend: U128(0),
-            next_snapshot_index: 0,
-            pending_estimate: 0.into(),
-        }
-    }
-}
-
 impl<T: AssetClass> Accumulator<T> {
     pub fn new(next_snapshot_index: u32) -> Self {
         Self {
@@ -94,14 +83,6 @@ impl<T: AssetClass> AccumulationRecord<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_accumulator() {
-        let a = Accumulator::<crate::asset::BorrowAsset>::default();
-
-        assert_eq!(a.get_total(), 0.into());
-        assert_eq!(a.get_next_snapshot_index(), 0);
-    }
 
     #[test]
     fn fraction() {
