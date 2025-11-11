@@ -11,6 +11,10 @@
 # OS
 .DS_Store
 
+# Environment files
+.env
+.env.local
+
 # documentation site
 _site/
 .aider*

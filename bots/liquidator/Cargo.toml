@@ -1,0 +1,36 @@
+[package]
+name = "templar-liquidator"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version = "0.1.0"
+
+[lib]
+path = "src/liquidator.rs"
+
+[[bin]]
+name = "liquidator"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+near-account-id = { workspace = true }
+near-crypto = { workspace = true }
+near-jsonrpc-client = { workspace = true }
+near-jsonrpc-primitives = { workspace = true }
+near-primitives = { workspace = true }
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+templar-common = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

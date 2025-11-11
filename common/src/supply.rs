@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, json_types::U64, near, require, AccountId};
+use near_sdk::{json_types::U64, near, require, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -298,7 +298,7 @@ impl<'a> SupplyPositionGuard<'a> {
                     incoming.activate_at_snapshot_index == newest.activate_at_snapshot_index
                 })
             else {
-                env::panic_str("Invariant violation: Market incoming entry should exist if position incoming entry exists");
+                crate::panic_with_message("Invariant violation: Market incoming entry should exist if position incoming entry exists");
             };
             market_incoming.amount = market_incoming.amount.unwrap_sub(newest.amount, "Invariant violation: Market incoming >= position incoming should hold for all snapshot indices");
 
@@ -392,7 +392,9 @@ impl<'a> SupplyPositionGuard<'a> {
         let Some(U64(started_at_block_timestamp_ms)) =
             self.0.position.started_at_block_timestamp_ms
         else {
-            env::panic_str("Invariant violation: Position with deposit has no timestamp");
+            crate::panic_with_message(
+                "Invariant violation: Position with deposit has no timestamp",
+            );
         };
         let supply_duration = block_timestamp_ms.saturating_sub(started_at_block_timestamp_ms);
 
@@ -401,7 +403,7 @@ impl<'a> SupplyPositionGuard<'a> {
             .configuration
             .supply_withdrawal_fee
             .of(withdrawal_amount, supply_duration)
-            .unwrap_or_else(|| env::panic_str("Fee calculation overflow"))
+            .unwrap_or_else(|| crate::panic_with_message("Fee calculation overflow"))
             .min(withdrawal_amount);
 
         let amount_to_account = withdrawal_amount.saturating_sub(amount_to_fees);
