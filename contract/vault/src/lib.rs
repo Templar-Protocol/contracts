@@ -158,7 +158,7 @@ pub struct Contract {
     next_withdraw_to_execute: u64,
 
     // indices of markets with created requests (per withdrawing op)
-    pending_market_exec: Vec<u32>,
+    market_execution_lock: Locker,
 
     // Keeper-provided withdraw route for the current Withdrawing op
     withdraw_route: Vec<AccountId>,
@@ -224,7 +224,7 @@ impl Contract {
             ),
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
-            pending_market_exec: Vec::new(),
+            market_execution_lock: Vec::new(),
             withdraw_route: Vec::new(),
         };
 
@@ -345,6 +345,7 @@ impl Contract {
             return self.stop_and_exit(Some(&e));
         };
 
+        self.market_execution_lock.lock(market_index);
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
                 .with_static_gas(Gas::from_tgas(5))
@@ -616,23 +617,11 @@ impl Contract {
     }
 
     pub fn has_pending_market_withdrawal(&self) -> bool {
-        !self.pending_market_exec.is_empty()
+        !self.market_execution_lock.is_empty()
     }
 
     pub fn get_current_withdraw_request_id(&self) -> Option<U64> {
         self.current_withdraw_inflight.map(Into::into)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct EscrowSettlement {
-    pub to_burn: u128,
-    pub refund: u128,
-}
-
-impl From<EscrowSettlement> for (u128, u128) {
-    fn from(tuple: EscrowSettlement) -> Self {
-        (tuple.to_burn, tuple.refund)
     }
 }
 
@@ -993,7 +982,7 @@ impl Contract {
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
         let (remaining, collected_from_idle) = self.idle_delta(amount);
 
-        self.pending_market_exec.clear();
+        self.market_execution_lock.clear();
         self.withdraw_route = route;
 
         self.op_state = OpState::Withdrawing(WithdrawingState {
@@ -1120,20 +1109,6 @@ impl Contract {
         let remaining = amount.saturating_sub(used_idle);
         let collected = used_idle;
         (remaining, collected)
-    }
-
-    fn with_pending_market_position(
-        &mut self,
-        market_index: u32,
-        and: impl FnOnce(&mut Self, usize),
-    ) {
-        if let Some(pos) = self
-            .pending_market_exec
-            .iter()
-            .position(|&idx| idx == market_index)
-        {
-            and(self, pos);
-        }
     }
 }
 

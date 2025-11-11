@@ -183,7 +183,7 @@ impl Contract {
         };
 
         if did_create.is_ok() {
-            self.pending_market_exec.push(market_index);
+            self.market_execution_lock.lock(market_index);
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -329,9 +329,7 @@ impl Contract {
         );
         let extra = inflow.saturating_sub(principal_delta);
 
-        self.with_pending_market_position(market_index, |self_, pos| {
-            self_.pending_market_exec.remove(pos);
-        });
+        self.market_execution_lock.unlock(market_index);
 
         match principal_delta.cmp(&inflow) {
             Ordering::Greater => {
@@ -365,11 +363,7 @@ impl Contract {
             self.update_idle_balance(IdleBalanceDelta::Increase(inflow.into()));
         }
 
-        self.with_pending_market_position(market_index, |self_, pos| {
-            if creditable == principal_delta {
-                self_.pending_market_exec.remove(pos);
-            }
-        });
+        self.market_execution_lock.unlock(market_index);
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -408,7 +402,6 @@ impl Contract {
                         .unwrap_or_else(|e| {
                             env::panic_str(&format!("Failed to refund escrowed shares {e}"))
                         });
-                    self_.pending_market_exec.clear();
                     self_.remove_inflight_and_advance_head();
                     self_.withdraw_route.clear();
                     self_.op_state = OpState::Idle;
@@ -515,7 +508,7 @@ impl Contract {
             // If this fails, this is a serious issue as above
             .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
-        self.pending_market_exec.clear();
+        self.market_execution_lock.unlock(market_index);
         self.remove_inflight_and_advance_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
