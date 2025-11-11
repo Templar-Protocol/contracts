@@ -964,10 +964,10 @@ impl Contract {
             owner: owner.clone(),
             escrow_shares,
         });
-        self.step_withdraw()
+        self.pay_or_signal_next_withdraw()
     }
 
-    fn step_withdraw(&mut self) -> PromiseOrValue<()> {
+    fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
         let OpState::Withdrawing(WithdrawingState {
             op_id,
             index,
