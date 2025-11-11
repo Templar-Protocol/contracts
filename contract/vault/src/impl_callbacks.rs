@@ -14,8 +14,8 @@ use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, AllocationPlan, Event, IdleBalanceDelta, PayoutState, WithdrawingState,
-        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_03_SETTLE_GAS,
+        AllocatingState, AllocationPlan, EscrowSettlement, Event, IdleBalanceDelta, PayoutState,
+        WithdrawingState, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_03_SETTLE_GAS,
         GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
     },
 };
@@ -213,10 +213,11 @@ impl Contract {
         };
 
         let principal = self.principal_of(&market);
-        let before_balance = before_balance.unwrap_or(U128(0));
+        let before_balance = before_balance.unwrap_or(U128(self.idle_balance));
 
         PromiseOrValue::Promise(
             ext_market::ext(market.clone())
+                // NOTE: gas might be incorrect here
                 .with_static_gas(Gas::from_tgas(
                     EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS.as_tgas()
                         * (u64::from(batch_limit.unwrap_or(1))),
@@ -286,6 +287,7 @@ impl Contract {
                     before: principal,
                 }
                 .emit();
+
                 return self.stop_and_exit(Some(&Error::PositionReadFailed));
             }
         };
@@ -331,8 +333,6 @@ impl Contract {
             before_balance,
         );
         let extra = inflow.saturating_sub(principal_delta);
-
-        self.market_execution_lock.unlock(market_index);
 
         match principal_delta.cmp(&inflow) {
             Ordering::Greater => {
@@ -381,7 +381,6 @@ impl Contract {
         );
 
         // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
-
         let (_, remaining_next, collected_next) =
             determine_payout_delta(remaining_next, collected_next, extra);
 
@@ -415,35 +414,19 @@ impl Contract {
             );
         }
 
-        match principal_delta.cmp(&inflow) {
-            Ordering::Less | Ordering::Equal if principal_delta > 0 => {
-                // Fully executed for this market: advance to next and continue
-                self.op_state = OpState::Withdrawing(WithdrawingState {
-                    op_id,
-                    index: market_index.saturating_add(1),
-                    remaining: remaining_next,
-                    receiver: ctx.receiver,
-                    collected: collected_next,
-                    owner: ctx.owner,
-                    escrow_shares: ctx.escrow_shares,
-                });
-                self.step_withdraw()
-            }
-            _ => {
-                // Partial or zero inflow: do not advance; keeper must re-execute this market later
-                self.op_state = OpState::Withdrawing(WithdrawingState {
-                    op_id,
-                    index: market_index,
-                    remaining: remaining_next,
-                    receiver: ctx.receiver,
-                    collected: collected_next,
-                    owner: ctx.owner,
-                    escrow_shares: ctx.escrow_shares,
-                });
-                PromiseOrValue::Value(())
-            }
-        }
+        let next_state = withdrawal_state_if_principal(
+            principal_delta,
+            inflow,
+            op_id,
+            market_index,
+            remaining_next,
+            collected_next,
+            ctx,
+        );
+        self.op_state = next_state;
+        self.pay_or_signal_next_withdraw()
     }
+
     /// Cash flow:
     /// - Runs in Payout context after funds were credited in after_exec_withdraw_read.
     /// - On success: idle_balance was pre-decremented before transfer; burn a portion of escrow_shares and refund the rest to the owner.
@@ -482,7 +465,7 @@ impl Contract {
             let EscrowSettlement {
                 to_burn: burn_shares,
                 refund,
-            } = Self::compute_escrow_settlement(escrow_shares, burn_shares);
+            } = EscrowSettlement::new(escrow_shares, burn_shares);
 
             // Burn only the proportional shares and refund the remainder to the owner.
             if burn_shares > 0 {
@@ -510,7 +493,6 @@ impl Contract {
                 |e| env::log_str(&e.to_string()),
             );
         }
-        self.market_execution_lock.unlock(market_index);
         self.remove_inflight_and_advance_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
@@ -582,6 +564,8 @@ impl Contract {
         }
         .emit();
 
+        self.market_execution_lock.unlock(s.index);
+
         let owner = s.owner.clone();
 
         if s.escrow_shares > 0 {
@@ -614,6 +598,8 @@ impl Contract {
             self.transfer_unchecked(&env::current_account_id(), &owner, s.escrow_shares)
                 .unwrap_or_else(|e| env::log_str(&e.to_string()));
         }
+
+        self.market_execution_lock.clear();
         self.remove_inflight_and_advance_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
@@ -654,7 +640,7 @@ impl Contract {
     }
 
     /// Validate current op is Withdrawing and return context tuple
-    pub(crate) fn ctx_withdrawing(&self, op_id: u64) -> Result<&WithdrawingState, Error> {
+    pub fn ctx_withdrawing(&self, op_id: u64) -> Result<&WithdrawingState, Error> {
         match &self.op_state {
             OpState::Withdrawing(s) if s.op_id == op_id => Ok(s),
             _ => Err(Error::NotWithdrawing),
@@ -777,4 +763,41 @@ pub fn determine_payout_delta(
     let remaining_next = remaining_total.saturating_sub(payout_delta);
     let collected_next = collected_total.saturating_add(payout_delta);
     (payout_delta, remaining_next, collected_next)
+}
+
+pub fn withdrawal_state_if_principal(
+    principal_delta: u128,
+    inflow: u128,
+    op_id: u64,
+    market_index: u32,
+    remaining_next: u128,
+    collected_next: u128,
+    ctx: WithdrawingState,
+) -> OpState {
+    match principal_delta.cmp(&inflow) {
+        Ordering::Less | Ordering::Equal if principal_delta > 0 => {
+            // Fully executed for this market: advance to next and continue
+            OpState::Withdrawing(WithdrawingState {
+                op_id,
+                index: market_index.saturating_add(1),
+                remaining: remaining_next,
+                receiver: ctx.receiver,
+                collected: collected_next,
+                owner: ctx.owner,
+                escrow_shares: ctx.escrow_shares,
+            })
+        }
+        _ => {
+            // Partial or zero inflow: do not advance; keeper must re-execute this market later
+            OpState::Withdrawing(WithdrawingState {
+                op_id,
+                index: market_index,
+                remaining: remaining_next,
+                receiver: ctx.receiver,
+                collected: collected_next,
+                owner: ctx.owner,
+                escrow_shares: ctx.escrow_shares,
+            })
+        }
+    }
 }

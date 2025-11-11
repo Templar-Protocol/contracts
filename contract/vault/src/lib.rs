@@ -34,12 +34,12 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     market::ext_market,
     vault::{
-        require_at_least, AllocatingState, AllocationMode, AllocationPlan, AllocationWeights,
-        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState,
+        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
+        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingValue,
         PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
-        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -112,22 +112,29 @@ impl From<MarketConfiguration> for MarketRecord {
 pub struct Contract {
     /// The underlying asset that the vault manages
     underlying_asset: FungibleAsset<BorrowAsset>,
-
     /// The process in which the vault calculates its assets under management
     aum: AUM,
-
     /// Performance fee
-    performance_fee: wad::Wad,
+    performance_fee: Wad,
+    /// The recipient of performance fees
     fee_recipient: AccountId,
+    /// The recipient of any skimmed tokens that are erroneously held by the vault
     skim_recipient: AccountId,
     /// Last recorded total assets (for fee accrual)
     last_total_assets: u128,
+    /// Vaults liquidity buffer
+    idle_balance: u128,
 
-    // Virtual offsets used only in conversions/previews to harden edge cases
+    /// The vault's operation state
+    op_state: OpState,
+    /// The next operation id
+    next_op_id: u64,
+
+    /// Virtual offsets used only in conversions/previews to harden edge cases
     virtual_shares: u128,
     virtual_assets: u128,
 
-    // Merged market record: cfg + pending_cap + principal (single persisted map; no per-entry storage keys)
+    /// Markets controlled by the vault
     markets: BTreeMap<AccountId, MarketRecord>,
 
     /// Per‑action governance timelock configuration.
@@ -136,14 +143,8 @@ pub struct Contract {
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
 
-    // id of the pending withdrawal being executed, if any
+    // Id of the pending withdrawal being executed, if any
     current_withdraw_inflight: Option<u64>,
-
-    /// underlying held by vault
-    idle_balance: u128,
-    op_state: OpState,
-    next_op_id: u64,
-
     /// Pending withdrawals queue (vault-level, FIFO by id)
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_id: u64,
@@ -163,15 +164,6 @@ pub struct Contract {
 impl Contract {
     #[allow(clippy::unwrap_used, reason = "Infallible")]
     #[init]
-    /// Initializes a new vault.
-    /// - `owner_id`: account that controls Owner-only actions.
-    /// - `curator_id`: manages markets and is also granted the Allocator role.
-    /// - `guardian_id`: can revoke pending governance actions.
-    /// - `underlying_token_id`: NEP-141 underlying asset managed by the vault.
-    /// - `initial_timelock_sec`: governance timelock in seconds.
-    /// - `fee_recipient`: account to receive performance fees.
-    /// - `skim_recipient`: account to receive skimmed tokens.
-    /// - `name`/`symbol`/`decimals`: metadata for the share token.
     #[must_use]
     pub fn new(configuration: VaultConfiguration) -> Self {
         let VaultConfiguration {
@@ -223,7 +215,7 @@ impl Contract {
             ),
             next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
-            market_execution_lock: Vec::new(),
+            market_execution_lock: Locker::new(),
             withdraw_route: Vec::new(),
             abdicator: Abdicator::new(),
             gate: Gate::new(restrictions),
@@ -285,9 +277,9 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes the next pending withdrawal request
-    /// This defers creating market-side withdrawal requests until explicitly invoked.
-    pub fn execute_next_withdrawal_request(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
+    /// Executes the withdraw route provided by the allocator
+    /// If `route` is empty, try to settle with the idle balance
+    pub fn execute_withdrawal(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
@@ -307,11 +299,10 @@ impl Contract {
                 // Skip dust request to avoid wedging the queue
                 self.current_withdraw_inflight = Some(id);
                 self.remove_inflight_and_advance_head();
-                return self.execute_next_withdrawal_request(route);
+                return self.execute_withdrawal(route);
             }
 
             self.current_withdraw_inflight = Some(id);
-            env::log_str(&format!("WithdrawalExecutionStarted id={id}"));
             return self.start_withdraw(
                 pending.expected_assets,
                 &receiver,
@@ -324,24 +315,25 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes one created market withdrawal request in the current Withdrawing op.
-    /// Allocator only.
-    pub fn execute_next_market_withdrawal(
+    /// Allocator-only. Progress the current Withdrawing op by executing the market at `market_index`
+    /// from the `withdraw_route`. Use when offchain signals the vault is next in the market queue.
+    pub fn execute_market_withdrawal(
         &mut self,
         op_id: U64,
+        market_index: u32,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
 
-        let _ctx = match self.ctx_withdrawing(op_id.into()) {
-            Ok(v) => v,
+        let ctx = match self.ctx_withdrawing(op_id.0) {
+            Ok(s) => s.clone(),
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         if let Err(e) = self.resolve_withdraw_market(market_index) {
             return self.stop_and_exit(Some(&e));
-        };
+        }
 
         self.market_execution_lock.lock(market_index);
 
@@ -467,7 +459,7 @@ impl Contract {
                         ))),
                 )
             }
-            AllocationDelta::Harvest(delta) => todo!(),
+            AllocationDelta::Harvest(delta) => todo!("Implement Harvest"),
         }
     }
 
@@ -549,7 +541,6 @@ impl Contract {
             name: meta.name,
             symbol: meta.symbol,
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
-            mode: self.mode.clone(),
             restrictions: self.gate.restrictions.clone(),
         }
     }
@@ -755,13 +746,14 @@ impl Contract {
     pub fn compute_effective_totals(
         cur_assets: Number,
         last_total_assets: Number,
-        performance_fee: wad::Wad,
+        performance_fee: Wad,
         total_supply: Number,
         virtual_shares: Number,
         virtual_assets: Number,
     ) -> (Number, Number) {
         let fee_shares =
             compute_fee_shares(cur_assets, last_total_assets, performance_fee, total_supply);
+        // Bump by fake virtual assets to bypass inflation attacks
         let new_total_supply = total_supply
             .saturating_add(fee_shares)
             .saturating_add(virtual_shares);
@@ -925,25 +917,25 @@ impl Contract {
                 room: U128(room),
                 to_supply: U128(to_supply),
                 remaining_before: U128(remaining),
-                    planned: true,
+                planned: true,
+            }
+            .emit();
+
+            if to_supply == 0 {
+                Event::AllocationStepSkipped {
+                    op_id: op_id.into(),
+                    index,
+                    market: market_id.clone(),
+                    reason: if room == 0 {
+                        "no-room".to_string()
+                    } else {
+                        "zero-target".to_string()
+                    },
+                    remaining: U128(remaining),
                 }
                 .emit();
 
-                if to_supply == 0 {
-                    Event::AllocationStepSkipped {
-                        op_id: op_id.into(),
-                        index,
-                        market: market_id.clone(),
-                        reason: if room == 0 {
-                            "no-room".to_string()
-                        } else {
-                            "zero-target".to_string()
-                        },
-                        remaining: U128(remaining),
-                    }
-                    .emit();
-
-                    self.op_state = OpState::Allocating(AllocatingState {
+                self.op_state = OpState::Allocating(AllocatingState {
                     op_id,
                     index: index + 1,
                     remaining,
@@ -952,10 +944,10 @@ impl Contract {
                 return self.step_allocation();
             }
 
-                PromiseOrValue::Promise(
-                    self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
-                )
-            } else {
+            PromiseOrValue::Promise(
+                self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
+            )
+        } else {
             // Plan exhausted; stop and reconcile remaining in stop_and_exit
             self.stop_and_exit::<Error>(None)
         }
@@ -979,9 +971,7 @@ impl Contract {
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
         let (remaining, collected_from_idle) = self.idle_delta(amount);
 
-        self.market_execution_lock.clear();
         self.withdraw_route = route;
-
         self.op_state = OpState::Withdrawing(WithdrawingState {
             op_id,
             index: Default::default(),
@@ -1020,7 +1010,11 @@ impl Contract {
             );
         }
         if self.withdraw_route.get(index as usize).is_some() {
-            // FIXME: emit an event NeedsExecution(blah)
+            Event::WithdrawExecutionRequired {
+                op_id: op_id.into(),
+                market_index: index,
+            }
+            .emit();
             return PromiseOrValue::Value(());
         } else {
             let requested = collected.saturating_add(remaining);

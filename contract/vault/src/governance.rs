@@ -1,3 +1,5 @@
+use templar_common::vault::MAX_QUEUE_LEN;
+
 use super::*;
 use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
