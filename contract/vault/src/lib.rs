@@ -339,10 +339,6 @@ impl Contract {
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        let Some(market_index) = self.pending_market_exec.first().copied() else {
-            templar_common::panic_with_message("No pending market withdrawal request to execute");
-        };
-
         if let Err(e) = self.resolve_withdraw_market(market_index) {
             return self.stop_and_exit(Some(&e));
         };
@@ -702,46 +698,6 @@ impl Contract {
         .emit();
     }
 
-    fn create_withdraw_request_for_market(
-        &mut self,
-        op_id: u64,
-        index: u32,
-        remaining: u128,
-        receiver: &AccountId,
-        collected: u128,
-        owner: &AccountId,
-        escrow_shares: u128,
-        market: AccountId,
-    ) -> PromiseOrValue<()> {
-        let have = self.principal_of(&market);
-        let to_request = have.min(remaining);
-        if to_request == 0 {
-            self.op_state = OpState::Withdrawing(WithdrawingState {
-                op_id,
-                index: index + 1,
-                remaining,
-                receiver: receiver.clone(),
-                collected,
-                owner: owner.clone(),
-                escrow_shares,
-            });
-            env::log_str(&format!(
-                "Skipping withdrawal for market {market} (have {have}, remaining {remaining})"
-            ));
-            return self.step_withdraw();
-        }
-        PromiseOrValue::Promise(
-            ext_market::ext(market.clone())
-                .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
-                .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)))
-                .then(
-                    Self::ext(env::current_account_id())
-                        .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
-                        .withdraw_01_handle_create_request(op_id, index, U128(to_request)),
-                ),
-        )
-    }
-
     /// Computes fee-aware effective totals for conversions, mimicking `MetaMorpho`:
     /// - Include fee shares that would be minted if fees accrued now.
     /// - Apply virtual offsets: +`virtual_shares` to supply and +`virtual_assets` to assets.
@@ -769,7 +725,7 @@ impl Contract {
         .into()
     }
 
-    pub(crate) fn compute_effective_totals(
+    pub fn compute_effective_totals(
         cur_assets: Number,
         last_total_assets: Number,
         performance_fee: wad::Wad,
@@ -786,19 +742,10 @@ impl Contract {
         (new_total_supply, new_total_assets)
     }
 
-    pub(crate) fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
+    pub fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
         let requested = requested.unwrap_or(self.idle_balance);
         let max_room = self.get_max_deposit().0;
         requested.min(self.idle_balance).min(max_room)
-    }
-
-    pub(crate) fn compute_escrow_settlement(
-        escrow_shares: u128,
-        burn_shares: u128,
-    ) -> EscrowSettlement {
-        let to_burn = burn_shares.min(escrow_shares);
-        let refund = escrow_shares.saturating_sub(to_burn);
-        EscrowSettlement { to_burn, refund }
     }
 
     pub fn internal_accrue_fee(&mut self) {
@@ -1045,17 +992,9 @@ impl Contract {
                 escrow_shares,
             );
         }
-        if let Some(market) = self.withdraw_route.get(index as usize) {
-            self.create_withdraw_request_for_market(
-                op_id,
-                index,
-                remaining,
-                &receiver,
-                collected,
-                &owner,
-                escrow_shares,
-                market.clone(),
-            )
+        if self.withdraw_route.get(index as usize).is_some() {
+            // FIXME: emit an event NeedsExecution(blah)
+            return PromiseOrValue::Value(());
         } else {
             let requested = collected.saturating_add(remaining);
             let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);

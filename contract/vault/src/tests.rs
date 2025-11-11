@@ -28,6 +28,10 @@ use near_sdk_contract_tools::owner::OwnerExternal;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
+use templar_common::vault::AllocatingState;
+use templar_common::vault::Error;
+use templar_common::vault::EscrowSettlement;
+use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
 use templar_common::vault::MAX_TIMELOCK_NS;
@@ -432,13 +436,13 @@ fn compute_escrow_settlement_burns_min_and_refunds_rest() {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
-    let s1: (u128, u128) = Contract::compute_escrow_settlement(100, 40).into();
+    let s1: (u128, u128) = EscrowSettlement::new(100, 40).into();
     assert_eq!(s1, (40u128, 60u128));
 
-    let s2: (u128, u128) = Contract::compute_escrow_settlement(100, 200).into();
+    let s2: (u128, u128) = EscrowSettlement::new(100, 200).into();
     assert_eq!(s2, (100u128, 0u128));
 
-    let s3: (u128, u128) = Contract::compute_escrow_settlement(0, 50).into();
+    let s3: (u128, u128) = EscrowSettlement::new(0, 50).into();
     assert_eq!(s3, (0u128, 0u128));
 }
 
