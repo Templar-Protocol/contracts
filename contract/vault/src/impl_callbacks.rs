@@ -210,10 +210,11 @@ impl Contract {
         };
 
         let principal = self.principal_of(&market);
-        let before_balance = before_balance.unwrap_or(U128(0));
+        let before_balance = before_balance.unwrap_or(U128(self.idle_balance));
 
         PromiseOrValue::Promise(
             ext_market::ext(market.clone())
+                // NOTE: gas might be incorrect here
                 .with_static_gas(Gas::from_tgas(
                     EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS.as_tgas()
                         * (u64::from(batch_limit.unwrap_or(1))),
