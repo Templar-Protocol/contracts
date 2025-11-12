@@ -107,7 +107,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .expect("Failed to get withdrawing op id");
     vault
-        .execute_market_withdrawal(&vault_curator, op_id, 0, None)
+        .execute_market_withdrawal(&vault_curator, op_id, 0, Some(10))
         .await;
 
     assert_eq!(

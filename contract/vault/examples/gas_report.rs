@@ -84,7 +84,7 @@ async fn main() {
     let mut execute_withdraw_gas_average = 0f64;
     for _ in 0..ITERATIONS {
         let execute_gas = vault
-            .execute_next_withdrawal(&vault_curator, withdraw_route.clone())
+            .execute_withdrawal(&vault_curator, withdraw_route.clone())
             .await
             .total_gas_burnt
             .as_gas() as f64;

@@ -282,6 +282,7 @@ impl Contract {
                 .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
+            env::log_str(&format!("Executing withdrawal for {pending:?}"));
 
             if pending.expected_assets == 0 {
                 // Skip dust request to avoid wedging the queue
@@ -332,11 +333,12 @@ impl Contract {
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
                 .with_static_gas(Gas::from_tgas(5))
+                .with_unused_gas_weight(0)
                 .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS)
-                        .execute_withdraw_01_call_market_fetch_position(
+                        .with_unused_gas_weight(100)
+                        .execute_withdraw_01_execute_withdraw_fetch_position(
                             op_id.into(),
                             market_index,
                             batch_limit,
@@ -964,6 +966,7 @@ impl Contract {
         };
 
         if remaining == 0 {
+            // FIXME: event for coveredbyidle
             // Already fully covered by idle => payout
             self.pay(
                 op_id,

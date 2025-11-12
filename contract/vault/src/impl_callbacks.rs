@@ -197,7 +197,7 @@ impl Contract {
     }
 
     #[private]
-    pub fn execute_withdraw_01_call_market_fetch_position(
+    pub fn execute_withdraw_01_execute_withdraw_fetch_position(
         &mut self,
         #[callback_result] before_balance: Result<U128, PromiseError>,
         op_id: u64,
@@ -211,6 +211,11 @@ impl Contract {
 
         let principal = self.principal_of(&market);
         let before_balance = before_balance.unwrap_or(U128(self.idle_balance));
+
+        Event::VaultBalance {
+            amount: before_balance,
+        }
+        .emit();
 
         PromiseOrValue::Promise(
             ext_market::ext(market.clone())
@@ -264,9 +269,18 @@ impl Contract {
         };
 
         let reported_principal: u128 = match position {
-            Ok(Some(position)) => position.get_deposit().total().into(),
+            Ok(Some(position)) => {
+                Event::ReportedPosition {
+                    op_id: op_id.into(),
+                    market: market.clone(),
+                    index: market_index,
+                    position: position.clone(),
+                }
+                .emit();
+                position.get_deposit().total().into()
+            }
             Ok(None) => {
-                Event::WithdrawalPositionMissing {
+                Event::PositionMissing {
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
@@ -277,7 +291,7 @@ impl Contract {
                 0
             }
             Err(_) => {
-                Event::WithdrawalPositionReadFailed {
+                Event::PositionReadFailed {
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,

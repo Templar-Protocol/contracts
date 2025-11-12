@@ -2103,7 +2103,7 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         escrow_shares: 0,
     });
 
-    let res = c.execute_withdraw_01_call_market_fetch_position(Ok(U128(1)), op_id, 0, None);
+    let res = c.execute_withdraw_01_execute_withdraw_fetch_position(Ok(U128(1)), op_id, 0, None);
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to read supply position after exec"),

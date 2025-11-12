@@ -122,12 +122,6 @@ impl Contract {
         self.mint(&Nep141Mint::new(shares, &sender_id))
             .unwrap_or_else(|_| env::panic_str("Failed to mint shares"));
 
-        Event::MintedShares {
-            amount: shares.into(),
-            receiver: sender_id.clone(),
-        }
-        .emit();
-
         self.update_idle_balance(IdleBalanceDelta::Increase(accept.into()));
         self.last_total_assets = self.last_total_assets.saturating_add(accept);
 
