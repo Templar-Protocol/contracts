@@ -324,41 +324,50 @@ impl App {
         &self,
         accounts: &AccountData,
         payload: &[templar_universal_account::transaction::Transaction],
-    ) -> Result<(HashSet<AccountId>, near_sdk::Gas), PayloadRejectionReason> {
+    ) -> Result<(HashSet<AccountId>, near_sdk::Gas), Vec<PayloadRejectionReason>> {
+        let mut errors = vec![];
         let mut gas = near_sdk::Gas::from_tgas(self.args.ua.execute_tgas).as_gas();
         let mut interacted = HashSet::with_capacity(payload.len());
 
         for transaction in payload {
             let receiver_id = &transaction.receiver_id;
             if !accounts.allowed_contract_data.contains_key(receiver_id) {
-                return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
+                errors.push(PayloadRejectionReason::UnknownTransactionReceiverId {
                     account_id: receiver_id.clone(),
                 });
             }
-            let calls = transaction
-                .actions
-                .iter()
-                .enumerate()
-                .map(|(index, action)| match action {
+            let mut calls = Vec::with_capacity(transaction.actions.len());
+            for (index, action) in transaction.actions.iter().enumerate() {
+                match action {
                     templar_universal_account::transaction::Action::FunctionCall(call)
                     | templar_universal_account::transaction::Action::FunctionCallWeight {
                         call,
                         ..
-                    } => Ok((**call).clone().into()),
-                    _ => Err(PayloadRejectionReason::UnsupportedAction { index }),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+                    } => calls.push(FunctionCallAction::from((**call).clone())),
+                    _ => errors.push(PayloadRejectionReason::UnsupportedAction { index }),
+                }
+            }
             let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
-                return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
+                errors.push(PayloadRejectionReason::UnknownTransactionReceiverId {
                     account_id: receiver_id.clone(),
                 });
+                continue;
             };
 
             interacted.insert(receiver_id.clone());
-            interacted.extend(
-                self.actions_are_allowed(accounts, receiver_id, contract_data, calls.iter())
-                    .map_err(PayloadRejectionReason::FunctionCallRejections)?,
-            );
+            let probably_interacted = match self.actions_are_allowed(
+                accounts,
+                receiver_id,
+                contract_data,
+                calls.iter(),
+            ) {
+                Ok(a) => a,
+                Err(e) => {
+                    errors.push(PayloadRejectionReason::FunctionCallRejection(e));
+                    continue;
+                }
+            };
+            interacted.extend(probably_interacted);
             if let Some(market_data) = accounts.market_data.get(receiver_id) {
                 interacted.insert(market_data.oracle_id.clone());
                 interacted.insert(market_data.borrow_asset.contract_id().to_owned());
@@ -367,7 +376,11 @@ impl App {
             gas += calls.iter().map(|f| f.gas).sum::<u64>();
         }
 
-        Ok((interacted, near_sdk::Gas::from_gas(gas)))
+        if errors.is_empty() {
+            Ok((interacted, near_sdk::Gas::from_gas(gas)))
+        } else {
+            Err(errors)
+        }
     }
 
     /// Check and calculate gas for a signed delegate action.
@@ -423,7 +436,7 @@ impl App {
             &contract_data,
             calls.iter().map(Borrow::borrow),
         )
-        .map_err(PayloadRejectionReason::FunctionCallRejections)?;
+        .map_err(PayloadRejectionReason::FunctionCallRejection)?;
 
         let gas_total = calls.iter().map(|call| call.gas).sum();
 

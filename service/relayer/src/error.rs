@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use near_sdk::AccountId;
 
 #[derive(Debug, thiserror::Error)]
@@ -8,10 +10,8 @@ pub enum PayloadRejectionReason {
     UnknownTransactionReceiverId { account_id: AccountId },
     #[error("Unsupported action at index {index}")]
     UnsupportedAction { index: usize },
-    #[error("Function call rejection: {0}")]
-    FunctionCallRejection(#[from] FunctionCallRejectionReason),
-    #[error("Function call rejection: {}", ._0.iter().map(|e| e.to_string() + "\n").collect::<String>())]
-    FunctionCallRejections(Vec<FunctionCallRejectionReason>),
+    #[error("Function call rejection:{}", ._0.iter().fold(String::new(), |mut a, e| { write!(&mut a, "\n\t{e}").unwrap(); a }))]
+    FunctionCallRejection(Vec<FunctionCallRejectionReason>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -32,4 +32,19 @@ pub enum FunctionCallRejectionReason {
         expected: String,
         actual: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compound_rejection_reason() {
+        let e = PayloadRejectionReason::FunctionCallRejection(vec![
+            FunctionCallRejectionReason::ArgumentDeserializationFailure { index: 0 },
+            FunctionCallRejectionReason::ArgumentDeserializationFailure { index: 1 },
+        ]);
+
+        assert_eq!(e.to_string(), "Function call rejection:\n\tArgument deserialization failure at index 0\n\tArgument deserialization failure at index 1");
+    }
 }

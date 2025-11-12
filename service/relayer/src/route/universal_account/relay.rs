@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::Write};
 
 use axum::{extract::State, Json};
 use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
@@ -101,10 +101,12 @@ pub async fn relay(
         match app.ua_interacted_contracts_and_gas(&accounts, payload) {
             Ok(a) => a,
             Err(e) => {
-                tracing::info!("Rejecting payload for reason: {e}");
-                return SimpleResponse::Rejected {
-                    reason: e.to_string(),
-                };
+                tracing::info!("Rejecting payload for reason: {e:?}");
+                let mut s = e[0].to_string();
+                for err in &e[1..] {
+                    let _ = write!(&mut s, "\n{err}");
+                }
+                return SimpleResponse::Rejected { reason: s };
             }
         };
 
