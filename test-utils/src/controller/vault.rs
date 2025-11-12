@@ -12,7 +12,7 @@ use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use std::{env, ops::Deref};
-use templar_common::vault::{AllocationWeights, DepositMsg, VaultConfiguration};
+use templar_common::vault::{AllocationDelta, AllocationWeights, DepositMsg, VaultConfiguration};
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
@@ -83,16 +83,19 @@ impl VaultController {
 
         // Allocator/curator/owner-gated: begins allocation across markets.
         #[call(exec, tgas(300))]
-        pub fn allocate(weights: AllocationWeights, amount: Option<U128>);
+        pub fn reallocate(delta: AllocationDelta);
 
         #[call(exec, tgas(30), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn withdraw(amount: U128, receiver: AccountId);
 
         #[call(exec, tgas(300))]
-        pub fn execute_next_withdrawal_request(route: Vec<AccountId>);
+        pub fn execute_withdrawal(route: Vec<AccountId>);
 
         #[call(exec, tgas(300))]
-        pub fn execute_next_market_withdrawal(op_id: U64);
+        pub fn execute_market_withdrawal(op_id: U64, market_index: u32, batch_limit: Option<u32>);
+
+        #[call(exec, tgas(300))]
+        pub fn cancel_in_flight_withdrawal();
 
         #[call(exec, tgas(300), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn redeem(shares: U128, receiver: AccountId);
@@ -272,16 +275,8 @@ impl UnifiedVaultController {
         self.set_supply_queue(owner, markets).await;
     }
 
-    pub async fn allocate(
-        &self,
-        allocator: &Account,
-        weights: AllocationWeights,
-        amount: Option<U128>,
-    ) -> ExecutionSuccess {
-        let e = self
-            .vault
-            .allocate(allocator, weights, amount.unwrap_or(1000.into()))
-            .await;
+    pub async fn allocate(&self, allocator: &Account, delta: AllocationDelta) -> ExecutionSuccess {
+        let e = self.vault.reallocate(allocator, delta).await;
         if self.debug {
             print_execution(&e);
         }
@@ -313,24 +308,23 @@ impl UnifiedVaultController {
         allocator: &Account,
         route: Vec<AccountId>,
     ) -> ExecutionSuccess {
-        let e = self
-            .vault
-            .execute_next_withdrawal_request(allocator, route)
-            .await;
+        let e = self.vault.execute_withdrawal(allocator, route).await;
         if self.debug {
             print_execution(&e);
         }
         e
     }
 
-    pub async fn execute_next_market_withdrawal(
+    pub async fn execute_market_withdrawal(
         &self,
         allocator: &Account,
         op_id: U64,
+        market_index: u32,
+        batch_limit: Option<u32>,
     ) -> ExecutionSuccess {
         let e = self
             .vault
-            .execute_next_market_withdrawal(allocator, op_id)
+            .execute_market_withdrawal(allocator, op_id, market_index, batch_limit)
             .await;
         if self.debug {
             print_execution(&e);

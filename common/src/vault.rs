@@ -6,7 +6,10 @@ use near_sdk::{
     near, require, AccountId, AccountIdRef, Gas, Promise, PromiseOrValue,
 };
 
-use crate::asset::{BorrowAsset, FungibleAsset};
+use crate::{
+    asset::{BorrowAsset, FungibleAsset},
+    supply::SupplyPosition,
+};
 
 pub type TimestampNs = u64;
 
@@ -409,6 +412,12 @@ pub struct Delta {
 }
 
 impl Delta {
+    pub fn new<T: Into<U128>>(market: AccountId, amount: T) -> Self {
+        Delta {
+            market,
+            amount: amount.into(),
+        }
+    }
     pub fn validate(&self) {
         require!(self.amount.0 > 0, "Delta amount must be greater than zero")
     }
@@ -531,13 +540,13 @@ impl IdleBalanceDelta {
 #[near(event_json(standard = "templar-vault"))]
 pub enum Event {
     #[event_version("1.0.0")]
-    MintedShares { amount: U128, receiver: AccountId },
-    #[event_version("1.0.0")]
-    AllocationStarted { op_id: U64, remaining: U128 },
-    #[event_version("1.0.0")]
     IdleBalanceUpdated { prev: U128, delta: IdleBalanceDelta },
+    #[event_version("1.0.0")]
+    PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
+    #[event_version("1.0.0")]
+    LockChange { is_locked: bool, market_index: u32 },
 
-    // Allocation lifecycle (plan/request)
+    // Allocation
     #[event_version("1.0.0")]
     AllocationRequestedQueue { op_id: U64, total: U128 },
     #[event_version("1.0.0")]
@@ -546,8 +555,8 @@ pub enum Event {
         total: U128,
         plan: Vec<(AccountId, U128)>,
     },
-
-    // Per-step planning and outcomes
+    #[event_version("1.0.0")]
+    AllocationStarted { op_id: U64, remaining: U128 },
     #[event_version("1.0.0")]
     AllocationStepPlanned {
         op_id: U64,
@@ -586,8 +595,6 @@ pub enum Event {
         refunded: U128,
         remaining_after: U128,
     },
-
-    // Completion and stop
     #[event_version("1.0.0")]
     AllocationCompleted { op_id: u64 },
     #[event_version("1.0.0")]
@@ -597,12 +604,6 @@ pub enum Event {
         remaining: U128,
         reason: Option<String>,
     },
-
-    #[event_version("1.0.0")]
-    PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
-
-    #[event_version("1.0.0")]
-    LockChange { is_locked: bool, market_index: u32 },
 
     // Admin and configuration events
     #[event_version("1.0.0")]
@@ -617,7 +618,6 @@ pub enum Event {
     FeeRecipientSet { account: AccountId },
     #[event_version("1.0.0")]
     PerformanceFeeSet { fee: U128 },
-
     #[event_version("1.0.0")]
     TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
@@ -632,26 +632,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     MarketCreated { market: AccountId },
     #[event_version("1.0.0")]
-    SupplyCapRaiseSubmitted {
-        market: AccountId,
-        new_cap: U128,
-        valid_at_ns: u64,
-    },
-    #[event_version("1.0.0")]
-    SupplyCapRaiseRevoked { market: AccountId },
-
-    #[event_version("1.0.0")]
-    SupplyCapSet { market: AccountId, new_cap: U128 },
-    #[event_version("1.0.0")]
     MarketEnabled { market: AccountId },
-    #[event_version("1.0.0")]
-    MarketAlreadyInWithdrawQueue { market: AccountId },
-    #[event_version("1.0.0")]
-    WithdrawQueueMarketAdded { market: AccountId },
-    #[event_version("1.0.0")]
-    WithdrawDequeued { index: U64 },
-    #[event_version("1.0.0")]
-    WithdrawalParked { id: U64 },
     #[event_version("1.0.0")]
     MarketRemovalSubmitted {
         market: AccountId,
@@ -659,6 +640,21 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     MarketRemovalRevoked { market: AccountId },
+    #[event_version("1.0.0")]
+    SupplyCapRaiseSubmitted {
+        market: AccountId,
+        new_cap: U128,
+        valid_at_ns: u64,
+    },
+    #[event_version("1.0.0")]
+    SupplyCapRaiseRevoked { market: AccountId },
+    #[event_version("1.0.0")]
+    SupplyCapSet { market: AccountId, new_cap: U128 },
+
+    #[event_version("1.0.0")]
+    WithdrawDequeued { index: U64 },
+    #[event_version("1.0.0")]
+    WithdrawalParked { id: U64 },
     #[event_version("1.0.0")]
     WithdrawExecutionRequired { op_id: U64, market_index: u32 },
 
@@ -698,19 +694,27 @@ pub enum Event {
 
     // Withdrawal read diagnostics
     #[event_version("1.0.0")]
-    WithdrawalPositionReadFailed {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        before: U128,
-    },
-
-    #[event_version("1.0.0")]
     CreateWithdrawalFailed {
         op_id: U64,
         market: AccountId,
         index: u32,
         need: U128,
+    },
+
+    #[event_version("1.0.0")]
+    WithdrawalInflowMismatch {
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        delta: U128,
+        inflow: U128,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalOverpayCredited {
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        extra: U128,
     },
 
     // Payout and stop diagnostics
@@ -746,27 +750,29 @@ pub enum Event {
     },
 
     #[event_version("1.0.0")]
-    WithdrawalPositionMissing {
+    ReportedPosition {
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        position: SupplyPosition,
+    },
+    #[event_version("1.0.0")]
+    PositionReadFailed {
         op_id: U64,
         market: AccountId,
         index: u32,
         before: U128,
     },
     #[event_version("1.0.0")]
-    WithdrawalInflowMismatch {
+    PositionMissing {
         op_id: U64,
         market: AccountId,
         index: u32,
-        delta: U128,
-        inflow: U128,
+        before: U128,
     },
+
     #[event_version("1.0.0")]
-    WithdrawalOverpayCredited {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        extra: U128,
-    },
+    VaultBalance { amount: U128 },
 }
 
 #[near(serializers = [borsh, serde])]
@@ -810,6 +816,10 @@ impl Locker {
 
     pub fn is_locked(&self, i: u32) -> bool {
         self.to_lock.contains(&i)
+    }
+
+    pub fn is_locked_all(&self) -> bool {
+        !self.to_lock.is_empty()
     }
 }
 
