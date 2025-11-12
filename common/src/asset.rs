@@ -584,6 +584,102 @@ mod tests {
         let deserialized: BorrowAssetAmount = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, amount);
     }
+
+    #[test]
+    fn checked_add() {
+        let v = BorrowAssetAmount::new(0).checked_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(0)));
+        let v = BorrowAssetAmount::new(0).checked_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, Some(BorrowAssetAmount::new(100)));
+        let v = BorrowAssetAmount::new(100).checked_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(100)));
+        let v = BorrowAssetAmount::new(100).checked_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, Some(BorrowAssetAmount::new(200)));
+        let v = BorrowAssetAmount::new(1).checked_add(BorrowAssetAmount::new(u128::MAX));
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn checked_sub() {
+        let v = BorrowAssetAmount::new(0).checked_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(0)));
+        let v = BorrowAssetAmount::new(0).checked_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, None);
+        let v = BorrowAssetAmount::new(100).checked_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(100)));
+        let v = BorrowAssetAmount::new(100).checked_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, Some(BorrowAssetAmount::new(0)));
+        let v = BorrowAssetAmount::new(1).checked_sub(BorrowAssetAmount::new(u128::MAX - 33));
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn saturating_add() {
+        let v = BorrowAssetAmount::new(0).saturating_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(0).saturating_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(100));
+        let v = BorrowAssetAmount::new(100).saturating_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(100));
+        let v = BorrowAssetAmount::new(100).saturating_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(200));
+        let v = BorrowAssetAmount::new(100).saturating_add(BorrowAssetAmount::new(u128::MAX - 33));
+        assert_eq!(v, BorrowAssetAmount::new(u128::MAX));
+    }
+
+    #[test]
+    fn saturating_sub() {
+        let v = BorrowAssetAmount::new(0).saturating_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(0).saturating_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(100).saturating_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(100));
+        let v = BorrowAssetAmount::new(100).saturating_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(100).saturating_sub(BorrowAssetAmount::new(u128::MAX - 33));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+    }
+
+    #[test]
+    #[should_panic = "overflow"]
+    fn overflow_unwrap_add() {
+        let _ =
+            BorrowAssetAmount::new(100).unwrap_add(BorrowAssetAmount::new(u128::MAX), "overflow");
+    }
+
+    #[test]
+    #[should_panic = "overflow"]
+    fn overflow_unwrap_sub() {
+        let _ =
+            BorrowAssetAmount::new(100).unwrap_sub(BorrowAssetAmount::new(u128::MAX), "overflow");
+    }
+
+    #[test]
+    #[should_panic = "attempt to add with overflow"]
+    fn overflow_add() {
+        let _ = BorrowAssetAmount::new(u128::MAX) + BorrowAssetAmount::new(1);
+    }
+
+    #[test]
+    #[should_panic = "attempt to add with overflow"]
+    fn overflow_add_assign() {
+        let mut v = BorrowAssetAmount::new(u128::MAX);
+        v += BorrowAssetAmount::new(1);
+    }
+
+    #[test]
+    #[should_panic = "attempt to subtract with overflow"]
+    fn overflow_sub() {
+        let _ = BorrowAssetAmount::new(0) - BorrowAssetAmount::new(1);
+    }
+
+    #[test]
+    #[should_panic = "attempt to subtract with overflow"]
+    fn overflow_sub_assign() {
+        let mut v = BorrowAssetAmount::new(1);
+        v -= BorrowAssetAmount::new(u128::MAX);
+    }
 }
 
 #[derive(Clone, Debug)]
