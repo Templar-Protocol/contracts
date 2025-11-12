@@ -54,7 +54,7 @@ pub struct Pyth {
         long = "pyth-refresh-secs",
         env = "PYTH_REFRESH_SECS",
         value_parser = duration_from_secs,
-        default_value = "25"
+        default_value = "5"
     )]
     pub refresh: Duration,
     /// Oracle ID to push price updates to.
