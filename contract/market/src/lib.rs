@@ -2,7 +2,7 @@
 
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, near, serde_json, AccountId, BorshStorageKey, PanicOnDefault};
+use near_sdk::{env, near, AccountId, BorshStorageKey, PanicOnDefault};
 use near_sdk_contract_tools::standard::nep145::{
     Nep145Controller, Nep145ForceUnregister, StorageBalanceBounds,
 };
@@ -113,25 +113,6 @@ impl DerefMut for Contract {
 mod impl_helper;
 mod impl_market_external;
 mod impl_token_receiver;
-
-#[derive(Clone, Debug)]
-#[near(serializers = [json])]
-pub enum ReturnStyle {
-    Nep141FtTransferCall,
-    Nep245MtTransferCall,
-}
-
-impl ReturnStyle {
-    pub fn serialize(
-        &self,
-        amount: templar_common::asset::FungibleAssetAmount<impl templar_common::asset::AssetClass>,
-    ) -> serde_json::Value {
-        match self {
-            Self::Nep141FtTransferCall => serde_json::json!(amount),
-            Self::Nep245MtTransferCall => serde_json::json!([amount]),
-        }
-    }
-}
 
 #[cfg(target_arch = "wasm32")]
 mod custom_getrandom {

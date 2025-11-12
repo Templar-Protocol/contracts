@@ -14,7 +14,11 @@ pub mod registry;
 pub mod snapshot;
 pub mod supply;
 pub mod time_chunk;
+pub mod vault;
 pub mod withdrawal_queue;
+
+pub use primitive_types;
+pub use schemars;
 
 /// Panic helper that works in both WASM and native contexts.
 ///

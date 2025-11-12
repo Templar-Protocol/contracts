@@ -15,6 +15,7 @@ pub mod registry;
 pub mod storage_management;
 pub mod token;
 pub mod universal_account;
+pub mod vault;
 
 pub trait ContractController {
     fn contract(&self) -> &Contract;

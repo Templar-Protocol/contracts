@@ -27,6 +27,7 @@ futures = "0.3.31"
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
+itertools = "0.14.0"
 near-account-id = "1.1.4"
 near-contract-standards = "5.17.2"
 near-crypto = "0.31.1"
@@ -42,6 +43,7 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
+templar-vault-contract = { path = "./contract/vault" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }
