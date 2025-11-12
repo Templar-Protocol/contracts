@@ -380,6 +380,12 @@ pub struct Delta {
 }
 
 impl Delta {
+    pub fn new<T: Into<U128>>(market: AccountId, amount: T) -> Self {
+        Delta {
+            market,
+            amount: amount.into(),
+        }
+    }
     pub fn validate(&self) {
         require!(self.amount.0 > 0, "Delta amount must be greater than zero")
     }
@@ -778,6 +784,10 @@ impl Locker {
 
     pub fn is_locked(&self, i: u32) -> bool {
         self.to_lock.contains(&i)
+    }
+
+    pub fn is_locked_all(&self) -> bool {
+        !self.to_lock.is_empty()
     }
 }
 

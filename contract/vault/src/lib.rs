@@ -150,7 +150,7 @@ pub struct Contract {
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
 
-    /// Pending withdrawals queue (vault-level, FIFO by id)
+    /// Pending withdrawals queue
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_to_execute: u64,
 
@@ -274,7 +274,6 @@ impl Contract {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
-
 
         if let Some(id) = self.peek_next_pending_withdrawal_id() {
             let pending = self
@@ -618,7 +617,7 @@ impl Contract {
     }
 
     pub fn has_pending_market_withdrawal(&self) -> bool {
-        !self.market_execution_lock.is_empty()
+        !self.market_execution_lock.is_locked_all()
     }
 
     pub fn get_current_withdraw_request_id(&self) -> Option<U64> {
