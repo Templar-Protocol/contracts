@@ -3,7 +3,11 @@
 use near_sdk::json_types::U128;
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::{interest_rate_strategy::InterestRateStrategy, number::Decimal};
+use templar_common::{
+    interest_rate_strategy::InterestRateStrategy,
+    number::Decimal,
+    vault::{AllocationDelta, Delta},
+};
 use test_utils::{
     controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
     UnifiedMarketController,
@@ -40,9 +44,11 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     println!("After supply of {}: {}", amount.0, after_supply_balance);
     c.collateralize(&borrow_user, 2000).await;
 
-    let weights = vec![(c.market.contract().id().clone(), U128(1))];
     vault
-        .allocate(&vault_curator, weights.clone(), Some(amount))
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(c.market.contract().id().clone(), amount)),
+        )
         .await;
 
     assert_eq!(
@@ -93,7 +99,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     // Plan the withdraw route (single market) and execute it via allocator methods
     let withdraw_route = vec![c.market.contract().id().clone()];
     vault
-        .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
+        .execute_withdrawal(&vault_curator, withdraw_route.clone())
         .await;
     let op_id = vault
         .vault
@@ -101,7 +107,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .expect("Failed to get withdrawing op id");
     vault
-        .execute_next_market_withdrawal(&vault_curator, op_id)
+        .execute_market_withdrawal(&vault_curator, op_id, 0, None)
         .await;
 
     assert_eq!(
@@ -120,8 +126,12 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Resupply and wait
     vault.supply(&supply_user, amount.0).await;
-    // FIXME:Storage issue:         Error: Error { repr: Custom { kind: Execution, error: ActionError(ActionError { index: Some(0), kind: FunctionCallError(ExecutionError("Smart contract panicked: Storage error: Account vault0251007104533-70674114756315 has insufficient balance: 0.005 NEAR available, but attempted to use 0.008 NEAR")) }) } }
-    vault.allocate(&vault_curator, weights, Some(amount)).await;
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(c.market.contract().id().clone(), amount)),
+        )
+        .await;
     harvest(&c, &vault).await;
 
     println!(
@@ -142,7 +152,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     // Plan the withdraw route (single market) and execute it via allocator methods
     let withdraw_route = vec![c.market.contract().id().clone()];
     vault
-        .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
+        .execute_withdrawal(&vault_curator, withdraw_route.clone())
         .await;
     let op_id = vault
         .vault
@@ -150,7 +160,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .expect("Failed to get withdrawing operation ID");
     vault
-        .execute_next_market_withdrawal(&vault_curator, op_id)
+        .execute_market_withdrawal(&vault_curator, op_id, 0, None)
         .await;
 }
 

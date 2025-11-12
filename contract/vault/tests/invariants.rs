@@ -1,5 +1,6 @@
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
+use templar_common::vault::{AllocationDelta, Delta};
 use test_utils::{setup_test, worker, ContractController as _};
 
 #[rstest]
@@ -28,11 +29,15 @@ async fn state_machine_is_locked_when_another_op_is_running(
         extract(vault, c, vault_owner)
         accounts(supply_user, borrow_user)
     );
+    let m = c.market.contract().id().clone();
     let amount = 1000;
     vault.supply(&supply_user, amount).await;
 
-    futures::future::select_all(
-        (0..100).map(|_| Box::pin(vault.allocate(&vault_owner, vec![], Some(1.into())))),
-    )
+    futures::future::select_all((0..100).map(|_| {
+        Box::pin(vault.reallocate(
+            &vault_owner,
+            AllocationDelta::Supply(Delta::new(m.clone(), 1)),
+        ))
+    }))
     .await;
 }

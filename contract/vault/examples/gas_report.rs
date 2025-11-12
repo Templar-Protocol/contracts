@@ -2,6 +2,7 @@
 
 use near_sdk::{json_types::U128, Gas};
 use rand::Rng as _;
+use templar_common::vault::{AllocationDelta, Delta};
 use test_utils::{setup_test, ContractController};
 
 #[tokio::main]
@@ -21,8 +22,8 @@ async fn main() {
 
     let max = c.borrow_asset.balance_of(user1.id()).await;
     let g = || rand::thread_rng().gen_range(0..=max);
+    let m = c.market.contract().id().clone();
 
-    let weights = vec![(c.market.contract().id().clone(), U128(1))];
     let user1_amount = max / ITERATIONS as u128;
 
     // Run supplies concurrently.
@@ -39,7 +40,10 @@ async fn main() {
     let mut allocation_gas_average = 0f64;
     for _ in 0..ITERATIONS {
         let allocation_gas = vault
-            .allocate(&vault_curator, weights.clone(), Some(U128(user1_amount)))
+            .reallocate(
+                &vault_curator,
+                AllocationDelta::Supply(Delta::new(m.clone(), user1_amount)),
+            )
             .await
             .total_gas_burnt
             .as_gas() as f64;
