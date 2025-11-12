@@ -4,8 +4,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write  # Required for workflows that call test.yml (Codecov OIDC)
-  pull-requests: write  # Required for deployment comments
+  id-token: write # Required for workflows that call test.yml (Codecov OIDC)
+  pull-requests: write # Required for deployment comments
 
 jobs:
   # Check if we need to run contract-related jobs
@@ -72,11 +72,11 @@ jobs:
 
       - name: Initialize staging account
         run: |
-          EXISTS=$(./script/ci/account-exists.sh \
+          ACCOUNT_EXISTS=$(./script/ci/account-exists.sh \
             --account "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}")
 
-          if [[ -z "$EXISTS" ]]; then
+          if [[ -z "$ACCOUNT_EXISTS" ]]; then
             echo "Account does not already exist, creating"
 
             near account create-account fund-myself "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '20 NEAR' \
@@ -88,19 +88,26 @@ jobs:
 
             echo "NEWLY_CREATED=1" >> $GITHUB_ENV
           else
-            echo "Account already exists, adding tokens and removing old market versions"
-
             near tokens "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
               send-near "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '6 NEAR' \
               network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
               sign-with-plaintext-private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}" \
               send
 
-            ./script/ci/remove-all-versions-from-registry.sh \
-              --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-              --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
-              --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
-              --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
+            CONTRACT_EXISTS=$(./script/ci/contract-exists.sh \
+              --contract "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+              --network "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}")
+
+            if [[ -n "$CONTRACT_EXISTS" ]]; then
+              echo "Contract already exists on staging account, removing old market versions"
+              # ./script/ci/remove-all-versions-from-registry.sh \
+              #     --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+              #     --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
+              #     --network     "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
+              #     --private-key "${{ secrets.NEAR_CONTRACT_STAGING_ACCOUNT_PRIVATE_KEY }}"
+            else
+              echo "NEWLY_CREATED=1" >> $GITHUB_ENV
+            fi
           fi
 
       - name: Deploy registry to staging account
