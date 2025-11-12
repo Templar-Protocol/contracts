@@ -10,6 +10,8 @@ pub enum PayloadRejectionReason {
     UnsupportedAction { index: usize },
     #[error("Function call rejection: {0}")]
     FunctionCallRejection(#[from] FunctionCallRejectionReason),
+    #[error("Function call rejection: {}", ._0.iter().map(|e| e.to_string() + "\n").collect::<String>())]
+    FunctionCallRejections(Vec<FunctionCallRejectionReason>),
 }
 
 #[derive(Debug, thiserror::Error)]

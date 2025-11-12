@@ -257,12 +257,13 @@ impl App {
         receiver_id: &AccountIdRef,
         contract_data: &ContractData,
         calls: impl IntoIterator<Item = &'a FunctionCallAction>,
-    ) -> Result<Vec<AccountId>, FunctionCallRejectionReason> {
+    ) -> Result<Vec<AccountId>, Vec<FunctionCallRejectionReason>> {
         let mut other_interactions = Vec::new();
+        let mut errors = vec![];
 
         for (index, call) in calls.into_iter().enumerate() {
             if !contract_data.allowed_methods.contains(&call.method_name) {
-                return Err(FunctionCallRejectionReason::UnknownFunctionName {
+                errors.push(FunctionCallRejectionReason::UnknownFunctionName {
                     index,
                     function_name: call.method_name.clone(),
                 });
@@ -273,24 +274,26 @@ impl App {
                 other_interactions.push(market_id.to_owned());
 
                 let Some(market_account_ids) = accounts.market_data.get(market_id) else {
-                    return Err(FunctionCallRejectionReason::UnknownTransferReceiverId {
+                    errors.push(FunctionCallRejectionReason::UnknownTransferReceiverId {
                         account_id: market_id.to_owned(),
                         index,
                     });
+                    continue;
                 };
 
                 let msg = transfer.args.msg();
                 let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
-                    return Err(FunctionCallRejectionReason::MsgDeserializationFailure {
+                    errors.push(FunctionCallRejectionReason::MsgDeserializationFailure {
                         index,
                         msg: msg.to_string(),
                     });
+                    continue;
                 };
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
                     if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
-                        return Err(FunctionCallRejectionReason::InvalidMsgForAsset {
+                        errors.push(FunctionCallRejectionReason::InvalidMsgForAsset {
                             index,
                             expected: "\"Supply\" or \"Repay\"".to_string(),
                             actual: serde_json::to_string(&msg).unwrap(),
@@ -298,7 +301,7 @@ impl App {
                     }
                 } else if transfer.asset() == market_account_ids.collateral_asset {
                     if !matches!(msg, DepositMsg::Collateralize) {
-                        return Err(FunctionCallRejectionReason::InvalidMsgForAsset {
+                        errors.push(FunctionCallRejectionReason::InvalidMsgForAsset {
                             index,
                             expected: "\"Collateralize\"".to_string(),
                             actual: serde_json::to_string(&msg).unwrap(),
@@ -310,7 +313,11 @@ impl App {
             }
         }
 
-        Ok(other_interactions)
+        if errors.is_empty() {
+            Ok(other_interactions)
+        } else {
+            Err(errors)
+        }
     }
 
     pub(crate) fn ua_interacted_contracts_and_gas(
@@ -348,12 +355,10 @@ impl App {
             };
 
             interacted.insert(receiver_id.clone());
-            interacted.extend(self.actions_are_allowed(
-                accounts,
-                receiver_id,
-                contract_data,
-                calls.iter(),
-            )?);
+            interacted.extend(
+                self.actions_are_allowed(accounts, receiver_id, contract_data, calls.iter())
+                    .map_err(PayloadRejectionReason::FunctionCallRejections)?,
+            );
             if let Some(market_data) = accounts.market_data.get(receiver_id) {
                 interacted.insert(market_data.oracle_id.clone());
                 interacted.insert(market_data.borrow_asset.contract_id().to_owned());
@@ -417,7 +422,8 @@ impl App {
             receiver_id,
             &contract_data,
             calls.iter().map(Borrow::borrow),
-        )?;
+        )
+        .map_err(PayloadRejectionReason::FunctionCallRejections)?;
 
         let gas_total = calls.iter().map(|call| call.gas).sum();
 
