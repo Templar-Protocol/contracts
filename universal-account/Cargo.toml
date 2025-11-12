@@ -15,9 +15,12 @@ hex.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
+rstest.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+near-parameters.workspace = true
 near-primitives.workspace = true
+near-chain-configs.workspace = true
 
 [lints]
 workspace = true

@@ -4544,9 +4544,12 @@ version = "1.2.0"
 dependencies = [
  "borsh",
  "hex",
+ "near-chain-configs",
+ "near-parameters",
  "near-primitives",
  "near-sdk",
  "p256",
+ "rstest",
  "schemars",
  "thiserror 2.0.11",
 ]
