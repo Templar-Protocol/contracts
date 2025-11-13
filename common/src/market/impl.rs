@@ -10,12 +10,12 @@ use crate::{
     chunked_append_only_list::ChunkedAppendOnlyList,
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
-    market::{MarketConfiguration, WithdrawalResolution},
+    market::MarketConfiguration,
     number::Decimal,
     snapshot::Snapshot,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
-    withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
+    withdrawal_queue::WithdrawalQueue,
     YEAR_PER_MS,
 };
 
@@ -64,7 +64,7 @@ pub struct Market {
 impl Market {
     pub fn new(prefix: impl IntoStorageKey, configuration: MarketConfiguration) -> Self {
         if let Err(e) = configuration.validate() {
-            env::panic_str(&e.to_string());
+            crate::panic_with_message(&e.to_string());
         }
 
         let prefix = prefix.into_storage_key();
@@ -310,38 +310,6 @@ impl Market {
             .filter(|p| !p.exists())
             .and_then(|_| self.borrow_positions.remove(account_id))
             .is_some()
-    }
-
-    /// # Errors
-    /// - If the withdrawal queue is already locked.
-    /// - If the withdrawal queue is empty.
-    pub fn try_lock_next_withdrawal_request(
-        &mut self,
-    ) -> Result<Option<WithdrawalResolution>, WithdrawalQueueLockError> {
-        let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
-
-        let proof = self.snapshot();
-        let Some((amount, mut supply_position)) = self
-            .supply_position_guard(proof, account_id)
-            .and_then(|supply_position| {
-                // Cap withdrawal amount to deposit amount at most.
-                let amount = supply_position.total_deposit().min(requested_amount);
-
-                (!amount.is_zero()).then_some((amount, supply_position))
-            })
-        else {
-            // The amount that the entry is eligible to withdraw is zero, so skip it.
-            self.withdrawal_queue
-                .try_pop()
-                .unwrap_or_else(|| env::panic_str("Inconsistent state")); // we just locked the queue
-            return Ok(None);
-        };
-
-        let proof = supply_position.accumulate_yield();
-        let resolution =
-            supply_position.record_withdrawal_initial(proof, amount, env::block_timestamp_ms());
-
-        Ok(Some(resolution))
     }
 
     pub fn record_borrow_asset_protocol_yield(&mut self, amount: BorrowAssetAmount) {

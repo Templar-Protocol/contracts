@@ -108,9 +108,9 @@ fn create_execute_message(
 
 #[fixture]
 async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
-        .init();
+        .try_init();
 
     setup_test!(worker extract(c) accounts(borrow_user, relay_user, ua_deployer));
     let rpc_addr = worker.rpc_addr();

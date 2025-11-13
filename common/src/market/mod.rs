@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU16;
 
-use near_sdk::{env, near, AccountId};
+use near_sdk::{near, AccountId};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
@@ -58,7 +58,7 @@ impl YieldWeights {
         self.r#static
             .values()
             .try_fold(self.supply, |a, b| a.checked_add(*b))
-            .unwrap_or_else(|| env::panic_str("Total weight overflow"))
+            .unwrap_or_else(|| crate::panic_with_message("Total weight overflow"))
     }
 
     pub fn static_share(&self, account_id: &AccountId) -> Decimal {
@@ -98,7 +98,7 @@ pub struct LiquidateMsg {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
-pub struct WithdrawalResolution {
+pub struct Withdrawal {
     pub account_id: AccountId,
     pub amount_to_account: BorrowAssetAmount,
     pub amount_to_fees: BorrowAssetAmount,

@@ -64,3 +64,18 @@ async fn collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(withdrawn + collateral_deposit, total);
 }
+
+#[rstest]
+#[tokio::test]
+#[should_panic = "attempt to subtract with overflow"]
+async fn excessive_collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(worker extract(c) accounts(borrow_user_1, borrow_user_2));
+
+    c.collateralize(&borrow_user_1, 1_000_000).await;
+    c.collateralize(&borrow_user_2, 1_000_000).await;
+
+    let balance_before = c.collateral_asset.balance_of(borrow_user_1.id()).await;
+    eprintln!("Balance before: {balance_before}");
+
+    c.withdraw_collateral(&borrow_user_1, 1_000_000 + 1).await;
+}

@@ -14,7 +14,7 @@ use near_sdk::{
     AccountId, AccountIdRef, Gas, NearToken, Promise,
 };
 
-use crate::number::Decimal;
+use crate::{number::Decimal, panic_with_message};
 
 /// Assets may be configuread as one of the supported asset types.
 ///
@@ -57,11 +57,20 @@ enum FungibleAssetKind {
 }
 
 impl<T: AssetClass> FungibleAsset<T> {
-    /// Really depends on the implementation, but this should suffice, since
-    /// normal implementations use < 3TGas.
+    /// Gas for simple transfers (`ft_transfer`)
     pub const GAS_FT_TRANSFER: Gas = Gas::from_tgas(6);
-    /// NEAR Intents implementation uses < 4TGas.
+
+    /// Gas for simple NEP-245 transfers (`mt_transfer`)
     pub const GAS_MT_TRANSFER: Gas = Gas::from_tgas(7);
+
+    /// Gas for `transfer_call` operations (includes callback to receiver)
+    /// NEP-141 `ft_transfer_call`: Transfer + receiver callback execution
+    /// Needs extra gas for the receiver contract logic (e.g., market liquidation)
+    pub const GAS_FT_TRANSFER_CALL: Gas = Gas::from_tgas(100);
+
+    /// Gas for NEP-245 `mt_transfer_call` operations
+    /// NEAR Intents `mt_transfer_call`: Transfer + receiver callback + collateral transfer back
+    pub const GAS_MT_TRANSFER_CALL: Gas = Gas::from_tgas(150);
 
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
@@ -94,6 +103,73 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
+    pub fn transfer_call(
+        &self,
+        receiver_id: &AccountId,
+        amount: FungibleAssetAmount<T>,
+        msg: Option<&str>,
+    ) -> Promise {
+        let msg = msg.unwrap_or_default().to_string();
+        match self.kind {
+            FungibleAssetKind::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
+                .with_static_gas(Self::GAS_FT_TRANSFER)
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .ft_transfer_call(receiver_id.clone(), u128::from(amount).into(), None, msg),
+            FungibleAssetKind::Nep245 {
+                ref contract_id,
+                ref token_id,
+            } => Promise::new(contract_id.clone()).function_call(
+                "mt_transfer_call".into(),
+                serde_json::to_vec(&json!({
+                   "receiver_id": receiver_id,
+                   "token_id": token_id,
+                   "amount": amount,
+                   "msg": msg,
+                }))
+                .unwrap(),
+                NearToken::from_yoctonear(1),
+                Self::GAS_MT_TRANSFER,
+            ),
+        }
+    }
+
+    /// Creates a simple `ft_transfer` action (no callback).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn transfer_action(
+        &self,
+        receiver_id: &AccountId,
+        amount: FungibleAssetAmount<T>,
+    ) -> FunctionCallAction {
+        let (method_name, args, gas) = match self.kind {
+            FungibleAssetKind::Nep141(_) => (
+                "ft_transfer",
+                json!({
+                    "receiver_id": receiver_id,
+                    "amount": u128::from(amount).to_string(),
+                }),
+                Self::GAS_FT_TRANSFER,
+            ),
+            FungibleAssetKind::Nep245 { ref token_id, .. } => (
+                "mt_transfer",
+                json!({
+                    "receiver_id": receiver_id,
+                    "token_id": token_id,
+                    "amount": u128::from(amount).to_string(),
+                }),
+                Self::GAS_MT_TRANSFER,
+            ),
+        };
+
+        FunctionCallAction {
+            method_name: method_name.to_string(),
+            #[allow(clippy::unwrap_used)]
+            args: serde_json::to_vec(&args).unwrap(),
+            gas: gas.as_gas(),
+            deposit: 1, // 1 yoctoNEAR for security
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn transfer_call_action(
         &self,
@@ -105,19 +181,19 @@ impl<T: AssetClass> FungibleAsset<T> {
             FungibleAssetKind::Nep141(_) => (
                 json!({
                     "receiver_id": receiver_id,
-                    "amount": u128::from(amount),
+                    "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
-                Self::GAS_FT_TRANSFER,
+                Self::GAS_FT_TRANSFER_CALL,
             ),
             FungibleAssetKind::Nep245 { ref token_id, .. } => (
                 json!({
                     "receiver_id": receiver_id,
                     "token_id": token_id,
-                    "amount": u128::from(amount),
+                    "amount": u128::from(amount).to_string(),
                     "msg": msg,
                 }),
-                Self::GAS_MT_TRANSFER,
+                Self::GAS_MT_TRANSFER_CALL,
             ),
         };
 
@@ -264,7 +340,9 @@ impl<T: AssetClass> std::str::FromStr for FungibleAsset<T> {
     type Err = FungibleAssetParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split(':').collect();
+        // Use splitn to limit splits - important for NEP-245 where token_id can contain colons
+        // e.g., "nep245:intents.near:nep141:btc.omft.near" should split into 3 parts max
+        let parts: Vec<&str> = s.splitn(3, ':').collect();
 
         match parts.as_slice() {
             ["nep141", contract_id] => {
@@ -306,13 +384,13 @@ mod sealed {
 }
 pub trait AssetClass: sealed::Sealed + Copy + Clone + Send + Sync + std::fmt::Debug {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct CollateralAsset;
 impl sealed::Sealed for CollateralAsset {}
 impl AssetClass for CollateralAsset {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}
@@ -386,7 +464,7 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
                 .amount
                 .0
                 .checked_add(other.into().amount.0)
-                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic overflow: {message}")))
+                .unwrap_or_else(|| panic_with_message(&format!("Arithmetic overflow: {message}")))
                 .into(),
             ..self
         }
@@ -415,7 +493,7 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
                 .amount
                 .0
                 .checked_sub(other.into().amount.0)
-                .unwrap_or_else(|| env::panic_str(&format!("Arithmetic underflow: {message}")))
+                .unwrap_or_else(|| panic_with_message(&format!("Arithmetic underflow: {message}")))
                 .into(),
             ..self
         }
@@ -505,5 +583,117 @@ mod tests {
         assert_eq!(serialized, "\"100\"");
         let deserialized: BorrowAssetAmount = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, amount);
+    }
+
+    #[test]
+    fn checked_add() {
+        let v = BorrowAssetAmount::new(0).checked_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(0)));
+        let v = BorrowAssetAmount::new(0).checked_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, Some(BorrowAssetAmount::new(100)));
+        let v = BorrowAssetAmount::new(100).checked_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(100)));
+        let v = BorrowAssetAmount::new(100).checked_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, Some(BorrowAssetAmount::new(200)));
+        let v = BorrowAssetAmount::new(1).checked_add(BorrowAssetAmount::new(u128::MAX));
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn checked_sub() {
+        let v = BorrowAssetAmount::new(0).checked_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(0)));
+        let v = BorrowAssetAmount::new(0).checked_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, None);
+        let v = BorrowAssetAmount::new(100).checked_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, Some(BorrowAssetAmount::new(100)));
+        let v = BorrowAssetAmount::new(100).checked_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, Some(BorrowAssetAmount::new(0)));
+        let v = BorrowAssetAmount::new(1).checked_sub(BorrowAssetAmount::new(u128::MAX - 33));
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn saturating_add() {
+        let v = BorrowAssetAmount::new(0).saturating_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(0).saturating_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(100));
+        let v = BorrowAssetAmount::new(100).saturating_add(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(100));
+        let v = BorrowAssetAmount::new(100).saturating_add(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(200));
+        let v = BorrowAssetAmount::new(100).saturating_add(BorrowAssetAmount::new(u128::MAX - 33));
+        assert_eq!(v, BorrowAssetAmount::new(u128::MAX));
+    }
+
+    #[test]
+    fn saturating_sub() {
+        let v = BorrowAssetAmount::new(0).saturating_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(0).saturating_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(100).saturating_sub(BorrowAssetAmount::new(0));
+        assert_eq!(v, BorrowAssetAmount::new(100));
+        let v = BorrowAssetAmount::new(100).saturating_sub(BorrowAssetAmount::new(100));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+        let v = BorrowAssetAmount::new(100).saturating_sub(BorrowAssetAmount::new(u128::MAX - 33));
+        assert_eq!(v, BorrowAssetAmount::new(0));
+    }
+
+    #[test]
+    #[should_panic = "overflow"]
+    fn overflow_unwrap_add() {
+        let _ =
+            BorrowAssetAmount::new(100).unwrap_add(BorrowAssetAmount::new(u128::MAX), "overflow");
+    }
+
+    #[test]
+    #[should_panic = "overflow"]
+    fn overflow_unwrap_sub() {
+        let _ =
+            BorrowAssetAmount::new(100).unwrap_sub(BorrowAssetAmount::new(u128::MAX), "overflow");
+    }
+
+    #[test]
+    #[should_panic = "attempt to add with overflow"]
+    fn overflow_add() {
+        let _ = BorrowAssetAmount::new(u128::MAX) + BorrowAssetAmount::new(1);
+    }
+
+    #[test]
+    #[should_panic = "attempt to add with overflow"]
+    fn overflow_add_assign() {
+        let mut v = BorrowAssetAmount::new(u128::MAX);
+        v += BorrowAssetAmount::new(1);
+    }
+
+    #[test]
+    #[should_panic = "attempt to subtract with overflow"]
+    fn overflow_sub() {
+        let _ = BorrowAssetAmount::new(0) - BorrowAssetAmount::new(1);
+    }
+
+    #[test]
+    #[should_panic = "attempt to subtract with overflow"]
+    fn overflow_sub_assign() {
+        let mut v = BorrowAssetAmount::new(1);
+        v -= BorrowAssetAmount::new(u128::MAX);
+    }
+}
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub enum ReturnStyle {
+    Nep141FtTransferCall,
+    Nep245MtTransferCall,
+}
+
+impl ReturnStyle {
+    pub fn serialize(&self, amount: FungibleAssetAmount<impl AssetClass>) -> serde_json::Value {
+        match self {
+            Self::Nep141FtTransferCall => serde_json::json!(amount),
+            Self::Nep245MtTransferCall => serde_json::json!([amount]),
+        }
     }
 }
