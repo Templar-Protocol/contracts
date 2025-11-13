@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "bots/accumulator",
-    "bots/liquidator",
     "common",
     "contract/*",
     "mock/*",
