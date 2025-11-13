@@ -51,13 +51,14 @@ impl Contract {
         let index = self.next_key_index;
         self.next_key_index += 1;
         self.keys.insert(
-            key,
+            key.clone(),
             ExecutionParameters {
                 block_height: U64(env::block_height()),
                 index: U64(index),
                 nonce: U64(0),
             },
         );
+        templar_universal_account::Event::KeyAdded { key }.emit();
     }
 
     #[private]
@@ -67,6 +68,7 @@ impl Contract {
             "Cannot remove last key using this function",
         );
         self.keys.remove(&key);
+        templar_universal_account::Event::KeyRemoved { key }.emit();
     }
 
     pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
@@ -75,6 +77,11 @@ impl Contract {
             env::panic_str("Key does not exist")
         };
         *key_entry = key_entry.next();
+        templar_universal_account::Event::NonceExecution {
+            key: KeyId::Passkey(key.clone()),
+            nonce: key_entry.nonce,
+        }
+        .emit();
 
         let current_account_id = env::current_account_id();
 

@@ -3,6 +3,8 @@ use near_sdk::{json_types::U64, near, serde::Serialize};
 
 pub mod authentication;
 pub mod encoding;
+mod event;
+pub use event::Event;
 pub mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
