@@ -14,7 +14,31 @@ pub mod registry;
 pub mod snapshot;
 pub mod supply;
 pub mod time_chunk;
+pub mod vault;
 pub mod withdrawal_queue;
+
+pub use primitive_types;
+pub use schemars;
+
+/// Panic helper that works in both WASM and native contexts.
+///
+/// In WASM contexts (contract compilation), uses `near_sdk::env::panic_str`.
+/// In native contexts (bots, tests), uses standard `panic!`.
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub fn panic_with_message(msg: &str) -> ! {
+    near_sdk::env::panic_str(msg);
+}
+
+/// Panic helper that works in both WASM and native contexts.
+///
+/// In WASM contexts (contract compilation), uses `near_sdk::env::panic_str`.
+/// In native contexts (bots, tests), uses standard `panic!`.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub fn panic_with_message(msg: &str) -> ! {
+    panic!("{}", msg);
+}
 
 /// Approximation of `1 / (1000 * 60 * 60 * 24 * 365.2425)`.
 ///

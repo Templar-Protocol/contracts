@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
+use near_sdk::{collections::LookupMap, near, AccountId, BorshStorageKey, IntoStorageKey};
 
 use crate::asset::BorrowAssetAmount;
 
@@ -33,7 +33,7 @@ enum StorageKey {
 }
 
 fn inconsistent_state<T>() -> T {
-    env::panic_str("Inconsistent state")
+    crate::panic_with_message("Inconsistent state")
 }
 
 impl WithdrawalQueue {
