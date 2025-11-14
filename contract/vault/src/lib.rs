@@ -683,6 +683,15 @@ impl Contract {
 }
 
 /* ----- Private Helpers ----- */
+// Internal helper value object describing idle coverage for a requested amount.
+// remaining_unmet = max(amount - idle_balance, 0)
+// collected_from_idle = min(idle_balance, amount)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleCoverage {
+    pub remaining_unmet: u128,
+    pub collected_from_idle: u128,
+}
+
 impl Contract {
     // Principal (vault-supplied) units currently recorded for a market
     fn principal_of(&self, market: &AccountId) -> u128 {
@@ -996,15 +1005,15 @@ impl Contract {
         self.next_op_id += 1;
 
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
-        let (remaining, collected_from_idle) = self.idle_delta(amount);
+        let cov = self.compute_idle_coverage(amount);
 
         self.withdraw_route = route;
         self.op_state = OpState::Withdrawing(WithdrawingState {
             op_id,
             index: Default::default(),
-            remaining,
+            remaining: cov.remaining_unmet,
             receiver: receiver.clone(),
-            collected: collected_from_idle,
+            collected: cov.collected_from_idle,
             owner: owner.clone(),
             escrow_shares,
         });
@@ -1122,11 +1131,14 @@ impl Contract {
         )
     }
 
-    fn idle_delta(&mut self, amount: u128) -> (u128, u128) {
+    /// Computes how much of `amount` can be covered by idle balance without mutating state.
+    /// Returns IdleCoverage { remaining_unmet, collected_from_idle }.
+    fn compute_idle_coverage(&self, amount: u128) -> IdleCoverage {
         let used_idle = self.idle_balance.min(amount);
-        let remaining = amount.saturating_sub(used_idle);
-        let collected = used_idle;
-        (remaining, collected)
+        IdleCoverage {
+            remaining_unmet: amount.saturating_sub(used_idle),
+            collected_from_idle: used_idle,
+        }
     }
 }
 
