@@ -87,6 +87,35 @@ pub async fn relay(
     let mut eligible_for_storage_deposit = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
+        if receiver_id == &account_id {
+            // Reflexive action - allow all.
+            let protocol_config = app.cache.protocol_configuration().await;
+            // One exception: recursive "execute" call, since that could be used to bypass gas restrictions.
+            // There is not a good use-case for this anyways, so it should be okay to reject wholesale.
+            for a in &transaction.actions {
+                match a {
+                    Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. }
+                        if call.function_name == "execute" =>
+                    {
+                        tracing::info!("Rejecting recursive `execute` call.");
+                        return SimpleResponse::Rejected {
+                            reason: "Recursive `execute` call".to_string(),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+
+            gas += transaction
+                .actions
+                .iter()
+                .map(|a| a.gas_cost(receiver_id, true, &protocol_config))
+                .reduce(|a, b| a.saturating_add(b))
+                .unwrap_or(near_sdk::Gas::from_gas(0))
+                .as_gas();
+            tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
+            continue;
+        }
         if !accounts.allowed_contract_data.contains_key(receiver_id) {
             tracing::info!("Unknown receiver {receiver_id}");
             return SimpleResponse::Rejected {
