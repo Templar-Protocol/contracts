@@ -36,8 +36,8 @@ use templar_common::{
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingValue,
         PendingWithdrawal, QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration,
         WithdrawingState, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -482,7 +482,6 @@ impl Contract {
                         ))),
                 )
             }
-            AllocationDelta::Harvest(delta) => todo!("Implement Harvest"),
         }
     }
 

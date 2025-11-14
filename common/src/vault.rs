@@ -401,7 +401,6 @@ impl Delta {
 pub enum AllocationDelta {
     Supply(Delta),
     Withdraw(Delta),
-    Harvest(Delta),
 }
 
 impl AsRef<Delta> for AllocationDelta {
@@ -409,7 +408,6 @@ impl AsRef<Delta> for AllocationDelta {
         match self {
             AllocationDelta::Supply(d) => d,
             AllocationDelta::Withdraw(d) => d,
-            AllocationDelta::Harvest(d) => d,
         }
     }
 }
@@ -659,7 +657,10 @@ pub enum Event {
     #[event_version("1.0.0")]
     WithdrawQueueUpdate { action: QueueAction, id: U64 },
     #[event_version("1.0.0")]
-    WithdrawQueueStatus { status: QueueStatus, id: Option<U64> },
+    WithdrawQueueStatus {
+        status: QueueStatus,
+        id: Option<U64>,
+    },
 
     // User flows
     #[event_version("1.0.0")]
