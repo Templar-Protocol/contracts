@@ -210,7 +210,7 @@ impl Contract {
                 .concat(),
             ),
             next_withdraw_to_execute: 0,
-            market_execution_lock: Locker::new(),
+            market_execution_lock: Locker::default(),
             withdraw_route: Vec::new(),
         };
 
