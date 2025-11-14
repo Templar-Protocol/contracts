@@ -11,8 +11,8 @@ use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, AllocationPlan, EscrowSettlement, Event, IdleBalanceDelta, PayoutState,
-        Reason, AllocationPositionIssueKind, WithdrawalAccountingKind, PositionReportOutcome,
+        AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
+        IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
         WithdrawingState, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_03_SETTLE_GAS,
         GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
     },

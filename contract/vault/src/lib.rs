@@ -1,7 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     num::NonZeroU8,
 };
 
@@ -32,11 +32,11 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     market::ext_market,
     vault::{
-        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event, Reason,
-        QueueStatus, QueueAction, IdleBalanceDelta, Locker, MarketConfiguration, OpState,
-        PayoutState, PendingValue, PendingWithdrawal, TimestampNs, VaultConfiguration,
+        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
+        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingValue,
+        PendingWithdrawal, QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration,
         WithdrawingState, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS,
+        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
         MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
@@ -488,7 +488,7 @@ impl Contract {
 
     // Derive queue tail = head + pending.len()
     fn queue_tail(&self) -> u64 {
-        self.next_withdraw_to_execute + (self.pending_withdrawals.len() as u64)
+        self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
     }
 
     // Return the current head id if queue is non-empty
@@ -802,7 +802,7 @@ impl Contract {
                     Event::PerformanceFeeMintFailed {
                         error: e.to_string(),
                     }
-                    .emit()
+                    .emit();
                 });
             Event::PerformanceFeeAccrued {
                 recipient,
@@ -1050,7 +1050,7 @@ impl Contract {
                 requested_at: None,
             }
             .emit();
-            return PromiseOrValue::Value(());
+            PromiseOrValue::Value(())
         } else {
             let requested = collected.saturating_add(remaining);
             let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);
