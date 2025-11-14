@@ -2683,3 +2683,166 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     let got2 = c.peek_next_pending_withdrawal_id();
     assert_eq!(got2, Some(head_before));
 }
+
+#[test]
+fn execute_withdrawal_empty_queue_noop() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.pending_withdrawals.len(), 0, "queue should be empty");
+
+    let res = c.execute_withdrawal(vec![]);
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) when queue is empty"),
+    }
+
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "state must remain Idle"
+    );
+    assert_eq!(
+        c.get_current_withdraw_request_id(),
+        None,
+        "no current request id when idle"
+    );
+    assert!(c.withdraw_route.is_empty(), "route must remain empty");
+}
+
+#[test]
+fn execute_withdrawal_skips_dust_and_starts_withdraw() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner_id = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner_id, vec![]);
+
+    // Prepare a withdraw market so a non-empty route makes sense
+    let m1 = mk(1234);
+    c.markets.insert(
+        m1.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            pending_cap: None,
+            principal: 50,
+        },
+    );
+
+    // Enqueue a dust head (expected_assets = 0)
+    let head_before = c.queue_tail();
+    c.pending_withdrawals.insert(
+        head_before,
+        PendingWithdrawal {
+            owner: owner_id.clone(),
+            receiver: mk(9),
+            escrow_shares: 1,
+            expected_assets: 0,
+            requested_at: 0,
+        },
+    );
+
+    // Followed by a real pending withdrawal
+    let receiver = mk(10);
+    let escrow: u128 = 5;
+    let expected: u128 = 60;
+    let id1 = c.queue_tail();
+    c.pending_withdrawals.insert(
+        id1,
+        PendingWithdrawal {
+            owner: owner_id.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: expected,
+            requested_at: 0,
+        },
+    );
+
+    c.idle_balance = 0; // force route-based execution
+
+    let res = c.execute_withdrawal(vec![m1.clone()]);
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) to signal offchain to execute next market"),
+    }
+
+    // Dust head must be removed and head advanced to the second request
+    assert_eq!(
+        c.next_withdraw_to_execute, id1,
+        "head should advance past dust"
+    );
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        1,
+        "one item should remain in queue"
+    );
+    assert_eq!(
+        c.get_current_withdraw_request_id(),
+        Some(near_sdk::json_types::U64(id1)),
+        "current request should be the second item"
+    );
+    assert_eq!(c.withdraw_route, vec![m1], "route must be set from input");
+
+    match &c.op_state {
+        OpState::Withdrawing(s) => {
+            assert_eq!(s.index, 0);
+            assert_eq!(
+                s.remaining, expected,
+                "no idle used so remaining equals expected"
+            );
+            assert_eq!(s.collected, 0, "no idle collected");
+            assert_eq!(s.owner, owner_id);
+            assert_eq!(s.receiver, receiver);
+            assert_eq!(s.escrow_shares, escrow);
+        }
+        other => panic!("Expected Withdrawing state, got {:?}", other),
+    }
+}
+
+#[test]
+fn execute_withdrawal_only_dust_drains_queue() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Two dust entries
+    let id0 = c.queue_tail();
+    c.pending_withdrawals.insert(
+        id0,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: mk(9),
+            escrow_shares: 1,
+            expected_assets: 0,
+            requested_at: 0,
+        },
+    );
+    let id1 = c.queue_tail();
+    c.pending_withdrawals.insert(
+        id1,
+        PendingWithdrawal {
+            owner,
+            receiver: mk(10),
+            escrow_shares: 2,
+            expected_assets: 0,
+            requested_at: 0,
+        },
+    );
+
+    let res = c.execute_withdrawal(vec![]);
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) after draining dust-only queue"),
+    }
+
+    assert!(matches!(c.op_state, OpState::Idle), "must remain Idle");
+    assert_eq!(c.pending_withdrawals.len(), 0, "queue should be empty");
+    assert_eq!(
+        c.next_withdraw_to_execute,
+        id1.saturating_add(1),
+        "head should advance by two"
+    );
+    assert!(c.withdraw_route.is_empty(), "route must remain empty");
+}
