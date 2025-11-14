@@ -2364,10 +2364,9 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
 #[test]
 fn cancel_in_flight_withdrawal_refunds_and_dequeues() {
     let vault_id = accounts(0);
-    let owner = accounts(1);
-    setup_env(&vault_id, &owner, vec![]);
-
     let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
 
     // Seed escrowed shares into the vault's own account
     let escrow: u128 = 10;
@@ -2412,8 +2411,14 @@ fn cancel_in_flight_withdrawal_refunds_and_dequeues() {
     }
 
     // Escrow refunded, head advanced, state reset
-    assert!(matches!(c.op_state, OpState::Idle), "vault should return to Idle");
-    assert!(c.withdraw_route.is_empty(), "withdraw route must be cleared");
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "vault should return to Idle"
+    );
+    assert!(
+        c.withdraw_route.is_empty(),
+        "withdraw route must be cleared"
+    );
     assert_eq!(c.total_supply(), supply_before, "no supply change");
     assert_eq!(
         c.balance_of(&near_sdk::env::current_account_id()),
@@ -2440,10 +2445,10 @@ fn cancel_in_flight_withdrawal_refunds_and_dequeues() {
 #[test]
 fn cancel_in_flight_withdrawal_noop_when_not_withdrawing() {
     let vault_id = accounts(0);
-    let owner = accounts(1);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let mut c = new_test_contract(&vault_id);
     c.op_state = OpState::Idle;
 
     // Capture baseline
@@ -2502,4 +2507,98 @@ fn idle_delta_cases(mut c: Contract, idle: u128, amount: u128, remaining: u128, 
         c.idle_balance, idle_before,
         "idle_delta must not mutate idle_balance"
     );
+}
+
+#[test]
+fn peek_next_pending_withdrawal_id_empty_returns_none() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let c = new_test_contract(&vault_id);
+
+    assert_eq!(c.pending_withdrawals.len(), 0, "queue should start empty");
+
+    let head_before = c.next_withdraw_to_execute;
+    let tail_before = c.queue_tail();
+    assert_eq!(
+        head_before, tail_before,
+        "empty queue invariant: head == tail"
+    );
+
+    let got = c.peek_next_pending_withdrawal_id();
+    assert!(got.is_none(), "expected None for empty queue");
+
+    // Subsequent call still None and state unchanged
+    let got2 = c.peek_next_pending_withdrawal_id();
+    assert!(got2.is_none(), "expected None on repeated peek");
+    assert_eq!(
+        c.next_withdraw_to_execute, head_before,
+        "peek must not mutate the head"
+    );
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        0,
+        "peek must not change the queue length"
+    );
+}
+
+#[test]
+fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    // Enqueue two pending withdrawals at tail positions
+    let head_before = c.next_withdraw_to_execute;
+
+    let id1 = c.queue_tail();
+    c.pending_withdrawals.insert(
+        id1,
+        PendingWithdrawal {
+            owner: accounts(1),
+            receiver: mk(9),
+            escrow_shares: 1,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    let id2 = c.queue_tail();
+    c.pending_withdrawals.insert(
+        id2,
+        PendingWithdrawal {
+            owner: accounts(2),
+            receiver: mk(10),
+            escrow_shares: 2,
+            expected_assets: 2,
+            requested_at: 0,
+        },
+    );
+
+    assert!(
+        head_before < c.queue_tail(),
+        "sanity: queue should now be non-empty (head < tail)"
+    );
+
+    // Peek should return the current head id
+    let got = c.peek_next_pending_withdrawal_id();
+    assert_eq!(
+        got,
+        Some(head_before),
+        "peek should return the current head id"
+    );
+
+    // Ensure peek does not mutate any state
+    assert_eq!(
+        c.next_withdraw_to_execute, head_before,
+        "head must be unchanged by peek"
+    );
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        2,
+        "peek must not modify queue length"
+    );
+
+    // Repeated peek yields the same result
+    let got2 = c.peek_next_pending_withdrawal_id();
+    assert_eq!(got2, Some(head_before));
 }
