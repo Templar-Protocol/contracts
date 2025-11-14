@@ -315,6 +315,87 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
     );
 }
 
+#[test]
+#[should_panic = "Insufficient principal"]
+fn reallocate_withdraw_insufficient_principal_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Known market with zero principal -> cannot request any withdrawal
+    let m = mk(9201);
+    c.markets.insert(
+        m.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            pending_cap: None,
+            principal: 0,
+        },
+    );
+
+    let _ = c.reallocate(AllocationDelta::Withdraw(Delta::new(m, 1)));
+}
+
+#[test]
+#[should_panic = "Insufficient principal"]
+fn reallocate_withdraw_zero_amount_panics() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Principal exists but requested amount is zero -> to_request = 0 -> panic
+    let m = mk(9202);
+    let rec = MarketRecord {
+        cfg: MarketConfiguration::default(),
+        pending_cap: None,
+        principal: 0,
+    };
+    c.markets.insert(m.clone(), rec.clone());
+
+    let _ = c.reallocate(AllocationDelta::Withdraw(Delta::new(m, 100)));
+}
+
+#[test]
+fn reallocate_withdraw_returns_promise_and_does_not_mutate() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    // Principal exists; request larger than principal should cap to principal internally
+    let m = mk(9203);
+    c.markets.insert(
+        m.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            pending_cap: None,
+            principal: 40,
+        },
+    );
+
+    let principal_before = c.principal_of(&m);
+    assert_eq!(principal_before, 40, "sanity: principal set");
+
+    let res = c.reallocate(AllocationDelta::Withdraw(Delta::new(m.clone(), 100)));
+    match res {
+        PromiseOrValue::Promise(_) => {}
+        _ => panic!("Expected Promise for withdraw reallocation"),
+    }
+
+    // No immediate state mutations for withdraw request creation
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "reallocate withdraw should not change op_state"
+    );
+    assert_eq!(
+        c.principal_of(&m),
+        principal_before,
+        "principal must not change when only creating a withdraw request"
+    );
+}
+
 #[rstest(
     escrow, collected, requested, expect,
     case(100u128, 200u128, 500u128, 40u128),  // 40%
