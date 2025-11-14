@@ -32,12 +32,12 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     market::ext_market,
     vault::{
-        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
-        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingValue,
-        PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS,
-        MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event, Reason,
+        QueueStatus, QueueAction, IdleBalanceDelta, Locker, MarketConfiguration, OpState,
+        PayoutState, PendingValue, PendingWithdrawal, TimestampNs, VaultConfiguration,
+        WithdrawingState, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS,
+        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS, EXECUTE_WITHDRAW_GAS,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
@@ -233,6 +233,11 @@ impl Contract {
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
         require_at_least(WITHDRAW_GAS);
         let shares_needed = self.preview_withdraw(amount).0;
+        Event::WithdrawPreview {
+            shares: U128(shares_needed),
+            receiver: receiver.clone(),
+        }
+        .emit();
         self.redeem(U128(shares_needed), receiver)
     }
 
@@ -280,11 +285,35 @@ impl Contract {
                 .pending_withdrawals
                 .get(&id)
                 .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
+            Event::WithdrawProgress {
+                phase: "execution_started".to_string(),
+                op_id: None,
+                id: Some(id.into()),
+                market_index: None,
+                owner: Some(pending.owner.clone()),
+                receiver: Some(pending.receiver.clone()),
+                escrow_shares: Some(U128(pending.escrow_shares)),
+                expected_assets: Some(U128(pending.expected_assets)),
+                requested_at: Some(pending.requested_at.into()),
+            }
+            .emit();
+
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
-            env::log_str(&format!("Executing withdrawal for {pending:?}"));
 
             if pending.expected_assets == 0 {
+                Event::WithdrawProgress {
+                    phase: "skipped_dust".to_string(),
+                    op_id: None,
+                    id: Some(id.into()),
+                    market_index: None,
+                    owner: None,
+                    receiver: None,
+                    escrow_shares: None,
+                    expected_assets: None,
+                    requested_at: None,
+                }
+                .emit();
                 // Skip dust request to avoid wedging the queue
                 self.pop_head();
                 return self.execute_withdrawal(route);
@@ -297,6 +326,12 @@ impl Contract {
                 pending.escrow_shares,
                 route,
             );
+        } else {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::Empty,
+                id: None,
+            }
+            .emit();
         }
 
         PromiseOrValue::Value(())
@@ -433,11 +468,11 @@ impl Contract {
                 let to_request = self.principal_of(&delta.market).min(delta.amount.0);
                 require!(to_request > 0, "Insufficient principal");
 
-                // TODO: proper event
-                env::log_str(&format!(
-                    "DeltaWithdrawRequestCreated market={} amount={}",
-                    delta.market, to_request
-                ));
+                Event::SupplyWithdrawRequestCreated {
+                    market: delta.market.clone(),
+                    amount: U128(to_request),
+                }
+                .emit();
 
                 PromiseOrValue::Promise(
                     ext_market::ext(delta.market.clone())
@@ -460,8 +495,18 @@ impl Contract {
     fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
         let tail = self.queue_tail();
         if self.next_withdraw_to_execute < tail {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::NextFound,
+                id: Some(self.next_withdraw_to_execute.into()),
+            }
+            .emit();
             Some(self.next_withdraw_to_execute)
         } else {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::Empty,
+                id: None,
+            }
+            .emit();
             None
         }
     }
@@ -472,12 +517,17 @@ impl Contract {
         let removed = self.pending_withdrawals.remove(&id);
         require!(removed.is_some(), "queue corrupt: head missing");
         self.next_withdraw_to_execute = id.saturating_add(1);
-        Event::WithdrawDequeued { index: id.into() }.emit();
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Dequeued,
+            id: id.into(),
+        }
+        .emit();
     }
 
     // Keep the head pending and emit telemetry; can be retried later
     fn park_head_for_retry(&mut self) {
-        Event::WithdrawalParked {
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Parked,
             id: self.next_withdraw_to_execute.into(),
         }
         .emit();
@@ -748,7 +798,12 @@ impl Contract {
             let recipient = self.fee_recipient.clone();
             let _ = self
                 .mint(&Nep141Mint::new(minted, &recipient))
-                .inspect_err(|e| env::log_str(&format!("Failed to mint {e}")));
+                .inspect_err(|e| {
+                    Event::PerformanceFeeMintFailed {
+                        error: e.to_string(),
+                    }
+                    .emit()
+                });
             Event::PerformanceFeeAccrued {
                 recipient,
                 shares: U128(minted),
@@ -876,7 +931,7 @@ impl Contract {
             let room = self.room_of(&market_id);
             let to_supply = room.min(*amount);
 
-            Event::AllocationStepPlanned {
+            Event::AllocationStepPlan {
                 op_id: op_id.into(),
                 index,
                 market: market_id.clone(),
@@ -885,20 +940,25 @@ impl Contract {
                 to_supply: U128(to_supply),
                 remaining_before: U128(remaining),
                 planned: true,
+                reason: None,
             }
             .emit();
 
             if to_supply == 0 {
-                Event::AllocationStepSkipped {
+                Event::AllocationStepPlan {
                     op_id: op_id.into(),
                     index,
                     market: market_id.clone(),
-                    reason: if room == 0 {
-                        "no-room".to_string()
+                    target: U128(*amount),
+                    room: U128(room),
+                    to_supply: U128(0),
+                    remaining_before: U128(remaining),
+                    planned: false,
+                    reason: Some(if room == 0 {
+                        Reason::NoRoom
                     } else {
-                        "zero-target".to_string()
-                    },
-                    remaining: U128(remaining),
+                        Reason::ZeroTarget
+                    }),
                 }
                 .emit();
 
@@ -978,9 +1038,16 @@ impl Contract {
             );
         }
         if self.withdraw_route.get(index as usize).is_some() {
-            Event::WithdrawExecutionRequired {
-                op_id: op_id.into(),
-                market_index: index,
+            Event::WithdrawProgress {
+                phase: "execution_required".to_string(),
+                op_id: Some(op_id.into()),
+                id: Some(self.next_withdraw_to_execute.into()),
+                market_index: Some(index),
+                owner: None,
+                receiver: None,
+                escrow_shares: None,
+                expected_assets: None,
+                requested_at: None,
             }
             .emit();
             return PromiseOrValue::Value(());
