@@ -21,7 +21,7 @@ pub struct InitArgs {
 #[near(serializers = [borsh, json])]
 pub enum KeyId {
     Passkey(Passkey),
-    Ed25519Raw(Ed25519RawKey),
+    Ed25519RawKey(Ed25519RawKey),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,11 +53,11 @@ impl ExecutionParameters {
 pub enum ExecuteArgs {
     Passkey {
         key: Passkey,
-        message: authentication::passkey::Message<Box<[transaction::Transaction]>>,
+        message: authentication::passkey::MessageWithSignature<Box<[transaction::Transaction]>>,
     },
     Ed25519Raw {
         key: Ed25519RawKey,
-        message: authentication::ed25519_raw::Message<Box<[transaction::Transaction]>>,
+        message: authentication::ed25519_raw::MessageWithSignature<Box<[transaction::Transaction]>>,
     },
 }
 
@@ -73,7 +73,7 @@ impl ExecuteArgs {
     pub fn key(&self) -> KeyId {
         match self {
             ExecuteArgs::Passkey { key, .. } => KeyId::Passkey(key.clone()),
-            ExecuteArgs::Ed25519Raw { key, .. } => KeyId::Ed25519Raw(key.clone()),
+            ExecuteArgs::Ed25519Raw { key, .. } => KeyId::Ed25519RawKey(key.clone()),
         }
     }
 

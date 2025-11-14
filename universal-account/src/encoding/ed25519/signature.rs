@@ -31,6 +31,18 @@ impl AsRef<ByteEncoding> for Signature {
     }
 }
 
+impl From<ByteEncoding> for Signature {
+    fn from(value: ByteEncoding) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Signature> for ByteEncoding {
+    fn from(value: Signature) -> Self {
+        value.0
+    }
+}
+
 impl From<solana_sdk::signature::Signature> for Signature {
     fn from(value: solana_sdk::signature::Signature) -> Self {
         Self(value.into())

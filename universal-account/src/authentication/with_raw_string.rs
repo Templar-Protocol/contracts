@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use near_sdk::{
-    env, near,
+    near,
     serde::{
         self,
         de::{self, DeserializeOwned},
@@ -9,8 +9,6 @@ use near_sdk::{
     },
     serde_json,
 };
-
-use crate::authentication::MagicNumber;
 
 #[derive(Clone, Debug)]
 #[near(serializers = [])]
@@ -30,16 +28,6 @@ impl<T> WithRawString<T> {
         #[allow(clippy::unwrap_used, reason = "This method panics")]
         let raw = serde_json::to_string(&value).unwrap();
         Self { raw, parsed: value }
-    }
-}
-
-impl<T: MagicNumber> WithRawString<T> {
-    pub fn bytes_with_magic_number(&self) -> Vec<u8> {
-        [T::MAGIC_NUMBER, self.raw.as_bytes()].concat()
-    }
-
-    pub fn hash(&self) -> [u8; 32] {
-        env::sha256_array(&self.bytes_with_magic_number())
     }
 }
 

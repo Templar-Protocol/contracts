@@ -6,16 +6,19 @@ use near_sdk::{
     NearToken,
 };
 use near_workspaces::{network::Sandbox, Worker};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::{ecdsa::signature::Signer, elliptic_curve::rand_core::OsRng};
 use rstest::rstest;
 use templar_universal_account::{
-    authentication::passkey::{
-        self,
-        data::{AuthenticatorData, ClientDataJson},
+    authentication::{
+        ed25519_raw::{self, Ed25519RawKey},
+        passkey::{
+            self,
+            data::{AuthenticatorData, ClientDataJson},
+            MessageWithSignatureWithUncheckedHashes, Passkey,
+        },
         with_raw_string::WithRawString,
-        Passkey, Payload, UncheckedMessage,
+        HashForSigning, Payload,
     },
-    encoding::p256::PublicKey,
     transaction::{FunctionCallAction, Transaction},
     ExecuteArgs, ExecutionParameters, KeyId,
 };
@@ -37,49 +40,94 @@ fn mint(amount: u128) -> FunctionCallAction {
     }
 }
 
-fn make_message(
-    secret_key: &p256::SecretKey,
-    payload: WithRawString<Payload<Box<[Transaction]>>>,
-) -> passkey::Message<Box<[Transaction]>> {
-    let challenge = payload.hash();
+enum Sk {
+    Passkey(p256::SecretKey),
+    Ed25519Raw(ed25519_dalek::SigningKey),
+}
 
-    let message: passkey::Message<_> = UncheckedMessage::new_and_sign(
-        secret_key,
-        payload,
-        AuthenticatorData(Box::new([0xff_u8; 32])),
-        WithRawString::from_parsed(ClientDataJson {
-            r#type: "type".to_string(),
-            challenge: challenge.into(),
-            origin: "origin".to_string(),
-            cross_origin: None,
-            top_origin: None,
-        }),
-    )
-    .try_into()
-    .unwrap();
+impl Sk {
+    fn random_passkey() -> Self {
+        Self::Passkey(p256::SecretKey::random(&mut OsRng))
+    }
 
-    message
+    fn random_ed25519_raw() -> Self {
+        Self::Ed25519Raw(ed25519_dalek::SigningKey::generate(&mut OsRng))
+    }
+
+    fn id(&self) -> KeyId {
+        match self {
+            Sk::Passkey(secret_key) => KeyId::Passkey(Passkey(secret_key.public_key().into())),
+            Sk::Ed25519Raw(signing_key) => {
+                KeyId::Ed25519RawKey(Ed25519RawKey(signing_key.verifying_key().to_bytes().into()))
+            }
+        }
+    }
+
+    fn execute_args(&self, payload: WithRawString<Payload<Box<[Transaction]>>>) -> ExecuteArgs {
+        match self {
+            Sk::Passkey(secret_key) => {
+                let payload = passkey::Message(payload);
+                let challenge = payload.hash_for_signing();
+
+                let message: passkey::MessageWithSignature<_> =
+                    MessageWithSignatureWithUncheckedHashes::new_and_sign(
+                        secret_key,
+                        payload,
+                        AuthenticatorData(Box::new([0xff_u8; 32])),
+                        ClientDataJson {
+                            r#type: "type".to_string(),
+                            challenge: challenge.into(),
+                            origin: "origin".to_string(),
+                            cross_origin: None,
+                            top_origin: None,
+                        },
+                    )
+                    .try_into()
+                    .unwrap();
+
+                ExecuteArgs::Passkey {
+                    key: Passkey(secret_key.public_key().into()),
+                    message,
+                }
+            }
+            Sk::Ed25519Raw(signing_key) => {
+                let message = ed25519_raw::Message(payload);
+                let signature = signing_key
+                    .sign(&message.preimage_for_signing())
+                    .to_bytes()
+                    .into();
+                let message = ed25519_raw::MessageWithSignature { message, signature };
+
+                ExecuteArgs::Ed25519Raw {
+                    key: Ed25519RawKey(signing_key.verifying_key().to_bytes().into()),
+                    message,
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ed_sign() {
+    let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+    let message = b"Hello";
+    let signature = key.sign(message.as_slice()).to_bytes();
+    let verify_result =
+        near_sdk::env::ed25519_verify(&signature, message, key.verifying_key().as_bytes());
+    eprintln!("Result: {verify_result:?}");
 }
 
 struct Setup {
-    secret_key: p256::SecretKey,
-    public_key: PublicKey,
-    key_id: KeyId,
     uac: UniversalAccountController,
     ft: FtController,
     third_party: near_workspaces::Account,
 }
 
-#[rstest::fixture]
-async fn setup(#[future(awt)] worker: Worker<Sandbox>) -> Setup {
+async fn setup(worker: &Worker<Sandbox>, sk: &Sk) -> Setup {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
-    let secret_key = p256::SecretKey::random(&mut OsRng);
-    let public_key: PublicKey = secret_key.public_key().into();
-    let key_id = KeyId::Passkey(Passkey(public_key.clone()));
-
     let (uac, ft) = tokio::join!(
-        UniversalAccountController::deploy(uni_account, key_id.clone()),
+        UniversalAccountController::deploy(uni_account, sk.id()),
         FtController::deploy(ft_account, "Fungible Token", "FT"),
     );
 
@@ -91,9 +139,6 @@ async fn setup(#[future(awt)] worker: Worker<Sandbox>) -> Setup {
     .await;
 
     Setup {
-        secret_key,
-        public_key,
-        key_id,
         uac,
         ft,
         third_party,
@@ -102,24 +147,24 @@ async fn setup(#[future(awt)] worker: Worker<Sandbox>) -> Setup {
 
 #[rstest]
 #[tokio::test]
-pub async fn universal_account(#[future(awt)] setup: Setup) {
+pub async fn universal_account(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[values(Sk::random_passkey(), Sk::random_ed25519_raw())] sk: Sk,
+) {
     let Setup {
-        secret_key,
-        public_key,
-        key_id,
         uac,
         ft,
         third_party,
-    } = setup;
+    } = setup(&worker, &sk).await;
 
     let key_list = uac.list_keys(None, None).await;
     assert_eq!(
         key_list,
-        vec![key_id.clone()],
+        vec![sk.id()],
         "Key should be the only one in control of the account immediately after deployment"
     );
 
-    let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;
 
     assert_eq!(key_entry.index.0, 0);
@@ -139,17 +184,9 @@ pub async fn universal_account(#[future(awt)] setup: Setup) {
         .into(),
     });
 
-    let message = make_message(&secret_key, payload);
+    let execute_args = sk.execute_args(payload);
 
-    let e = uac
-        .execute(
-            &third_party,
-            ExecuteArgs::Passkey {
-                key: Passkey(public_key.clone()),
-                message,
-            },
-        )
-        .await;
+    let e = uac.execute(&third_party, execute_args).await;
 
     for o in e.outcomes() {
         assert!(o.is_success(), "Expect success on all receipts: {o:?}");
@@ -158,7 +195,7 @@ pub async fn universal_account(#[future(awt)] setup: Setup) {
     let balance = ft.ft_balance_of(uac.contract.id()).await;
     assert_eq!(balance.0, 100, "Function call should succeed");
 
-    let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
 
     assert_eq!(key_entry.block_height, block_height);
     assert_eq!(key_entry.index.0, 0);
@@ -180,17 +217,9 @@ pub async fn universal_account(#[future(awt)] setup: Setup) {
         .into(),
     });
 
-    let message = make_message(&secret_key, payload);
+    let execute_args = sk.execute_args(payload);
 
-    let e = uac
-        .execute(
-            &third_party,
-            ExecuteArgs::Passkey {
-                key: Passkey(public_key.clone()),
-                message,
-            },
-        )
-        .await;
+    let e = uac.execute(&third_party, execute_args).await;
 
     for o in e.outcomes() {
         assert!(o.is_success(), "Expect success on all receipts: {o:?}");
@@ -199,7 +228,7 @@ pub async fn universal_account(#[future(awt)] setup: Setup) {
     let balance = ft.ft_balance_of(uac.contract.id()).await;
     assert_eq!(balance.0, 200, "Function call should succeed");
 
-    let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
 
     assert_eq!(key_entry.block_height, block_height);
     assert_eq!(key_entry.index.0, 0);
@@ -209,17 +238,17 @@ pub async fn universal_account(#[future(awt)] setup: Setup) {
 #[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Nonce mismatch"]
-async fn skip_nonce(#[future(awt)] setup: Setup) {
+async fn skip_nonce(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[values(Sk::random_passkey(), Sk::random_ed25519_raw())] sk: Sk,
+) {
     let Setup {
-        secret_key,
-        public_key,
-        key_id,
         uac,
         ft,
         third_party,
-    } = setup;
+    } = setup(&worker, &sk).await;
 
-    let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;
 
     let payload = WithRawString::from_parsed(Payload {
@@ -236,21 +265,14 @@ async fn skip_nonce(#[future(awt)] setup: Setup) {
         .into(),
     });
 
-    let message = make_message(&secret_key, payload);
+    let execute_args = sk.execute_args(payload);
 
-    uac.execute(
-        &third_party,
-        ExecuteArgs::Passkey {
-            key: Passkey(public_key.clone()),
-            message,
-        },
-    )
-    .await;
+    uac.execute(&third_party, execute_args).await;
 
     let balance = ft.ft_balance_of(uac.contract.id()).await;
     assert_eq!(balance.0, 100, "Function call should not succeed");
 
-    let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
 
     assert_eq!(key_entry.block_height, block_height);
     assert_eq!(key_entry.index.0, 0);
@@ -272,32 +294,25 @@ async fn skip_nonce(#[future(awt)] setup: Setup) {
         .into(),
     });
 
-    let message = make_message(&secret_key, payload);
+    let execute_args = sk.execute_args(payload);
 
-    uac.execute(
-        &third_party,
-        ExecuteArgs::Passkey {
-            key: Passkey(public_key.clone()),
-            message,
-        },
-    )
-    .await;
+    uac.execute(&third_party, execute_args).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Nonce mismatch"]
-async fn reuse_nonce(#[future(awt)] setup: Setup) {
+async fn reuse_nonce(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[values(Sk::random_passkey(), Sk::random_ed25519_raw())] sk: Sk,
+) {
     let Setup {
-        secret_key,
-        public_key,
-        key_id,
         uac,
         ft,
         third_party,
-    } = setup;
+    } = setup(&worker, &sk).await;
 
-    let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;
 
     let payload = WithRawString::from_parsed(Payload {
@@ -314,21 +329,14 @@ async fn reuse_nonce(#[future(awt)] setup: Setup) {
         .into(),
     });
 
-    let message = make_message(&secret_key, payload);
+    let execute_args = sk.execute_args(payload);
 
-    uac.execute(
-        &third_party,
-        ExecuteArgs::Passkey {
-            key: Passkey(public_key.clone()),
-            message,
-        },
-    )
-    .await;
+    uac.execute(&third_party, execute_args).await;
 
     let balance = ft.ft_balance_of(uac.contract.id()).await;
     assert_eq!(balance.0, 100, "Function call should succeed");
 
-    let key_entry = uac.get_key(key_id.clone()).await.unwrap();
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
 
     assert_eq!(key_entry.block_height, block_height);
     assert_eq!(key_entry.index.0, 0);
@@ -350,14 +358,7 @@ async fn reuse_nonce(#[future(awt)] setup: Setup) {
         .into(),
     });
 
-    let message = make_message(&secret_key, payload);
+    let execute_args = sk.execute_args(payload);
 
-    uac.execute(
-        &third_party,
-        ExecuteArgs::Passkey {
-            key: Passkey(public_key.clone()),
-            message,
-        },
-    )
-    .await;
+    uac.execute(&third_party, execute_args).await;
 }

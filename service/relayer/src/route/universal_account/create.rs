@@ -46,7 +46,7 @@ impl PowTarget for CreatePasskeyAccount {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub enum CreateRequest {
-    Passkey(passkey::Message<Pow<CreatePasskeyAccount>>),
+    Passkey(passkey::MessageWithSignature<Pow<CreatePasskeyAccount>>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

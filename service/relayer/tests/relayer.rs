@@ -60,7 +60,7 @@ fn create_message<T: near_sdk::serde::Serialize>(
     account_id: AccountId,
     parameters: ExecutionParameters,
     payload: T,
-) -> passkey::Message<T> {
+) -> passkey::MessageWithSignature<T> {
     let payload = WithRawString::from_parsed(Payload {
         parameters,
         account_id,
@@ -69,7 +69,7 @@ fn create_message<T: near_sdk::serde::Serialize>(
 
     let challenge = payload.hash().into();
 
-    passkey::UncheckedMessage::new_and_sign(
+    passkey::MessageWithSignatureWithUncheckedHashes::new_and_sign(
         secret_key,
         payload,
         AuthenticatorData(Box::new([0xffu8; 32])),
@@ -91,7 +91,7 @@ fn create_execute_message(
     parameters: ExecutionParameters,
     receiver_id: AccountId,
     actions: impl Into<Box<[transaction::Action]>>,
-) -> passkey::Message<Box<[Transaction]>> {
+) -> passkey::MessageWithSignature<Box<[Transaction]>> {
     create_message(
         secret_key,
         account_id,
