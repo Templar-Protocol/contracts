@@ -25,6 +25,8 @@ async fn main() -> anyhow::Result<()> {
     let mut refresh_ticker =
         tokio::time::interval(Duration::from_secs(args.registry_refresh_interval));
     let mut accumulate_ticker = tokio::time::interval(Duration::from_secs(args.interval));
+    let mut static_accumulate_ticker =
+        tokio::time::interval(Duration::from_secs(args.static_interval));
     let mut accumulators =
         list_all_deployments(client.clone(), args.registries.clone(), args.concurrency)
             .await?
@@ -57,10 +59,18 @@ async fn main() -> anyhow::Result<()> {
             _ = accumulate_ticker.tick() => {
                 for (market, accumulator) in &accumulators {
                     info!("Running accumulation for market: {market}");
-                    accumulator.run_accumulations(args.concurrency).await?;
+                    accumulator.run_borrow_accumulations(args.concurrency).await?;
                 }
 
                 info!("Accumulation job done");
+            }
+            _ = static_accumulate_ticker.tick() => {
+                for (market, accumulator) in &accumulators {
+                    info!("Running static accumulation for market: {market}");
+                    accumulator.run_static_accumulations(args.concurrency).await?;
+                }
+
+                info!("Static accumulation job done");
             }
         }
     }

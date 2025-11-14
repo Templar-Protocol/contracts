@@ -10,6 +10,7 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{serde_json::json, AccountId};
+use templar_common::market::MarketConfiguration;
 use tracing::{error, info, instrument};
 
 pub mod rpc;
@@ -38,13 +39,11 @@ pub struct Args {
     /// Interval between accumulations in seconds
     #[arg(short, long, default_value_t = 600, env = "INTERVAL")]
     pub interval: u64,
+    /// Interval between static accumulations in seconds
+    #[arg(long, default_value_t = 86_400, env = "STATIC_INTERVAL")]
+    pub static_interval: u64,
     /// Registry refresh interval in seconds
-    #[arg(
-        short = 'r',
-        long,
-        default_value_t = 3600,
-        env = "REGISTRY_REFRESH_INTERVAL"
-    )]
+    #[arg(short, long, default_value_t = 3600, env = "REGISTRY_REFRESH_INTERVAL")]
     pub registry_refresh_interval: u64,
     /// Concurrency for accumulation tasks
     #[arg(short, long, default_value_t = 4, env = "CONCURRENCY")]
@@ -55,12 +54,13 @@ impl std::fmt::Display for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "registries: {:?}\nsigner_account: {}\nnetwork: {}\ntimeout: {}\ninterval: {}\nregistry_refresh_interval: {}\nconcurrency: {}",
+            "registries: {:?}\nsigner_account: {}\nnetwork: {}\ntimeout: {}\ninterval: {}\nstatic_interval: {}\nregistry_refresh_interval: {}\nconcurrency: {}",
             self.registries,
             self.signer_account,
             self.network,
             self.timeout,
             self.interval,
+            self.static_interval,
             self.registry_refresh_interval,
             self.concurrency
         )
@@ -90,11 +90,12 @@ impl Accumulator {
         }
     }
 
-    fn create_accumulate_tx(
+    fn create_tx(
         &self,
         borrow: &AccountId,
         nonce: u64,
         block_hash: CryptoHash,
+        method_name: String,
     ) -> Transaction {
         Transaction::V0(TransactionV0 {
             nonce,
@@ -103,7 +104,7 @@ impl Accumulator {
             signer_id: self.signer.get_account_id(),
             public_key: self.signer.public_key().clone(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                method_name: "apply_interest".to_string(),
+                method_name,
                 args: serialize_and_encode(json!({
                     "account_id": borrow,
                 })),
@@ -114,14 +115,14 @@ impl Accumulator {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn accumulate(&self, borrow: AccountId) -> anyhow::Result<()> {
+    pub async fn accumulate(&self, borrow: AccountId, method: &str) -> anyhow::Result<()> {
         info!("Starting accumulation for market: {}", self.market);
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
 
-        let apply_interest_tx = self.create_accumulate_tx(&borrow, nonce, block_hash);
+        let accumulate_tx = self.create_tx(&borrow, nonce, block_hash, method.to_owned());
 
-        match send_tx(&self.client, &self.signer, self.timeout, apply_interest_tx).await {
+        match send_tx(&self.client, &self.signer, self.timeout, accumulate_tx).await {
             Ok(_) => {
                 info!("Accumulation successful");
             }
@@ -166,7 +167,7 @@ impl Accumulator {
     }
 
     #[instrument(skip(self), level = "info")]
-    pub async fn run_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
+    pub async fn run_borrow_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
         let borrows = self.get_borrows().await?;
 
         if borrows.is_empty() {
@@ -174,11 +175,48 @@ impl Accumulator {
         }
 
         futures::stream::iter(borrows)
-            .map(|(account_id, _)| async move { self.accumulate(account_id).await })
+            .map(|(account_id, _)| async move { self.accumulate(account_id, "apply_interest").await })
             .buffer_unordered(concurrency)
             .try_for_each(|_result| async { Ok(()) })
             .await?;
 
         Ok(())
+    }
+
+    #[instrument(skip(self), level = "info")]
+    pub async fn run_static_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
+        let static_accounts = self.get_static_accounts().await?;
+
+        if static_accounts.is_empty() {
+            return Ok(());
+        }
+
+        futures::stream::iter(static_accounts)
+            .map(|account_id| async move {
+                self.accumulate(account_id, "accumulate_static_yield").await
+            })
+            .buffer_unordered(concurrency)
+            .try_for_each(|_result| async { Ok(()) })
+            .await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), level = "debug")]
+    async fn get_static_accounts(&self) -> anyhow::Result<Vec<AccountId>> {
+        let configuration: MarketConfiguration = view(
+            &self.client,
+            self.market.clone(),
+            "get_configuration",
+            json!({}),
+        )
+        .await?;
+
+        Ok(configuration
+            .yield_weights
+            .r#static
+            .keys()
+            .cloned()
+            .collect())
     }
 }
