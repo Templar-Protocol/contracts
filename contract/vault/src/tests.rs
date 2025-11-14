@@ -94,7 +94,6 @@ fn c(vault_id: AccountId) -> Contract {
     new_test_contract(&vault_id)
 }
 
-// Contract with the env used by after_supply_1_check_* tests
 #[fixture]
 fn c_max(vault_id: AccountId) -> Contract {
     setup_env(
@@ -208,7 +207,6 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_000;
 
-    // Set fee to 10%
     c.performance_fee = Wad::one() / 10;
 
     // Baseline: last_total_assets = current, so no profit => no fee
@@ -240,10 +238,8 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     let receiver = mk(7);
     let owner = accounts(1);
 
-    // Seed escrow into vault account (shares held by vault)
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
-        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
-    // Seed idle to cover payout
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
     c.idle_balance = 1_000;
 
     // Partial payout scenario: collected/requested = 200/500 => burn 40% of escrowed shares
@@ -255,7 +251,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
         amount,
         owner: owner.clone(),
         escrow_shares: 100,
-        burn_shares: 40, // precomputed proportional burn for test
+        burn_shares: 40,
     });
     c.pending_withdrawals.insert(
         0,
@@ -274,7 +270,6 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     // Idle decreased by payout before payout is initiated
     // Only burn_shares are burned from total supply
     assert_eq!(c.total_supply(), supply_before - 40);
-    // State returns to Idle
     assert!(matches!(c.op_state, OpState::Idle));
 }
 
@@ -284,7 +279,6 @@ fn set_supply_queue_rejects_zero_cap() {
     let mut c = new_test_contract(&mk(0));
     setup_env(&mk(0), &accounts(1), vec![]);
 
-    // Unknown market => cap treated as 0
     c.set_supply_queue(vec![mk(100)]);
 }
 
@@ -329,7 +323,6 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
     owner_call_env(env::current_account_id(), &owner());
     c.reallocate(AllocationDelta::Supply(Delta::new(m1.clone(), total)));
 
-    // Emulate allocation completing successfully: 80 moved to market
     if let Some(rec) = c.markets.get_mut(&m1) {
         rec.principal = 80;
     } else {
@@ -442,7 +435,6 @@ fn reallocate_withdraw_returns_promise_and_does_not_mutate() {
         _ => panic!("Expected Promise for withdraw reallocation"),
     }
 
-    // No immediate state mutations for withdraw request creation
     assert!(
         matches!(c.op_state, OpState::Idle),
         "reallocate withdraw should not change op_state"
@@ -478,7 +470,7 @@ fn compute_effective_totals_fee_share_and_virtuals() {
 
     let cur = 1_500u128.into();
     let last = 1_000u128.into();
-    let perf = Wad::one() / 10; // 10%
+    let perf = Wad::one() / 10;
     let ts = 1_000u128.into();
     let vs = 1u128.into();
     let va = 1u128.into();
@@ -524,7 +516,6 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
     c.markets
         .insert(m.clone(), MarketRecord { cfg, principal: 0 });
 
-    // Lower cap to zero: should NOT disable the market anymore
     c.submit_cap(m.clone(), U128(0));
     let cfg_after = &c.markets.get(&m).expect("market must exist").cfg;
     assert_eq!(cfg_after.cap.0, 0, "cap must be updated to 0");
@@ -532,7 +523,6 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
 
     set_block_ts(&vault_id, &owner, 2);
 
-    // Now we can schedule removal
     c.submit_market_removal(m.clone());
     let cfg_after2 = c.markets.get(&m).expect("market must exist");
     assert!(cfg_after2.cfg.removable_at > 0, "removal must be scheduled");
@@ -547,7 +537,6 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
 
     let m = mk(8002);
 
-    // Start disabled with cap=0
     c.markets.insert(
         m.clone(),
         MarketRecord {
@@ -561,7 +550,6 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     set_ctx(&vault_id, &owner, None, Some(yocto_for_bytes(10_000)));
     c.submit_cap(m.clone(), U128(raise));
 
-    // Fast-forward timelock to accept the raise
     set_ctx(
         &vault_id,
         &owner,
@@ -574,7 +562,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     assert_eq!(cfg1.cap.0, raise);
     assert!(cfg1.enabled, "market should be enabled after raise");
 
-    // Now lower back to 0 (immediate path) and ensure enabled stays true
+    // Now lower back to 0 and ensure enabled stays true
     c.submit_cap(m.clone(), U128(0));
     let cfg2 = &c.markets.get(&m).unwrap().cfg;
     assert_eq!(cfg2.cap.0, 0);
@@ -776,11 +764,12 @@ fn set_fee_recipient_accrues_before_switch_variant() {
 
     // Seed supply so fee shares can mint
     c.deposit_unchecked(&accounts(2), 2_000)
-        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
     // Simulate profit: last=2000, current=2400
     c.idle_balance = 2_400;
     c.last_total_assets = 2_000;
-    c.performance_fee = Wad::one() / 20; // 5%
+    c.performance_fee = Wad::one() / 20;
 
     let cur = c.get_total_assets().0;
     let ts_before = c.total_supply();
@@ -829,7 +818,8 @@ fn set_performance_fee_accrues_with_old_rate_then_updates() {
 
     // Seed supply so fee shares can mint
     c.deposit_unchecked(&accounts(1), 1_000)
-        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
     // Simulate profit: last=1000, current=1500
     c.idle_balance = 1_500;
     c.last_total_assets = 1_000;
@@ -882,13 +872,14 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
 
     // Seed supply so fee shares can mint
     c.deposit_unchecked(&accounts(2), 2_000)
-        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
     // Simulate profit: last=2000, current=2400
     c.idle_balance = 2_400;
     c.last_total_assets = 2_000;
 
     // Old rate = 5%, new rate = 0.5%
-    c.performance_fee = Wad::one() / 20; // 5%
+    c.performance_fee = Wad::one() / 20;
     let cur = c.get_total_assets().0;
     let ts_before = c.total_supply();
     let expect_old = compute_fee_shares(
@@ -901,7 +892,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
     let recipient = c.fee_recipient.clone();
     let bal_before = c.balance_of(&recipient);
 
-    c.set_performance_fee(Wad::one() / 200); // 0.5%
+    c.set_performance_fee(Wad::one() / 200);
 
     assert_eq!(
         c.balance_of(&recipient),
@@ -932,7 +923,8 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
 
     // Seed supply so total_supply > 0
     c.deposit_unchecked(&accounts(1), 1_000)
-        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
     // Loss scenario: last=1000, current=800
     c.idle_balance = 800;
     c.last_total_assets = 1_000;
@@ -1050,12 +1042,10 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
 #[test]
 #[should_panic = "Invalid token ID"]
 fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
-    // Underlying token id != predecessor => full refund
     let vault_id = accounts(0);
-    let mut c = new_test_contract(&mk(42)); // underlying differs from predecessor
+    let mut c = new_test_contract(&mk(42));
     setup_env(&vault_id, &vault_id, vec![]);
 
-    // Provide a market (not used due to wrong token)
     let m = mk(9003);
     let cfg = MarketConfiguration {
         cap: U128(100),
@@ -1104,7 +1094,6 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
         vec![],
     );
 
-    // Setup a valid market
     let (m, cfg) = enabled_market_100;
     c.markets.insert(m.clone(), cfg.into());
     c.supply_queue.insert(m);
@@ -1144,7 +1133,7 @@ fn mt_on_transfer_rejects_multiple_tokens() {
     let _ = c.mt_on_transfer(
         accounts(2),
         vec![accounts(2)],
-        vec!["a".to_string(), "b".to_string()], // len != 1
+        vec!["a".to_string(), "b".to_string()],
         vec![U128(1)],
         serde_json::to_string(&DepositMsg::Supply).unwrap(),
     );
@@ -1159,7 +1148,7 @@ fn mt_on_transfer_rejects_invalid_input_lengths() {
 
     let _ = c.mt_on_transfer(
         accounts(3),
-        vec![accounts(3), accounts(4)], // len != 1
+        vec![accounts(3), accounts(4)],
         vec!["t".to_string()],
         vec![U128(1)],
         serde_json::to_string(&DepositMsg::Supply).unwrap(),
@@ -1168,7 +1157,6 @@ fn mt_on_transfer_rejects_invalid_input_lengths() {
 
 #[test]
 fn mt_on_transfer_wrong_asset_refunds_full() {
-    // With default test underlying (NEP-141), is_nep245 should fail; expect full refund
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
     let old_ft_id = c.underlying_asset.contract_id().into();
@@ -1183,9 +1171,9 @@ fn mt_on_transfer_wrong_asset_refunds_full() {
 
     let res = c.mt_on_transfer(
         accounts(3),
-        vec![sender.clone()], // previous_owner_ids
-        vec![token_id],       // token_ids
-        vec![U128(amount)],   // amounts
+        vec![sender.clone()],
+        vec![token_id],
+        vec![U128(amount)],
         serde_json::to_string(&DepositMsg::Supply).unwrap(),
     );
     match res {
@@ -1218,7 +1206,6 @@ fn governance_set_curator_grants_allocator() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    // Prepare a market to exercise allocator permission
     let m1 = mk(9101);
     let cfg = MarketConfiguration {
         cap: U128(1),
@@ -1230,7 +1217,6 @@ fn governance_set_curator_grants_allocator() {
     let new_cur = accounts(3);
     c.set_curator(new_cur.clone());
 
-    // New curator can set supply queue
     set_ctx(
         &vault_id,
         &new_cur,
@@ -1251,7 +1237,6 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
 
     let grantee = accounts(4);
 
-    // Market to operate on
     let m1 = mk(9102);
     let cfg = MarketConfiguration {
         cap: U128(1),
@@ -1260,10 +1245,8 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
     };
     c.markets.insert(m1.clone(), cfg.into());
 
-    // Grant Allocator role
     c.set_is_allocator(grantee.clone(), true);
 
-    // Grantee can set supply queue
     set_ctx(
         &vault_id,
         &grantee,
@@ -1286,7 +1269,6 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     let grantee = accounts(12);
     c.set_is_allocator(grantee.clone(), true);
 
-    // Market to attempt on
     let m1 = mk(9103);
     let cfg = MarketConfiguration {
         cap: U128(1),
@@ -1421,7 +1403,6 @@ fn governance_accept_guardian_not_yet_panics() {
     let new_g = accounts(5);
     set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(new_g);
-    // Timelock not advanced -> should panic
     c.accept_guardian();
 }
 
@@ -1436,7 +1417,6 @@ fn governance_submit_accept_and_revoke_guardian() {
     let new_g = accounts(4);
     c.submit_guardian(new_g.clone());
 
-    // Advance time beyond timelock and accept
     set_ctx(
         &vault_id,
         &owner,
@@ -1451,7 +1431,6 @@ fn governance_submit_accept_and_revoke_guardian() {
     c.submit_guardian(another);
     c.revoke_pending_guardian();
 
-    // No pending now; accept should panic due to no pending guardian change
     c.accept_guardian();
 }
 
@@ -1496,7 +1475,6 @@ fn governance_accept_timelock_without_pending_panics() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    // No pending change -> accept should panic
     c.accept_timelock();
 }
 
@@ -1514,7 +1492,6 @@ fn governance_revoke_pending_timelock_then_accept_panics() {
     c.submit_timelock((cur.0 + 1).into(), None);
     c.submit_timelock(cur, None);
 
-    // Revoke the pending change; accept must now panic
     c.revoke_pending_timelock();
     c.accept_timelock();
 }
@@ -1548,11 +1525,9 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
 
     let m = mk(9105);
 
-    // Submit raise for a brand-new market
     set_ctx(&vault_id, &owner, None, Some(yocto_for_bytes(20_000)));
     c.submit_cap(m.clone(), U128(5));
 
-    // Advance timelock and accept; attach storage for withdraw queue addition
     set_ctx(
         &vault_id,
         &owner,
@@ -1579,11 +1554,9 @@ fn governance_revoke_pending_cap_then_accept_panics() {
 
     let m = mk(9106);
 
-    // Create pending cap raise for a new market
     set_ctx(&vault_id, &owner, None, Some(yocto_for_bytes(20_000)));
     c.submit_cap(m.clone(), U128(7));
 
-    // Revoke, then accepting should panic
     set_ctx(&vault_id, &owner, None, None);
     c.revoke_pending_cap(m.clone());
     c.accept_cap(m);
@@ -1613,7 +1586,6 @@ fn governance_submit_and_revoke_market_removal() {
     let after = c.markets.get(&m).unwrap();
     assert_eq!(after.cfg.removable_at, new_ts, "removal must be scheduled");
 
-    // Revoke pending removal
     c.revoke_pending_market_removal(m.clone());
     let after2 = c.markets.get(&m).unwrap();
     assert_eq!(after2.cfg.removable_at, 0, "removal must be revoked");
@@ -1639,7 +1611,6 @@ fn governance_set_fee_recipient_no_fee_does_not_accrue() {
 
     owner_call_env(vault_id, &owner);
 
-    // Seed supply and simulate profit, but fee = 0
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_500;
@@ -1688,11 +1659,9 @@ fn skim_rejects_underlying_token() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    // Set a skim recipient
     let recipient = accounts(4);
     c.set_skim_recipient(recipient.clone());
 
-    // Attempt to skim the underlying token -> must panic
     let underlying: AccountId = c.underlying_asset.contract_id().into();
     let _ = c.skim(underlying);
 }
@@ -1705,11 +1674,9 @@ fn skim_rejects_share_token() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    // Set a skim recipient
     let recipient = accounts(4);
     c.set_skim_recipient(recipient.clone());
 
-    // Attempt to skim the share token (the vault itself) -> must panic
     let share_token: AccountId = vault_id.clone();
     let _ = c.skim(share_token);
 }
@@ -1812,7 +1779,6 @@ fn after_supply_1_check_allocating() {
 
 #[rstest]
 fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
-    // Prepare a single-market withdraw queue with non-zero principal
     let market = mk(8);
     c.withdraw_route = vec![market.clone()];
     let principal = 100;
@@ -1843,10 +1809,10 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
     }
 
     let res2 = c.execute_withdraw_03_settle(
-        Ok(U128(principal)), // observed after_balance
+        Ok(U128(principal)),
         op_id,
         index,
-        U128(principal), // before_principal
+        U128(principal),
         U128(0),
         U128(0),
     );
@@ -1863,7 +1829,6 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
     );
 
     // Collected was 70, payouit is 70, idle is 30
-
     assert_eq!(
         c.idle_balance, 30,
         "Idle balance should increase by returned amount"
@@ -1899,17 +1864,14 @@ fn after_skim_balance_positive_returns_promise() {
 
     let mut c = new_test_contract(&vault_id);
 
-    // Positive balance -> Promise to ft_transfer
     let res = c.skim_01_read_balance(Ok(U128(123)), mk(10), mk(11));
     match res {
         PromiseOrValue::Promise(_) => { //NOTE: one day we will be able to read the promise
-             //definition :<
         }
         _ => panic!("Skim with positive balance must return a Promise"),
     }
 }
 
-/// Property: Exec-withdraw read failure assumes unchanged principal and does not credit idle
 #[rstest(
     before => [0u128, 1u128, 100u128],
     need => [0u128, 1u128, 50u128],
@@ -1944,7 +1906,6 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         escrow_shares: 0,
     });
 
-    // Stub a withdrawal
     c.pending_withdrawals.insert(
         0,
         PendingWithdrawal {
@@ -2064,12 +2025,10 @@ fn refund_path_consistency() {
         },
     );
     c.withdraw_route = vec![market.clone()];
-    // Seed escrowed shares into the vault's own account
     let owner = accounts(1);
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
-    // Withdrawing state with remaining=0 and collected=0 forces refund path
     let op_id = 77;
     let index = 0;
     c.op_state = OpState::Withdrawing(WithdrawingState {
@@ -2757,31 +2716,40 @@ fn cancel_in_flight_withdrawal_noop_when_not_withdrawing() {
     case(0u128, 0u128, 0u128, 0u128),
     case(100u128, 0u128, 0u128, 0u128),
     case(0u128, 50u128, 50u128, 0u128),
-    case(100u128, 50u128, 50u128, 50u128),
+    case(100u128, 50u128, 0u128, 50u128),
     case(100u128, 100u128, 0u128, 100u128),
     case(100u128, 150u128, 50u128, 100u128),
     case(u128::MAX, 1u128, 0u128, 1u128),
     case(1u128, u128::MAX, u128::MAX - 1u128, 1u128),
 )]
-fn idle_delta_cases(mut c: Contract, idle: u128, amount: u128, remaining: u128, collected: u128) {
-    // Arrange
+fn compute_idle_coverage_cases(
+    mut c: Contract,
+    idle: u128,
+    amount: u128,
+    remaining: u128,
+    collected: u128,
+) {
     c.idle_balance = idle;
     let idle_before = c.idle_balance;
 
-    // Act
-    let (rem, coll) = c.idle_delta(amount);
+    let cov = c.compute_idle_coverage(amount);
 
-    // Assert
-    assert_eq!(rem, remaining, "remaining should match expected");
-    assert_eq!(coll, collected, "collected should match expected");
     assert_eq!(
-        rem.saturating_add(coll),
+        cov.remaining_unmet, remaining,
+        "remaining should match expected"
+    );
+    assert_eq!(
+        cov.collected_from_idle, collected,
+        "collected should match expected"
+    );
+    assert_eq!(
+        cov.remaining_unmet.saturating_add(cov.collected_from_idle),
         amount,
         "invariant: remaining + collected == amount"
     );
     assert_eq!(
         c.idle_balance, idle_before,
-        "idle_delta must not mutate idle_balance"
+        "compute_idle_coverage must not mutate idle_balance"
     );
 }
 fn full_fee_100_percent() {
