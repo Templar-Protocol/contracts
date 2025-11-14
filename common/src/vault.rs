@@ -537,6 +537,50 @@ impl IdleBalanceDelta {
     }
 }
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum Reason {
+    NoRoom,
+    ZeroTarget,
+    Other(String),
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum QueueAction {
+    Dequeued,
+    Parked,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum QueueStatus {
+    NextFound,
+    Empty,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum AllocationPositionIssueKind {
+    Missing,
+    ReadFailed,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum WithdrawalAccountingKind {
+    InflowMismatch,
+    OverpayCredited,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum PositionReportOutcome {
+    Ok,
+    Missing,
+    ReadFailed,
+}
+
 #[near(event_json(standard = "templar-vault"))]
 pub enum Event {
     #[event_version("1.0.0")]
@@ -544,11 +588,11 @@ pub enum Event {
     #[event_version("1.0.0")]
     PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
     #[event_version("1.0.0")]
+    PerformanceFeeMintFailed { error: String },
+    #[event_version("1.0.0")]
     LockChange { is_locked: bool, market_index: u32 },
 
     // Allocation
-    #[event_version("1.0.0")]
-    AllocationRequestedQueue { op_id: U64, total: U128 },
     #[event_version("1.0.0")]
     AllocationPlanSet {
         op_id: U64,
@@ -558,7 +602,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     AllocationStarted { op_id: U64, remaining: U128 },
     #[event_version("1.0.0")]
-    AllocationStepPlanned {
+    AllocationStepPlan {
         op_id: U64,
         index: u32,
         market: AccountId,
@@ -567,14 +611,7 @@ pub enum Event {
         to_supply: U128,
         remaining_before: U128,
         planned: bool,
-    },
-    #[event_version("1.0.0")]
-    AllocationStepSkipped {
-        op_id: U64,
-        index: u32,
-        market: AccountId,
-        reason: String,
-        remaining: U128,
+        reason: Option<Reason>,
     },
     #[event_version("1.0.0")]
     AllocationTransferFailed {
@@ -602,7 +639,7 @@ pub enum Event {
         op_id: U64,
         index: u32,
         remaining: U128,
-        reason: Option<String>,
+        reason: Option<Reason>,
     },
 
     // Admin and configuration events
@@ -652,11 +689,9 @@ pub enum Event {
     SupplyCapSet { market: AccountId, new_cap: U128 },
 
     #[event_version("1.0.0")]
-    WithdrawDequeued { index: U64 },
+    WithdrawQueueUpdate { action: QueueAction, id: U64 },
     #[event_version("1.0.0")]
-    WithdrawalParked { id: U64 },
-    #[event_version("1.0.0")]
-    WithdrawExecutionRequired { op_id: U64, market_index: u32 },
+    WithdrawQueueStatus { status: QueueStatus, id: Option<U64> },
 
     // User flows
     #[event_version("1.0.0")]
@@ -673,23 +708,32 @@ pub enum Event {
         expected_assets: U128,
         requested_at: U64,
     },
+    #[event_version("1.0.0")]
+    WithdrawPreview { shares: U128, receiver: AccountId },
+    #[event_version("1.0.0")]
+    WithdrawProgress {
+        phase: String,
+        op_id: Option<U64>,
+        id: Option<U64>,
+        market_index: Option<u32>,
+        owner: Option<AccountId>,
+        receiver: Option<AccountId>,
+        escrow_shares: Option<U128>,
+        expected_assets: Option<U128>,
+        requested_at: Option<U64>,
+    },
+    #[event_version("1.0.0")]
+    SupplyWithdrawRequestCreated { market: AccountId, amount: U128 },
 
     // Allocation read/settlement diagnostics
     #[event_version("1.0.0")]
-    AllocationPositionMissing {
+    AllocationPositionIssue {
         op_id: U64,
         index: u32,
         market: AccountId,
         attempted: U128,
         accepted: U128,
-    },
-    #[event_version("1.0.0")]
-    AllocationPositionReadFailed {
-        op_id: U64,
-        index: u32,
-        market: AccountId,
-        attempted: U128,
-        accepted: U128,
+        kind: AllocationPositionIssueKind,
     },
 
     // Withdrawal read diagnostics
@@ -702,19 +746,14 @@ pub enum Event {
     },
 
     #[event_version("1.0.0")]
-    WithdrawalInflowMismatch {
+    WithdrawalAccounting {
+        kind: WithdrawalAccountingKind,
         op_id: U64,
         market: AccountId,
         index: u32,
-        delta: U128,
-        inflow: U128,
-    },
-    #[event_version("1.0.0")]
-    WithdrawalOverpayCredited {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        extra: U128,
+        delta: Option<U128>,
+        inflow: Option<U128>,
+        extra: Option<U128>,
     },
 
     // Payout and stop diagnostics
@@ -730,17 +769,17 @@ pub enum Event {
         index: u32,
         remaining: U128,
         collected: U128,
-        reason: Option<String>,
+        reason: Option<Reason>,
     },
     #[event_version("1.0.0")]
     PayoutStopped {
         op_id: U64,
         receiver: AccountId,
         amount: U128,
-        reason: Option<String>,
+        reason: Option<Reason>,
     },
     #[event_version("1.0.0")]
-    OperationStoppedWhileIdle { reason: Option<String> },
+    OperationStoppedWhileIdle { reason: Option<Reason> },
 
     // Skim and deposits
     #[event_version("1.0.0")]
@@ -750,25 +789,13 @@ pub enum Event {
     },
 
     #[event_version("1.0.0")]
-    ReportedPosition {
+    WithdrawPositionReport {
+        outcome: PositionReportOutcome,
         op_id: U64,
         market: AccountId,
         index: u32,
-        position: SupplyPosition,
-    },
-    #[event_version("1.0.0")]
-    PositionReadFailed {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        before: U128,
-    },
-    #[event_version("1.0.0")]
-    PositionMissing {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        before: U128,
+        position: Option<SupplyPosition>,
+        before: Option<U128>,
     },
 
     #[event_version("1.0.0")]

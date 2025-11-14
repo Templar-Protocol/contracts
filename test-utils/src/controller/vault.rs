@@ -303,7 +303,7 @@ impl UnifiedVaultController {
         e
     }
 
-    pub async fn execute_next_withdrawal(
+    pub async fn execute_withdrawal(
         &self,
         allocator: &Account,
         route: Vec<AccountId>,

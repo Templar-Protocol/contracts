@@ -14,7 +14,8 @@ use templar_common::{
     market::ext_market,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, AllocationPlan, EscrowSettlement, Event, IdleBalanceDelta, PayoutState,
+        AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
+        IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
         WithdrawingState, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_03_SETTLE_GAS,
         GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
     },
@@ -115,24 +116,26 @@ impl Contract {
                 &remaining_before.0,
             ),
             Ok(None) => {
-                Event::AllocationPositionMissing {
+                Event::AllocationPositionIssue {
                     op_id: op_id.into(),
                     index: market_index,
                     market: market.clone(),
                     attempted,
                     accepted,
+                    kind: AllocationPositionIssueKind::Missing,
                 }
                 .emit();
 
                 return self.stop_and_exit(Some(&Error::MissingSupplyPosition));
             }
             Err(_) => {
-                Event::AllocationPositionReadFailed {
+                Event::AllocationPositionIssue {
                     op_id: op_id.into(),
                     index: market_index,
                     market: market.clone(),
                     attempted,
                     accepted,
+                    kind: AllocationPositionIssueKind::ReadFailed,
                 }
                 .emit();
                 return self.stop_and_exit(Some(&Error::PositionReadFailed));
@@ -273,32 +276,38 @@ impl Contract {
 
         let reported_principal: u128 = match position {
             Ok(Some(position)) => {
-                Event::ReportedPosition {
+                Event::WithdrawPositionReport {
+                    outcome: PositionReportOutcome::Ok,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    position: position.clone(),
+                    position: Some(position.clone()),
+                    before: None,
                 }
                 .emit();
                 position.get_deposit().total().into()
             }
             Ok(None) => {
-                Event::PositionMissing {
+                Event::WithdrawPositionReport {
+                    outcome: PositionReportOutcome::Missing,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    before: principal,
+                    position: None,
+                    before: Some(principal),
                 }
                 .emit();
                 // Treat missing position as zero principal and continue to balance settlement
                 0
             }
             Err(_) => {
-                Event::PositionReadFailed {
+                Event::WithdrawPositionReport {
+                    outcome: PositionReportOutcome::ReadFailed,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    before: principal,
+                    position: None,
+                    before: Some(principal),
                 }
                 .emit();
 
@@ -350,21 +359,26 @@ impl Contract {
 
         match principal_delta.cmp(&inflow) {
             Ordering::Greater => {
-                Event::WithdrawalInflowMismatch {
+                Event::WithdrawalAccounting {
+                    kind: WithdrawalAccountingKind::InflowMismatch,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    delta: U128(principal_delta),
-                    inflow: U128(inflow),
+                    delta: Some(U128(principal_delta)),
+                    inflow: Some(U128(inflow)),
+                    extra: None,
                 }
                 .emit();
             }
             Ordering::Less => {
-                Event::WithdrawalOverpayCredited {
+                Event::WithdrawalAccounting {
+                    kind: WithdrawalAccountingKind::OverpayCredited,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    extra: U128(extra),
+                    delta: None,
+                    inflow: None,
+                    extra: Some(U128(extra)),
                 }
                 .emit();
             }
@@ -552,7 +566,7 @@ impl Contract {
                 op_id: s.op_id.into(),
                 index: s.index,
                 remaining: U128(s.remaining),
-                reason: Some(m.to_string()),
+                reason: Some(Reason::Other(m.to_string())),
             }
         })
         .emit();
@@ -574,7 +588,7 @@ impl Contract {
             index: s.index,
             remaining: U128(s.remaining),
             collected: U128(s.collected),
-            reason: msg.map(std::string::ToString::to_string),
+            reason: msg.map(|m| Reason::Other(m.to_string())),
         }
         .emit();
 
@@ -603,7 +617,7 @@ impl Contract {
             op_id: (s.op_id).into(),
             receiver: s.receiver.clone(),
             amount: U128(s.amount),
-            reason: msg.map(std::string::ToString::to_string),
+            reason: msg.map(|m| Reason::Other(m.to_string())),
         }
         .emit();
 
@@ -629,7 +643,7 @@ impl Contract {
             OpState::Payout(_) => self.stop_and_exit_payout(msg),
             OpState::Idle => {
                 Event::OperationStoppedWhileIdle {
-                    reason: msg.map(std::string::ToString::to_string),
+                    reason: msg.map(|m| Reason::Other(m.to_string())),
                 }
                 .emit();
             }

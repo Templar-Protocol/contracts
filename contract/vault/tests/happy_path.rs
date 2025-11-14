@@ -118,24 +118,33 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     harvest(&c, &vault).await;
 
-    let supply_position = c.get_supply_position(v).await.unwrap();
-
     assert_eq!(
-        u128::from(supply_position.get_deposit().active),
+        u128::from(c.get_supply_position(v).await.unwrap().get_deposit().active),
         amount.0,
         "Supply position should match amount of tokens supplied to contract",
     );
 
-    let user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
+    let balance_before_withdraw = c.borrow_asset.balance_of(supply_user.id()).await;
 
     vault.withdraw(&supply_user, amount, None).await;
-    // Ensure deposits are activated before we attempt to route and execute the withdrawal
+
     harvest(&c, &vault).await;
+
+    let mkt = c.market.contract().id();
+
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Withdraw(Delta::new(mkt.clone(), amount)),
+        )
+        .await;
+
     // Plan the withdraw route (single market) and execute it via allocator methods
-    let withdraw_route = vec![c.market.contract().id().clone()];
+    let withdraw_route = vec![mkt.clone()];
     vault
         .execute_withdrawal(&vault_curator, withdraw_route.clone())
         .await;
+
     let op_id = vault
         .vault
         .get_withdrawing_op_id()
@@ -147,7 +156,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         c.borrow_asset.balance_of(supply_user.id()).await,
-        amount.0 + user_balance,
+        amount.0 + balance_before_withdraw,
         "Supply user should have received their tokens back"
     );
 
