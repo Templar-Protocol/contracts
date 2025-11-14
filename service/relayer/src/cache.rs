@@ -148,7 +148,7 @@ async fn start(
                         let fresh = protocol_config.fetch(update_protocol_config, cache_config.gas_price_refresh).await;
                         #[allow(clippy::unwrap_used)]
                         if let Ok(config) = fresh {
-                            tracing::trace!(protocol_config = ?config, "Sending fresh protocol_config");
+                            tracing::trace!(protocol_config = ?config, "Sending fresh protocol config");
                             sender.send(config.clone()).unwrap();
                         } else if let Some(config) = protocol_config.stale() {
                             tracing::warn!("Failed to fetch protocol config, sending stale value.");
