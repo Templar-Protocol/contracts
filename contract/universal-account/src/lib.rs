@@ -69,7 +69,7 @@ impl Contract {
     }
 
     pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
-        let key = args.key();
+        let key = args.key_id();
         let Some(key_entry) = self.keys.get_mut(&key) else {
             env::panic_str("Key does not exist")
         };

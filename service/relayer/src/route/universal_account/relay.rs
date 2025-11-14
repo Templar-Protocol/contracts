@@ -6,11 +6,7 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId, NearToken,
 };
-use templar_universal_account::{
-    authentication::{ExecutionContextProvider, Key},
-    transaction::Action,
-    ExecuteArgs, KeyId,
-};
+use templar_universal_account::{transaction::Action, ExecuteArgs};
 
 use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 
@@ -47,20 +43,16 @@ pub async fn relay(
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
-    let ExecuteArgs::Passkey {
-        ref key,
-        ref message,
-    } = args;
 
     let parameters = match app
         .ua_near
-        .load_ua_key(account_id.clone(), KeyId::Passkey(key.clone()))
+        .load_ua_key(account_id.clone(), args.key_id())
         .await
     {
         Ok(parameters) => parameters,
         Err(e) => {
             // Account might not exist, but we also might have connection issues.
-            tracing::warn!("Failed to load execution parameters for key \"{}\" from universal account \"{account_id}\": {e}", &key.0);
+            tracing::warn!("Failed to load execution parameters for key \"{}\" from universal account \"{account_id}\": {e}", args.key_id());
             return SimpleResponse::Failure {
                 error: "Failed to load execution parameters from universal account".to_string(),
             };
@@ -70,31 +62,21 @@ pub async fn relay(
     let Some(parameters) = parameters else {
         tracing::info!(
             "Key \"{}\" does not exist on account \"{account_id}\"",
-            key.0
+            args.key_id(),
         );
         return SimpleResponse::Rejected {
             reason: "Key does not exist on account".to_string(),
         };
     };
 
-    let valid_signature = match key.verify_signature(message.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::info!("Signature verification failed: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Signature verification failed".to_string(),
-            };
-        }
-    };
-
-    let payload = match valid_signature.verify_execution(&account_id, &parameters.next(), |o| {
+    let payload = match args.clone().verify(&account_id, &parameters.next(), |o| {
         app.args.ua.is_origin_allowed(o)
     }) {
         Ok(p) => p,
         Err(e) => {
-            tracing::info!("Execution parameter verification failed: {e}");
+            tracing::info!("Verification failed: {e}");
             return SimpleResponse::Rejected {
-                reason: "Execution parameter verification failed".to_string(),
+                reason: format!("Verification failed: {e}"),
             };
         }
     };

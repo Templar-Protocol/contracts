@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use authentication::{
     ed25519_raw::Ed25519RawKey, passkey::Passkey, ExecutionContextProvider, ExecutionError,
     InvalidSignatureError, Key,
@@ -22,6 +24,15 @@ pub struct InitArgs {
 pub enum KeyId {
     Passkey(Passkey),
     Ed25519RawKey(Ed25519RawKey),
+}
+
+impl Display for KeyId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyId::Passkey(passkey) => write!(f, "passkey:{}", passkey.0),
+            KeyId::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,7 +81,7 @@ pub enum VerificationError {
 }
 
 impl ExecuteArgs {
-    pub fn key(&self) -> KeyId {
+    pub fn key_id(&self) -> KeyId {
         match self {
             ExecuteArgs::Passkey { key, .. } => KeyId::Passkey(key.clone()),
             ExecuteArgs::Ed25519Raw { key, .. } => KeyId::Ed25519RawKey(key.clone()),
