@@ -77,7 +77,7 @@ pub async fn relay(
         };
     };
 
-    let valid_signature = match key.verify(message.clone()) {
+    let valid_signature = match key.verify_signature(message.clone()) {
         Ok(p) => p,
         Err(e) => {
             tracing::info!("Signature verification failed: {e}");
@@ -87,7 +87,7 @@ pub async fn relay(
         }
     };
 
-    let payload = match valid_signature.verify(&account_id, &parameters.next(), |o| {
+    let payload = match valid_signature.verify_execution(&account_id, &parameters.next(), |o| {
         app.args.ua.is_origin_allowed(o)
     }) {
         Ok(p) => p,

@@ -1,10 +1,14 @@
-use authentication::passkey::Passkey;
-use near_sdk::{json_types::U64, near, serde::Serialize};
+use authentication::{
+    ed25519_raw::Ed25519RawKey, passkey::Passkey, ExecutionContextProvider, ExecutionError,
+    InvalidSignatureError, Key,
+};
+use near_sdk::{json_types::U64, near, AccountIdRef};
 
 pub mod authentication;
 pub mod encoding;
 mod event;
 pub use event::Event;
+use transaction::Transaction;
 pub mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -17,6 +21,7 @@ pub struct InitArgs {
 #[near(serializers = [borsh, json])]
 pub enum KeyId {
     Passkey(Passkey),
+    Ed25519Raw(Ed25519RawKey),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,16 +55,45 @@ pub enum ExecuteArgs {
         key: Passkey,
         message: authentication::passkey::Message<Box<[transaction::Transaction]>>,
     },
+    Ed25519Raw {
+        key: Ed25519RawKey,
+        message: authentication::ed25519_raw::Message<Box<[transaction::Transaction]>>,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationError {
+    #[error(transparent)]
+    Signature(#[from] InvalidSignatureError),
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
 }
 
 impl ExecuteArgs {
     pub fn key(&self) -> KeyId {
-        let Self::Passkey { ref key, .. } = self;
-        KeyId::Passkey(key.clone())
+        match self {
+            ExecuteArgs::Passkey { key, .. } => KeyId::Passkey(key.clone()),
+            ExecuteArgs::Ed25519Raw { key, .. } => KeyId::Ed25519Raw(key.clone()),
+        }
     }
 
-    pub fn message(&self) -> impl Serialize + '_ {
-        let Self::Passkey { ref message, .. } = self;
-        message
+    /// # Errors
+    ///
+    /// - If signature verification fails
+    /// - If execution parameters do not match
+    pub fn verify(
+        self,
+        executor_account_id: &AccountIdRef,
+        parameters: &ExecutionParameters,
+        allowed_origin: impl FnOnce(Option<&str>) -> bool,
+    ) -> Result<Box<[Transaction]>, VerificationError> {
+        Ok(match self {
+            ExecuteArgs::Passkey { key, message } => key
+                .verify_signature(message)?
+                .verify_execution(executor_account_id, parameters, allowed_origin)?,
+            ExecuteArgs::Ed25519Raw { key, message } => key
+                .verify_signature(message)?
+                .verify_execution(executor_account_id, parameters, allowed_origin)?,
+        })
     }
 }

@@ -7,16 +7,19 @@ version.workspace = true
 
 [dependencies]
 borsh.workspace = true
-thiserror.workspace = true
-near-sdk = { workspace = true, features = ["global-contracts"] }
-schemars.workspace = true
-p256.workspace = true
 hex.workspace = true
+near-sdk = { workspace = true, features = ["global-contracts"] }
+p256.workspace = true
+schemars.workspace = true
+solana-sdk.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
+rstest.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
 near-primitives.workspace = true
 
 [lints]

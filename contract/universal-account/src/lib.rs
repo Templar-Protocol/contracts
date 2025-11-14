@@ -6,10 +6,7 @@ use near_sdk::{
 };
 
 use templar_common::contract::list;
-use templar_universal_account::{
-    authentication::{ExecutionContextProvider, Key},
-    ExecuteArgs, ExecutionParameters, KeyId,
-};
+use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
@@ -72,23 +69,20 @@ impl Contract {
     }
 
     pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
-        let ExecuteArgs::Passkey { key, message } = args;
-        let Some(key_entry) = self.keys.get_mut(&KeyId::Passkey(key.clone())) else {
+        let key = args.key();
+        let Some(key_entry) = self.keys.get_mut(&key) else {
             env::panic_str("Key does not exist")
         };
         *key_entry = key_entry.next();
         templar_universal_account::Event::NonceExecution {
-            key: KeyId::Passkey(key.clone()),
+            key,
             nonce: key_entry.nonce,
         }
         .emit();
 
         let current_account_id = env::current_account_id();
 
-        let message = key
-            .verify(message)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-        let transactions = message
+        let transactions = args
             .verify(&current_account_id, key_entry, |_| true)
             .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 

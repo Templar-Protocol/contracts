@@ -4,17 +4,16 @@ use near_sdk::{env, near};
 use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 
+use super::with_raw_string::WithRawString;
 use super::{
     ExecutionContextProvider, ExecutionParameters, InvalidSignatureError, Key, MagicNumber,
 };
 
 use data::{AuthenticatorData, ClientDataJson};
 use signature::Signature;
-use with_raw_string::WithRawString;
 
 pub mod data;
 pub mod signature;
-pub mod with_raw_string;
 
 fn sig_base(
     authenticator_data: &AuthenticatorData,
@@ -34,9 +33,12 @@ pub struct Passkey(pub crate::encoding::p256::PublicKey);
 pub struct MessageWithValidSignature<T>(Message<T>);
 
 impl<T> Key<Message<T>> for Passkey {
-    type Validated = MessageWithValidSignature<T>;
+    type Verified = MessageWithValidSignature<T>;
 
-    fn verify(&self, message: Message<T>) -> Result<Self::Validated, InvalidSignatureError> {
+    fn verify_signature(
+        &self,
+        message: Message<T>,
+    ) -> Result<Self::Verified, InvalidSignatureError> {
         let payload_prehash = sig_base(&message.0.authenticator_data, &message.0.client_data_json);
         if VerifyingKey::from(*self.0)
             .verify(&payload_prehash, &*message.0.signature)
@@ -131,8 +133,8 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
         &self.0 .0.message.parsed.parameters
     }
 
-    fn payload_unchecked(&self) -> &Self::Payload {
-        &self.0 .0.message.parsed.payload
+    fn payload_unchecked(self) -> Self::Payload {
+        self.0 .0.message.parsed.payload
     }
 
     fn origin(&self) -> Option<&str> {

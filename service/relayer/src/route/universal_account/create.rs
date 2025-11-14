@@ -72,7 +72,7 @@ pub async fn create(
     let key = message.payload_unchecked().payload_unchecked().key.clone();
     tracing::Span::current().record("key", tracing::field::display(&key.0));
 
-    let verified_signature = match key.verify(message) {
+    let verified_signature = match key.verify_signature(message) {
         Ok(p) => p,
         Err(e) => {
             tracing::info!("Failed signature verification: {e}");
@@ -82,7 +82,7 @@ pub async fn create(
         }
     };
 
-    let pow_payload = match verified_signature.verify(
+    let pow_payload = match verified_signature.verify_execution(
         &app.args.ua.account_id,
         &ExecutionParameters::default(),
         |o| app.args.ua.is_origin_allowed(o),
