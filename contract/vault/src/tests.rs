@@ -2360,3 +2360,146 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
         "Owner balance unchanged"
     );
 }
+
+#[test]
+fn cancel_in_flight_withdrawal_refunds_and_dequeues() {
+    let vault_id = accounts(0);
+    let owner = accounts(1);
+    setup_env(&vault_id, &owner, vec![]);
+
+    let mut c = new_test_contract(&vault_id);
+
+    // Seed escrowed shares into the vault's own account
+    let escrow: u128 = 10;
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    // Enqueue a pending withdrawal at the head
+    let id_before = c.queue_tail();
+    let receiver = mk(9);
+    c.pending_withdrawals.insert(
+        id_before,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    // Simulate an in-flight withdrawing state
+    c.withdraw_route = vec![mk(1001)];
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 42,
+        index: 0,
+        remaining: 1,
+        receiver,
+        collected: 0,
+        owner: owner.clone(),
+        escrow_shares: escrow,
+    });
+
+    let supply_before = c.total_supply();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+    let len_before = c.pending_withdrawals.len();
+
+    let res = c.cancel_in_flight_withdrawal();
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from cancel_in_flight_withdrawal"),
+    }
+
+    // Escrow refunded, head advanced, state reset
+    assert!(matches!(c.op_state, OpState::Idle), "vault should return to Idle");
+    assert!(c.withdraw_route.is_empty(), "withdraw route must be cleared");
+    assert_eq!(c.total_supply(), supply_before, "no supply change");
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before.saturating_sub(escrow),
+        "vault should refund escrow to owner"
+    );
+    assert_eq!(
+        c.balance_of(&owner),
+        owner_before.saturating_add(escrow),
+        "owner should receive escrow refund"
+    );
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        len_before.saturating_sub(1),
+        "queue should dequeue the in-flight request"
+    );
+    assert_eq!(
+        c.next_withdraw_to_execute,
+        id_before.saturating_add(1),
+        "head should advance by one"
+    );
+}
+
+#[test]
+fn cancel_in_flight_withdrawal_noop_when_not_withdrawing() {
+    let vault_id = accounts(0);
+    let owner = accounts(1);
+    setup_env(&vault_id, &owner, vec![]);
+
+    let mut c = new_test_contract(&vault_id);
+    c.op_state = OpState::Idle;
+
+    // Capture baseline
+    let len_before = c.pending_withdrawals.len();
+    let head_before = c.next_withdraw_to_execute;
+    let supply_before = c.total_supply();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+
+    let res = c.cancel_in_flight_withdrawal();
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from cancel_in_flight_withdrawal"),
+    }
+
+    // No changes expected when not Withdrawing
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.pending_withdrawals.len(), len_before);
+    assert_eq!(c.next_withdraw_to_execute, head_before);
+    assert_eq!(c.total_supply(), supply_before);
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before
+    );
+    assert_eq!(c.balance_of(&owner), owner_before);
+}
+
+#[rstest(
+    idle, amount, remaining, collected,
+    case(0u128, 0u128, 0u128, 0u128),
+    case(100u128, 0u128, 0u128, 0u128),
+    case(0u128, 50u128, 50u128, 0u128),
+    case(100u128, 50u128, 50u128, 50u128),
+    case(100u128, 100u128, 0u128, 100u128),
+    case(100u128, 150u128, 50u128, 100u128),
+    case(u128::MAX, 1u128, 0u128, 1u128),
+    case(1u128, u128::MAX, u128::MAX - 1u128, 1u128),
+)]
+fn idle_delta_cases(mut c: Contract, idle: u128, amount: u128, remaining: u128, collected: u128) {
+    // Arrange
+    c.idle_balance = idle;
+    let idle_before = c.idle_balance;
+
+    // Act
+    let (rem, coll) = c.idle_delta(amount);
+
+    // Assert
+    assert_eq!(rem, remaining, "remaining should match expected");
+    assert_eq!(coll, collected, "collected should match expected");
+    assert_eq!(
+        rem.saturating_add(coll),
+        amount,
+        "invariant: remaining + collected == amount"
+    );
+    assert_eq!(
+        c.idle_balance, idle_before,
+        "idle_delta must not mutate idle_balance"
+    );
+}
