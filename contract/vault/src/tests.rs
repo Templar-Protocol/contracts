@@ -44,19 +44,19 @@ use templar_common::vault::{
 use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[fixture]
-fn vault_id_fixture() -> AccountId {
+fn vault_id() -> AccountId {
     accounts(0)
 }
 
 #[fixture]
-fn c_vault_env(vault_id_fixture: AccountId) -> Contract {
-    setup_env(&vault_id_fixture, &vault_id_fixture, vec![]);
-    new_test_contract(&vault_id_fixture)
+fn c_vault_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
+    setup_env(&vault_id, &vault_id, vec![]);
+    new_test_contract(&vault_id)
 }
 
 #[fixture]
-fn c_owner_env(vault_id_fixture: AccountId) -> Contract {
-    let c = new_test_contract(&vault_id_fixture);
+fn c_owner_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
+    let c = new_test_contract(&vault_id);
     let owner = c
         .own_get_owner()
         .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
@@ -65,10 +65,10 @@ fn c_owner_env(vault_id_fixture: AccountId) -> Contract {
 }
 
 #[fixture]
-fn c_asset_env(vault_id_fixture: AccountId) -> Contract {
-    let c = new_test_contract(&vault_id_fixture);
+fn c_asset_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
+    let c = new_test_contract(&vault_id);
     let asset: AccountId = c.underlying_asset.contract_id().into();
-    setup_env(&vault_id_fixture, &asset, vec![]);
+    setup_env(&vault_id, &asset, vec![]);
     c
 }
 
@@ -83,15 +83,33 @@ fn enabled_market_100() -> (AccountId, MarketConfiguration) {
     (m, cfg)
 }
 
-#[fixture]
-fn vault_id() -> AccountId {
-    accounts(0)
-}
+type MarketFixture = (AccountId, u128, bool, u128, bool);
 
 #[fixture]
-fn c(vault_id: AccountId) -> Contract {
+fn c(vault_id: AccountId, #[default(Vec::new())] markets: Vec<MarketFixture>) -> Contract {
     setup_env(&vault_id, &vault_id, vec![]);
-    new_test_contract(&vault_id)
+    let mut c = new_test_contract(&vault_id);
+
+    println!("Markets to do {:?}", markets);
+    for (market_id, cap, enabled, principal, in_supply_queue) in markets {
+        c.markets.insert(
+            market_id.clone(),
+            MarketRecord {
+                cfg: MarketConfiguration {
+                    cap: U128(cap),
+                    enabled,
+                    removable_at: 0,
+                },
+                pending_cap: None,
+                principal,
+            },
+        );
+        if in_supply_queue {
+            c.supply_queue.insert(market_id.clone());
+        }
+    }
+
+    c
 }
 
 #[fixture]
@@ -300,20 +318,9 @@ fn execute_supply_wrong_token_refunds_full(c_vault_env: Contract) {
 }
 
 #[rstest]
-fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
-    let mut c = c_vault_env;
-
-    // Configure a single market with cap = 80 in the supply queue
-    let m1 = mk(2000);
-    let cfg = MarketConfiguration {
-        cap: U128(80),
-        enabled: true,
-        removable_at: 0,
-    };
-    c.markets
-        .insert(m1.clone(), MarketRecord { cfg, principal: 0 });
-    c.supply_queue.insert(m1.clone());
-
+fn start_allocation_reserves_only_amount(
+    #[with(vault_id(), vec![(mk(2000), 80, true, 0, true)])] mut c: Contract,
+) {
     // Idle = 100, so max_room (80) should clamp allocation
     c.idle_balance = 100;
     assert_eq!(c.get_max_deposit().0, 80, "sanity: max room must be 80");
@@ -321,6 +328,7 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
     // Reserve only the amount to allocate (intended behavior)
     let total = c.get_max_deposit().0.min(c.idle_balance);
     owner_call_env(env::current_account_id(), &owner());
+    let m1 = mk(2000);
     c.reallocate(AllocationDelta::Supply(Delta::new(m1.clone(), total)));
 
     if let Some(rec) = c.markets.get_mut(&m1) {
@@ -1778,17 +1786,12 @@ fn after_supply_1_check_allocating() {
 }
 
 #[rstest]
-fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
-    let market = mk(8);
+fn after_exec_withdraw_read_none_to_payout(
+    #[with(vault_id(), vec![(mk(8), 0, true, 100, false)])] mut c: Contract,
+) {
+    let (market, _record) = c.markets.clone().into_iter().next().unwrap();
+    let principal = 100u128;
     c.withdraw_route = vec![market.clone()];
-    let principal = 100;
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal,
-        },
-    );
 
     let op_id = 42;
     let index = 0;
@@ -1823,7 +1826,7 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
     }
 
     assert_eq!(
-        c.markets.get(&market).map_or(u128::MAX, |r| r.principal),
+        c.markets.get(&market).map(|r| r.principal).unwrap(),
         0,
         "Market principal should be updated to 0"
     );
@@ -2009,21 +2012,11 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     }
 }
 
-#[test]
-fn refund_path_consistency() {
+#[rstest]
+fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])] mut c: Contract) {
     use near_sdk_contract_tools::ft::Nep141Controller as _;
 
-    let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-    let mut c = new_test_contract(&vault_id);
     let market = mk(8);
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: 10,
-        },
-    );
     c.withdraw_route = vec![market.clone()];
     let owner = accounts(1);
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
@@ -2236,19 +2229,12 @@ fn after_supply_2_read_read_failed_stops() {
 
 #[rstest]
 fn after_create_withdraw_req_success_returns_promise(
-    mut c: Contract,
+    #[with(vault_id(), vec![(mk(50), 0, true, 100, false)])] mut c: Contract,
     receiver: AccountId,
     owner: AccountId,
 ) {
     let market = mk(50);
     c.withdraw_route = vec![market.clone()];
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: 100,
-        },
-    );
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 21,
@@ -2270,16 +2256,11 @@ fn after_create_withdraw_req_success_returns_promise(
 }
 
 #[rstest]
-fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
+fn after_exec_withdraw_req_returns_promise(
+    #[with(vault_id(), vec![(mk(60), 0, true, 10, false)])] mut c: Contract,
+) {
     let market = mk(60);
     c.withdraw_route = vec![market.clone()];
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: 10,
-        },
-    );
 
     let op_id = 33;
     c.op_state = OpState::Withdrawing(WithdrawingState {
@@ -2305,19 +2286,15 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
 
 #[rstest]
 fn after_exec_withdraw_read_instant_payout_when_remaining_0(
+    #[with(vault_id(), vec![(mk(70), 0, true, 10, false), (mk(71), 0, true, 0, false)])]
     mut c: Contract,
     owner: AccountId,
     receiver: AccountId,
 ) {
     let m1 = mk(70);
-    let record = MarketRecord {
-        cfg: MarketConfiguration::default(),
-        principal: 10,
-    };
-    c.markets.insert(m1.clone(), record.clone());
-
     let m2 = mk(71);
     c.withdraw_route = vec![m1.clone(), m2.clone()];
+    let record_principal = 10u128;
 
     let op_id = 0;
     let index = 0;
@@ -2349,11 +2326,11 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     // before = 0
     // after = 10
     // We now queue up for execution
-    let res2 = c.execute_withdraw_03_settle(
-        Ok(U128(record.principal)), // after_balance
+    c.execute_withdraw_03_settle(
+        Ok(U128(record_principal)), // after_balance
         op_id,
         index,
-        U128(record.principal), // before_principal
+        U128(record_principal), // before_principal
         U128(0),
         U128(before_balance),
     );
@@ -2368,7 +2345,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
             burn_shares,
         }) => {
             assert_eq!(*op_id, 0);
-            assert_eq!(*amount, before_balance + record.principal);
+            assert_eq!(*amount, before_balance + record_principal);
             assert_eq!(*escrow_shares, 0);
             assert_eq!(*burn_shares, 0);
             assert_eq!(*r, receiver);
@@ -2997,23 +2974,15 @@ fn execute_withdrawal_empty_queue_noop() {
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
 }
 
-#[test]
-fn execute_withdrawal_skips_dust_and_starts_withdraw() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
+#[rstest]
+fn execute_withdrawal_skips_dust_and_starts_withdraw(
+    #[with(vault_id(), vec![(mk(1234), 0, true, 50, false)])] mut c: Contract,
+) {
     let owner_id = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner_id, vec![]);
+    setup_env(&near_sdk::env::current_account_id(), &owner_id, vec![]);
 
     // Prepare a withdraw market so a non-empty route makes sense
     let m1 = mk(1234);
-    c.markets.insert(
-        m1.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            pending_cap: None,
-            principal: 50,
-        },
-    );
 
     // Enqueue a dust head (expected_assets = 0)
     let head_before = c.queue_tail();

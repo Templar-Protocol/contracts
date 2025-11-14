@@ -419,7 +419,7 @@ impl Delta {
         }
     }
     pub fn validate(&self) {
-        require!(self.amount.0 > 0, "Delta amount must be greater than zero")
+        require!(self.amount.0 > 0, "Delta amount must be greater than zero");
     }
 }
 
@@ -435,8 +435,7 @@ pub enum AllocationDelta {
 impl AsRef<Delta> for AllocationDelta {
     fn as_ref(&self) -> &Delta {
         match self {
-            AllocationDelta::Supply(d) => d,
-            AllocationDelta::Withdraw(d) => d,
+            AllocationDelta::Supply(d) | AllocationDelta::Withdraw(d) => d,
         }
     }
 }
@@ -803,18 +802,13 @@ pub enum Event {
     VaultBalance { amount: U128 },
 }
 
+#[derive(Default)]
 #[near(serializers = [borsh, serde])]
 pub struct Locker {
     to_lock: Vec<u32>,
 }
 
 impl Locker {
-    pub fn new() -> Self {
-        Locker {
-            to_lock: Vec::new(),
-        }
-    }
-
     pub fn lock(&mut self, i: u32) {
         if self.is_locked(i) {
             env::panic_str("Market is locked for index");
