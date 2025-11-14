@@ -36,11 +36,14 @@ use templar_relayer::{
     },
 };
 use templar_universal_account::{
-    authentication::passkey::{
-        self,
-        data::{AuthenticatorData, ClientDataJson},
+    authentication::{
+        passkey::{
+            self,
+            data::{AuthenticatorData, ClientDataJson},
+            Passkey,
+        },
         with_raw_string::WithRawString,
-        Passkey, Payload,
+        HashForSigning, Payload,
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
@@ -65,25 +68,25 @@ fn create_message<T: near_sdk::serde::Serialize>(
     parameters: ExecutionParameters,
     payload: T,
 ) -> passkey::MessageWithSignature<T> {
-    let payload = WithRawString::from_parsed(Payload {
+    let payload = passkey::Message(WithRawString::from_parsed(Payload {
         parameters,
         account_id,
         payload,
-    });
+    }));
 
-    let challenge = payload.hash().into();
+    let challenge = payload.hash_for_signing().into();
 
     passkey::MessageWithSignatureWithUncheckedHashes::new_and_sign(
         secret_key,
         payload,
         AuthenticatorData(Box::new([0xffu8; 32])),
-        WithRawString::from_parsed(ClientDataJson {
+        ClientDataJson {
             r#type: "type".to_string(),
             challenge,
             origin: "origin".to_string(),
             cross_origin: None,
             top_origin: None,
-        }),
+        },
     )
     .try_into()
     .unwrap()
