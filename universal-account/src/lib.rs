@@ -64,11 +64,13 @@ impl ExecutionParameters {
 pub enum ExecuteArgs {
     Passkey {
         key: Passkey,
-        message: authentication::passkey::MessageWithSignature<Box<[transaction::Transaction]>>,
+        message:
+            Box<authentication::passkey::MessageWithSignature<Box<[transaction::Transaction]>>>,
     },
     Ed25519Raw {
         key: Ed25519RawKey,
-        message: authentication::ed25519_raw::MessageWithSignature<Box<[transaction::Transaction]>>,
+        message:
+            Box<authentication::ed25519_raw::MessageWithSignature<Box<[transaction::Transaction]>>>,
     },
 }
 
@@ -100,10 +102,10 @@ impl ExecuteArgs {
     ) -> Result<Box<[Transaction]>, VerificationError> {
         Ok(match self {
             ExecuteArgs::Passkey { key, message } => key
-                .verify_signature(message)?
+                .verify_signature(*message)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
             ExecuteArgs::Ed25519Raw { key, message } => key
-                .verify_signature(message)?
+                .verify_signature(*message)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
         })
     }
