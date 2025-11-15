@@ -121,6 +121,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn borsh_serialization() {
+        let keypair = Keypair::new();
+        let signature = super::Signature::from(keypair.sign_message(b"borsh serialization"));
+        let signature_2 = super::Signature::from(keypair.sign_message(b"borsh serialization 2"));
+
+        assert_ne!(signature, signature_2);
+
+        let borsh_ser = borsh::to_vec(&signature).unwrap();
+        let borsh_ser_2 = borsh::to_vec(&signature_2).unwrap();
+
+        assert_ne!(borsh_ser, borsh_ser_2);
+
+        let parsed: super::Signature = borsh::from_slice(&borsh_ser).unwrap();
+        let parsed_2: super::Signature = borsh::from_slice(&borsh_ser_2).unwrap();
+
+        assert_ne!(parsed, parsed_2);
+
+        assert_eq!(signature, parsed);
+        assert_eq!(signature_2, parsed_2);
+    }
+
+    #[test]
     fn json_serialization() {
         let keypair = Keypair::new();
         let signature = super::Signature::from(keypair.sign_message(b"json serialization"));

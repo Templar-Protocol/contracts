@@ -102,28 +102,79 @@ impl Serialize for PublicKey {
     }
 }
 
-// impl BorshSchema for PublicKey {
-//     fn add_definitions_recursively(
-//         definitions: &mut BTreeMap<borsh::schema::Declaration, borsh::schema::Definition>,
-//     ) {
-//         <ByteEncoding as BorshSchema>::add_definitions_recursively(definitions);
-//     }
+#[cfg(test)]
+mod tests {
+    use near_sdk::serde_json;
+    use solana_sdk::signer::{keypair::Keypair, Signer};
 
-//     fn declaration() -> borsh::schema::Declaration {
-//         String::from("PublicKey")
-//     }
-// }
+    use super::*;
 
-// impl BorshSerialize for PublicKey {
-//     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-//         BorshSerialize::serialize(&self.0, writer)
-//     }
-// }
+    #[test]
+    fn borsh_serialization() {
+        let keypair = Keypair::new();
+        let keypair_2 = Keypair::new();
+        let pubkey = super::PublicKey(keypair.pubkey().to_bytes());
+        let pubkey_2 = super::PublicKey(keypair_2.pubkey().to_bytes());
 
-// impl BorshDeserialize for PublicKey {
-//     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-//         Ok(Self(
-//             <ByteEncoding as BorshDeserialize>::deserialize_reader(reader)?,
-//         ))
-//     }
-// }
+        assert_ne!(pubkey, pubkey_2);
+
+        let borsh_ser = borsh::to_vec(&pubkey).unwrap();
+        let borsh_ser_2 = borsh::to_vec(&pubkey_2).unwrap();
+
+        assert_ne!(borsh_ser, borsh_ser_2);
+
+        let parsed: super::PublicKey = borsh::from_slice(&borsh_ser).unwrap();
+        let parsed_2: super::PublicKey = borsh::from_slice(&borsh_ser_2).unwrap();
+
+        assert_ne!(parsed, parsed_2);
+
+        assert_eq!(pubkey, parsed);
+        assert_eq!(pubkey_2, parsed_2);
+    }
+
+    #[test]
+    fn json_serialization() {
+        let keypair = Keypair::new();
+        let keypair_2 = Keypair::new();
+        let pubkey = super::PublicKey(keypair.pubkey().to_bytes());
+        let pubkey_2 = super::PublicKey(keypair_2.pubkey().to_bytes());
+
+        assert_ne!(pubkey, pubkey_2);
+
+        let json_ser = serde_json::to_string(&pubkey).unwrap();
+        let json_ser_2 = serde_json::to_string(&pubkey_2).unwrap();
+
+        assert_ne!(json_ser, json_ser_2);
+
+        let parsed: super::PublicKey = serde_json::from_str(&json_ser).unwrap();
+        let parsed_2: super::PublicKey = serde_json::from_str(&json_ser_2).unwrap();
+
+        assert_ne!(parsed, parsed_2);
+
+        assert_eq!(pubkey, parsed);
+        assert_eq!(pubkey_2, parsed_2);
+    }
+
+    #[test]
+    fn to_from_string() {
+        let keypair = Keypair::new();
+        let pubkey = super::PublicKey(keypair.pubkey().to_bytes());
+        let pk_str = pubkey.to_string();
+
+        let Some(b) = pk_str.strip_prefix("ed25519:") else {
+            panic!("Missing prefix");
+        };
+
+        let b = bs58::decode(b).into_vec().unwrap();
+        assert_eq!(b.len(), 32, "Incorrect length");
+
+        let parsed = super::PublicKey::from_str(&pk_str).unwrap();
+
+        assert_eq!(parsed, pubkey);
+
+        let keypair_2 = Keypair::new();
+        let pk_str_2 = super::PublicKey(keypair_2.pubkey().to_bytes()).to_string();
+
+        assert_ne!(pk_str, pk_str_2);
+    }
+}
