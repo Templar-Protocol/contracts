@@ -35,6 +35,18 @@ impl Display for KeyId {
     }
 }
 
+impl From<Passkey> for KeyId {
+    fn from(value: Passkey) -> Self {
+        Self::Passkey(value)
+    }
+}
+
+impl From<Ed25519RawKey> for KeyId {
+    fn from(value: Ed25519RawKey) -> Self {
+        Self::Ed25519RawKey(value)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 #[serde(deny_unknown_fields)]
@@ -108,5 +120,41 @@ impl ExecuteArgs {
                 .verify_signature(*message)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::bs58;
+    use p256::elliptic_curve::rand_core::OsRng;
+    use solana_sdk::{signature::Keypair, signer::Signer};
+
+    use super::*;
+
+    #[test]
+    fn keyid_serialization() {
+        let sk_p256 = p256::SecretKey::random(&mut OsRng);
+        let passkey = Passkey(sk_p256.public_key().into());
+        let passkey_id: KeyId = passkey.into();
+        let passkey_id_str = passkey_id.to_string();
+
+        let Some(b) = passkey_id_str.strip_prefix("passkey:p256:") else {
+            panic!("invalid prefix");
+        };
+
+        let b = bs58::decode(b).into_vec().unwrap();
+        assert_eq!(b.len(), 65);
+
+        let sk_ed25519 = Keypair::new();
+        let ed25519_raw = Ed25519RawKey(sk_ed25519.pubkey().to_bytes().into());
+        let ed25519_raw_id: KeyId = ed25519_raw.into();
+        let ed25519_raw_id_str = ed25519_raw_id.to_string();
+
+        let Some(b) = ed25519_raw_id_str.strip_prefix("ed25519:") else {
+            panic!("invalid prefix");
+        };
+
+        let b = bs58::decode(b).into_vec().unwrap();
+        assert_eq!(b.len(), 32);
     }
 }
