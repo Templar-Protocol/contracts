@@ -112,3 +112,57 @@ impl Serialize for Signature {
         <String as Serialize>::serialize(&self.to_string(), serializer)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::serde_json;
+    use solana_sdk::signer::{keypair::Keypair, Signer};
+
+    use super::*;
+
+    #[test]
+    fn json_serialization() {
+        let keypair = Keypair::new();
+        let signature = super::Signature::from(keypair.sign_message(b"json serialization"));
+        let signature_2 = super::Signature::from(keypair.sign_message(b"json serialization 2"));
+
+        assert_ne!(signature, signature_2);
+
+        let json_ser = serde_json::to_string(&signature).unwrap();
+        let json_ser_2 = serde_json::to_string(&signature_2).unwrap();
+
+        assert_ne!(json_ser, json_ser_2);
+
+        let parsed: super::Signature = serde_json::from_str(&json_ser).unwrap();
+        let parsed_2: super::Signature = serde_json::from_str(&json_ser_2).unwrap();
+
+        assert_ne!(parsed, parsed_2);
+
+        assert_eq!(signature, parsed);
+        assert_eq!(signature_2, parsed_2);
+    }
+
+    #[test]
+    fn to_from_string() {
+        let keypair = Keypair::new();
+        let signature =
+            super::Signature::from(keypair.sign_message(b"test ToString/FromStr implementation"));
+        let sig_str = signature.to_string();
+
+        let Some(b) = sig_str.strip_prefix("ed25519:") else {
+            panic!("Missing prefix");
+        };
+
+        let b = bs58::decode(b).into_vec().unwrap();
+        assert_eq!(b.len(), 64, "Incorrect length");
+
+        let parsed = super::Signature::from_str(&sig_str).unwrap();
+
+        assert_eq!(parsed, signature);
+
+        let sig_str_2 =
+            super::Signature::from(keypair.sign_message(b"A different message")).to_string();
+
+        assert_ne!(sig_str, sig_str_2);
+    }
+}
