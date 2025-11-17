@@ -14,7 +14,7 @@ use templar_universal_account::{
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
-            MessageWithSignatureWithUncheckedHashes, Passkey,
+            Passkey,
         },
         with_raw_string::WithRawString,
         HashForSigning, Payload,
@@ -69,10 +69,9 @@ impl Sk {
                 let payload = passkey::Message(payload);
                 let challenge = payload.hash_for_signing();
 
-                let message: passkey::MessageWithSignature<_> =
-                    MessageWithSignatureWithUncheckedHashes::new_and_sign(
+                let message: passkey::MessageWithSignature<_> = payload
+                    .sign(
                         secret_key,
-                        payload,
                         AuthenticatorData(Box::new([0xff_u8; 32])),
                         ClientDataJson {
                             r#type: "type".to_string(),
@@ -87,7 +86,7 @@ impl Sk {
 
                 ExecuteArgs::Passkey {
                     key: Passkey(secret_key.public_key().into()),
-                    message,
+                    message: Box::new(message),
                 }
             }
             Sk::Ed25519Raw(signing_key) => {
@@ -100,7 +99,7 @@ impl Sk {
 
                 ExecuteArgs::Ed25519Raw {
                     key: Ed25519RawKey(signing_key.verifying_key().to_bytes().into()),
-                    message,
+                    message: Box::new(message),
                 }
             }
         }
