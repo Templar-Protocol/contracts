@@ -5936,6 +5936,7 @@ dependencies = [
  "p256",
  "rstest",
  "sha2",
+ "solana-sdk",
  "sqlx",
  "templar-common",
  "templar-universal-account",

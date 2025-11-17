@@ -33,7 +33,7 @@ pub enum ExecutionError {
     OriginUnknown,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
 #[serde(deny_unknown_fields)]
 pub struct Payload<T> {

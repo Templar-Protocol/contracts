@@ -4,7 +4,7 @@ use near_sdk::{
 };
 use sha2::{Digest, Sha256};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Pow<T> {
     pow_nonce: U64,

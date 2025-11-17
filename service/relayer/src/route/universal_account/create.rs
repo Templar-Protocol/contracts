@@ -40,7 +40,7 @@ impl PowTarget for CreatePasskeyAccount {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(crate = "near_sdk::serde")]
 pub struct CreateUniversalAccount {
     pub key: KeyId,
@@ -319,4 +319,133 @@ pub async fn create(
         account_id,
         transaction_hash,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::serde_json;
+    use p256::elliptic_curve::rand_core::OsRng;
+    use solana_sdk::{signature::Keypair, signer::Signer};
+    use templar_universal_account::authentication::{
+        ed25519_raw::{self, Ed25519RawKey},
+        HashForSigning, Payload,
+    };
+
+    use super::*;
+
+    #[test]
+    fn encoding_ed25519_raw() {
+        let keypair = Keypair::new();
+        let pubkey = Ed25519RawKey(keypair.pubkey().to_bytes().into());
+
+        let message = {
+            let m = ed25519_raw::Message::from_parsed(Payload {
+                parameters: ExecutionParameters::default(),
+                account_id: "my-universal-account.near".parse().unwrap(),
+                payload: Pow::mine(
+                    CreateUniversalAccount {
+                        key: pubkey.clone().into(),
+                        block_hash: CryptoHash([0u8; 32]),
+                    },
+                    2,
+                    10_000,
+                )
+                .unwrap(),
+            });
+            let h = m.preimage_for_signing();
+            let signature = keypair.sign_message(&h);
+            Box::new(m.with_signature(signature.into()))
+        };
+
+        let cr = CreateRequest::ExecuteArgs(ExecuteArgs::Ed25519Raw {
+            key: pubkey.clone(),
+            message: message.clone(),
+        });
+
+        eprintln!("{cr:?}");
+        eprintln!("{}", near_sdk::serde_json::to_string_pretty(&cr).unwrap());
+
+        let parsed: CreateRequest =
+            serde_json::from_str(&serde_json::to_string(&cr).unwrap()).unwrap();
+
+        assert_eq!(parsed.key_id_to_add().unwrap(), cr.key_id_to_add().unwrap());
+
+        let original_message = message;
+
+        let CreateRequest::ExecuteArgs(ExecuteArgs::Ed25519Raw { key, message }) = parsed else {
+            panic!("invalid parse");
+        };
+
+        assert_eq!(key, pubkey);
+        assert_eq!(message, original_message);
+    }
+
+    #[test]
+    fn encoding_passkey() {
+        let keypair = p256::SecretKey::random(&mut OsRng);
+        let pubkey = Passkey(keypair.public_key().into());
+
+        let cr = CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
+            key: pubkey.clone(),
+            message: {
+                let m = passkey::Message::from_parsed(Payload {
+                    parameters: ExecutionParameters::default(),
+                    account_id: "my-universal-account.near".parse().unwrap(),
+                    payload: Pow::mine(
+                        CreateUniversalAccount {
+                            key: pubkey.into(),
+                            block_hash: CryptoHash([0u8; 32]),
+                        },
+                        2,
+                        10_000,
+                    )
+                    .unwrap(),
+                });
+                let challenge = m.hash_for_signing().into();
+                Box::new(
+                    m.sign(
+                        &keypair,
+                        passkey::data::AuthenticatorData([1u8; 32].into()),
+                        passkey::data::ClientDataJson {
+                            r#type: "type".to_string(),
+                            challenge,
+                            origin: "origin".to_string(),
+                            cross_origin: None,
+                            top_origin: None,
+                        },
+                    )
+                    .try_into()
+                    .unwrap(),
+                )
+            },
+        });
+
+        eprintln!("{cr:?}");
+        eprintln!("{}", near_sdk::serde_json::to_string_pretty(&cr).unwrap());
+
+        let inverse: CreateRequest =
+            near_sdk::serde_json::from_str(&near_sdk::serde_json::to_string(&cr).unwrap()).unwrap();
+
+        assert!(
+            matches!(
+                inverse,
+                CreateRequest::ExecuteArgs(ExecuteArgs::Passkey { .. }),
+            ),
+            "should parse to new format"
+        );
+    }
+
+    #[test]
+    fn can_still_parse_old_passkey_format() {
+        let old = r#"{
+              "Passkey": {
+                "authenticator_data": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "message": "{\"parameters\":{\"block_height\":\"0\",\"index\":\"0\",\"nonce\":\"0\"},\"account_id\":\"ua_deployer7175948-34077552565862.test.near\",\"payload\":{\"pow_nonce\":\"83\",\"key\":\"p256:NWo1ZFBV1ZWhyfVkHRmZwbBC5pYmUEpEZ1SqtCzA6CrSnHszYwcS5MnaGZWTkqf1scFzhikZvbZhkxxFEjwDC4sd\",\"block_hash\":\"9fu4SxXiTpHH2VsmB2ZKejjtkyrUMY8BMjpS18JsCEfv\"}}",
+                "client_data_json": "{\"type\":\"type\",\"challenge\":\"F8e2D6LXKwKC-ua1MjvU_9w814_paOUMbsL7Le9D7Ng\",\"origin\":\"origin\",\"crossOrigin\":null,\"topOrigin\":null}",
+                "signature": "MEUCIEmV-RNxjVd7c0kcG-xpIJV7euA5H5sagy3FEcUdxr_8AiEAiHPX_w-DtL-wtHfKnRdW1_JcuyVLK-6ZDliOdtRHWy4"
+              }
+            }"#;
+
+        let _: CreateRequest = serde_json::from_str(old).unwrap();
+    }
 }

@@ -10,7 +10,7 @@ use near_sdk::{
     serde_json,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [])]
 pub struct WithRawString<T> {
     pub raw: String,

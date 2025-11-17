@@ -16,7 +16,7 @@ impl std::fmt::Display for Ed25519RawKey {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
 #[serde(bound = "T: DeserializeOwned")]
 pub struct Message<T>(pub WithRawString<Payload<T>>);
@@ -51,7 +51,7 @@ impl<T> HashForSigning for Message<T> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
 #[serde(bound = "T: DeserializeOwned")]
 pub struct MessageWithSignature<T> {

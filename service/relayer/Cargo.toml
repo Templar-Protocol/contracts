@@ -39,6 +39,7 @@ tracing = { workspace = true, features = ["attributes"] }
 near-workspaces = { workspace = true, features = ["experimental"] }
 p256.workspace = true
 rstest.workspace = true
+solana-sdk.workspace = true
 test-utils.workspace = true
 
 [lints]
