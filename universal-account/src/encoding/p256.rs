@@ -54,6 +54,13 @@ impl FromStr for PublicKey {
         let key_bytes = bs58::decode(key_bs58)
             .into_vec()
             .map_err(|e| ParseError::InvalidEncoding(e.into()))?;
+        let actual = key_bytes.len();
+        if actual != KEY_LENGTH {
+            return Err(ParseError::InvalidLength {
+                expected: KEY_LENGTH,
+                actual,
+            });
+        }
         let key = p256::PublicKey::from_sec1_bytes(&key_bytes)
             .map_err(|e| ParseError::InvalidEncoding(e.into()))?;
 
@@ -198,5 +205,26 @@ mod tests {
         let pk_str_2 = super::PublicKey::from(key_2.public_key()).to_string();
 
         assert_ne!(pk_str, pk_str_2);
+    }
+
+    #[test]
+    #[should_panic = r#"MissingPrefix("p256:")"#]
+    fn from_string_err_prefix() {
+        let s = "ed25519:5dZgMshSoMVwebufwFJm8pWyNqrY8VxMCsgFrKfe3KRc";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "InvalidEncoding(InvalidCharacter { character: '*', index: 0 })"]
+    fn from_string_err_bs58() {
+        let s = "p256:*5dZgMshSoMVwebufwFJm8pWyNqrY8VxMCsgFrKfe3KRc";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "InvalidLength { expected: 65, actual: 32 }"]
+    fn from_string_err_length() {
+        let s = "p256:5dZgMshSoMVwebufwFJm8pWyNqrY8VxMCsgFrKfe3KRc";
+        super::PublicKey::from_str(s).unwrap();
     }
 }

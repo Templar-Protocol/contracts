@@ -187,4 +187,25 @@ mod tests {
 
         assert_ne!(sig_str, sig_str_2);
     }
+
+    #[test]
+    #[should_panic = r#"MissingPrefix("ed25519:")"#]
+    fn from_string_err_prefix() {
+        let s = "wC3KDXXriL2HFPztgvpcWES2bBzaDBWV2xY5rwrXTFRMmM59p434FLYfZZTu2iSLdu99wcWuGnva5yHQSaCZsJW";
+        super::Signature::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "InvalidEncoding(InvalidCharacter { character: '*', index: 0 })"]
+    fn from_string_err_bs58() {
+        let s = "ed25519:*wC3KDXXriL2HFPztgvpcWES2bBzaDBWV2xY5rwrXTFRMmM59p434FLYfZZTu2iSLdu99wcWuGnva5yHQSaCZsJW";
+        super::Signature::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "InvalidLength { expected: 64, actual: 65 }"]
+    fn from_string_err_length() {
+        let s = "ed25519:wC3KDXXriL2HFPztgvpcWES2bBzaDBWV2xY5rwrXTFRMmM59p434FLYfZZTu2iSLdu99wcWuGnva5yHQSaCZsJWa";
+        super::Signature::from_str(s).unwrap();
+    }
 }

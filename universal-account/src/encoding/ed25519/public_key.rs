@@ -177,4 +177,25 @@ mod tests {
 
         assert_ne!(pk_str, pk_str_2);
     }
+
+    #[test]
+    #[should_panic = r#"MissingPrefix("ed25519:")"#]
+    fn from_string_err_prefix() {
+        let s = "p256:QgbCYxWGboZy9VvWfAvdRs8M1EBtLabW9pPAZQP5UuNdz4gsY2EPG8xvmSAxyT8KMaFq677R3N5y8QmYSagCzFra";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "InvalidEncoding(InvalidCharacter { character: '*', index: 0 })"]
+    fn from_string_err_bs58() {
+        let s = "ed25519:*QgbCYxWGboZy9VvWfAvdRs8M1EBtLabW9pPAZQP5UuNdz4gsY2EPG8xvmSAxyT8KMaFq677R3N5y8QmYSagCzFra";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "InvalidLength { expected: 32, actual: 65 }"]
+    fn from_string_err_length() {
+        let s = "ed25519:QgbCYxWGboZy9VvWfAvdRs8M1EBtLabW9pPAZQP5UuNdz4gsY2EPG8xvmSAxyT8KMaFq677R3N5y8QmYSagCzFra";
+        super::PublicKey::from_str(s).unwrap();
+    }
 }
