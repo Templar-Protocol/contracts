@@ -6,7 +6,10 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId, NearToken,
 };
-use templar_universal_account::{transaction::Action, ExecuteArgs};
+use templar_universal_account::{
+    transaction::{Action, Transaction},
+    ExecuteArgs,
+};
 
 use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 
@@ -14,7 +17,7 @@ use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayRequest {
     pub account_id: AccountId,
-    pub args: ExecuteArgs,
+    pub args: ExecuteArgs<Box<[Transaction]>>,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
 }
@@ -151,7 +154,7 @@ pub async fn relay(
                     };
                 }
             };
-        eligible_for_storage_deposit.insert(receiver_id.clone());
+        eligible_for_storage_deposit.insert(receiver_id.to_owned());
         eligible_for_storage_deposit.extend(additional_interactions.into_iter());
         if let Some(market_data) = accounts.market_data.get(receiver_id) {
             eligible_for_storage_deposit.insert(market_data.oracle_id.clone());

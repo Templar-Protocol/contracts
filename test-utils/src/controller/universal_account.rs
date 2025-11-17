@@ -1,6 +1,8 @@
 use near_sdk::{json_types::U64, serde_json::json};
 use near_workspaces::{Account, Contract};
-use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
+use templar_universal_account::{
+    transaction::Transaction, ExecuteArgs, ExecutionParameters, KeyId,
+};
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
@@ -54,6 +56,6 @@ impl UniversalAccountController {
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
 
         #[call(exec, tgas(300))]
-        pub fn execute(args: ExecuteArgs);
+        pub fn execute(args: ExecuteArgs<Box<[Transaction]>>);
     }
 }

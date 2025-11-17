@@ -4,13 +4,12 @@ use authentication::{
     ed25519_raw::Ed25519RawKey, passkey::Passkey, ExecutionContextProvider, ExecutionError,
     InvalidSignatureError, Key,
 };
-use near_sdk::{json_types::U64, near, AccountIdRef};
+use near_sdk::{json_types::U64, near, serde::de::DeserializeOwned, AccountIdRef};
 
 pub mod authentication;
 pub mod encoding;
 mod event;
 pub use event::Event;
-use transaction::Transaction;
 pub mod transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -73,16 +72,15 @@ impl ExecutionParameters {
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
-pub enum ExecuteArgs {
+#[serde(bound = "T: DeserializeOwned")]
+pub enum ExecuteArgs<T> {
     Passkey {
         key: Passkey,
-        message:
-            Box<authentication::passkey::MessageWithSignature<Box<[transaction::Transaction]>>>,
+        message: Box<authentication::passkey::MessageWithSignature<T>>,
     },
     Ed25519Raw {
         key: Ed25519RawKey,
-        message:
-            Box<authentication::ed25519_raw::MessageWithSignature<Box<[transaction::Transaction]>>>,
+        message: Box<authentication::ed25519_raw::MessageWithSignature<T>>,
     },
 }
 
@@ -94,11 +92,18 @@ pub enum VerificationError {
     Execution(#[from] ExecutionError),
 }
 
-impl ExecuteArgs {
+impl<T> ExecuteArgs<T> {
     pub fn key_id(&self) -> KeyId {
         match self {
-            ExecuteArgs::Passkey { key, .. } => KeyId::Passkey(key.clone()),
-            ExecuteArgs::Ed25519Raw { key, .. } => KeyId::Ed25519RawKey(key.clone()),
+            Self::Passkey { key, .. } => KeyId::Passkey(key.clone()),
+            Self::Ed25519Raw { key, .. } => KeyId::Ed25519RawKey(key.clone()),
+        }
+    }
+
+    pub fn message_unchecked(&self) -> &T {
+        match self {
+            Self::Passkey { message, .. } => message.payload_unchecked(),
+            Self::Ed25519Raw { message, .. } => &message.message.0.parsed.payload,
         }
     }
 
@@ -111,7 +116,7 @@ impl ExecuteArgs {
         executor_account_id: &AccountIdRef,
         parameters: &ExecutionParameters,
         allowed_origin: impl FnOnce(Option<&str>) -> bool,
-    ) -> Result<Box<[Transaction]>, VerificationError> {
+    ) -> Result<T, VerificationError> {
         Ok(match self {
             ExecuteArgs::Passkey { key, message } => key
                 .verify_signature(*message)?
@@ -139,6 +144,7 @@ mod tests {
     use p256::elliptic_curve::rand_core::OsRng;
     use rstest::rstest;
     use solana_sdk::{signature::Keypair, signer::Signer};
+    use transaction::Transaction;
 
     use super::*;
 
@@ -194,7 +200,7 @@ mod tests {
         }
     }
 
-    fn ed25519_raw_execute_args() -> ExecuteArgs {
+    fn ed25519_raw_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
         let sk = Keypair::new();
 
         let message = ed25519_raw::Message::from_parsed(payload());
@@ -207,7 +213,7 @@ mod tests {
         }
     }
 
-    fn passkey_execute_args() -> ExecuteArgs {
+    fn passkey_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
         let sk = p256::SecretKey::random(&mut OsRng);
 
         let message = passkey::Message::from_parsed(payload());
@@ -245,7 +251,9 @@ mod tests {
     #[case("my-universal-account.near", 12345, 1, 45)]
     #[test]
     fn verify(
-        #[values(passkey_execute_args(), ed25519_raw_execute_args())] exec_args: ExecuteArgs,
+        #[values(passkey_execute_args(), ed25519_raw_execute_args())] exec_args: ExecuteArgs<
+            Box<[Transaction]>,
+        >,
         #[case] executor_account_id: AccountId,
         #[case] block_height: u64,
         #[case] index: u64,

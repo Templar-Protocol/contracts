@@ -6,7 +6,9 @@ use near_sdk::{
 };
 
 use templar_common::contract::list;
-use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
+use templar_universal_account::{
+    transaction::Transaction, ExecuteArgs, ExecutionParameters, KeyId,
+};
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
@@ -68,7 +70,7 @@ impl Contract {
         templar_universal_account::Event::KeyRemoved { key }.emit();
     }
 
-    pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
+    pub fn execute(&mut self, args: ExecuteArgs<Box<[Transaction]>>) -> Promise {
         let key = args.key_id();
         let Some(key_entry) = self.keys.get_mut(&key) else {
             env::panic_str("Key does not exist")

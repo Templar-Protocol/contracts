@@ -27,6 +27,12 @@ fn sig_base(
 #[near(serializers = [borsh, json])]
 pub struct Passkey(pub crate::encoding::p256::PublicKey);
 
+impl std::fmt::Display for Passkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub struct MessageWithValidSignature<T>(MessageWithSignature<T>);
 
 impl<T> Key<MessageWithSignature<T>> for Passkey {

@@ -301,7 +301,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(message)),
+        Json(CreateRequest::Passkey(Box::new(message))),
     )
     .await;
 
@@ -498,7 +498,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(message)),
+        Json(CreateRequest::Passkey(Box::new(message))),
     )
     .await;
 

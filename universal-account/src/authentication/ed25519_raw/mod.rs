@@ -10,6 +10,12 @@ use super::{ExecutionContextProvider, HashForSigning, Key, Payload};
 #[near(serializers = [json, borsh])]
 pub struct Ed25519RawKey(pub encoding::ed25519::PublicKey);
 
+impl std::fmt::Display for Ed25519RawKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 #[serde(bound = "T: DeserializeOwned")]

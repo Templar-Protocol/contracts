@@ -40,12 +40,12 @@ fn mint(amount: u128) -> FunctionCallAction {
     }
 }
 
-enum Sk {
+enum TestSigner {
     Passkey(p256::SecretKey),
     Ed25519Raw(ed25519_dalek::SigningKey),
 }
 
-impl Sk {
+impl TestSigner {
     fn random_passkey() -> Self {
         Self::Passkey(p256::SecretKey::random(&mut OsRng))
     }
@@ -56,16 +56,19 @@ impl Sk {
 
     fn id(&self) -> KeyId {
         match self {
-            Sk::Passkey(secret_key) => KeyId::Passkey(Passkey(secret_key.public_key().into())),
-            Sk::Ed25519Raw(signing_key) => {
-                KeyId::Ed25519RawKey(Ed25519RawKey(signing_key.verifying_key().to_bytes().into()))
+            Self::Passkey(key) => KeyId::Passkey(Passkey(key.public_key().into())),
+            Self::Ed25519Raw(key) => {
+                KeyId::Ed25519RawKey(Ed25519RawKey(key.verifying_key().to_bytes().into()))
             }
         }
     }
 
-    fn execute_args(&self, payload: WithRawString<Payload<Box<[Transaction]>>>) -> ExecuteArgs {
+    fn execute_args(
+        &self,
+        payload: WithRawString<Payload<Box<[Transaction]>>>,
+    ) -> ExecuteArgs<Box<[Transaction]>> {
         match self {
-            Sk::Passkey(secret_key) => {
+            TestSigner::Passkey(secret_key) => {
                 let payload = passkey::Message(payload);
                 let challenge = payload.hash_for_signing();
 
@@ -89,7 +92,7 @@ impl Sk {
                     message: Box::new(message),
                 }
             }
-            Sk::Ed25519Raw(signing_key) => {
+            TestSigner::Ed25519Raw(signing_key) => {
                 let message = ed25519_raw::Message(payload);
                 let signature = signing_key
                     .sign(&message.preimage_for_signing())
@@ -122,7 +125,7 @@ struct Setup {
     third_party: near_workspaces::Account,
 }
 
-async fn setup(worker: &Worker<Sandbox>, sk: &Sk) -> Setup {
+async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner) -> Setup {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
     let (uac, ft) = tokio::join!(
@@ -148,7 +151,7 @@ async fn setup(worker: &Worker<Sandbox>, sk: &Sk) -> Setup {
 #[tokio::test]
 pub async fn universal_account(
     #[future(awt)] worker: Worker<Sandbox>,
-    #[values(Sk::random_passkey(), Sk::random_ed25519_raw())] sk: Sk,
+    #[values(TestSigner::random_passkey(), TestSigner::random_ed25519_raw())] sk: TestSigner,
 ) {
     let Setup {
         uac,
@@ -239,7 +242,7 @@ pub async fn universal_account(
 #[should_panic = "Nonce mismatch"]
 async fn skip_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
-    #[values(Sk::random_passkey(), Sk::random_ed25519_raw())] sk: Sk,
+    #[values(TestSigner::random_passkey(), TestSigner::random_ed25519_raw())] sk: TestSigner,
 ) {
     let Setup {
         uac,
@@ -303,7 +306,7 @@ async fn skip_nonce(
 #[should_panic = "Nonce mismatch"]
 async fn reuse_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
-    #[values(Sk::random_passkey(), Sk::random_ed25519_raw())] sk: Sk,
+    #[values(TestSigner::random_passkey(), TestSigner::random_ed25519_raw())] sk: TestSigner,
 ) {
     let Setup {
         uac,

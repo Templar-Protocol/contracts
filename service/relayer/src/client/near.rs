@@ -358,7 +358,7 @@ impl Near {
         &self,
         cache: &Cache,
         ua_account_id: AccountId,
-        args: ExecuteArgs,
+        args: ExecuteArgs<Box<[templar_universal_account::transaction::Transaction]>>,
         gas: u64,
     ) -> SignedTransaction {
         let signer = self.next_signer();

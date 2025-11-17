@@ -15,11 +15,8 @@ use near_sdk::{
 };
 
 use templar_universal_account::{
-    authentication::{
-        passkey::{self, Passkey},
-        ExecutionContextProvider, Key,
-    },
-    ExecutionParameters, KeyId,
+    authentication::passkey::{self, Passkey},
+    ExecuteArgs, ExecutionParameters, KeyId,
 };
 
 use crate::{
@@ -39,14 +36,56 @@ pub struct CreatePasskeyAccount {
 
 impl PowTarget for CreatePasskeyAccount {
     fn pow_target(&self) -> String {
-        format!("{},{}", &self.key.0, &self.block_hash)
+        format!("{},{}", &self.key, &self.block_hash)
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub struct CreateUniversalAccount {
+    pub key: KeyId,
+    pub block_hash: CryptoHash,
+}
+
+impl PowTarget for CreateUniversalAccount {
+    fn pow_target(&self) -> String {
+        format!("{},{}", &self.key, &self.block_hash)
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub enum CreateRequest {
-    Passkey(passkey::MessageWithSignature<Pow<CreatePasskeyAccount>>),
+    Passkey(Box<passkey::MessageWithSignature<Pow<CreatePasskeyAccount>>>),
+    #[serde(untagged)]
+    ExecuteArgs(ExecuteArgs<Pow<CreateUniversalAccount>>),
+}
+
+#[derive(thiserror::Error, Debug, Clone)]
+#[error("The key to add did not sign the payload: signer {signer} != to add {to_add}")]
+struct KeyIdMismatchError {
+    signer: KeyId,
+    to_add: KeyId,
+}
+
+impl CreateRequest {
+    fn key_id_to_add(&self) -> Result<KeyId, Box<KeyIdMismatchError>> {
+        match self {
+            Self::Passkey(m) => Ok(m.payload_unchecked().payload_unchecked().key.clone().into()),
+            Self::ExecuteArgs(ea) => {
+                let signer = ea.key_id();
+                let to_add = &ea.message_unchecked().payload_unchecked().key;
+                if to_add == &signer {
+                    Ok(signer)
+                } else {
+                    Err(Box::new(KeyIdMismatchError {
+                        signer,
+                        to_add: to_add.clone(),
+                    }))
+                }
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -67,49 +106,87 @@ pub async fn create(
     Json(request): Json<CreateRequest>,
 ) -> SimpleResponse<CreateResponse> {
     tracing::info!("Creating universal account");
-    let CreateRequest::Passkey(message) = request;
 
-    let key = message.payload_unchecked().payload_unchecked().key.clone();
-    tracing::Span::current().record("key", tracing::field::display(&key.0));
-
-    let verified_signature = match key.verify_signature(message) {
-        Ok(p) => p,
+    let key_id = match request.key_id_to_add() {
+        Ok(k) => k,
         Err(e) => {
-            tracing::info!("Failed signature verification: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Failed signature verification".to_string(),
-            };
-        }
-    };
-
-    let pow_payload = match verified_signature.verify_execution(
-        &app.args.ua.account_id,
-        &ExecutionParameters::default(),
-        |o| app.args.ua.is_origin_allowed(o),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::info!("Failed execution parameter verification: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Failed execution parameter verification".to_string(),
-            };
-        }
-    };
-
-    // Verify PoW
-
-    let payload = match pow_payload.verify_pow(app.args.ua.pow_difficulty) {
-        Ok(p) => p,
-        Err(e) => {
+            tracing::debug!(e = ?e, "Key ID mismatch");
             return SimpleResponse::Rejected {
                 reason: e.to_string(),
             };
         }
     };
+    tracing::Span::current().record("key_id", tracing::field::display(&key_id));
+
+    let create = match request {
+        CreateRequest::Passkey(m) => {
+            let key_inner = m.payload_unchecked().payload_unchecked().key.clone();
+            let exec_args = ExecuteArgs::Passkey {
+                key: key_inner.clone(),
+                message: m,
+            };
+
+            let m = match exec_args.verify(
+                &app.args.ua.account_id,
+                &ExecutionParameters::default(),
+                |o| app.args.ua.is_origin_allowed(o),
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed verification");
+                    return SimpleResponse::Rejected {
+                        reason: format!("Failed verification: {e}"),
+                    };
+                }
+            };
+
+            let p = match m.verify_pow(app.args.ua.pow_difficulty) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed proof-of-work");
+                    return SimpleResponse::Rejected {
+                        reason: e.to_string(),
+                    };
+                }
+            };
+
+            CreateUniversalAccount {
+                key: KeyId::Passkey(key_inner),
+                block_hash: p.block_hash,
+            }
+        }
+        CreateRequest::ExecuteArgs(request) => {
+            let m = match request.verify(
+                &app.args.ua.account_id,
+                &ExecutionParameters::default(),
+                |o| app.args.ua.is_origin_allowed(o),
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed verification");
+                    return SimpleResponse::Rejected {
+                        reason: format!("Failed verification: {e}"),
+                    };
+                }
+            };
+
+            let p = match m.verify_pow(app.args.ua.pow_difficulty) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed proof-of-work");
+                    return SimpleResponse::Rejected {
+                        reason: e.to_string(),
+                    };
+                }
+            };
+
+            p.clone()
+        }
+    };
 
     // Check block timestamp (make sure signature is not too old)
 
-    let block_hash = payload.block_hash;
+    let block_hash = create.block_hash;
     let Ok(block_timestamp_ms) = app.ua_near.fetch_block_timestamp_ms(block_hash).await else {
         return SimpleResponse::Failure {
             error: "Failed to fetch block timestamp".to_string(),
@@ -128,6 +205,7 @@ pub async fn create(
         .elapsed()
         .is_ok_and(|duration| duration <= app.args.ua.blockref_max_age)
     {
+        tracing::debug!("Rejected: Block reference is too old");
         return SimpleResponse::Rejected {
             reason: "Block reference is too old".to_string(),
         };
@@ -135,7 +213,7 @@ pub async fn create(
 
     // Check that account does not exist already
 
-    let account_slug = public_key_to_account_id_slug(&payload.key.0.to_string());
+    let account_slug = public_key_to_account_id_slug(&create.key.to_string());
     tracing::info!("Account slug: {account_slug}");
 
     let registry_id = &app.args.ua.registry_id;
@@ -177,9 +255,7 @@ pub async fn create(
             &DeployArgs::new(
                 account_slug,
                 app.args.ua.version_key.clone(),
-                &templar_universal_account::InitArgs {
-                    key: KeyId::Passkey(key.clone()),
-                },
+                &templar_universal_account::InitArgs { key: create.key },
                 None,
             ),
         )
