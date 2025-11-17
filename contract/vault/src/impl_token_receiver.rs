@@ -11,7 +11,8 @@ use near_sdk_contract_tools::mt::*;
 
 // Parses JSON-encoded DepositMsg or panics with a consistent message.
 fn parse_deposit_msg(msg: &str) -> DepositMsg {
-    near_sdk::serde_json::from_str(msg).unwrap_or_else(|_| env::panic_str("Invalid deposit msg"))
+    near_sdk::serde_json::from_str(msg)
+        .unwrap_or_else(|_| templar_common::panic_with_message("Invalid deposit msg"))
 }
 
 // Validates NEP-245 transfer inputs and returns (depositor, token_id, amount).
@@ -111,7 +112,7 @@ impl Contract {
         require!(deposit > 0, "Deposit amount must be greater than zero");
 
         if matches!(self.op_state, OpState::Payout(_)) {
-            env::panic_str("Cannot deposit during payout");
+            templar_common::panic_with_message("Cannot deposit during payout");
         }
 
         self.internal_accrue_fee();
@@ -122,7 +123,7 @@ impl Contract {
 
         let shares = self.preview_deposit(U128(accept)).0;
         self.mint(&Nep141Mint::new(shares, &sender_id))
-            .unwrap_or_else(|_| env::panic_str("Failed to mint shares"));
+            .unwrap_or_else(|_| templar_common::panic_with_message("Failed to mint shares"));
 
         Event::MintedShares {
             amount: shares.into(),

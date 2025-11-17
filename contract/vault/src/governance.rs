@@ -196,7 +196,7 @@ impl Contract {
             .emit();
             self.pending_timelock = None;
         } else {
-            env::panic_str("No pending timelock change");
+            templar_common::panic_with_message("No pending timelock change");
         }
     }
 
@@ -226,7 +226,7 @@ impl Contract {
                 .emit();
                 self.markets
                     .get_mut(&market)
-                    .unwrap_or_else(|| env::panic_str("Config not found"))
+                    .unwrap_or_else(|| templar_common::panic_with_message("Config not found"))
             }
             Some(m) => m,
         };
@@ -274,12 +274,12 @@ impl Contract {
         let m = self
             .markets
             .get_mut(&market)
-            .unwrap_or_else(|| env::panic_str("Config not found"));
+            .unwrap_or_else(|| templar_common::panic_with_message("Config not found"));
 
         let was_enabled = m.cfg.enabled;
 
         let pending_value = m.pending_cap.as_ref().map_or_else(
-            || env::panic_str("No pending cap change for this market"),
+            || templar_common::panic_with_message("No pending cap change for this market"),
             |pending_cap| {
                 pending_cap.verify();
                 pending_cap.value
@@ -309,7 +309,7 @@ impl Contract {
 
         self.markets
             .get_mut(&market)
-            .unwrap_or_else(|| env::panic_str("Config not found"))
+            .unwrap_or_else(|| templar_common::panic_with_message("Config not found"))
             .pending_cap = None;
     }
 
@@ -335,10 +335,9 @@ impl Contract {
     /// Requires cap == 0 and no pending cap changes; starts a timelock.
     pub fn submit_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        let rec = self
-            .markets
-            .get_mut(&market)
-            .unwrap_or_else(|| env::panic_str(&format!("Unknown market: {market}")));
+        let rec = self.markets.get_mut(&market).unwrap_or_else(|| {
+            templar_common::panic_with_message(&format!("Unknown market: {market}"))
+        });
         require!(
             rec.cfg.removable_at == 0,
             "Removal already pending for this market"
@@ -381,7 +380,7 @@ impl Contract {
         let mut seen = HashSet::new();
         for m in &markets {
             if !seen.insert(m.clone()) {
-                env::panic_str(&format!("Duplicate market {m}"));
+                templar_common::panic_with_message(&format!("Duplicate market {m}"));
             }
         }
         // Validate all markets are authorized (cap > 0) before charging storage

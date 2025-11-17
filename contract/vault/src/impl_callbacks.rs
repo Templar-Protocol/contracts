@@ -405,7 +405,9 @@ impl Contract {
                             &ctx.owner,
                         ))
                         .unwrap_or_else(|e| {
-                            env::panic_str(&format!("Failed to refund escrowed shares {e}"))
+                            templar_common::panic_with_message(&format!(
+                                "Failed to refund escrowed shares {e}"
+                            ))
                         });
                     self_.pending_market_exec.clear();
                     self_.remove_inflight_and_advance_head();

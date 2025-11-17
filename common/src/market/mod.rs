@@ -8,7 +8,7 @@ use crate::{
     number::Decimal,
 };
 mod configuration;
-pub use configuration::{MarketConfiguration, APY_LIMIT};
+pub use configuration::{MarketConfiguration, ValidAmountRange, APY_LIMIT};
 mod external;
 pub use external::*;
 mod r#impl;

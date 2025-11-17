@@ -13,7 +13,10 @@ near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
 near-primitives.workspace = true
-near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
+near-sdk = { workspace = true, features = [
+    "non-contract-usage",
+    "unit-testing",
+] }
 near-sdk-contract-tools.workspace = true
 sha2 = "0.10.9"
 sqlx = { version = "0.8", features = [
@@ -26,7 +29,7 @@ sqlx = { version = "0.8", features = [
     "rust_decimal",
     "uuid",
 ] }
-templar-common.workspace = true
+templar-common = { workspace = true, features = ["rpc"] }
 templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
