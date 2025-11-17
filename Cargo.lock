@@ -2395,6 +2395,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2874a2af47a2325c2001a6e6fad9b16a53b802102b528163885171cf92b15976"
 
 [[package]]
+name = "libfuzzer-sys"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5037190e1f70cbeef565bd267599242926f724d3b8a9f510fd7e0b540cfa4404"
+dependencies = [
+ "arbitrary",
+ "cc",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5846,6 +5856,18 @@ dependencies = [
  "rstest",
  "schemars",
  "thiserror 2.0.11",
+]
+
+[[package]]
+name = "templar-fuzz"
+version = "1.2.0"
+dependencies = [
+ "arbitrary",
+ "hex-literal",
+ "libfuzzer-sys",
+ "near-sdk",
+ "primitive-types 0.10.1",
+ "templar-common",
 ]
 
 [[package]]

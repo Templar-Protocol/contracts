@@ -73,7 +73,7 @@ impl Contract {
     pub fn execute(&mut self, args: ExecuteArgs<Box<[Transaction]>>) -> Promise {
         let key = args.key_id();
         let Some(key_entry) = self.keys.get_mut(&key) else {
-            env::panic_str("Key does not exist")
+            templar_common::panic_with_message("Key does not exist")
         };
         *key_entry = key_entry.next();
         templar_universal_account::Event::NonceExecution {
@@ -86,7 +86,7 @@ impl Contract {
 
         let transactions = args
             .verify(&current_account_id, key_entry, |_| true)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         require!(!transactions.is_empty(), "Transaction list is empty");
 

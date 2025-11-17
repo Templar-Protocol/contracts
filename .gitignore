@@ -17,4 +17,10 @@
 
 # documentation site
 _site/
+
+# fuzz artifacts
+**/artifacts
+**/corpus
+**/fuzz*.log
+**/coverage
 .aider*

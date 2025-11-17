@@ -15,7 +15,7 @@ primitive-types.workspace = true
 schemars.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-near-primitives.workspace = true
+near-primitives = { workspace = true, optional = true }
 
 [dev-dependencies]
 rstest.workspace = true
@@ -24,3 +24,8 @@ rand = "0.8"
 
 [lints]
 workspace = true
+
+[features]
+default = []
+rpc = ["dep:near-primitives"]
+non-contract-usage = ["near-sdk/non-contract-usage"]
