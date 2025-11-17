@@ -53,6 +53,34 @@ impl<T> Key<MessageWithSignature<T>> for Passkey {
 #[serde(bound = "T: DeserializeOwned", deny_unknown_fields)]
 pub struct Message<T>(pub WithRawString<Payload<T>>);
 
+impl<T> Message<T> {
+    pub fn from_parsed(payload: Payload<T>) -> Self
+    where
+        T: near_sdk::serde::Serialize,
+    {
+        Self(WithRawString::from_parsed(payload))
+    }
+
+    pub fn sign(
+        self,
+        key: &p256::SecretKey,
+        authenticator_data: AuthenticatorData,
+        client_data_json: ClientDataJson,
+    ) -> MessageWithSignatureWithUncheckedHashes<T> {
+        let client_data_json = WithRawString::from_parsed(client_data_json);
+        let signature = Signature(
+            SigningKey::from(key).sign(&sig_base(&authenticator_data, &client_data_json)),
+        );
+
+        MessageWithSignatureWithUncheckedHashes {
+            authenticator_data,
+            message: self,
+            client_data_json,
+            signature,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 #[serde(bound = "T: DeserializeOwned", deny_unknown_fields)]
@@ -61,27 +89,6 @@ pub struct MessageWithSignatureWithUncheckedHashes<T> {
     pub message: Message<T>,
     pub client_data_json: WithRawString<ClientDataJson>,
     pub signature: Signature,
-}
-
-impl<T: near_sdk::serde::Serialize> MessageWithSignatureWithUncheckedHashes<T> {
-    pub fn new_and_sign(
-        key: &p256::SecretKey,
-        message: Message<T>,
-        authenticator_data: AuthenticatorData,
-        client_data_json: ClientDataJson,
-    ) -> Self {
-        let client_data_json = WithRawString::from_parsed(client_data_json);
-        let signature = Signature(
-            SigningKey::from(key).sign(&sig_base(&authenticator_data, &client_data_json)),
-        );
-
-        Self {
-            authenticator_data,
-            message,
-            client_data_json,
-            signature,
-        }
-    }
 }
 
 impl<T> HashForSigning for Message<T> {

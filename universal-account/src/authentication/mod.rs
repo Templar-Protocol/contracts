@@ -6,7 +6,7 @@ pub mod ed25519_raw;
 pub mod passkey;
 pub mod with_raw_string;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
 #[error("Invalid signature")]
 pub struct InvalidSignatureError;
 
@@ -19,10 +19,12 @@ pub trait Key<M> {
     fn verify_signature(&self, message: M) -> Result<Self::Verified, InvalidSignatureError>;
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExecutionError {
     #[error("Executor account ID mismatch")]
     ExecutorAccountIdMismatch,
+    #[error("Block height mismatch")]
+    BlockHeightMismatch,
     #[error("Key index mismatch")]
     KeyIndexMismatch,
     #[error("Nonce mismatch")]
@@ -67,6 +69,10 @@ where
         let payload = self.payload();
         if payload.account_id != executor_account_id {
             return Err(ExecutionError::ExecutorAccountIdMismatch);
+        }
+
+        if payload.parameters.block_height != parameters.block_height {
+            return Err(ExecutionError::BlockHeightMismatch);
         }
 
         if payload.parameters.index != parameters.index {

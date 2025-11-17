@@ -15,6 +15,22 @@ pub struct Ed25519RawKey(pub encoding::ed25519::PublicKey);
 #[serde(bound = "T: DeserializeOwned")]
 pub struct Message<T>(pub WithRawString<Payload<T>>);
 
+impl<T: near_sdk::serde::Serialize> Message<T> {
+    pub fn from_parsed(payload: Payload<T>) -> Self {
+        Self(WithRawString::from_parsed(payload))
+    }
+
+    pub fn with_signature(
+        self,
+        signature: encoding::ed25519::Signature,
+    ) -> MessageWithSignature<T> {
+        MessageWithSignature {
+            message: self,
+            signature,
+        }
+    }
+}
+
 impl<T> From<WithRawString<Payload<T>>> for Message<T> {
     fn from(value: WithRawString<Payload<T>>) -> Self {
         Self(value)

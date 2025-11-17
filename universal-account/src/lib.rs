@@ -86,7 +86,7 @@ pub enum ExecuteArgs {
     },
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VerificationError {
     #[error(transparent)]
     Signature(#[from] InvalidSignatureError),
@@ -125,8 +125,19 @@ impl ExecuteArgs {
 
 #[cfg(test)]
 mod tests {
-    use near_sdk::bs58;
+    use std::str::FromStr;
+
+    use authentication::{
+        ed25519_raw,
+        passkey::{
+            self,
+            data::{AuthenticatorData, ClientDataJson},
+        },
+        HashForSigning, Payload,
+    };
+    use near_sdk::{bs58, AccountId, NearToken};
     use p256::elliptic_curve::rand_core::OsRng;
+    use rstest::rstest;
     use solana_sdk::{signature::Keypair, signer::Signer};
 
     use super::*;
@@ -156,5 +167,119 @@ mod tests {
 
         let b = bs58::decode(b).into_vec().unwrap();
         assert_eq!(b.len(), 32);
+    }
+
+    fn payload() -> Payload<Box<[Transaction]>> {
+        let payload = vec![Transaction {
+            receiver_id: "token.near".parse().unwrap(),
+            actions: vec![transaction::FunctionCallAction::new(
+                "ft_transfer",
+                br#"{"receiver_id":"receiver.near","amount":"100"}"#,
+                NearToken::from_yoctonear(1),
+                near_sdk::Gas::from_tgas(30),
+            )
+            .into()]
+            .into_boxed_slice(),
+        }]
+        .into_boxed_slice();
+
+        Payload {
+            parameters: ExecutionParameters {
+                block_height: U64(12345),
+                index: U64(1),
+                nonce: U64(44),
+            },
+            account_id: "my-universal-account.near".parse().unwrap(),
+            payload,
+        }
+    }
+
+    fn ed25519_raw_execute_args() -> ExecuteArgs {
+        let sk = Keypair::new();
+
+        let message = ed25519_raw::Message::from_parsed(payload());
+        let preimage = message.preimage_for_signing();
+        let signed_message = message.with_signature(sk.sign_message(&preimage).into());
+
+        ExecuteArgs::Ed25519Raw {
+            key: Ed25519RawKey(sk.pubkey().to_bytes().into()),
+            message: Box::new(signed_message),
+        }
+    }
+
+    fn passkey_execute_args() -> ExecuteArgs {
+        let sk = p256::SecretKey::random(&mut OsRng);
+
+        let message = passkey::Message::from_parsed(payload());
+        let hash = message.hash_for_signing();
+        let signed_message: passkey::MessageWithSignature<_> = message
+            .sign(
+                &sk,
+                AuthenticatorData(vec![1u8; 32].into_boxed_slice()),
+                ClientDataJson {
+                    r#type: "type".to_string(),
+                    challenge: hash.into(),
+                    origin: "origin".to_string(),
+                    cross_origin: None,
+                    top_origin: None,
+                },
+            )
+            .try_into()
+            .unwrap();
+
+        ExecuteArgs::Passkey {
+            key: Passkey(sk.public_key().into()),
+            message: Box::new(signed_message),
+        }
+    }
+
+    #[rstest]
+    #[case("my-universal-account.near", 12345, 1, 44)]
+    #[should_panic = "Execution(ExecutorAccountIdMismatch)"]
+    #[case("my-universal-account.nearx", 12345, 1, 44)]
+    #[should_panic = "Execution(BlockHeightMismatch)"]
+    #[case("my-universal-account.near", 12346, 1, 44)]
+    #[should_panic = "Execution(KeyIndexMismatch)"]
+    #[case("my-universal-account.near", 12345, 0, 44)]
+    #[should_panic = "Execution(NonceMismatch)"]
+    #[case("my-universal-account.near", 12345, 1, 45)]
+    #[test]
+    fn verify(
+        #[values(passkey_execute_args(), ed25519_raw_execute_args())] exec_args: ExecuteArgs,
+        #[case] executor_account_id: AccountId,
+        #[case] block_height: u64,
+        #[case] index: u64,
+        #[case] nonce: u64,
+    ) {
+        exec_args
+            .verify(
+                &executor_account_id,
+                &ExecutionParameters {
+                    block_height: U64(block_height),
+                    index: U64(index),
+                    nonce: U64(nonce),
+                },
+                |_| true,
+            )
+            .unwrap();
+    }
+
+    #[rstest]
+    #[case("origin")]
+    #[should_panic = "Execution(OriginUnknown)"]
+    #[case("origin2")]
+    #[test]
+    fn verify_origin(#[case] allowed_origin: &str) {
+        passkey_execute_args()
+            .verify(
+                &AccountId::from_str("my-universal-account.near").unwrap(),
+                &ExecutionParameters {
+                    block_height: U64(12345),
+                    index: U64(1),
+                    nonce: U64(44),
+                },
+                |o| o == Some(allowed_origin),
+            )
+            .unwrap();
     }
 }

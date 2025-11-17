@@ -34,6 +34,22 @@ pub struct FunctionCallAction {
     pub gas: Gas,
 }
 
+impl FunctionCallAction {
+    pub fn new(
+        function_name: impl Into<String>,
+        arguments: impl Into<Vec<u8>>,
+        amount: NearToken,
+        gas: Gas,
+    ) -> Self {
+        Self {
+            function_name: function_name.into(),
+            arguments: Base64VecU8(arguments.into()),
+            amount,
+            gas,
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl From<FunctionCallAction> for near_primitives::action::FunctionCallAction {
     fn from(value: FunctionCallAction) -> Self {
