@@ -666,6 +666,9 @@ impl Contract {
     }
 
     /// Validate current op is Withdrawing and return context tuple
+    ///
+    /// # Errors
+    /// Returns an error if the operation is not currently withdrawing.
     pub fn ctx_withdrawing(&self, op_id: u64) -> Result<&WithdrawingState, Error> {
         match &self.op_state {
             OpState::Withdrawing(s) if s.op_id == op_id => Ok(s),

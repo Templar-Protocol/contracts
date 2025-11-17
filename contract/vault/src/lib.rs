@@ -326,13 +326,12 @@ impl Contract {
                 pending.escrow_shares,
                 route,
             );
-        } else {
-            Event::WithdrawQueueStatus {
-                status: QueueStatus::Empty,
-                id: None,
-            }
-            .emit();
         }
+        Event::WithdrawQueueStatus {
+            status: QueueStatus::Empty,
+            id: None,
+        }
+        .emit();
 
         PromiseOrValue::Value(())
     }
@@ -1131,7 +1130,7 @@ impl Contract {
     }
 
     /// Computes how much of `amount` can be covered by idle balance without mutating state.
-    /// Returns IdleCoverage { remaining_unmet, collected_from_idle }.
+    /// Returns `IdleCoverage`.
     fn compute_idle_coverage(&self, amount: u128) -> IdleCoverage {
         let used_idle = self.idle_balance.min(amount);
         IdleCoverage {
