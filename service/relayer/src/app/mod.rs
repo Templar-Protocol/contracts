@@ -71,12 +71,17 @@ impl App {
                 .collect(),
         );
 
-        let pyth = Pyth::new(args.pyth.clone());
-
         #[allow(clippy::unwrap_used)]
         let database = Database::new(&args.database_url, kill.clone()).unwrap();
 
         let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
+
+        let pyth = Pyth::new(
+            args.pyth.clone(),
+            relay_near.clone(),
+            cache.clone(),
+            kill.clone(),
+        );
 
         tokio::spawn(broom::start(
             database.clone(),

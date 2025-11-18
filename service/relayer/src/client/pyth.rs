@@ -1,52 +1,158 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
+use near_jsonrpc_client::errors::JsonRpcError;
+use near_primitives::{
+    errors::TxExecutionError,
+    views::{FinalExecutionStatus, TxExecutionStatus},
+};
 use near_sdk::serde::Deserialize;
 use templar_common::oracle::pyth::PriceIdentifier;
-use tokio::{sync::Mutex, time::Instant};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot, watch},
+    time::Instant,
+};
 
-use crate::app::args;
+use crate::{app::args, cache::Cache};
 
-#[derive(Debug, Clone)]
-pub struct Pyth {
-    http: reqwest::Client,
-    args: args::Pyth,
-    last_updated: Arc<Mutex<HashMap<PriceIdentifier, Instant>>>,
+use super::near::Near;
+
+#[derive(Debug)]
+pub enum PythRequest {
+    Update {
+        price_ids: Box<[PriceIdentifier]>,
+        send: oneshot::Sender<Result<(), UpdateError>>,
+    },
 }
 
-impl Pyth {
-    pub fn new(args: args::Pyth) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            args,
-            last_updated: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
+#[tracing::instrument(skip_all, name = "pyth_service")]
+async fn start(
+    mut recv: mpsc::Receiver<PythRequest>,
+    args: args::Pyth,
+    near: Near,
+    cache: Cache,
+    kill: watch::Sender<()>,
+) {
+    let mut pyth = PythClient::new(args, near, cache);
+    let mut on_kill = kill.subscribe();
 
-    pub async fn needs_update(
-        &self,
-        price_ids: impl IntoIterator<Item = &PriceIdentifier>,
-    ) -> HashSet<PriceIdentifier> {
-        let mut set = HashSet::new();
-        let last_updated = self.last_updated.lock().await;
-        for price_id in price_ids {
-            if last_updated
-                .get(price_id)
-                .is_none_or(|i| i.elapsed() >= self.args.refresh)
-            {
-                set.insert(*price_id);
+    loop {
+        select! {
+            _ = on_kill.changed() => {
+                tracing::debug!("Received kill notification.");
+                break;
+            }
+            request = recv.recv() => {
+                let Some(request) = request else {
+                    tracing::debug!("Pyth sender dropped, exiting.");
+                    break;
+                };
+                tracing::debug!("Handling request: {request:?}");
+                match request {
+                    PythRequest::Update { price_ids, send } => {
+                        #[allow(clippy::unwrap_used, reason = "Sender should not drop")]
+                        send.send(pyth.update(&price_ids).await).unwrap();
+                    }
+                }
             }
         }
-        set
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum UpdateError {
+    #[error(transparent)]
+    Reqwest(#[from] reqwest::Error),
+    #[error(transparent)]
+    JsonRpc(#[from] JsonRpcError<near_jsonrpc_client::methods::tx::RpcTransactionError>),
+    #[error("Unknown RPC error")]
+    UnknownRpcError,
+    #[error("Transaction execution error: {0}")]
+    TransactionExecution(#[from] TxExecutionError),
+}
+
+#[derive(Debug)]
+struct PythClient {
+    http: reqwest::Client,
+    last_updated: HashMap<PriceIdentifier, Instant>,
+    args: args::Pyth,
+    near: Near,
+    cache: Cache,
+}
+
+impl PythClient {
+    pub fn new(args: args::Pyth, near: Near, cache: Cache) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            last_updated: HashMap::new(),
+            args,
+            near,
+            cache,
+        }
     }
 
-    pub async fn mark_update(&mut self, price_ids: impl IntoIterator<Item = &PriceIdentifier>) {
+    pub async fn update(&mut self, price_ids: &[PriceIdentifier]) -> Result<(), UpdateError> {
+        let send_updates_for = IntoIterator::into_iter(price_ids)
+            .filter(|id| {
+                self.last_updated
+                    .get(id)
+                    .is_none_or(|i| i.elapsed() > self.args.refresh)
+            })
+            .collect::<HashSet<_>>();
+
+        if send_updates_for.is_empty() {
+            return Ok(());
+        }
+
+        let send_updates_for: Vec<_> = send_updates_for.into_iter().copied().collect();
+
+        tracing::info!(price_ids = ?send_updates_for, "Sending update for Pyth prices");
+
+        // Start timing from when we request the prices
         let now = Instant::now();
-        let mut last_updated = self.last_updated.lock().await;
-        for price_id in price_ids {
-            last_updated.insert(*price_id, now);
+        let vaa = self.get_latest_price_updates_vaa(&send_updates_for).await?;
+        tracing::debug!(vaa = hex::encode(&vaa), "Retrieved VAA");
+        let signed_transaction = self
+            .near
+            .construct_pyth_update_transaction(
+                &self.cache,
+                self.args.oracle_id.clone(),
+                vaa,
+                self.args.update_gas,
+                self.args.update_deposit,
+            )
+            .await;
+        tracing::debug!(?signed_transaction, "Signed Pyth update transaction.");
+
+        let transaction_result = self
+            .near
+            .send_transaction(signed_transaction, TxExecutionStatus::Final)
+            .await?;
+        tracing::debug!(?transaction_result, "Pyth update transaction sent");
+
+        if let Some(o) = transaction_result.final_execution_outcome {
+            match o.into_outcome().status {
+                FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
+                    // Should never happen because we waited until TxExecutionStatus::Final
+                    tracing::warn!("Unexpected transaction execution status retrieved from RPC");
+                    Err(UpdateError::UnknownRpcError)
+                }
+                FinalExecutionStatus::Failure(error) => {
+                    tracing::error!(?error, "Pyth update transaction failed");
+                    Err(error.into())
+                }
+                FinalExecutionStatus::SuccessValue(..) => {
+                    tracing::debug!("Pyth update succeeded");
+
+                    self.last_updated
+                        .extend(send_updates_for.into_iter().map(|id| (id, now)));
+
+                    Ok(())
+                }
+            }
+        } else {
+            tracing::warn!("Unable to retrieve final execution outcome from RPC");
+            Err(UpdateError::UnknownRpcError)
         }
     }
 
@@ -56,10 +162,10 @@ impl Pyth {
     ///
     /// - [`reqwest::Error`]
     /// - Response deserialization.
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip(self))]
     pub async fn get_latest_price_updates_vaa(
         &self,
-        price_ids: impl IntoIterator<Item = &PriceIdentifier>,
+        price_ids: &[PriceIdentifier],
     ) -> Result<Vec<u8>, reqwest::Error> {
         #[derive(Deserialize)]
         #[serde(crate = "near_sdk::serde")]
@@ -93,28 +199,32 @@ impl Pyth {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Debug, Clone)]
+pub struct Pyth {
+    send: mpsc::Sender<PythRequest>,
+}
 
-    use std::time::Duration;
-    use test_utils::pyth_price_id;
+impl Pyth {
+    pub fn new(args: args::Pyth, near: Near, cache: Cache, kill: watch::Sender<()>) -> Self {
+        let (send, recv) = mpsc::channel(16);
+        tokio::spawn(start(recv, args, near, cache, kill));
 
-    #[tokio::test]
-    async fn fetch() {
-        let c = Pyth::new(args::Pyth {
-            hermes_url: "https://hermes.pyth.network".into(),
-            refresh: Duration::from_secs(25),
-            oracle_id: "pyth-oracle.near".parse().unwrap(),
-            update_gas: near_sdk::Gas::from_tgas(300),
-            update_deposit: near_sdk::NearToken::from_near(1).saturating_div(10),
-        });
+        Self { send }
+    }
 
-        let vaa = c
-            .get_latest_price_updates_vaa(&[pyth_price_id::stable::CRYPTO_BTC_USD])
+    /// # Errors
+    ///
+    /// - Network error [`reqwest::Error`]
+    /// - JSON RPC error
+    /// - Unexpected/inconsistent RPC behavior
+    /// - Transaction failure
+    #[allow(clippy::unwrap_used)]
+    pub async fn update(&self, price_ids: Box<[PriceIdentifier]>) -> Result<(), UpdateError> {
+        let (send, recv) = oneshot::channel();
+        self.send
+            .send(PythRequest::Update { price_ids, send })
             .await
             .unwrap();
-
-        eprintln!("VAA: {}", hex::encode(vaa));
+        recv.await.unwrap()
     }
 }

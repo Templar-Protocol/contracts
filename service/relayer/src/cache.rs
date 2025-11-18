@@ -74,7 +74,7 @@ impl<T> CacheRecord<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Cache {
     request: mpsc::Sender<CacheRequest>,
 }

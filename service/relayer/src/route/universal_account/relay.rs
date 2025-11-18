@@ -205,71 +205,14 @@ pub async fn relay(
         }
     }
 
-    let send_price_updates_for = app
-        .pyth
-        .needs_update(interacted_price_identifiers.intersection(&update_price_feeds))
-        .await;
+    let request_price_updates = interacted_price_identifiers
+        .intersection(&update_price_feeds)
+        .copied();
 
-    if !send_price_updates_for.is_empty() {
-        let vaa = match app
-            .pyth
-            .get_latest_price_updates_vaa(&send_price_updates_for)
-            .await
-        {
-            Ok(vaa) => vaa,
-            Err(e) => {
-                tracing::warn!("Failed to fetch Pyth VAA: {e:?}");
-                return SimpleResponse::Failure {
-                    error: "Failed to fetch Pyth VAA".to_string(),
-                };
-            }
-        };
-
-        let gas = app.args.pyth.update_gas;
-        let deposit = app.args.pyth.update_deposit;
-
-        let update_transaction = app
-            .relay_near
-            .construct_pyth_update_transaction(
-                &app.cache,
-                app.args.pyth.oracle_id.clone(),
-                vaa,
-                gas,
-                deposit,
-            )
-            .await;
-
-        let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
-            tracing::error!("Failed to estimate cost of gas for Pyth update transaction");
-            return SimpleResponse::Failure {
-                error: "Failed to estimate cost of gas for Pyth update transaction".to_string(),
-            };
-        };
-
-        match app
-            .send_and_resolve_transaction(
-                account_id.clone(),
-                cost_of_gas,
-                NearToken::from_near(0), // although we actually do attach a deposit to the pyth transaction, the oracle contract returns this deposit, so we don't need to charge the user for it
-                update_transaction,
-                TxExecutionStatus::Final,
-            )
-            .await
-        {
-            Ok(resolve) => {
-                if let Err(e) = resolve.await {
-                    tracing::error!("Resolve Pyth update transaction failure: {e:?}");
-                    return SimpleResponse::Failure {
-                        error: "Resolve Pyth update transaction failure".to_string(),
-                    };
-                }
-            }
-            Err(e) => {
-                tracing::error!("Send Pyth update transaction error: {e:?}");
-                return SimpleResponse::Failure {
-                    error: "Send Pyth update transaction error".to_string(),
-                };
-            }
+    if let Err(e) = app.pyth.update(request_price_updates.collect()).await {
+        tracing::error!(error = ?e, "Failed to update requested Pyth prices");
+        return SimpleResponse::Failure {
+            error: e.to_string(),
         };
     }
 
