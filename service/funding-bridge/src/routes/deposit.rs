@@ -25,7 +25,6 @@ use super::models::{DepositRequest, DepositResponse};
     name = "deposit",
     skip(app),
     fields(
-        request_id = %req.request_id,
         source_chain = %req.source_chain,
         asset = %req.asset,
         amount = %req.amount
@@ -44,10 +43,9 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
             return (
                 StatusCode::BAD_REQUEST,
                 Json(DepositResponse {
-                    request_id: req.request_id,
+                    source_tx_hash: String::new(),
                     status: "FAILED".to_string(),
                     source_chain: chain_id.clone(),
-                    source_tx_hash: None,
                     bridge_deposit_address: None,
                     error: Some(format!(
                         "Chain {} not configured. Available chains: {:?}",
@@ -66,14 +64,14 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
         return (
             StatusCode::BAD_REQUEST,
             Json(DepositResponse {
-                request_id: req.request_id,
+                source_tx_hash: String::new(),
                 status: "FAILED".to_string(),
                 source_chain: chain_id,
-                source_tx_hash: None,
                 bridge_deposit_address: None,
                 error: Some(format!(
                     "Token {} not supported on {}",
-                    req.asset, chain_handler.chain_id()
+                    req.asset,
+                    chain_handler.chain_id()
                 )),
             }),
         )
@@ -99,10 +97,9 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(DepositResponse {
-                    request_id: req.request_id,
+                    source_tx_hash: String::new(),
                     status: "FAILED".to_string(),
                     source_chain: chain_id,
-                    source_tx_hash: None,
                     bridge_deposit_address: None,
                     error: Some(format!("Failed to get bridge deposit address: {}", e)),
                 }),
@@ -117,10 +114,9 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
         return (
             StatusCode::OK,
             Json(DepositResponse {
-                request_id: req.request_id,
+                source_tx_hash: "dry-run-tx-hash".to_string(),
                 status: "DRY_RUN".to_string(),
                 source_chain: chain_id,
-                source_tx_hash: Some("dry-run-tx-hash".to_string()),
                 bridge_deposit_address: Some(deposit_address),
                 error: None,
             }),
@@ -142,14 +138,13 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
             (
                 StatusCode::OK,
                 Json(DepositResponse {
-                    request_id: req.request_id,
+                    source_tx_hash: result.tx_hash,
                     status: if result.confirmed {
                         "PENDING".to_string() // Pending bridge processing
                     } else {
                         "SUBMITTED".to_string()
                     },
                     source_chain: chain_id,
-                    source_tx_hash: Some(result.tx_hash),
                     bridge_deposit_address: Some(deposit_address),
                     error: None,
                 }),
@@ -161,10 +156,9 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(DepositResponse {
-                    request_id: req.request_id,
+                    source_tx_hash: String::new(),
                     status: "FAILED".to_string(),
                     source_chain: chain_id,
-                    source_tx_hash: None,
                     bridge_deposit_address: Some(deposit_address),
                     error: Some(format!("Transfer failed: {}", e)),
                 }),

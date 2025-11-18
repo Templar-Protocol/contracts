@@ -73,7 +73,11 @@ pub struct Args {
     pub sol_private_key: Option<String>,
 
     /// Solana RPC URL
-    #[arg(long, env = "SOL_RPC_URL", default_value = "https://api.mainnet-beta.solana.com")]
+    #[arg(
+        long,
+        env = "SOL_RPC_URL",
+        default_value = "https://api.mainnet-beta.solana.com"
+    )]
     pub sol_rpc_url: String,
 }
 

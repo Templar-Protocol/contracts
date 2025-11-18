@@ -21,7 +21,14 @@ pub fn create_router() -> Router<App> {
         .route("/deposit", routing::post(deposit::deposit))
         .route("/withdraw", routing::post(withdraw::withdraw))
         .route("/tokens/lookup", routing::get(tokens::token_lookup))
-        .route("/status/:request_id", routing::get(status::get_status))
+        .route(
+            "/status/withdrawal/:tx_hash",
+            routing::get(status::get_withdrawal_status),
+        )
+        .route(
+            "/status/deposit/:tx_hash",
+            routing::get(status::get_deposit_status),
+        )
 }
 
 #[cfg(test)]

@@ -18,7 +18,8 @@
 //! - `GET /tokens/lookup?asset=USDT&chain=ethereum` - Resolve OMFT token IDs
 //! - `POST /deposit` - **Automated deposit from external wallet** (ETH/Arbitrum)
 //! - `POST /withdraw` - Initiate cross-chain withdrawal via NEAR Intents
-//! - `GET /status/:request_id` - Check operation status
+//! - `GET /status/withdrawal/:tx_hash` - Check withdrawal status via Bridge API
+//! - `GET /status/deposit/:tx_hash` - Check deposit status via Bridge API
 //!
 //! ## Architecture
 //!
@@ -66,7 +67,6 @@
 //! - [`routes`] - REST API endpoints
 //! - [`rpc`] - NEAR network configuration
 //! - [`tokens`] - Token registry and OMFT utilities
-//! - [`tracker`] - Operation status tracking
 
 pub mod app;
 pub mod bridge;
@@ -79,7 +79,6 @@ pub mod metrics;
 pub mod routes;
 pub mod rpc;
 pub mod tokens;
-pub mod tracker;
 
 // Re-export commonly used types
 pub use config::Args;

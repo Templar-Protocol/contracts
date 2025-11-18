@@ -3,19 +3,15 @@
 //! These models define the JSON API contract for the funding-bridge service.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Request to deposit funds from external wallet to NEAR treasury
 ///
 /// Triggers an automated transfer from a configured external wallet
-/// (ETH/Arbitrum) to the bridge deposit address, which then credits
+/// (ETH/Arbitrum/Solana) to the bridge deposit address, which then credits
 /// the NEAR treasury with OMFT tokens.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositRequest {
-    /// Unique identifier for this request
-    pub request_id: String,
-
-    /// Source chain to transfer from (e.g., "ethereum", "arbitrum", "eth:42161")
+    /// Source chain to transfer from (e.g., "ethereum", "arbitrum", "eth:42161", "solana")
     pub source_chain: String,
 
     /// Asset to transfer (e.g., "USDC", "USDT")
@@ -32,18 +28,14 @@ pub struct DepositRequest {
 /// Response for deposit request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositResponse {
-    /// Same request_id from the request
-    pub request_id: String,
+    /// Transaction hash on source chain (use this for status tracking)
+    pub source_tx_hash: String,
 
     /// Current status
     pub status: String,
 
     /// Source chain used
     pub source_chain: String,
-
-    /// Transaction hash on source chain
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_tx_hash: Option<String>,
 
     /// Bridge deposit address used
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,12 +49,6 @@ pub struct DepositResponse {
 /// Request to withdraw funds from NEAR to external chain
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WithdrawRequest {
-    /// Unique identifier for this request
-    pub request_id: String,
-
-    /// NEAR account to withdraw from
-    pub source_account: String,
-
     /// Destination chain (e.g., "ethereum", "solana")
     pub destination_chain: String,
 
@@ -72,34 +58,22 @@ pub struct WithdrawRequest {
     /// Asset identifier
     pub asset: String,
 
-    /// Amount to withdraw
+    /// Amount to withdraw (in smallest units)
     pub amount: String,
 
     /// If true, log actions but don't execute
     #[serde(default)]
     pub dry_run: bool,
-
-    /// Additional metadata
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub metadata: HashMap<String, String>,
 }
 
 /// Response for withdraw request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WithdrawResponse {
-    /// Same request_id from the request
-    pub request_id: String,
+    /// NEAR transaction hash (use this for status tracking via Bridge API)
+    pub source_tx_hash: String,
 
     /// Current status
     pub status: WithdrawStatus,
-
-    /// NEAR transaction hash (if initiated)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_tx_hash: Option<String>,
-
-    /// Bridge transaction ID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bridge_tx_id: Option<String>,
 
     /// Destination transaction hash (if completed)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,36 +98,46 @@ pub enum WithdrawStatus {
     Failed,
 }
 
-/// Request to check status of an operation
+/// Response for withdrawal status check (from Bridge API)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatusRequest {
-    /// Request ID to check
-    pub request_id: String,
-}
+pub struct WithdrawalStatusResponse {
+    /// NEAR transaction hash
+    pub near_tx_hash: String,
 
-/// Response with operation status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatusResponse {
-    /// Request ID
-    pub request_id: String,
-
-    /// Type of operation
-    pub operation_type: OperationType,
-
-    /// Current status (varies by operation type)
+    /// Current status
     pub status: String,
 
-    /// Additional status details
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub details: HashMap<String, String>,
+    /// Destination chain
+    pub chain: String,
+
+    /// Destination transaction hash (if completed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_tx_hash: Option<String>,
+
+    /// Amount transferred
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
 }
 
-/// Type of operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationType {
-    Deposit,
-    Withdraw,
+/// Response for deposit status check (from Bridge API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepositStatusResponse {
+    /// Source chain transaction hash
+    pub tx_hash: String,
+
+    /// Current status
+    pub status: String,
+
+    /// Source chain
+    pub chain: String,
+
+    /// NEAR transaction hash (when completed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_tx_hash: Option<String>,
+
+    /// Amount deposited
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
 }
 
 /// Health check response
@@ -212,7 +196,6 @@ mod tests {
     #[test]
     fn test_deposit_request_serialization() {
         let req = DepositRequest {
-            request_id: "req-123".to_string(),
             source_chain: "ethereum".to_string(),
             asset: "USDC".to_string(),
             amount: "100.5".to_string(),
@@ -222,7 +205,7 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let parsed: DepositRequest = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.request_id, "req-123");
+        assert_eq!(parsed.source_chain, "ethereum");
         assert_eq!(parsed.asset, "USDC");
         assert_eq!(parsed.amount, "100.5");
     }
@@ -230,10 +213,9 @@ mod tests {
     #[test]
     fn test_deposit_response_serialization() {
         let resp = DepositResponse {
-            request_id: "req-123".to_string(),
+            source_tx_hash: "0xabc123".to_string(),
             status: "PENDING".to_string(),
             source_chain: "eth:42161".to_string(),
-            source_tx_hash: Some("0xabc123".to_string()),
             bridge_deposit_address: Some("0xdef456".to_string()),
             error: None,
         };
@@ -241,24 +223,37 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("PENDING"));
         assert!(json.contains("0xabc123"));
+        assert!(json.contains("0xdef456"));
     }
 
     #[test]
     fn test_withdraw_request_serialization() {
         let req = WithdrawRequest {
-            request_id: "req-456".to_string(),
-            source_account: "user.near".to_string(),
             destination_chain: "ethereum".to_string(),
             destination_address: "0x123".to_string(),
             asset: "usdt".to_string(),
             amount: "500000".to_string(),
             dry_run: true,
-            metadata: HashMap::new(),
         };
 
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("req-456"));
         assert!(json.contains("ethereum"));
+        assert!(json.contains("0x123"));
+        assert!(json.contains("500000"));
+    }
+
+    #[test]
+    fn test_withdraw_response_serialization() {
+        let resp = WithdrawResponse {
+            source_tx_hash: "7abc123def".to_string(),
+            status: WithdrawStatus::Pending,
+            destination_tx_hash: None,
+            error: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("7abc123def"));
+        assert!(json.contains("PENDING"));
     }
 
     #[test]
@@ -291,13 +286,13 @@ mod tests {
     }
 
     #[test]
-    fn test_operation_type_serialization() {
-        let op = OperationType::Deposit;
-        let json = serde_json::to_string(&op).unwrap();
-        assert_eq!(json, "\"deposit\"");
+    fn test_withdraw_status_serialization() {
+        let status = WithdrawStatus::Completed;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"COMPLETED\"");
 
-        let op = OperationType::Withdraw;
-        let json = serde_json::to_string(&op).unwrap();
-        assert_eq!(json, "\"withdraw\"");
+        let status = WithdrawStatus::Failed;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"FAILED\"");
     }
 }

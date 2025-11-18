@@ -320,6 +320,34 @@ pub struct WithdrawalStatusResult {
 }
 
 // ============================================================================
+// Deposit Status
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct DepositStatusParams {
+    /// Source chain transaction hash
+    pub tx_hash: String,
+    /// Source chain identifier
+    pub chain: String,
+}
+
+/// Deposit status result from Bridge API
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DepositStatusResult {
+    /// Deposit status
+    pub status: String,
+    /// Source chain
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
+    /// NEAR transaction hash (when completed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_tx_hash: Option<String>,
+    /// Amount deposited
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+}
+
+// ============================================================================
 // Token Mapping Helper
 // ============================================================================
 

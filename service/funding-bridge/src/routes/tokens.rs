@@ -193,10 +193,7 @@ mod tests {
             near_handler,
             bridge_client,
             token_registry,
-            tracker: crate::tracker::OperationTracker::new(),
-            external_chains: std::sync::Arc::new(
-                crate::external::ExternalChainRegistry::new(),
-            ),
+            external_chains: std::sync::Arc::new(crate::external::ExternalChainRegistry::new()),
             dry_run: false,
             version: "0.1.0-test",
         }

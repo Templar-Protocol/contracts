@@ -8,10 +8,7 @@ use async_trait::async_trait;
 use solana_rpc_client::rpc_client::RpcClient;
 // Use the Pubkey from solana-program (re-exported by SPL crates)
 use spl_associated_token_account::solana_program::{
-    pubkey::Pubkey,
-    message::Message,
-    hash::Hash,
-    instruction::Instruction,
+    hash::Hash, instruction::Instruction, message::Message, pubkey::Pubkey,
 };
 use spl_associated_token_account::{
     get_associated_token_address, instruction::create_associated_token_account,
@@ -391,7 +388,9 @@ impl ExternalChainHandler for SolanaSdkHandler {
         );
 
         // Execute transfer
-        let signature = self.transfer_spl(mint, to_address, amount_raw, decimals).await?;
+        let signature = self
+            .transfer_spl(mint, to_address, amount_raw, decimals)
+            .await?;
 
         info!(signature = %signature, "SPL token transfer completed");
 
@@ -426,13 +425,14 @@ pub fn solana_sdk_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
     }
 
     // Try JSON format first, then base58
-    let handler: Option<SolanaSdkHandler> = if let Ok(json_bytes) = std::env::var("SOLANA_KEYPAIR_JSON") {
-        SolanaSdkHandler::from_json_bytes(config.clone(), &json_bytes).ok()
-    } else if let Ok(base58) = std::env::var("SOLANA_KEYPAIR_BASE58") {
-        SolanaSdkHandler::from_base58(config.clone(), &base58).ok()
-    } else {
-        None
-    };
+    let handler: Option<SolanaSdkHandler> =
+        if let Ok(json_bytes) = std::env::var("SOLANA_KEYPAIR_JSON") {
+            SolanaSdkHandler::from_json_bytes(config.clone(), &json_bytes).ok()
+        } else if let Ok(base58) = std::env::var("SOLANA_KEYPAIR_BASE58") {
+            SolanaSdkHandler::from_base58(config.clone(), &base58).ok()
+        } else {
+            None
+        };
 
     if let Some(h) = handler {
         info!(
@@ -601,9 +601,6 @@ mod tests {
             .transfer_tokens("11111111111111111111111111111111", "USDC", "invalid")
             .await;
 
-        assert!(matches!(
-            result,
-            Err(ExternalChainError::InvalidAmount(_))
-        ));
+        assert!(matches!(result, Err(ExternalChainError::InvalidAmount(_))));
     }
 }

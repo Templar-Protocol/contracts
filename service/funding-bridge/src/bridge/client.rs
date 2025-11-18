@@ -225,6 +225,36 @@ impl BridgeClient {
         Ok(result)
     }
 
+    /// Get deposit status by source chain transaction hash
+    pub async fn get_deposit_status(
+        &self,
+        tx_hash: &str,
+        chain: &str,
+    ) -> BridgeResult<DepositStatusResult> {
+        debug!(
+            tx_hash = %tx_hash,
+            chain = %chain,
+            "Getting deposit status"
+        );
+
+        let params = DepositStatusParams {
+            tx_hash: tx_hash.to_string(),
+            chain: chain.to_string(),
+        };
+        let request = JsonRpcRequest::new("deposit_status", params);
+
+        let response: JsonRpcResponse<DepositStatusResult> = self.send_request(request).await?;
+        let result = response
+            .result
+            .ok_or_else(|| BridgeError::ApiError("No result in response".to_string()))?;
+
+        info!(
+            status = %result.status,
+            "Fetched deposit status"
+        );
+        Ok(result)
+    }
+
     /// Find token info by asset name and chain
     pub async fn find_token(
         &self,

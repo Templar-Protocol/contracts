@@ -8,9 +8,9 @@ use axum::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::{app::App, bridge::ChainId, tracker::OperationInfo};
+use crate::{app::App, bridge::ChainId};
 
-use super::models::{OperationType, WithdrawRequest, WithdrawResponse, WithdrawStatus};
+use super::models::{WithdrawRequest, WithdrawResponse, WithdrawStatus};
 
 /// POST /withdraw - Withdraw funds from NEAR to external chain
 ///
@@ -20,8 +20,6 @@ use super::models::{OperationType, WithdrawRequest, WithdrawResponse, WithdrawSt
     name = "withdraw",
     skip(app),
     fields(
-        request_id = %req.request_id,
-        source = %req.source_account,
         dest_chain = %req.destination_chain,
         dest_address = %req.destination_address,
         asset = %req.asset,
@@ -36,18 +34,13 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         Ok(amt) => amt,
         Err(e) => {
             error!(error = %e, "Invalid amount format");
-            return error_response(
-                &req.request_id,
-                StatusCode::BAD_REQUEST,
-                format!("Invalid amount: {}", e),
-            );
+            return error_response(StatusCode::BAD_REQUEST, format!("Invalid amount: {}", e));
         }
     };
 
     if amount == 0 {
         error!("Amount must be greater than zero");
         return error_response(
-            &req.request_id,
             StatusCode::BAD_REQUEST,
             "Amount must be greater than zero".to_string(),
         );
@@ -58,7 +51,7 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         Ok(result) => result,
         Err(e) => {
             error!(chain = %req.destination_chain, error = %e, "Invalid destination chain");
-            return error_response(&req.request_id, StatusCode::BAD_REQUEST, e);
+            return error_response(StatusCode::BAD_REQUEST, e);
         }
     };
 
@@ -103,35 +96,14 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
     if app.dry_run || req.dry_run {
         info!("Dry run mode - no actual withdrawal");
 
-        // Track dry run operation
-        let mut op_info = OperationInfo::new(
-            req.request_id.clone(),
-            OperationType::Withdraw,
-            "COMPLETED".to_string(),
-        );
-        op_info.add_detail("destination_chain".to_string(), chain_id.to_string());
-        op_info.add_detail(
-            "destination_address".to_string(),
-            req.destination_address.clone(),
-        );
-        op_info.add_detail("asset".to_string(), req.asset.clone());
-        op_info.add_detail("amount".to_string(), amount.to_string());
-        op_info.add_detail("dry_run".to_string(), "true".to_string());
-        if let Some(info) = &token_info {
-            op_info.add_detail("near_token_id".to_string(), info.near_token_id.clone());
-        }
-        app.tracker.track(op_info);
-
         // Record metrics
         crate::metrics::record_withdraw("COMPLETED", &chain_name);
 
         return (
             StatusCode::OK,
             Json(WithdrawResponse {
-                request_id: req.request_id,
+                source_tx_hash: format!("dry-run-near-tx-{}", amount),
                 status: WithdrawStatus::Completed,
-                source_tx_hash: Some(format!("dry-run-near-tx-{}", amount)),
-                bridge_tx_id: Some(format!("dry-run-bridge-{}", amount)),
                 destination_tx_hash: Some(format!("dry-run-{}-tx-{}", chain_name, amount)),
                 error: None,
             }),
@@ -170,7 +142,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
                     "Failed to resolve asset to OMFT token ID"
                 );
                 return error_response(
-                    &req.request_id,
                     StatusCode::BAD_REQUEST,
                     format!(
                         "Unknown asset '{}' for chain {}: {}",
@@ -201,7 +172,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
             Err(e) => {
                 error!(error = %e, "Failed to build withdrawal intent");
                 return error_response(
-                    &req.request_id,
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Failed to build withdrawal intent: {}", e),
                 );
@@ -223,57 +193,20 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         Err(e) => {
             error!(error = %e, "Failed to execute withdrawal intent");
 
-            // Track failed operation
-            let mut op_info = OperationInfo::new(
-                req.request_id.clone(),
-                OperationType::Withdraw,
-                "FAILED".to_string(),
-            );
-            op_info.add_detail("destination_chain".to_string(), chain_id.to_string());
-            op_info.add_detail(
-                "destination_address".to_string(),
-                req.destination_address.clone(),
-            );
-            op_info.add_detail("asset".to_string(), req.asset.clone());
-            op_info.add_detail("amount".to_string(), amount.to_string());
-            op_info.add_detail("near_token_id".to_string(), near_token_id.clone());
-            op_info.add_detail("error".to_string(), e.to_string());
-            app.tracker.track(op_info);
-
             // Record metrics
             crate::metrics::record_withdraw("FAILED", &chain_name);
 
             return error_response(
-                &req.request_id,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to execute withdrawal: {}", e),
             );
         }
     };
 
-    // Track successful withdrawal
-    let mut op_info = OperationInfo::new(
-        req.request_id.clone(),
-        OperationType::Withdraw,
-        "PENDING".to_string(),
-    );
-    op_info.add_detail("destination_chain".to_string(), chain_id.to_string());
-    op_info.add_detail(
-        "destination_address".to_string(),
-        req.destination_address.clone(),
-    );
-    op_info.add_detail("asset".to_string(), req.asset.clone());
-    op_info.add_detail("amount".to_string(), amount.to_string());
-    op_info.add_detail("source_account".to_string(), req.source_account.clone());
-    op_info.add_detail("near_token_id".to_string(), near_token_id.clone());
-    op_info.add_detail("source_tx_hash".to_string(), tx_hash.clone());
-    app.tracker.track(op_info);
-
     // Record metrics
     crate::metrics::record_withdraw("PENDING", &chain_name);
 
     info!(
-        request_id = %req.request_id,
         tx_hash = %tx_hash,
         near_token = %near_token_id,
         chain = %chain_id,
@@ -285,10 +218,8 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
     (
         StatusCode::OK,
         Json(WithdrawResponse {
-            request_id: req.request_id,
+            source_tx_hash: tx_hash,
             status: WithdrawStatus::Pending,
-            source_tx_hash: Some(tx_hash),
-            bridge_tx_id: None,
             destination_tx_hash: None,
             error: None,
         }),
@@ -330,14 +261,12 @@ fn parse_chain(chain: &str) -> Result<(ChainId, String), String> {
     }
 }
 
-fn error_response(request_id: &str, status_code: StatusCode, error: String) -> Response {
+fn error_response(status_code: StatusCode, error: String) -> Response {
     (
         status_code,
         Json(WithdrawResponse {
-            request_id: request_id.to_string(),
+            source_tx_hash: String::new(),
             status: WithdrawStatus::Failed,
-            source_tx_hash: None,
-            bridge_tx_id: None,
             destination_tx_hash: None,
             error: Some(error),
         }),
@@ -351,7 +280,7 @@ mod tests {
     use crate::{bridge::BridgeClient, chain::NearHandler};
     use near_crypto::{KeyType, SecretKey};
     use near_primitives::types::AccountId;
-    use std::{collections::HashMap, str::FromStr, sync::Arc};
+    use std::{str::FromStr, sync::Arc};
 
     fn create_test_app() -> App {
         let bridge_client = Arc::new(BridgeClient::new("https://test.api".to_string()));
@@ -369,10 +298,7 @@ mod tests {
             near_handler,
             bridge_client,
             token_registry,
-            tracker: crate::tracker::OperationTracker::new(),
-            external_chains: std::sync::Arc::new(
-                crate::external::ExternalChainRegistry::new(),
-            ),
+            external_chains: std::sync::Arc::new(crate::external::ExternalChainRegistry::new()),
             dry_run: false,
             version: "0.1.0-test",
         }
@@ -417,14 +343,11 @@ mod tests {
         let app = create_test_app();
 
         let req = WithdrawRequest {
-            request_id: "req-789".to_string(),
-            source_account: "user.near".to_string(),
             destination_chain: "ethereum".to_string(),
             destination_address: "0x123".to_string(),
             asset: "usdc".to_string(),
             amount: "500000".to_string(),
             dry_run: false,
-            metadata: HashMap::new(),
         };
 
         let response = withdraw(State(app), Json(req)).await;
@@ -438,14 +361,11 @@ mod tests {
         let app = create_test_app();
 
         let req = WithdrawRequest {
-            request_id: "req-790".to_string(),
-            source_account: "user.near".to_string(),
             destination_chain: "eth:42161".to_string(), // Arbitrum
             destination_address: "0x456".to_string(),
             asset: "usdc".to_string(),
             amount: "1000000".to_string(),
             dry_run: false,
-            metadata: HashMap::new(),
         };
 
         let response = withdraw(State(app), Json(req)).await;
@@ -459,14 +379,11 @@ mod tests {
         let app = create_test_app();
 
         let req = WithdrawRequest {
-            request_id: "req-789".to_string(),
-            source_account: "user.near".to_string(),
             destination_chain: "ethereum".to_string(),
             destination_address: "0x123".to_string(),
             asset: "usdc".to_string(),
             amount: "invalid".to_string(),
             dry_run: false,
-            metadata: HashMap::new(),
         };
 
         let response = withdraw(State(app), Json(req)).await;
@@ -479,14 +396,11 @@ mod tests {
         let app = create_test_app();
 
         let req = WithdrawRequest {
-            request_id: "req-789".to_string(),
-            source_account: "user.near".to_string(),
             destination_chain: "ethereum".to_string(),
             destination_address: "0x123".to_string(),
             asset: "usdc".to_string(),
             amount: "0".to_string(),
             dry_run: false,
-            metadata: HashMap::new(),
         };
 
         let response = withdraw(State(app), Json(req)).await;
@@ -499,14 +413,11 @@ mod tests {
         let app = create_test_app();
 
         let req = WithdrawRequest {
-            request_id: "req-789".to_string(),
-            source_account: "user.near".to_string(),
             destination_chain: "bitcoin".to_string(),
             destination_address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2".to_string(),
             asset: "usdc".to_string(),
             amount: "500000".to_string(),
             dry_run: false,
-            metadata: HashMap::new(),
         };
 
         let response = withdraw(State(app), Json(req)).await;
@@ -519,14 +430,11 @@ mod tests {
         let app = create_test_app();
 
         let req = WithdrawRequest {
-            request_id: "req-789".to_string(),
-            source_account: "user.near".to_string(),
             destination_chain: "arbitrum".to_string(),
             destination_address: "0x789".to_string(),
             asset: "usdc".to_string(),
             amount: "500000".to_string(),
             dry_run: true,
-            metadata: HashMap::new(),
         };
 
         let response = withdraw(State(app), Json(req)).await;

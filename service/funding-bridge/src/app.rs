@@ -8,7 +8,6 @@ use crate::{
     config::Args,
     external::{config::EvmChainConfig, evm::EvmChainHandler, ExternalChainRegistry},
     tokens::TokenRegistry,
-    tracker::OperationTracker,
     VERSION,
 };
 
@@ -23,9 +22,6 @@ pub struct App {
 
     /// Token registry for decimal handling and token info
     pub token_registry: TokenRegistry,
-
-    /// Operation tracker for status queries
-    pub tracker: OperationTracker,
 
     /// External chain registry for cross-chain deposits
     pub external_chains: Arc<ExternalChainRegistry>,
@@ -68,7 +64,6 @@ impl App {
         };
 
         let token_registry = TokenRegistry::new(Arc::clone(&bridge_client));
-        let tracker = OperationTracker::new();
 
         // Initialize external chain registry
         let external_chains = Self::build_external_chain_registry(args);
@@ -77,7 +72,6 @@ impl App {
             near_handler,
             bridge_client,
             token_registry,
-            tracker,
             external_chains,
             dry_run: args.dry_run,
             version: VERSION,
@@ -98,14 +92,14 @@ impl App {
                 let chain_id = config.chain_id.clone();
 
                 // Override RPC URL if configured
-                let config = if chain_id == "eth:1" && args.eth_rpc_url != "https://eth.llamarpc.com"
-                {
-                    let mut c = config;
-                    c.rpc_url = args.eth_rpc_url.clone();
-                    c
-                } else {
-                    config
-                };
+                let config =
+                    if chain_id == "eth:1" && args.eth_rpc_url != "https://eth.llamarpc.com" {
+                        let mut c = config;
+                        c.rpc_url = args.eth_rpc_url.clone();
+                        c
+                    } else {
+                        config
+                    };
 
                 let handler = EvmChainHandler::new(config, private_key.clone());
                 registry.register(Box::new(handler));

@@ -240,7 +240,6 @@ async fn test_app_initialization() {
         near_handler: near_handler.clone(),
         bridge_client,
         token_registry,
-        tracker: templar_funding_bridge::tracker::OperationTracker::new(),
         external_chains: std::sync::Arc::new(
             templar_funding_bridge::external::ExternalChainRegistry::new(),
         ),

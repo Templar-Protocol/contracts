@@ -1,6 +1,8 @@
 //! EVM chain handler for Ethereum and compatible chains
 
 use async_trait::async_trait;
+#[cfg(feature = "ethereum")]
+use tracing::{error, info};
 
 use super::{config::EvmChainConfig, ExternalChainError, ExternalChainHandler, TransferResult};
 
@@ -151,9 +153,7 @@ impl ExternalChainHandler for EvmChainHandler {
         call_data.extend_from_slice(&amount_bytes);
 
         // Create transaction
-        let tx = TransactionRequest::new()
-            .to(token_address)
-            .data(call_data);
+        let tx = TransactionRequest::new().to(token_address).data(call_data);
 
         // Send transaction
         let client_clone = client.clone();
