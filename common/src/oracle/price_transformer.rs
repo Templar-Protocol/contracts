@@ -40,7 +40,7 @@ pub struct Call {
 }
 
 impl Call {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     #[allow(clippy::unwrap_used)]
     pub fn new(
         account_id: &near_sdk::AccountIdRef,
@@ -56,7 +56,7 @@ impl Call {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     pub fn new_simple(account_id: &near_sdk::AccountIdRef, method_name: impl Into<String>) -> Self {
         Self::new(
             account_id,
@@ -75,7 +75,7 @@ impl Call {
         )
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
     pub fn rpc_call(&self) -> near_primitives::views::QueryRequest {
         near_primitives::views::QueryRequest::CallFunction {
             account_id: self.account_id.clone(),

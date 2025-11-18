@@ -20,7 +20,7 @@ impl Contract {
         self.configuration
             .price_oracle_configuration
             .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
     }
 
     pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
@@ -64,7 +64,7 @@ impl Contract {
         let snapshot = self.snapshot();
         let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
         if !borrow_position.inner().liquidation_lock.is_zero() {
-            env::panic_str("Cannot add collateral while liquidation locked");
+            templar_common::panic_with_message("Cannot add collateral while liquidation locked");
         }
         let proof = borrow_position.accumulate_interest();
         borrow_position.record_collateral_asset_deposit(proof, amount);
@@ -98,7 +98,7 @@ impl Contract {
         // Returns the amount that should be returned to the borrower.
         borrow_position
             .record_repay(proof, amount)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
     }
 }
 
@@ -122,7 +122,9 @@ impl Contract {
 
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
         else {
-            env::panic_str("No borrower record. Please deposit collateral first.");
+            templar_common::panic_with_message(
+                "No borrower record. Please deposit collateral first.",
+            );
         };
 
         let interest = borrow_position.accumulate_interest();
@@ -135,7 +137,7 @@ impl Contract {
                 &price_pair,
                 env::block_timestamp_ms(),
             )
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         drop(borrow_position);
 
@@ -155,7 +157,9 @@ impl Contract {
     pub fn borrow_02_finalize(&mut self, account_id: AccountId, initial_borrow: InitialBorrow) {
         let snapshot = self.snapshot();
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
-            env::panic_str("Invariant violation: borrow position does not exist after transfer.");
+            templar_common::panic_with_message(
+                "Invariant violation: borrow position does not exist after transfer.",
+            );
         };
 
         let proof = borrow_position.accumulate_interest();
@@ -251,13 +255,15 @@ impl Contract {
             .configuration
             .price_oracle_configuration
             .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         let result = {
             let snapshot = self.snapshot();
             let mut borrow_position = self
                 .borrow_position_guard(snapshot, msg.account_id.clone())
-                .unwrap_or_else(|| env::panic_str("Borrow position does not exist"));
+                .unwrap_or_else(|| {
+                    templar_common::panic_with_message("Borrow position does not exist")
+                });
 
             let proof = borrow_position.accumulate_interest();
 
@@ -269,7 +275,7 @@ impl Contract {
                     &price_pair,
                     env::block_timestamp_ms(),
                 )
-                .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
         };
 
         self.configuration
@@ -316,7 +322,9 @@ impl Contract {
         let mut borrow_position = self
             .borrow_position_guard(snapshot, account_id)
             .unwrap_or_else(|| {
-                env::panic_str("Invariant violation: Liquidation of nonexistent position.")
+                templar_common::panic_with_message(
+                    "Invariant violation: Liquidation of nonexistent position.",
+                )
             });
 
         let proof = borrow_position.accumulate_interest();
@@ -341,7 +349,9 @@ impl Contract {
         let snapshot = self.snapshot();
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
         else {
-            env::panic_str("No borrower record. Please deposit collateral first.");
+            templar_common::panic_with_message(
+                "No borrower record. Please deposit collateral first.",
+            );
         };
 
         let proof = borrow_position.accumulate_interest();
@@ -378,7 +388,7 @@ impl Contract {
 
         let snapshot = self.snapshot();
         let Some(mut position) = self.borrow_position_guard(snapshot, account_id.clone()) else {
-            env::panic_str(
+            templar_common::panic_with_message(
                 "Invariant violation: Borrow position must exist after collateral withdrawal.",
             );
         };
@@ -405,7 +415,9 @@ impl Contract {
     ) {
         if matches!(env::promise_result(0), PromiseResult::Failed) {
             let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
-                env::panic_str("Invariant violation: static yield entry must exist during callback")
+                templar_common::panic_with_message(
+                    "Invariant violation: static yield entry must exist during callback",
+                )
             });
             yield_record.add_once(amount);
             self.static_yield.insert(&account_id, &yield_record);

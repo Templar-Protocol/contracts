@@ -273,7 +273,7 @@ impl Contract {
             &sender,
             env::current_account_id(),
         ))
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         self.internal_accrue_fee();
 
@@ -295,14 +295,13 @@ impl Contract {
         Self::assert_allocator();
 
         if self.current_withdraw_inflight.is_some() {
-            env::panic_str("A pending withdrawal is already in-flight");
+            templar_common::panic_with_message("A pending withdrawal is already in-flight");
         }
 
         if let Some(id) = self.peek_next_pending_withdrawal_id() {
-            let pending = self
-                .pending_withdrawals
-                .get(&id)
-                .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
+            let pending = self.pending_withdrawals.get(&id).unwrap_or_else(|| {
+                templar_common::panic_with_message("pending vanished unexpectedly")
+            });
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
 
@@ -343,7 +342,7 @@ impl Contract {
         };
 
         let Some(market_index) = self.pending_market_exec.first().copied() else {
-            env::panic_str("No pending market withdrawal request to execute");
+            templar_common::panic_with_message("No pending market withdrawal request to execute");
         };
 
         if let Err(e) = self.resolve_withdraw_market(market_index) {
@@ -435,10 +434,10 @@ impl Contract {
 
         let sum_weights: u128 = weights.values().sum();
         if sum_weights == 0 {
-            env::panic_str("Sum of weights is zero");
+            templar_common::panic_with_message("Sum of weights is zero");
         }
         if total == 0 {
-            env::panic_str("No funds to allocate");
+            templar_common::panic_with_message("No funds to allocate");
         }
 
         let op_id = self.next_op_id;
@@ -501,9 +500,9 @@ impl Contract {
     pub fn get_configuration(&self) -> VaultConfiguration {
         let meta = self.get_metadata();
         VaultConfiguration {
-            owner: self
-                .own_get_owner()
-                .unwrap_or_else(|| env::panic_str("Owner not set in get_configuration")),
+            owner: self.own_get_owner().unwrap_or_else(|| {
+                templar_common::panic_with_message("Owner not set in get_configuration")
+            }),
             curator: Self::with_members_of(&Role::Curator, |members| {
                 require!(
                     members.len() == 1,
@@ -807,7 +806,7 @@ impl Contract {
     fn ensure_idle(&self) {
         // Invariant: Only one op in flight; ensure_idle() guards all mutating ops.
         if !matches!(self.op_state, OpState::Idle) {
-            env::panic_str(&format!(
+            templar_common::panic_with_message(&format!(
                 "Invariant: Only one op in flight; current op_state = {:?}",
                 self.op_state
             ));
@@ -860,7 +859,7 @@ impl Contract {
                 Some(
                     #[allow(clippy::expect_used, reason = "Infallible")]
                     serde_json::to_string(&templar_common::market::DepositMsg::Supply)
-                        .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+                        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
                         .as_str(),
                 ),
             )
@@ -1188,7 +1187,7 @@ impl Contract {
 impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {
     fn hook<R>(_: &mut Self, _: &Nep145ForceUnregister, _: impl FnOnce(&mut Self) -> R) -> R {
         // Invariant: Force unregister must fail to preserve FT ledger integrity.
-        env::panic_str("force unregistration is not supported")
+        templar_common::panic_with_message("force unregistration is not supported")
     }
 }
 

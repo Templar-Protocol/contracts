@@ -1,12 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "common",
-    "contract/*",
-    "mock/*",
-    "service/*",
-    "test-utils",
-    "universal-account",
+  "common",
+  "contract/*",
+  "fuzz",
+  "mock/*",
+  "service/*",
+  "test-utils",
+  "universal-account",
 ]
 
 [workspace.package]
@@ -17,6 +18,7 @@ version = "1.2.0"
 
 [workspace.dependencies]
 anyhow = "1.0.95"
+arbitrary = { version = "1", features = ["derive"] }
 async-trait = "0.1.88"
 base64 = "0.22.1"
 borsh = { version = "1.5", features = ["unstable__schema"] }
@@ -26,6 +28,7 @@ getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 itertools = "0.14.0"
+libfuzzer-sys = "0.4"
 near-account-id = "1.1.4"
 near-chain-configs = "0.31.1"
 near-contract-standards = "5.17.2"
