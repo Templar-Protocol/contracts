@@ -1,0 +1,37 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/

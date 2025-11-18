@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  funding-bridge:
+    build:
+      context: ../../
+      dockerfile: service/funding-bridge/Dockerfile
+      args:
+        # Build with all features (ethereum, solana)
+        FEATURES: "ethereum,solana"
+
+    container_name: templar-funding-bridge
+
+    # Environment variables (override with .env file)
+    environment:
+      # Server
+      - PORT=${PORT:-3000}
+      - NETWORK=${NETWORK:-mainnet}
+
+      # NEAR
+      - NEAR_ENABLED=${NEAR_ENABLED:-true}
+      - NEAR_TREASURY_ACCOUNT=${NEAR_TREASURY_ACCOUNT}
+      - NEAR_SIGNER_KEY=${NEAR_SIGNER_KEY}
+      - NEAR_RPC_URL=${NEAR_RPC_URL:-https://rpc.mainnet.near.org}
+
+      # Bridge
+      - BRIDGE_API_URL=${BRIDGE_API_URL:-https://bridge.chaindefuser.com/rpc}
+
+      # Ethereum (optional)
+      - ETH_PRIVATE_KEY=${ETH_PRIVATE_KEY}
+      - ETH_RPC_URL=${ETH_RPC_URL:-https://eth.llamarpc.com}
+
+      # Solana (optional)
+      - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY}
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+
+      # Testing
+      - DRY_RUN=${DRY_RUN:-false}
+
+      # Logging
+      - RUST_LOG=${RUST_LOG:-info,templar_funding_bridge=debug}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+
+    # Load environment from file
+    env_file:
+      - .env
+
+    # Port mapping
+    ports:
+      - "${PORT:-3000}:3000"
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Command (override default --help)
+    command:
+      - "--port"
+      - "3000"
+      - "--network"
+      - "${NETWORK:-mainnet}"
+      - "--near-enabled"
+      - "--near-treasury-account"
+      - "${NEAR_TREASURY_ACCOUNT}"
+      - "--near-signer-key"
+      - "${NEAR_SIGNER_KEY}"
+
+# Networks
+networks:
+  default:
+    name: templar-network
+    driver: bridge
+
+# Volumes (if needed for logs or data)
+volumes:
+  logs:
+    driver: local
