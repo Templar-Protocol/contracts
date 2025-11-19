@@ -213,7 +213,7 @@ pub async fn create(
 
     // Check that account does not exist already
 
-    let account_slug = public_key_to_account_id_slug(&create.key.to_string());
+    let account_slug = public_key_to_account_id_slug(&create.key);
     tracing::info!("Account slug: {account_slug}");
 
     let registry_id = &app.args.ua.registry_id;

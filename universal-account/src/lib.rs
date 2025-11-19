@@ -28,7 +28,7 @@ pub enum KeyId {
 impl Display for KeyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            KeyId::Passkey(passkey) => write!(f, "passkey:{}", passkey.0),
+            KeyId::Passkey(passkey) => write!(f, "{}", passkey.0),
             KeyId::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
         }
     }
@@ -155,7 +155,7 @@ mod tests {
         let passkey_id: KeyId = passkey.into();
         let passkey_id_str = passkey_id.to_string();
 
-        let Some(b) = passkey_id_str.strip_prefix("passkey:p256:") else {
+        let Some(b) = passkey_id_str.strip_prefix("p256:") else {
             panic!("invalid prefix");
         };
 
