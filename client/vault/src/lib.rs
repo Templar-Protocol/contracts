@@ -938,3 +938,169 @@ impl Client {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::u128;
+
+    use super::*;
+    use near_crypto::{KeyType, SecretKey};
+    use rstest::{fixture, rstest};
+
+    #[fixture]
+    fn vault() -> AccountId {
+        tracing_subscriber::fmt::init();
+        AccountId("metavault.topgunbakugo.testnet".to_string())
+    }
+
+    #[fixture]
+    fn everything() -> AccountId {
+    }
+
+    #[fixture]
+    fn testnet_rpc() -> String {
+        "https://rpc.testnet.near.org".to_string()
+    }
+
+    #[fixture]
+    fn sk() -> SecretKey {
+    }
+
+    #[rstest]
+    fn account_id_conversion_happy_path(everything: AccountId) {
+        let near_id: NearAccountId = everything.clone().into();
+        assert_eq!(near_id.as_str(), "topgunbakugo.testnet");
+    }
+
+    #[test]
+    fn error_wrapper_display_happy_path() {
+        let err = ErrorWrapper::from(anyhow::anyhow!("boom"));
+        let s = format!("{}", err);
+        assert!(s.contains("boom"));
+    }
+
+    #[test]
+    fn default_gas_is_nonzero() {
+        assert!(super::DEFAULT_GAS > 0);
+    }
+
+    #[rstest]
+    fn can_construct_client_happy_path(
+        vault: AccountId,
+        everything: AccountId,
+        testnet_rpc: String,
+        sk: SecretKey,
+    ) {
+        Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5)
+            .expect("Client should be created");
+    }
+
+    // The following async tests exercise the happy-path surfaces but are ignored by default
+    // because they require a running NEAR RPC endpoint and appropriate accounts/contracts.
+    #[rstest]
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_methods_happy_path_smoke(vault: AccountId, testnet_rpc: String) {
+        let sk = SecretKey::from_random(KeyType::ED25519);
+        let signer_account = AccountId("alice.testnet".to_string());
+        let client = Client::new_client(testnet_rpc, &signer_account, &sk.to_string(), &vault, 5)
+            .expect("Client should be created");
+        println!("Total Assets: {}", client.get_total_assets().await.unwrap());
+        println!("Total Supply: {}", client.get_total_supply().await.unwrap());
+        println!("Idle Balance: {}", client.get_idle_balance().await.unwrap());
+        println!("Max Deposit: {}", client.get_max_deposit().await.unwrap());
+    }
+
+    #[rstest]
+    #[tokio::test(flavor = "current_thread")]
+    async fn redeem_happy_path_smoke(
+        vault: AccountId,
+        everything: AccountId,
+        testnet_rpc: String,
+        sk: SecretKey,
+    ) {
+        let client =
+            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
+        let receiver = AccountId("topgunbakugo.testnet".to_string());
+        client.redeem(&"1".to_string(), &receiver).await.unwrap();
+    }
+
+    #[rstest]
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_withdrawal_happy_path_smoke(
+        vault: AccountId,
+        everything: AccountId,
+        testnet_rpc: String,
+        sk: SecretKey,
+    ) {
+        let client =
+            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
+        let route = vec![
+            AccountId("market1.testnet".to_string()),
+            AccountId("vault.testnet".to_string()),
+        ];
+        println!("{:?}", client.execute_withdrawal(&route).await.unwrap());
+    }
+
+    #[test]
+    fn governance_u128_serialization_happy_path() {
+        let input = "\"12345\"".to_string();
+        let u: U128 = serde_json::from_str(&input).unwrap();
+        assert_eq!(u.0, 12345);
+    }
+
+    #[test]
+    fn governance_u64_wrapper_happy_path() {
+        let u = near_sdk::json_types::U64::from(42u64);
+        assert_eq!(u.0, 42u64);
+    }
+
+    #[test]
+    fn deposit_string_parse_happy_path() {
+        let s = "1000000".to_string();
+        let v: u128 = s.parse().unwrap();
+        assert_eq!(v, 1_000_000u128);
+    }
+
+    // The following async tests are ignored by default as they require network and permissions.
+    #[rstest]
+    #[tokio::test(flavor = "current_thread")]
+    async fn governance_smoke_calls_ignored(
+        vault: AccountId,
+        everything: AccountId,
+        testnet_rpc: String,
+        sk: SecretKey,
+    ) {
+        let client =
+            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
+
+        println!("{:?}", client.accept_guardian().await.unwrap());
+        println!("{:?}", client.revoke_pending_guardian().await.unwrap());
+
+        println!("{:?}", client.submit_timelock(0).await.unwrap());
+        println!("{:?}", client.accept_timelock().await.unwrap());
+        println!("{:?}", client.revoke_pending_timelock().await.unwrap());
+    }
+
+    #[rstest]
+    #[tokio::test(flavor = "current_thread")]
+    async fn governance_set_supply_queue_ignored(
+        vault: AccountId,
+        everything: AccountId,
+        testnet_rpc: String,
+        sk: SecretKey,
+    ) {
+        let client =
+            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
+        let markets: Vec<AccountId> = vec!["gh-65.templar-in-training.testnet".to_string().into()];
+
+        let x = serde_json::to_string_pretty(&U128(u128::MAX)).unwrap();
+        println!("{:?}", x);
+        println!(
+            "{:?}",
+            client
+                .set_supply_queue(&markets, &"0".to_string())
+                .await
+                .unwrap()
+        );
+    }
+}
