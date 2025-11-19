@@ -44,14 +44,16 @@ LIQUIDATION_STRATEGY="${LIQUIDATION_STRATEGY:-partial}"
 LIQUIDATION_SCAN_INTERVAL="${LIQUIDATION_SCAN_INTERVAL:-600}"
 REGISTRY_REFRESH_INTERVAL="${REGISTRY_REFRESH_INTERVAL:-3600}"
 CONCURRENCY="${CONCURRENCY:-10}"
-PARTIAL_PERCENTAGE="${PARTIAL_PERCENTAGE:-50}"
+PARTIAL_LIQUIDATION_PERCENTAGE="${PARTIAL_LIQUIDATION_PERCENTAGE:-50}"
+FIXED_LIQUIDATION_AMOUNT="${FIXED_LIQUIDATION_AMOUNT}"
+LOOP_LIQUIDATION="${LOOP_LIQUIDATION:-false}"
+MAX_LOOP_ITERATIONS="${MAX_LOOP_ITERATIONS:-10}"
 TRANSACTION_TIMEOUT="${TRANSACTION_TIMEOUT:-60}"
 MIN_PROFIT_BPS="${MIN_PROFIT_BPS:-50}"
 DRY_RUN="${DRY_RUN:-true}"
 
 # Collateral strategy configuration
 COLLATERAL_STRATEGY="${COLLATERAL_STRATEGY:-hold}"
-PRIMARY_ASSET="${PRIMARY_ASSET}"
 
 # Swap provider configuration (both providers will be initialized automatically)
 ONECLICK_API_TOKEN="${ONECLICK_API_TOKEN}"
@@ -121,7 +123,7 @@ CMD_ARGS=(
     "--liquidation-scan-interval" "$LIQUIDATION_SCAN_INTERVAL"
     "--registry-refresh-interval" "$REGISTRY_REFRESH_INTERVAL"
     "--concurrency" "$CONCURRENCY"
-    "--partial-percentage" "$PARTIAL_PERCENTAGE"
+    "--partial-percentage" "$PARTIAL_LIQUIDATION_PERCENTAGE"
     "--min-profit-bps" "$MIN_PROFIT_BPS"
     "--transaction-timeout" "$TRANSACTION_TIMEOUT"
 )
@@ -135,9 +137,13 @@ done
 # Add RPC_URL if set
 [ -n "$RPC_URL" ] && CMD_ARGS+=("--rpc-url" "$RPC_URL")
 
+# Add loop liquidation arguments
+[ "$LOOP_LIQUIDATION" = "true" ] && CMD_ARGS+=("--loop-liquidation")
+[ -n "$MAX_LOOP_ITERATIONS" ] && CMD_ARGS+=("--max-loop-iterations" "$MAX_LOOP_ITERATIONS")
+[ -n "$FIXED_LIQUIDATION_AMOUNT" ] && CMD_ARGS+=("--fixed-liquidation-amount" "$FIXED_LIQUIDATION_AMOUNT")
+
 # Add collateral strategy arguments
 CMD_ARGS+=("--collateral-strategy" "$COLLATERAL_STRATEGY")
-[ -n "$PRIMARY_ASSET" ] && CMD_ARGS+=("--primary-asset" "$PRIMARY_ASSET")
 [ -n "$ONECLICK_API_TOKEN" ] && CMD_ARGS+=("--oneclick-api-token" "$ONECLICK_API_TOKEN")
 [ -n "$REF_CONTRACT" ] && CMD_ARGS+=("--ref-contract" "$REF_CONTRACT")
 

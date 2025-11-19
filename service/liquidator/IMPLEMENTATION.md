@@ -317,4 +317,4 @@ profitable = profit >= min_profit
 See [README.md](./README.md) for Docker commands.
 
 **Build context:** `contracts/` (repository root)
-**Dockerfile location:** `bots/liquidator/Dockerfile`
+**Dockerfile location:** `service/liquidator/Dockerfile`

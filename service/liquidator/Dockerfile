@@ -17,8 +17,8 @@ WORKDIR /app
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY common ./common
-COPY bots ./bots
 COPY contract ./contract
+COPY fuzz ./fuzz
 COPY mock ./mock
 COPY service ./service
 COPY test-utils ./test-utils
@@ -51,8 +51,8 @@ WORKDIR /app
 COPY --from=builder /app/target/release/liquidator /app/liquidator
 
 # Copy configuration templates
-COPY --chown=liquidator:liquidator bots/liquidator/scripts ./scripts
-COPY --chown=liquidator:liquidator bots/liquidator/.env.example ./.env.example
+COPY --chown=liquidator:liquidator service/liquidator/scripts ./scripts
+COPY --chown=liquidator:liquidator service/liquidator/.env.example ./.env.example
 
 # Set ownership
 RUN chown -R liquidator:liquidator /app

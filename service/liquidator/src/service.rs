@@ -453,8 +453,13 @@ impl LiquidatorService {
                     self.config.max_loop_iterations,
                 );
 
-                // Test market compatibility
-                match liquidator.scanner().test_market_compatibility().await {
+                // Test market compatibility (including partial liquidation support if required)
+                let requires_partial = self.config.strategy.requires_partial_liquidation_support();
+                match liquidator
+                    .scanner()
+                    .check_market_compatibility(requires_partial)
+                    .await
+                {
                     Ok(()) => {
                         supported_markets.insert(market, liquidator);
                     }

@@ -238,8 +238,6 @@ impl Liquidator {
         position: BorrowPosition,
         oracle_response: OracleResponse,
     ) -> Result<LiquidationOutcome, LiquidatorError> {
-        use templar_common::number::Decimal;
-
         // Loop liquidation support
         let mut loop_iteration = 0;
         let max_iterations = self.max_loop_iterations;
@@ -299,7 +297,7 @@ impl Liquidator {
 
             // Safety check for max iterations
             if loop_iteration > max_iterations {
-                tracing::warn!(
+                tracing::info!(
                     borrower = %borrow_account,
                     max_iterations,
                     "Reached maximum loop iterations, stopping"
@@ -365,12 +363,13 @@ impl Liquidator {
             let mut adjusted_position = position.clone();
             adjusted_position.collateral_asset_deposit = liquidatable_collateral;
 
-            let Some(liquidation_amount) = self.strategy.calculate_liquidation_amount(
-                &adjusted_position,
-                &oracle_response,
-                &self.market_config,
-                available_balance,
-            )?
+            let Some((liquidation_amount, collateral_amount)) =
+                self.strategy.calculate_liquidation_amount(
+                    &adjusted_position,
+                    &oracle_response,
+                    &self.market_config,
+                    available_balance,
+                )?
             else {
                 if loop_iteration > 1 {
                     tracing::warn!(
@@ -396,23 +395,9 @@ impl Liquidator {
                 borrower = %borrow_account,
                 iteration = loop_iteration,
                 liquidation_amount = %liquidation_amount.0,
-                "Calculated liquidation amount"
+                collateral_amount = %collateral_amount.0,
+                "Calculated liquidation and collateral amounts from strategy"
             );
-
-            // Step 4: Calculate collateral amount that corresponds to the liquidation amount
-            // The strategy already calculated liquidation_amount based on liquidatable collateral
-
-            // Calculate target collateral as percentage of liquidatable amount
-            let target_percentage_decimal =
-                Decimal::from(u64::from(self.strategy.max_liquidation_percentage()))
-                    / Decimal::from(100u64);
-            let target_collateral_decimal =
-                Decimal::from(u128::from(liquidatable_collateral)) * target_percentage_decimal;
-            let target_collateral_u128 = target_collateral_decimal.to_u128_floor().unwrap_or(0);
-
-            // Use the target collateral, capped at liquidatable amount
-            let collateral_amount =
-                U128(target_collateral_u128.min(u128::from(liquidatable_collateral)));
 
             // Calculate expected value for profitability
             let expected_collateral_value =

@@ -35,6 +35,10 @@ impl MarketScanner {
     /// Minimum supported contract version (semver).
     /// Markets with version < 1.0.0 will be skipped.
     pub const MIN_SUPPORTED_VERSION: (u32, u32, u32) = (1, 0, 0);
+
+    /// Minimum version that supports partial liquidation (semver).
+    /// Markets with version < 1.1.0 only support full liquidation.
+    pub const MIN_PARTIAL_LIQUIDATION_VERSION: (u32, u32, u32) = (1, 1, 0);
 }
 
 impl MarketScanner {
@@ -135,20 +139,46 @@ impl MarketScanner {
         }
     }
 
-    /// Tests if the market is compatible by verifying its version via NEP-330.
+    /// Checks market compatibility and feature support in a single call.
+    ///
+    /// This method fetches the version once and checks:
+    /// 1. Basic compatibility (version >= 1.0.0)
+    /// 2. Partial liquidation support (version >= 1.1.0) if required by strategy
+    ///
+    /// # Arguments
+    ///
+    /// * `requires_partial_liquidation` - Whether the strategy requires partial liquidation support
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the market is compatible with the strategy requirements.
     ///
     /// # Errors
     ///
-    /// Returns an error if the market version is not supported, including the
-    /// actual version and minimum required version in the error message.
+    /// Returns an error if the market version is not supported or doesn't support
+    /// required features.
     #[tracing::instrument(skip(self), level = "debug")]
-    pub async fn test_market_compatibility(&self) -> LiquidatorResult<()> {
+    pub async fn check_market_compatibility(
+        &self,
+        requires_partial_liquidation: bool,
+    ) -> LiquidatorResult<()> {
         use crate::rpc::get_contract_version;
 
         let Some(version_string) = get_contract_version(&self.client, &self.market).await else {
-            info!(
+            // No NEP-330 metadata - can't verify version
+            if requires_partial_liquidation {
+                info!(
+                    market = %self.market,
+                    "Contract missing NEP-330 metadata, cannot verify partial liquidation support"
+                );
+                return Err(LiquidatorError::StrategyError(
+                    "Contract missing version metadata, cannot verify partial liquidation support"
+                        .to_string(),
+                ));
+            }
+            debug!(
                 market = %self.market,
-                "Contract does not implement NEP-330 (contract_source_metadata), assuming compatible"
+                "Contract missing NEP-330 metadata, assuming basic compatibility"
             );
             return Ok(());
         };
@@ -164,32 +194,73 @@ impl MarketScanner {
             info!(
                 market = %self.market,
                 version = %version_string,
-                "Invalid semver format, assuming compatible"
+                "Invalid semver format, skipping market"
             );
-            return Ok(());
+            return Err(LiquidatorError::StrategyError(format!(
+                "Invalid version format: {version_string}"
+            )));
         };
 
+        // Check basic compatibility
         let is_compatible = (major, minor, patch) >= Self::MIN_SUPPORTED_VERSION;
-
-        if is_compatible {
-            info!(
-                market = %self.market,
-                version = %version_string,
-                "Market is compatible and supported"
-            );
-            Ok(())
-        } else {
+        if !is_compatible {
             let (min_major, min_minor, min_patch) = Self::MIN_SUPPORTED_VERSION;
-            let error_msg = format!(
-                "Market version {version_string} is not supported (minimum required: {min_major}.{min_minor}.{min_patch})"
-            );
             info!(
                 market = %self.market,
                 version = %version_string,
                 min_version = %format!("{min_major}.{min_minor}.{min_patch}"),
                 "Skipping market - unsupported contract version"
             );
-            Err(LiquidatorError::StrategyError(error_msg))
+            return Err(LiquidatorError::StrategyError(format!(
+                "Market version {version_string} < {min_major}.{min_minor}.{min_patch}"
+            )));
         }
+
+        // Check partial liquidation support if required
+        if requires_partial_liquidation {
+            let supports_partial = (major, minor, patch) >= Self::MIN_PARTIAL_LIQUIDATION_VERSION;
+            if !supports_partial {
+                let (min_major, min_minor, min_patch) = Self::MIN_PARTIAL_LIQUIDATION_VERSION;
+                info!(
+                    market = %self.market,
+                    version = %version_string,
+                    min_version = %format!("{min_major}.{min_minor}.{min_patch}"),
+                    "Skipping market - does not support partial liquidation"
+                );
+                return Err(LiquidatorError::StrategyError(format!(
+                    "Market version {version_string} does not support partial liquidation (requires {min_major}.{min_minor}.{min_patch}+)"
+                )));
+            }
+        }
+
+        info!(
+            market = %self.market,
+            version = %version_string,
+            "Market is compatible"
+        );
+        Ok(())
+    }
+
+    /// Tests if the market is compatible by verifying its version via NEP-330.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the market version is not supported.
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn test_market_compatibility(&self) -> LiquidatorResult<()> {
+        self.check_market_compatibility(false).await
+    }
+
+    /// Checks if the market supports partial liquidation based on its version.
+    ///
+    /// Markets with version >= 1.1.0 support partial liquidation.
+    /// Older markets only support full liquidation of all liquidatable collateral.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the market supports partial liquidation, `false` otherwise.
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn supports_partial_liquidation(&self) -> bool {
+        self.check_market_compatibility(true).await.is_ok()
     }
 }
