@@ -542,3 +542,63 @@ impl Client {
         info!("Execute market withdrawal call submitted");
         Ok(())
     }
+
+    #[instrument(skip(self))]
+    pub async fn get_withdrawing_op_id(&self) -> Result<u64, ErrorWrapper> {
+        info!("Fetching withdrawing op id");
+        let res = self
+            .view(&self.vault, "get_withdrawing_op_id", (), self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)?;
+        info!("Withdrawing op id fetched: {}", res);
+        Ok(res)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn has_pending_market_withdrawal(&self) -> Result<bool, ErrorWrapper> {
+        info!("Checking pending market withdrawal");
+        let res = self
+            .view(
+                &self.vault,
+                "has_pending_market_withdrawal",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        info!("Pending market withdrawal: {}", res);
+        Ok(res)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_current_withdraw_request_id(&self) -> Result<u64, ErrorWrapper> {
+        info!("Fetching current withdraw request id");
+        let res = self
+            .view(
+                &self.vault,
+                "get_current_withdraw_request_id",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        info!("Current withdraw request id: {}", res);
+        Ok(res)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn cancel_inflight_withdrawal(&self) -> Result<(), ErrorWrapper> {
+        info!("Cancelling inflight withdrawal");
+        self.call(
+            &self.vault,
+            "cancel_inflight_withdrawal",
+            (),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Cancel inflight withdrawal call submitted");
+        Ok(())
+    }
