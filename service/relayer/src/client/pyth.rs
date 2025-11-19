@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use near_jsonrpc_client::errors::JsonRpcError;
 use near_primitives::{
     errors::TxExecutionError,
+    hash::CryptoHash,
     views::{FinalExecutionStatus, TxExecutionStatus},
 };
 use near_sdk::serde::Deserialize;
@@ -21,7 +22,7 @@ use super::near::Near;
 pub enum PythRequest {
     Update {
         price_ids: Box<[PriceIdentifier]>,
-        send: oneshot::Sender<Result<(), UpdateError>>,
+        send: oneshot::Sender<Result<Option<CryptoHash>, UpdateError>>,
     },
 }
 
@@ -91,7 +92,10 @@ impl PythClient {
         }
     }
 
-    pub async fn update(&mut self, price_ids: &[PriceIdentifier]) -> Result<(), UpdateError> {
+    pub async fn update(
+        &mut self,
+        price_ids: &[PriceIdentifier],
+    ) -> Result<Option<CryptoHash>, UpdateError> {
         let send_updates_for = IntoIterator::into_iter(price_ids)
             .filter(|id| {
                 self.last_updated
@@ -101,7 +105,7 @@ impl PythClient {
             .collect::<HashSet<_>>();
 
         if send_updates_for.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let send_updates_for: Vec<_> = send_updates_for.into_iter().copied().collect();
@@ -123,6 +127,8 @@ impl PythClient {
             )
             .await;
         tracing::debug!(?signed_transaction, "Signed Pyth update transaction.");
+
+        let transaction_hash = signed_transaction.get_hash();
 
         let transaction_result = self
             .near
@@ -147,7 +153,7 @@ impl PythClient {
                     self.last_updated
                         .extend(send_updates_for.into_iter().map(|id| (id, now)));
 
-                    Ok(())
+                    Ok(Some(transaction_hash))
                 }
             }
         } else {
@@ -219,7 +225,10 @@ impl Pyth {
     /// - Unexpected/inconsistent RPC behavior
     /// - Transaction failure
     #[allow(clippy::unwrap_used)]
-    pub async fn update(&self, price_ids: Box<[PriceIdentifier]>) -> Result<(), UpdateError> {
+    pub async fn update(
+        &self,
+        price_ids: Box<[PriceIdentifier]>,
+    ) -> Result<Option<CryptoHash>, UpdateError> {
         let (send, recv) = oneshot::channel();
         self.send
             .send(PythRequest::Update { price_ids, send })

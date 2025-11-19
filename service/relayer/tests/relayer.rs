@@ -466,7 +466,6 @@ pub async fn pyth_updates() {
         update_gas: near_sdk::Gas::from_tgas(300),
         update_deposit: NearToken::from_near(1).saturating_div(100),
     };
-    let pyth = Pyth::new(pyth_args.clone());
 
     let near = Near::new(
         JsonRpcClient::connect("https://test.rpc.fastnear.com"),
@@ -481,43 +480,22 @@ pub async fn pyth_updates() {
         nonce_refresh: Duration::from_secs(60),
     };
 
-    let cache = Cache::new(near.clone(), cache_args, watch::Sender::default());
+    let kill = watch::Sender::default();
 
-    let vaa = pyth
-        .get_latest_price_updates_vaa(&[PriceIdentifier(
-            hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
-                .unwrap()
-                .try_into()
-                .unwrap(),
-        )])
-        .await
-        .unwrap();
+    let cache = Cache::new(near.clone(), cache_args, kill.clone());
 
-    let tx = near
-        .construct_pyth_update_transaction(
-            &cache,
-            pyth_args.oracle_id.clone(),
-            vaa,
-            pyth_args.update_gas,
-            pyth_args.update_deposit,
-        )
-        .await;
+    let pyth = Pyth::new(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
 
-    let result = near
-        .send_transaction(tx, TxExecutionStatus::Final)
-        .await
-        .unwrap();
+    let price_id = PriceIdentifier(
+        hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
 
-    eprintln!("{result:?}");
+    let txid = pyth.update(Box::new([price_id])).await.unwrap();
 
-    let status = &result
-        .final_execution_outcome
-        .unwrap()
-        .into_outcome()
-        .status;
+    eprintln!("Transaction hash: {txid:?}");
 
-    assert!(matches!(
-        status,
-        near_primitives::views::FinalExecutionStatus::SuccessValue(_),
-    ));
+    kill.send(()).unwrap();
 }

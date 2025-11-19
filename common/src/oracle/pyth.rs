@@ -26,7 +26,7 @@ use near_sdk::{
 
 pub type OracleResponse = HashMap<PriceIdentifier, Option<Price>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct PriceIdentifier(
     #[serde(
@@ -35,6 +35,12 @@ pub struct PriceIdentifier(
     )]
     pub [u8; 32],
 );
+
+impl std::fmt::Debug for PriceIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
 
 impl Display for PriceIdentifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
