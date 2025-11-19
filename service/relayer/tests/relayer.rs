@@ -36,11 +36,13 @@ use templar_relayer::{
     },
 };
 use templar_universal_account::{
-    authentication::passkey::{
-        self,
-        data::{AuthenticatorData, ClientDataJson},
-        with_raw_string::WithRawString,
-        Passkey, Payload,
+    authentication::{
+        passkey::{
+            self,
+            data::{AuthenticatorData, ClientDataJson},
+            Passkey,
+        },
+        HashForSigning, Payload,
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
@@ -64,29 +66,29 @@ fn create_message<T: near_sdk::serde::Serialize>(
     account_id: AccountId,
     parameters: ExecutionParameters,
     payload: T,
-) -> passkey::Message<T> {
-    let payload = WithRawString::from_parsed(Payload {
+) -> passkey::MessageWithSignature<T> {
+    let payload = passkey::Message::from_parsed(Payload {
         parameters,
         account_id,
         payload,
     });
 
-    let challenge = payload.hash().into();
+    let challenge = payload.hash_for_signing().into();
 
-    passkey::UncheckedMessage::new_and_sign(
-        secret_key,
-        payload,
-        AuthenticatorData(Box::new([0xffu8; 32])),
-        WithRawString::from_parsed(ClientDataJson {
-            r#type: "type".to_string(),
-            challenge,
-            origin: "origin".to_string(),
-            cross_origin: None,
-            top_origin: None,
-        }),
-    )
-    .try_into()
-    .unwrap()
+    payload
+        .sign(
+            secret_key,
+            AuthenticatorData(Box::new([0xffu8; 32])),
+            ClientDataJson {
+                r#type: "type".to_string(),
+                challenge,
+                origin: "origin".to_string(),
+                cross_origin: None,
+                top_origin: None,
+            },
+        )
+        .try_into()
+        .unwrap()
 }
 
 fn create_execute_message(
@@ -95,7 +97,7 @@ fn create_execute_message(
     parameters: ExecutionParameters,
     receiver_id: AccountId,
     actions: impl Into<Box<[transaction::Action]>>,
-) -> passkey::Message<Box<[Transaction]>> {
+) -> passkey::MessageWithSignature<Box<[Transaction]>> {
     create_message(
         secret_key,
         account_id,
@@ -299,7 +301,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(message)),
+        Json(CreateRequest::Passkey(Box::new(message))),
     )
     .await;
 
@@ -362,7 +364,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
                 key: passkey.clone(),
-                message,
+                message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
         }),
@@ -424,7 +426,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
                 key: passkey.clone(),
-                message,
+                message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
         }),
@@ -496,7 +498,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(message)),
+        Json(CreateRequest::Passkey(Box::new(message))),
     )
     .await;
 
@@ -565,7 +567,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
                 key: passkey.clone(),
-                message,
+                message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
         }),
@@ -628,7 +630,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
                 key: passkey_2.clone(),
-                message,
+                message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
         }),

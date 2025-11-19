@@ -3,7 +3,7 @@
 use near_sdk::{base64::prelude::*, env::sha256, json_types::U64, NearToken};
 
 use templar_universal_account::{
-    authentication::passkey::{with_raw_string::WithRawString, Payload},
+    authentication::{passkey, with_raw_string::WithRawString, HashForSigning, Payload},
     transaction::{Action, Transaction},
     ExecutionParameters,
 };
@@ -25,9 +25,9 @@ pub fn main() {
         }]
         .into(),
     };
-    let payload = WithRawString::from_parsed(payload);
+    let payload = passkey::Message(WithRawString::from_parsed(payload));
 
-    let bytes = payload.bytes_with_magic_number();
+    let bytes = payload.preimage_for_signing();
 
     println!("Payload (stringified):");
     println!("{}", String::from_utf8(bytes.clone()).unwrap());

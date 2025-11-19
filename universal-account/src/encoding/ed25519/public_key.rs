@@ -1,36 +1,43 @@
-use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::str::FromStr;
 
-use near_sdk::borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
 use near_sdk::serde::{self, de, Deserialize, Serialize};
 use near_sdk::{bs58, near};
 
-use super::ParseError;
+use crate::encoding::ParseError;
 
-pub static PREFIX: &str = "p256:";
-const KEY_LENGTH: usize = 65;
+use super::PREFIX;
+
+pub const KEY_LENGTH: usize = 32;
+
 type ByteEncoding = [u8; KEY_LENGTH];
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [])]
-pub struct PublicKey(pub p256::PublicKey);
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [borsh])]
+pub struct PublicKey(pub ByteEncoding);
 
-impl From<PublicKey> for p256::PublicKey {
+impl PublicKey {
+    pub fn verify(&self, message: &[u8], signature: &super::Signature) -> bool {
+        // #[cfg(target_arch = "wasm32")]
+        near_sdk::env::ed25519_verify(signature.as_ref(), message, &self.0)
+    }
+}
+
+impl From<PublicKey> for ByteEncoding {
     fn from(value: PublicKey) -> Self {
         value.0
     }
 }
 
-impl From<p256::PublicKey> for PublicKey {
-    fn from(value: p256::PublicKey) -> Self {
+impl From<ByteEncoding> for PublicKey {
+    fn from(value: ByteEncoding) -> Self {
         Self(value)
     }
 }
 
 impl Deref for PublicKey {
-    type Target = p256::PublicKey;
+    type Target = ByteEncoding;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -39,8 +46,7 @@ impl Deref for PublicKey {
 
 impl Display for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bytes = self.0.to_sec1_bytes();
-        write!(f, "{PREFIX}{}", bs58::encode(bytes).into_string())
+        write!(f, "{PREFIX}{}", bs58::encode(self.0).into_string())
     }
 }
 
@@ -54,15 +60,11 @@ impl FromStr for PublicKey {
         let key_bytes = bs58::decode(key_bs58)
             .into_vec()
             .map_err(|e| ParseError::InvalidEncoding(e.into()))?;
-        let actual = key_bytes.len();
-        if actual != KEY_LENGTH {
-            return Err(ParseError::InvalidLength {
-                expected: KEY_LENGTH,
-                actual,
-            });
-        }
-        let key = p256::PublicKey::from_sec1_bytes(&key_bytes)
-            .map_err(|e| ParseError::InvalidEncoding(e.into()))?;
+        let len = key_bytes.len();
+        let key = ByteEncoding::try_from(key_bytes).map_err(|_| ParseError::InvalidLength {
+            expected: KEY_LENGTH,
+            actual: len,
+        })?;
 
         Ok(Self(key))
     }
@@ -75,8 +77,8 @@ impl schemars::JsonSchema for PublicKey {
 
     fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
         let mut schema = gen.subschema_for::<String>().into_object();
-        schema.metadata().description = Some("NIST P256 public key".to_string());
-        schema.string().pattern = Some("^p256:[1-9A-HJ-NP-Za-km-z]{88,89}$".to_string());
+        schema.metadata().description = Some("ED25519 public key".to_string());
+        schema.string().pattern = Some("^ed25519:[1-9A-HJ-NP-Za-km-z]+$".to_string());
         schema.into()
     }
 }
@@ -100,50 +102,19 @@ impl Serialize for PublicKey {
     }
 }
 
-impl BorshSchema for PublicKey {
-    fn add_definitions_recursively(
-        definitions: &mut BTreeMap<borsh::schema::Declaration, borsh::schema::Definition>,
-    ) {
-        <ByteEncoding as BorshSchema>::add_definitions_recursively(definitions);
-    }
-
-    fn declaration() -> borsh::schema::Declaration {
-        String::from("PublicKey")
-    }
-}
-
-impl BorshSerialize for PublicKey {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        #[allow(clippy::unwrap_used, reason = "Key length is known")]
-        let bytes: ByteEncoding = (&*self.0.to_sec1_bytes()).try_into().unwrap();
-        BorshSerialize::serialize(&bytes, writer)
-    }
-}
-
-impl BorshDeserialize for PublicKey {
-    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        Ok(Self(
-            p256::PublicKey::from_sec1_bytes(
-                &<ByteEncoding as BorshDeserialize>::deserialize_reader(reader)?,
-            )
-            .map_err(|e| std::io::Error::other(e.to_string()))?,
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use near_sdk::serde_json;
-    use p256::elliptic_curve::rand_core::OsRng;
+    use solana_sdk::signer::{keypair::Keypair, Signer};
 
     use super::*;
 
     #[test]
     fn borsh_serialization() {
-        let key = p256::SecretKey::random(&mut OsRng);
-        let key_2 = p256::SecretKey::random(&mut OsRng);
-        let pubkey = super::PublicKey::from(key.public_key());
-        let pubkey_2 = super::PublicKey::from(key_2.public_key());
+        let keypair = Keypair::new();
+        let keypair_2 = Keypair::new();
+        let pubkey = super::PublicKey(keypair.pubkey().to_bytes());
+        let pubkey_2 = super::PublicKey(keypair_2.pubkey().to_bytes());
 
         assert_ne!(pubkey, pubkey_2);
 
@@ -163,10 +134,10 @@ mod tests {
 
     #[test]
     fn json_serialization() {
-        let key = p256::SecretKey::random(&mut OsRng);
-        let key_2 = p256::SecretKey::random(&mut OsRng);
-        let pubkey = super::PublicKey::from(key.public_key());
-        let pubkey_2 = super::PublicKey::from(key_2.public_key());
+        let keypair = Keypair::new();
+        let keypair_2 = Keypair::new();
+        let pubkey = super::PublicKey(keypair.pubkey().to_bytes());
+        let pubkey_2 = super::PublicKey(keypair_2.pubkey().to_bytes());
 
         assert_ne!(pubkey, pubkey_2);
 
@@ -186,45 +157,45 @@ mod tests {
 
     #[test]
     fn to_from_string() {
-        let key = p256::SecretKey::random(&mut OsRng);
-        let pubkey = super::PublicKey::from(key.public_key());
+        let keypair = Keypair::new();
+        let pubkey = super::PublicKey(keypair.pubkey().to_bytes());
         let pk_str = pubkey.to_string();
 
-        let Some(b) = pk_str.strip_prefix("p256:") else {
+        let Some(b) = pk_str.strip_prefix("ed25519:") else {
             panic!("Missing prefix");
         };
 
         let b = bs58::decode(b).into_vec().unwrap();
-        assert_eq!(b.len(), 65, "Incorrect length");
+        assert_eq!(b.len(), 32, "Incorrect length");
 
         let parsed = super::PublicKey::from_str(&pk_str).unwrap();
 
         assert_eq!(parsed, pubkey);
 
-        let key_2 = p256::SecretKey::random(&mut OsRng);
-        let pk_str_2 = super::PublicKey::from(key_2.public_key()).to_string();
+        let keypair_2 = Keypair::new();
+        let pk_str_2 = super::PublicKey(keypair_2.pubkey().to_bytes()).to_string();
 
         assert_ne!(pk_str, pk_str_2);
     }
 
     #[test]
-    #[should_panic = r#"MissingPrefix("p256:")"#]
+    #[should_panic = r#"MissingPrefix("ed25519:")"#]
     fn from_string_err_prefix() {
-        let s = "ed25519:5dZgMshSoMVwebufwFJm8pWyNqrY8VxMCsgFrKfe3KRc";
+        let s = "p256:QgbCYxWGboZy9VvWfAvdRs8M1EBtLabW9pPAZQP5UuNdz4gsY2EPG8xvmSAxyT8KMaFq677R3N5y8QmYSagCzFra";
         super::PublicKey::from_str(s).unwrap();
     }
 
     #[test]
     #[should_panic = "InvalidEncoding(InvalidCharacter { character: '*', index: 0 })"]
     fn from_string_err_bs58() {
-        let s = "p256:*5dZgMshSoMVwebufwFJm8pWyNqrY8VxMCsgFrKfe3KRc";
+        let s = "ed25519:*QgbCYxWGboZy9VvWfAvdRs8M1EBtLabW9pPAZQP5UuNdz4gsY2EPG8xvmSAxyT8KMaFq677R3N5y8QmYSagCzFra";
         super::PublicKey::from_str(s).unwrap();
     }
 
     #[test]
-    #[should_panic = "InvalidLength { expected: 65, actual: 32 }"]
+    #[should_panic = "InvalidLength { expected: 32, actual: 65 }"]
     fn from_string_err_length() {
-        let s = "p256:5dZgMshSoMVwebufwFJm8pWyNqrY8VxMCsgFrKfe3KRc";
+        let s = "ed25519:QgbCYxWGboZy9VvWfAvdRs8M1EBtLabW9pPAZQP5UuNdz4gsY2EPG8xvmSAxyT8KMaFq677R3N5y8QmYSagCzFra";
         super::PublicKey::from_str(s).unwrap();
     }
 }

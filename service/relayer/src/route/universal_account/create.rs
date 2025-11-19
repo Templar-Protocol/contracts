@@ -15,11 +15,8 @@ use near_sdk::{
 };
 
 use templar_universal_account::{
-    authentication::{
-        passkey::{self, Passkey},
-        ExecutionContextProvider, Key,
-    },
-    ExecutionParameters, KeyId,
+    authentication::passkey::{self, Passkey},
+    ExecuteArgs, ExecutionParameters, KeyId,
 };
 
 use crate::{
@@ -39,14 +36,56 @@ pub struct CreatePasskeyAccount {
 
 impl PowTarget for CreatePasskeyAccount {
     fn pow_target(&self) -> String {
-        format!("{},{}", &self.key.0, &self.block_hash)
+        format!("{},{}", &self.key, &self.block_hash)
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(crate = "near_sdk::serde")]
+pub struct CreateUniversalAccount {
+    pub key: KeyId,
+    pub block_hash: CryptoHash,
+}
+
+impl PowTarget for CreateUniversalAccount {
+    fn pow_target(&self) -> String {
+        format!("{},{}", &self.key, &self.block_hash)
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub enum CreateRequest {
-    Passkey(passkey::Message<Pow<CreatePasskeyAccount>>),
+    Passkey(Box<passkey::MessageWithSignature<Pow<CreatePasskeyAccount>>>),
+    #[serde(untagged)]
+    ExecuteArgs(ExecuteArgs<Pow<CreateUniversalAccount>>),
+}
+
+#[derive(thiserror::Error, Debug, Clone)]
+#[error("The key to add did not sign the payload: signer {signer} != to add {to_add}")]
+struct KeyIdMismatchError {
+    signer: KeyId,
+    to_add: KeyId,
+}
+
+impl CreateRequest {
+    fn key_id_to_add(&self) -> Result<KeyId, Box<KeyIdMismatchError>> {
+        match self {
+            Self::Passkey(m) => Ok(m.payload_unchecked().payload_unchecked().key.clone().into()),
+            Self::ExecuteArgs(ea) => {
+                let signer = ea.key_id();
+                let to_add = &ea.message_unchecked().payload_unchecked().key;
+                if to_add == &signer {
+                    Ok(signer)
+                } else {
+                    Err(Box::new(KeyIdMismatchError {
+                        signer,
+                        to_add: to_add.clone(),
+                    }))
+                }
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -67,49 +106,87 @@ pub async fn create(
     Json(request): Json<CreateRequest>,
 ) -> SimpleResponse<CreateResponse> {
     tracing::info!("Creating universal account");
-    let CreateRequest::Passkey(message) = request;
 
-    let key = message.payload_unchecked().payload_unchecked().key.clone();
-    tracing::Span::current().record("key", tracing::field::display(&key.0));
-
-    let verified_signature = match key.verify(message) {
-        Ok(p) => p,
+    let key_id = match request.key_id_to_add() {
+        Ok(k) => k,
         Err(e) => {
-            tracing::info!("Failed signature verification: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Failed signature verification".to_string(),
-            };
-        }
-    };
-
-    let pow_payload = match verified_signature.verify(
-        &app.args.ua.account_id,
-        &ExecutionParameters::default(),
-        |o| app.args.ua.is_origin_allowed(o),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::info!("Failed execution parameter verification: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Failed execution parameter verification".to_string(),
-            };
-        }
-    };
-
-    // Verify PoW
-
-    let payload = match pow_payload.verify_pow(app.args.ua.pow_difficulty) {
-        Ok(p) => p,
-        Err(e) => {
+            tracing::debug!(e = ?e, "Key ID mismatch");
             return SimpleResponse::Rejected {
                 reason: e.to_string(),
             };
         }
     };
+    tracing::Span::current().record("key_id", tracing::field::display(&key_id));
+
+    let create = match request {
+        CreateRequest::Passkey(m) => {
+            let key_inner = m.payload_unchecked().payload_unchecked().key.clone();
+            let exec_args = ExecuteArgs::Passkey {
+                key: key_inner.clone(),
+                message: m,
+            };
+
+            let m = match exec_args.verify(
+                &app.args.ua.account_id,
+                &ExecutionParameters::default(),
+                |o| app.args.ua.is_origin_allowed(o),
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed verification");
+                    return SimpleResponse::Rejected {
+                        reason: format!("Failed verification: {e}"),
+                    };
+                }
+            };
+
+            let p = match m.verify_pow(app.args.ua.pow_difficulty) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed proof-of-work");
+                    return SimpleResponse::Rejected {
+                        reason: e.to_string(),
+                    };
+                }
+            };
+
+            CreateUniversalAccount {
+                key: KeyId::Passkey(key_inner),
+                block_hash: p.block_hash,
+            }
+        }
+        CreateRequest::ExecuteArgs(request) => {
+            let m = match request.verify(
+                &app.args.ua.account_id,
+                &ExecutionParameters::default(),
+                |o| app.args.ua.is_origin_allowed(o),
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed verification");
+                    return SimpleResponse::Rejected {
+                        reason: format!("Failed verification: {e}"),
+                    };
+                }
+            };
+
+            let p = match m.verify_pow(app.args.ua.pow_difficulty) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!(error = ?e, "Failed proof-of-work");
+                    return SimpleResponse::Rejected {
+                        reason: e.to_string(),
+                    };
+                }
+            };
+
+            p.clone()
+        }
+    };
 
     // Check block timestamp (make sure signature is not too old)
 
-    let block_hash = payload.block_hash;
+    let block_hash = create.block_hash;
     let Ok(block_timestamp_ms) = app.ua_near.fetch_block_timestamp_ms(block_hash).await else {
         return SimpleResponse::Failure {
             error: "Failed to fetch block timestamp".to_string(),
@@ -128,6 +205,7 @@ pub async fn create(
         .elapsed()
         .is_ok_and(|duration| duration <= app.args.ua.blockref_max_age)
     {
+        tracing::debug!("Rejected: Block reference is too old");
         return SimpleResponse::Rejected {
             reason: "Block reference is too old".to_string(),
         };
@@ -135,7 +213,7 @@ pub async fn create(
 
     // Check that account does not exist already
 
-    let account_slug = public_key_to_account_id_slug(&payload.key.0.to_string());
+    let account_slug = public_key_to_account_id_slug(&create.key);
     tracing::info!("Account slug: {account_slug}");
 
     let registry_id = &app.args.ua.registry_id;
@@ -177,9 +255,7 @@ pub async fn create(
             &DeployArgs::new(
                 account_slug,
                 app.args.ua.version_key.clone(),
-                &templar_universal_account::InitArgs {
-                    key: KeyId::Passkey(key.clone()),
-                },
+                &templar_universal_account::InitArgs { key: create.key },
                 None,
             ),
         )
@@ -243,4 +319,133 @@ pub async fn create(
         account_id,
         transaction_hash,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::serde_json;
+    use p256::elliptic_curve::rand_core::OsRng;
+    use solana_sdk::{signature::Keypair, signer::Signer};
+    use templar_universal_account::authentication::{
+        ed25519_raw::{self, Ed25519RawKey},
+        HashForSigning, Payload,
+    };
+
+    use super::*;
+
+    #[test]
+    fn encoding_ed25519_raw() {
+        let keypair = Keypair::new();
+        let pubkey = Ed25519RawKey(keypair.pubkey().to_bytes().into());
+
+        let message = {
+            let m = ed25519_raw::Message::from_parsed(Payload {
+                parameters: ExecutionParameters::default(),
+                account_id: "my-universal-account.near".parse().unwrap(),
+                payload: Pow::mine(
+                    CreateUniversalAccount {
+                        key: pubkey.clone().into(),
+                        block_hash: CryptoHash([0u8; 32]),
+                    },
+                    2,
+                    10_000,
+                )
+                .unwrap(),
+            });
+            let h = m.preimage_for_signing();
+            let signature = keypair.sign_message(&h);
+            Box::new(m.with_signature(signature.into()))
+        };
+
+        let cr = CreateRequest::ExecuteArgs(ExecuteArgs::Ed25519Raw {
+            key: pubkey.clone(),
+            message: message.clone(),
+        });
+
+        eprintln!("{cr:?}");
+        eprintln!("{}", near_sdk::serde_json::to_string_pretty(&cr).unwrap());
+
+        let parsed: CreateRequest =
+            serde_json::from_str(&serde_json::to_string(&cr).unwrap()).unwrap();
+
+        assert_eq!(parsed.key_id_to_add().unwrap(), cr.key_id_to_add().unwrap());
+
+        let original_message = message;
+
+        let CreateRequest::ExecuteArgs(ExecuteArgs::Ed25519Raw { key, message }) = parsed else {
+            panic!("invalid parse");
+        };
+
+        assert_eq!(key, pubkey);
+        assert_eq!(message, original_message);
+    }
+
+    #[test]
+    fn encoding_passkey() {
+        let keypair = p256::SecretKey::random(&mut OsRng);
+        let pubkey = Passkey(keypair.public_key().into());
+
+        let cr = CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
+            key: pubkey.clone(),
+            message: {
+                let m = passkey::Message::from_parsed(Payload {
+                    parameters: ExecutionParameters::default(),
+                    account_id: "my-universal-account.near".parse().unwrap(),
+                    payload: Pow::mine(
+                        CreateUniversalAccount {
+                            key: pubkey.into(),
+                            block_hash: CryptoHash([0u8; 32]),
+                        },
+                        2,
+                        10_000,
+                    )
+                    .unwrap(),
+                });
+                let challenge = m.hash_for_signing().into();
+                Box::new(
+                    m.sign(
+                        &keypair,
+                        passkey::data::AuthenticatorData([1u8; 32].into()),
+                        passkey::data::ClientDataJson {
+                            r#type: "type".to_string(),
+                            challenge,
+                            origin: "origin".to_string(),
+                            cross_origin: None,
+                            top_origin: None,
+                        },
+                    )
+                    .try_into()
+                    .unwrap(),
+                )
+            },
+        });
+
+        eprintln!("{cr:?}");
+        eprintln!("{}", near_sdk::serde_json::to_string_pretty(&cr).unwrap());
+
+        let inverse: CreateRequest =
+            near_sdk::serde_json::from_str(&near_sdk::serde_json::to_string(&cr).unwrap()).unwrap();
+
+        assert!(
+            matches!(
+                inverse,
+                CreateRequest::ExecuteArgs(ExecuteArgs::Passkey { .. }),
+            ),
+            "should parse to new format"
+        );
+    }
+
+    #[test]
+    fn can_still_parse_old_passkey_format() {
+        let old = r#"{
+              "Passkey": {
+                "authenticator_data": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "message": "{\"parameters\":{\"block_height\":\"0\",\"index\":\"0\",\"nonce\":\"0\"},\"account_id\":\"ua_deployer7175948-34077552565862.test.near\",\"payload\":{\"pow_nonce\":\"83\",\"key\":\"p256:NWo1ZFBV1ZWhyfVkHRmZwbBC5pYmUEpEZ1SqtCzA6CrSnHszYwcS5MnaGZWTkqf1scFzhikZvbZhkxxFEjwDC4sd\",\"block_hash\":\"9fu4SxXiTpHH2VsmB2ZKejjtkyrUMY8BMjpS18JsCEfv\"}}",
+                "client_data_json": "{\"type\":\"type\",\"challenge\":\"F8e2D6LXKwKC-ua1MjvU_9w814_paOUMbsL7Le9D7Ng\",\"origin\":\"origin\",\"crossOrigin\":null,\"topOrigin\":null}",
+                "signature": "MEUCIEmV-RNxjVd7c0kcG-xpIJV7euA5H5sagy3FEcUdxr_8AiEAiHPX_w-DtL-wtHfKnRdW1_JcuyVLK-6ZDliOdtRHWy4"
+              }
+            }"#;
+
+        let _: CreateRequest = serde_json::from_str(old).unwrap();
+    }
 }
