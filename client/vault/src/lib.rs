@@ -494,3 +494,26 @@ impl Client {
         Ok(())
     }
 
+
+    #[instrument(skip(self, route))]
+    pub async fn execute_withdrawal(&self, route: &[AccountId]) -> Result<(), ErrorWrapper> {
+        let route: Vec<NearAccountId> = route
+            .iter()
+            .cloned()
+            .map(|id| NearAccountId::from(id))
+            .collect();
+        info!("Executing withdrawal with route length {}", route.len());
+
+        self.call(
+            &self.vault,
+            "execute_withdrawal",
+            (route,),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Execute withdrawal call submitted");
+        Ok(())
+    }
