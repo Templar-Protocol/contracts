@@ -5990,7 +5990,7 @@ dependencies = [
 
 [[package]]
 name = "templar-universal-account-contract"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.15",
