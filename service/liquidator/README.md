@@ -46,20 +46,27 @@ REGISTRY_ACCOUNT_IDS=v1.tmplr.near
 ### Liquidation
 
 ```bash
-LIQUIDATION_STRATEGY=partial    # partial | full
-PARTIAL_PERCENTAGE=50           # 1-100 (if partial)
+LIQUIDATION_STRATEGY=partial    # partial | full | fixed-amount
+PARTIAL_LIQUIDATION_PERCENTAGE=50           # 1-100 (% of available funds to use)
+FIXED_LIQUIDATION_AMOUNT=1000000000  # Token base units (e.g., 1000 USDC)
+LOOP_LIQUIDATION=false          # Repeatedly liquidate until healthy
+MAX_LOOP_ITERATIONS=10          # Safety limit for loop liquidation
 MIN_PROFIT_BPS=50              # Minimum profit (basis points)
 ```
+
+- **partial** - Use percentage of available funds per liquidation
+- **full** - Use 100% of available funds up to liquidatable amount
+- **fixed-amount** - Use a fixed amount per liquidation (ideal for loop liquidation)
+- **loop_liquidation** - When enabled, continues liquidating the same position until it becomes healthy or runs out of funds
+- **max_loop_iterations** - Safety limit to prevent infinite loops (default: 10)
 
 ### Collateral Strategy
 
 ```bash
-COLLATERAL_STRATEGY=hold  # hold | swap-to-primary | swap-to-borrow
-# PRIMARY_ASSET=nep141:usdc.near  # Required for swap-to-primary
+COLLATERAL_STRATEGY=hold  # hold | swap-to-borrow
 ```
 
 - **hold** - Keep collateral as received
-- **swap-to-primary** - Convert all to specified asset
 - **swap-to-borrow** - Route back to borrow assets
 
 ### Market Filtering

@@ -103,12 +103,6 @@ pub struct InventoryManager {
     inventory: HashMap<FungibleAsset<BorrowAsset>, InventoryEntry<BorrowAsset>>,
     /// Tracked collateral assets (received from liquidations)
     collateral_inventory: HashMap<FungibleAsset<CollateralAsset>, InventoryEntry<CollateralAsset>>,
-    /// Liquidation history: maps `collateral_asset` -> `borrow_asset` used to acquire it
-    /// This allows us to swap collateral back to the original borrow asset
-    liquidation_history: HashMap<FungibleAsset<CollateralAsset>, FungibleAsset<BorrowAsset>>,
-    /// Pending swap amounts: tracks collateral received from liquidations awaiting swap
-    /// Maps `collateral_asset` -> cumulative amount pending swap
-    pending_swaps: HashMap<FungibleAsset<CollateralAsset>, U128>,
     /// Minimum refresh interval to avoid excessive RPC calls
     min_refresh_interval: Duration,
     /// Last full refresh timestamp
@@ -128,8 +122,6 @@ impl InventoryManager {
             account_id,
             inventory: HashMap::new(),
             collateral_inventory: HashMap::new(),
-            liquidation_history: HashMap::new(),
-            pending_swaps: HashMap::new(),
             min_refresh_interval: Duration::from_secs(30),
             last_full_refresh: None,
         }
@@ -613,107 +605,6 @@ impl InventoryManager {
             })
             .collect()
     }
-
-    /// Records which borrow asset was used to acquire collateral and tracks pending swap amount
-    ///
-    /// Call this after a successful liquidation to track the relationship
-    /// between borrow and collateral assets for swap-to-borrow strategy.
-    ///
-    /// # Arguments
-    ///
-    /// * `borrow_asset` - Borrow asset used for liquidation
-    /// * `collateral_asset` - Collateral asset received
-    /// * `collateral_amount` - Amount of collateral received (cumulative if multiple liquidations)
-    pub fn record_liquidation(
-        &mut self,
-        borrow_asset: &FungibleAsset<BorrowAsset>,
-        collateral_asset: &FungibleAsset<CollateralAsset>,
-        collateral_amount: U128,
-    ) {
-        // Track liquidation history for swap-to-borrow strategy
-        self.liquidation_history
-            .insert(collateral_asset.clone(), borrow_asset.clone());
-
-        // Accumulate pending swap amount (in case of multiple liquidations before swap)
-        let current_pending = self
-            .pending_swaps
-            .get(collateral_asset)
-            .map_or(0, |amount| amount.0);
-        let new_pending = current_pending.saturating_add(collateral_amount.0);
-        self.pending_swaps
-            .insert(collateral_asset.clone(), U128(new_pending));
-
-        tracing::debug!(
-            borrow = %borrow_asset,
-            collateral = %collateral_asset,
-            amount = %collateral_amount.0,
-            total_pending = %new_pending,
-            "Recorded liquidation and pending swap amount"
-        );
-    }
-
-    /// Gets the borrow asset that was used to acquire a collateral asset
-    ///
-    /// Returns None if no history exists for this collateral.
-    pub fn get_liquidation_history(
-        &self,
-        collateral_asset: &FungibleAsset<CollateralAsset>,
-    ) -> Option<&FungibleAsset<BorrowAsset>> {
-        self.liquidation_history.get(collateral_asset)
-    }
-
-    /// Gets pending swap amounts for collateral assets
-    ///
-    /// Returns only the amounts tracked from liquidations, not total balance.
-    /// This is used by the rebalancer to swap only liquidated collateral.
-    pub fn get_pending_swap_amounts(&self) -> HashMap<String, U128> {
-        self.pending_swaps
-            .iter()
-            .filter(|(_, amount)| amount.0 > 0)
-            .map(|(asset, amount)| (asset.to_string(), *amount))
-            .collect()
-    }
-
-    /// Updates the pending swap amount for a collateral asset
-    ///
-    /// Used when actual balance is less than pending amount to keep records in sync.
-    pub fn update_pending_swap_amount(
-        &mut self,
-        collateral_asset: &FungibleAsset<CollateralAsset>,
-        new_amount: U128,
-    ) {
-        if new_amount.0 == 0 {
-            self.pending_swaps.remove(collateral_asset);
-            tracing::debug!(
-                collateral = %collateral_asset,
-                "Cleared pending swap amount (zero balance)"
-            );
-        } else {
-            self.pending_swaps
-                .insert(collateral_asset.clone(), new_amount);
-            tracing::debug!(
-                collateral = %collateral_asset,
-                amount = %new_amount.0,
-                "Updated pending swap amount"
-            );
-        }
-    }
-
-    /// Clears liquidation history and pending swap amount for a collateral asset
-    ///
-    /// Should be called after swapping collateral back to borrow asset.
-    pub fn clear_liquidation_history(&mut self, collateral_asset: &FungibleAsset<CollateralAsset>) {
-        let history_cleared = self.liquidation_history.remove(collateral_asset).is_some();
-        let pending_cleared = self.pending_swaps.remove(collateral_asset);
-
-        if history_cleared || pending_cleared.is_some() {
-            tracing::debug!(
-                collateral = %collateral_asset,
-                pending_amount = ?pending_cleared,
-                "Cleared liquidation history and pending swap amount after successful swap"
-            );
-        }
-    }
 }
 
 /// Snapshot of inventory state for logging/metrics
@@ -855,43 +746,6 @@ mod tests {
         assert_eq!(inventory.get_total_balance(&asset).0, 1000);
         assert_eq!(inventory.get_available_balance(&asset).0, 700);
         assert_eq!(inventory.get_reserved_balance(&asset).0, 300);
-    }
-
-    #[test]
-    fn test_liquidation_history() {
-        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
-        let account_id = AccountId::from_str("test.near").unwrap();
-        let mut inventory = InventoryManager::new(client, account_id);
-
-        let borrow_asset =
-            templar_common::asset::FungibleAsset::<templar_common::asset::BorrowAsset>::nep141(
-                "usdc.testnet".parse().unwrap(),
-            );
-        let collateral_asset = templar_common::asset::FungibleAsset::<
-            templar_common::asset::CollateralAsset,
-        >::nep141("btc.testnet".parse().unwrap());
-
-        let collateral_str = collateral_asset.to_string();
-
-        // Initially no history
-        assert_eq!(inventory.get_liquidation_history(&collateral_asset), None);
-
-        // Record liquidation with amount
-        inventory.record_liquidation(&borrow_asset, &collateral_asset, U128(1000));
-        assert_eq!(
-            inventory.get_liquidation_history(&collateral_asset),
-            Some(&borrow_asset)
-        );
-
-        // Check pending swap amount
-        let pending = inventory.get_pending_swap_amounts();
-        assert_eq!(pending.get(&collateral_str), Some(&U128(1000)));
-
-        // Clear history (should also clear pending amount)
-        inventory.clear_liquidation_history(&collateral_asset);
-        assert_eq!(inventory.get_liquidation_history(&collateral_asset), None);
-        let pending_after = inventory.get_pending_swap_amounts();
-        assert_eq!(pending_after.get(&collateral_str), None);
     }
 
     #[test]

@@ -1,19 +1,21 @@
 //! Liquidation transaction executor module.
 //!
 //! Handles the creation and submission of liquidation transactions,
-//! including inventory management and collateral strategy execution.
+//! including inventory management and immediate collateral swapping.
 
 use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
+    views::FinalExecutionStatus,
 };
 use near_sdk::{json_types::U128, AccountId};
 use std::sync::Arc;
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+        FungibleAssetAmount,
     },
     market::{DepositMsg, LiquidateMsg},
 };
@@ -22,7 +24,8 @@ use tracing::{debug, error, info};
 use crate::{
     inventory,
     rpc::{check_transaction_success, get_access_key_data, send_tx},
-    LiquidationOutcome, LiquidatorError, LiquidatorResult,
+    swap::SwapProvider,
+    CollateralStrategy, LiquidationOutcome, LiquidatorError, LiquidatorResult,
 };
 
 /// Liquidation transaction executor.
@@ -31,7 +34,7 @@ use crate::{
 /// - Creating liquidation transactions
 /// - Managing inventory reservations
 /// - Executing transactions
-/// - Collateral is added to inventory (rebalancer handles swaps)
+/// - Immediately swapping collateral based on strategy
 pub struct LiquidationExecutor {
     client: JsonRpcClient,
     signer: Arc<Signer>,
@@ -39,10 +42,13 @@ pub struct LiquidationExecutor {
     market: AccountId,
     timeout: u64,
     dry_run: bool,
+    collateral_strategy: CollateralStrategy,
+    swap_provider: Option<crate::swap::SwapProviderImpl>,
 }
 
 impl LiquidationExecutor {
     /// Creates a new liquidation executor.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: JsonRpcClient,
         signer: Arc<Signer>,
@@ -50,6 +56,8 @@ impl LiquidationExecutor {
         market: AccountId,
         timeout: u64,
         dry_run: bool,
+        collateral_strategy: CollateralStrategy,
+        swap_provider: Option<crate::swap::SwapProviderImpl>,
     ) -> Self {
         Self {
             client,
@@ -58,6 +66,8 @@ impl LiquidationExecutor {
             market,
             timeout,
             dry_run,
+            collateral_strategy,
+            swap_provider,
         }
     }
 
@@ -182,20 +192,49 @@ impl LiquidationExecutor {
                             "Liquidation executed successfully (all receipts succeeded)"
                         );
 
-                        // Record liquidation history and pending swap amount for rebalancing
-                        self.inventory.write().await.record_liquidation(
-                            borrow_asset,
-                            collateral_asset,
-                            U128::from(collateral_amount),
-                        );
+                        // Handle collateral based on strategy
+                        let swap_succeeded = match &self.collateral_strategy {
+                            CollateralStrategy::Hold => {
+                                debug!(
+                                    collateral_asset = %collateral_asset,
+                                    amount = %u128::from(collateral_amount),
+                                    "Holding collateral (no swap)"
+                                );
+                                false // No swap performed
+                            }
+                            CollateralStrategy::SwapToBorrow => {
+                                // Immediately swap collateral back to borrow asset
+                                self.swap_collateral_to_borrow(
+                                    collateral_asset,
+                                    borrow_asset,
+                                    collateral_amount,
+                                )
+                                .await
+                                .unwrap_or(false)
+                            }
+                        };
 
-                        // Collateral is now in inventory - rebalancer will handle any swaps
-                        debug!(
-                            borrower = %borrow_account,
-                            collateral_asset = %collateral_asset,
-                            amount = %u128::from(collateral_amount),
-                            "Collateral added to inventory"
-                        );
+                        // If swap succeeded, refresh inventory to get updated balance
+                        if swap_succeeded {
+                            if let Err(e) = self
+                                .inventory
+                                .write()
+                                .await
+                                .refresh_asset(borrow_asset)
+                                .await
+                            {
+                                tracing::warn!(
+                                    borrow_asset = %borrow_asset,
+                                    error = ?e,
+                                    "Failed to refresh inventory after swap, continuing with stale balance"
+                                );
+                            } else {
+                                debug!(
+                                    borrow_asset = %borrow_asset,
+                                    "Inventory refreshed after swap"
+                                );
+                            }
+                        }
 
                         Ok(LiquidationOutcome::Liquidated)
                     }
@@ -231,6 +270,79 @@ impl LiquidationExecutor {
                     "Liquidation RPC call failed, inventory released"
                 );
                 Err(LiquidatorError::LiquidationTransactionError(e))
+            }
+        }
+    }
+
+    /// Swap collateral immediately after liquidation
+    /// Returns Ok(true) if swap succeeded, Ok(false) if skipped, Err if failed
+    async fn swap_collateral_to_borrow(
+        &self,
+        collateral_asset: &FungibleAsset<CollateralAsset>,
+        borrow_asset: &FungibleAsset<BorrowAsset>,
+        collateral_amount: CollateralAssetAmount,
+    ) -> LiquidatorResult<bool> {
+        let Some(ref swap_provider) = self.swap_provider else {
+            info!(
+                collateral = %collateral_asset,
+                borrow = %borrow_asset,
+                amount = %u128::from(collateral_amount),
+                "No swap provider configured, holding collateral"
+            );
+            return Ok(false);
+        };
+
+        // Skip swap if collateral is already the target borrow asset
+        if collateral_asset.to_string() == borrow_asset.to_string() {
+            debug!(
+                asset = %collateral_asset,
+                "Collateral is already target borrow asset, skipping swap"
+            );
+            return Ok(false);
+        }
+
+        info!(
+            from = %collateral_asset,
+            to = %borrow_asset,
+            amount = %u128::from(collateral_amount),
+            "Swapping collateral to borrow asset"
+        );
+
+        let swap_amount = FungibleAssetAmount::from(U128::from(collateral_amount));
+
+        match swap_provider
+            .swap(collateral_asset, borrow_asset, swap_amount)
+            .await
+        {
+            Ok(status) => {
+                if let FinalExecutionStatus::SuccessValue(_) = status {
+                    info!(
+                        from = %collateral_asset,
+                        to = %borrow_asset,
+                        input_amount = %u128::from(collateral_amount),
+                        "Collateral swap successful"
+                    );
+                    Ok(true)
+                } else {
+                    error!(
+                        from = %collateral_asset,
+                        to = %borrow_asset,
+                        amount = %u128::from(collateral_amount),
+                        status = ?status,
+                        "Collateral swap failed"
+                    );
+                    Ok(false)
+                }
+            }
+            Err(e) => {
+                error!(
+                    from = %collateral_asset,
+                    to = %borrow_asset,
+                    amount = %u128::from(collateral_amount),
+                    error = ?e,
+                    "Failed to execute collateral swap"
+                );
+                Err(LiquidatorError::SwapProviderError(e))
             }
         }
     }

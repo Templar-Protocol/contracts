@@ -15,8 +15,7 @@
 
 use near_sdk::json_types::U128;
 use templar_common::{
-    asset::CollateralAssetAmount, borrow::BorrowPosition, market::MarketConfiguration,
-    oracle::pyth::OracleResponse,
+    borrow::BorrowPosition, market::MarketConfiguration, oracle::pyth::OracleResponse,
 };
 use tracing::debug;
 
@@ -96,24 +95,24 @@ pub trait LiquidationStrategy: Send + Sync + std::fmt::Debug {
 
 /// Partial liquidation strategy.
 ///
-/// This strategy liquidates a configured percentage of the position to minimize
-/// market impact and gas costs while still profiting from the liquidation.
+/// This strategy uses a configured percentage of available funds to minimize
+/// capital deployment while still profiting from liquidations.
 ///
 /// # Benefits
 ///
-/// - Reduced market impact
-/// - Lower gas costs
-/// - Faster execution
-/// - Multiple liquidators can participate
+/// - Controlled capital deployment
+/// - Risk management through partial fund usage
+/// - Faster execution with smaller amounts
+/// - Multiple liquidation opportunities can be pursued
 ///
 /// # Tradeoffs
 ///
-/// - May leave position partially underwater
-/// - Requires multiple transactions for full liquidation
-/// - More complex profitability calculations
+/// - May not fully liquidate positions
+/// - Requires multiple transactions for full capital deployment
+/// - Position may remain partially underwater
 #[derive(Debug, Clone, Copy)]
 pub struct PartialLiquidationStrategy {
-    /// Target liquidation percentage (0-100)
+    /// Percentage of available funds to use (1-100)
     pub target_percentage: u8,
     /// Minimum profit margin in basis points (e.g., 50 = 0.5%)
     pub min_profit_margin_bps: u32,
@@ -124,7 +123,7 @@ impl PartialLiquidationStrategy {
     ///
     /// # Arguments
     ///
-    /// * `target_percentage` - Target liquidation percentage (1-100)
+    /// * `target_percentage` - Percentage of available funds to use (1-100)
     /// * `min_profit_margin_bps` - Minimum profit margin in basis points
     ///
     /// # Panics
@@ -133,10 +132,10 @@ impl PartialLiquidationStrategy {
     ///
     /// # Example
     ///
-    /// ```
-    /// use templar_bots::strategy::PartialLiquidationStrategy;
+    /// ```ignore
+    /// use templar_liquidator::liquidation_strategy::PartialLiquidationStrategy;
     ///
-    /// // Liquidate 50% of position, require 0.5% profit margin
+    /// // Use 50% of available funds, require 0.5% profit margin
     /// let strategy = PartialLiquidationStrategy::new(50, 50);
     /// ```
     #[must_use]
@@ -152,7 +151,7 @@ impl PartialLiquidationStrategy {
         }
     }
 
-    /// Creates a strategy that liquidates 50% of positions (recommended default).
+    /// Creates a strategy that uses 50% of available funds (recommended default).
     #[must_use]
     pub fn default_partial() -> Self {
         Self {
@@ -171,59 +170,58 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         configuration: &MarketConfiguration,
         available_balance: U128,
     ) -> LiquidatorResult<Option<U128>> {
-        // For partial liquidation:
-        // 1. Calculate target collateral (percentage of total)
-        // 2. Calculate minimum borrow amount needed for that collateral
-        // This ensures the liquidation amount matches the collateral we'll request
+        // For partial liquidation with fund-based strategy:
+        // 1. Calculate percentage of available funds to use
+        // 2. Ensure we don't exceed what's needed for the position
+        // 3. Calculate corresponding collateral amount
+
+        let available_u128: u128 = available_balance.into();
+
+        // Calculate target liquidation amount (percentage of available funds)
+        let target_amount = (available_u128 * u128::from(self.target_percentage)) / 100;
+
+        if target_amount == 0 {
+            tracing::warn!(
+                available_balance = %available_u128,
+                percentage = %self.target_percentage,
+                "Target liquidation amount is zero"
+            );
+            return Ok(None);
+        }
 
         let price_pair = configuration
             .price_oracle_configuration
             .create_price_pair(oracle_response)?;
 
-        // Calculate target collateral amount (e.g., 50% of total)
-        let total_collateral = position.collateral_asset_deposit;
-        let target_collateral_u128 =
-            u128::from(total_collateral) * u128::from(self.target_percentage) / 100;
-        let target_collateral = CollateralAssetAmount::from(target_collateral_u128);
+        // Calculate liquidatable collateral for the position
+        let liquidatable_collateral = position.liquidatable_collateral(
+            &price_pair,
+            configuration.borrow_mcr_liquidation,
+            configuration.liquidation_maximum_spread,
+        );
 
-        // Calculate minimum acceptable liquidation amount for this collateral
-        let min_for_target =
-            configuration.minimum_acceptable_liquidation_amount(target_collateral, &price_pair);
+        // Calculate the minimum borrow amount needed to get all liquidatable collateral
+        let max_liquidation_amount = configuration
+            .minimum_acceptable_liquidation_amount(liquidatable_collateral, &price_pair);
 
-        let Some(liquidation_amount) = min_for_target else {
+        let Some(max_amount) = max_liquidation_amount else {
             tracing::warn!(
-                target_collateral = %target_collateral_u128,
-                "Could not calculate minimum liquidation amount from target collateral"
+                liquidatable_collateral = %u128::from(liquidatable_collateral),
+                "Could not calculate maximum liquidation amount from liquidatable collateral"
             );
             return Ok(None);
         };
 
-        // Add a small buffer (0.1%) to account for rounding differences
-        let liquidation_u128: u128 = liquidation_amount.into();
-        let buffer = liquidation_u128 / 1000; // 0.1% buffer
-        let liquidation_with_buffer = liquidation_u128.saturating_add(buffer.max(1));
+        let max_amount_u128: u128 = max_amount.into();
 
-        // Ensure we don't exceed available balance
-        let available_u128: u128 = available_balance.into();
-
-        let final_liquidation_amount = if liquidation_with_buffer > available_u128 {
-            debug!(
-                requested = %liquidation_with_buffer,
-                available = %available_u128,
-                "Insufficient balance, using available amount"
-            );
-            available_balance
-        } else {
-            U128(liquidation_with_buffer)
-        };
+        // Use the minimum of target amount and max liquidation amount
+        let final_amount = std::cmp::min(target_amount, max_amount_u128);
 
         // Ensure the amount is economically viable (at least ~$0.02 USD value)
         // This prevents wasting gas on dust liquidations
-        let final_u128: u128 = final_liquidation_amount.into();
-
-        if final_u128 < MIN_LIQUIDATION_AMOUNT_6_DECIMALS {
+        if final_amount < MIN_LIQUIDATION_AMOUNT_6_DECIMALS {
             tracing::warn!(
-                amount = %final_u128,
+                amount = %final_amount,
                 minimum_threshold = %MIN_LIQUIDATION_AMOUNT_6_DECIMALS,
                 available_balance = %available_u128,
                 "Liquidation amount too small to be economically viable (< $0.02)"
@@ -232,16 +230,16 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         }
 
         debug!(
-            target_collateral = %target_collateral_u128,
-            total_collateral = %u128::from(total_collateral),
-            liquidation_amount = %liquidation_with_buffer,
-            base_amount = %liquidation_u128,
-            buffer = %buffer,
+            available_balance = %available_u128,
+            target_amount = %target_amount,
+            max_liquidation = %max_amount_u128,
+            final_amount = %final_amount,
             percentage = %self.target_percentage,
-            "Calculated partial liquidation amount with buffer"
+            liquidatable_collateral = %u128::from(liquidatable_collateral),
+            "Calculated partial liquidation amount based on available funds"
         );
 
-        Ok(Some(final_liquidation_amount))
+        Ok(Some(U128(final_amount)))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -399,6 +397,166 @@ impl LiquidationStrategy for FullLiquidationStrategy {
 
     fn strategy_name(&self) -> &'static str {
         "Full Liquidation"
+    }
+}
+
+/// Fixed amount liquidation strategy.
+///
+/// This strategy uses a fixed amount (in token base units) per liquidation iteration.
+/// Ideal for loop liquidation where you want consistent liquidation sizes.
+///
+/// # Benefits
+///
+/// - Predictable liquidation amounts
+/// - Works well with loop liquidation
+/// - Easy to reason about capital deployment
+/// - Balance grows predictably with each profitable liquidation
+///
+/// # Use Cases
+///
+/// - Loop liquidation with consistent chunk sizes
+/// - Risk management with fixed exposure per transaction
+/// - Testing and simulation with predictable amounts
+#[derive(Debug, Clone, Copy)]
+pub struct FixedAmountLiquidationStrategy {
+    /// Fixed amount to use per liquidation (in token base units, e.g., `1000_000000` for 1000 USDC)
+    pub fixed_amount: u128,
+    /// Minimum profit margin in basis points
+    pub min_profit_margin_bps: u32,
+}
+
+impl FixedAmountLiquidationStrategy {
+    /// Creates a new fixed amount liquidation strategy.
+    ///
+    /// # Arguments
+    ///
+    /// * `fixed_amount` - Fixed amount to use per liquidation (in token base units)
+    /// * `min_profit_margin_bps` - Minimum profit margin in basis points
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use templar_liquidator::liquidation_strategy::FixedAmountLiquidationStrategy;
+    ///
+    /// // Use 1000 USDC (6 decimals) per liquidation
+    /// let strategy = FixedAmountLiquidationStrategy::new(1000_000000, 50);
+    /// ```
+    #[must_use]
+    pub fn new(fixed_amount: u128, min_profit_margin_bps: u32) -> Self {
+        Self {
+            fixed_amount,
+            min_profit_margin_bps,
+        }
+    }
+}
+
+impl LiquidationStrategy for FixedAmountLiquidationStrategy {
+    #[tracing::instrument(skip(self, position, oracle_response, configuration), level = "debug")]
+    fn calculate_liquidation_amount(
+        &self,
+        position: &BorrowPosition,
+        oracle_response: &OracleResponse,
+        configuration: &MarketConfiguration,
+        available_balance: U128,
+    ) -> LiquidatorResult<Option<U128>> {
+        let available_u128: u128 = available_balance.into();
+
+        // Check if we have enough balance for the fixed amount
+        if self.fixed_amount > available_u128 {
+            tracing::warn!(
+                fixed_amount = %self.fixed_amount,
+                available_balance = %available_u128,
+                "Insufficient balance for fixed amount liquidation"
+            );
+            return Ok(None);
+        }
+
+        let price_pair = configuration
+            .price_oracle_configuration
+            .create_price_pair(oracle_response)?;
+
+        // Calculate liquidatable collateral for the position
+        let liquidatable_collateral = position.liquidatable_collateral(
+            &price_pair,
+            configuration.borrow_mcr_liquidation,
+            configuration.liquidation_maximum_spread,
+        );
+
+        // Calculate the maximum borrow amount needed for all liquidatable collateral
+        let max_liquidation_amount = configuration
+            .minimum_acceptable_liquidation_amount(liquidatable_collateral, &price_pair);
+
+        let Some(max_amount) = max_liquidation_amount else {
+            tracing::warn!(
+                liquidatable_collateral = %u128::from(liquidatable_collateral),
+                "Could not calculate maximum liquidation amount from liquidatable collateral"
+            );
+            return Ok(None);
+        };
+
+        let max_amount_u128: u128 = max_amount.into();
+
+        // Use the minimum of fixed amount and max liquidation amount
+        let final_amount = std::cmp::min(self.fixed_amount, max_amount_u128);
+
+        // Ensure the amount is economically viable
+        if final_amount < MIN_LIQUIDATION_AMOUNT_6_DECIMALS {
+            tracing::warn!(
+                amount = %final_amount,
+                minimum_threshold = %MIN_LIQUIDATION_AMOUNT_6_DECIMALS,
+                "Liquidation amount too small to be economically viable (< $0.02)"
+            );
+            return Ok(None);
+        }
+
+        debug!(
+            available_balance = %available_u128,
+            fixed_amount = %self.fixed_amount,
+            max_liquidation = %max_amount_u128,
+            final_amount = %final_amount,
+            liquidatable_collateral = %u128::from(liquidatable_collateral),
+            "Calculated fixed amount liquidation"
+        );
+
+        Ok(Some(U128(final_amount)))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    fn should_liquidate(
+        &self,
+        liquidation_amount: U128,
+        expected_collateral_value: U128,
+        gas_cost_estimate: U128,
+    ) -> LiquidatorResult<bool> {
+        // Same profitability logic as other strategies
+        let liquidation_u128: u128 = liquidation_amount.into();
+        let gas_cost_u128: u128 = gas_cost_estimate.into();
+
+        let total_cost = liquidation_u128.saturating_add(gas_cost_u128);
+        let profit_margin_multiplier = 10_000 + self.min_profit_margin_bps;
+        let min_revenue = (total_cost * u128::from(profit_margin_multiplier)) / 10_000;
+
+        let collateral_value_u128: u128 = expected_collateral_value.into();
+        let is_profitable = collateral_value_u128 >= min_revenue;
+
+        let net_profit = collateral_value_u128.saturating_sub(total_cost);
+
+        debug!(
+            liquidation_amount = %liquidation_u128,
+            gas_cost = %gas_cost_u128,
+            total_cost = %total_cost,
+            expected_collateral_value = %collateral_value_u128,
+            min_revenue = %min_revenue,
+            net_profit = %net_profit,
+            is_profitable = %is_profitable,
+            "Fixed amount liquidation profitability check"
+        );
+
+        Ok(is_profitable)
+    }
+
+    fn strategy_name(&self) -> &'static str {
+        "Fixed Amount Liquidation"
     }
 }
 
