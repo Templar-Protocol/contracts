@@ -517,3 +517,28 @@ impl Client {
         info!("Execute withdrawal call submitted");
         Ok(())
     }
+
+    #[instrument(skip(self, batch_limit))]
+    pub async fn execute_market_withdrawal(
+        &self,
+        op_id: &u64,
+        market_index: &u32,
+        batch_limit: Option<u32>,
+    ) -> Result<(), ErrorWrapper> {
+        info!(
+            "Executing market withdrawal op_id={} market_index={} batch_limit={:?}",
+            op_id, market_index, batch_limit
+        );
+        self.call(
+            &self.vault,
+            "execute_market_withdrawal",
+            (op_id, market_index, batch_limit),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Execute market withdrawal call submitted");
+        Ok(())
+    }
