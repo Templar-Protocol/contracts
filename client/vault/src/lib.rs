@@ -472,5 +472,25 @@ impl Client {
         Ok(res)
     }
 
-}
+    #[instrument(skip(self, shares, receiver))]
+    pub async fn redeem(
+        &self,
+        shares: &ForeignU128,
+        receiver: &AccountId,
+    ) -> Result<(), ErrorWrapper> {
+        let shares: U128 = serde_json::from_str(shares).map_err(ErrorWrapper::from)?;
+        info!("Redeeming shares");
+        self.call(
+            &self.vault,
+            "redeem",
+            (shares, NearAccountId::from(receiver.clone())),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Redeem call submitted");
+        Ok(())
+    }
 
