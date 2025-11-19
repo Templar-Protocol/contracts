@@ -53,6 +53,11 @@ pub struct Delta {
     pub amount: ForeignU128,
 }
 
+
+#[uniffi::export(callback_interface)]
+pub trait EventHandler {
+    fn handle(&self, event: Event);
+}
 pub const DEFAULT_GAS: Gas = 300 * 1e12 as u64;
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 
