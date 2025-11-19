@@ -1,14 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "bots/accumulator",
-    "bots/liquidator",
-    "common",
-    "contract/*",
-    "mock/*",
-    "service/*",
-    "test-utils",
-    "universal-account",
+  "common",
+  "contract/*",
+  "fuzz",
+  "mock/*",
+  "service/*",
+  "test-utils",
+  "universal-account",
 ]
 
 [workspace.package]
@@ -19,20 +18,25 @@ version = "1.2.0"
 
 [workspace.dependencies]
 anyhow = "1.0.95"
+arbitrary = { version = "1", features = ["derive"] }
 async-trait = "0.1.88"
 base64 = "0.22.1"
 borsh = { version = "1.5", features = ["unstable__schema"] }
 clap = { version = "4.5.23", features = ["derive", "env"] }
+ed25519-dalek = "2.2.0"
 futures = "0.3.31"
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 itertools = "0.14.0"
+libfuzzer-sys = "0.4"
 near-account-id = "1.1.4"
+near-chain-configs = "0.31.1"
 near-contract-standards = "5.17.2"
 near-crypto = "0.31.1"
 near-jsonrpc-client = "0.18.0"
 near-jsonrpc-primitives = "0.31.1"
+near-parameters = "0.31.1"
 near-primitives = "0.31.1"
 near-sdk = { version = "5.17.2", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
@@ -40,6 +44,7 @@ near-workspaces = { version = "0.21.0", features = ["unstable"] }
 p256 = "0.13.2"
 primitive-types = { version = "0.10.1" }
 rstest = { version = "0.24" }
+solana-sdk = "3.0.0"
 schemars = { version = "0.8" }
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }

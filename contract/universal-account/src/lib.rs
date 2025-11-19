@@ -7,8 +7,7 @@ use near_sdk::{
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    authentication::{ExecutionContextProvider, Key},
-    ExecuteArgs, ExecutionParameters, KeyId,
+    transaction::Transaction, ExecuteArgs, ExecutionParameters, KeyId,
 };
 
 #[derive(PanicOnDefault)]
@@ -51,13 +50,14 @@ impl Contract {
         let index = self.next_key_index;
         self.next_key_index += 1;
         self.keys.insert(
-            key,
+            key.clone(),
             ExecutionParameters {
                 block_height: U64(env::block_height()),
                 index: U64(index),
                 nonce: U64(0),
             },
         );
+        templar_universal_account::Event::KeyAdded { key }.emit();
     }
 
     #[private]
@@ -67,23 +67,26 @@ impl Contract {
             "Cannot remove last key using this function",
         );
         self.keys.remove(&key);
+        templar_universal_account::Event::KeyRemoved { key }.emit();
     }
 
-    pub fn execute(&mut self, args: ExecuteArgs) -> Promise {
-        let ExecuteArgs::Passkey { key, message } = args;
-        let Some(key_entry) = self.keys.get_mut(&KeyId::Passkey(key.clone())) else {
-            env::panic_str("Key does not exist")
+    pub fn execute(&mut self, args: ExecuteArgs<Box<[Transaction]>>) -> Promise {
+        let key = args.key_id();
+        let Some(key_entry) = self.keys.get_mut(&key) else {
+            templar_common::panic_with_message("Key does not exist")
         };
         *key_entry = key_entry.next();
+        templar_universal_account::Event::NonceExecution {
+            key,
+            nonce: key_entry.nonce,
+        }
+        .emit();
 
         let current_account_id = env::current_account_id();
 
-        let message = key
-            .verify(message)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-        let transactions = message
+        let transactions = args
             .verify(&current_account_id, key_entry, |_| true)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         require!(!transactions.is_empty(), "Transaction list is empty");
 

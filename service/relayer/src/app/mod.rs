@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     future::Future,
     sync::Arc,
     time::Duration,
@@ -320,69 +320,6 @@ impl App {
 
         if errors.is_empty() {
             Ok(other_interactions)
-        } else {
-            Err(errors)
-        }
-    }
-
-    pub(crate) fn ua_interacted_contracts_and_gas(
-        &self,
-        accounts: &AccountData,
-        payload: &[templar_universal_account::transaction::Transaction],
-    ) -> Result<(HashSet<AccountId>, near_sdk::Gas), Vec<PayloadRejectionReason>> {
-        let mut errors = vec![];
-        let mut gas = near_sdk::Gas::from_tgas(self.args.ua.execute_tgas).as_gas();
-        let mut interacted = HashSet::with_capacity(payload.len());
-
-        for transaction in payload {
-            let receiver_id = &transaction.receiver_id;
-            if !accounts.allowed_contract_data.contains_key(receiver_id) {
-                errors.push(PayloadRejectionReason::UnknownTransactionReceiverId {
-                    account_id: receiver_id.clone(),
-                });
-            }
-            let mut calls = Vec::with_capacity(transaction.actions.len());
-            for (index, action) in transaction.actions.iter().enumerate() {
-                match action {
-                    templar_universal_account::transaction::Action::FunctionCall(call)
-                    | templar_universal_account::transaction::Action::FunctionCallWeight {
-                        call,
-                        ..
-                    } => calls.push(FunctionCallAction::from((**call).clone())),
-                    _ => errors.push(PayloadRejectionReason::UnsupportedAction { index }),
-                }
-            }
-            let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
-                errors.push(PayloadRejectionReason::UnknownTransactionReceiverId {
-                    account_id: receiver_id.clone(),
-                });
-                continue;
-            };
-
-            interacted.insert(receiver_id.clone());
-            let probably_interacted = match self.actions_are_allowed(
-                accounts,
-                receiver_id,
-                contract_data,
-                calls.iter(),
-            ) {
-                Ok(a) => a,
-                Err(e) => {
-                    errors.push(PayloadRejectionReason::FunctionCallRejection(e));
-                    continue;
-                }
-            };
-            interacted.extend(probably_interacted);
-            if let Some(market_data) = accounts.market_data.get(receiver_id) {
-                interacted.insert(market_data.oracle_id.clone());
-                interacted.insert(market_data.borrow_asset.contract_id().to_owned());
-                interacted.insert(market_data.collateral_asset.contract_id().to_owned());
-            }
-            gas += calls.iter().map(|f| f.gas).sum::<u64>();
-        }
-
-        if errors.is_empty() {
-            Ok((interacted, near_sdk::Gas::from_gas(gas)))
         } else {
             Err(errors)
         }

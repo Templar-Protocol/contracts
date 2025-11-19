@@ -83,7 +83,7 @@ impl MarketExternalInterface for Contract {
             .configuration
             .price_oracle_configuration
             .create_price_pair(&oracle_response)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         Some(borrow_position.status(&price_pair, env::block_timestamp_ms()))
     }
@@ -111,7 +111,9 @@ impl MarketExternalInterface for Contract {
         let snapshot = self.snapshot();
         let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
         else {
-            env::panic_str("No borrower record. Please deposit collateral first.");
+            templar_common::panic_with_message(
+                "No borrower record. Please deposit collateral first.",
+            );
         };
 
         if borrow_position
@@ -170,7 +172,7 @@ impl MarketExternalInterface for Contract {
             .supply_position_ref(predecessor.clone())
             .filter(|supply_position| !supply_position.total_deposit().is_zero())
         else {
-            env::panic_str("Supply position does not exist");
+            templar_common::panic_with_message("Supply position does not exist");
         };
 
         // We do check here, as well as during the execution.
@@ -351,13 +353,15 @@ impl MarketExternalInterface for Contract {
                 &account_id.unwrap_or_else(env::predecessor_account_id),
                 snapshot_limit.unwrap_or(u32::MAX),
             )
-            .unwrap_or_else(|_| env::panic_str("This account does not earn static yield"));
+            .unwrap_or_else(|_| {
+                templar_common::panic_with_message("This account does not earn static yield")
+            });
     }
 
     fn withdraw_static_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
         let predecessor = env::predecessor_account_id();
         let Some(mut yield_record) = self.static_yield.get(&predecessor) else {
-            env::panic_str("Yield record does not exist");
+            templar_common::panic_with_message("Yield record does not exist");
         };
 
         let amount = amount.unwrap_or_else(|| yield_record.get_total());

@@ -78,7 +78,7 @@ impl Contract {
             account_id,
             env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
         )
-        .unwrap_or_else(|e| env::panic_str(&format!("Storage error: {e}")));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&format!("Storage error: {e}")));
     }
 
     fn refund_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
@@ -86,13 +86,13 @@ impl Contract {
             account_id,
             env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
         )
-        .unwrap_or_else(|e| env::panic_str(&format!("Storage error: {e}")));
+        .unwrap_or_else(|e| templar_common::panic_with_message(&format!("Storage error: {e}")));
     }
 }
 
 impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {
     fn hook<R>(_: &mut Self, _: &Nep145ForceUnregister, _: impl FnOnce(&mut Self) -> R) -> R {
-        env::panic_str("force unregistration is not supported")
+        templar_common::panic_with_message("force unregistration is not supported")
     }
 }
 

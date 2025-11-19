@@ -17,7 +17,7 @@ use near_primitives::{
     action::{delegate::SignedDelegateAction, FunctionCallAction},
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction, TransactionV0},
-    types::{BlockId, Finality},
+    types::{BlockId, BlockReference, Finality},
     views::{FinalExecutionOutcomeView, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
@@ -121,6 +121,24 @@ impl Near {
         let price = NearToken::from_yoctonear(response.gas_price);
         tracing::trace!(gas_price = %price, "Fetched gas price");
         Ok(price)
+    }
+
+    /// # Errors
+    ///
+    /// - RPC errors
+    #[tracing::instrument(skip(self))]
+    pub async fn fetch_protocol_config(
+        &self,
+    ) -> Result<
+        methods::EXPERIMENTAL_protocol_config::RpcProtocolConfigResponse,
+        JsonRpcError<methods::EXPERIMENTAL_protocol_config::RpcProtocolConfigError>,
+    > {
+        let method = methods::EXPERIMENTAL_protocol_config::RpcProtocolConfigRequest {
+            block_reference: BlockReference::latest(),
+        };
+        let response = self.client.call(method).await?;
+        tracing::trace!(protocol_config = ?response, "Fetched protocol config");
+        Ok(response)
     }
 
     /// # Errors
@@ -343,7 +361,7 @@ impl Near {
         &self,
         cache: &Cache,
         ua_account_id: AccountId,
-        args: ExecuteArgs,
+        args: ExecuteArgs<Box<[templar_universal_account::transaction::Transaction]>>,
         gas: u64,
     ) -> SignedTransaction {
         let signer = self.next_signer();

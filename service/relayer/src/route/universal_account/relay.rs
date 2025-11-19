@@ -8,8 +8,8 @@ use near_sdk::{
 };
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_universal_account::{
-    authentication::{ExecutionContextProvider, Key},
-    ExecuteArgs, KeyId,
+    transaction::{Action, Transaction},
+    ExecuteArgs,
 };
 
 use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
@@ -18,7 +18,7 @@ use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayRequest {
     pub account_id: AccountId,
-    pub args: ExecuteArgs,
+    pub args: ExecuteArgs<Box<[Transaction]>>,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
     #[serde(default)]
@@ -43,20 +43,16 @@ pub async fn relay(
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
-    let ExecuteArgs::Passkey {
-        ref key,
-        ref message,
-    } = args;
 
     let parameters = match app
         .ua_near
-        .load_ua_key(account_id.clone(), KeyId::Passkey(key.clone()))
+        .load_ua_key(account_id.clone(), args.key_id())
         .await
     {
         Ok(parameters) => parameters,
         Err(e) => {
             // Account might not exist, but we also might have connection issues.
-            tracing::warn!("Failed to load execution parameters for key \"{}\" from universal account \"{account_id}\": {e}", &key.0);
+            tracing::warn!("Failed to load execution parameters for key \"{}\" from universal account \"{account_id}\": {e}", args.key_id());
             return SimpleResponse::Failure {
                 error: "Failed to load execution parameters from universal account".to_string(),
             };
@@ -66,49 +62,106 @@ pub async fn relay(
     let Some(parameters) = parameters else {
         tracing::info!(
             "Key \"{}\" does not exist on account \"{account_id}\"",
-            key.0,
+            args.key_id(),
         );
         return SimpleResponse::Rejected {
             reason: "Key does not exist on account".to_string(),
         };
     };
 
-    let valid_signature = match key.verify(message.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::info!("Signature verification failed: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Signature verification failed".to_string(),
-            };
-        }
-    };
-
-    let payload = match valid_signature.verify(&account_id, &parameters.next(), |o| {
+    let payload = match args.clone().verify(&account_id, &parameters.next(), |o| {
         app.args.ua.is_origin_allowed(o)
     }) {
         Ok(p) => p,
         Err(e) => {
-            tracing::info!("Execution parameter verification failed: {e}");
+            tracing::info!("Verification failed: {e}");
             return SimpleResponse::Rejected {
-                reason: "Execution parameter verification failed".to_string(),
+                reason: format!("Verification failed: {e}"),
             };
         }
     };
 
     let accounts = app.accounts.read().await;
 
-    let (interacted_contract_ids, gas) =
-        match app.ua_interacted_contracts_and_gas(&accounts, payload) {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::info!("Rejecting payload for reason: {e:?}");
-                let mut s = e[0].to_string();
-                for err in &e[1..] {
-                    let _ = write!(&mut s, "\n{err}");
+    let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
+    let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
+    for transaction in payload {
+        let receiver_id = &transaction.receiver_id;
+        if receiver_id == &account_id {
+            // Reflexive action - allow all.
+            let protocol_config = app.cache.protocol_configuration().await;
+            // One exception: recursive "execute" call, since that could be used to bypass gas restrictions.
+            // There is not a good use-case for this anyways, so it should be okay to reject wholesale.
+            for a in &transaction.actions {
+                match a {
+                    Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. }
+                        if call.function_name == "execute" =>
+                    {
+                        tracing::info!("Rejecting recursive `execute` call.");
+                        return SimpleResponse::Rejected {
+                            reason: "Recursive `execute` call".to_string(),
+                        };
+                    }
+                    _ => {}
                 }
-                return SimpleResponse::Rejected { reason: s };
+            }
+
+            gas += transaction
+                .actions
+                .iter()
+                .map(|a| a.gas_cost(receiver_id, true, &protocol_config))
+                .reduce(|a, b| a.saturating_add(b))
+                .unwrap_or(near_sdk::Gas::from_gas(0))
+                .as_gas();
+            tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
+            continue;
+        }
+        let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
+            tracing::info!("Unknown receiver {receiver_id}");
+            return SimpleResponse::Rejected {
+                reason: "Unknown receiver".to_string(),
+            };
+        };
+        let calls = match transaction
+            .actions
+            .iter()
+            .map(|action| match action {
+                Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
+                    Ok((**call).clone().into())
+                }
+                a => Err(a),
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(calls) => calls,
+            Err(a) => {
+                tracing::info!("Disallowed action: {a:?}");
+                return SimpleResponse::Rejected {
+                    reason: "Disallowed action".to_string(),
+                };
             }
         };
+        let additional_interactions =
+            match app.actions_are_allowed(&accounts, receiver_id, contract_data, calls.iter()) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::info!("Rejecting payload for reason: {e:?}");
+                    let mut s = e[0].to_string();
+                    for err in &e[1..] {
+                        let _ = write!(&mut s, "\n{err}");
+                    }
+                    return SimpleResponse::Rejected { reason: s };
+                }
+            };
+        interacted_contract_ids.insert(receiver_id.to_owned());
+        interacted_contract_ids.extend(additional_interactions.into_iter());
+        if let Some(market_data) = accounts.market_data.get(receiver_id) {
+            interacted_contract_ids.insert(market_data.oracle_id.clone());
+            interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
+        }
+        gas += calls.iter().map(|f| f.gas).sum::<u64>();
+    }
 
     let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
 
@@ -219,9 +272,9 @@ pub async fn relay(
     // Send the user's transaction
     let signed_transaction = app
         .relay_near
-        .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas.as_gas())
+        .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas)
         .await;
-    let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
+    let Some(cost_of_gas) = app.estimate_cost_of_gas(near_sdk::Gas::from_gas(gas)).await else {
         tracing::error!("Failed to estimate cost of gas");
         return SimpleResponse::Failure {
             error: "Failed to estimate cost of gas".to_string(),

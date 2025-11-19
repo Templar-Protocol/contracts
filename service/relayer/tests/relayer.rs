@@ -12,7 +12,11 @@ use near_primitives::{
     },
     views::TxExecutionStatus,
 };
-use near_sdk::{json_types::U64, AccountId, NearToken};
+use near_sdk::{
+    json_types::U64,
+    serde_json::{self, json},
+    AccountId, NearToken,
+};
 use near_workspaces::{network::Sandbox, Account, Worker};
 use p256::elliptic_curve::rand_core::OsRng;
 use rstest::{fixture, rstest};
@@ -34,11 +38,13 @@ use templar_relayer::{
     },
 };
 use templar_universal_account::{
-    authentication::passkey::{
-        self,
-        data::{AuthenticatorData, ClientDataJson},
-        with_raw_string::WithRawString,
-        Passkey, Payload,
+    authentication::{
+        passkey::{
+            self,
+            data::{AuthenticatorData, ClientDataJson},
+            Passkey,
+        },
+        HashForSigning, Payload,
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
@@ -62,29 +68,29 @@ fn create_message<T: near_sdk::serde::Serialize>(
     account_id: AccountId,
     parameters: ExecutionParameters,
     payload: T,
-) -> passkey::Message<T> {
-    let payload = WithRawString::from_parsed(Payload {
+) -> passkey::MessageWithSignature<T> {
+    let payload = passkey::Message::from_parsed(Payload {
         parameters,
         account_id,
         payload,
     });
 
-    let challenge = payload.hash().into();
+    let challenge = payload.hash_for_signing().into();
 
-    passkey::UncheckedMessage::new_and_sign(
-        secret_key,
-        payload,
-        AuthenticatorData(Box::new([0xffu8; 32])),
-        WithRawString::from_parsed(ClientDataJson {
-            r#type: "type".to_string(),
-            challenge,
-            origin: "origin".to_string(),
-            cross_origin: None,
-            top_origin: None,
-        }),
-    )
-    .try_into()
-    .unwrap()
+    payload
+        .sign(
+            secret_key,
+            AuthenticatorData(Box::new([0xffu8; 32])),
+            ClientDataJson {
+                r#type: "type".to_string(),
+                challenge,
+                origin: "origin".to_string(),
+                cross_origin: None,
+                top_origin: None,
+            },
+        )
+        .try_into()
+        .unwrap()
 }
 
 fn create_execute_message(
@@ -93,7 +99,7 @@ fn create_execute_message(
     parameters: ExecutionParameters,
     receiver_id: AccountId,
     actions: impl Into<Box<[transaction::Action]>>,
-) -> passkey::Message<Box<[Transaction]>> {
+) -> passkey::MessageWithSignature<Box<[Transaction]>> {
     create_message(
         secret_key,
         account_id,
@@ -297,7 +303,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(message)),
+        Json(CreateRequest::Passkey(Box::new(message))),
     )
     .await;
 
@@ -360,7 +366,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
                 key: passkey.clone(),
-                message,
+                message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
@@ -423,7 +429,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
             account_id: ua_account_id.clone(),
             args: ExecuteArgs::Passkey {
                 key: passkey.clone(),
-                message,
+                message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
@@ -498,4 +504,200 @@ pub async fn pyth_updates() {
     eprintln!("Transaction hash: {txid:?}");
 
     kill.send(()).unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
+    let InitTest {
+        worker,
+        app,
+        ua_deployer,
+        borrow_user,
+        ..
+    } = init_test;
+
+    // Relay a signed delegate action.
+
+    let fetch_nonce = app
+        .relay_near
+        .fetch_nonce(
+            borrow_user.id().clone(),
+            borrow_user.secret_key().public_key().into(),
+        )
+        .await
+        .unwrap();
+
+    // Deploy a universal account.
+
+    let secret_key = p256::SecretKey::random(&mut OsRng);
+    let passkey = Passkey(PublicKey(secret_key.public_key()));
+
+    let message = create_message(
+        &secret_key,
+        ua_deployer.contract().id().clone(),
+        ExecutionParameters {
+            block_height: U64(0),
+            index: U64(0),
+            nonce: U64(0),
+        },
+        Pow::mine(
+            CreatePasskeyAccount {
+                key: passkey.clone(),
+                block_hash: fetch_nonce.block_hash,
+            },
+            POW_DIFFICULTY,
+            10_000,
+        )
+        .unwrap(),
+    );
+
+    let response = templar_relayer::route::universal_account::create::create(
+        State(app.clone()),
+        Json(CreateRequest::Passkey(Box::new(message))),
+    )
+    .await;
+
+    eprintln!("UA deploy response: {response:?}");
+
+    let SimpleResponse::Success(response) = response else {
+        panic!("Universal account deployment should succeed");
+    };
+
+    let ua_account_id = response.account_id.clone();
+
+    let status = worker
+        .tx_status(
+            TransactionInfo::TransactionId {
+                tx_hash: response.transaction_hash,
+                sender_account_id: ua_deployer.contract().id().clone(),
+            },
+            TxExecutionStatus::Final,
+        )
+        .await
+        .unwrap();
+
+    eprintln!("UA deploy status: {status:?}");
+
+    status
+        .final_execution_outcome
+        .unwrap()
+        .into_outcome()
+        .assert_success();
+
+    // Send an action to the universal account contract
+
+    let load_parameters = async |account_id: AccountId, key: KeyId| {
+        app.ua_near
+            .load_ua_key(account_id, key)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+
+    let parameters = load_parameters(ua_account_id.clone(), KeyId::Passkey(passkey.clone())).await;
+    let secret_key_2 = p256::SecretKey::random(&mut OsRng);
+    let passkey_2 = Passkey(PublicKey(secret_key_2.public_key()));
+
+    let message = create_execute_message(
+        &secret_key,
+        ua_account_id.clone(),
+        parameters.next(),
+        ua_account_id.clone(),
+        vec![transaction::FunctionCallAction {
+            function_name: "add_key".to_string(),
+            arguments: serde_json::to_vec(&json!({
+                "key": KeyId::Passkey(passkey_2.clone()),
+            }))
+            .unwrap()
+            .into(),
+            amount: NearToken::from_near(0),
+            gas: near_sdk::Gas::from_tgas(25),
+        }
+        .into()],
+    );
+
+    let response = templar_relayer::route::universal_account::relay::relay(
+        State(app.clone()),
+        Json(UaRelayRequest {
+            account_id: ua_account_id.clone(),
+            args: ExecuteArgs::Passkey {
+                key: passkey.clone(),
+                message: Box::new(message),
+            },
+            storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
+        }),
+    )
+    .await;
+
+    eprintln!("UA Relay response: {response:?}");
+
+    let response = match response {
+        SimpleResponse::Success(response) => response,
+        e => {
+            panic!("Should succeed: {e:?}");
+        }
+    };
+
+    let status = worker
+        .tx_status(
+            TransactionInfo::TransactionId {
+                tx_hash: response.transaction_hash,
+                sender_account_id: ua_account_id.clone(),
+            },
+            TxExecutionStatus::Final,
+        )
+        .await
+        .unwrap();
+
+    eprintln!("UA relay status: {status:?}");
+
+    status
+        .final_execution_outcome
+        .unwrap()
+        .into_outcome()
+        .assert_success();
+
+    // Test intents.near contract intraction
+    // The actual transaction should fail, because `intents.near` does not
+    // exist on the sandbox blockchain, but the relayer should still send the
+    // transaction.
+
+    let parameters =
+        load_parameters(ua_account_id.clone(), KeyId::Passkey(passkey_2.clone())).await;
+
+    let message = create_execute_message(
+        &secret_key_2,
+        ua_account_id.clone(),
+        parameters.next(),
+        ua_account_id.clone(),
+        vec![transaction::FunctionCallAction {
+            function_name: "execute".to_string(),
+            arguments: b"{}".to_vec().into(),
+            amount: NearToken::from_near(0),
+            gas: near_sdk::Gas::from_tgas(200),
+        }
+        .into()],
+    );
+
+    let response = templar_relayer::route::universal_account::relay::relay(
+        State(app.clone()),
+        Json(UaRelayRequest {
+            account_id: ua_account_id.clone(),
+            args: ExecuteArgs::Passkey {
+                key: passkey_2.clone(),
+                message: Box::new(message),
+            },
+            storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Rejected { reason } = response else {
+        panic!("Should have been rejected: {response:?}");
+    };
+
+    assert_eq!(reason, "Recursive `execute` call");
 }
