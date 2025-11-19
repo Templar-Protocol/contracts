@@ -47,17 +47,68 @@ impl From<templar_common::vault::Event> for Event {
     }
 }
 
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Debug, Clone)]
 pub struct Delta {
     pub market: AccountId,
     pub amount: ForeignU128,
 }
 
+impl From<templar_common::vault::Delta> for Delta {
+    fn from(value: templar_common::vault::Delta) -> Self {
+        Delta {
+            market: AccountId(value.market.to_string()),
+            amount: serde_json::to_string(&value.amount).unwrap(),
+        }
+    }
+}
+
+impl From<Delta> for templar_common::vault::Delta {
+    fn from(value: Delta) -> Self {
+        println!("Delta {:?}", value);
+        templar_common::vault::Delta {
+            market: value.market.into(),
+            amount: U128(u128::from_str(value.amount.as_str()).unwrap()),
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Debug, Clone)]
+pub enum AllocationDelta {
+    Supply(Delta),
+    Withdraw(Delta),
+}
+
+impl From<templar_common::vault::AllocationDelta> for AllocationDelta {
+    fn from(value: templar_common::vault::AllocationDelta) -> Self {
+        match value {
+            templar_common::vault::AllocationDelta::Supply(delta) => {
+                AllocationDelta::Supply(delta.into())
+            }
+            templar_common::vault::AllocationDelta::Withdraw(delta) => {
+                AllocationDelta::Withdraw(delta.into())
+            }
+        }
+    }
+}
+
+impl From<AllocationDelta> for templar_common::vault::AllocationDelta {
+    fn from(value: AllocationDelta) -> Self {
+        match value {
+            AllocationDelta::Supply(delta) => {
+                templar_common::vault::AllocationDelta::Supply(delta.into())
+            }
+            AllocationDelta::Withdraw(delta) => {
+                templar_common::vault::AllocationDelta::Withdraw(delta.into())
+            }
+        }
+    }
+}
 
 #[uniffi::export(callback_interface)]
 pub trait EventHandler {
     fn handle(&self, event: Event);
 }
+
 pub const DEFAULT_GAS: Gas = 300 * 1e12 as u64;
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 
@@ -276,7 +327,7 @@ impl<T: Into<anyhow::Error>> From<T> for ErrorWrapper {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AccountId(String);
 
 uniffi::custom_type!(AccountId, String);
@@ -494,6 +545,23 @@ impl Client {
         Ok(())
     }
 
+    #[instrument(skip(self))]
+    pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
+        info!("Reallocating shares");
+        let delta = templar_common::vault::AllocationDelta::from(delta.to_owned());
+        self.call(
+            &self.vault,
+            "reallocate",
+            (delta,),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Reallocate call submitted");
+        Ok(())
+    }
 
     #[instrument(skip(self, route))]
     pub async fn execute_withdrawal(&self, route: &[AccountId]) -> Result<(), ErrorWrapper> {
@@ -532,7 +600,7 @@ impl Client {
         self.call(
             &self.vault,
             "execute_market_withdrawal",
-            (op_id, market_index, batch_limit),
+            (op_id.to_string(), market_index, batch_limit),
             None,
             None,
             self.timeout,
@@ -587,7 +655,7 @@ impl Client {
     }
 
     #[instrument(skip(self))]
-    pub async fn cancel_inflight_withdrawal(&self) -> Result<(), ErrorWrapper> {
+    pub async fn cancel_in_flight_withdrawal(&self) -> Result<(), ErrorWrapper> {
         info!("Cancelling inflight withdrawal");
         self.call(
             &self.vault,
@@ -803,7 +871,7 @@ impl Client {
         Ok(())
     }
 
-    #[instrument(skip(self, market, new_cap))]
+    #[instrument(skip(self))]
     pub async fn submit_cap(
         &self,
         market: &AccountId,
@@ -825,13 +893,13 @@ impl Client {
         Ok(())
     }
 
-    #[instrument(skip(self, market))]
+    #[instrument(skip(self))]
     pub async fn accept_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
         info!("Accepting cap change");
         self.call(
             &self.vault,
             "accept_cap",
-            &NearAccountId::from(market.clone()),
+            (NearAccountId::from(market.clone()),),
             None,
             None,
             self.timeout,
@@ -848,7 +916,7 @@ impl Client {
         self.call(
             &self.vault,
             "revoke_pending_cap",
-            &NearAccountId::from(market.clone()),
+            (NearAccountId::from(market.clone()),),
             None,
             None,
             self.timeout,
@@ -865,7 +933,7 @@ impl Client {
         self.call(
             &self.vault,
             "submit_market_removal",
-            &NearAccountId::from(market.clone()),
+            (NearAccountId::from(market.clone()),),
             None,
             None,
             self.timeout,
@@ -885,7 +953,7 @@ impl Client {
         self.call(
             &self.vault,
             "revoke_pending_market_removal",
-            &NearAccountId::from(market.clone()),
+            (NearAccountId::from(market.clone()),),
             None,
             None,
             self.timeout,
@@ -945,6 +1013,7 @@ mod tests {
 
     use super::*;
     use near_crypto::{KeyType, SecretKey};
+    use near_sdk::NearToken;
     use rstest::{fixture, rstest};
 
     #[fixture]
@@ -959,7 +1028,7 @@ mod tests {
 
     #[fixture]
     fn testnet_rpc() -> String {
-        "https://rpc.testnet.near.org".to_string()
+        "https://rpc.testnet.fastnear.com/".to_string()
     }
 
     #[fixture]
@@ -1038,7 +1107,14 @@ mod tests {
             AccountId("market1.testnet".to_string()),
             AccountId("vault.testnet".to_string()),
         ];
-        println!("{:?}", client.execute_withdrawal(&route).await.unwrap());
+        client.cancel_in_flight_withdrawal().await.unwrap();
+        println!(
+            "{:?}",
+            client
+                .execute_withdrawal(&route, Some(100.to_string()))
+                .await
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1102,5 +1178,92 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[rstest]
+    #[tokio::test(flavor = "current_thread")]
+    async fn full_happy(
+        vault: AccountId,
+        everything: AccountId,
+        testnet_rpc: String,
+        sk: SecretKey,
+    ) {
+        let client =
+            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
+        let markets: Vec<AccountId> = vec!["usdt.registry.topgunbakugo.testnet".to_string().into()];
+
+        let mkt = &markets[0];
+        println!("market: {:?}", mkt);
+
+        client
+            .submit_cap(
+                mkt,
+                &serde_json::to_string_pretty(&U128(u128::MAX)).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        client.accept_cap(mkt).await.unwrap();
+
+        let deposit = NearToken::from_near(1).as_yoctonear();
+
+        println!("deposit: {:?}", deposit);
+
+        println!(
+            "{:?}",
+            client
+                .set_supply_queue(&markets, &deposit.to_string())
+                .await
+                .unwrap()
+        );
+
+        let delta = AllocationDelta::Supply(Delta {
+            market: mkt.clone(),
+            amount: 100.to_string(),
+        });
+        println!("{:?}", delta);
+        println!("{:?}", client.reallocate(&delta).await.unwrap());
+    }
+
+    #[rstest]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reallocate(
+        vault: AccountId,
+        everything: AccountId,
+        testnet_rpc: String,
+        sk: SecretKey,
+    ) {
+        let client =
+            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
+        let markets: Vec<AccountId> = vec!["usdt.registry.topgunbakugo.testnet".to_string().into()];
+
+        let mkt = &markets[0];
+        println!("market: {:?}", mkt);
+
+        let delta = AllocationDelta::Supply(Delta {
+            market: mkt.clone(),
+            amount: 100.to_string(),
+        });
+        println!("{:?}", delta);
+        println!("{:?}", client.reallocate(&delta).await.unwrap());
+
+        let delta = AllocationDelta::Withdraw(Delta {
+            market: mkt.clone(),
+            amount: 100.to_string(),
+        });
+        println!("{:?}", delta);
+        println!("{:?}", client.reallocate(&delta).await.unwrap());
+
+        // let (op_id, market_index) = client
+        //     .execute_withdrawal(&vec![mkt.clone()], Some(100.to_string()))
+        //     .await
+        //     .unwrap();
+
+        // client
+        //     .execute_market_withdrawal(&op_id, &market_index, None)
+        //     .await
+        //     .unwrap();
     }
 }
