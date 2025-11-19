@@ -602,3 +602,339 @@ impl Client {
         info!("Cancel inflight withdrawal call submitted");
         Ok(())
     }
+
+    #[instrument(skip(self, token))]
+    pub async fn skim(&self, token: &AccountId) -> Result<(), ErrorWrapper> {
+        info!("Skimming token");
+        self.call(
+            &self.vault,
+            "skim",
+            &NearAccountId::from(token.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Skim call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, account))]
+    pub async fn set_curator(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
+        info!("Setting curator");
+        self.call(
+            &self.vault,
+            "set_curator",
+            &NearAccountId::from(account.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Set curator call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, account))]
+    pub async fn set_is_allocator(
+        &self,
+        account: &AccountId,
+        allowed: bool,
+    ) -> Result<(), ErrorWrapper> {
+        info!("Setting allocator role");
+        self.call(
+            &self.vault,
+            "set_is_allocator",
+            (NearAccountId::from(account.clone()), allowed),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Allocator role call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, new_g))]
+    pub async fn submit_guardian(&self, new_g: &AccountId) -> Result<(), ErrorWrapper> {
+        info!("Submitting guardian");
+        self.call(
+            &self.vault,
+            "submit_guardian",
+            &NearAccountId::from(new_g.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Submit guardian call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn accept_guardian(&self) -> Result<(), ErrorWrapper> {
+        info!("Accepting guardian");
+        self.call(&self.vault, "accept_guardian", (), None, None, self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)?;
+        info!("Accept guardian call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn revoke_pending_guardian(&self) -> Result<(), ErrorWrapper> {
+        info!("Revoking pending guardian");
+        self.call(
+            &self.vault,
+            "revoke_pending_guardian",
+            (),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Revoke pending guardian call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, account))]
+    pub async fn set_skim_recipient(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
+        info!("Setting skim recipient");
+        self.call(
+            &self.vault,
+            "set_skim_recipient",
+            &NearAccountId::from(account.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Set skim recipient call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, account, deposit_yocto))]
+    pub async fn set_fee_recipient(
+        &self,
+        account: &AccountId,
+        deposit_yocto: &ForeignU128,
+    ) -> Result<(), ErrorWrapper> {
+        let deposit: u128 = deposit_yocto.parse().map_err(ErrorWrapper::from)?;
+        info!("Setting fee recipient");
+        self.call(
+            &self.vault,
+            "set_fee_recipient",
+            &NearAccountId::from(account.clone()),
+            None,
+            Some(deposit),
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Set fee recipient call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, fee))]
+    pub async fn set_performance_fee(&self, fee: &ForeignU128) -> Result<(), ErrorWrapper> {
+        let fee: U128 = serde_json::from_str(fee).map_err(ErrorWrapper::from)?;
+        info!("Setting performance fee");
+        self.call(
+            &self.vault,
+            "set_performance_fee",
+            (fee,),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Set performance fee call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn submit_timelock(&self, new_timelock_ns: u64) -> Result<(), ErrorWrapper> {
+        info!("Submitting timelock");
+        self.call(
+            &self.vault,
+            "submit_timelock",
+            (U64::from(new_timelock_ns),),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Submit timelock call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn accept_timelock(&self) -> Result<(), ErrorWrapper> {
+        info!("Accepting timelock");
+        self.call(&self.vault, "accept_timelock", (), None, None, self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)?;
+        info!("Accept timelock call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn revoke_pending_timelock(&self) -> Result<(), ErrorWrapper> {
+        info!("Revoking pending timelock");
+        self.call(
+            &self.vault,
+            "revoke_pending_timelock",
+            (),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Revoke pending timelock call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, market, new_cap))]
+    pub async fn submit_cap(
+        &self,
+        market: &AccountId,
+        new_cap: &ForeignU128,
+    ) -> Result<(), ErrorWrapper> {
+        let new_cap: U128 = serde_json::from_str(new_cap).map_err(ErrorWrapper::from)?;
+        info!("Submitting cap change");
+        self.call(
+            &self.vault,
+            "submit_cap",
+            (NearAccountId::from(market.clone()), new_cap),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Submit cap call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn accept_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
+        info!("Accepting cap change");
+        self.call(
+            &self.vault,
+            "accept_cap",
+            &NearAccountId::from(market.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Accept cap call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn revoke_pending_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
+        info!("Revoking pending cap");
+        self.call(
+            &self.vault,
+            "revoke_pending_cap",
+            &NearAccountId::from(market.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Revoke pending cap call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn submit_market_removal(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
+        info!("Submitting market removal");
+        self.call(
+            &self.vault,
+            "submit_market_removal",
+            &NearAccountId::from(market.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Submit market removal call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn revoke_pending_market_removal(
+        &self,
+        market: &AccountId,
+    ) -> Result<(), ErrorWrapper> {
+        info!("Revoking pending market removal");
+        self.call(
+            &self.vault,
+            "revoke_pending_market_removal",
+            &NearAccountId::from(market.clone()),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Revoke pending market removal call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, markets, deposit_yocto))]
+    pub async fn set_supply_queue(
+        &self,
+        markets: &[AccountId],
+        deposit_yocto: &ForeignU128,
+    ) -> Result<(), ErrorWrapper> {
+        let deposit: u128 = deposit_yocto.parse().map_err(ErrorWrapper::from)?;
+        let markets: Vec<NearAccountId> =
+            markets.iter().cloned().map(NearAccountId::from).collect();
+        info!("Setting supply queue, len={}", markets.len());
+        self.call(
+            &self.vault,
+            "set_supply_queue",
+            (markets,),
+            None,
+            Some(deposit),
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Set supply queue call submitted");
+        Ok(())
+    }
+
+    #[instrument(skip(self, queue))]
+    pub async fn set_withdraw_queue(&self, queue: &[AccountId]) -> Result<(), ErrorWrapper> {
+        let queue: Vec<NearAccountId> = queue.iter().cloned().map(NearAccountId::from).collect();
+        info!("Setting withdraw queue, len={}", queue.len());
+        self.call(
+            &self.vault,
+            "set_withdraw_queue",
+            (queue,),
+            None,
+            None,
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)?;
+        info!("Set withdraw queue call submitted");
+        Ok(())
+    }
+}
