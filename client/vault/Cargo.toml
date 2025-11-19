@@ -1,0 +1,45 @@
+[package]
+name = "templar-vault-client"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[[bin]]
+# This can be whatever name makes sense for your project, but the rest of this tutorial assumes uniffi-bindgen.
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+uniffi = { version = "*", features = ["cli"] }
+templar-common.workspace = true
+near-jsonrpc-client.workspace = true
+near-crypto.workspace = true
+near-account-id.workspace = true
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize = { version = "*" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+near-sdk = { version = "5.17.2", features = ["unstable", "non-contract-usage"] }
+
+[build-dependencies]
+uniffi = { version = "*", features = [
+    "build",
+    "wasm-unstable-single-threaded",
+] }
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true

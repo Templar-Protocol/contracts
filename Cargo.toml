@@ -5,6 +5,7 @@ members = [
   "contract/*",
   "fuzz",
   "tools/*",
+  "client/*",
   "mock/*",
   "service/*",
   "test-utils",
