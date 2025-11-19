@@ -5,6 +5,7 @@ This smart contract accepts many different signature types and converts them int
 Currently supported:
 
 - Webauthn/NIST-P256
+- ED25519 raw (Solana)
 
 ## Build & Deploy
 
