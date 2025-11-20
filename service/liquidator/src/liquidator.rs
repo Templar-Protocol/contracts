@@ -224,9 +224,13 @@ impl Liquidator {
         &self.scanner
     }
 
-    /// Fetches and caches the market version via NEP-330.
+    /// Fetches and caches the market version via NEP-330 contract metadata.
     ///
-    /// This should be called once after creating the Liquidator to enable version-specific logic.
+    /// This should be called once after creating the Liquidator to enable version-specific
+    /// liquidation logic. The version determines whether to use total collateral (v1.0)
+    /// or liquidatable collateral (v1.1+) for liquidation calculations.
+    ///
+    /// If the market doesn't provide NEP-330 metadata, assumes v1.0 for safety.
     pub async fn fetch_market_version(&mut self) {
         self.market_version = self.scanner.get_market_version().await;
         if let Some((major, minor, patch)) = self.market_version {
@@ -379,8 +383,9 @@ impl Liquidator {
             // Will log consolidated info after profitability check
             let dry_run_mode = self.executor.is_dry_run();
 
-            // Step 2: Calculate liquidatable collateral first
-            // We need to know the actual liquidatable amount before calculating liquidation_amount
+            // Step 2: Calculate liquidatable collateral
+            // This amount determines the maximum collateral that can be liquidated
+            // to bring the position to the maintenance collateralization ratio.
             let price_pair = self
                 .market_config
                 .price_oracle_configuration
@@ -429,10 +434,23 @@ impl Liquidator {
                 "Calculating liquidation amount"
             );
 
-            // Create a temporary position with appropriate collateral for strategy calculation
-            // Version-specific logic:
-            // - v1.0: Uses total collateral (validates against total, takes all)
-            // - v1.1+: Uses liquidatable collateral (validates against requested, enforces limit)
+            // Create a temporary position with appropriate collateral for strategy calculation.
+            //
+            // Version-specific logic required because v1.0 and v1.1+ validate differently:
+            //
+            // v1.0 markets:
+            //   - Validate: amount >= total_collateral × price × (1 - spread)
+            //   - Behavior: Takes ALL collateral, zeros ALL debt
+            //   - No partial liquidation support
+            //
+            // v1.1+ markets:
+            //   - Validate: amount >= requested_collateral × price × (1 - spread)
+            //   - Enforce: requested_collateral <= liquidatable_collateral
+            //   - Behavior: Takes requested collateral, reduces debt proportionally
+            //   - Supports partial liquidation
+            //
+            // We adjust position.collateral_asset_deposit accordingly so the strategy
+            // calculates the correct liquidation amount for the contract's validation.
             let mut adjusted_position = position.clone();
             let use_total_collateral = if let Some((major, minor, _)) = self.market_version {
                 // If version is < 1.1.0, use total collateral

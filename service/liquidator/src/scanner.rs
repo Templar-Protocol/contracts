@@ -264,11 +264,26 @@ impl MarketScanner {
         self.check_market_compatibility(true).await.is_ok()
     }
 
-    /// Gets the market version via NEP-330.
+    /// Gets the market version via NEP-330 contract metadata.
+    ///
+    /// Fetches the contract version and parses it as a semver tuple.
+    /// Used to enable version-specific liquidation logic (v1.0 vs v1.1+).
     ///
     /// # Returns
     ///
-    /// `Some((major, minor, patch))` if version is available, `None` otherwise.
+    /// `Some((major, minor, patch))` if version metadata is available and parseable,
+    /// `None` if the contract doesn't support NEP-330 or version format is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let version = scanner.get_market_version().await;
+    /// match version {
+    ///     Some((1, 0, 0)) => println!("v1.0 market"),
+    ///     Some((1, 1, _)) => println!("v1.1+ market"),
+    ///     None => println!("Unknown version"),
+    /// }
+    /// ```
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn get_market_version(&self) -> Option<(u32, u32, u32)> {
         use crate::rpc::get_contract_version;
