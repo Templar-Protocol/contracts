@@ -157,6 +157,8 @@ pub struct Liquidator {
     loop_liquidation: bool,
     /// Maximum iterations for loop liquidation (safety limit)
     max_loop_iterations: u32,
+    /// Market version (major, minor, patch) - used for version-specific liquidation logic
+    market_version: Option<(u32, u32, u32)>,
 }
 
 impl Liquidator {
@@ -213,12 +215,32 @@ impl Liquidator {
             strategy,
             loop_liquidation,
             max_loop_iterations,
+            market_version: None,
         }
     }
 
     /// Get reference to the scanner (for compatibility checks)
     pub fn scanner(&self) -> &scanner::MarketScanner {
         &self.scanner
+    }
+
+    /// Fetches and caches the market version via NEP-330.
+    ///
+    /// This should be called once after creating the Liquidator to enable version-specific logic.
+    pub async fn fetch_market_version(&mut self) {
+        self.market_version = self.scanner.get_market_version().await;
+        if let Some((major, minor, patch)) = self.market_version {
+            info!(
+                market = %self.market,
+                version = %format!("{major}.{minor}.{patch}"),
+                "Fetched market version"
+            );
+        } else {
+            info!(
+                market = %self.market,
+                "Market version unavailable (no NEP-330 metadata), assuming v1.0"
+            );
+        }
     }
 
     /// Get formatted asset info for logging (decimals and symbols)
@@ -407,9 +429,42 @@ impl Liquidator {
                 "Calculating liquidation amount"
             );
 
-            // Create a temporary position with liquidatable collateral for strategy calculation
+            // Create a temporary position with appropriate collateral for strategy calculation
+            // Version-specific logic:
+            // - v1.0: Uses total collateral (validates against total, takes all)
+            // - v1.1+: Uses liquidatable collateral (validates against requested, enforces limit)
             let mut adjusted_position = position.clone();
-            adjusted_position.collateral_asset_deposit = liquidatable_collateral;
+            let use_total_collateral = if let Some((major, minor, _)) = self.market_version {
+                // If version is < 1.1.0, use total collateral
+                (major, minor) < (1, 1)
+            } else {
+                // If version is unknown, assume v1.0 for safety
+                true
+            };
+
+            if use_total_collateral {
+                // v1.0: Keep total collateral - contract validates against total
+                let (_, _, coll_dec, coll_sym) = self.asset_info();
+                info!(
+                    borrower = %format::short_account(borrow_account.as_ref()),
+                    market = %self.market,
+                    market_version = ?self.market_version,
+                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
+                    "Using total collateral for v1.0 market"
+                );
+            } else {
+                // v1.1+: Use liquidatable collateral - contract enforces limit
+                adjusted_position.collateral_asset_deposit = liquidatable_collateral;
+                let (_, _, coll_dec, coll_sym) = self.asset_info();
+                info!(
+                    borrower = %format::short_account(borrow_account.as_ref()),
+                    market = %self.market,
+                    market_version = ?self.market_version,
+                    liquidatable_collateral = %format::format_amount(liquidatable_collateral.into(), coll_dec, coll_sym),
+                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
+                    "Using liquidatable collateral for v1.1+ market"
+                );
+            }
 
             let Some((liquidation_amount, collateral_amount)) =
                 self.strategy.calculate_liquidation_amount(

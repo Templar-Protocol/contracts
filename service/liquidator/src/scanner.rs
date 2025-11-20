@@ -263,4 +263,27 @@ impl MarketScanner {
     pub async fn supports_partial_liquidation(&self) -> bool {
         self.check_market_compatibility(true).await.is_ok()
     }
+
+    /// Gets the market version via NEP-330.
+    ///
+    /// # Returns
+    ///
+    /// `Some((major, minor, patch))` if version is available, `None` otherwise.
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn get_market_version(&self) -> Option<(u32, u32, u32)> {
+        use crate::rpc::get_contract_version;
+
+        let version_string = get_contract_version(&self.client, &self.market).await?;
+
+        // Parse semver (e.g., "1.2.3" or "0.1.0")
+        let parts: Vec<&str> = version_string.split('.').collect();
+        if let [maj, min, pat] = parts.as_slice() {
+            let major = maj.parse::<u32>().ok()?;
+            let minor = min.parse::<u32>().ok()?;
+            let patch = pat.parse::<u32>().ok()?;
+            Some((major, minor, patch))
+        } else {
+            None
+        }
+    }
 }

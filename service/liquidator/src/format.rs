@@ -212,7 +212,7 @@ mod tests {
         );
         assert_eq!(
             asset_symbol("nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"),
-            "TOKEN"
+            "USDC" // This is the USDC contract hash on NEAR
         );
         assert_eq!(asset_symbol("nep141:wrap.near"), "NEAR");
         assert_eq!(asset_symbol("nep141:meta-pool.near"), "stNEAR");

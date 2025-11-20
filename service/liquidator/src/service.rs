@@ -438,7 +438,7 @@ impl LiquidatorService {
                 // Clone Signer enum
                 let signer = Arc::new(self.signer.clone());
 
-                let liquidator = Liquidator::new(
+                let mut liquidator = Liquidator::new(
                     &self.client,
                     signer,
                     &self.inventory,
@@ -452,6 +452,9 @@ impl LiquidatorService {
                     self.config.loop_liquidation,
                     self.config.max_loop_iterations,
                 );
+
+                // Fetch market version for version-specific liquidation logic
+                liquidator.fetch_market_version().await;
 
                 // Test market compatibility (including partial liquidation support if required)
                 let requires_partial = self.config.strategy.requires_partial_liquidation_support();
