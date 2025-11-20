@@ -16,11 +16,6 @@
 //! - `strategy`: Liquidation amount calculations
 //! - `rebalancer`: Post-liquidation inventory rebalancing
 //! - `swap`: Swap provider implementations
-//!
-//!   service.run().await;
-//! # Ok(())
-//! # }
-//! ```
 
 use std::sync::Arc;
 
