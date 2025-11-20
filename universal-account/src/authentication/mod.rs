@@ -3,6 +3,7 @@ use near_sdk::{near, AccountId, AccountIdRef};
 use crate::ExecutionParameters;
 
 pub mod ed25519_raw;
+pub mod eip712;
 pub mod passkey;
 pub mod with_raw_string;
 

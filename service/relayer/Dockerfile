@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1.85.0 AS builder
+FROM rust:1.86.0 AS builder
 
 WORKDIR /usr/src/relayer
 

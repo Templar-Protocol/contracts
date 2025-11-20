@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
   "common",
   "contract/*",
@@ -17,6 +17,7 @@ edition = "2021"
 version = "1.2.0"
 
 [workspace.dependencies]
+alloy = { version = "1.0.42" }
 anyhow = "1.0.95"
 arbitrary = { version = "1", features = ["derive"] }
 async-trait = "0.1.88"
@@ -44,8 +45,9 @@ near-workspaces = { version = "0.21.0", features = ["unstable"] }
 p256 = "0.13.2"
 primitive-types = { version = "0.10.1" }
 rstest = { version = "0.24" }
-solana-sdk = "3.0.0"
 schemars = { version = "0.8" }
+serde = { version = "1.0.228", features = ["derive"] }
+solana-sdk = "3.0.0"
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
 templar-vault-contract = { path = "./contract/vault" }
