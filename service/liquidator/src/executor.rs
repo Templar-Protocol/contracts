@@ -47,6 +47,25 @@ pub struct LiquidationExecutor {
 }
 
 impl LiquidationExecutor {
+    /// Extract decimals and symbol from asset string (e.g., "nep245:intents.near:nep141:btc.omft.near")
+    /// Returns (decimals, symbol) for formatting
+    fn extract_asset_info(asset_str: &str) -> (i32, &str) {
+        let asset_lower = asset_str.to_lowercase();
+        if asset_lower.contains("usdc") {
+            (6, "USDC")
+        } else if asset_lower.contains("usdt") {
+            (6, "USDT")
+        } else if asset_lower.contains("dai") {
+            (18, "DAI")
+        } else if asset_lower.contains("btc") {
+            (8, "BTC")
+        } else if asset_lower.contains("eth") && !asset_lower.contains("usdc") {
+            (18, "ETH")
+        } else {
+            (6, "TOKEN")
+        }
+    }
+
     /// Creates a new liquidation executor.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -126,15 +145,8 @@ impl LiquidationExecutor {
         collateral_amount: CollateralAssetAmount,
         expected_collateral_value: BorrowAssetAmount,
     ) -> LiquidatorResult<LiquidationOutcome> {
-        // Dry run mode - log and skip execution
+        // Dry run mode - skip execution
         if self.dry_run {
-            info!(
-                borrower = %borrow_account,
-                liquidation_amount = %u128::from(liquidation_amount),
-                collateral_amount = %u128::from(collateral_amount),
-                borrow_asset = %borrow_asset,
-                "DRY RUN: Liquidatable position found, skipping execution (dry run mode enabled)"
-            );
             return Ok(LiquidationOutcome::Liquidated);
         }
 
@@ -301,11 +313,17 @@ impl LiquidationExecutor {
             return Ok(false);
         }
 
+        // Get asset info for formatted logging
+        let from_str = collateral_asset.to_string();
+        let to_str = borrow_asset.to_string();
+        let (coll_decimals, coll_symbol) = Self::extract_asset_info(&from_str);
+        let (_borrow_decimals, borrow_symbol) = Self::extract_asset_info(&to_str);
+
         info!(
             from = %collateral_asset,
             to = %borrow_asset,
-            amount = %u128::from(collateral_amount),
-            "Swapping collateral to borrow asset"
+            amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
+            "Swapping received collateral back to borrow asset"
         );
 
         let swap_amount = FungibleAssetAmount::from(U128::from(collateral_amount));
@@ -317,32 +335,30 @@ impl LiquidationExecutor {
             Ok(status) => {
                 if let FinalExecutionStatus::SuccessValue(_) = status {
                     info!(
-                        from = %collateral_asset,
-                        to = %borrow_asset,
-                        input_amount = %u128::from(collateral_amount),
-                        "Collateral swap successful"
+                        from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
+                        to_asset = borrow_symbol,
+                        "Swap completed successfully - inventory replenished"
                     );
                     Ok(true)
                 } else {
-                    error!(
-                        from = %collateral_asset,
-                        to = %borrow_asset,
-                        amount = %u128::from(collateral_amount),
+                    info!(
+                        from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
+                        to_asset = borrow_symbol,
                         status = ?status,
-                        "Collateral swap failed"
+                        "Swap failed (non-fatal) - collateral will be held in inventory"
                     );
                     Ok(false)
                 }
             }
             Err(e) => {
-                error!(
-                    from = %collateral_asset,
-                    to = %borrow_asset,
-                    amount = %u128::from(collateral_amount),
-                    error = ?e,
-                    "Failed to execute collateral swap"
+                info!(
+                    from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
+                    to_asset = borrow_symbol,
+                    reason = %e,
+                    "Swap failed (non-fatal) - liquidation succeeded, collateral held in inventory"
                 );
-                Err(LiquidatorError::SwapProviderError(e))
+                // Don't propagate error - swap failure is non-fatal, liquidation already succeeded
+                Ok(false)
             }
         }
     }
