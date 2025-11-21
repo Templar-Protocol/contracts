@@ -2,7 +2,7 @@ use std::sync::{atomic::AtomicUsize, Arc};
 
 use near_crypto::{PublicKey, Signer};
 use near_jsonrpc_client::{
-    errors::JsonRpcError,
+    errors::{JsonRpcError, JsonRpcServerError},
     methods::{
         self,
         block::RpcBlockError,
@@ -28,13 +28,16 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBounds};
 
-use templar_common::market::MarketConfiguration;
+use templar_common::{
+    market::MarketConfiguration,
+    oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier},
+};
 use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
 
 use crate::{cache::Cache, MarketData};
 
-pub const STORAGE_DEPOSIT_GAS: u64 = Gas::from_tgas(5).as_gas();
-pub const DEPLOY_GAS: u64 = Gas::from_tgas(50).as_gas();
+pub const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(5);
+pub const DEPLOY_GAS: Gas = Gas::from_tgas(50);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
@@ -305,7 +308,7 @@ impl Near {
                 "account_id": account_id,
             }))
             .unwrap(),
-            gas: STORAGE_DEPOSIT_GAS,
+            gas: STORAGE_DEPOSIT_GAS.as_gas(),
             deposit: amount.as_yoctonear(),
         };
 
@@ -338,7 +341,7 @@ impl Near {
         let action = FunctionCallAction {
             method_name: "deploy".to_string(),
             args: serde_json::to_vec(args).unwrap(),
-            gas: DEPLOY_GAS,
+            gas: DEPLOY_GAS.as_gas(),
             deposit: 0,
         };
 
@@ -380,6 +383,40 @@ impl Near {
             public_key,
             nonce,
             receiver_id: ua_account_id,
+            block_hash,
+            actions: vec![action.into()],
+        })
+        .sign(signer)
+    }
+
+    #[must_use]
+    pub async fn construct_pyth_update_transaction(
+        &self,
+        cache: &Cache,
+        pyth_account_id: AccountId,
+        vaa: Vec<u8>,
+        gas: near_sdk::Gas,
+        deposit: near_sdk::NearToken,
+    ) -> SignedTransaction {
+        let signer = self.next_signer();
+        let public_key = signer.public_key();
+
+        let (nonce, block_hash) = cache
+            .nonce(self.account_id.clone(), public_key.clone())
+            .await;
+
+        let action = FunctionCallAction {
+            method_name: "update_price_feeds".to_string(),
+            args: serde_json::to_vec(&json!({ "data": hex::encode(vaa) })).unwrap(),
+            gas: gas.as_gas(),
+            deposit: deposit.as_yoctonear(),
+        };
+
+        Transaction::V0(TransactionV0 {
+            signer_id: self.account_id.clone(),
+            public_key,
+            nonce,
+            receiver_id: pyth_account_id,
             block_hash,
             actions: vec![action.into()],
         })
@@ -497,16 +534,59 @@ impl Near {
         &self,
         market_id: AccountId,
     ) -> Result<MarketData, ViewError> {
-        let market_configuration = self
+        let config = self
             .view::<MarketConfiguration>(market_id.clone(), "get_configuration", json!({}))
+            .await?;
+
+        let oracle_id = config.price_oracle_configuration.account_id;
+
+        let borrow_asset_price_id = self
+            .try_resolve_price_identifier(
+                oracle_id.clone(),
+                config.price_oracle_configuration.borrow_asset_price_id,
+            )
+            .await?;
+        let collateral_asset_price_id = self
+            .try_resolve_price_identifier(
+                oracle_id.clone(),
+                config.price_oracle_configuration.collateral_asset_price_id,
+            )
             .await?;
 
         Ok(MarketData {
             account_id: market_id.clone(),
-            oracle_id: market_configuration.price_oracle_configuration.account_id,
-            borrow_asset: market_configuration.borrow_asset,
-            collateral_asset: market_configuration.collateral_asset,
+            oracle_id,
+            borrow_asset: config.borrow_asset,
+            borrow_asset_price_id,
+            collateral_asset: config.collateral_asset,
+            collateral_asset_price_id,
         })
+    }
+
+    async fn try_resolve_price_identifier(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+    ) -> Result<PriceIdentifier, ViewError> {
+        match self
+            .view::<PriceTransformer>(oracle_id, "get_transformer", json!({}))
+            .await
+        {
+            Ok(transformer) => {
+                tracing::debug!("Price ID {price_identifier} resolved: LST oracle contract");
+                Ok(transformer.price_id)
+            }
+            Err(ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+                RpcQueryError::ContractExecutionError { vm_error, .. },
+            )))) if vm_error.contains("MethodResolveError(MethodNotFound)") => {
+                tracing::debug!("Price ID {price_identifier} resolved: not an LST oracle contract");
+                Ok(price_identifier)
+            }
+            Err(e) => {
+                tracing::error!("Failed to resolve price ID {price_identifier}: {e:?}");
+                Err(e)
+            }
+        }
     }
 
     /// # Errors

@@ -262,13 +262,15 @@ pub async fn create(
         .await;
 
     // NOTE: This only counts gas from function calls, but this is OK, because
-    // the deploy-from-registy transaction is a function call.
-    let gas_estimate = signed_transaction
-        .transaction
-        .actions()
-        .iter()
-        .map(|a| a.get_prepaid_gas())
-        .sum();
+    // the deploy-from-registry transaction is a function call.
+    let gas_estimate = near_sdk::Gas::from_gas(
+        signed_transaction
+            .transaction
+            .actions()
+            .iter()
+            .map(|a| a.get_prepaid_gas())
+            .sum(),
+    );
 
     let Some(gas_cost_estimate) = app.estimate_cost_of_gas(gas_estimate).await else {
         return SimpleResponse::Failure {

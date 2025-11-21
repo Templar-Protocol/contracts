@@ -8,7 +8,10 @@ use near_sdk::{
 };
 
 use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
-use templar_common::asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset};
+use templar_common::{
+    asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
+    oracle::pyth::PriceIdentifier,
+};
 
 pub mod app;
 pub mod broom;
@@ -34,7 +37,9 @@ pub struct MarketData {
     pub account_id: AccountId,
     pub oracle_id: AccountId,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
+    pub collateral_asset_price_id: PriceIdentifier,
     pub borrow_asset: FungibleAsset<BorrowAsset>,
+    pub borrow_asset_price_id: PriceIdentifier,
 }
 
 pub struct AssetTransfer {

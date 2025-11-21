@@ -26,7 +26,10 @@ pub async fn relay(
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing relay request");
-    let (gas, contract_data) = match app.check_and_calculate_gas(&signed_delegate_action).await {
+    let (gas, contract_data) = match app
+        .sda_check_and_calculate_gas(&signed_delegate_action)
+        .await
+    {
         Ok(x) => {
             tracing::info!(gas = %x.0, "Gas check passed");
             x
