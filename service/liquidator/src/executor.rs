@@ -46,25 +46,6 @@ pub struct LiquidationExecutor {
 }
 
 impl LiquidationExecutor {
-    /// Extract decimals and symbol from asset string (e.g., "nep245:intents.near:nep141:btc.omft.near")
-    /// Returns (decimals, symbol) for formatting
-    fn extract_asset_info(asset_str: &str) -> (i32, &str) {
-        let asset_lower = asset_str.to_lowercase();
-        if asset_lower.contains("usdc") {
-            (6, "USDC")
-        } else if asset_lower.contains("usdt") {
-            (6, "USDT")
-        } else if asset_lower.contains("dai") {
-            (18, "DAI")
-        } else if asset_lower.contains("btc") {
-            (8, "BTC")
-        } else if asset_lower.contains("eth") && !asset_lower.contains("usdc") {
-            (18, "ETH")
-        } else {
-            (6, "TOKEN")
-        }
-    }
-
     /// Creates a new liquidation executor.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -303,8 +284,9 @@ impl LiquidationExecutor {
         // Get asset info for formatted logging
         let from_str = collateral_asset.to_string();
         let to_str = borrow_asset.to_string();
-        let (coll_decimals, coll_symbol) = Self::extract_asset_info(&from_str);
-        let (_borrow_decimals, borrow_symbol) = Self::extract_asset_info(&to_str);
+        let coll_symbol = crate::format::asset_symbol(&from_str);
+        let coll_decimals = crate::format::asset_decimals(coll_symbol);
+        let borrow_symbol = crate::format::asset_symbol(&to_str);
 
         tracing::info!(
             from = %collateral_asset,

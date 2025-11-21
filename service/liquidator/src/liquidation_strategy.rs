@@ -245,8 +245,7 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
 
         // Reserve buffer from available balance before calculating target amount
         // This ensures we don't exceed available balance after adding safety buffer
-        let buffer_percentage = SAFETY_BUFFER_BPS;
-        let available_after_buffer = (available_u128 * (10_000 - buffer_percentage)) / 10_000;
+        let available_after_buffer = (available_u128 * (10_000 - SAFETY_BUFFER_BPS)) / 10_000;
 
         // Calculate target liquidation amount (percentage of available funds after buffer)
         let target_amount = (available_after_buffer * u128::from(self.target_percentage)) / 100;
@@ -283,8 +282,7 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         };
 
         // Cap the collateral request at what's actually liquidatable
-        let liquidatable_u128: u128 = liquidatable_collateral.into();
-        let final_collateral = std::cmp::min(collateral_amount, liquidatable_u128);
+        let final_collateral = std::cmp::min(collateral_amount, liquidatable_collateral.into());
 
         // Calculate the exact borrow amount needed for this collateral
         let Some(base_amount) = collateral_to_borrow(
@@ -300,8 +298,7 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         };
 
         // Add safety buffer to account for rounding differences and price movements
-        let buffer = (base_amount * SAFETY_BUFFER_BPS) / 10_000;
-        let final_amount = base_amount.saturating_add(buffer.max(1));
+        let final_amount = base_amount.saturating_add(((base_amount * SAFETY_BUFFER_BPS) / 10_000).max(1));
 
         // Verify final amount doesn't exceed available balance
         // This check should pass given earlier buffer reservation, but verify for safety
@@ -426,8 +423,7 @@ impl LiquidationStrategy for FullLiquidationStrategy {
         };
 
         // Add safety buffer to account for rounding differences and price movements
-        let buffer = (minimum_required * SAFETY_BUFFER_BPS) / 10_000;
-        let amount_with_buffer = minimum_required.saturating_add(buffer.max(1));
+        let amount_with_buffer = minimum_required.saturating_add(((minimum_required * SAFETY_BUFFER_BPS) / 10_000).max(1));
 
         // Check if we have enough balance (all-or-nothing)
         if amount_with_buffer > available_u128 {
@@ -585,8 +581,7 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
         // Use the liquidatable collateral already calculated by the liquidator
         // (passed via position.collateral_asset_deposit which was set to liquidatable_collateral)
         // This ensures consistency and avoids recalculation with potentially stale data
-        let liquidatable_collateral = position.collateral_asset_deposit;
-        let liquidatable_u128: u128 = liquidatable_collateral.into();
+        let liquidatable_u128: u128 = position.collateral_asset_deposit.into();
 
         // Calculate how much collateral we can theoretically buy with the fixed amount
         let Some(max_collateral) = borrow_to_collateral(
@@ -619,8 +614,7 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
         .unwrap_or(0);
 
         // Add safety buffer to account for price movements
-        let buffer = (expected_minimum * SAFETY_BUFFER_BPS) / 10_000;
-        let amount_with_buffer = expected_minimum.saturating_add(buffer.max(1));
+        let amount_with_buffer = expected_minimum.saturating_add(((expected_minimum * SAFETY_BUFFER_BPS) / 10_000).max(1));
 
         // Cap at the configured maximum (fixed_amount is the MAX we'll send)
         let final_amount = std::cmp::min(amount_with_buffer, self.fixed_amount);
