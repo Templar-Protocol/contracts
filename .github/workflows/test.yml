@@ -80,6 +80,9 @@ jobs:
           SQLX_OFFLINE: true
           # Use nextest CI profile with reduced parallelism
           NEXTEST_PROFILE: ci
+          # Optimize cargo build for faster compilation
+          CARGO_TERM_COLOR: always
+          CARGO_INCREMENTAL: 0
         run: ./script/test.sh
 
       - name: Cleanup Docker resources
@@ -125,13 +128,15 @@ jobs:
           SQLX_OFFLINE: true
           CARGO_INCREMENTAL: 0
           RUSTFLAGS: "-Cinstrument-coverage"
-          # Use nextest CI profile with reduced parallelism
+          # Use nextest CI profile with optimized parallelism
           NEXTEST_PROFILE: ci
+          CARGO_TERM_COLOR: always
         run: |
           # --lib: unit tests only (excludes slow WASM integration tests)
           cargo llvm-cov nextest --lib --lcov --output-path coverage.lcov
           # Clean up intermediate coverage files to save space
           rm -rf target/llvm-cov-target/*/debug/deps/*.profraw 2>/dev/null || true
+          rm -rf target/llvm-cov-target/*/debug/incremental 2>/dev/null || true
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

@@ -9,15 +9,15 @@ retries = 0
 max-fail = 10
 
 [profile.ci]
-# CI-specific profile with aggressive disk space optimization
-test-threads = 2
+# CI-specific profile balancing disk space and performance
+test-threads = 6
 retries = 1
 
 # Fail fast to avoid wasting resources
 fail-fast = false
 
-# Show output for all tests
-status-level = "all"
+# Show output for failed tests only to reduce log size
+status-level = "fail"
 
 # Set slower timeout for CI runners
 slow-timeout = { period = "120s", terminate-after = 3 }

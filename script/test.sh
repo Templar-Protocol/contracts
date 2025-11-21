@@ -15,10 +15,11 @@ cargo nextest run "$@"
 # Clean up build artifacts to save disk space in CI
 if [ -n "$CI" ]; then
     echo "Cleaning up build artifacts to save disk space..."
-    # Remove debug artifacts and keep only essentials
+    # Remove only the largest intermediate artifacts
     find target -type f -name "*.rmeta" -delete 2>/dev/null || true
-    find target -type f -name "*.rlib" -delete 2>/dev/null || true
-    cargo clean --release 2>/dev/null || true
+    # Clean up incremental compilation artifacts
+    rm -rf target/debug/incremental 2>/dev/null || true
+    rm -rf target/release 2>/dev/null || true
     # Show remaining disk space
     df -h
 fi
