@@ -298,7 +298,8 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         };
 
         // Add safety buffer to account for rounding differences and price movements
-        let final_amount = base_amount.saturating_add(((base_amount * SAFETY_BUFFER_BPS) / 10_000).max(1));
+        let final_amount =
+            base_amount.saturating_add(((base_amount * SAFETY_BUFFER_BPS) / 10_000).max(1));
 
         // Verify final amount doesn't exceed available balance
         // This check should pass given earlier buffer reservation, but verify for safety
@@ -423,7 +424,8 @@ impl LiquidationStrategy for FullLiquidationStrategy {
         };
 
         // Add safety buffer to account for rounding differences and price movements
-        let amount_with_buffer = minimum_required.saturating_add(((minimum_required * SAFETY_BUFFER_BPS) / 10_000).max(1));
+        let amount_with_buffer = minimum_required
+            .saturating_add(((minimum_required * SAFETY_BUFFER_BPS) / 10_000).max(1));
 
         // Check if we have enough balance (all-or-nothing)
         if amount_with_buffer > available_u128 {
@@ -614,7 +616,8 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
         .unwrap_or(0);
 
         // Add safety buffer to account for price movements
-        let amount_with_buffer = expected_minimum.saturating_add(((expected_minimum * SAFETY_BUFFER_BPS) / 10_000).max(1));
+        let amount_with_buffer = expected_minimum
+            .saturating_add(((expected_minimum * SAFETY_BUFFER_BPS) / 10_000).max(1));
 
         // Cap at the configured maximum (fixed_amount is the MAX we'll send)
         let final_amount = std::cmp::min(amount_with_buffer, self.fixed_amount);
