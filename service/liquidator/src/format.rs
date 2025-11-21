@@ -161,6 +161,24 @@ pub fn format_iteration(current: u32, max: u32) -> String {
     }
 }
 
+/// Returns the number of decimals for a given asset symbol.
+///
+/// # Examples
+///
+/// ```ignore
+/// asset_decimals("USDC") // 6
+/// asset_decimals("BTC")  // 8
+/// asset_decimals("ETH")  // 18
+/// ```
+pub fn asset_decimals(symbol: &str) -> i32 {
+    match symbol {
+        "BTC" | "iBTC" | "WBTC" | "iWBTC" => 8,
+        "DAI" | "ETH" | "iETH" | "WETH" => 18,
+        "XLM" | "iXLM" => 7,
+        _ => 6, // USDC, USDT, stablecoins, and default
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +247,30 @@ mod tests {
             format_amount_with_usd(14_624, 8, "BTC", 89_500.0),
             "0.00014624 BTC [14624] ($13.09)"
         );
+    }
+
+    #[test]
+    fn test_asset_decimals() {
+        // 6 decimals (stablecoins and default)
+        assert_eq!(asset_decimals("USDC"), 6);
+        assert_eq!(asset_decimals("iUSDC"), 6);
+        assert_eq!(asset_decimals("USDT"), 6);
+        assert_eq!(asset_decimals("TOKEN"), 6);
+
+        // 8 decimals (BTC variants)
+        assert_eq!(asset_decimals("BTC"), 8);
+        assert_eq!(asset_decimals("iBTC"), 8);
+        assert_eq!(asset_decimals("WBTC"), 8);
+        assert_eq!(asset_decimals("iWBTC"), 8);
+
+        // 18 decimals (ETH, DAI)
+        assert_eq!(asset_decimals("ETH"), 18);
+        assert_eq!(asset_decimals("iETH"), 18);
+        assert_eq!(asset_decimals("WETH"), 18);
+        assert_eq!(asset_decimals("DAI"), 18);
+
+        // 7 decimals (XLM)
+        assert_eq!(asset_decimals("XLM"), 7);
+        assert_eq!(asset_decimals("iXLM"), 7);
     }
 }

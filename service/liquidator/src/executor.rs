@@ -19,7 +19,6 @@ use templar_common::{
     },
     market::{DepositMsg, LiquidateMsg},
 };
-use tracing::{debug, error, info};
 
 use crate::{
     inventory,
@@ -156,7 +155,7 @@ impl LiquidationExecutor {
             .await
             .reserve(borrow_asset, liquidation_amount)?;
 
-        info!(
+        tracing::info!(
             borrower = %borrow_account,
             liquidation_amount = %u128::from(liquidation_amount),
             borrow_asset = %borrow_asset,
@@ -177,7 +176,7 @@ impl LiquidationExecutor {
             block_hash,
         )?;
 
-        info!(
+        tracing::info!(
             borrower = %borrow_account,
             liquidation_amount = %u128::from(liquidation_amount),
             expected_collateral_value = %u128::from(expected_collateral_value),
@@ -195,7 +194,7 @@ impl LiquidationExecutor {
                 // Check if transaction AND all receipts succeeded
                 match check_transaction_success(&outcome) {
                     Ok(()) => {
-                        info!(
+                        tracing::info!(
                             borrower = %borrow_account,
                             liquidation_amount = %u128::from(liquidation_amount),
                             expected_collateral_value = %u128::from(expected_collateral_value),
@@ -206,14 +205,7 @@ impl LiquidationExecutor {
 
                         // Handle collateral based on strategy
                         let swap_succeeded = match &self.collateral_strategy {
-                            CollateralStrategy::Hold => {
-                                debug!(
-                                    collateral_asset = %collateral_asset,
-                                    amount = %u128::from(collateral_amount),
-                                    "Holding collateral (no swap)"
-                                );
-                                false // No swap performed
-                            }
+                            CollateralStrategy::Hold => false, // No swap performed
                             CollateralStrategy::SwapToBorrow => {
                                 // Immediately swap collateral back to borrow asset
                                 self.swap_collateral_to_borrow(
@@ -240,11 +232,6 @@ impl LiquidationExecutor {
                                     error = ?e,
                                     "Failed to refresh inventory after swap, continuing with stale balance"
                                 );
-                            } else {
-                                debug!(
-                                    borrow_asset = %borrow_asset,
-                                    "Inventory refreshed after swap"
-                                );
                             }
                         }
 
@@ -257,7 +244,7 @@ impl LiquidationExecutor {
                             .await
                             .release(borrow_asset, liquidation_amount);
 
-                        error!(
+                        tracing::error!(
                             borrower = %borrow_account,
                             liquidation_amount = %u128::from(liquidation_amount),
                             error = %error_msg,
@@ -275,7 +262,7 @@ impl LiquidationExecutor {
                     .await
                     .release(borrow_asset, liquidation_amount);
 
-                error!(
+                tracing::error!(
                     borrower = %borrow_account,
                     liquidation_amount = %u128::from(liquidation_amount),
                     error = ?e,
@@ -295,7 +282,7 @@ impl LiquidationExecutor {
         collateral_amount: CollateralAssetAmount,
     ) -> LiquidatorResult<bool> {
         let Some(ref swap_provider) = self.swap_provider else {
-            info!(
+            tracing::info!(
                 collateral = %collateral_asset,
                 borrow = %borrow_asset,
                 amount = %u128::from(collateral_amount),
@@ -306,7 +293,7 @@ impl LiquidationExecutor {
 
         // Skip swap if collateral is already the target borrow asset
         if collateral_asset.to_string() == borrow_asset.to_string() {
-            debug!(
+            tracing::debug!(
                 asset = %collateral_asset,
                 "Collateral is already target borrow asset, skipping swap"
             );
@@ -319,7 +306,7 @@ impl LiquidationExecutor {
         let (coll_decimals, coll_symbol) = Self::extract_asset_info(&from_str);
         let (_borrow_decimals, borrow_symbol) = Self::extract_asset_info(&to_str);
 
-        info!(
+        tracing::info!(
             from = %collateral_asset,
             to = %borrow_asset,
             amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
@@ -334,14 +321,14 @@ impl LiquidationExecutor {
         {
             Ok(status) => {
                 if let FinalExecutionStatus::SuccessValue(_) = status {
-                    info!(
+                    tracing::info!(
                         from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
                         to_asset = borrow_symbol,
                         "Swap completed successfully - inventory replenished"
                     );
                     Ok(true)
                 } else {
-                    info!(
+                    tracing::info!(
                         from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
                         to_asset = borrow_symbol,
                         status = ?status,
@@ -351,7 +338,7 @@ impl LiquidationExecutor {
                 }
             }
             Err(e) => {
-                info!(
+                tracing::info!(
                     from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
                     to_asset = borrow_symbol,
                     reason = %e,

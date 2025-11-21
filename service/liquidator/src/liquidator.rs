@@ -31,7 +31,6 @@ use templar_common::{
     market::MarketConfiguration,
     oracle::pyth::OracleResponse,
 };
-use tracing::{debug, info};
 
 use crate::liquidation_strategy::LiquidationStrategy;
 
@@ -234,13 +233,13 @@ impl Liquidator {
     pub async fn fetch_market_version(&mut self) {
         self.market_version = self.scanner.get_market_version().await;
         if let Some((major, minor, patch)) = self.market_version {
-            info!(
+            tracing::info!(
                 market = %self.market,
                 version = %format!("{major}.{minor}.{patch}"),
                 "Fetched market version"
             );
         } else {
-            info!(
+            tracing::info!(
                 market = %self.market,
                 "Market version unavailable (no NEP-330 metadata), assuming v1.0"
             );
@@ -297,7 +296,7 @@ impl Liquidator {
             loop_iteration += 1;
 
             if loop_enabled && loop_iteration > 1 {
-                debug!(
+                tracing::debug!(
                     borrower = %borrow_account,
                     iteration = loop_iteration,
                     total_liquidated = total_liquidated_amount,
@@ -316,18 +315,13 @@ impl Liquidator {
             let Some(BorrowStatus::Liquidation(reason)) = status else {
                 if loop_iteration > 1 {
                     let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
-                    info!(
+                    tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
                         iterations = loop_iteration - 1,
                         total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, borrow_sym),
                         total_received = %format::format_amount(total_collateral_received, coll_dec, coll_sym),
                         "Loop liquidation completed successfully - position now healthy"
-                    );
-                } else {
-                    debug!(
-                        borrower = %borrow_account,
-                        "Position is healthy, not liquidatable"
                     );
                 }
                 return Ok(if loop_iteration > 1 {
@@ -346,7 +340,7 @@ impl Liquidator {
                     .create_price_pair(&oracle_response)?;
                 let collateralization_ratio = position.collateralization_ratio(&price_pair);
 
-                info!(
+                tracing::info!(
                     borrower = %borrow_account,
                     reason = ?reason,
                     mcr_liquidation = %self.market_config.borrow_mcr_liquidation,
@@ -359,7 +353,7 @@ impl Liquidator {
 
             // If loop liquidation is disabled or strategy doesn't support it, exit after first iteration
             if !loop_enabled && loop_iteration > 1 {
-                info!(
+                tracing::info!(
                     borrower = %borrow_account,
                     "Loop liquidation not supported for this strategy, stopping after first liquidation"
                 );
@@ -369,7 +363,7 @@ impl Liquidator {
             // Safety check for max iterations
             if loop_iteration > max_iterations {
                 let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
-                info!(
+                tracing::info!(
                     market = %self.market,
                     borrower = %borrow_account,
                     iterations = max_iterations,
@@ -396,14 +390,6 @@ impl Liquidator {
                 self.market_config.liquidation_maximum_spread,
             );
 
-            debug!(
-                borrower = %borrow_account,
-                iteration = loop_iteration,
-                liquidatable_collateral = %u128::from(liquidatable_collateral),
-                total_collateral = %u128::from(position.collateral_asset_deposit),
-                "Calculated liquidatable collateral"
-            );
-
             // Step 3: Calculate liquidation amount based on liquidatable collateral
             let available_balance = self
                 .executor
@@ -424,15 +410,6 @@ impl Liquidator {
                 );
                 return Ok(LiquidationOutcome::NotLiquidatable);
             }
-
-            debug!(
-                borrower = %borrow_account,
-                iteration = loop_iteration,
-                available_balance = %available_balance.0,
-                contract_minimum = %contract_minimum,
-                collateral_deposit = %position.collateral_asset_deposit,
-                "Calculating liquidation amount"
-            );
 
             // Create a temporary position with appropriate collateral for strategy calculation.
             //
@@ -463,7 +440,7 @@ impl Liquidator {
             if use_total_collateral {
                 // v1.0: Keep total collateral - contract validates against total
                 let (_, _, coll_dec, coll_sym) = self.asset_info();
-                info!(
+                tracing::info!(
                     borrower = %borrow_account,
                     market = %self.market,
                     market_version = ?self.market_version,
@@ -474,7 +451,7 @@ impl Liquidator {
                 // v1.1+: Use liquidatable collateral - contract enforces limit
                 adjusted_position.collateral_asset_deposit = liquidatable_collateral;
                 let (_, _, coll_dec, coll_sym) = self.asset_info();
-                info!(
+                tracing::info!(
                     borrower = %borrow_account,
                     market = %self.market,
                     market_version = ?self.market_version,
@@ -503,20 +480,8 @@ impl Liquidator {
                     return Ok(LiquidationOutcome::Liquidated);
                 }
                 // Strategy already logged the specific reason (insufficient inventory, below minimum, etc.)
-                debug!(
-                    borrower = %borrow_account,
-                    "Strategy returned None - position not liquidatable with current parameters"
-                );
                 return Ok(LiquidationOutcome::NotLiquidatable);
             };
-
-            debug!(
-                borrower = %borrow_account,
-                iteration = loop_iteration,
-                liquidation_amount = %liquidation_amount.0,
-                collateral_amount = %collateral_amount.0,
-                "Calculated liquidation and collateral amounts from strategy"
-            );
 
             // Calculate expected value for profitability
             let expected_collateral_value =
@@ -541,21 +506,6 @@ impl Liquidator {
                 let after_spread = value_f64 * (1.0 - spread_f64);
                 after_spread as u128
             };
-            let spread_pct = spread.to_f64_lossy() * 100.0;
-
-            debug!(
-                borrower = %borrow_account,
-                iteration = loop_iteration,
-                liquidation_amount = %liquidation_amount.0,
-                collateral_amount = %collateral_amount.0,
-                liquidatable_collateral = %u128::from(liquidatable_collateral),
-                total_collateral = %u128::from(position.collateral_asset_deposit),
-                estimated_collateral_value = %expected_collateral_value.0,
-                collateral_value_with_spread = %collateral_value_with_spread,
-                spread_pct = %format!("{:.1}%", spread_pct),
-                target_percentage = %self.strategy.max_liquidation_percentage(),
-                "Calculated target collateral based on liquidatable amount"
-            );
 
             // Step 5: Check profitability
 
@@ -568,7 +518,7 @@ impl Liquidator {
                 .unwrap_or(U128(50_000));
 
             // Calculate detailed profitability metrics
-            let (net_profit, profit_pct) =
+            let (net_profit, _profit_pct) =
                 profitability::ProfitabilityCalculator::calculate_profit_metrics(
                     liquidation_amount,
                     expected_collateral_value,
@@ -599,7 +549,7 @@ impl Liquidator {
 
                 // Only show iteration if loop is enabled (for partial/fixed strategies)
                 if loop_enabled {
-                    info!(
+                    tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
                         mode = mode,
@@ -613,7 +563,7 @@ impl Liquidator {
                         "Liquidatable position"
                     );
                 } else {
-                    info!(
+                    tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
                         mode = mode,
@@ -627,19 +577,6 @@ impl Liquidator {
                     );
                 }
             }
-
-            debug!(
-                borrower = %borrow_account,
-                iteration = loop_iteration,
-                liquidation_amount = %liquidation_amount.0,
-                expected_collateral_value = %expected_collateral_value.0,
-                gas_cost = %gas_cost.0,
-                expected_revenue = %expected_collateral_value.0,
-                net_profit = %net_profit,
-                profit_percentage = %profit_pct,
-                is_profitable = is_profitable,
-                "Profitability analysis details"
-            );
 
             if !is_profitable {
                 let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
@@ -657,8 +594,9 @@ impl Liquidator {
                 // Calculate min required for profitability
                 let profit_margin_multiplier = 10_000 + 50; // 50 bps default
                 let min_revenue_required = (total_cost * profit_margin_multiplier) / 10_000;
+                let spread_pct = spread.to_f64_lossy() * 100.0;
 
-                info!(
+                tracing::info!(
                     market = %self.market,
                     borrower = %borrow_account,
                     mode = mode,
@@ -699,7 +637,7 @@ impl Liquidator {
             total_liquidated_amount += liquidation_amount.0;
             total_collateral_received += collateral_amount.0;
 
-            debug!(
+            tracing::debug!(
                 borrower = %borrow_account,
                 iteration = loop_iteration,
                 liquidation_amount = %liquidation_amount.0,
@@ -724,7 +662,7 @@ impl Liquidator {
     pub async fn run_liquidations(&self, _concurrency: usize) -> LiquidatorResult {
         let max_percentage = self.strategy.max_liquidation_percentage();
 
-        info!(
+        tracing::info!(
             strategy = %self.strategy.strategy_name(),
             percentage = max_percentage,
             "Starting liquidation run"
@@ -759,11 +697,11 @@ impl Liquidator {
         // Scan for positions
         let borrows = self.scanner.get_all_borrows().await?;
         if borrows.is_empty() {
-            info!("No borrow positions found");
+            tracing::info!("No borrow positions found");
             return Ok(());
         }
 
-        info!(positions = borrows.len(), "Evaluating positions");
+        tracing::info!(positions = borrows.len(), "Evaluating positions");
 
         // Process positions
         let mut liquidated = 0;
@@ -791,9 +729,12 @@ impl Liquidator {
             }
         }
 
-        info!(
+        tracing::info!(
             liquidated,
-            not_liquidatable, unprofitable, failed, "Liquidation run completed"
+            not_liquidatable,
+            unprofitable,
+            failed,
+            "Liquidation run completed"
         );
 
         Ok(())

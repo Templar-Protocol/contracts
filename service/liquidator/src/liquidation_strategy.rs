@@ -22,61 +22,15 @@ use templar_common::{
     oracle::pyth::OracleResponse,
     price::{Convert, PricePair},
 };
-use tracing::debug;
 
 use crate::LiquidatorResult;
 
-/// Minimum liquidation amount for 6-decimal tokens (e.g., USDC, USDT)
-/// This represents approximately $0.02 USD for stablecoins
-const MIN_LIQUIDATION_AMOUNT_6_DECIMALS: u128 = 20_000;
-
-/// Safety buffer in basis points (1% = 100 bps).
+/// Safety buffer in basis points (0.5% = 50 bps).
 ///
-/// This buffer accounts for:
-/// - Rounding differences between liquidator and contract calculations
-/// - Small price movements during transaction execution
-/// - Oracle confidence interval differences
-///
-/// Increased from 0.5% to 1% to prevent "Too little attached" errors
-const SAFETY_BUFFER_BPS: u128 = 100;
-
-/// Extract decimals and symbol from borrow asset for formatting
-fn get_borrow_asset_info(
-    asset: &templar_common::asset::FungibleAsset<templar_common::asset::BorrowAsset>,
-) -> (i32, &'static str) {
-    let asset_str = asset.to_string();
-    let symbol = crate::format::asset_symbol(&asset_str);
-
-    // Determine decimals based on symbol
-    let decimals = match symbol {
-        "BTC" | "iBTC" | "WBTC" | "iWBTC" => 8,
-        "DAI" | "ETH" | "iETH" | "WETH" => 18,
-        "XLM" | "iXLM" => 7,
-        _ => 6, // USDC, USDT, and default
-    };
-
-    (decimals, symbol)
-}
-
-/// Extract decimals and symbol from both assets for formatting
-fn get_asset_info(
-    borrow_asset: &templar_common::asset::FungibleAsset<templar_common::asset::BorrowAsset>,
-    collateral_asset: &templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>,
-) -> (i32, &'static str, i32, &'static str) {
-    let (borrow_dec, borrow_sym) = get_borrow_asset_info(borrow_asset);
-
-    let coll_str = collateral_asset.to_string();
-    let coll_sym = crate::format::asset_symbol(&coll_str);
-
-    let coll_dec = match coll_sym {
-        "BTC" | "iBTC" | "WBTC" | "iWBTC" => 8,
-        "DAI" | "ETH" | "iETH" | "WETH" => 18,
-        "XLM" | "iXLM" => 7,
-        _ => 6, // USDC, USDT, and default
-    };
-
-    (borrow_dec, borrow_sym, coll_dec, coll_sym)
-}
+/// Accounts for rounding differences and minor price fluctuations between
+/// liquidation calculation and on-chain execution. This ensures the liquidation
+/// amount passes contract validation even with small discrepancies.
+const SAFETY_BUFFER_BPS: u128 = 50;
 
 /// Convert a borrow asset amount to collateral asset amount.
 ///
@@ -202,19 +156,6 @@ pub trait LiquidationStrategy: Send + Sync + std::fmt::Debug {
     /// Returns `false` by default (strategy works with all markets).
     fn requires_partial_liquidation_support(&self) -> bool {
         false
-    }
-
-    /// Returns whether this strategy is compatible with loop liquidation.
-    ///
-    /// Loop liquidation repeatedly liquidates a position until it's healthy.
-    /// All strategies support this - loop liquidation is controlled by the
-    /// `LOOP_LIQUIDATION` parameter in the configuration.
-    ///
-    /// # Default
-    ///
-    /// Returns `true` by default (all strategies support loop liquidation).
-    fn supports_loop_liquidation(&self) -> bool {
-        true
     }
 }
 
@@ -384,32 +325,6 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
             return Ok(None);
         }
 
-        // Ensure the amount is economically viable (at least ~$0.02 USD value)
-        // This prevents wasting gas on dust liquidations
-        if final_amount < MIN_LIQUIDATION_AMOUNT_6_DECIMALS {
-            tracing::warn!(
-                amount = %final_amount,
-                minimum_threshold = %MIN_LIQUIDATION_AMOUNT_6_DECIMALS,
-                available_balance = %available_u128,
-                "Liquidation amount too small to be economically viable (< $0.02)"
-            );
-            return Ok(None);
-        }
-
-        debug!(
-            available_balance = %available_u128,
-            available_after_buffer = %available_after_buffer,
-            target_amount = %target_amount,
-            collateral_from_borrow = %collateral_amount,
-            liquidatable_collateral = %liquidatable_u128,
-            final_collateral = %final_collateral,
-            base_amount = %base_amount,
-            buffer = %buffer,
-            final_amount = %final_amount,
-            percentage = %self.target_percentage,
-            "Calculated partial liquidation amount with safety buffer"
-        );
-
         Ok(Some((U128(final_amount), U128(final_collateral))))
     }
 
@@ -433,20 +348,6 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
         // Check if expected collateral value meets minimum revenue requirement
         let collateral_value_u128: u128 = expected_collateral_value.into();
         let is_profitable = collateral_value_u128 >= min_revenue;
-
-        let net_profit = collateral_value_u128.saturating_sub(total_cost);
-
-        debug!(
-            liquidation_amount = %liquidation_u128,
-            gas_cost = %gas_cost_u128,
-            total_cost = %total_cost,
-            expected_collateral_value = %collateral_value_u128,
-            min_revenue = %min_revenue,
-            net_profit = %net_profit,
-            profit_margin_bps = %self.min_profit_margin_bps,
-            is_profitable = %is_profitable,
-            "Profitability check (inventory-based)"
-        );
 
         Ok(is_profitable)
     }
@@ -514,8 +415,9 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             &price_pair,
             configuration.liquidation_maximum_spread,
         ) else {
-            let (_, _, coll_decimals, coll_symbol) =
-                get_asset_info(&configuration.borrow_asset, &configuration.collateral_asset);
+            let coll_symbol =
+                crate::format::asset_symbol(&configuration.collateral_asset.to_string());
+            let coll_decimals = crate::format::asset_decimals(coll_symbol);
             tracing::warn!(
                 collateral_amount = %crate::format::format_amount(liquidatable_collateral, coll_decimals, coll_symbol),
                 "Could not calculate borrow amount from collateral"
@@ -529,8 +431,10 @@ impl LiquidationStrategy for FullLiquidationStrategy {
 
         // Check if we have enough balance (all-or-nothing)
         if amount_with_buffer > available_u128 {
-            let (borrow_dec, borrow_sym, coll_dec, coll_sym) =
-                get_asset_info(&configuration.borrow_asset, &configuration.collateral_asset);
+            let borrow_sym = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
+            let borrow_dec = crate::format::asset_decimals(borrow_sym);
+            let coll_sym = crate::format::asset_symbol(&configuration.collateral_asset.to_string());
+            let coll_dec = crate::format::asset_decimals(coll_sym);
             tracing::info!(
                 required = %crate::format::format_amount(amount_with_buffer, borrow_dec, borrow_sym),
                 available = %crate::format::format_amount(available_u128, borrow_dec, borrow_sym),
@@ -541,8 +445,10 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             return Ok(None);
         }
 
-        let (borrow_dec, borrow_sym, coll_dec, coll_sym) =
-            get_asset_info(&configuration.borrow_asset, &configuration.collateral_asset);
+        let borrow_sym = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
+        let borrow_dec = crate::format::asset_decimals(borrow_sym);
+        let coll_sym = crate::format::asset_symbol(&configuration.collateral_asset.to_string());
+        let coll_dec = crate::format::asset_decimals(coll_sym);
         tracing::info!(
             available_balance = %crate::format::format_amount(available_u128, borrow_dec, borrow_sym),
             liquidatable_collateral = %crate::format::format_amount(liquidatable_collateral, coll_dec, coll_sym),
@@ -554,13 +460,9 @@ impl LiquidationStrategy for FullLiquidationStrategy {
 
         // Check against contract's minimum borrow amount
         let contract_minimum: u128 = configuration.borrow_range.minimum.into();
-        debug!(
-            amount_with_buffer = %amount_with_buffer,
-            contract_minimum = %contract_minimum,
-            "Checking contract minimum borrow amount"
-        );
         if amount_with_buffer < contract_minimum {
-            let (decimals, symbol) = get_borrow_asset_info(&configuration.borrow_asset);
+            let symbol = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
+            let decimals = crate::format::asset_decimals(symbol);
             tracing::warn!(
                 amount = %crate::format::format_amount(amount_with_buffer, decimals, symbol),
                 contract_minimum = %crate::format::format_amount(contract_minimum, decimals, symbol),
@@ -568,16 +470,6 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             );
             return Ok(None);
         }
-
-        debug!(
-            available_balance = %available_u128,
-            total_debt = %total_debt,
-            liquidatable_collateral = %liquidatable_collateral,
-            minimum_required = %minimum_required,
-            send_amount = %amount_with_buffer,
-            buffer = %buffer,
-            "Calculated full liquidation amount with safety buffer"
-        );
 
         // Return: (amount to send, collateral to request)
         // We request ALL liquidatable collateral and send the minimum required + buffer
@@ -604,19 +496,6 @@ impl LiquidationStrategy for FullLiquidationStrategy {
 
         let collateral_value_u128: u128 = expected_collateral_value.into();
         let is_profitable = collateral_value_u128 >= min_revenue;
-
-        let net_profit = collateral_value_u128.saturating_sub(total_cost);
-
-        debug!(
-            liquidation_amount = %liquidation_u128,
-            gas_cost = %gas_cost_u128,
-            total_cost = %total_cost,
-            expected_collateral_value = %collateral_value_u128,
-            min_revenue = %min_revenue,
-            net_profit = %net_profit,
-            is_profitable = %is_profitable,
-            "Full liquidation profitability check (inventory-based)"
-        );
 
         Ok(is_profitable)
     }
@@ -689,7 +568,8 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
 
         // Check if we have enough balance for the fixed amount
         if self.fixed_amount > available_u128 {
-            let (decimals, symbol) = get_borrow_asset_info(&configuration.borrow_asset);
+            let symbol = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
+            let decimals = crate::format::asset_decimals(symbol);
             tracing::warn!(
                 fixed_amount = %crate::format::format_amount(self.fixed_amount, decimals, symbol),
                 available_balance = %crate::format::format_amount(available_u128, decimals, symbol),
@@ -714,7 +594,8 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
             &price_pair,
             configuration.liquidation_maximum_spread,
         ) else {
-            let (decimals, symbol) = get_borrow_asset_info(&configuration.borrow_asset);
+            let symbol = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
+            let decimals = crate::format::asset_decimals(symbol);
             tracing::warn!(
                 fixed_amount = %crate::format::format_amount(self.fixed_amount, decimals, symbol),
                 "Could not calculate collateral amount from fixed amount"
@@ -728,15 +609,6 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
 
         // Cap at liquidatable collateral
         let final_collateral = std::cmp::min(safe_collateral, liquidatable_u128);
-
-        debug!(
-            fixed_amount = %self.fixed_amount,
-            max_collateral = %max_collateral,
-            safe_collateral = %safe_collateral,
-            liquidatable_collateral = %liquidatable_u128,
-            final_collateral = %final_collateral,
-            "Calculated collateral amount for fixed liquidation"
-        );
 
         // Calculate required borrow amount for this collateral
         let expected_minimum = collateral_to_borrow(
@@ -753,38 +625,13 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
         // Cap at the configured maximum (fixed_amount is the MAX we'll send)
         let final_amount = std::cmp::min(amount_with_buffer, self.fixed_amount);
 
-        // Calculate the cushion
-        let cushion = final_amount.saturating_sub(expected_minimum);
-        let cushion_bps = if expected_minimum > 0 {
-            (cushion as u128 * 10_000) / expected_minimum as u128
-        } else {
-            0
-        };
-
-        // Log the validation details
-        debug!(
-            fixed_amount = %final_amount,
-            expected_minimum = %expected_minimum,
-            collateral_requested = %final_collateral,
-            max_collateral = %max_collateral,
-            safe_collateral = %safe_collateral,
-            cushion = %cushion,
-            cushion_bps = %cushion_bps,
-            spread = %configuration.liquidation_maximum_spread,
-            "Fixed amount strategy calculation details"
-        );
-
         // Check against contract's minimum borrow amount
         let contract_minimum: u128 = configuration.borrow_range.minimum.into();
-        debug!(
-            contract_borrow_minimum = %contract_minimum,
-            our_amount = %final_amount,
-            "Contract minimum borrow amount check"
-        );
-
         if final_amount < contract_minimum {
-            let (borrow_dec, borrow_sym, coll_dec, coll_sym) =
-                get_asset_info(&configuration.borrow_asset, &configuration.collateral_asset);
+            let borrow_sym = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
+            let borrow_dec = crate::format::asset_decimals(borrow_sym);
+            let coll_sym = crate::format::asset_symbol(&configuration.collateral_asset.to_string());
+            let coll_dec = crate::format::asset_decimals(coll_sym);
             tracing::warn!(
                 amount = %crate::format::format_amount(final_amount, borrow_dec, borrow_sym),
                 contract_minimum = %crate::format::format_amount(contract_minimum, borrow_dec, borrow_sym),
@@ -793,25 +640,6 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
             );
             return Ok(None);
         }
-
-        // Ensure the amount is economically viable
-        if final_amount < MIN_LIQUIDATION_AMOUNT_6_DECIMALS {
-            let (decimals, symbol) = get_borrow_asset_info(&configuration.borrow_asset);
-            tracing::warn!(
-                amount = %crate::format::format_amount(final_amount, decimals, symbol),
-                minimum_threshold = %crate::format::format_amount(MIN_LIQUIDATION_AMOUNT_6_DECIMALS, decimals, symbol),
-                "Liquidation amount too small to be economically viable (< $0.02)"
-            );
-            return Ok(None);
-        }
-
-        debug!(
-            available_balance = %available_u128,
-            fixed_amount = %self.fixed_amount,
-            final_collateral = %final_collateral,
-            final_amount = %final_amount,
-            "Calculated fixed amount liquidation"
-        );
 
         Ok(Some((U128(final_amount), U128(final_collateral))))
     }
@@ -833,19 +661,6 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
 
         let collateral_value_u128: u128 = expected_collateral_value.into();
         let is_profitable = collateral_value_u128 >= min_revenue;
-
-        let net_profit = collateral_value_u128.saturating_sub(total_cost);
-
-        debug!(
-            liquidation_amount = %liquidation_u128,
-            gas_cost = %gas_cost_u128,
-            total_cost = %total_cost,
-            expected_collateral_value = %collateral_value_u128,
-            min_revenue = %min_revenue,
-            net_profit = %net_profit,
-            is_profitable = %is_profitable,
-            "Fixed amount liquidation profitability check"
-        );
 
         Ok(is_profitable)
     }

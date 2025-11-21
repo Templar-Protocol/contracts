@@ -17,7 +17,6 @@ use templar_common::asset::{
     FungibleAssetAmount,
 };
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
 
 use crate::rpc::{view, RpcError};
 
@@ -163,12 +162,11 @@ impl InventoryManager {
                         last_updated: Instant::now(),
                     });
                     discovered += 1;
-                    debug!(asset = %asset, "Discovered new asset");
                 }
             }
         }
 
-        info!(
+        tracing::info!(
             discovered = discovered,
             existing = existing,
             total = self.inventory.len(),
@@ -198,12 +196,11 @@ impl InventoryManager {
                         last_updated: Instant::now(),
                     });
                     discovered += 1;
-                    debug!(asset = %asset, "Discovered new collateral asset");
                 }
             }
         }
 
-        info!(
+        tracing::info!(
             discovered = discovered,
             existing = existing,
             total = self.collateral_inventory.len(),
@@ -220,7 +217,7 @@ impl InventoryManager {
         // Check if we should throttle
         if let Some(last_refresh) = self.last_full_refresh {
             if last_refresh.elapsed() < self.min_refresh_interval {
-                debug!(
+                tracing::debug!(
                     elapsed_ms = last_refresh.elapsed().as_millis(),
                     min_interval_ms = self.min_refresh_interval.as_millis(),
                     "Skipping refresh - too soon since last refresh"
@@ -229,7 +226,7 @@ impl InventoryManager {
             }
         }
 
-        info!(asset_count = self.inventory.len(), "Refreshing inventory");
+        tracing::info!(asset_count = self.inventory.len(), "Refreshing inventory");
 
         let mut refreshed = 0;
         let mut errors = 0;
@@ -258,7 +255,7 @@ impl InventoryManager {
                     }
                 }
                 Err(e) => {
-                    warn!(
+                    tracing::warn!(
                         asset = %asset,
                         error = %e,
                         "Failed to fetch balance"
@@ -301,13 +298,13 @@ impl InventoryManager {
             .collect();
 
         if available_assets.is_empty() {
-            info!(
+            tracing::info!(
                 refreshed = refreshed,
                 errors = errors,
                 "Borrow asset inventory refresh complete - no assets with balance"
             );
         } else {
-            info!(
+            tracing::info!(
                 refreshed = refreshed,
                 errors = errors,
                 available_borrow_assets = available_assets.join(", "),
@@ -335,12 +332,6 @@ impl InventoryManager {
 
         if let Some(entry) = self.inventory.get_mut(asset) {
             entry.update_balance(BorrowAssetAmount::from(balance.0));
-            debug!(
-                asset = %asset,
-                balance = balance.0,
-                available = u128::from(entry.available()),
-                "Asset balance refreshed"
-            );
         } else {
             return Err(InventoryError::AssetNotTracked(asset.to_string()));
         }
@@ -424,14 +415,6 @@ impl InventoryManager {
 
         entry.reserve(amount)?;
 
-        debug!(
-            asset = %asset,
-            amount = u128::from(amount),
-            available = u128::from(entry.available()),
-            reserved = u128::from(entry.reserved),
-            "Reserved balance"
-        );
-
         Ok(())
     }
 
@@ -444,14 +427,6 @@ impl InventoryManager {
     pub fn release(&mut self, asset: &FungibleAsset<BorrowAsset>, amount: BorrowAssetAmount) {
         if let Some(entry) = self.inventory.get_mut(asset) {
             entry.release(amount);
-
-            debug!(
-                asset = %asset,
-                amount = u128::from(amount),
-                available = u128::from(entry.available()),
-                reserved = u128::from(entry.reserved),
-                "Released balance"
-            );
         }
     }
 
@@ -491,7 +466,7 @@ impl InventoryManager {
     ///
     /// Returns error if fetching fails
     pub async fn refresh_collateral(&mut self) -> InventoryResult<HashMap<String, U128>> {
-        info!(
+        tracing::info!(
             collateral_asset_count = self.collateral_inventory.len(),
             "Refreshing collateral inventory"
         );
@@ -517,7 +492,7 @@ impl InventoryManager {
                     }
                 }
                 Err(e) => {
-                    warn!(
+                    tracing::warn!(
                         collateral_asset = %asset,
                         error = %e,
                         "Failed to fetch collateral balance"
@@ -528,7 +503,7 @@ impl InventoryManager {
         }
 
         if non_zero_balances.is_empty() {
-            info!(
+            tracing::info!(
                 refreshed = refreshed,
                 errors = errors,
                 "Collateral asset inventory refresh complete - no holdings"
@@ -540,7 +515,7 @@ impl InventoryManager {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            info!(
+            tracing::info!(
                 refreshed = refreshed,
                 errors = errors,
                 collateral_holdings = assets_str,

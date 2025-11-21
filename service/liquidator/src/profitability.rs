@@ -7,7 +7,6 @@
 
 use near_sdk::json_types::U128;
 use templar_common::{market::MarketConfiguration, oracle::pyth::OracleResponse};
-use tracing::debug;
 
 use crate::{LiquidatorError, LiquidatorResult};
 
@@ -167,16 +166,6 @@ impl ProfitabilityCalculator {
         } else {
             0
         };
-
-        debug!(
-            liquidation_cost = %liquidation_cost,
-            gas_cost = %gas_cost_u128,
-            total_cost = %total_cost,
-            expected_revenue = %expected_revenue,
-            net_profit = %net_profit,
-            profit_percentage = %profit_percentage,
-            "Calculated profitability metrics"
-        );
 
         (net_profit, profit_percentage)
     }

@@ -9,7 +9,6 @@ use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     oracle::pyth::OracleResponse,
 };
-use tracing::{debug, info};
 
 use crate::{
     rpc::{view, RpcError},
@@ -91,7 +90,7 @@ impl MarketScanner {
                 break;
             }
 
-            debug!(
+            tracing::debug!(
                 market = %self.market,
                 offset = current_offset,
                 fetched = fetched,
@@ -106,7 +105,7 @@ impl MarketScanner {
             }
         }
 
-        info!(
+        tracing::info!(
             market = %self.market,
             total_positions = all_positions.len(),
             "Fetched all borrow positions"
@@ -167,7 +166,7 @@ impl MarketScanner {
         let Some(version_string) = get_contract_version(&self.client, &self.market).await else {
             // No NEP-330 metadata - can't verify version
             if requires_partial_liquidation {
-                info!(
+                tracing::info!(
                     market = %self.market,
                     "Contract missing NEP-330 metadata, cannot verify partial liquidation support"
                 );
@@ -176,7 +175,7 @@ impl MarketScanner {
                         .to_string(),
                 ));
             }
-            debug!(
+            tracing::debug!(
                 market = %self.market,
                 "Contract missing NEP-330 metadata, assuming basic compatibility"
             );
@@ -191,7 +190,7 @@ impl MarketScanner {
             let patch = pat.parse::<u32>().unwrap_or(0);
             (major, minor, patch)
         } else {
-            info!(
+            tracing::info!(
                 market = %self.market,
                 version = %version_string,
                 "Invalid semver format, skipping market"
@@ -205,7 +204,7 @@ impl MarketScanner {
         let is_compatible = (major, minor, patch) >= Self::MIN_SUPPORTED_VERSION;
         if !is_compatible {
             let (min_major, min_minor, min_patch) = Self::MIN_SUPPORTED_VERSION;
-            info!(
+            tracing::info!(
                 market = %self.market,
                 version = %version_string,
                 min_version = %format!("{min_major}.{min_minor}.{min_patch}"),
@@ -221,7 +220,7 @@ impl MarketScanner {
             let supports_partial = (major, minor, patch) >= Self::MIN_PARTIAL_LIQUIDATION_VERSION;
             if !supports_partial {
                 let (min_major, min_minor, min_patch) = Self::MIN_PARTIAL_LIQUIDATION_VERSION;
-                info!(
+                tracing::info!(
                     market = %self.market,
                     version = %version_string,
                     min_version = %format!("{min_major}.{min_minor}.{min_patch}"),
@@ -233,7 +232,7 @@ impl MarketScanner {
             }
         }
 
-        info!(
+        tracing::info!(
             market = %self.market,
             version = %version_string,
             "Market is compatible"
