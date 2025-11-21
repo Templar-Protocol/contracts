@@ -204,16 +204,17 @@ pub trait LiquidationStrategy: Send + Sync + std::fmt::Debug {
         false
     }
 
-    /// Returns whether this strategy supports loop liquidation.
+    /// Returns whether this strategy is compatible with loop liquidation.
     ///
     /// Loop liquidation repeatedly liquidates a position until it's healthy.
-    /// Only partial and fixed-amount strategies support this.
+    /// All strategies support this - loop liquidation is controlled by the
+    /// `LOOP_LIQUIDATION` parameter in the configuration.
     ///
     /// # Default
     ///
-    /// Returns `false` by default (full liquidation doesn't loop).
+    /// Returns `true` by default (all strategies support loop liquidation).
     fn supports_loop_liquidation(&self) -> bool {
-        false
+        true
     }
 }
 
@@ -459,10 +460,6 @@ impl LiquidationStrategy for PartialLiquidationStrategy {
     }
 
     fn requires_partial_liquidation_support(&self) -> bool {
-        true
-    }
-
-    fn supports_loop_liquidation(&self) -> bool {
         true
     }
 }
@@ -858,10 +855,6 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
     }
 
     fn requires_partial_liquidation_support(&self) -> bool {
-        true
-    }
-
-    fn supports_loop_liquidation(&self) -> bool {
         true
     }
 }

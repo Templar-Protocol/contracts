@@ -286,8 +286,8 @@ impl Liquidator {
         position: BorrowPosition,
         oracle_response: OracleResponse,
     ) -> Result<LiquidationOutcome, LiquidatorError> {
-        // Loop liquidation support - only if enabled AND strategy supports it
-        let loop_enabled = self.loop_liquidation && self.strategy.supports_loop_liquidation();
+        // Loop liquidation support - controlled by LOOP_LIQUIDATION parameter
+        let loop_enabled = self.loop_liquidation;
         let mut loop_iteration = 0;
         let max_iterations = self.max_loop_iterations;
         let mut total_liquidated_amount = 0u128;
@@ -318,7 +318,7 @@ impl Liquidator {
                     let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
                     info!(
                         market = %self.market,
-                        borrower = %format::short_account(borrow_account.as_ref()),
+                        borrower = %borrow_account,
                         iterations = loop_iteration - 1,
                         total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, borrow_sym),
                         total_received = %format::format_amount(total_collateral_received, coll_dec, coll_sym),
@@ -347,7 +347,7 @@ impl Liquidator {
                 let collateralization_ratio = position.collateralization_ratio(&price_pair);
 
                 info!(
-                    borrower = %format::short_account(borrow_account.as_ref()),
+                    borrower = %borrow_account,
                     reason = ?reason,
                     mcr_liquidation = %self.market_config.borrow_mcr_liquidation,
                     collateralization_ratio = ?collateralization_ratio,
@@ -371,7 +371,7 @@ impl Liquidator {
                 let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
                 info!(
                     market = %self.market,
-                    borrower = %format::short_account(borrow_account.as_ref()),
+                    borrower = %borrow_account,
                     iterations = max_iterations,
                     total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, borrow_sym),
                     total_received = %format::format_amount(total_collateral_received, coll_dec, coll_sym),
@@ -417,7 +417,7 @@ impl Liquidator {
             if available_balance.0 < contract_minimum {
                 let (borrow_dec, borrow_sym, _, _) = self.asset_info();
                 tracing::warn!(
-                    borrower = %format::short_account(borrow_account.as_ref()),
+                    borrower = %borrow_account,
                     available_balance = %format::format_amount(available_balance.0, borrow_dec, borrow_sym),
                     contract_minimum = %format::format_amount(contract_minimum, borrow_dec, borrow_sym),
                     "Insufficient inventory: below contract minimum borrow amount, skipping"
@@ -464,7 +464,7 @@ impl Liquidator {
                 // v1.0: Keep total collateral - contract validates against total
                 let (_, _, coll_dec, coll_sym) = self.asset_info();
                 info!(
-                    borrower = %format::short_account(borrow_account.as_ref()),
+                    borrower = %borrow_account,
                     market = %self.market,
                     market_version = ?self.market_version,
                     total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
@@ -475,7 +475,7 @@ impl Liquidator {
                 adjusted_position.collateral_asset_deposit = liquidatable_collateral;
                 let (_, _, coll_dec, coll_sym) = self.asset_info();
                 info!(
-                    borrower = %format::short_account(borrow_account.as_ref()),
+                    borrower = %borrow_account,
                     market = %self.market,
                     market_version = ?self.market_version,
                     liquidatable_collateral = %format::format_amount(liquidatable_collateral.into(), coll_dec, coll_sym),
@@ -495,7 +495,7 @@ impl Liquidator {
                 if loop_iteration > 1 {
                     let (borrow_dec, borrow_sym, _, _) = self.asset_info();
                     tracing::warn!(
-                        borrower = %format::short_account(borrow_account.as_ref()),
+                        borrower = %borrow_account,
                         iteration = %format::format_iteration(loop_iteration, max_iterations),
                         available_balance = %format::format_amount(available_balance.0, borrow_dec, borrow_sym),
                         "Loop liquidation: insufficient balance to continue, stopping"
@@ -601,7 +601,7 @@ impl Liquidator {
                 if loop_enabled {
                     info!(
                         market = %self.market,
-                        borrower = %format::short_account(borrow_account.as_ref()),
+                        borrower = %borrow_account,
                         mode = mode,
                         reason = ?reason,
                         iteration = %format::format_iteration(loop_iteration, max_iterations),
@@ -615,7 +615,7 @@ impl Liquidator {
                 } else {
                     info!(
                         market = %self.market,
-                        borrower = %format::short_account(borrow_account.as_ref()),
+                        borrower = %borrow_account,
                         mode = mode,
                         reason = ?reason,
                         collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
@@ -660,7 +660,7 @@ impl Liquidator {
 
                 info!(
                     market = %self.market,
-                    borrower = %format::short_account(borrow_account.as_ref()),
+                    borrower = %borrow_account,
                     mode = mode,
                     collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
                     collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, coll_sym),

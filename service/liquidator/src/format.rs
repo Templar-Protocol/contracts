@@ -119,28 +119,6 @@ pub fn asset_symbol(asset: &str) -> &'static str {
     }
 }
 
-/// Shorten account ID for display.
-///
-/// # Examples
-///
-/// ```ignore
-/// short_account("0x89776584d7f7f0f98ae15afa599d7f87ef8a8aed") // "0x8977...8aed"
-/// short_account("silly_psyop.near") // "silly_psyop.near"
-/// short_account("very-long-account-name.near") // "very-long-accou..."
-/// ```
-pub fn short_account(account: &str) -> String {
-    if account.len() > 16 && account.starts_with("0x") {
-        // Ethereum-style address: 0x8977...8aed
-        format!("{}...{}", &account[..6], &account[account.len() - 4..])
-    } else if account.len() > 20 {
-        // Long NEAR account: first 15 chars + "..."
-        format!("{}...", &account[..15])
-    } else {
-        // Short enough to display fully
-        account.to_string()
-    }
-}
-
 /// Format profit/loss with sign and percentage.
 ///
 /// # Examples
@@ -216,19 +194,6 @@ mod tests {
         );
         assert_eq!(asset_symbol("nep141:wrap.near"), "NEAR");
         assert_eq!(asset_symbol("nep141:meta-pool.near"), "stNEAR");
-    }
-
-    #[test]
-    fn test_short_account() {
-        assert_eq!(
-            short_account("0x89776584d7f7f0f98ae15afa599d7f87ef8a8aed"),
-            "0x8977...8aed"
-        );
-        assert_eq!(short_account("alice.near"), "alice.near");
-        assert_eq!(
-            short_account("very-long-account-name-that-exceeds-limit.near"),
-            "very-long-accou..." // 15 chars + "..."
-        );
     }
 
     #[test]
