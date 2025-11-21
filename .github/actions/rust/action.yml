@@ -21,3 +21,13 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+        # Exclude large build artifacts to reduce cache size
+        cache-directories: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+        # Don't cache target/debug or intermediate artifacts
+        cache-targets: "false"
+        # Add shared key to deduplicate cache across jobs
+        shared-key: "rust-cache"
