@@ -1,20 +1,16 @@
 use near_sdk::serde::de::DeserializeOwned;
-use near_sdk::AccountId;
 use near_sdk::{env, near};
 use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 
-use super::{
-    ExecutionContextProvider, ExecutionParameters, InvalidSignatureError, Key, MagicNumber,
-};
+use super::with_raw_string::WithRawString;
+use super::{ExecutionContextProvider, HashForSigning, InvalidSignatureError, Key, Payload};
 
 use data::{AuthenticatorData, ClientDataJson};
 use signature::Signature;
-use with_raw_string::WithRawString;
 
 pub mod data;
 pub mod signature;
-pub mod with_raw_string;
 
 fn sig_base(
     authenticator_data: &AuthenticatorData,
@@ -31,12 +27,21 @@ fn sig_base(
 #[near(serializers = [borsh, json])]
 pub struct Passkey(pub crate::encoding::p256::PublicKey);
 
-pub struct MessageWithValidSignature<T>(Message<T>);
+impl std::fmt::Display for Passkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
-impl<T> Key<Message<T>> for Passkey {
-    type Validated = MessageWithValidSignature<T>;
+pub struct MessageWithValidSignature<T>(MessageWithSignature<T>);
 
-    fn verify(&self, message: Message<T>) -> Result<Self::Validated, InvalidSignatureError> {
+impl<T> Key<MessageWithSignature<T>> for Passkey {
+    type Verified = MessageWithValidSignature<T>;
+
+    fn verify_signature(
+        &self,
+        message: MessageWithSignature<T>,
+    ) -> Result<Self::Verified, InvalidSignatureError> {
         let payload_prehash = sig_base(&message.0.authenticator_data, &message.0.client_data_json);
         if VerifyingKey::from(*self.0)
             .verify(&payload_prehash, &*message.0.signature)
@@ -51,44 +56,52 @@ impl<T> Key<Message<T>> for Passkey {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-#[serde(deny_unknown_fields)]
-pub struct Payload<T> {
-    pub parameters: ExecutionParameters,
-    pub account_id: AccountId,
-    pub payload: T,
-}
+#[serde(bound = "T: DeserializeOwned", deny_unknown_fields)]
+pub struct Message<T>(pub WithRawString<Payload<T>>);
 
-impl<T> MagicNumber for Payload<T> {
-    const MAGIC_NUMBER: &'static [u8] = b"\x19UAccount Signed Message:\n";
+impl<T> Message<T> {
+    pub fn from_parsed(payload: Payload<T>) -> Self
+    where
+        T: near_sdk::serde::Serialize,
+    {
+        Self(WithRawString::from_parsed(payload))
+    }
+
+    pub fn sign(
+        self,
+        key: &p256::SecretKey,
+        authenticator_data: AuthenticatorData,
+        client_data_json: ClientDataJson,
+    ) -> MessageWithSignatureWithUncheckedHashes<T> {
+        let client_data_json = WithRawString::from_parsed(client_data_json);
+        let signature = Signature(
+            SigningKey::from(key).sign(&sig_base(&authenticator_data, &client_data_json)),
+        );
+
+        MessageWithSignatureWithUncheckedHashes {
+            authenticator_data,
+            message: self,
+            client_data_json,
+            signature,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 #[serde(bound = "T: DeserializeOwned", deny_unknown_fields)]
-pub struct UncheckedMessage<T> {
+pub struct MessageWithSignatureWithUncheckedHashes<T> {
     pub authenticator_data: AuthenticatorData,
-    pub message: WithRawString<Payload<T>>,
+    pub message: Message<T>,
     pub client_data_json: WithRawString<ClientDataJson>,
     pub signature: Signature,
 }
 
-impl<T> UncheckedMessage<T> {
-    pub fn new_and_sign(
-        key: &p256::SecretKey,
-        message: WithRawString<Payload<T>>,
-        authenticator_data: AuthenticatorData,
-        client_data_json: WithRawString<ClientDataJson>,
-    ) -> Self {
-        let signature = Signature(
-            SigningKey::from(key).sign(&sig_base(&authenticator_data, &client_data_json)),
-        );
+impl<T> HashForSigning for Message<T> {
+    const MAGIC_NUMBER: &'static [u8] = b"\x19UAccount Signed Message:\n";
 
-        Self {
-            authenticator_data,
-            message,
-            client_data_json,
-            signature,
-        }
+    fn content_bytes(&self) -> Vec<u8> {
+        self.0.raw.as_bytes().to_vec()
     }
 }
 
@@ -98,21 +111,24 @@ pub struct PayloadHashMismatchError;
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-#[serde(bound = "T: DeserializeOwned", try_from = "UncheckedMessage<T>")]
-pub struct Message<T>(UncheckedMessage<T>);
+#[serde(
+    bound = "T: DeserializeOwned",
+    try_from = "MessageWithSignatureWithUncheckedHashes<T>"
+)]
+pub struct MessageWithSignature<T>(MessageWithSignatureWithUncheckedHashes<T>);
 
-impl<T> Message<T> {
+impl<T> MessageWithSignature<T> {
     pub fn payload_unchecked(&self) -> &T {
-        &self.0.message.parsed.payload
+        &self.0.message.0.parsed.payload
     }
 }
 
-impl<T> TryFrom<UncheckedMessage<T>> for Message<T> {
+impl<T> TryFrom<MessageWithSignatureWithUncheckedHashes<T>> for MessageWithSignature<T> {
     type Error = PayloadHashMismatchError;
 
-    fn try_from(value: UncheckedMessage<T>) -> Result<Self, Self::Error> {
+    fn try_from(value: MessageWithSignatureWithUncheckedHashes<T>) -> Result<Self, Self::Error> {
         // Check that the payload actually hashes to the signed challenge
-        if value.message.hash() != value.client_data_json.parsed.challenge.as_slice() {
+        if value.message.hash_for_signing() != value.client_data_json.parsed.challenge.as_slice() {
             return Err(PayloadHashMismatchError);
         }
 
@@ -123,16 +139,8 @@ impl<T> TryFrom<UncheckedMessage<T>> for Message<T> {
 impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
     type Payload = P;
 
-    fn account_id(&self) -> &near_sdk::AccountIdRef {
-        &self.0 .0.message.parsed.account_id
-    }
-
-    fn parameters(&self) -> &ExecutionParameters {
-        &self.0 .0.message.parsed.parameters
-    }
-
-    fn payload_unchecked(&self) -> &Self::Payload {
-        &self.0 .0.message.parsed.payload
+    fn payload(self) -> Payload<Self::Payload> {
+        self.0 .0.message.0.parsed
     }
 
     fn origin(&self) -> Option<&str> {

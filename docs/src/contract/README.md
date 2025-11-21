@@ -1,5 +1,5 @@
 # Smart Contracts
 
-- [**Market**](./market/README.md)
-- [**Registry**](./registry/README.md)
-- [**LST Oracle**](./lst-oracle/README.md)
+- [**Market**](./market/index.html)
+- [**Registry**](./registry.html)
+- [**LST Oracle**](./lst-oracle.html)

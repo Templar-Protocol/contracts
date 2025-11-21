@@ -37,11 +37,13 @@ tower.workspace = true
 tower-http.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tracing = { workspace = true, features = ["attributes"] }
+reqwest = {version = "0.12.24", features = ["json"]}
 
 [dev-dependencies]
 near-workspaces = { workspace = true, features = ["experimental"] }
 p256.workspace = true
 rstest.workspace = true
+solana-sdk.workspace = true
 test-utils.workspace = true
 
 [lints]

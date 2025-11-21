@@ -15,11 +15,6 @@
 //! - `inventory`: Asset balance tracking
 //! - `strategy`: Liquidation amount calculations
 //! - `swap`: Swap provider implementations
-//!
-//!   service.run().await;
-//! # Ok(())
-//! # }
-//! ```
 
 use std::sync::Arc;
 
