@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use near_jsonrpc_client::errors::JsonRpcError;
 use near_primitives::{
@@ -57,6 +60,8 @@ async fn start(
                 }
             }
         }
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
