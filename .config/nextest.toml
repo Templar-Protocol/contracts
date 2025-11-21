@@ -25,7 +25,3 @@ slow-timeout = { period = "120s", terminate-after = 3 }
 [store]
 # Reduce disk usage by not storing test output
 dir = "target/nextest"
-
-[test-groups]
-# Group slow tests together to better manage resources
-default = { max-threads = 4 }
