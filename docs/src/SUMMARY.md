@@ -6,6 +6,7 @@
     - [Supply](./contract/market/supply.md)
     - [Borrow](./contract/market/borrow.md)
     - [Liquidate](./contract/market/liquidate.md)
+    - [Known Issues](./contract/market/known-issues.md)
   - [Registry](./contract/registry.md)
   - [LST Oracle](./contract/lst-oracle.md)
 - [Smart Contract Deployments](./deployments.md)

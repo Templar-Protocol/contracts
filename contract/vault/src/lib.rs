@@ -395,7 +395,7 @@ impl Contract {
     /// If `amount` is provided, it is used as the target amount for each market.
     /// Otherwise, the vault will attempt to allocate as much as possible.
     ///
-    /// NOTE: Each allocation takes roughly [common::vault::ALLOCATE_GAS] gas. (~21 TGAS)
+    /// NOTE: Each allocation takes roughly [`ALLOCATE_GAS`] gas. (~21 TGAS)
     /// So in one allocation cycle, we should do at most ~12 market allocations.
     /// This is a conservative estimate, and may need to be tweaked.
     ///
