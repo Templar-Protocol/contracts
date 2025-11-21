@@ -563,28 +563,37 @@ impl Near {
         })
     }
 
-    async fn try_resolve_price_identifier(
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub async fn try_resolve_price_identifier(
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
     ) -> Result<PriceIdentifier, ViewError> {
         match self
-            .view::<PriceTransformer>(oracle_id, "get_transformer", json!({}))
+            .view::<Option<PriceTransformer>>(
+                oracle_id,
+                "get_transformer",
+                json!({ "price_identifier": price_identifier }),
+            )
             .await
         {
-            Ok(transformer) => {
-                tracing::debug!("Price ID {price_identifier} resolved: LST oracle contract");
+            Ok(None) => {
+                tracing::debug!(%price_identifier, "Price ID resolved: LST oracle contract: passthrough");
+                Ok(price_identifier)
+            }
+            Ok(Some(transformer)) => {
+                tracing::debug!(%price_identifier, "Price ID resolved: LST oracle contract: transformed");
                 Ok(transformer.price_id)
             }
             Err(ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
                 RpcQueryError::ContractExecutionError { vm_error, .. },
             )))) if vm_error.contains("MethodResolveError(MethodNotFound)") => {
-                tracing::debug!("Price ID {price_identifier} resolved: not an LST oracle contract");
+                tracing::debug!(%price_identifier, "Price ID resolved: not an LST oracle contract");
                 Ok(price_identifier)
             }
-            Err(e) => {
-                tracing::error!("Failed to resolve price ID {price_identifier}: {e:?}");
-                Err(e)
+            Err(error) => {
+                tracing::error!(%price_identifier, ?error, "Failed to resolve price ID");
+                Err(error)
             }
         }
     }
