@@ -1,10 +1,12 @@
-use near_sdk::{near, AccountId, AccountIdRef};
+use near_sdk::AccountIdRef;
+use payload::Payload;
 
 use crate::ExecutionParameters;
 
 pub mod ed25519_raw;
 pub mod eip712;
 pub mod passkey;
+pub mod payload;
 pub mod with_raw_string;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,15 +34,6 @@ pub enum ExecutionError {
     NonceMismatch,
     #[error("Origin unknown")]
     OriginUnknown,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json])]
-#[serde(deny_unknown_fields)]
-pub struct Payload<T> {
-    pub parameters: ExecutionParameters,
-    pub account_id: AccountId,
-    pub payload: T,
 }
 
 pub trait ExecutionContextProvider

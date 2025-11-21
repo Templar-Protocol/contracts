@@ -46,7 +46,6 @@ p256 = "0.13.2"
 primitive-types = { version = "0.10.1" }
 rstest = { version = "0.24" }
 schemars = { version = "0.8" }
-serde = { version = "1.0.228", features = ["derive"] }
 solana-sdk = "3.0.0"
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }

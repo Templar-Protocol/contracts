@@ -1,7 +1,8 @@
 use std::fmt::Display;
 
+use alloy::sol;
 use authentication::{
-    ed25519_raw::Ed25519RawKey, passkey::Passkey, ExecutionContextProvider, ExecutionError,
+    ed25519_raw::Ed25519RawKey, eip712, passkey::Passkey, ExecutionContextProvider, ExecutionError,
     InvalidSignatureError, Key,
 };
 use near_sdk::{json_types::U64, near, serde::de::DeserializeOwned, AccountIdRef};
@@ -23,13 +24,15 @@ pub struct InitArgs {
 pub enum KeyId {
     Passkey(Passkey),
     Ed25519RawKey(Ed25519RawKey),
+    Eip712(eip712::VerifyKey),
 }
 
 impl Display for KeyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            KeyId::Passkey(passkey) => write!(f, "{}", passkey.0),
-            KeyId::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
+            Self::Passkey(passkey) => write!(f, "{}", passkey.0),
+            Self::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
+            Self::Eip712(key) => write!(f, "{}", key.0),
         }
     }
 }
@@ -58,6 +61,34 @@ pub struct ExecutionParameters {
     pub index: U64,
     /// Increments for each message executed by this key.
     pub nonce: U64,
+}
+
+sol! {
+    struct SolExecutionParameters {
+        uint64 block_height;
+        uint64 index;
+        uint64 nonce;
+    }
+}
+
+impl From<SolExecutionParameters> for ExecutionParameters {
+    fn from(value: SolExecutionParameters) -> Self {
+        Self {
+            block_height: U64(value.block_height),
+            index: U64(value.index),
+            nonce: U64(value.nonce),
+        }
+    }
+}
+
+impl From<ExecutionParameters> for SolExecutionParameters {
+    fn from(value: ExecutionParameters) -> Self {
+        Self {
+            block_height: value.block_height.0,
+            index: value.index.0,
+            nonce: value.nonce.0,
+        }
+    }
 }
 
 impl ExecutionParameters {
@@ -138,13 +169,15 @@ mod tests {
             self,
             data::{AuthenticatorData, ClientDataJson},
         },
-        HashForSigning, Payload,
+        HashForSigning,
     };
     use near_sdk::{bs58, AccountId, NearToken};
     use p256::elliptic_curve::rand_core::OsRng;
     use rstest::rstest;
     use solana_sdk::{signature::Keypair, signer::Signer};
     use transaction::Transaction;
+
+    use crate::authentication::payload::Payload;
 
     use super::*;
 

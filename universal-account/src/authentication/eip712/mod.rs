@@ -1,50 +1,61 @@
-use alloy::primitives::Address;
-use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use near_sdk::near;
 
+use crate::encoding;
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [])]
-pub struct VerifyKey(Address);
-
-// impl BorshSerialize for VerifyKey {
-//     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-//         let bytes: [u8; 20] = self.0.into();
-//         BorshSerialize::serialize(&bytes, writer)
-//     }
-// }
-
-// impl BorshDeserialize for VerifyKey {
-//     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-//         let bytes = <[u8; 20] as BorshDeserialize>::deserialize_reader(reader)?;
-//         Ok(Self(Address::from(bytes)))
-//     }
-// }
-
-// impl BorshSchema for VerifyKey {
-//     fn add_definitions_recursively(
-//         definitions: &mut std::collections::BTreeMap<
-//             near_sdk::borsh::schema::Declaration,
-//             near_sdk::borsh::schema::Definition,
-//         >,
-//     ) {
-//         // <[u64; 8] as BorshSchema>::add_definitions_recursively(definitions);
-//         todo!()
-//     }
-
-//     fn declaration() -> near_sdk::borsh::schema::Declaration {
-//         // String::from("Decimal")
-//         todo!()
-//     }
-// }
+#[near(serializers = [json, borsh])]
+pub struct VerifyKey(pub encoding::ethereum::Address);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use alloy::{
+        primitives::U256,
+        signers::{local::PrivateKeySigner, Signer, SignerSync},
+        sol_types::SolStruct,
+    };
+
+    use crate::{
+        authentication::payload::{Payload, SolPayload},
+        transaction::{Action, Transaction},
+        ExecutionParameters,
+    };
 
     #[test]
-    fn serialization() {
-        // let key = VerifyKey(Address::from_slice(&[0xff; 20]));
+    fn sign() {
+        let signer = PrivateKeySigner::from_bytes(&[0x55_u8; 32].into())
+            .unwrap()
+            .with_chain_id(Some(1337));
 
-        // eprintln!("{}", near_sdk::serde_json::to_string(&key).unwrap());
+        // The message to sign.
+        let message: SolPayload = Payload {
+            parameters: ExecutionParameters::default(),
+            account_id: "account_id".parse().unwrap(),
+            payload: Box::new([Transaction {
+                receiver_id: "receiver".parse().unwrap(),
+                actions: Box::new([Action::CreateAccount]),
+            }]),
+        }
+        .try_into()
+        .unwrap();
+
+        let domain = alloy::dyn_abi::Eip712Domain {
+            name: Some("Templar Universal Account".into()),
+            version: Some("0.0.0".into()),
+            chain_id: Some(U256::from(397)),
+            verifying_contract: Some(alloy::primitives::Address([0x99_u8; 20].into())),
+            salt: None,
+        };
+
+        // Sign the message asynchronously with the signer.
+        let signature = signer.sign_typed_data_sync(&message, &domain).unwrap();
+
+        let signer_address = signer.address();
+        println!("Signature produced by {signer_address}: {signature:?}");
+        let recovered_address = signature
+            .recover_address_from_prehash(&message.eip712_signing_hash(&domain))
+            .unwrap();
+        println!("Signature recovered address: {recovered_address}");
+
+        assert_eq!(signer_address, recovered_address);
     }
 }

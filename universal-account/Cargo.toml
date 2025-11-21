@@ -6,12 +6,12 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-alloy = { workspace = true }
+alloy = { workspace = true, features = ["eip712"] }
 borsh.workspace = true
 hex.workspace = true
+near-account-id.workspace = true
 near-sdk = { workspace = true, features = ["global-contracts"] }
 p256.workspace = true
-serde.workspace = true
 schemars.workspace = true
 solana-sdk.workspace = true
 thiserror.workspace = true
