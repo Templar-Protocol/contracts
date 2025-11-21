@@ -263,21 +263,13 @@ impl LiquidationExecutor {
         collateral_amount: CollateralAssetAmount,
     ) -> LiquidatorResult<bool> {
         let Some(ref swap_provider) = self.swap_provider else {
-            tracing::info!(
-                collateral = %collateral_asset,
-                borrow = %borrow_asset,
-                amount = %u128::from(collateral_amount),
-                "No swap provider configured, holding collateral"
-            );
+            tracing::debug!("No swap provider configured, holding collateral");
             return Ok(false);
         };
 
         // Skip swap if collateral is already the target borrow asset
         if collateral_asset.to_string() == borrow_asset.to_string() {
-            tracing::debug!(
-                asset = %collateral_asset,
-                "Collateral is already target borrow asset, skipping swap"
-            );
+            tracing::debug!("Collateral is already borrow asset, skipping JIT swap");
             return Ok(false);
         }
 
@@ -289,10 +281,9 @@ impl LiquidationExecutor {
         let borrow_symbol = crate::format::asset_symbol(&to_str);
 
         tracing::info!(
-            from = %collateral_asset,
-            to = %borrow_asset,
+            swap = %format!("{coll_symbol}→{borrow_symbol}"),
             amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
-            "Swapping received collateral back to borrow asset"
+            "JIT swap: collateral→borrow"
         );
 
         let swap_amount = FungibleAssetAmount::from(U128::from(collateral_amount));
@@ -304,27 +295,25 @@ impl LiquidationExecutor {
             Ok(status) => {
                 if let FinalExecutionStatus::SuccessValue(_) = status {
                     tracing::info!(
-                        from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
-                        to_asset = borrow_symbol,
-                        "Swap completed successfully - inventory replenished"
+                        swap = %format!("{coll_symbol}→{borrow_symbol}"),
+                        amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
+                        "JIT swap completed - inventory replenished"
                     );
                     Ok(true)
                 } else {
-                    tracing::info!(
-                        from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
-                        to_asset = borrow_symbol,
+                    tracing::warn!(
+                        swap = %format!("{coll_symbol}→{borrow_symbol}"),
                         status = ?status,
-                        "Swap failed (non-fatal) - collateral will be held in inventory"
+                        "JIT swap failed (non-fatal) - holding collateral"
                     );
                     Ok(false)
                 }
             }
             Err(e) => {
-                tracing::info!(
-                    from_amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
-                    to_asset = borrow_symbol,
+                tracing::warn!(
+                    swap = %format!("{coll_symbol}→{borrow_symbol}"),
                     reason = %e,
-                    "Swap failed (non-fatal) - liquidation succeeded, collateral held in inventory"
+                    "JIT swap failed (non-fatal) - holding collateral"
                 );
                 // Don't propagate error - swap failure is non-fatal, liquidation already succeeded
                 Ok(false)

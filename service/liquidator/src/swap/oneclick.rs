@@ -344,13 +344,10 @@ impl OneClickSwap {
         let to_asset_id = Self::to_oneclick_asset_id(to_asset);
         let recipient = self.signer.get_account_id().to_string();
 
-        tracing::info!(
-            from_contract = %from_asset.contract_id(),
-            to_contract = %to_asset.contract_id(),
-            from_oneclick_id = %from_asset_id,
-            to_oneclick_id = %to_asset_id,
-            "Converting assets to 1-Click format"
-        );
+        let from_str = from_asset.to_string();
+        let from_symbol = crate::format::asset_symbol(&from_str);
+        let from_decimals = crate::format::asset_decimals(from_symbol);
+        let to_symbol = crate::format::asset_symbol(&to_asset.to_string());
 
         // Calculate deadline (30 minutes from now)
         let deadline = chrono::Utc::now() + chrono::Duration::minutes(30);
@@ -386,13 +383,10 @@ impl OneClickSwap {
 
         let url = format!("{ONECLICK_API_BASE}/v0/quote");
 
-        // Log the full request for debugging
         tracing::info!(
-            origin_asset = %request.origin_asset,
-            destination_asset = %request.destination_asset,
-            amount = %request.amount,
-            swap_type = ?request.swap_type,
-            "Sending quote request to 1-Click API"
+            swap = %format!("{from_symbol}→{to_symbol}"),
+            amount = %crate::format::format_amount(u128::from(input_amount), from_decimals, from_symbol),
+            "Requesting quote from 1-Click API"
         );
 
         let mut req = self.http_client.post(&url).json(&request);
@@ -441,14 +435,20 @@ impl OneClickSwap {
                 AppError::ValidationError(format!("Invalid quote response: {e}"))
             })?;
 
+        let amount_out_u128: u128 = quote_response.quote.amount_out.parse().unwrap_or_default();
+        let min_amount_out_u128: u128 = quote_response
+            .quote
+            .min_amount_out
+            .parse()
+            .unwrap_or_default();
+
+        let to_decimals = crate::format::asset_decimals(to_symbol);
+
         tracing::info!(
-            amount_in = %quote_response.quote.amount_in,
-            amount_out = %quote_response.quote.amount_out,
-            min_amount_in = %quote_response.quote.min_amount_in,
-            min_amount_out = %quote_response.quote.min_amount_out,
-            deposit_address = %quote_response.quote.deposit_address,
-            time_estimate = %quote_response.quote.time_estimate,
-            "Quote received from 1-Click API"
+            out = %crate::format::format_amount(amount_out_u128, to_decimals, to_symbol),
+            min_out = %crate::format::format_amount(min_amount_out_u128, to_decimals, to_symbol),
+            time_estimate_s = %quote_response.quote.time_estimate,
+            "Quote received"
         );
 
         Ok(quote_response)
@@ -465,7 +465,7 @@ impl OneClickSwap {
 
         const MAX_REASONABLE_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
 
-        tracing::info!(
+        tracing::debug!(
             token = %token_contract.contract_id(),
             account = %account_id,
             "Registering storage deposit for account"
@@ -496,10 +496,9 @@ impl OneClickSwap {
         #[allow(clippy::cast_precision_loss)]
         let min_deposit_near = min_deposit as f64 / 1e24;
 
-        tracing::info!(
-            token = %token_contract.contract_id(),
+        tracing::debug!(
             min_deposit_near = %min_deposit_near,
-            "Using storage deposit minimum from contract"
+            "Storage deposit minimum from contract"
         );
 
         let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
@@ -528,10 +527,7 @@ impl OneClickSwap {
 
         match outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
-                tracing::info!(
-                    account = %account_id,
-                    "Storage deposit successful"
-                );
+                tracing::debug!(account = %account_id, "Storage deposit successful");
                 Ok(())
             }
             FinalExecutionStatus::Failure(failure) => {
@@ -562,10 +558,14 @@ impl OneClickSwap {
         amount: U128,
         _memo: Option<&str>,
     ) -> AppResult<String> {
+        let asset_str = from_asset.to_string();
+        let symbol = crate::format::asset_symbol(&asset_str);
+        let decimals = crate::format::asset_decimals(symbol);
+
         tracing::info!(
-            asset = %from_asset,
+            asset = %crate::format::format_asset_for_log(from_asset),
+            amount = %crate::format::format_amount(amount.0, decimals, symbol),
             deposit_address = %deposit_address,
-            amount = %amount.0,
             "Depositing tokens to 1-Click"
         );
 
@@ -578,9 +578,9 @@ impl OneClickSwap {
         // For implicit accounts, we need to ensure they exist first
         // by sending a small amount of NEAR to create the account
         if deposit_account.get_account_type() == AccountType::NearImplicitAccount {
-            tracing::info!(
+            tracing::debug!(
                 deposit_account = %deposit_account,
-                "Creating implicit account with NEAR transfer"
+                "Creating implicit account"
             );
 
             let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
@@ -600,10 +600,7 @@ impl OneClickSwap {
             // Send transaction but don't fail if account already exists
             match send_tx(&self.client, &self.signer, self.timeout, create_account_tx).await {
                 Ok(_) => {
-                    tracing::info!(
-                        deposit_account = %deposit_account,
-                        "Implicit account created successfully"
-                    );
+                    tracing::debug!(deposit_account = %deposit_account, "Implicit account created");
 
                     // Wait for account creation to propagate (1-2 blocks)
                     // This prevents race conditions with storage registration
@@ -657,7 +654,7 @@ impl OneClickSwap {
 
         match &outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
-                tracing::info!("Deposit transaction succeeded");
+                tracing::debug!("Deposit transaction succeeded");
             }
             FinalExecutionStatus::Failure(failure) => {
                 tracing::error!(
@@ -691,7 +688,7 @@ impl OneClickSwap {
                 )));
             }
             Ok(None) => {
-                tracing::info!(tx_hash = %tx_hash_str, "Deposit was accepted (not refunded)");
+                tracing::debug!(tx_hash = %tx_hash_str, "Deposit accepted");
             }
             Err(e) => {
                 tracing::warn!(
@@ -859,7 +856,7 @@ impl OneClickSwap {
             return Err(AppError::ValidationError(error_msg));
         }
 
-        tracing::info!("Deposit submitted to 1-Click API");
+        tracing::debug!(tx_hash = %tx_hash, "Deposit submitted to 1-Click API");
         Ok(())
     }
 
@@ -872,9 +869,8 @@ impl OneClickSwap {
     ) -> AppResult<SwapStatus> {
         let max_attempts = max_wait_seconds / POLL_INTERVAL_SECONDS;
 
-        tracing::info!(
-            deposit_address = %deposit_address,
-            max_wait_seconds = %max_wait_seconds,
+        tracing::debug!(
+            max_wait_s = %max_wait_seconds,
             "Polling swap status"
         );
 
@@ -944,15 +940,15 @@ impl OneClickSwap {
                 }
             };
 
-            tracing::info!(
+            tracing::debug!(
                 attempt = %attempt,
                 status = ?status_response.status,
-                "Swap status update"
+                "Swap status"
             );
 
             match status_response.status {
                 SwapStatus::Success => {
-                    tracing::info!("Swap completed successfully");
+                    tracing::debug!("Swap completed successfully");
                     return Ok(SwapStatus::Success);
                 }
                 SwapStatus::Failed | SwapStatus::Refunded => {
@@ -1003,12 +999,7 @@ impl SwapProvider for OneClickSwap {
         ))
     }
 
-    #[tracing::instrument(skip(self), level = "info", fields(
-        provider = %self.provider_name(),
-        from = %from_asset.to_string(),
-        to = %to_asset.to_string(),
-        amount = %amount
-    ))]
+    #[tracing::instrument(skip(self, from_asset, to_asset), level = "info")]
     async fn swap<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
@@ -1041,7 +1032,6 @@ impl SwapProvider for OneClickSwap {
             .await?;
 
         if status == SwapStatus::Success {
-            tracing::info!("1-Click swap completed successfully");
             Ok(FinalExecutionStatus::SuccessValue("".as_bytes().to_vec()))
         } else {
             tracing::error!(status = ?status, "Swap did not succeed");

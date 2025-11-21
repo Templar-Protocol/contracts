@@ -82,7 +82,10 @@ pub fn asset_symbol(asset: &str) -> &'static str {
         } else {
             "USDT"
         }
-    } else if asset_lower.contains("wbtc") {
+    } else if asset_lower.contains("wbtc")
+        || asset.contains("0x2260fac5e5542a773aa44fbcfedf7c193bc2c599")
+    {
+        // WBTC Ethereum address: 0x2260fac5e5542a773aa44fbcfedf7c193bc2c599
         if is_intent {
             "iWBTC"
         } else {
@@ -94,7 +97,10 @@ pub fn asset_symbol(asset: &str) -> &'static str {
         } else {
             "BTC"
         }
-    } else if asset_lower.contains("weth") {
+    } else if asset_lower.contains("weth")
+        || asset.contains("0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2")
+    {
+        // WETH Ethereum address: 0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2
         if is_intent {
             "iETH"
         } else {
@@ -179,6 +185,32 @@ pub fn asset_decimals(symbol: &str) -> i32 {
     }
 }
 
+/// Formats asset for concise logging (e.g., "iWBTC (intents.near)" or "USDC").
+///
+/// For NEP-245 (intent-wrapped) tokens, shows symbol with contract context.
+/// For NEP-141 tokens, shows just the symbol.
+///
+/// # Examples
+///
+/// ```ignore
+/// format_asset_for_log(&nep245_asset) // "iWBTC (intents.near)"
+/// format_asset_for_log(&nep141_asset) // "USDC"
+/// ```
+pub fn format_asset_for_log<A: templar_common::asset::AssetClass>(
+    asset: &templar_common::asset::FungibleAsset<A>,
+) -> String {
+    let asset_str = asset.to_string();
+    let symbol = asset_symbol(&asset_str);
+
+    // For NEP-245 (intents), show: "iWBTC (intents.near)"
+    if let Some((contract_id, _)) = asset.clone().into_nep245() {
+        format!("{symbol} ({contract_id})")
+    } else {
+        // For NEP-141, just show symbol
+        symbol.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +241,14 @@ mod tests {
         assert_eq!(
             asset_symbol("nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"),
             "USDC" // This is the USDC contract hash on NEAR
+        );
+        assert_eq!(
+            asset_symbol("nep245:intents.near:nep141:eth-0x2260fac5e5542a773aa44fbcfedf7c193bc2c599.omft.near"),
+            "iWBTC" // WBTC Ethereum address
+        );
+        assert_eq!(
+            asset_symbol("nep245:intents.near:nep141:eth-0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2.omft.near"),
+            "iETH" // WETH Ethereum address
         );
         assert_eq!(asset_symbol("nep141:wrap.near"), "NEAR");
         assert_eq!(asset_symbol("nep141:meta-pool.near"), "stNEAR");
