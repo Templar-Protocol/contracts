@@ -5850,7 +5850,7 @@ dependencies = [
 
 [[package]]
 name = "templar-common"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "borsh",
  "hex",
@@ -5866,7 +5866,7 @@ dependencies = [
 
 [[package]]
 name = "templar-fuzz"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "arbitrary",
  "hex-literal",
@@ -5902,7 +5902,7 @@ dependencies = [
 
 [[package]]
 name = "templar-lst-oracle-contract"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "getrandom 0.2.15",
  "hex-literal",
@@ -5918,7 +5918,7 @@ dependencies = [
 
 [[package]]
 name = "templar-market-contract"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "getrandom 0.2.15",
  "near-contract-standards",
@@ -5934,7 +5934,7 @@ dependencies = [
 
 [[package]]
 name = "templar-registry-contract"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "getrandom 0.2.15",
  "near-sdk",
@@ -5980,7 +5980,7 @@ dependencies = [
 
 [[package]]
 name = "templar-universal-account"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "borsh",
  "hex",
@@ -6013,7 +6013,7 @@ dependencies = [
 
 [[package]]
 name = "templar-vault-contract"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "futures",
  "getrandom 0.2.15",
