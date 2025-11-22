@@ -21,3 +21,9 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+        # Cache target directory but with smart cleanup
+        cache-on-failure: false
+        # Add shared key to deduplicate cache across jobs
+        shared-key: "rust-cache"
+        # Only save cache from main/dev branches to reduce storage
+        workspaces: ". -> target"

@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::HashSet, str::FromStr, time::Duration};
 
 use axum::{extract::State, Json};
 use clap::Parser;
-use near_jsonrpc_client::methods::tx::TransactionInfo;
+use near_jsonrpc_client::{methods::tx::TransactionInfo, JsonRpcClient};
 use near_primitives::{
     action::{
         delegate::{DelegateAction, SignedDelegateAction},
@@ -22,9 +22,11 @@ use p256::elliptic_curve::rand_core::OsRng;
 use rstest::{fixture, rstest};
 use tokio::sync::watch;
 
-use templar_common::registry::DeployMode;
+use templar_common::{oracle::pyth::PriceIdentifier, registry::DeployMode};
 use templar_relayer::{
-    app::{App, Configuration},
+    app::{args, App, Configuration},
+    cache::Cache,
+    client::{near::Near, pyth::Pyth},
     route::{
         relay::RelayRequest as SdaRelayRequest,
         universal_account::{
@@ -367,6 +369,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
                 message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
         }),
     )
     .await;
@@ -429,6 +432,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
                 message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
         }),
     )
     .await;
@@ -448,6 +452,58 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         .await;
 
     eprintln!("Status: {status:?}");
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "Puts tx on testnet. Set ACCOUNT_ID and SECRET_KEY before running."]
+pub async fn pyth_updates() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
+
+    let account_id: AccountId = std::env::var("ACCOUNT_ID").unwrap().parse().unwrap();
+    let secret_key: near_crypto::SecretKey = std::env::var("SECRET_KEY").unwrap().parse().unwrap();
+
+    let pyth_args = args::Pyth {
+        hermes_url: "https://hermes-beta.pyth.network".to_string(),
+        refresh: Duration::from_secs(25),
+        oracle_id: "pyth-oracle.testnet".parse().unwrap(),
+        update_gas: near_sdk::Gas::from_tgas(300),
+        update_deposit: NearToken::from_near(1).saturating_div(100),
+    };
+
+    let near = Near::new(
+        JsonRpcClient::connect("https://test.rpc.fastnear.com"),
+        account_id.clone(),
+        vec![near_crypto::InMemorySigner::from_secret_key(
+            account_id, secret_key,
+        )],
+    );
+
+    let cache_args = args::Cache {
+        gas_price_refresh: Duration::from_secs(600),
+        nonce_refresh: Duration::from_secs(60),
+    };
+
+    let kill = watch::Sender::default();
+
+    let cache = Cache::new(near.clone(), cache_args, kill.clone());
+
+    let pyth = Pyth::new(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
+
+    let price_id = PriceIdentifier(
+        hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+
+    let txid = pyth.update(Box::new([price_id])).await.unwrap();
+
+    eprintln!("Transaction hash: {txid:?}");
+
+    kill.send(()).unwrap();
 }
 
 #[rstest]
@@ -570,6 +626,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
                 message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
         }),
     )
     .await;
@@ -633,6 +690,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
                 message: Box::new(message),
             },
             storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
         }),
     )
     .await;
