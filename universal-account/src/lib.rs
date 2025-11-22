@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use alloy::sol;
 use authentication::{
-    ed25519_raw::Ed25519RawKey, eip712, passkey::Passkey, ExecutionContextProvider, ExecutionError,
+    ed25519_raw, eip712, passkey::Passkey, ExecutionContextProvider, ExecutionError,
     InvalidSignatureError, Key,
 };
 use near_sdk::{json_types::U64, near, serde::de::DeserializeOwned, AccountIdRef};
@@ -23,7 +23,7 @@ pub struct InitArgs {
 #[near(serializers = [borsh, json])]
 pub enum KeyId {
     Passkey(Passkey),
-    Ed25519RawKey(Ed25519RawKey),
+    Ed25519RawKey(ed25519_raw::VerifyKey),
     Eip712(eip712::VerifyKey),
 }
 
@@ -43,8 +43,8 @@ impl From<Passkey> for KeyId {
     }
 }
 
-impl From<Ed25519RawKey> for KeyId {
-    fn from(value: Ed25519RawKey) -> Self {
+impl From<ed25519_raw::VerifyKey> for KeyId {
+    fn from(value: ed25519_raw::VerifyKey) -> Self {
         Self::Ed25519RawKey(value)
     }
 }
@@ -110,7 +110,7 @@ pub enum ExecuteArgs<T> {
         message: Box<authentication::passkey::MessageWithSignature<T>>,
     },
     Ed25519Raw {
-        key: Ed25519RawKey,
+        key: ed25519_raw::VerifyKey,
         message: Box<authentication::ed25519_raw::MessageWithSignature<T>>,
     },
 }
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(b.len(), 65);
 
         let sk_ed25519 = Keypair::new();
-        let ed25519_raw = Ed25519RawKey(sk_ed25519.pubkey().to_bytes().into());
+        let ed25519_raw = ed25519_raw::VerifyKey(sk_ed25519.pubkey().to_bytes().into());
         let ed25519_raw_id: KeyId = ed25519_raw.into();
         let ed25519_raw_id_str = ed25519_raw_id.to_string();
 
@@ -241,7 +241,7 @@ mod tests {
         let signed_message = message.with_signature(sk.sign_message(&preimage).into());
 
         ExecuteArgs::Ed25519Raw {
-            key: Ed25519RawKey(sk.pubkey().to_bytes().into()),
+            key: ed25519_raw::VerifyKey(sk.pubkey().to_bytes().into()),
             message: Box::new(signed_message),
         }
     }

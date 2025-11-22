@@ -1,12 +1,12 @@
 use near_sdk::AccountIdRef;
-use payload::Payload;
 
 use crate::ExecutionParameters;
 
 pub mod ed25519_raw;
 pub mod eip712;
 pub mod passkey;
-pub mod payload;
+mod payload;
+pub use payload::*;
 pub mod with_raw_string;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]

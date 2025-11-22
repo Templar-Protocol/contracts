@@ -329,7 +329,7 @@ mod tests {
     use p256::elliptic_curve::rand_core::OsRng;
     use solana_sdk::{signature::Keypair, signer::Signer};
     use templar_universal_account::authentication::{
-        ed25519_raw::{self, Ed25519RawKey},
+        ed25519_raw::{self, VerifyKey},
         HashForSigning, Payload,
     };
 
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn encoding_ed25519_raw() {
         let keypair = Keypair::new();
-        let pubkey = Ed25519RawKey(keypair.pubkey().to_bytes().into());
+        let pubkey = VerifyKey(keypair.pubkey().to_bytes().into());
 
         let message = {
             let m = ed25519_raw::Message::from_parsed(Payload {

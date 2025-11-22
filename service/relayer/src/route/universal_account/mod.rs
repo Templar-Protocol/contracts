@@ -13,7 +13,7 @@ use near_sdk::{
 };
 use sha2::{Digest, Sha256};
 use templar_universal_account::{
-    authentication::{ed25519_raw::Ed25519RawKey, passkey::Passkey},
+    authentication::{ed25519_raw::VerifyKey, passkey::Passkey},
     KeyId,
 };
 
@@ -65,7 +65,7 @@ pub async fn index(State(app): State<App>) -> impl IntoResponse {
 #[serde(crate = "near_sdk::serde", tag = "type")]
 pub enum KeyQuery {
     Passkey { key: Passkey },
-    Ed25519Raw { key: Ed25519RawKey },
+    Ed25519Raw { key: VerifyKey },
 }
 
 impl From<KeyQuery> for KeyId {
@@ -101,7 +101,7 @@ mod tests {
         "549bca2d5a64",
     )]
     #[case(
-        Ed25519RawKey("ed25519:DWYRtzDDtbX63hcXziJEXgXZamSPQT61YPFGM1oFTqVp".parse().unwrap()).into(),
+        VerifyKey("ed25519:DWYRtzDDtbX63hcXziJEXgXZamSPQT61YPFGM1oFTqVp".parse().unwrap()).into(),
         "e2cac2be8cef",
     )]
     #[test]

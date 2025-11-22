@@ -8,9 +8,9 @@ use super::{ExecutionContextProvider, HashForSigning, Key, Payload};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
-pub struct Ed25519RawKey(pub encoding::ed25519::PublicKey);
+pub struct VerifyKey(pub encoding::ed25519::PublicKey);
 
-impl std::fmt::Display for Ed25519RawKey {
+impl std::fmt::Display for VerifyKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -62,7 +62,7 @@ pub struct MessageWithSignature<T> {
 #[derive(Debug)]
 pub struct MessageWithValidSignature<T>(MessageWithSignature<T>);
 
-impl<T> Key<MessageWithSignature<T>> for Ed25519RawKey {
+impl<T> Key<MessageWithSignature<T>> for VerifyKey {
     type Verified = MessageWithValidSignature<T>;
 
     fn verify_signature(
@@ -148,7 +148,7 @@ mod tests {
             signature: sol_sig.into(),
         };
 
-        let key = Ed25519RawKey((*keypair.pubkey().as_array()).into());
+        let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
         key.verify_signature(message).unwrap();
     }
@@ -170,7 +170,7 @@ mod tests {
 
         let sol_sig = keypair.sign_message(&message.preimage_for_signing());
 
-        let key = Ed25519RawKey((*keypair.pubkey().as_array()).into());
+        let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
         key.verify_signature(MessageWithSignature {
             message: Message(WithRawString::from_parsed(Payload {

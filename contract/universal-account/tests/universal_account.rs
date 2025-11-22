@@ -10,7 +10,7 @@ use p256::{ecdsa::signature::Signer, elliptic_curve::rand_core::OsRng};
 use rstest::rstest;
 use templar_universal_account::{
     authentication::{
-        ed25519_raw::{self, Ed25519RawKey},
+        ed25519_raw,
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
@@ -57,9 +57,9 @@ impl TestSigner {
     fn id(&self) -> KeyId {
         match self {
             Self::Passkey(key) => KeyId::Passkey(Passkey(key.public_key().into())),
-            Self::Ed25519Raw(key) => {
-                KeyId::Ed25519RawKey(Ed25519RawKey(key.verifying_key().to_bytes().into()))
-            }
+            Self::Ed25519Raw(key) => KeyId::Ed25519RawKey(ed25519_raw::VerifyKey(
+                key.verifying_key().to_bytes().into(),
+            )),
         }
     }
 
@@ -101,7 +101,7 @@ impl TestSigner {
                 let message = ed25519_raw::MessageWithSignature { message, signature };
 
                 ExecuteArgs::Ed25519Raw {
-                    key: Ed25519RawKey(signing_key.verifying_key().to_bytes().into()),
+                    key: ed25519_raw::VerifyKey(signing_key.verifying_key().to_bytes().into()),
                     message: Box::new(message),
                 }
             }
