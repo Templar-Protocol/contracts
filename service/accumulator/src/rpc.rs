@@ -387,3 +387,169 @@ pub async fn list_all_deployments(
 
     Ok(all_markets)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine;
+    use near_jsonrpc_primitives::types::query::RpcQueryResponse;
+    use near_primitives::types::AccountId;
+    use near_sdk::serde_json::{json, Value as JsonValue};
+    use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, Request, ResponseTemplate,
+    };
+
+    fn rpc_success_response(payload: &JsonValue, id: &JsonValue) -> JsonValue {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": payload,
+        })
+    }
+
+    fn call_result_response(result_bytes: Vec<u8>) -> RpcQueryResponse {
+        RpcQueryResponse {
+            kind: QueryResponseKind::CallResult(near_primitives::views::CallResult {
+                result: result_bytes,
+                logs: Vec::new(),
+            }),
+            block_height: 1,
+            block_hash: near_primitives::hash::CryptoHash::default(),
+        }
+    }
+
+    fn decode_args(params: &JsonValue) -> JsonValue {
+        let args_base64 = params
+            .get("args_base64")
+            .and_then(JsonValue::as_str)
+            .expect("args_base64 present");
+        let decoded = BASE64_STANDARD
+            .decode(args_base64)
+            .expect("args_base64 to decode");
+
+        near_sdk::serde_json::from_slice(&decoded).expect("decoded args to be valid json")
+    }
+
+    fn parse_query_request(request: &Request) -> (JsonValue, JsonValue) {
+        let body: JsonValue =
+            near_sdk::serde_json::from_slice(&request.body).expect("request body to be valid json");
+        let params = body
+            .get("params")
+            .cloned()
+            .expect("query params to exist in request");
+        let id = body.get("id").cloned().unwrap_or_else(|| json!("1"));
+
+        (params, id)
+    }
+
+    #[tokio::test]
+    async fn list_deployments_paginates_until_short_page() {
+        let server = MockServer::start().await;
+        let client = JsonRpcClient::connect(server.uri());
+        let call_counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&call_counter);
+
+        let first_page: Vec<AccountId> = (0..500)
+            .map(|idx| format!("market-{idx}.testnet").parse().unwrap())
+            .collect();
+        let second_page: Vec<AccountId> = vec!["market-500.testnet".parse().unwrap()];
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("method_name").and_then(JsonValue::as_str),
+                    Some("list_deployments")
+                );
+
+                let offset = decode_args(&params)
+                    .get("offset")
+                    .and_then(JsonValue::as_u64)
+                    .expect("offset present");
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                let page = if offset == 0 {
+                    &first_page
+                } else {
+                    &second_page
+                };
+
+                let payload = call_result_response(near_sdk::serde_json::to_vec(page).unwrap());
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let deployments =
+            list_deployments(&client, "registry.testnet".parse().unwrap(), None, None)
+                .await
+                .unwrap();
+
+        assert_eq!(deployments.len(), 501);
+        assert_eq!(call_counter.load(Ordering::SeqCst), 2);
+        assert_eq!(deployments.first().unwrap().as_str(), "market-0.testnet");
+        assert_eq!(deployments.last().unwrap().as_str(), "market-500.testnet");
+    }
+
+    #[tokio::test]
+    async fn list_all_deployments_merges_registries() {
+        let server = MockServer::start().await;
+        let client = JsonRpcClient::connect(server.uri());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("method_name").and_then(JsonValue::as_str),
+                    Some("list_deployments")
+                );
+                calls_clone.fetch_add(1, Ordering::SeqCst);
+
+                let registry_id = params
+                    .get("account_id")
+                    .and_then(JsonValue::as_str)
+                    .expect("registry id");
+                let markets: Vec<AccountId> = match registry_id {
+                    "registry-a.testnet" => vec!["ma.testnet".parse().unwrap()],
+                    "registry-b.testnet" => vec![
+                        "mb1.testnet".parse().unwrap(),
+                        "mb2.testnet".parse().unwrap(),
+                    ],
+                    other => panic!("unexpected registry {other}"),
+                };
+                let payload = call_result_response(near_sdk::serde_json::to_vec(&markets).unwrap());
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let deployments = list_all_deployments(
+            client,
+            vec![
+                "registry-a.testnet".parse().unwrap(),
+                "registry-b.testnet".parse().unwrap(),
+            ],
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            deployments,
+            vec![
+                AccountId::from_str("ma.testnet").unwrap(),
+                AccountId::from_str("mb1.testnet").unwrap(),
+                AccountId::from_str("mb2.testnet").unwrap()
+            ]
+        );
+    }
+}
