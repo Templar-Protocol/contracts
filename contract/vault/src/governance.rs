@@ -40,6 +40,7 @@ impl Abdicator {
             templar_common::panic_with_message(&format!("abdicated {method_name}"));
         }
 #[near(serializers = [borsh])]
+#[derive(Default)]
 pub struct Gate {
     /// Internal flag to bypass transfer gates for trusted internal flows
     /// (e.g. escrow/redemption settlement).
@@ -49,15 +50,6 @@ pub struct Gate {
 }
 
 // FIXME: update list
-
-impl Default for Gate {
-    fn default() -> Self {
-        Self {
-            restrictions: None,
-            bypass_share_transfer_gates: false,
-        }
-    }
-}
 
 impl Gate {
     pub fn new(restrictions: Option<Restrictions>) -> Self {
@@ -71,8 +63,7 @@ impl Gate {
         if let Some(restrictions) = &self.restrictions {
             if let Some(reason) = restrictions.is_restricted(account) {
                 templar_common::panic_with_message(&format!(
-                    "Account {} is restricted: {:?}",
-                    account, reason
+                    "Account {account} is restricted: {reason:?}"
                 ));
             }
         }
@@ -100,12 +91,12 @@ impl Gate {
     pub fn bypass_transfer_with(
         c: &mut Contract,
         t: &Nep141Transfer,
-        on_err: impl FnOnce(TransferError) -> (),
+        on_err: impl FnOnce(TransferError),
     ) {
         // Escrow shares into the vault; bypass transfer gates for this internal flow.
         c.gate.bypass_share_transfer_gates = true;
         // FIXME: transfer_unchecked?? with event
-        c.transfer(&t).unwrap_or_else(on_err);
+        c.transfer(t).unwrap_or_else(on_err);
         c.gate.bypass_share_transfer_gates = false;
     }
 
@@ -131,7 +122,7 @@ impl near_sdk_contract_tools::hook::Hook<Self, Nep141Transfer<'_>> for Contract 
         // Gate all NEP-141 share transfers.
         contract
             .gate
-            .enforce_share_transfer_gates(&contract.markets, &transfer);
+            .enforce_share_transfer_gates(&contract.markets, transfer);
         f(contract)
     }
 }
@@ -566,7 +557,7 @@ impl Contract {
     /// Sets the restrictions for the vault.
     pub fn set_restrictions(&mut self, restrictions: Option<Restrictions>) {
         Self::assert_guardian_or_owner();
-        env::log_str(&format!("Restrictions set to {:?}", restrictions));
+        env::log_str(&format!("Restrictions set to {restrictions:?}"));
         self.gate.restrictions = restrictions;
     }
 
