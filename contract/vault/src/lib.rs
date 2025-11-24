@@ -553,7 +553,10 @@ impl Contract {
         U128(self.total_supply())
     }
 
-    /// Returns the maximum additional amount that can be deposited across all markets given current caps.
+    /// Returns a best-effort estimate of the maximum additional amount that can be deposited
+    /// across all markets given current caps and the current `supply_queue`.
+    ///
+    /// This does not reserve capacity and may become stale immediately after it is read.
     pub fn get_max_deposit(&self) -> U128 {
         let total = self
             .supply_queue
@@ -563,6 +566,25 @@ impl Contract {
                 _ => acc,
             });
         U128(total)
+    }
+
+    /// Returns a best-effort estimate of the maximum additional amount that can be deposited
+    /// into any single market in the current `supply_queue`, given current caps.
+    ///
+    /// This is intended for UIs that want to route deposits in a way that is consistent with
+    /// the vault's `supply_queue`. It does not reserve capacity and may become stale
+    /// immediately after it is read.
+    pub fn get_max_single_market_deposit(&self) -> U128 {
+        let max_room = self
+            .supply_queue
+            .iter()
+            .fold(0u128, |acc, m| match self.markets.get(m) {
+                Some(rec) if rec.cfg.cap.0 > 0 => {
+                    acc.max(rec.cfg.cap.0.saturating_sub(rec.principal))
+                }
+                _ => acc,
+            });
+        U128(max_room)
     }
 
     /// Converts an amount of underlying assets to shares, flooring the result.
