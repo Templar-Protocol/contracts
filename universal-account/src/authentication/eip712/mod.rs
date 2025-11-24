@@ -3,7 +3,7 @@ use near_sdk::{near, serde, serde_json};
 
 use crate::{authentication::SolPayload, encoding};
 
-use super::{Key, MessageWithSignature, Payload, SignableMessage};
+use super::{CheckSignatureError, Key, MessageWithSignature, Payload, SignableMessage};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
@@ -32,20 +32,25 @@ pub struct SignatureAndDomain {
 }
 
 impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
-    fn has_valid_signature(&self, mws: &super::MessageWithSignature<Message<T>>) -> bool {
-        let Ok(prehash) = mws.message.eip712_prehash(&mws.signature.domain) else {
-            return false;
-        };
-        let Ok(recovered_address) = mws
+    fn check_signature(
+        &self,
+        mws: &super::MessageWithSignature<Message<T>>,
+    ) -> Result<(), CheckSignatureError> {
+        let prehash = mws
+            .message
+            .eip712_prehash(&mws.signature.domain)
+            .map_err(CheckSignatureError::other)?;
+
+        let recovered_address = mws
             .signature
             .signature
             .0
             .recover_address_from_prehash(&prehash)
-        else {
-            return false;
-        };
+            .map_err(CheckSignatureError::other)?;
 
-        recovered_address == self.0 .0
+        (recovered_address == self.0 .0)
+            .then_some(())
+            .ok_or(CheckSignatureError::InvalidSignature)
     }
 }
 
@@ -156,7 +161,7 @@ mod tests {
 
         let verify_key = VerifyKey(signer.address().into());
 
-        mws.verify_signature(&verify_key).unwrap();
+        verify_key.verify_signature(mws).unwrap();
     }
 
     #[test]
@@ -170,7 +175,7 @@ mod tests {
 
         let verify_key = VerifyKey(signer2().address().into());
 
-        mws.verify_signature(&verify_key).unwrap();
+        verify_key.verify_signature(mws).unwrap();
     }
 
     #[test]
@@ -186,7 +191,7 @@ mod tests {
 
         mws.message.0.payload[0].receiver_id = "different".parse().unwrap();
 
-        mws.verify_signature(&verify_key).unwrap();
+        verify_key.verify_signature(mws).unwrap();
     }
 
     #[test]
@@ -202,6 +207,6 @@ mod tests {
 
         mws.signature.domain.name = Some("different".into());
 
-        mws.verify_signature(&verify_key).unwrap();
+        verify_key.verify_signature(mws).unwrap();
     }
 }

@@ -4,7 +4,7 @@ use alloy::sol;
 use authentication::{
     ed25519_raw, eip712,
     passkey::{self, Passkey},
-    ExecutionContextProvider, ExecutionError, InvalidSignatureError, MessageWithSignature,
+    CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
 };
 use near_sdk::{json_types::U64, near, serde::de::DeserializeOwned, AccountIdRef};
 
@@ -120,7 +120,7 @@ pub enum ExecuteArgs<T> {
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VerificationError {
     #[error(transparent)]
-    Signature(#[from] InvalidSignatureError),
+    Signature(#[from] CheckSignatureError),
     #[error(transparent)]
     Execution(#[from] ExecutionError),
 }
@@ -151,11 +151,11 @@ impl<T> ExecuteArgs<T> {
         allowed_origin: impl FnOnce(Option<&str>) -> bool,
     ) -> Result<T, VerificationError> {
         Ok(match self {
-            ExecuteArgs::Passkey { key, message } => message
-                .verify_signature(&key)?
+            ExecuteArgs::Passkey { key, message } => key
+                .verify_signature(*message)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
-            ExecuteArgs::Ed25519Raw { key, message } => message
-                .verify_signature(&key)?
+            ExecuteArgs::Ed25519Raw { key, message } => key
+                .verify_signature(*message)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
         })
     }

@@ -24,27 +24,38 @@ pub struct MessageWithSignature<M: SignableMessage> {
     pub signature: M::Signature,
 }
 
-impl<M: SignableMessage> MessageWithSignature<M> {
-    pub fn verify_signature(
-        self,
-        key: &M::Key,
-    ) -> Result<MessageWithValidSignature<M>, InvalidSignatureError> {
-        if key.has_valid_signature(&self) {
-            Ok(MessageWithValidSignature(self))
-        } else {
-            Err(InvalidSignatureError)
-        }
-    }
-}
-
 pub struct MessageWithValidSignature<M: SignableMessage>(MessageWithSignature<M>);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
-#[error("Invalid signature")]
-pub struct InvalidSignatureError;
+pub enum CheckSignatureError {
+    #[error("Invalid signature")]
+    InvalidSignature,
+    #[error("Signature verification error: {0}")]
+    Other(Box<str>),
+}
+
+impl CheckSignatureError {
+    pub fn other(e: impl std::error::Error) -> Self {
+        Self::Other(e.to_string().into())
+    }
+}
 
 pub trait Key<M: SignableMessage> {
-    fn has_valid_signature(&self, mws: &MessageWithSignature<M>) -> bool;
+    /// # Errors
+    ///
+    /// - If the signature is not valid.
+    fn check_signature(&self, mws: &MessageWithSignature<M>) -> Result<(), CheckSignatureError>;
+
+    /// # Errors
+    ///
+    /// - If [`Key::check_signature`] returns an error.
+    fn verify_signature(
+        &self,
+        mws: MessageWithSignature<M>,
+    ) -> Result<MessageWithValidSignature<M>, CheckSignatureError> {
+        self.check_signature(&mws)
+            .map(|()| MessageWithValidSignature(mws))
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]

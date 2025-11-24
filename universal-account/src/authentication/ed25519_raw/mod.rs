@@ -5,8 +5,8 @@ use crate::encoding;
 
 use super::with_raw_string::WithRawString;
 use super::{
-    ExecutionContextProvider, HashForSigning, Key, MessageWithSignature, MessageWithValidSignature,
-    Payload,
+    CheckSignatureError, ExecutionContextProvider, HashForSigning, Key, MessageWithSignature,
+    MessageWithValidSignature, Payload,
 };
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -60,8 +60,14 @@ impl<T> HashForSigning for Message<T> {
 }
 
 impl<T> Key<Message<T>> for VerifyKey {
-    fn has_valid_signature(&self, message: &super::MessageWithSignature<Message<T>>) -> bool {
-        (self.0).verify(&message.message.preimage_for_signing(), &message.signature)
+    fn check_signature(
+        &self,
+        message: &super::MessageWithSignature<Message<T>>,
+    ) -> Result<(), CheckSignatureError> {
+        (self.0)
+            .verify(&message.message.preimage_for_signing(), &message.signature)
+            .then_some(())
+            .ok_or(CheckSignatureError::InvalidSignature)
     }
 }
 
@@ -138,7 +144,7 @@ mod tests {
 
         let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
-        message.verify_signature(&key).unwrap();
+        key.verify_signature(message).unwrap();
     }
 
     #[rstest]
@@ -173,6 +179,6 @@ mod tests {
             signature: sol_sig.into(),
         };
 
-        mws.verify_signature(&key).unwrap();
+        key.verify_signature(mws).unwrap();
     }
 }

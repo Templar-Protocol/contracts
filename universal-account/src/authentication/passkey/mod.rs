@@ -5,8 +5,8 @@ use p256::ecdsa::{SigningKey, VerifyingKey};
 
 use super::with_raw_string::WithRawString;
 use super::{
-    ExecutionContextProvider, HashForSigning, Key, MessageWithSignature, MessageWithValidSignature,
-    Payload,
+    CheckSignatureError, ExecutionContextProvider, HashForSigning, Key, MessageWithSignature,
+    MessageWithValidSignature, Payload,
 };
 
 use data::{AuthenticatorData, ClientDataJson};
@@ -37,11 +37,16 @@ impl std::fmt::Display for Passkey {
 }
 
 impl<T> Key<Message<T>> for Passkey {
-    fn has_valid_signature(&self, mws: &super::MessageWithSignature<Message<T>>) -> bool {
+    fn check_signature(
+        &self,
+        mws: &super::MessageWithSignature<Message<T>>,
+    ) -> Result<(), CheckSignatureError> {
         if mws.message.hash_for_signing()
             != mws.signature.client_data_json.parsed.challenge.as_slice()
         {
-            return false;
+            return Err(CheckSignatureError::Other(
+                "Computed hash does not match clientDataJson.challenge".into(),
+            ));
         }
 
         let payload_prehash = sig_base(
@@ -49,9 +54,14 @@ impl<T> Key<Message<T>> for Passkey {
             &mws.signature.client_data_json,
         );
 
-        VerifyingKey::from(*self.0)
+        if VerifyingKey::from(*self.0)
             .verify(&payload_prehash, &*mws.signature.signature)
             .is_ok()
+        {
+            Ok(())
+        } else {
+            Err(CheckSignatureError::InvalidSignature)
+        }
     }
 }
 
@@ -172,7 +182,7 @@ mod tests {
         let mws = message.sign(&signer, authenticator_data(), client_data_json(challenge));
 
         let verify_key = Passkey(signer.public_key().into());
-        mws.verify_signature(&verify_key).unwrap();
+        verify_key.verify_signature(mws).unwrap();
     }
 
     #[test]
@@ -186,6 +196,6 @@ mod tests {
         let mws = message.sign(&signer, authenticator_data(), client_data_json(challenge));
 
         let verify_key = Passkey(signer.public_key().into());
-        mws.verify_signature(&verify_key).unwrap();
+        verify_key.verify_signature(mws).unwrap();
     }
 }
