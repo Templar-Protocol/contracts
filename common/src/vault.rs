@@ -121,7 +121,7 @@ impl Restrictions {
                 }
             }
             Restrictions::WhiteList(whitelist) => {
-                if whitelist.contains(account_id) {
+                if whitelist.contains(account_id) || account_id == env::current_account_id() {
                     None
                 } else {
                     Some(Restrictions::WhiteList(whitelist.clone()))
