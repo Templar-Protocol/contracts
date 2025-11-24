@@ -49,7 +49,7 @@ impl From<ed25519_raw::VerifyKey> for KeyId {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionParameters {
@@ -64,6 +64,7 @@ pub struct ExecutionParameters {
 }
 
 sol! {
+    #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord)]
     struct SolExecutionParameters {
         uint64 block_height;
         uint64 index;
@@ -169,15 +170,13 @@ mod tests {
             self,
             data::{AuthenticatorData, ClientDataJson},
         },
-        HashForSigning,
+        HashForSigning, Payload,
     };
     use near_sdk::{bs58, AccountId, NearToken};
     use p256::elliptic_curve::rand_core::OsRng;
     use rstest::rstest;
     use solana_sdk::{signature::Keypair, signer::Signer};
     use transaction::Transaction;
-
-    use crate::authentication::payload::Payload;
 
     use super::*;
 

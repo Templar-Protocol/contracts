@@ -1,10 +1,47 @@
-use near_sdk::near;
+use std::marker::PhantomData;
+
+use alloy::{dyn_abi::SolType, sol_types::SolValue};
+use near_sdk::{
+    near,
+    serde::{self, de::DeserializeOwned, ser, Deserialize, Serialize},
+    serde_json,
+};
 
 use crate::encoding;
+
+use super::{Payload, SolPayload};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 pub struct VerifyKey(pub encoding::ethereum::Address);
+
+impl std::fmt::Display for VerifyKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Message<T>(pub Payload<T>);
+
+impl<T: Serialize> Serialize for Message<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: near_sdk::serde::Serializer,
+    {
+        let sol_payload: SolPayload = SolPayload::try_from(&self.0).map_err(ser::Error::custom)?;
+        serde::Serialize::serialize(&sol_payload.abi_encode_packed(), serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Message<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        todo!()
+    }
+}
 
 #[cfg(test)]
 mod tests {
