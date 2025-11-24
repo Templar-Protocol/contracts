@@ -1241,6 +1241,37 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
 }
 
 #[test]
+#[should_panic = "abdicated set_is_allocator"]
+fn governance_abdicate_set_is_allocator_blocks_further_changes() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.set_is_allocator(accounts(7), true);
+
+    c.abdicate("set_is_allocator".to_string());
+
+    c.set_is_allocator(accounts(7), false);
+}
+
+#[test]
+#[should_panic = "abdicated submit_cap"]
+fn governance_abdicate_submit_cap_blocks_cap_changes() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.abdicate("submit_cap".to_string());
+
+    let market = mk(9200);
+    c.submit_cap(market, U128(1));
+}
+
+#[test]
 #[should_panic = "Timelock not elapsed yet"]
 fn governance_accept_guardian_not_yet_panics() {
     let vault_id = accounts(0);
