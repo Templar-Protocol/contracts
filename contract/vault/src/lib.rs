@@ -271,6 +271,10 @@ impl Contract {
         let assets = self.convert_to_assets(U128(shares)).0;
         let sender = env::predecessor_account_id();
 
+        // Gate withdraw entrypoint: who is sending and who will receive assets.
+        self.gate.enforce_policy(&sender);
+        self.gate.enforce_policy(&receiver);
+
         require!(shares > 0, "Invalid shares");
         require!(assets > 0, "Dust redeem would yield 0 assets");
 

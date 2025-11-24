@@ -53,6 +53,9 @@ impl FungibleTokenReceiver for Contract {
         match msg {
             DepositMsg::Supply => {
                 require_at_least(SUPPLY_GAS);
+
+                self.gate.enforce_policy(&sender_id);
+
                 let refund = self.execute_supply(sender_id, asset_id, amount.into());
                 PromiseOrValue::Value(refund.into())
             }
@@ -75,12 +78,15 @@ impl Nep245Receiver for Contract {
     ) -> PromiseOrValue<Vec<U128>> {
         let msg = parse_deposit_msg(&msg);
 
-        let (depositor, token_id, amount) =
+        let (sender_id, token_id, amount) =
             validate_single_mt_input(&previous_owner_ids, &token_ids, &amounts);
 
         match msg {
             DepositMsg::Supply => {
                 require_at_least(SUPPLY_GAS);
+
+                self.gate.enforce_policy(&sender_id);
+
                 let token_contract = env::predecessor_account_id();
 
                 require!(
@@ -88,7 +94,7 @@ impl Nep245Receiver for Contract {
                     "Invalid token ID"
                 );
 
-                let refund = self.execute_supply(depositor.clone(), token_contract, amount.into());
+                let refund = self.execute_supply(sender_id.clone(), token_contract, amount.into());
 
                 PromiseOrValue::Value(vec![U128(refund)])
             }
