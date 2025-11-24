@@ -2770,3 +2770,247 @@ fn execute_withdrawal_only_dust_drains_queue() {
     );
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
 }
+
+#[test]
+fn sentinel_can_reallocate_withdraw_but_not_supply() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let sentinel = accounts(9);
+
+    // Owner grants Sentinel role
+    setup_env(&vault_id, &owner, vec![]);
+    c.set_is_sentinel(sentinel.clone(), true);
+
+    // Prepare a market with principal and cap so both variants validate
+    let market = mk(9301);
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration {
+                cap: U128(100),
+                enabled: true,
+                removable_at: 0,
+            },
+            pending_cap: None,
+            principal: 10,
+        },
+    );
+    c.supply_queue.insert(market.clone());
+
+    // Switch context to Sentinel
+    set_ctx(&vault_id, &sentinel, None, None);
+
+    // Sentinel is allowed to trigger a withdraw-side reallocation
+    let res = c.reallocate(AllocationDelta::Withdraw(Delta::new(market.clone(), 5)));
+    match res {
+        PromiseOrValue::Promise(_) => {}
+        _ => panic!("Expected Promise from withdraw-side reallocate"),
+    }
+
+    // Sentinel must NOT be able to trigger a supply-side reallocation
+    // (Allocator/Curator/Owner only). Expect panic from auth guard.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = c.reallocate(AllocationDelta::Supply(Delta::new(market.clone(), 5)));
+    }))
+    .expect_err("Sentinel should not be allowed to call supply-side reallocate");
+}
+
+#[test]
+fn sentinel_can_cancel_in_flight_withdrawal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let sentinel = accounts(10);
+
+    // Owner grants Sentinel role
+    setup_env(&vault_id, &owner, vec![]);
+    c.set_is_sentinel(sentinel.clone(), true);
+
+    // Seed escrowed shares into the vault's own account
+    let escrow: u128 = 10;
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    // Enqueue a pending withdrawal at the head
+    let id_before = c.queue_tail();
+    let receiver = mk(9);
+    c.pending_withdrawals.insert(
+        id_before,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    // Simulate an in-flight withdrawing state
+    c.withdraw_route = vec![mk(1002)];
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 7,
+        index: 0,
+        remaining: 1,
+        receiver,
+        collected: 0,
+        owner: owner.clone(),
+        escrow_shares: escrow,
+    });
+
+    let supply_before = c.total_supply();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+    let len_before = c.pending_withdrawals.len();
+
+    // Switch context to Sentinel and cancel
+    set_ctx(&vault_id, &sentinel, None, None);
+    let res = c.cancel_in_flight_withdrawal();
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from cancel_in_flight_withdrawal"),
+    }
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert!(c.withdraw_route.is_empty());
+    assert_eq!(c.total_supply(), supply_before);
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before.saturating_sub(escrow),
+        "vault should refund escrow to owner"
+    );
+    assert_eq!(
+        c.balance_of(&owner),
+        owner_before.saturating_add(escrow),
+        "owner should receive escrow refund"
+    );
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        len_before.saturating_sub(1),
+        "queue should dequeue the in-flight request"
+    );
+    assert_eq!(
+        c.next_withdraw_to_execute,
+        id_before.saturating_add(1),
+        "head should advance by one"
+    );
+}
+
+#[test]
+fn sentinel_can_cancel_broken_payout() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let sentinel = accounts(11);
+
+    // Owner grants Sentinel role
+    setup_env(&vault_id, &owner, vec![]);
+    c.set_is_sentinel(sentinel.clone(), true);
+
+    // Seed escrowed shares into the vault's own account
+    let escrow: u128 = 10;
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    // Enqueue a pending withdrawal with escrow
+    let amount = 77;
+    c.pending_withdrawals.insert(
+        c.queue_tail(),
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: mk(9),
+            escrow_shares: escrow,
+            expected_assets: amount,
+            requested_at: 0,
+        },
+    );
+
+    // Enter Payout with non-zero escrow
+    c.op_state = OpState::Payout(PayoutState {
+        op_id: 123,
+        receiver: mk(9),
+        amount,
+        owner: owner.clone(),
+        escrow_shares: escrow,
+        burn_shares: escrow,
+    });
+
+    let supply_before = c.total_supply();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+    let idle_before = c.idle_balance;
+
+    // Switch context to Sentinel and cancel the payout
+    set_ctx(&vault_id, &sentinel, None, None);
+    let res = c.cancel_broken_payout();
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from cancel_broken_payout"),
+    }
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.total_supply(), supply_before, "No burn/mint on cancel");
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before.saturating_sub(escrow),
+        "Vault should transfer escrow back to owner"
+    );
+    assert_eq!(
+        c.balance_of(&owner),
+        owner_before.saturating_add(escrow),
+        "Owner should receive escrow refund"
+    );
+    assert_eq!(c.idle_balance, idle_before, "Idle balance unchanged");
+}
+
+#[test]
+fn sentinel_can_revoke_pending_timelock_and_cap() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let sentinel = accounts(12);
+
+    // Owner grants Sentinel role
+    setup_env(&vault_id, &owner, vec![]);
+    c.set_is_sentinel(sentinel.clone(), true);
+
+    // Create a pending timelock decrease:
+    // - First increase timelock (applies immediately)
+    // - Then submit a decrease back to the original value (becomes pending)
+    let cur = c.get_configuration().initial_timelock_ns;
+    c.submit_timelock((cur.0 + 1).into());
+    c.submit_timelock(cur);
+
+    assert!(
+        c.pending_timelock.is_some(),
+        "expected a pending timelock change"
+    );
+
+    // Create a pending cap raise for a new market
+    let market = mk(9302);
+    c.submit_cap(market.clone(), U128(5));
+    assert!(
+        c.markets
+            .get(&market)
+            .and_then(|m| m.pending_cap)
+            .is_some(),
+        "expected a pending cap change"
+    );
+
+    // Switch context to Sentinel and revoke both
+    set_ctx(&vault_id, &sentinel, None, None);
+    c.revoke_pending_timelock();
+    c.revoke_pending_cap(market.clone());
+
+    assert!(
+        c.pending_timelock.is_none(),
+        "Sentinel should be able to revoke pending timelock"
+    );
+    assert!(
+        c.markets
+            .get(&market)
+            .map(|m| m.pending_cap.is_none())
+            .unwrap_or(true),
+        "Sentinel should be able to revoke pending cap"
+    );
+}
