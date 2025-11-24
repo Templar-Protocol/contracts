@@ -50,6 +50,9 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
 }
 
 impl<T: serde::Serialize> Message<T> {
+    /// # Errors
+    ///
+    /// - If serialization of `T` to bytes fails.
     pub fn eip712_prehash(
         &self,
         domain: &Eip712Domain,
@@ -58,32 +61,38 @@ impl<T: serde::Serialize> Message<T> {
         Ok(sol_payload.eip712_signing_hash(domain))
     }
 
+    /// # Panics
+    ///
+    /// - Serialization errors
+    /// - Signing errors
     pub fn sign(
         self,
         key: &alloy::signers::local::PrivateKeySigner,
         domain: Eip712Domain,
-    ) -> Result<MessageWithSignature<Self>, serde_json::Error> {
-        let signature = key.sign_hash_sync(&self.eip712_prehash(&domain)?).unwrap();
-        Ok(MessageWithSignature {
+    ) -> MessageWithSignature<Self> {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "This function should not be used in a case where panicking is unsafe"
+        )]
+        let signature = key
+            .sign_hash_sync(&self.eip712_prehash(&domain).unwrap())
+            .unwrap();
+        MessageWithSignature {
             message: self,
             signature: SignatureAndDomain {
                 signature: signature.into(),
                 domain,
             },
-        })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy::{
-        primitives::U256,
-        signers::{local::PrivateKeySigner, Signer, SignerSync},
-        sol_types::SolStruct,
-    };
+    use alloy::{primitives::U256, signers::local::PrivateKeySigner};
 
     use crate::{
-        authentication::payload::{Payload, SolPayload},
+        authentication::payload::Payload,
         transaction::{Action, Transaction},
         ExecutionParameters,
     };
@@ -143,7 +152,7 @@ mod tests {
         let message = message();
         let domain = domain();
 
-        let mws = message.sign(&signer, domain.clone()).unwrap();
+        let mws = message.sign(&signer, domain.clone());
 
         let verify_key = VerifyKey(signer.address().into());
 
@@ -157,7 +166,7 @@ mod tests {
         let message = message();
         let domain = domain();
 
-        let mws = message.sign(&signer, domain.clone()).unwrap();
+        let mws = message.sign(&signer, domain.clone());
 
         let verify_key = VerifyKey(signer2().address().into());
 
@@ -171,7 +180,7 @@ mod tests {
         let message = message();
         let domain = domain();
 
-        let mut mws = message.sign(&signer, domain.clone()).unwrap();
+        let mut mws = message.sign(&signer, domain.clone());
 
         let verify_key = VerifyKey(signer.address().into());
 
@@ -187,7 +196,7 @@ mod tests {
         let message = message();
         let domain = domain();
 
-        let mut mws = message.sign(&signer, domain.clone()).unwrap();
+        let mut mws = message.sign(&signer, domain.clone());
 
         let verify_key = VerifyKey(signer.address().into());
 
