@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use crate::ExecutionParameters;
 
 pub mod ed25519_raw;
-// pub mod eip712;
+pub mod eip712;
 pub mod passkey;
 mod payload;
 pub use payload::*;

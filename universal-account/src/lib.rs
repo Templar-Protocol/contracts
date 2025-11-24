@@ -1,16 +1,16 @@
 use std::fmt::Display;
 
-use alloy::sol;
 use authentication::{
-    ed25519_raw, //eip712,
+    ed25519_raw, eip712,
     passkey::{self, Passkey},
-    CheckSignatureError,
-    ExecutionContextProvider,
-    ExecutionError,
-    Key,
-    MessageWithSignature,
+    CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
 };
-use near_sdk::{json_types::U64, near, serde::de::DeserializeOwned, AccountIdRef};
+use near_sdk::{
+    json_types::U64,
+    near,
+    serde::{self, de::DeserializeOwned},
+    AccountIdRef,
+};
 
 pub mod authentication;
 pub mod encoding;
@@ -29,7 +29,7 @@ pub struct InitArgs {
 pub enum KeyId {
     Passkey(Passkey),
     Ed25519RawKey(ed25519_raw::VerifyKey),
-    // Eip712(eip712::VerifyKey),
+    Eip712(eip712::VerifyKey),
 }
 
 impl Display for KeyId {
@@ -37,7 +37,7 @@ impl Display for KeyId {
         match self {
             Self::Passkey(passkey) => write!(f, "{}", passkey.0),
             Self::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
-            // Self::Eip712(key) => write!(f, "{}", key.0),
+            Self::Eip712(key) => write!(f, "{}", key.0),
         }
     }
 }
@@ -51,6 +51,12 @@ impl From<Passkey> for KeyId {
 impl From<ed25519_raw::VerifyKey> for KeyId {
     fn from(value: ed25519_raw::VerifyKey) -> Self {
         Self::Ed25519RawKey(value)
+    }
+}
+
+impl From<eip712::VerifyKey> for KeyId {
+    fn from(value: eip712::VerifyKey) -> Self {
+        Self::Eip712(value)
     }
 }
 
@@ -68,35 +74,6 @@ pub struct ExecutionParameters {
     pub nonce: U64,
 }
 
-sol! {
-    #[derive(Debug, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    struct SolExecutionParameters {
-        uint64 block_height;
-        uint64 index;
-        uint64 nonce;
-    }
-}
-
-impl From<SolExecutionParameters> for ExecutionParameters {
-    fn from(value: SolExecutionParameters) -> Self {
-        Self {
-            block_height: U64(value.block_height),
-            index: U64(value.index),
-            nonce: U64(value.nonce),
-        }
-    }
-}
-
-impl From<ExecutionParameters> for SolExecutionParameters {
-    fn from(value: ExecutionParameters) -> Self {
-        Self {
-            block_height: value.block_height.0,
-            index: value.index.0,
-            nonce: value.nonce.0,
-        }
-    }
-}
-
 impl ExecutionParameters {
     #[must_use]
     pub fn next(&self) -> Self {
@@ -110,7 +87,7 @@ impl ExecutionParameters {
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
 #[serde(bound = "T: DeserializeOwned")]
-pub enum ExecuteArgs<T> {
+pub enum ExecuteArgs<T: serde::Serialize> {
     Passkey {
         key: Passkey,
         message: Box<MessageWithSignature<passkey::Message<T>>>,
@@ -118,6 +95,10 @@ pub enum ExecuteArgs<T> {
     Ed25519Raw {
         key: ed25519_raw::VerifyKey,
         message: Box<MessageWithSignature<ed25519_raw::Message<T>>>,
+    },
+    Eip712 {
+        key: eip712::VerifyKey,
+        message: Box<MessageWithSignature<eip712::Message<T>>>,
     },
 }
 
@@ -129,11 +110,12 @@ pub enum VerificationError {
     Execution(#[from] ExecutionError),
 }
 
-impl<T> ExecuteArgs<T> {
+impl<T: serde::Serialize> ExecuteArgs<T> {
     pub fn key_id(&self) -> KeyId {
         match self {
             Self::Passkey { key, .. } => KeyId::Passkey(key.clone()),
             Self::Ed25519Raw { key, .. } => KeyId::Ed25519RawKey(key.clone()),
+            Self::Eip712 { key, .. } => KeyId::Eip712(key.clone()),
         }
     }
 
@@ -141,6 +123,7 @@ impl<T> ExecuteArgs<T> {
         match self {
             Self::Passkey { message, .. } => &message.message.0.parsed.payload,
             Self::Ed25519Raw { message, .. } => &message.message.0.parsed.payload,
+            Self::Eip712 { message, .. } => &message.message.0.parsed.payload,
         }
     }
 
@@ -159,6 +142,9 @@ impl<T> ExecuteArgs<T> {
                 .verify_signature(*message)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
             ExecuteArgs::Ed25519Raw { key, message } => key
+                .verify_signature(*message)?
+                .verify_execution(executor_account_id, parameters, allowed_origin)?,
+            ExecuteArgs::Eip712 { key, message } => key
                 .verify_signature(*message)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
         })

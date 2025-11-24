@@ -1,14 +1,18 @@
-use alloy::{dyn_abi::Eip712Domain, signers::SignerSync, sol_types::SolStruct};
+use alloy::signers::SignerSync;
+use alloy::sol_types::{Eip712Domain, SolStruct};
 use near_sdk::{
     near,
-    serde::{self, Deserialize, Serialize},
+    serde::{self, de::DeserializeOwned, Deserialize, Serialize},
     serde_json,
 };
 use schemars::JsonSchema;
 
-use crate::{authentication::SolPayload, encoding};
-
-use super::{CheckSignatureError, Key, MessageWithSignature, Payload, SignableMessage};
+use super::SolBytes;
+use super::{
+    with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
+    MessageWithSignature, MessageWithValidSignature, Payload, SignableMessage,
+};
+use crate::encoding;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
@@ -22,7 +26,17 @@ impl std::fmt::Display for VerifyKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
-pub struct Message<T>(pub Payload<T>);
+#[serde(bound = "T: DeserializeOwned")]
+pub struct Message<T>(pub WithRawString<Payload<T>>);
+
+impl<T> Message<T> {
+    pub fn from_parsed(payload: Payload<T>) -> Self
+    where
+        T: Serialize,
+    {
+        Self(WithRawString::from_parsed(payload))
+    }
+}
 
 impl<T: serde::Serialize> SignableMessage for Message<T> {
     type Key = VerifyKey;
@@ -67,7 +81,9 @@ impl<T: serde::Serialize> Message<T> {
         &self,
         domain: &Eip712Domain,
     ) -> Result<alloy::primitives::FixedBytes<32>, serde_json::Error> {
-        let sol_payload: SolPayload = (&self.0).try_into()?;
+        let sol_payload = SolBytes {
+            inner: self.0.raw.clone().into_bytes().into(),
+        };
         Ok(sol_payload.eip712_signing_hash(domain))
     }
 
@@ -97,6 +113,18 @@ impl<T: serde::Serialize> Message<T> {
     }
 }
 
+impl<T: serde::Serialize> ExecutionContextProvider for MessageWithValidSignature<Message<T>> {
+    type Payload = T;
+
+    fn payload(self) -> Payload<Self::Payload> {
+        self.0.message.0.parsed
+    }
+
+    fn origin(&self) -> Option<&str> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy::{primitives::U256, signers::local::PrivateKeySigner};
@@ -111,7 +139,7 @@ mod tests {
 
     #[test]
     fn serialization() {
-        let m = Message(Payload {
+        let m = Message::from_parsed(Payload {
             parameters: ExecutionParameters::default(),
             account_id: "account_id".parse().unwrap(),
             payload: "hello, world".to_string(),
@@ -135,7 +163,7 @@ mod tests {
     }
 
     fn message() -> Message<Box<[Transaction]>> {
-        Message(Payload {
+        Message::from_parsed(Payload {
             parameters: ExecutionParameters::default(),
             account_id: "account_id".parse().unwrap(),
             payload: vec![Transaction {
@@ -194,7 +222,7 @@ mod tests {
 
         let verify_key = VerifyKey(signer.address().into());
 
-        mws.message.0.payload[0].receiver_id = "different".parse().unwrap();
+        mws.message.0.parsed.payload[0].receiver_id = "different".parse().unwrap();
 
         verify_key.verify_signature(mws).unwrap();
     }

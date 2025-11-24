@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use alloy::signers::{Signer as _, SignerSync};
 use near_sdk::{
     json_types::{U128, U64},
     serde_json::{self, json},
@@ -10,7 +11,7 @@ use p256::{ecdsa::signature::Signer, elliptic_curve::rand_core::OsRng};
 use rstest::rstest;
 use templar_universal_account::{
     authentication::{
-        ed25519_raw,
+        ed25519_raw, eip712,
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
@@ -19,6 +20,7 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         HashForSigning, MessageWithSignature, Payload,
     },
+    encoding,
     transaction::{FunctionCallAction, Transaction},
     ExecuteArgs, ExecutionParameters, KeyId,
 };
@@ -43,6 +45,7 @@ fn mint(amount: u128) -> FunctionCallAction {
 enum TestSigner {
     Passkey(p256::SecretKey),
     Ed25519Raw(ed25519_dalek::SigningKey),
+    Eip712(alloy::signers::local::PrivateKeySigner),
 }
 
 impl TestSigner {
@@ -54,12 +57,17 @@ impl TestSigner {
         Self::Ed25519Raw(ed25519_dalek::SigningKey::generate(&mut OsRng))
     }
 
+    fn random_eip712() -> Self {
+        Self::Eip712(alloy::signers::local::PrivateKeySigner::random())
+    }
+
     fn id(&self) -> KeyId {
         match self {
             Self::Passkey(key) => KeyId::Passkey(Passkey(key.public_key().into())),
             Self::Ed25519Raw(key) => KeyId::Ed25519RawKey(ed25519_raw::VerifyKey(
                 key.verifying_key().to_bytes().into(),
             )),
+            Self::Eip712(key) => KeyId::Eip712(eip712::VerifyKey(key.address().into())),
         }
     }
 
@@ -100,6 +108,23 @@ impl TestSigner {
                 ExecuteArgs::Ed25519Raw {
                     key: ed25519_raw::VerifyKey(signing_key.verifying_key().to_bytes().into()),
                     message: Box::new(message),
+                }
+            }
+            TestSigner::Eip712(key) => {
+                let message = eip712::Message(payload);
+                let mws = message.sign(
+                    key,
+                    alloy::sol_types::Eip712Domain {
+                        name: None,
+                        version: None,
+                        chain_id: None,
+                        verifying_contract: None,
+                        salt: None,
+                    },
+                );
+                ExecuteArgs::Eip712 {
+                    key: eip712::VerifyKey(key.address().into()),
+                    message: Box::new(mws),
                 }
             }
         }
@@ -148,7 +173,12 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner) -> Setup {
 #[tokio::test]
 pub async fn universal_account(
     #[future(awt)] worker: Worker<Sandbox>,
-    #[values(TestSigner::random_passkey(), TestSigner::random_ed25519_raw())] sk: TestSigner,
+    #[values(
+        TestSigner::random_passkey(),
+        TestSigner::random_ed25519_raw(),
+        TestSigner::random_eip712()
+    )]
+    sk: TestSigner,
 ) {
     let Setup {
         uac,
@@ -239,7 +269,12 @@ pub async fn universal_account(
 #[should_panic = "Nonce mismatch"]
 async fn skip_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
-    #[values(TestSigner::random_passkey(), TestSigner::random_ed25519_raw())] sk: TestSigner,
+    #[values(
+        TestSigner::random_passkey(),
+        TestSigner::random_ed25519_raw(),
+        TestSigner::random_eip712()
+    )]
+    sk: TestSigner,
 ) {
     let Setup {
         uac,
@@ -303,7 +338,12 @@ async fn skip_nonce(
 #[should_panic = "Nonce mismatch"]
 async fn reuse_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
-    #[values(TestSigner::random_passkey(), TestSigner::random_ed25519_raw())] sk: TestSigner,
+    #[values(
+        TestSigner::random_passkey(),
+        TestSigner::random_ed25519_raw(),
+        TestSigner::random_eip712()
+    )]
+    sk: TestSigner,
 ) {
     let Setup {
         uac,
