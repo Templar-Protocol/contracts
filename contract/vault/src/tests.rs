@@ -116,7 +116,7 @@ fn owner() -> AccountId {
 
 proptest! {
     #[test]
-    fn paused_restricts_all_accounts(account in any::<u32>().prop_map(|v| mk(v))) {
+    fn paused_restricts_all_accounts(account in any::<u32>().prop_map(mk)) {
         let r = Restrictions::Paused;
         let out = r.is_restricted(account.as_ref());
         prop_assert_eq!(out, Some(Restrictions::Paused));
@@ -124,8 +124,8 @@ proptest! {
 
     #[test]
     fn blacklist_restricts_exact_members(
-        blacklist in prop::collection::vec(any::<u32>().prop_map(|v| mk(v)), 0..10),
-        account in any::<u32>().prop_map(|v| mk(v))
+        blacklist in prop::collection::vec(any::<u32>().prop_map(mk), 0..10),
+        account in any::<u32>().prop_map(mk)
     ) {
         let set: BTreeSet<AccountId> = blacklist.into_iter().collect();
         let r = Restrictions::BlackList(set.clone());
@@ -148,8 +148,8 @@ proptest! {
 
     #[test]
     fn whitelist_restricts_exact_non_members(
-        whitelist in prop::collection::vec(any::<u32>().prop_map(|v| mk(v)), 0..10),
-        account in any::<u32>().prop_map(|v| mk(v))
+        whitelist in prop::collection::vec(any::<u32>().prop_map(mk), 0..10),
+        account in any::<u32>().prop_map(mk)
     ) {
         let set: BTreeSet<AccountId> = whitelist.into_iter().collect();
         let r = Restrictions::WhiteList(set.clone());
