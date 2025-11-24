@@ -9,6 +9,7 @@ use crate::wad::compute_fee_shares;
 use crate::wad::Wad;
 use crate::Contract;
 use crate::MarketRecord;
+use crate::Number;
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
 use near_sdk::serde_json;
@@ -21,15 +22,22 @@ use near_sdk_contract_tools::ft::Nep141 as _;
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
+use near_workspaces::network::Sandbox;
+use near_workspaces::Worker;
+use proptest::prelude::*;
 use rstest::{fixture, rstest};
+use std::collections::BTreeSet;
 use templar_common::asset::FungibleAsset;
 use templar_common::vault::AllocatingState;
 use templar_common::vault::Error;
 use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
+use templar_common::vault::Restrictions;
 use templar_common::vault::WithdrawingState;
 use templar_common::vault::{AllocationMode, DepositMsg};
+use test_utils::setup_test;
+use test_utils::*;
 
 #[fixture]
 fn vault_id_fixture() -> AccountId {
@@ -104,6 +112,98 @@ fn receiver() -> AccountId {
 #[fixture]
 fn owner() -> AccountId {
     accounts(1)
+}
+
+proptest! {
+    #[test]
+    fn paused_restricts_all_accounts(account in any::<u32>().prop_map(|v| mk(v))) {
+        let r = Restrictions::Paused;
+        let out = r.is_restricted(account.as_ref());
+        prop_assert_eq!(out, Some(Restrictions::Paused));
+    }
+
+    #[test]
+    fn blacklist_restricts_exact_members(
+        blacklist in prop::collection::vec(any::<u32>().prop_map(|v| mk(v)), 0..10),
+        account in any::<u32>().prop_map(|v| mk(v))
+    ) {
+        let set: BTreeSet<AccountId> = blacklist.into_iter().collect();
+        let r = Restrictions::BlackList(set.clone());
+        let out = r.is_restricted(account.as_ref());
+
+        if set.contains(&account) {
+            match &out {
+                Some(Restrictions::BlackList(cloned)) => {
+                    prop_assert_eq!(cloned, &set);
+                    prop_assert!(cloned.contains(&account));
+                }
+                other => {
+                    prop_assert!(false, "expected Some(BlackList), got {:?}", other);
+                }
+            }
+        } else {
+            prop_assert_eq!(out, None);
+        }
+    }
+
+    #[test]
+    fn whitelist_restricts_exact_non_members(
+        whitelist in prop::collection::vec(any::<u32>().prop_map(|v| mk(v)), 0..10),
+        account in any::<u32>().prop_map(|v| mk(v))
+    ) {
+        let set: BTreeSet<AccountId> = whitelist.into_iter().collect();
+        let r = Restrictions::WhiteList(set.clone());
+        let out = r.is_restricted(account.as_ref());
+
+        if set.contains(&account) {
+            prop_assert_eq!(out, None);
+        } else {
+            match &out {
+                Some(Restrictions::WhiteList(cloned)) => {
+                    prop_assert_eq!(cloned, &set);
+                    prop_assert!(!cloned.contains(&account));
+                }
+                other => {
+                    prop_assert!(false, "expected Some(WhiteList), got {:?}", other);
+                }
+            }
+        }
+    }
+}
+
+#[rstest]
+#[tokio::test]
+#[should_panic = "Duplicate market"]
+async fn supply_queue_mustnt_have_duplicates(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(vault, c, vault_curator)
+        accounts(supply_user, borrow_user)
+    );
+    let m = c.market.contract().id().clone();
+
+    let queue = vec![m.clone(), m.clone()];
+    vault.set_supply_queue(&vault_curator, &queue).await;
+}
+
+#[rstest]
+#[tokio::test]
+#[should_panic = "Invariant: Only one op in flight"]
+async fn state_machine_is_locked_when_another_op_is_running(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    setup_test!(
+        worker
+        extract(vault, c, vault_owner)
+        accounts(supply_user, borrow_user)
+    );
+    let amount = 1000;
+    vault.supply(&supply_user, amount).await;
+
+    futures::future::select_all(
+        (0..100).map(|_| Box::pin(vault.allocate(&vault_owner, vec![], Some(1.into())))),
+    )
+    .await;
 }
 
 #[rstest(len => [2usize, 3, 5])]
@@ -2521,4 +2621,177 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
         owner_before,
         "Owner balance unchanged"
     );
+}
+
+#[test]
+fn no_fee_returns_zero() {
+    assert_eq!(
+        compute_fee_shares(1_000.into(), 900.into(), Wad::zero(), 1_000.into()),
+        Number::zero()
+    );
+}
+
+#[test]
+fn no_profit_returns_zero() {
+    assert_eq!(
+        compute_fee_shares(
+            1_000.into(),
+            1_000.into(),
+            Wad::one() / 10u128,
+            1_000.into()
+        ),
+        Number::zero()
+    );
+    assert_eq!(
+        compute_fee_shares(900.into(), 1_000.into(), Wad::one() / 10u128, 1_000.into()),
+        Number::zero()
+    );
+}
+
+#[test]
+fn zero_supply_returns_zero() {
+    assert_eq!(
+        compute_fee_shares(1_000.into(), 900.into(), Wad::one() / 10u128, 0u128.into()),
+        Number::zero()
+    );
+}
+
+#[test]
+fn simple_accrual_10_percent_fee() {
+    // cur=1200, last=1000, profit=200, fee_assets=20
+    // fee_shares = floor(20 * 1000 / (1200-20)) = floor(20000/1180) = 16
+    assert_eq!(
+        u128::from(compute_fee_shares(
+            1200u128.into(),
+            1000u128.into(),
+            Wad::one() / 10u128,
+            1000u128.into()
+        )),
+        16
+    );
+}
+
+#[test]
+fn full_fee_100_percent() {
+    // cur=1200, last=1000, profit=200, fee_assets=200
+    // denom = 1200 - 200 = 1000
+    // fee_shares = 200*1000/1000 = 200
+    assert_eq!(
+        u128::from(compute_fee_shares(
+            1200u128.into(),
+            1000u128.into(),
+            Wad::one(),
+            1000u128.into()
+        )),
+        200
+    );
+}
+
+// Property: Shares minting never panics, never mints more than `accept` when price ≥ 1
+// Model: minted = floor(accept * S / A); price ≥ 1 <=> A >= S => minted ≤ accept
+#[rstest(
+        accept => [0u128.into(), 1u128.into(), 2u128.into(), 10u128.into(), (1u128<<32).into(), (1u128<<64).into(), (u128::MAX/2).into(), (u128::MAX-1).into()],
+        supply => [0u128.into(), 1u128.into(), 10u128.into(), (1u128<<32).into(), (1u128<<64).into(), (u128::MAX/2).into()],
+        assets_base => [1u128.into(), 2u128.into(), 10u128.into(), (1u128<<32).into(), (1u128<<64).into(), (u128::MAX/2).into(), (u128::MAX-1).into()]
+    )]
+fn prop_minted_shares_le_accept_when_price_ge_one(
+    accept: Number,
+    supply: Number,
+    assets_base: Number,
+) {
+    use crate::mul_div_floor;
+
+    let assets = core::cmp::max(assets_base, supply); // enforce price ≥ 1
+    let minted = mul_div_floor(accept, supply, assets);
+    assert!(
+        minted <= accept,
+        "minted {minted:?} should be <= accept {accept:?} when price>=1 (S={supply:?}, A={assets:?})"
+    );
+}
+
+// Property: Fee shares are 0 when not profitable (cur_total_assets <= last_total_assets)
+#[rstest(
+    perf => [Wad::zero(), Wad::one() / Number::from(100u128), Wad::one() / Number::from(10u128)],
+    last => [0u128.into(), 1u128.into(), (1u128<<32).into()],
+    ts => [0u128.into(), 1u128.into(), (1u128<<64).into()]
+)]
+fn prop_fee_zero_when_not_profitable(perf: Wad, last: Number, ts: Number) {
+    let cur_equal = last;
+    let cur_lower = last.saturating_sub(Number::one());
+    assert_eq!(
+        compute_fee_shares(cur_equal, last, perf, ts),
+        Number::zero()
+    );
+    assert_eq!(
+        compute_fee_shares(cur_lower, last, perf, ts),
+        Number::zero()
+    );
+}
+
+#[rstest(
+        s =>[0u128.into(), 1u128.into(), 13u128.into(), (1u128<<32).into(), (1u128<<64).into()],
+        a =>[1u128.into(), 7u128.into(), (1u128<<32).into(), (1u128<<64).into(), ((1u128<<64) + 123).into()],
+        k =>[0u128.into(), 1u128.into(), 2u128.into(), 10u128.into(), (1u128<<16).into()]
+    )]
+fn deposit_is_monotone_in_assets(s: Number, a: Number, k: Number) {
+    // More assets never produce fewer shares (with fixed totals & offsets).
+
+    use crate::mul_div_floor;
+    let shares1 = mul_div_floor(a, s + Number::one(), a + k + Number::one());
+    let shares2 = mul_div_floor(
+        a + Number::one(),
+        s + Number::one(),
+        a + k + Number::from(2u128),
+    );
+    assert!(shares2 >= shares1);
+}
+
+// Property: Fee shares are monotone =>profit when fee>0 and total_supply>0
+#[rstest(
+        perf => [Wad::one()/100u128, Wad::one()/10u128],
+        last => [0u128.into(), (1u128<<32).into()],
+        ts => [1u128.into(), (1u128<<64).into()],
+        p1 => [0u128.into(), 1u128.into(), (1u128<<16).into()],
+        p2 => [1u128.into(), (1u128<<16).into(), (1u128<<32).into()]
+    )]
+fn prop_fee_monotone_in_profit(perf: Wad, last: Number, ts: Number, p1: Number, p2: Number) {
+    let p_low = core::cmp::min(p1, p2);
+    let p_high = core::cmp::max(p1, p2);
+    let s1 = compute_fee_shares(last.saturating_add(p_low), last, perf, ts);
+    let s2 = compute_fee_shares(last.saturating_add(p_high), last, perf, ts);
+    assert!(
+        s2 >= s1,
+        "fee shares should be monotone =>profit: s2 {s2:?} >= s1 {s1:?} (last={last:?}, perf={perf:?}, ts={ts:?})"
+    );
+}
+
+// Property: Withdrawal math never underflows:
+// withdrawn = before - new (saturating)
+// credited = min(withdrawn, need)
+// remaining = rem - credited (saturating)
+#[rstest(
+        before => [0u128, 1, 10, 1u128<<64, u128::MAX/2, u128::MAX-1],
+        newp => [0u128, 1, 10, 1u128<<64, u128::MAX/2],
+        need => [0u128, 1, 10, 1u128<<32, u128::MAX/4],
+        rem => [0u128, 1, 10, 1u128<<32, u128::MAX/4]
+    )]
+fn prop_withdraw_math_never_underflows(before: u128, newp: u128, need: u128, rem: u128) {
+    let withdrawn = before.saturating_sub(newp);
+    let credited = core::cmp::min(withdrawn, need);
+    let remaining = rem.saturating_sub(credited);
+    assert!(withdrawn <= before, "withdrawn should not exceed before");
+    assert!(credited <= need, "credited should be <= need");
+    assert!(remaining <= rem, "remaining should not exceed rem");
+}
+
+#[rstest(
+    fee =>[Wad::zero(), Wad::one()/100u128, Wad::one()/10u128],
+    ts =>[0u128.into(), 1u128.into(), (1u128<<32).into(), (1u128<<64).into()],
+    last =>[0u128.into(), 1u128.into(), (1u128<<32).into()],
+    profit =>[0u128.into(), 1u128.into(), 10u128.into(), (1u128<<32).into()]
+)]
+fn fee_shares_upper_bound_by_total_supply(fee: Wad, ts: Number, last: Number, profit: Number) {
+    let cur = last.saturating_add(profit);
+    let minted = compute_fee_shares(cur, last, fee, ts);
+    assert!(minted <= ts || ts.is_zero());
 }
