@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     aum::AUM,
+    governance::Abdicator,
     storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -164,6 +165,8 @@ pub struct Contract {
 
     // Keeper-provided withdraw route for the current Withdrawing op
     withdraw_route: Vec<AccountId>,
+
+    abdicator: Option<Abdicator>,
 }
 
 #[near]
@@ -231,6 +234,7 @@ impl Contract {
             next_withdraw_to_execute: 0,
             pending_market_exec: Vec::new(),
             withdraw_route: Vec::new(),
+            abdicator: None,
         };
 
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
