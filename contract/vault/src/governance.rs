@@ -39,13 +39,17 @@ impl Gate {
     /// or a known market contract.
     fn enforce_share_transfer_gates(
         &self,
-        // TODO: decide if we want to block share xfer to markets (seems like user error anyway)
         markets: &BTreeMap<AccountId, MarketRecord>,
         t: &Nep141Transfer,
     ) {
         if self.bypass_share_transfer_gates {
             return;
         }
+
+        require!(
+            !markets.contains_key(t.receiver_id.as_ref()),
+            "Cannot transfer shares to a market contract that is managed by the vault"
+        );
 
         self.enforce_policy(t.sender_id.as_ref());
         self.enforce_policy(t.receiver_id.as_ref());
