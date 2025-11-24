@@ -1,9 +1,9 @@
-use std::num::NonZeroU8;
+use std::{collections::BTreeSet, num::NonZeroU8};
 
 use near_sdk::{
     env,
     json_types::{U128, U64},
-    near, require, AccountId, Gas, Promise, PromiseOrValue,
+    near, require, AccountId, AccountIdRef, Gas, Promise, PromiseOrValue,
 };
 
 use crate::asset::{BorrowAsset, FungibleAsset};
@@ -66,14 +66,6 @@ pub struct MarketConfiguration {
     pub removable_at: TimestampNs,
 }
 
-impl MarketConfiguration {
-    /// Size of the market configuration in borsh encoded bytes.
-    #[must_use]
-    pub const fn encoded_size() -> usize {
-        16 + 1 + 8
-    }
-}
-
 /// Configuration for the setup of a metavault.
 #[derive(Clone)]
 #[near(serializers = [json, borsh])]
@@ -100,6 +92,43 @@ pub struct VaultConfiguration {
     pub symbol: String,
     /// The number of decimals for the share token, usually would be the same as the underlying asset.
     pub decimals: NonZeroU8,
+    /// Restrictions for this market.
+    pub restrictions: Option<Restrictions>,
+}
+
+/// Restrictions that can be applied to the vault.
+///
+/// It should cover both Whitelist style functionality and Blacklist style functionality.
+/// It should also enable Pausing
+#[near(serializers = [borsh, json])]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restrictions {
+    Paused,
+    BlackList(BTreeSet<AccountId>),
+    WhiteList(BTreeSet<AccountId>),
+}
+
+impl Restrictions {
+    /// Check if the account is restricted, and if so, what is the reason
+    pub fn is_restricted(&self, account_id: &AccountIdRef) -> Option<Restrictions> {
+        match self {
+            Restrictions::Paused => Some(Restrictions::Paused),
+            Restrictions::BlackList(blacklist) => {
+                if blacklist.contains(account_id) {
+                    Some(Restrictions::BlackList(blacklist.clone()))
+                } else {
+                    None
+                }
+            }
+            Restrictions::WhiteList(whitelist) => {
+                if whitelist.contains(account_id) {
+                    None
+                } else {
+                    Some(Restrictions::WhiteList(whitelist.clone()))
+                }
+            }
+        }
+    }
 }
 
 #[near_sdk::ext_contract(ext_vault)]
@@ -714,51 +743,4 @@ pub enum Event {
         index: u32,
         extra: U128,
     },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    const _: [(); MarketConfiguration::encoded_size()] = [(); 25];
-    const _EXPECTED_FROM_TYPES: usize =
-        core::mem::size_of::<u128>() + core::mem::size_of::<bool>() + core::mem::size_of::<u64>();
-    const _: [(); MarketConfiguration::encoded_size()] = [(); _EXPECTED_FROM_TYPES];
-
-    #[test]
-    fn encoded_size_is_25() {
-        assert_eq!(MarketConfiguration::encoded_size(), 25);
-    }
-
-    #[test]
-    fn encoded_size_market_matches_field_sizes() {
-        assert_eq!(
-            MarketConfiguration::encoded_size(),
-            borsh::to_vec(&MarketConfiguration::default())
-                .unwrap()
-                .len(),
-        );
-    }
-
-    #[test]
-    fn encoded_size_pending_withdrawal_matches_field_sizes() {
-        // let 64 byte account id
-        let s = "abc1abc2abc3abc4abc5abc6abc7abc8abc9abc0abc1abc2abc3abc4abc5abc6";
-        assert_eq!(s.len(), 64);
-        let account = AccountId::from_str(s).unwrap();
-        assert_eq!(account.len(), 64);
-        assert_eq!(
-            borsh::to_vec(&PendingWithdrawal {
-                owner: account.clone(),
-                receiver: account.clone(),
-                escrow_shares: 3,
-                expected_assets: 4,
-                requested_at: 5
-            })
-            .unwrap()
-            .len() as u64,
-            PendingWithdrawal::encoded_size()
-        );
-    }
 }

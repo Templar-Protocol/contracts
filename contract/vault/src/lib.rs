@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     aum::AUM,
+    governance::Gate,
     storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -164,6 +165,8 @@ pub struct Contract {
 
     // Keeper-provided withdraw route for the current Withdrawing op
     withdraw_route: Vec<AccountId>,
+
+    gate: Gate,
 }
 
 #[near]
@@ -193,6 +196,7 @@ impl Contract {
             symbol,
             decimals,
             mode,
+            restrictions,
         } = configuration;
 
         require!(
@@ -231,6 +235,7 @@ impl Contract {
             next_withdraw_to_execute: 0,
             pending_market_exec: Vec::new(),
             withdraw_route: Vec::new(),
+            gate: Gate::new(restrictions),
         };
 
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
@@ -268,12 +273,10 @@ impl Contract {
 
         let _ = require_attached_for_pending_withdrawal();
 
-        self.transfer(&Nep141Transfer::new(
-            shares,
-            &sender,
-            env::current_account_id(),
-        ))
-        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+        Gate::bypass_transfer(
+            self,
+            &Nep141Transfer::new(shares, &sender, env::current_account_id()),
+        );
 
         self.internal_accrue_fee();
 
@@ -533,6 +536,7 @@ impl Contract {
             symbol: meta.symbol,
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
             mode: self.mode.clone(),
+            restrictions: self.gate.restrictions.clone(),
         }
     }
 
