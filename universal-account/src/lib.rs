@@ -2,9 +2,13 @@ use std::fmt::Display;
 
 use alloy::sol;
 use authentication::{
-    ed25519_raw, eip712,
+    ed25519_raw, //eip712,
     passkey::{self, Passkey},
-    CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
+    CheckSignatureError,
+    ExecutionContextProvider,
+    ExecutionError,
+    Key,
+    MessageWithSignature,
 };
 use near_sdk::{json_types::U64, near, serde::de::DeserializeOwned, AccountIdRef};
 
@@ -25,7 +29,7 @@ pub struct InitArgs {
 pub enum KeyId {
     Passkey(Passkey),
     Ed25519RawKey(ed25519_raw::VerifyKey),
-    Eip712(eip712::VerifyKey),
+    // Eip712(eip712::VerifyKey),
 }
 
 impl Display for KeyId {
@@ -33,7 +37,7 @@ impl Display for KeyId {
         match self {
             Self::Passkey(passkey) => write!(f, "{}", passkey.0),
             Self::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
-            Self::Eip712(key) => write!(f, "{}", key.0),
+            // Self::Eip712(key) => write!(f, "{}", key.0),
         }
     }
 }

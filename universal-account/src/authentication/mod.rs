@@ -1,9 +1,10 @@
 use near_sdk::{near, AccountIdRef};
+use schemars::JsonSchema;
 
 use crate::ExecutionParameters;
 
 pub mod ed25519_raw;
-pub mod eip712;
+// pub mod eip712;
 pub mod passkey;
 mod payload;
 pub use payload::*;
@@ -13,14 +14,13 @@ pub trait SignableMessage {
     type Key: Key<Self>
     where
         Self: Sized;
-    type Signature;
+    type Signature: JsonSchema;
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 pub struct MessageWithSignature<M: SignableMessage> {
     pub message: M,
-    #[serde(flatten)]
     pub signature: M::Signature,
 }
 

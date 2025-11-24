@@ -1,7 +1,9 @@
 use near_sdk::serde::de::DeserializeOwned;
+use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, near};
 use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
+use schemars::JsonSchema;
 
 use super::with_raw_string::WithRawString;
 use super::{
@@ -75,8 +77,8 @@ impl<T> super::SignableMessage for Message<T> {
     type Signature = PasskeySignatureData;
 }
 
-#[derive(Clone, Debug)]
-#[near(serializers = [json])]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(crate = "near_sdk::serde")]
 pub struct PasskeySignatureData {
     pub authenticator_data: AuthenticatorData,
     pub client_data_json: WithRawString<ClientDataJson>,

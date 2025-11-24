@@ -1,5 +1,10 @@
 use alloy::{dyn_abi::Eip712Domain, signers::SignerSync, sol_types::SolStruct};
-use near_sdk::{near, serde, serde_json};
+use near_sdk::{
+    near,
+    serde::{self, Deserialize, Serialize},
+    serde_json,
+};
+use schemars::JsonSchema;
 
 use crate::{authentication::SolPayload, encoding};
 
@@ -24,11 +29,11 @@ impl<T: serde::Serialize> SignableMessage for Message<T> {
     type Signature = SignatureAndDomain;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(crate = "near_sdk::serde")]
 pub struct SignatureAndDomain {
     pub signature: encoding::ethereum::Signature,
-    pub domain: Eip712Domain,
+    pub domain: encoding::ethereum::Domain,
 }
 
 impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
@@ -38,7 +43,7 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
     ) -> Result<(), CheckSignatureError> {
         let prehash = mws
             .message
-            .eip712_prehash(&mws.signature.domain)
+            .eip712_prehash(&mws.signature.domain.0)
             .map_err(CheckSignatureError::other)?;
 
         let recovered_address = mws
@@ -86,7 +91,7 @@ impl<T: serde::Serialize> Message<T> {
             message: self,
             signature: SignatureAndDomain {
                 signature: signature.into(),
-                domain,
+                domain: domain.into(),
             },
         }
     }
@@ -205,7 +210,7 @@ mod tests {
 
         let verify_key = VerifyKey(signer.address().into());
 
-        mws.signature.domain.name = Some("different".into());
+        mws.signature.domain.0.name = Some("different".into());
 
         verify_key.verify_signature(mws).unwrap();
     }

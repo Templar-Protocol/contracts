@@ -44,7 +44,7 @@ use templar_universal_account::{
             data::{AuthenticatorData, ClientDataJson},
             Passkey,
         },
-        HashForSigning, Payload,
+        HashForSigning, MessageWithSignature, Payload,
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
@@ -68,7 +68,7 @@ fn create_message<T: near_sdk::serde::Serialize>(
     account_id: AccountId,
     parameters: ExecutionParameters,
     payload: T,
-) -> passkey::MessageWithSignature<T> {
+) -> MessageWithSignature<passkey::Message<T>> {
     let payload = passkey::Message::from_parsed(Payload {
         parameters,
         account_id,
@@ -77,20 +77,17 @@ fn create_message<T: near_sdk::serde::Serialize>(
 
     let challenge = payload.hash_for_signing().into();
 
-    payload
-        .sign(
-            secret_key,
-            AuthenticatorData(Box::new([0xffu8; 32])),
-            ClientDataJson {
-                r#type: "type".to_string(),
-                challenge,
-                origin: "origin".to_string(),
-                cross_origin: None,
-                top_origin: None,
-            },
-        )
-        .try_into()
-        .unwrap()
+    payload.sign(
+        secret_key,
+        AuthenticatorData(Box::new([0xffu8; 32])),
+        ClientDataJson {
+            r#type: "type".to_string(),
+            challenge,
+            origin: "origin".to_string(),
+            cross_origin: None,
+            top_origin: None,
+        },
+    )
 }
 
 fn create_execute_message(
@@ -99,7 +96,7 @@ fn create_execute_message(
     parameters: ExecutionParameters,
     receiver_id: AccountId,
     actions: impl Into<Box<[transaction::Action]>>,
-) -> passkey::MessageWithSignature<Box<[Transaction]>> {
+) -> MessageWithSignature<passkey::Message<Box<[Transaction]>>> {
     create_message(
         secret_key,
         account_id,
@@ -115,7 +112,7 @@ fn create_execute_message(
 #[fixture]
 async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::WARN)
         .try_init();
 
     setup_test!(worker extract(c) accounts(borrow_user, relay_user, ua_deployer));
@@ -125,7 +122,7 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
     ua_deployer
         .add_version(
             ua_deployer.contract().as_account(),
-            NearToken::from_near(40),
+            NearToken::from_near(80),
             "v1",
             DeployMode::GlobalHash,
             UniversalAccountController::wasm().await,

@@ -15,7 +15,10 @@ use near_sdk::{
 };
 
 use templar_universal_account::{
-    authentication::passkey::{self, Passkey},
+    authentication::{
+        passkey::{self, Passkey},
+        MessageWithSignature,
+    },
     ExecuteArgs, ExecutionParameters, KeyId,
 };
 
@@ -56,7 +59,7 @@ impl PowTarget for CreateUniversalAccount {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub enum CreateRequest {
-    Passkey(Box<passkey::MessageWithSignature<Pow<CreatePasskeyAccount>>>),
+    Passkey(Box<MessageWithSignature<passkey::Message<Pow<CreatePasskeyAccount>>>>),
     #[serde(untagged)]
     ExecuteArgs(ExecuteArgs<Pow<CreateUniversalAccount>>),
 }
@@ -71,7 +74,15 @@ struct KeyIdMismatchError {
 impl CreateRequest {
     fn key_id_to_add(&self) -> Result<KeyId, Box<KeyIdMismatchError>> {
         match self {
-            Self::Passkey(m) => Ok(m.payload_unchecked().payload_unchecked().key.clone().into()),
+            Self::Passkey(m) => Ok(m
+                .message
+                .0
+                .parsed
+                .payload
+                .payload_unchecked()
+                .key
+                .clone()
+                .into()),
             Self::ExecuteArgs(ea) => {
                 let signer = ea.key_id();
                 let to_add = &ea.message_unchecked().payload_unchecked().key;
@@ -119,11 +130,11 @@ pub async fn create(
     tracing::Span::current().record("key_id", tracing::field::display(&key_id));
 
     let create = match request {
-        CreateRequest::Passkey(m) => {
-            let key_inner = m.payload_unchecked().payload_unchecked().key.clone();
+        CreateRequest::Passkey(mws) => {
+            let key_inner = mws.message.0.parsed.payload.payload_unchecked().key.clone();
             let exec_args = ExecuteArgs::Passkey {
                 key: key_inner.clone(),
-                message: m,
+                message: mws,
             };
 
             let m = match exec_args.verify(
@@ -404,21 +415,17 @@ mod tests {
                     .unwrap(),
                 });
                 let challenge = m.hash_for_signing().into();
-                Box::new(
-                    m.sign(
-                        &keypair,
-                        passkey::data::AuthenticatorData([1u8; 32].into()),
-                        passkey::data::ClientDataJson {
-                            r#type: "type".to_string(),
-                            challenge,
-                            origin: "origin".to_string(),
-                            cross_origin: None,
-                            top_origin: None,
-                        },
-                    )
-                    .try_into()
-                    .unwrap(),
-                )
+                Box::new(m.sign(
+                    &keypair,
+                    passkey::data::AuthenticatorData([1u8; 32].into()),
+                    passkey::data::ClientDataJson {
+                        r#type: "type".to_string(),
+                        challenge,
+                        origin: "origin".to_string(),
+                        cross_origin: None,
+                        top_origin: None,
+                    },
+                ))
             },
         });
 
