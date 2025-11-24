@@ -149,7 +149,7 @@ mod tests {
 
     #[rstest]
     #[test]
-    #[should_panic = "InvalidSignatureError"]
+    #[should_panic = "InvalidSignature"]
     fn invalid_signature(keypair: Keypair) {
         let message: Message<_> = WithRawString::from_parsed(Payload {
             parameters: ExecutionParameters {

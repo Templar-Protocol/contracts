@@ -1,4 +1,4 @@
-use alloy_sol_macro::sol;
+use alloy::sol;
 use near_sdk::{
     near,
     serde::{de::DeserializeOwned, Serialize},

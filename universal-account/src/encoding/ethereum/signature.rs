@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use alloy_signer::Signature as AlloySignature;
+use alloy::signers::Signature as AlloySignature;
 use near_sdk::serde::{self, Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -53,8 +53,7 @@ impl schemars::JsonSchema for Signature {
 
 #[cfg(test)]
 mod tests {
-    use alloy_signer::SignerSync;
-    use alloy_signer_local::PrivateKeySigner;
+    use alloy::signers::{local::PrivateKeySigner, SignerSync};
     use near_sdk::serde_json;
 
     use super::*;

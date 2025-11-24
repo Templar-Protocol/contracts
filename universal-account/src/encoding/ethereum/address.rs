@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use alloy_primitives::Address as AlloyAddress;
+use alloy::primitives::Address as AlloyAddress;
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{borsh, near};

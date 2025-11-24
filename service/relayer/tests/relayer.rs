@@ -30,7 +30,7 @@ use templar_relayer::{
     route::{
         relay::RelayRequest as SdaRelayRequest,
         universal_account::{
-            create::{CreatePasskeyAccount, CreateRequest},
+            create::{CreateRequest, CreateUniversalAccount},
             pow::Pow,
             relay::RelayRequest as UaRelayRequest,
         },
@@ -288,8 +288,8 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
             nonce: U64(0),
         },
         Pow::mine(
-            CreatePasskeyAccount {
-                key: passkey.clone(),
+            CreateUniversalAccount {
+                key: passkey.clone().into(),
                 block_hash: fetch_nonce.block_hash,
             },
             POW_DIFFICULTY,
@@ -300,7 +300,10 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(Box::new(message))),
+        Json(CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
+            key: passkey.clone(),
+            message: Box::new(message),
+        })),
     )
     .await;
 
@@ -539,8 +542,8 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
             nonce: U64(0),
         },
         Pow::mine(
-            CreatePasskeyAccount {
-                key: passkey.clone(),
+            CreateUniversalAccount {
+                key: passkey.clone().into(),
                 block_hash: fetch_nonce.block_hash,
             },
             POW_DIFFICULTY,
@@ -551,7 +554,10 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(Box::new(message))),
+        Json(CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
+            key: passkey.clone(),
+            message: Box::new(message),
+        })),
     )
     .await;
 

@@ -16,7 +16,12 @@ use near_sdk::{
 
 use templar_universal_account::{
     authentication::{
-        passkey::{self, Passkey},
+        passkey::{
+            self,
+            data::{AuthenticatorData, ClientDataJson},
+            Passkey, PasskeySignatureData,
+        },
+        with_raw_string::WithRawString,
         MessageWithSignature,
     },
     ExecuteArgs, ExecutionParameters, KeyId,
@@ -29,6 +34,15 @@ use crate::{
 };
 
 use super::pow::{Pow, PowTarget};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub struct OldPasskey {
+    pub message: passkey::Message<Pow<CreatePasskeyAccount>>,
+    pub authenticator_data: AuthenticatorData,
+    pub client_data_json: WithRawString<ClientDataJson>,
+    pub signature: passkey::signature::Signature,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -59,7 +73,7 @@ impl PowTarget for CreateUniversalAccount {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub enum CreateRequest {
-    Passkey(Box<MessageWithSignature<passkey::Message<Pow<CreatePasskeyAccount>>>>),
+    Passkey(Box<OldPasskey>),
     #[serde(untagged)]
     ExecuteArgs(ExecuteArgs<Pow<CreateUniversalAccount>>),
 }
@@ -134,7 +148,14 @@ pub async fn create(
             let key_inner = mws.message.0.parsed.payload.payload_unchecked().key.clone();
             let exec_args = ExecuteArgs::Passkey {
                 key: key_inner.clone(),
-                message: mws,
+                message: Box::new(MessageWithSignature {
+                    message: mws.message,
+                    signature: PasskeySignatureData {
+                        authenticator_data: mws.authenticator_data,
+                        client_data_json: mws.client_data_json,
+                        signature: mws.signature,
+                    },
+                }),
             };
 
             let m = match exec_args.verify(

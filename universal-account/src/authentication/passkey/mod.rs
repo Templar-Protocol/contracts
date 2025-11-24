@@ -47,7 +47,7 @@ impl<T> Key<Message<T>> for Passkey {
             != mws.signature.client_data_json.parsed.challenge.as_slice()
         {
             return Err(CheckSignatureError::Other(
-                "Computed hash does not match clientDataJson.challenge".into(),
+                "Computed hash does not match clientDataJSON.challenge".into(),
             ));
         }
 
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "InvalidSignatureError"]
+    #[should_panic = "Computed hash does not match clientDataJSON.challenge"]
     fn check_signature_fail_hash_mismatch() {
         let signer = signer();
         let message = message();
