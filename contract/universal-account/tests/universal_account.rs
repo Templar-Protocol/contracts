@@ -17,7 +17,7 @@ use templar_universal_account::{
             Passkey,
         },
         with_raw_string::WithRawString,
-        HashForSigning, Payload,
+        HashForSigning, MessageWithSignature, Payload,
     },
     transaction::{FunctionCallAction, Transaction},
     ExecuteArgs, ExecutionParameters, KeyId,
@@ -72,20 +72,17 @@ impl TestSigner {
                 let payload = passkey::Message(payload);
                 let challenge = payload.hash_for_signing();
 
-                let message: passkey::MessageWithSignature<_> = payload
-                    .sign(
-                        secret_key,
-                        AuthenticatorData(Box::new([0xff_u8; 32])),
-                        ClientDataJson {
-                            r#type: "type".to_string(),
-                            challenge: challenge.into(),
-                            origin: "origin".to_string(),
-                            cross_origin: None,
-                            top_origin: None,
-                        },
-                    )
-                    .try_into()
-                    .unwrap();
+                let message: MessageWithSignature<_> = payload.sign(
+                    secret_key,
+                    AuthenticatorData(Box::new([0xff_u8; 32])),
+                    ClientDataJson {
+                        r#type: "type".to_string(),
+                        challenge: challenge.into(),
+                        origin: "origin".to_string(),
+                        cross_origin: None,
+                        top_origin: None,
+                    },
+                );
 
                 ExecuteArgs::Passkey {
                     key: Passkey(secret_key.public_key().into()),
@@ -98,7 +95,7 @@ impl TestSigner {
                     .sign(&message.preimage_for_signing())
                     .to_bytes()
                     .into();
-                let message = ed25519_raw::MessageWithSignature { message, signature };
+                let message = MessageWithSignature { message, signature };
 
                 ExecuteArgs::Ed25519Raw {
                     key: ed25519_raw::VerifyKey(signing_key.verifying_key().to_bytes().into()),
