@@ -1,3 +1,4 @@
+use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
 use templar_common::{panic_with_message, vault::Restrictions};
 
@@ -31,6 +32,17 @@ impl Gate {
         }
     }
 
+    pub(crate) fn enforce_policy(&self, account: &AccountIdRef) {
+        if let Some(restrictions) = &self.restrictions {
+            if let Some(reason) = restrictions.is_restricted(account) {
+                templar_common::panic_with_message(&format!(
+                    "Account {} is restricted: {:?}",
+                    account, reason
+                ));
+            }
+        }
+    }
+
     // Common gate for NEP-141 share transfers (ft_transfer/ft_transfer_call).
     /// Blocks transfers when globally paused or when sending to a blocked recipient
     /// or a known market contract.
@@ -44,14 +56,8 @@ impl Gate {
             return;
         }
 
-        if let Some(restrictions) = &self.restrictions {
-            if let Some(r) = restrictions.is_restricted(t.sender_id.as_ref()) {
-                panic_with_message(&format!("Sender is restricted {:?}", r));
-            }
-            if let Some(r) = restrictions.is_restricted(t.receiver_id.as_ref()) {
-                panic_with_message(&format!("Receiver is restricted {:?}", r));
-            }
-        }
+        self.enforce_policy(t.sender_id.as_ref());
+        self.enforce_policy(t.receiver_id.as_ref());
     }
 
     /// Bypass share transfer gates for a given transfer.
