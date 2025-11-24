@@ -14,7 +14,7 @@ impl Abdicator {
     }
 
     fn is_abdicated(&self, method_name: &str) -> bool {
-        *self.map.get(&method_name.to_string()).unwrap_or(&false)
+        *self.map.get(method_name).unwrap_or(&false)
     }
 
     pub fn abdicate(&mut self, method_name: &str) {
@@ -451,15 +451,12 @@ impl Contract {
     /// Permanently disables a governance method by name.
     pub fn abdicate(&mut self, method_name: String) {
         Self::assert_curator_or_owner();
-        match self.abdicator {
-            Some(ref mut abdicator) => {
-                abdicator.abdicate(&method_name);
-            }
-            None => {
-                let mut abdicator = Abdicator::new();
-                abdicator.abdicate(&method_name);
-                self.abdicator = Some(abdicator);
-            }
+        if let Some(ref mut abdicator) = self.abdicator {
+            abdicator.abdicate(&method_name);
+        } else {
+            let mut abdicator = Abdicator::new();
+            abdicator.abdicate(&method_name);
+            self.abdicator = Some(abdicator);
         }
     }
 }
