@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use alloy::sol;
+use alloy_sol_macro::sol;
 use authentication::{
     ed25519_raw, //eip712,
     passkey::{self, Passkey},

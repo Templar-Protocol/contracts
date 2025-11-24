@@ -1,7 +1,5 @@
-use alloy::{
-    dyn_abi::Eip712Domain,
-    primitives::{Address, U256},
-};
+use alloy_primitives::{Address, U256};
+use alloy_sol_types::Eip712Domain;
 use near_sdk::serde::{Deserialize, Serialize};
 use schemars::schema_for_value;
 
