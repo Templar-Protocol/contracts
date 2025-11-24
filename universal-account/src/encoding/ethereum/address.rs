@@ -8,11 +8,23 @@ use schemars::JsonSchema;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [])]
-pub struct Address(AlloyAddress);
+pub struct Address(pub AlloyAddress);
 
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl From<AlloyAddress> for Address {
+    fn from(value: AlloyAddress) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Address> for AlloyAddress {
+    fn from(value: Address) -> Self {
+        value.0
     }
 }
 

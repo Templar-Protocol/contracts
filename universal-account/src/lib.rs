@@ -2,8 +2,9 @@ use std::fmt::Display;
 
 use alloy::sol;
 use authentication::{
-    ed25519_raw, eip712, passkey::Passkey, ExecutionContextProvider, ExecutionError,
-    InvalidSignatureError, Key,
+    ed25519_raw, eip712,
+    passkey::{self, Passkey},
+    ExecutionContextProvider, ExecutionError, InvalidSignatureError, MessageWithSignature,
 };
 use near_sdk::{json_types::U64, near, serde::de::DeserializeOwned, AccountIdRef};
 
@@ -97,7 +98,7 @@ impl ExecutionParameters {
     pub fn next(&self) -> Self {
         Self {
             nonce: U64(self.nonce.0 + 1),
-            ..self.clone()
+            ..*self
         }
     }
 }
@@ -108,11 +109,11 @@ impl ExecutionParameters {
 pub enum ExecuteArgs<T> {
     Passkey {
         key: Passkey,
-        message: Box<authentication::passkey::MessageWithSignature<T>>,
+        message: Box<MessageWithSignature<passkey::Message<T>>>,
     },
     Ed25519Raw {
         key: ed25519_raw::VerifyKey,
-        message: Box<authentication::ed25519_raw::MessageWithSignature<T>>,
+        message: Box<MessageWithSignature<ed25519_raw::Message<T>>>,
     },
 }
 
@@ -134,7 +135,7 @@ impl<T> ExecuteArgs<T> {
 
     pub fn message_unchecked(&self) -> &T {
         match self {
-            Self::Passkey { message, .. } => message.payload_unchecked(),
+            Self::Passkey { message, .. } => &message.message.0.parsed.payload,
             Self::Ed25519Raw { message, .. } => &message.message.0.parsed.payload,
         }
     }
@@ -150,11 +151,11 @@ impl<T> ExecuteArgs<T> {
         allowed_origin: impl FnOnce(Option<&str>) -> bool,
     ) -> Result<T, VerificationError> {
         Ok(match self {
-            ExecuteArgs::Passkey { key, message } => key
-                .verify_signature(*message)?
+            ExecuteArgs::Passkey { key, message } => message
+                .verify_signature(&key)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
-            ExecuteArgs::Ed25519Raw { key, message } => key
-                .verify_signature(*message)?
+            ExecuteArgs::Ed25519Raw { key, message } => message
+                .verify_signature(&key)?
                 .verify_execution(executor_account_id, parameters, allowed_origin)?,
         })
     }
@@ -250,20 +251,17 @@ mod tests {
 
         let message = passkey::Message::from_parsed(payload());
         let hash = message.hash_for_signing();
-        let signed_message: passkey::MessageWithSignature<_> = message
-            .sign(
-                &sk,
-                AuthenticatorData(vec![1u8; 32].into_boxed_slice()),
-                ClientDataJson {
-                    r#type: "type".to_string(),
-                    challenge: hash.into(),
-                    origin: "origin".to_string(),
-                    cross_origin: None,
-                    top_origin: None,
-                },
-            )
-            .try_into()
-            .unwrap();
+        let signed_message: MessageWithSignature<_> = message.sign(
+            &sk,
+            AuthenticatorData(vec![1u8; 32].into_boxed_slice()),
+            ClientDataJson {
+                r#type: "type".to_string(),
+                challenge: hash.into(),
+                origin: "origin".to_string(),
+                cross_origin: None,
+                top_origin: None,
+            },
+        );
 
         ExecuteArgs::Passkey {
             key: Passkey(sk.public_key().into()),

@@ -4,7 +4,10 @@ use near_sdk::serde::de::DeserializeOwned;
 use crate::encoding;
 
 use super::with_raw_string::WithRawString;
-use super::{ExecutionContextProvider, HashForSigning, Key, Payload};
+use super::{
+    ExecutionContextProvider, HashForSigning, Key, MessageWithSignature, MessageWithValidSignature,
+    Payload,
+};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
@@ -21,6 +24,11 @@ impl std::fmt::Display for VerifyKey {
 #[serde(bound = "T: DeserializeOwned")]
 pub struct Message<T>(pub WithRawString<Payload<T>>);
 
+impl<T> super::SignableMessage for Message<T> {
+    type Key = VerifyKey;
+    type Signature = encoding::ed25519::Signature;
+}
+
 impl<T: near_sdk::serde::Serialize> Message<T> {
     pub fn from_parsed(payload: Payload<T>) -> Self {
         Self(WithRawString::from_parsed(payload))
@@ -29,7 +37,7 @@ impl<T: near_sdk::serde::Serialize> Message<T> {
     pub fn with_signature(
         self,
         signature: encoding::ed25519::Signature,
-    ) -> MessageWithSignature<T> {
+    ) -> MessageWithSignature<Self> {
         MessageWithSignature {
             message: self,
             signature,
@@ -51,33 +59,13 @@ impl<T> HashForSigning for Message<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json])]
-#[serde(bound = "T: DeserializeOwned")]
-pub struct MessageWithSignature<T> {
-    pub message: Message<T>,
-    pub signature: encoding::ed25519::Signature,
-}
-
-#[derive(Debug)]
-pub struct MessageWithValidSignature<T>(MessageWithSignature<T>);
-
-impl<T> Key<MessageWithSignature<T>> for VerifyKey {
-    type Verified = MessageWithValidSignature<T>;
-
-    fn verify_signature(
-        &self,
-        message: MessageWithSignature<T>,
-    ) -> Result<Self::Verified, crate::authentication::InvalidSignatureError> {
-        if (self.0).verify(&message.message.preimage_for_signing(), &message.signature) {
-            Ok(MessageWithValidSignature(message))
-        } else {
-            Err(super::InvalidSignatureError)
-        }
+impl<T> Key<Message<T>> for VerifyKey {
+    fn has_valid_signature(&self, message: &super::MessageWithSignature<Message<T>>) -> bool {
+        (self.0).verify(&message.message.preimage_for_signing(), &message.signature)
     }
 }
 
-impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
+impl<P> ExecutionContextProvider for MessageWithValidSignature<Message<P>> {
     type Payload = P;
 
     fn payload(self) -> Payload<Self::Payload> {
@@ -150,7 +138,7 @@ mod tests {
 
         let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
-        key.verify_signature(message).unwrap();
+        message.verify_signature(&key).unwrap();
     }
 
     #[rstest]
@@ -172,7 +160,7 @@ mod tests {
 
         let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
-        key.verify_signature(MessageWithSignature {
+        let mws = MessageWithSignature {
             message: Message(WithRawString::from_parsed(Payload {
                 parameters: ExecutionParameters {
                     block_height: U64(12345),
@@ -183,7 +171,8 @@ mod tests {
                 payload: "Hello, world!",
             })),
             signature: sol_sig.into(),
-        })
-        .unwrap();
+        };
+
+        mws.verify_signature(&key).unwrap();
     }
 }

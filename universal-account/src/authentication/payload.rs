@@ -26,15 +26,15 @@ sol! {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum SolPayloadParseError {
+pub enum SolPayloadDeserializationError {
     #[error(transparent)]
-    AccountIdParse(#[from] near_account_id::ParseAccountError),
+    AccountId(#[from] near_account_id::ParseAccountError),
     #[error(transparent)]
-    JsonParse(#[from] serde_json::Error),
+    Json(#[from] serde_json::Error),
 }
 
 impl<T: DeserializeOwned> TryFrom<SolPayload> for Payload<T> {
-    type Error = SolPayloadParseError;
+    type Error = SolPayloadDeserializationError;
 
     fn try_from(value: SolPayload) -> Result<Self, Self::Error> {
         Ok(Self {

@@ -1,4 +1,4 @@
-use near_sdk::AccountIdRef;
+use near_sdk::{near, AccountIdRef};
 
 use crate::ExecutionParameters;
 
@@ -9,17 +9,42 @@ mod payload;
 pub use payload::*;
 pub mod with_raw_string;
 
+pub trait SignableMessage {
+    type Key: Key<Self>
+    where
+        Self: Sized;
+    type Signature;
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json, borsh])]
+pub struct MessageWithSignature<M: SignableMessage> {
+    pub message: M,
+    #[serde(flatten)]
+    pub signature: M::Signature,
+}
+
+impl<M: SignableMessage> MessageWithSignature<M> {
+    pub fn verify_signature(
+        self,
+        key: &M::Key,
+    ) -> Result<MessageWithValidSignature<M>, InvalidSignatureError> {
+        if key.has_valid_signature(&self) {
+            Ok(MessageWithValidSignature(self))
+        } else {
+            Err(InvalidSignatureError)
+        }
+    }
+}
+
+pub struct MessageWithValidSignature<M: SignableMessage>(MessageWithSignature<M>);
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
 #[error("Invalid signature")]
 pub struct InvalidSignatureError;
 
-pub trait Key<M> {
-    type Verified;
-
-    /// # Errors
-    ///
-    /// - If checking the signature fails
-    fn verify_signature(&self, message: M) -> Result<Self::Verified, InvalidSignatureError>;
+pub trait Key<M: SignableMessage> {
+    fn has_valid_signature(&self, mws: &MessageWithSignature<M>) -> bool;
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
