@@ -1249,11 +1249,11 @@ fn governance_abdicate_set_is_allocator_blocks_further_changes() {
 
     setup_env(&vault_id, &owner, vec![]);
 
-    c.set_is_allocator(accounts(7), true);
+    c.set_is_allocator(accounts(4), true);
 
     c.abdicate("set_is_allocator".to_string());
 
-    c.set_is_allocator(accounts(7), false);
+    c.set_is_allocator(accounts(4), false);
 }
 
 #[test]

@@ -19,13 +19,18 @@ impl Abdicator {
 
     pub fn abdicate(&mut self, method_name: &str) {
         self.map.insert(method_name.to_string(), true);
-        near_sdk::env::log_str(&format!("abdicated {method_name}"));
+        Event::Abdicated {
+            method_name: method_name.to_string(),
+        }
+        .emit();
     }
 
-    pub fn require_not_abdicated(method_name: &str) {
-        let this = Self::new();
-        if this.is_abdicated(method_name) {
-            templar_common::panic_with_message(&format!("abdicated {method_name}"));
+    pub fn require_not_abdicated(a: Option<&Self>, method_name: &str) {
+        match a {
+            Some(a) if a.is_abdicated(method_name) => {
+                templar_common::panic_with_message(&format!("abdicated {method_name}"));
+            }
+            _ => (),
         }
     }
 }
@@ -35,7 +40,7 @@ impl Contract {
     /// Sets the Curator account. Also grants/removes the Allocator role accordingly.
     pub fn set_curator(&mut self, account: AccountId) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("set_curator");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "set_curator");
         Self::with_members_of_mut(&Role::Curator, |members| {
             require!(
                 members.len() < 2,
@@ -61,7 +66,7 @@ impl Contract {
     /// Grants or revokes the Allocator role for `account`.
     pub fn set_is_allocator(&mut self, account: AccountId, allowed: bool) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("set_is_allocator");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "set_is_allocator");
         if allowed {
             Self::add_role(self, &account, &Role::Allocator);
         } else {
@@ -73,7 +78,7 @@ impl Contract {
     /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
     pub fn submit_guardian(&mut self, new_g: AccountId) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("submit_guardian");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "submit_guardian");
         let mut guardian_occupied = false;
 
         Self::with_members_of(&Role::Guardian, |members| {
@@ -106,7 +111,7 @@ impl Contract {
     /// Accepts the pending Guardian change after the timelock has elapsed.
     pub fn accept_guardian(&mut self) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("accept_guardian");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "accept_guardian");
 
         let p = self.pending_guardian.clone();
 
@@ -127,14 +132,14 @@ impl Contract {
     /// Revokes any pending Guardian change.
     pub fn revoke_pending_guardian(&mut self) {
         Self::assert_guardian_or_owner();
-        Abdicator::require_not_abdicated("revoke_pending_guardian");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "revoke_pending_guardian");
         self.pending_guardian = None;
     }
 
     /// Sets the recipient account for skimmed tokens.
     pub fn set_skim_recipient(&mut self, account: AccountId) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("set_skim_recipient");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "set_skim_recipient");
         require!(
             account != self.skim_recipient,
             "Already set to this address"
@@ -150,7 +155,7 @@ impl Contract {
     #[payable]
     pub fn set_fee_recipient(&mut self, account: AccountId) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("set_fee_recipient");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "set_fee_recipient");
         require!(account != self.fee_recipient, "Already set to this address");
 
         if self.performance_fee != wad::Wad::zero() {
@@ -171,7 +176,7 @@ impl Contract {
     /// Sets the performance fee as a WAD fraction (1e24 = 100%). Accrues fees at the old rate first.
     pub fn set_performance_fee(&mut self, fee: Wad) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("set_performance_fee");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "set_performance_fee");
 
         require!(fee != self.performance_fee, "Fee already set to this value");
         require!(fee <= Wad::from(MAX_FEE_WAD), "fee too high");
@@ -190,7 +195,7 @@ impl Contract {
     /// If increasing, applies immediately; if decreasing, starts a timelock equal to the current duration.
     pub fn submit_timelock(&mut self, new_timelock_ns: U64) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("submit_timelock");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "submit_timelock");
         let tl = &new_timelock_ns.0;
 
         require!(tl != &self.timelock_ns, "Already set to this value");
@@ -225,7 +230,7 @@ impl Contract {
     /// Accepts a pending timelock change after it becomes valid.
     pub fn accept_timelock(&mut self) {
         Self::require_owner();
-        Abdicator::require_not_abdicated("accept_timelock");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "accept_timelock");
         if let Some(p) = &self.pending_timelock {
             p.verify();
 
@@ -243,7 +248,7 @@ impl Contract {
     /// Revokes any pending timelock change.
     pub fn revoke_pending_timelock(&mut self) {
         Self::assert_guardian_or_owner();
-        Abdicator::require_not_abdicated("revoke_pending_timelock");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "revoke_pending_timelock");
         self.pending_timelock = None;
         Event::PendingTimelockRevoked {}.emit();
     }
@@ -256,7 +261,7 @@ impl Contract {
     #[payable]
     pub fn submit_cap(&mut self, market: AccountId, new_cap: U128) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated("submit_cap");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "submit_cap");
         self.ensure_idle();
 
         let mkt = match self.markets.get_mut(&market) {
@@ -311,7 +316,7 @@ impl Contract {
     #[payable]
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated("accept_cap");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "accept_cap");
         self.ensure_idle();
 
         let m = self
@@ -359,7 +364,7 @@ impl Contract {
     /// Revokes any pending cap change for `market`.
     pub fn revoke_pending_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated("revoke_pending_cap");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "revoke_pending_cap");
         if let Some(rec) = self.markets.get_mut(&market) {
             if rec.pending_cap.take().is_some() {
                 Event::SupplyCapRaiseRevoked {
@@ -379,7 +384,7 @@ impl Contract {
     /// Requires cap == 0 and no pending cap changes; starts a timelock.
     pub fn submit_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated("submit_market_removal");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "submit_market_removal");
         let rec = self.markets.get_mut(&market).unwrap_or_else(|| {
             templar_common::panic_with_message(&format!("Unknown market: {market}"))
         });
@@ -407,7 +412,7 @@ impl Contract {
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated("revoke_pending_market_removal");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "revoke_pending_market_removal");
         if let Some(cfg) = self.markets.get_mut(&market).map(|c| &mut c.cfg) {
             cfg.removable_at = 0;
         }
@@ -419,7 +424,7 @@ impl Contract {
     #[payable]
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
-        Abdicator::require_not_abdicated("set_supply_queue");
+        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "set_supply_queue");
         self.ensure_idle();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
