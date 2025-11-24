@@ -40,6 +40,19 @@ impl Contract {
         Event::AllocatorRoleSet { account, allowed }.emit();
     }
 
+    /// Grants or revokes the Sentinel role for `account`.
+    /// Sentinel is an emergency role that can revoke pending governance changes
+    /// and trigger deallocations/cancellations without having full Allocator powers.
+    pub fn set_is_sentinel(&mut self, account: AccountId, allowed: bool) {
+        Self::require_owner();
+        if allowed {
+            Self::add_role(self, &account, &Role::Sentinel);
+        } else {
+            self.remove_role(&account, &Role::Sentinel);
+        }
+        Event::SentinelRoleSet { account, allowed }.emit();
+    }
+
     /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
     pub fn submit_guardian(&mut self, new_g: AccountId) {
         Self::require_owner();
@@ -94,7 +107,7 @@ impl Contract {
 
     /// Revokes any pending Guardian change.
     pub fn revoke_pending_guardian(&mut self) {
-        Self::assert_guardian_or_owner();
+        Self::assert_sentinel_or_guardian_or_owner();
         self.pending_guardian = None;
     }
 
@@ -204,7 +217,7 @@ impl Contract {
 
     /// Revokes any pending timelock change.
     pub fn revoke_pending_timelock(&mut self) {
-        Self::assert_guardian_or_owner();
+        Self::assert_sentinel_or_guardian_or_owner();
         self.pending_timelock = None;
         Event::PendingTimelockRevoked {}.emit();
     }
@@ -317,7 +330,7 @@ impl Contract {
 
     /// Revokes any pending cap change for `market`.
     pub fn revoke_pending_cap(&mut self, market: AccountId) {
-        Self::assert_curator_or_owner();
+        Self::assert_sentinel_or_curator_or_owner();
         if let Some(rec) = self.markets.get_mut(&market) {
             if rec.pending_cap.take().is_some() {
                 Event::SupplyCapRaiseRevoked {
@@ -364,7 +377,7 @@ impl Contract {
 
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
-        Self::assert_curator_or_owner();
+        Self::assert_sentinel_or_curator_or_owner();
         if let Some(cfg) = self.markets.get_mut(&market).map(|c| &mut c.cfg) {
             cfg.removable_at = 0;
         }

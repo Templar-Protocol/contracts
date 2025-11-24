@@ -73,6 +73,10 @@ pub enum Role {
     /// Operational role for allocation and withdrawal execution.
     /// May set the supply_queue while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
+    /// Emergency role that can revoke pending governance changes and trigger
+    /// deallocations / cancellation of stuck operations without having full
+    /// Allocator powers.
+    Sentinel,
 }
 
 #[near(serializers = [borsh])]
@@ -388,13 +392,33 @@ impl Contract {
     ///
     /// If the vault is not currently Withdrawing, this is a no-op.
     pub fn cancel_in_flight_withdrawal(&mut self) -> PromiseOrValue<()> {
-        Self::assert_allocator();
+        Self::assert_deallocator();
 
         match &self.op_state {
             OpState::Withdrawing(_) => {
                 // stop_and_exit_withdrawing refunds escrow, unlocks current index, clears route,
                 // dequeues the inflight request and sets the vault back to Idle.
                 self.stop_and_exit_withdrawing::<&str>(None);
+                PromiseOrValue::Value(())
+            }
+            _ => PromiseOrValue::Value(()),
+        }
+    }
+
+    /// Sentinel/Allocator/Curator/Owner only.
+    /// Cancels the current in-flight payout:
+    /// - Refunds escrowed shares to the owner (if any)
+    /// - Leaves idle_balance unchanged
+    /// - Clears withdraw state and dequeues the pending request (advance head)
+    ///
+    /// If the vault is not currently in Payout, this is a no-op.
+    pub fn cancel_broken_payout(&mut self) -> PromiseOrValue<()> {
+        Self::assert_deallocator();
+
+        match &self.op_state {
+            OpState::Payout(_) => {
+                // stop_and_exit_payout handles refund + queue/head updates + state reset.
+                self.stop_and_exit_payout::<&str>(None);
                 PromiseOrValue::Value(())
             }
             _ => PromiseOrValue::Value(()),
@@ -438,7 +462,13 @@ impl Contract {
     ///
     /// NOTE: When we rewrite this we should use a delta based approach
     pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
-        Self::assert_allocator();
+        match &delta {
+            // Supply (allocation) remains restricted to Allocator/Curator/Owner.
+            AllocationDelta::Supply(_) => Self::assert_allocator(),
+            // Withdraw (deallocation) additionally allowed for Sentinel.
+            AllocationDelta::Withdraw(_) => Self::assert_deallocator(),
+        }
+
         self.ensure_idle();
         delta.as_ref().validate();
 
@@ -839,6 +869,38 @@ impl Contract {
     fn assert_allocator() {
         let p = env::predecessor_account_id();
         if !Self::has_role(&p, &Role::Allocator) && !Self::has_role(&p, &Role::Curator) {
+            Self::require_owner();
+        }
+    }
+
+    /// Guardian or Sentinel (or Owner) guard used for revoking pending governance changes.
+    fn assert_sentinel_or_guardian_or_owner() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Sentinel) && !Self::has_role(&p, &Role::Guardian) {
+            Self::require_owner();
+        }
+    }
+
+    /// Curator or Sentinel (or Owner) guard used for revoking pending market-level changes.
+    fn assert_sentinel_or_curator_or_owner() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Sentinel) && !Self::has_role(&p, &Role::Curator) {
+            Self::require_owner();
+        }
+    }
+
+    /// Deallocation / emergency-ops guard: Allocator, Curator or Sentinel (or Owner).
+    ///
+    /// Used for:
+    /// - Deallocation (withdrawal-side reallocate)
+    /// - Cancelling in-flight withdrawals
+    /// - Cancelling broken payouts
+    fn assert_deallocator() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Allocator)
+            && !Self::has_role(&p, &Role::Curator)
+            && !Self::has_role(&p, &Role::Sentinel)
+        {
             Self::require_owner();
         }
     }
