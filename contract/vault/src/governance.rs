@@ -15,54 +15,26 @@ pub enum TimelockedAction {
     MarketRemoval { market: AccountId },
 }
 
-impl TimelockedAction {
-    pub fn bucket(&self) -> TimelockBucket {
-        match self {
-            TimelockedAction::GuardianChange { .. } => TimelockBucket::Guardian,
-            TimelockedAction::TimelockConfigChange { .. } => TimelockBucket::TimelockConfig,
-            TimelockedAction::CapChange { .. } => TimelockBucket::Cap,
-            TimelockedAction::MarketRemoval { .. } => TimelockBucket::MarketRemoval,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
-#[near(serializers = [borsh])]
-pub enum TimelockBucket {
-    /// Timelock for changing guardian.
-    Guardian,
-    /// Timelock for changing the timelock configuration.
-    TimelockConfig,
-    /// Timelock for increasing a market cap.
-    Cap,
-    /// Timelock for submitting market removal.
-    MarketRemoval,
-}
 
 #[near(serializers = [borsh])]
 pub struct Timelocks {
-    buckets: BTreeMap<TimelockBucket, TimestampNs>,
-    pending_actions: VecDeque<(TimelockBucket, PendingValue<TimelockedAction>)>,
+    guardian_ns: TimestampNs,
+    timelock_config_ns: TimestampNs,
+    cap_ns: TimestampNs,
+    market_removal_ns: TimestampNs,
+    pending_actions: VecDeque<PendingValue<TimelockedAction>>,
 }
 
 impl Timelocks {
-    fn duration_for(&self, bucket: TimelockBucket) -> Option<&TimestampNs> {
-        match bucket {
-            TimelockBucket::Guardian => self.buckets.get(&TimelockBucket::Guardian),
-            TimelockBucket::TimelockConfig => self.buckets.get(&TimelockBucket::TimelockConfig),
-            TimelockBucket::Cap => self.buckets.get(&TimelockBucket::Cap),
-            TimelockBucket::MarketRemoval => self.buckets.get(&TimelockBucket::MarketRemoval),
-        }
-    }
     fn seek_pending_timelock(
         &self,
         find_fn: impl Fn(&TimelockedAction) -> bool,
-    ) -> Option<(usize, &TimelockBucket, &PendingValue<TimelockedAction>)> {
+    ) -> Option<(usize, &PendingValue<TimelockedAction>)> {
         self.pending_actions
             .iter()
             .enumerate()
-            .find(|(_, (_, entry))| find_fn(&entry.value))
-            .map(|(index, (bucket, entry))| (index, bucket, entry))
+            .find(|(_, entry)| find_fn(&entry.value))
+            .map(|(index, entry)| (index, entry))
     }
 }
 
@@ -362,10 +334,7 @@ impl Contract {
                 Self::assert_guardian_or_owner();
 
                 let new = new_timelock_ns.0;
-                let current = *self
-                    .governance_timelocks
-                    .duration_for(TimelockBucket::TimelockConfig)
-                    .unwrap_or(&0);
+                let current = self.governance_timelocks.timelock_config_ns;
 
                 require!(new != current, "Already set to this value");
                 require!(
@@ -438,18 +407,10 @@ impl Contract {
             }
             TimelockedAction::TimelockConfigChange { new_timelock_ns } => {
                 // Increases apply immediately to all governance buckets.
-                self.governance_timelocks
-                    .buckets
-                    .insert(TimelockBucket::Guardian, new_timelock_ns.0);
-                self.governance_timelocks
-                    .buckets
-                    .insert(TimelockBucket::TimelockConfig, new_timelock_ns.0);
-                self.governance_timelocks
-                    .buckets
-                    .insert(TimelockBucket::MarketRemoval, new_timelock_ns.0);
-                self.governance_timelocks
-                    .buckets
-                    .insert(TimelockBucket::Cap, new_timelock_ns.0);
+                self.governance_timelocks.guardian_ns = new_timelock_ns.0;
+                self.governance_timelocks.timelock_config_ns = new_timelock_ns.0;
+                self.governance_timelocks.market_removal_ns = new_timelock_ns.0;
+                self.governance_timelocks.cap_ns = new_timelock_ns.0;
                 Event::TimelockSet {
                     seconds: *new_timelock_ns,
                 }
@@ -514,13 +475,19 @@ impl Contract {
     ///
     /// Fails if an identical action is already pending.
     fn schedule_timelock(&mut self, action: &TimelockedAction) {
-        let cur = self
-            .governance_timelocks
-            .duration_for(action.bucket())
-            .unwrap_or(&0);
+        let cur = match action {
+            TimelockedAction::GuardianChange { .. } => self.governance_timelocks.guardian_ns,
+            TimelockedAction::TimelockConfigChange { .. } => {
+                self.governance_timelocks.timelock_config_ns
+            }
+            TimelockedAction::CapChange { .. } => self.governance_timelocks.cap_ns,
+            TimelockedAction::MarketRemoval { .. } => {
+                self.governance_timelocks.market_removal_ns
+            }
+        };
 
         require!(
-            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(cur),
+            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&cur),
             "Timelock duration out of bounds"
         );
 
@@ -531,15 +498,14 @@ impl Contract {
             "Change already pending for this action and arguments"
         );
 
-        let valid_at_ns = env::block_timestamp().saturating_add(*cur);
+        let valid_at_ns = env::block_timestamp().saturating_add(cur);
 
-        self.governance_timelocks.pending_actions.push_back((
-            action.bucket(),
-            PendingValue {
+        self.governance_timelocks
+            .pending_actions
+            .push_back(PendingValue {
                 value: action.clone(),
                 valid_at_ns,
-            },
-        ));
+            });
 
         Event::TimelockChangeSubmitted {
             valid_at_ns: valid_at_ns.into(),
@@ -556,10 +522,10 @@ impl Contract {
     ) -> Option<TimelockedAction> {
         self.governance_timelocks
             .seek_pending_timelock(find_fn)
-            .inspect(|(_, _, pending)| {
+            .inspect(|(_, pending)| {
                 pending.verify();
             })
-            .map(|(i, _, entry)| (i, entry.clone()))
+            .map(|(i, entry)| (i, entry.clone()))
             .map(|(i, entry)| {
                 self.governance_timelocks.pending_actions.remove(i);
                 entry.value
@@ -572,7 +538,7 @@ impl Contract {
         let mut removed_any = false;
         self.governance_timelocks
             .pending_actions
-            .retain(|(_, entry)| {
+            .retain(|entry| {
                 let keep = !pred(&entry.value);
                 if !keep {
                     removed_any = true;
