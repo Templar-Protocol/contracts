@@ -284,13 +284,27 @@ impl Contract {
         self.submit_change(TimelockedAction::MarketRemoval { market });
     }
 
+    /// Accepts a pending market removal for `market` after the timelock has elapsed.
+    pub fn accept_market_removal(&mut self, market: AccountId) {
+        Self::assert_curator_or_owner();
+
+        if let Some(action) = self.take_timelock(
+            |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
+        ) {
+            self.apply_immediately(&action);
+        } else {
+            panic_with_message("No pending market removal for this market");
+        }
+    }
+
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        if let Some(cfg) = self.markets.get_mut(&market).map(|c| &mut c.cfg) {
-            cfg.removable_at = 0;
+        if self.revoke_timelocks(
+            |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
+        ) {
+            Event::MarketRemovalRevoked { market }.emit();
         }
-        Event::MarketRemovalRevoked { market }.emit();
     }
 
     /// Sets the ordered supply queue.
@@ -405,7 +419,7 @@ impl Contract {
                         .is_none(),
                     "Cap change pending for this market"
                 );
-                true
+                r.principal > 0
             }
         }
     }
@@ -484,14 +498,9 @@ impl Contract {
                     .markets
                     .get_mut(market)
                     .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
-                // FIXME: this is now a pending action
-                rec.cfg.removable_at = env::block_timestamp().saturating_add(
-                    *self
-                        .governance_timelocks
-                        .buckets
-                        .get(&TimelockBucket::MarketRemoval)
-                        .unwrap_or(&0),
-                );
+
+                // Governance timelock has elapsed; mark as removable now.
+                rec.cfg.removable_at = env::block_timestamp();
                 Event::MarketRemovalSubmitted {
                     market: market.clone(),
                     removable_at: rec.cfg.removable_at.into(),
