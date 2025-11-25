@@ -1,4 +1,70 @@
 use super::*;
+use std::collections::VecDeque;
+use templar_common::{panic_with_message, vault::PendingValue};
+
+#[near(serializers = [borsh, json])]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimelockedAction {
+    /// Change the guardian to `new_guardian`.
+    GuardianChange { account: AccountId },
+    /// Change the base governance timelock configuration to `new_timelock_ns`.
+    TimelockConfigChange { new_timelock_ns: U64 },
+    /// Increase the cap for a given `market` to `new_cap`.
+    CapChange { market: AccountId, new_cap: U128 },
+    /// Mark a `market` for removal (timestamp is still stored on the config).
+    MarketRemoval { market: AccountId },
+}
+
+impl TimelockedAction {
+    pub fn bucket(&self) -> TimelockBucket {
+        match self {
+            TimelockedAction::GuardianChange { .. } => TimelockBucket::Guardian,
+            TimelockedAction::TimelockConfigChange { .. } => TimelockBucket::TimelockConfig,
+            TimelockedAction::CapChange { .. } => TimelockBucket::Cap,
+            TimelockedAction::MarketRemoval { .. } => TimelockBucket::MarketRemoval,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[near(serializers = [borsh])]
+pub enum TimelockBucket {
+    /// Timelock for changing guardian.
+    Guardian,
+    /// Timelock for changing the timelock configuration.
+    TimelockConfig,
+    /// Timelock for increasing a market cap.
+    Cap,
+    /// Timelock for submitting market removal.
+    MarketRemoval,
+}
+
+#[near(serializers = [borsh])]
+pub struct Timelocks {
+    buckets: BTreeMap<TimelockBucket, TimestampNs>,
+    pending_actions: VecDeque<(TimelockBucket, PendingValue<TimelockedAction>)>,
+}
+
+impl Timelocks {
+    fn duration_for(&self, bucket: TimelockBucket) -> Option<&TimestampNs> {
+        match bucket {
+            TimelockBucket::Guardian => self.buckets.get(&TimelockBucket::Guardian),
+            TimelockBucket::TimelockConfig => self.buckets.get(&TimelockBucket::TimelockConfig),
+            TimelockBucket::Cap => self.buckets.get(&TimelockBucket::Cap),
+            TimelockBucket::MarketRemoval => self.buckets.get(&TimelockBucket::MarketRemoval),
+        }
+    }
+    fn seek_pending_timelock(
+        &self,
+        find_fn: impl Fn(&TimelockedAction) -> bool,
+    ) -> Option<(usize, &TimelockBucket, &PendingValue<TimelockedAction>)> {
+        self.pending_actions
+            .iter()
+            .enumerate()
+            .find(|(_, (_, entry))| find_fn(&entry.value))
+            .map(|(index, (bucket, entry))| (index, bucket, entry))
+    }
+}
 
 #[near]
 impl Contract {
@@ -36,64 +102,6 @@ impl Contract {
             self.remove_role(&account, &Role::Allocator);
         }
         Event::AllocatorRoleSet { account, allowed }.emit();
-    }
-
-    /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
-    pub fn submit_guardian(&mut self, new_g: AccountId) {
-        Self::require_owner();
-        let mut guardian_occupied = false;
-
-        Self::with_members_of(&Role::Guardian, |members| {
-            require!(
-                members.len() < 2,
-                "Invariant violation: Cannot have more than one Guardian"
-            );
-            require!(!members.contains(&new_g), "Already set to this address");
-            guardian_occupied = !members.is_empty();
-        });
-        require!(
-            self.pending_guardian.is_none(),
-            "Guardian change already pending"
-        );
-        if guardian_occupied {
-            let valid_at_ns = env::block_timestamp() + self.timelock_ns;
-            self.pending_guardian = Some(PendingValue {
-                value: new_g,
-                valid_at_ns,
-            });
-        } else {
-            Self::add_role(self, &new_g, &Role::Guardian);
-            Event::GuardianSet {
-                account: new_g.clone(),
-            }
-            .emit();
-        }
-    }
-
-    /// Accepts the pending Guardian change after the timelock has elapsed.
-    pub fn accept_guardian(&mut self) {
-        Self::require_owner();
-
-        let p = self.pending_guardian.clone();
-
-        if let Some(p) = &p {
-            p.verify();
-            Self::with_members_of_mut(&Role::Guardian, |members| {
-                members.clear();
-                members.insert(&p.value);
-            });
-            Event::GuardianSet {
-                account: p.value.clone(),
-            }
-            .emit();
-            self.pending_guardian = None;
-        }
-    }
-
-    /// Revokes any pending Guardian change.
-    pub fn revoke_pending_guardian(&mut self) {
-        Self::assert_guardian_or_owner();
-        self.pending_guardian = None;
     }
 
     /// Sets the recipient account for skimmed tokens.
@@ -147,64 +155,82 @@ impl Contract {
         .emit();
     }
 
+    // // • Cap: “If new_cap < current_cap → apply immediately; if > → timelock, only one pending per market, also ensure_idle.”
+    // // • Market removal: doesn’t use PendingValue<TimelockedAction> at all; it uses removable_at on the market plus checks about cap, enabled, no pending cap changes, etc.
+    // /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
+    pub fn submit_change(&mut self, action: TimelockedAction) {
+        let should_schedule_timelock = self.decide_should_queue(&action);
+
+        if should_schedule_timelock {
+            self.schedule_timelock(&action);
+        } else {
+            self.apply_immediately(&action);
+        }
+    }
+
+    /// Accepts any pending changes
+    pub fn accept_change(&mut self) {
+        todo!("Find next pending change and apply it");
+
+        // self.governance_timelocks
+        //     .pending_actions
+        //     .iter()
+        //     .sorted_by(|f| f.1.valid_at_ns)
+    }
+
+    /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
+    pub fn submit_guardian(&mut self, account: AccountId) {
+        let tl = TimelockedAction::GuardianChange { account };
+        self.submit_change(tl);
+    }
+
+    /// Accepts the pending Guardian change after the timelock has elapsed.
+    pub fn accept_guardian(&mut self) {
+        Self::require_owner();
+
+        if let Some(action) =
+            self.take_timelock(|a| matches!(a, TimelockedAction::GuardianChange { .. }))
+        {
+            self.apply_immediately(&action);
+        } else {
+            panic!("No pending change");
+        }
+    }
+
+    /// Revokes any pending Guardian change.
+    pub fn revoke_pending_guardian(&mut self) {
+        Self::assert_guardian_or_owner();
+        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::GuardianChange { .. })) {
+            Event::PendingTimelockRevoked.emit();
+        }
+    }
+
     /* ----- Timelocks / Pending ----- */
     /// Proposes a new governance timelock in nanoseconds.
     /// If increasing, applies immediately; if decreasing, starts a timelock equal to the current duration.
     pub fn submit_timelock(&mut self, new_timelock_ns: U64) {
-        Self::require_owner();
-        let tl = &new_timelock_ns.0;
-
-        require!(tl != &self.timelock_ns, "Already set to this value");
-        require!(
-            self.pending_timelock.is_none(),
-            "Timelock change already pending"
-        );
-        require!(
-            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(tl),
-            "Timelock out of bounds"
-        );
-        if tl > &self.timelock_ns {
-            self.timelock_ns = *tl;
-            Event::TimelockSet {
-                seconds: new_timelock_ns,
-            }
-            .emit();
-        } else {
-            let valid_at_ns = env::block_timestamp() + self.timelock_ns;
-            self.pending_timelock = Some(PendingValue {
-                value: *tl,
-                valid_at_ns,
-            });
-            Event::TimelockChangeSubmitted {
-                new_ns: new_timelock_ns,
-                valid_at_ns: valid_at_ns.into(),
-            }
-            .emit();
-        }
+        let tl = TimelockedAction::TimelockConfigChange { new_timelock_ns };
+        self.submit_change(tl);
     }
 
     /// Accepts a pending timelock change after it becomes valid.
     pub fn accept_timelock(&mut self) {
         Self::require_owner();
-        if let Some(p) = &self.pending_timelock {
-            p.verify();
-
-            self.timelock_ns = p.value;
-            Event::TimelockSet {
-                seconds: p.value.into(),
-            }
-            .emit();
-            self.pending_timelock = None;
+        if let Some(action) =
+            self.take_timelock(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. }))
+        {
+            self.apply_immediately(&action);
         } else {
-            templar_common::panic_with_message("No pending timelock change");
-        }
+            panic_with_message("No pending change");
+        };
     }
 
     /// Revokes any pending timelock change.
     pub fn revoke_pending_timelock(&mut self) {
         Self::assert_guardian_or_owner();
-        self.pending_timelock = None;
-        Event::PendingTimelockRevoked {}.emit();
+        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. })) {
+            Event::PendingTimelockRevoked.emit();
+        }
     }
 
     /// Submits a change to a market's supply cap.
@@ -214,53 +240,7 @@ impl Contract {
     /// If the market does not exist.
     #[payable]
     pub fn submit_cap(&mut self, market: AccountId, new_cap: U128) {
-        Self::assert_curator_or_owner();
-        self.ensure_idle();
-
-        let mkt = match self.markets.get_mut(&market) {
-            None => {
-                self.markets.insert(market.clone(), MarketRecord::default());
-                Event::MarketCreated {
-                    market: market.clone(),
-                }
-                .emit();
-                self.markets
-                    .get_mut(&market)
-                    .unwrap_or_else(|| templar_common::panic_with_message("Config not found"))
-            }
-            Some(m) => m,
-        };
-
-        require!(
-            &mkt.pending_cap.is_none(),
-            "Policy violation: A cap change is already pending for this market"
-        );
-
-        require!(
-            mkt.cfg.removable_at == 0,
-            "Market removal pending, cannot change cap"
-        );
-
-        require!(new_cap != mkt.cfg.cap, "New cap is same as current");
-
-        if new_cap < mkt.cfg.cap {
-            // If lowering the cap, we can apply the delta immediately
-            mkt.cfg.cap = new_cap;
-        } else {
-            let valid_at_ns = env::block_timestamp() + self.timelock_ns;
-            if let Some(rec) = self.markets.get_mut(&market) {
-                rec.pending_cap = Some(PendingValue {
-                    value: new_cap.0,
-                    valid_at_ns,
-                });
-            }
-            Event::SupplyCapRaiseSubmitted {
-                market: market.clone(),
-                new_cap,
-                valid_at_ns,
-            }
-            .emit();
-        }
+        self.submit_change(TimelockedAction::CapChange { market, new_cap });
     }
 
     /// Accepts a pending cap increase for `market` once the timelock has elapsed.
@@ -271,58 +251,25 @@ impl Contract {
         Self::assert_curator_or_owner();
         self.ensure_idle();
 
-        let m = self
-            .markets
-            .get_mut(&market)
-            .unwrap_or_else(|| templar_common::panic_with_message("Config not found"));
-
-        let was_enabled = m.cfg.enabled;
-
-        let pending_value = m.pending_cap.as_ref().map_or_else(
-            || templar_common::panic_with_message("No pending cap change for this market"),
-            |pending_cap| {
-                pending_cap.verify();
-                pending_cap.value
-            },
-        );
-        m.cfg.cap = pending_value.into();
-
-        if pending_value > 0 {
-            if !m.cfg.enabled {
-                m.cfg.enabled = true;
-            }
-            m.cfg.removable_at = 0;
-        }
-
-        if pending_value > 0 && !was_enabled {
-            Event::MarketEnabled {
-                market: market.clone(),
-            }
-            .emit();
-        }
-
-        Event::SupplyCapSet {
-            market: market.clone(),
-            new_cap: U128(pending_value),
-        }
-        .emit();
-
-        self.markets
-            .get_mut(&market)
-            .unwrap_or_else(|| templar_common::panic_with_message("Config not found"))
-            .pending_cap = None;
+        if let Some(action) = self.take_timelock(
+            |a| matches!(a, TimelockedAction::CapChange { market: mkt, .. } if mkt == &market),
+        ) {
+            self.apply_immediately(&action);
+        } else {
+            panic_with_message("No pending cap change for this market");
+        };
     }
 
     /// Revokes any pending cap change for `market`.
     pub fn revoke_pending_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        if let Some(rec) = self.markets.get_mut(&market) {
-            if rec.pending_cap.take().is_some() {
-                Event::SupplyCapRaiseRevoked {
-                    market: market.clone(),
-                }
-                .emit();
+        if self.revoke_timelocks(
+            |a| matches!(a, TimelockedAction::CapChange { market: mkt, .. } if mkt == &market),
+        ) {
+            Event::SupplyCapRaiseRevoked {
+                market: market.clone(),
             }
+            .emit();
         }
     }
 
@@ -334,29 +281,7 @@ impl Contract {
     /// Begins the process to remove `market`.
     /// Requires cap == 0 and no pending cap changes; starts a timelock.
     pub fn submit_market_removal(&mut self, market: AccountId) {
-        Self::assert_curator_or_owner();
-        let rec = self.markets.get_mut(&market).unwrap_or_else(|| {
-            templar_common::panic_with_message(&format!("Unknown market: {market}"))
-        });
-        require!(
-            rec.cfg.removable_at == 0,
-            "Removal already pending for this market"
-        );
-        require!(
-            rec.cfg.cap.0 == 0,
-            "Cannot remove market with non-zero cap (disable deposits first)"
-        );
-        require!(rec.cfg.enabled, "Market not enabled or already removed");
-        require!(
-            rec.pending_cap.is_none(),
-            "Cap change pending for this market"
-        );
-        rec.cfg.removable_at = env::block_timestamp() + self.timelock_ns;
-        Event::MarketRemovalSubmitted {
-            market: market.clone(),
-            removable_at: rec.cfg.removable_at.into(),
-        }
-        .emit();
+        self.submit_change(TimelockedAction::MarketRemoval { market });
     }
 
     /// Revokes a pending market removal for `market`.
@@ -380,7 +305,7 @@ impl Contract {
         let mut seen = HashSet::new();
         for m in &markets {
             if !seen.insert(m.clone()) {
-                templar_common::panic_with_message(&format!("Duplicate market {m}"));
+                panic_with_message(&format!("Duplicate market {m}"));
             }
         }
         // Validate all markets are authorized (cap > 0) before charging storage
@@ -399,5 +324,252 @@ impl Contract {
         for m in &markets {
             self.supply_queue.insert(m.clone());
         }
+    }
+}
+
+impl Contract {
+    fn decide_should_queue(&self, action: &TimelockedAction) -> bool {
+        match action {
+            // Submit a timelocked governance change if there is already a guardian
+            TimelockedAction::GuardianChange { account } => {
+                Self::require_owner();
+
+                Self::with_members_of(&Role::Guardian, |members| {
+                    require!(
+                        members.len() < 2,
+                        "Invariant violation: Cannot have more than one Guardian"
+                    );
+                    require!(!members.contains(&account), "Already set to this address");
+                    !members.is_empty()
+                })
+            }
+            // Submit a timelocked governance change if  the global timelock is to be smaller than the current timelock
+            TimelockedAction::TimelockConfigChange { new_timelock_ns } => {
+                Self::assert_guardian_or_owner();
+
+                let new = new_timelock_ns.0;
+                let current = *self
+                    .governance_timelocks
+                    .duration_for(TimelockBucket::TimelockConfig)
+                    .unwrap_or(&0);
+
+                require!(new != current, "Already set to this value");
+                require!(
+                    (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&new),
+                    "Timelock out of bounds"
+                );
+                new < current
+            }
+            // Submit a timelocked governance change if the cap is greater than the current cap or there is a new market to be made
+            TimelockedAction::CapChange { market, new_cap } => {
+                Self::assert_curator_or_owner();
+                self.ensure_idle();
+
+                let cfg = self.markets.get(market).map(|m| &m.cfg);
+
+                if let Some(cfg) = cfg {
+                    require!(
+                        cfg.removable_at == 0,
+                        "Market removal pending, cannot change cap"
+                    );
+
+                    require!(new_cap != &cfg.cap, "New cap is same as current");
+                    new_cap > &cfg.cap
+                } else {
+                    true
+                }
+            }
+            // Submit a timelocked governance change to remove a market
+            TimelockedAction::MarketRemoval { market } => {
+                Self::assert_curator_or_owner();
+
+                let r = self
+                    .markets
+                    .get(market)
+                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+                require!(
+                    r.cfg.removable_at == 0,
+                    "Removal already pending for this market"
+                );
+                require!(
+                    r.cfg.cap.0 == 0,
+                    "Cannot remove market with non-zero cap (disable deposits first)"
+                );
+                require!(r.cfg.enabled, "Market not enabled or already removed");
+                require!(
+                    self.governance_timelocks
+                        .seek_pending_timelock(|p| matches!(
+                            p,
+                            TimelockedAction::CapChange { market: m, .. } if m == market
+                        ))
+                        .is_none(),
+                    "Cap change pending for this market"
+                );
+                true
+            }
+        }
+    }
+
+    fn apply_immediately(&mut self, action: &TimelockedAction) {
+        match action {
+            TimelockedAction::GuardianChange { account } => {
+                Self::with_members_of_mut(&Role::Guardian, |members| {
+                    members.clear();
+                    members.insert(&account);
+                });
+                Event::GuardianSet {
+                    account: account.clone(),
+                }
+                .emit();
+            }
+            TimelockedAction::TimelockConfigChange { new_timelock_ns } => {
+                // Increases apply immediately to all governance buckets.
+                self.governance_timelocks
+                    .buckets
+                    .insert(TimelockBucket::Guardian, new_timelock_ns.0);
+                self.governance_timelocks
+                    .buckets
+                    .insert(TimelockBucket::TimelockConfig, new_timelock_ns.0);
+                self.governance_timelocks
+                    .buckets
+                    .insert(TimelockBucket::MarketRemoval, new_timelock_ns.0);
+                self.governance_timelocks
+                    .buckets
+                    .insert(TimelockBucket::Cap, new_timelock_ns.0);
+                Event::TimelockSet {
+                    seconds: *new_timelock_ns,
+                }
+                .emit();
+            }
+            TimelockedAction::CapChange { market, new_cap } => {
+                let mkt = match self.markets.get_mut(market) {
+                    None => {
+                        self.markets.insert(market.clone(), MarketRecord::default());
+                        Event::MarketCreated {
+                            market: market.clone(),
+                        }
+                        .emit();
+                        self.markets
+                            .get_mut(market)
+                            .unwrap_or_else(|| panic_with_message("Config not found"))
+                    }
+                    Some(m) => m,
+                };
+
+                let was_enabled = mkt.cfg.enabled;
+
+                if new_cap.0 > 0 {
+                    if !was_enabled {
+                        mkt.cfg.enabled = true;
+                    }
+                    mkt.cfg.removable_at = 0;
+                }
+
+                if new_cap.0 > 0 && !was_enabled {
+                    Event::MarketEnabled {
+                        market: market.clone(),
+                    }
+                    .emit();
+                }
+
+                Event::SupplyCapSet {
+                    market: market.clone(),
+                    new_cap: *new_cap,
+                }
+                .emit();
+                mkt.cfg.cap = *new_cap;
+            }
+            TimelockedAction::MarketRemoval { market } => {
+                let rec = self
+                    .markets
+                    .get_mut(market)
+                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+                // FIXME: this is now a pending action
+                rec.cfg.removable_at = env::block_timestamp().saturating_add(
+                    *self
+                        .governance_timelocks
+                        .buckets
+                        .get(&TimelockBucket::MarketRemoval)
+                        .unwrap_or(&0),
+                );
+                Event::MarketRemovalSubmitted {
+                    market: market.clone(),
+                    removable_at: rec.cfg.removable_at.into(),
+                }
+                .emit();
+            }
+        }
+    }
+
+    /// Schedule a new timelocked governance action.
+    ///
+    /// Fails if an identical action is already pending.
+    fn schedule_timelock(&mut self, action: &TimelockedAction) {
+        let cur = self
+            .governance_timelocks
+            .duration_for(action.bucket())
+            .unwrap_or(&0);
+
+        require!(
+            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(cur),
+            "Timelock duration out of bounds"
+        );
+
+        require!(
+            self.governance_timelocks
+                .seek_pending_timelock(|a| a == action)
+                .is_none(),
+            "Change already pending for this action and arguments"
+        );
+
+        let valid_at_ns = env::block_timestamp().saturating_add(*cur);
+
+        self.governance_timelocks.pending_actions.push_back((
+            action.bucket(),
+            PendingValue {
+                value: action.clone(),
+                valid_at_ns,
+            },
+        ));
+
+        Event::TimelockChangeSubmitted {
+            valid_at_ns: valid_at_ns.into(),
+        }
+        .emit();
+    }
+
+    /// Find and consume the first pending action that matches `pred`.
+    ///
+    /// Returns `None` if no such action exists, or panics if the timelock hasn't elapsed yet.
+    fn take_timelock(
+        &mut self,
+        find_fn: impl Fn(&TimelockedAction) -> bool,
+    ) -> Option<TimelockedAction> {
+        self.governance_timelocks
+            .seek_pending_timelock(find_fn)
+            .inspect(|(_, _, pending)| {
+                pending.verify();
+            })
+            .map(|(i, _, entry)| (i, entry.clone()))
+            .map(|(i, entry)| {
+                self.governance_timelocks.pending_actions.remove(i);
+                entry.value
+            })
+    }
+
+    /// Remove all pending actions that match `pred`.
+    /// Returns `true` if at least one action was removed.
+    fn revoke_timelocks(&mut self, pred: impl Fn(&TimelockedAction) -> bool) -> bool {
+        let mut removed_any = false;
+        self.governance_timelocks
+            .pending_actions
+            .retain(|(_, entry)| {
+                let keep = !pred(&entry.value);
+                if !keep {
+                    removed_any = true;
+                }
+                keep
+            });
+        removed_any
     }
 }

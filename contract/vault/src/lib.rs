@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     aum::AUM,
+    governance::Timelocks,
     storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -32,7 +33,7 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
         require_at_least, AllocatingState, AllocationMode, AllocationPlan, AllocationWeights,
-        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState, PendingValue,
+        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState,
         PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
         AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
         ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
@@ -78,17 +79,12 @@ pub enum Role {
 #[derive(Debug, Clone, Default)]
 pub struct MarketRecord {
     pub cfg: MarketConfiguration,
-    pub pending_cap: Option<PendingValue<u128>>,
     pub principal: u128,
 }
 
 impl From<MarketConfiguration> for MarketRecord {
     fn from(cfg: MarketConfiguration) -> Self {
-        Self {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        }
+        Self { cfg, principal: 0 }
     }
 }
 
@@ -136,12 +132,8 @@ pub struct Contract {
     // Merged market record: cfg + pending_cap + principal (single persisted map; no per-entry storage keys)
     markets: BTreeMap<AccountId, MarketRecord>,
 
-    /// Any pending change to the vault's timelock
-    pending_timelock: Option<PendingValue<TimestampNs>>,
-    /// Any pending change to the vault's guardian
-    pending_guardian: Option<PendingValue<AccountId>>,
-    /// Current timelock duration for governance actions (ns)
-    timelock_ns: TimestampNs,
+    /// Per‑action governance timelock configuration.
+    governance_timelocks: Timelocks,
 
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
@@ -203,13 +195,17 @@ impl Contract {
         let mut contract = Self {
             underlying_asset: underlying_token,
             aum: AUM::BalanceSheet,
-            timelock_ns: initial_timelock_ns.0,
             performance_fee: Wad::default(),
             fee_recipient,
             skim_recipient,
             markets: BTreeMap::new(),
-            pending_timelock: None,
-            pending_guardian: None,
+            governance_timelocks: GovernanceTimelocks {
+                guardian_ns: initial_timelock_ns.0,
+                timelock_config_ns: initial_timelock_ns.0,
+                cap_ns: initial_timelock_ns.0,
+                market_removal_ns: initial_timelock_ns.0,
+            },
+            pending_actions: BTreeMap::new(),
             supply_queue: BTreeSet::default(),
             last_total_assets: 0,
             virtual_shares: 1,
@@ -526,7 +522,7 @@ impl Contract {
                     .clone()
             }),
             underlying_token: self.underlying_asset.clone(),
-            initial_timelock_ns: self.timelock_ns.into(),
+            initial_timelock_ns: self.governance_timelocks.timelock_config_ns.into(),
             fee_recipient: self.fee_recipient.clone(),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,

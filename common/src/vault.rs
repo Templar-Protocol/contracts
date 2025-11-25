@@ -571,7 +571,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
-    TimelockChangeSubmitted { new_ns: U64, valid_at_ns: U64 },
+    TimelockChangeSubmitted { valid_at_ns: U64 },
     #[event_version("1.0.0")]
     PendingTimelockRevoked,
 
