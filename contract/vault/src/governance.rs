@@ -111,7 +111,6 @@ impl Contract {
         require!(account != self.fee_recipient, "Already set to this address");
 
         if self.performance_fee != wad::Wad::zero() {
-            // Accrue any pending fees to current recipient before changing (so current recipient gets up to now)
             self.internal_accrue_fee();
         }
         Event::FeeRecipientSet {
@@ -125,15 +124,15 @@ impl Contract {
         self.fee_recipient = account;
     }
 
-    /// Sets the performance fee as a WAD fraction (1e24 = 100%). Accrues fees at the old rate first.
+    /// Sets the performance fee as a `WAD`. Accrues fees at the old rate first.
     pub fn set_performance_fee(&mut self, fee: Wad) {
         Self::require_owner();
 
         require!(fee != self.performance_fee, "Fee already set to this value");
         require!(fee <= Wad::from(MAX_FEE_WAD), "fee too high");
 
-        // Accrue any pending fees with old rate before changing
         self.internal_accrue_fee();
+
         self.performance_fee = fee;
         Event::PerformanceFeeSet {
             fee: U128(u128::from(fee)),
@@ -141,9 +140,6 @@ impl Contract {
         .emit();
     }
 
-    // // • Cap: “If new_cap < current_cap → apply immediately; if > → timelock, only one pending per market, also ensure_idle.”
-    // // • Market removal: doesn’t use PendingValue<TimelockedAction> at all; it uses removable_at on the market plus checks about cap, enabled, no pending cap changes, etc.
-    // /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
     pub fn submit_change(&mut self, action: TimelockedAction) {
         let should_schedule_timelock = self.decide_should_queue(&action);
 
@@ -152,16 +148,6 @@ impl Contract {
         } else {
             self.apply_immediately(&action);
         }
-    }
-
-    /// Accepts any pending changes
-    pub fn accept_change(&mut self) {
-        todo!("Find next pending change and apply it");
-
-        // self.governance_timelocks
-        //     .pending_actions
-        //     .iter()
-        //     .sorted_by(|f| f.1.valid_at_ns)
     }
 
     /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
@@ -420,7 +406,6 @@ impl Contract {
                 .emit();
             }
             TimelockedAction::TimelockConfigChange { new_timelock_ns } => {
-                // Increases apply immediately to all governance buckets.
                 self.governance_timelocks.guardian_ns = new_timelock_ns.0;
                 self.governance_timelocks.timelock_config_ns = new_timelock_ns.0;
                 self.governance_timelocks.market_removal_ns = new_timelock_ns.0;
@@ -474,7 +459,6 @@ impl Contract {
                     .get_mut(market)
                     .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
 
-                // Governance timelock has elapsed; mark as removable now.
                 rec.cfg.removable_at = env::block_timestamp();
                 Event::MarketRemovalSubmitted {
                     market: market.clone(),

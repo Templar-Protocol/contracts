@@ -1491,6 +1491,8 @@ fn governance_submit_and_revoke_market_removal() {
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
+    let new_ts = env::block_timestamp() + 1_000_000_000;
+    set_ctx(&vault_id, &owner, Some(new_ts), None);
 
     let m = mk(9107);
     let cfg = MarketConfiguration {
@@ -1498,14 +1500,17 @@ fn governance_submit_and_revoke_market_removal() {
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(m.clone(), cfg.into());
+    let mut rec: MarketRecord = cfg.into();
+    rec.principal = 1;
+    c.markets.insert(m.clone(), rec);
 
-    // Submit removal (schedules timelock)
     c.submit_market_removal(m.clone());
+    c.accept_market_removal(m.clone());
     let after = c.markets.get(&m).unwrap();
-    assert!(after.cfg.removable_at > 0, "removal must be scheduled");
+    assert_eq!(after.cfg.removable_at, new_ts, "removal must be scheduled");
 
     // Revoke pending removal
+    // c.submit_market_removal(m.clone());
     c.revoke_pending_market_removal(m.clone());
     let after2 = c.markets.get(&m).unwrap();
     assert_eq!(after2.cfg.removable_at, 0, "removal must be revoked");
