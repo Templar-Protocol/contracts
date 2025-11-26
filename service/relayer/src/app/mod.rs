@@ -334,7 +334,7 @@ impl App {
     /// - If the action is not supported.
     /// - If the function name is not valid.
     /// - If the function arguments are invalid.
-    /// - etc. See [`PreconditionError`] for more details.
+    /// - etc. See [`PayloadRejectionReason`] for more details.
     #[tracing::instrument(skip(self, signed_delegate_action), fields(
         sender_id = %signed_delegate_action.delegate_action.sender_id,
         receiver_id = %signed_delegate_action.delegate_action.receiver_id
