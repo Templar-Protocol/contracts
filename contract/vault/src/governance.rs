@@ -52,7 +52,6 @@ impl Timelocks {
             .iter()
             .enumerate()
             .find(|(_, entry)| find_fn(&entry.value))
-            .map(|(index, entry)| (index, entry))
     }
 }
 
@@ -429,9 +428,9 @@ impl Contract {
         self.revoke_timelocks(
             |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
         );
-        self.markets.get_mut(&market).map(|m| {
+        if let Some(m) = self.markets.get_mut(&market) {
             m.cfg.removable_at = 0;
-        });
+        }
         Event::MarketRemovalRevoked { market }.emit();
     }
 
@@ -500,7 +499,7 @@ impl Contract {
                         members.len() < 2,
                         "Invariant violation: Cannot have more than one Guardian"
                     );
-                    require!(!members.contains(&account), "Already set to this address");
+                    require!(!members.contains(account), "Already set to this address");
                     !members.is_empty()
                 })
             }
@@ -527,10 +526,6 @@ impl Contract {
 
                 if let Some(cfg) = cfg {
                     require!(
-                        cfg.removable_at == 0,
-                        "Market removal pending, cannot change cap"
-                    );
-                    require!(
                         self.governance_timelocks
                             .seek_pending_timelock(|p| matches!(
                                 p,
@@ -539,7 +534,10 @@ impl Contract {
                             .is_none(),
                         "Market removal pending, cannot change cap"
                     );
-
+                    require!(
+                        cfg.removable_at == 0,
+                        "Market removal pending, cannot change cap"
+                    );
                     require!(new_cap != &cfg.cap, "New cap is same as current");
                     new_cap > &cfg.cap
                 } else {
@@ -592,7 +590,7 @@ impl Contract {
             TimelockedAction::GuardianChange { account } => {
                 Self::with_members_of_mut(&Role::Guardian, |members| {
                     members.clear();
-                    members.insert(&account);
+                    members.insert(account);
                 });
                 Event::GuardianSet {
                     account: account.clone(),
