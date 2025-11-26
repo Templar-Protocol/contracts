@@ -1,8 +1,8 @@
 # Summary
 
-- [Introduction](./README.md)
-- [Smart Contracts](./contract/README.md)
-  - [Market](./contract/market/README.md)
+- [Introduction](./index.md)
+- [Smart Contracts](./contract/index.md)
+  - [Market](./contract/market/index.md)
     - [Supply](./contract/market/supply.md)
     - [Borrow](./contract/market/borrow.md)
     - [Liquidate](./contract/market/liquidate.md)
