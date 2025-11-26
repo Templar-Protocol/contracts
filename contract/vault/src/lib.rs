@@ -1,10 +1,5 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    num::NonZeroU8,
-};
-
 use crate::{
     aum::AUM,
     governance::Timelocks,
@@ -29,6 +24,10 @@ use near_sdk_contract_tools::{
 };
 use near_sdk_contract_tools::{owner::Owner, rbac};
 use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    num::NonZeroU8,
+};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
@@ -199,13 +198,12 @@ impl Contract {
             fee_recipient,
             skim_recipient,
             markets: BTreeMap::new(),
-            governance_timelocks: GovernanceTimelocks {
-                guardian_ns: initial_timelock_ns.0,
-                timelock_config_ns: initial_timelock_ns.0,
-                cap_ns: initial_timelock_ns.0,
-                market_removal_ns: initial_timelock_ns.0,
-            },
-            pending_actions: BTreeMap::new(),
+            governance_timelocks: governance::Timelocks::new(
+                initial_timelock_ns.0,
+                initial_timelock_ns.0,
+                initial_timelock_ns.0,
+                initial_timelock_ns.0,
+            ),
             supply_queue: BTreeSet::default(),
             last_total_assets: 0,
             virtual_shares: 1,

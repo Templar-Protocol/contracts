@@ -15,17 +15,31 @@ pub enum TimelockedAction {
     MarketRemoval { market: AccountId },
 }
 
-
 #[near(serializers = [borsh])]
 pub struct Timelocks {
     guardian_ns: TimestampNs,
-    timelock_config_ns: TimestampNs,
+    pub timelock_config_ns: TimestampNs,
     cap_ns: TimestampNs,
     market_removal_ns: TimestampNs,
     pending_actions: VecDeque<PendingValue<TimelockedAction>>,
 }
 
 impl Timelocks {
+    pub fn new(
+        guardian_ns: TimestampNs,
+        timelock_config_ns: TimestampNs,
+        cap_ns: TimestampNs,
+        market_removal_ns: TimestampNs,
+    ) -> Self {
+        Self {
+            guardian_ns,
+            timelock_config_ns,
+            cap_ns,
+            market_removal_ns,
+            pending_actions: VecDeque::new(),
+        }
+    }
+
     fn seek_pending_timelock(
         &self,
         find_fn: impl Fn(&TimelockedAction) -> bool,
@@ -481,9 +495,7 @@ impl Contract {
                 self.governance_timelocks.timelock_config_ns
             }
             TimelockedAction::CapChange { .. } => self.governance_timelocks.cap_ns,
-            TimelockedAction::MarketRemoval { .. } => {
-                self.governance_timelocks.market_removal_ns
-            }
+            TimelockedAction::MarketRemoval { .. } => self.governance_timelocks.market_removal_ns,
         };
 
         require!(
@@ -536,15 +548,13 @@ impl Contract {
     /// Returns `true` if at least one action was removed.
     fn revoke_timelocks(&mut self, pred: impl Fn(&TimelockedAction) -> bool) -> bool {
         let mut removed_any = false;
-        self.governance_timelocks
-            .pending_actions
-            .retain(|entry| {
-                let keep = !pred(&entry.value);
-                if !keep {
-                    removed_any = true;
-                }
-                keep
-            });
+        self.governance_timelocks.pending_actions.retain(|entry| {
+            let keep = !pred(&entry.value);
+            if !keep {
+                removed_any = true;
+            }
+            keep
+        });
         removed_any
     }
 }
