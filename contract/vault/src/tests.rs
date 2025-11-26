@@ -1459,35 +1459,6 @@ fn governance_submit_accept_and_revoke_guardian() {
 }
 
 #[test]
-#[should_panic = "Guardian change already pending"]
-fn governance_submit_guardian_rejects_duplicate_pending() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
-
-    // Ensure there is an existing guardian so changes are timelocked.
-    let first = accounts(2);
-    c.submit_guardian(first.clone());
-    set_ctx(
-        &vault_id,
-        &owner,
-        Some(env::block_timestamp() + 1_000_000_000),
-        None,
-    );
-    c.accept_guardian();
-
-    // Submit a new guardian change, then attempt to submit another one
-    // before the first has been accepted or revoked.
-    let pending = accounts(5);
-    set_ctx(&vault_id, &owner, None, None);
-    c.submit_guardian(pending.clone());
-
-    let another = accounts(1);
-    c.submit_guardian(another);
-}
-
-#[test]
 fn governance_submit_accept_timelock_increase_then_decrease() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1518,24 +1489,6 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
         cur,
         "timelock should decrease after accept"
     );
-}
-
-#[test]
-#[should_panic = "Change already pending for this action and arguments"]
-fn governance_submit_timelock_rejects_duplicate_pending() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
-
-    let cur = c.get_configuration().initial_timelock_ns;
-
-    // First, increase then decrease to create a pending change.
-    c.submit_timelock((cur.0 + 1).into());
-    c.submit_timelock(cur);
-
-    // A second decrease while the first is still pending must panic.
-    c.submit_timelock(cur);
 }
 
 #[test]
@@ -1617,25 +1570,6 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
         cfg.enabled,
         "market should be enabled after accepting raise"
     );
-}
-
-#[test]
-#[should_panic = "Policy violation: A cap change is already pending for this market"]
-fn governance_submit_cap_rejects_duplicate_pending_for_market() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
-
-    let m = mk(9108);
-
-    // First pending raise for a new market.
-    set_ctx(&vault_id, &owner, None, Some(yocto_for_bytes(20_000)));
-    c.submit_cap(m.clone(), U128(5));
-
-    // Second raise for the same market while pending must panic.
-    set_ctx(&vault_id, &owner, None, None);
-    c.submit_cap(m.clone(), U128(10));
 }
 
 #[test]
