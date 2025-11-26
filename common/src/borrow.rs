@@ -147,54 +147,42 @@ impl BorrowPosition {
         mcr: Decimal,
         liquidator_spread: Decimal,
     ) -> CollateralAssetAmount {
-        // c = Value of collateral
-        // b = Value of borrow (liability)
-        // l = Value of amount of collateral to liquidate
-        // m = Target MCR
-        // d = Liquidation discount (spread)
-        // *_p = Price of *
-        // *_a = Amount of *
-        //
-        // We should be just at the target MCR after liquidating the
-        // maximum amount of collateral:
-        // (c - l) / (b - l) = m
-        // l = (m * b - c) / (m - 1)
-        //
-        // l = l_a * c_p
-        // c = c_a * c_p * (1 - d)
-        // b = b_a * b_p
-        //
-        // l_a * c_p = (m * b_a * b_p - c_a * c_p * (1 - d)) / (m - 1)
-        // l_a = m * (b_a * b_p / c_p - c_a * (1 - d) / m) / (m - 1)
-
-        let collateral_amount = self.get_total_collateral_amount();
-        let collateral_amount_dec = Decimal::from(collateral_amount);
-        let liability_valuation = price_pair.valuation(self.get_total_borrow_asset_liability());
-
-        #[allow(clippy::unwrap_used, reason = "not div0")]
-        let scaled_liability = liability_valuation
-            .ratio(price_pair.valuation(CollateralAssetAmount::new(1)))
-            .unwrap();
-        let scaled_collateral_amount =
-            collateral_amount_dec * (Decimal::ONE - liquidator_spread) / mcr;
-
-        if scaled_liability <= scaled_collateral_amount {
-            CollateralAssetAmount::zero()
-        } else {
-            // Multiplication by mcr here could cause overflow
-            let unscaled_amount =
-                (scaled_liability - scaled_collateral_amount) / (mcr - Decimal::ONE);
-
-            let available = if unscaled_amount >= collateral_amount_dec / mcr {
-                collateral_amount
-            } else {
-                let amount = mcr * unscaled_amount;
-                amount
-                    .to_u128_ceil()
-                    .map_or(collateral_amount, CollateralAssetAmount::new)
-            };
-            available.unwrap_sub(self.liquidation_lock, "Invariant violation: get_total_collateral_amount() >= liquidation_lock should hold")
+        let liability = self.get_total_borrow_asset_liability();
+        if liability.is_zero() {
+            // No liability
+            return CollateralAssetAmount::zero();
         }
+
+        let valuation_liability = price_pair.valuation(liability);
+        let collateral = self.get_total_collateral_amount();
+        let valuation_collateral = price_pair.valuation(collateral);
+
+        let Some(cr) = valuation_collateral.ratio(valuation_liability) else {
+            // Zero-valued liability
+            return CollateralAssetAmount::zero();
+        };
+
+        if cr <= Decimal::ONE {
+            // Totally underwater
+            return collateral.saturating_sub(self.liquidation_lock);
+        }
+
+        if cr >= mcr {
+            // Above MCR
+            return CollateralAssetAmount::zero();
+        }
+
+        let collateral_dec = Decimal::from(collateral);
+        let discount = Decimal::ONE - liquidator_spread;
+
+        let liquidatable_amount = (mcr * price_pair.convert(liability) - collateral_dec)
+            / (mcr * discount - Decimal::ONE);
+
+        liquidatable_amount
+            .to_u128_ceil()
+            .map_or(collateral, CollateralAssetAmount::new)
+            .min(collateral)
+            .saturating_sub(self.liquidation_lock)
     }
 }
 
@@ -720,7 +708,7 @@ impl<'a> BorrowPositionGuard<'a> {
     ///
     /// - If this record is not eligible for liquidation.
     /// - If the liquidator requests to liquidate too much collateral from the
-    ///     position.
+    ///   position.
     /// - If the calculation of the collateral value fails.
     /// - If the liquidator offers too little to purchase the collateral.
     pub fn record_liquidation_initial(
@@ -817,8 +805,167 @@ impl<'a> BorrowPositionGuard<'a> {
 
 #[cfg(test)]
 mod tests {
+    use near_sdk::{serde_json, test_utils::VMContextBuilder, testing_env};
+    use rstest::rstest;
+
+    use crate::{
+        asset::FungibleAsset,
+        dec,
+        fee::{Fee, TimeBasedFee},
+        interest_rate_strategy::InterestRateStrategy,
+        market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
+        oracle::pyth::{self, PriceIdentifier},
+        time_chunk::TimeChunkConfiguration,
+    };
+
     use super::*;
-    use near_sdk::serde_json;
+
+    #[rstest]
+    #[test]
+    fn liquidatable_collateral(
+        #[values("1.2", "1.25", "1.5", "2")] mcr: Decimal,
+        #[values(1000, 1010)] collateral_price: i64,
+        #[values(0, 10)] collateral_conf: u64,
+        #[values(1000, 1010)] borrow_price: i64,
+        #[values(0, 10)] borrow_conf: u64,
+    ) {
+        let c = VMContextBuilder::new()
+            .block_timestamp(1_000_000_000_000_000)
+            .build();
+        testing_env!(c.clone());
+
+        let configuration = MarketConfiguration {
+            time_chunk_configuration: TimeChunkConfiguration::new(600_000),
+            borrow_asset: FungibleAsset::nep141("borrow.near".parse().unwrap()),
+            collateral_asset: FungibleAsset::nep141("collateral.near".parse().unwrap()),
+            price_oracle_configuration: PriceOracleConfiguration {
+                account_id: "pyth-oracle.near".parse().unwrap(),
+                collateral_asset_price_id: PriceIdentifier([0xcc; 32]),
+                collateral_asset_decimals: 24,
+                borrow_asset_price_id: PriceIdentifier([0xbb; 32]),
+                borrow_asset_decimals: 24,
+                price_maximum_age_s: 60,
+            },
+            borrow_mcr_maintenance: mcr,
+            borrow_mcr_liquidation: mcr,
+            borrow_asset_maximum_usage_ratio: dec!("0.99"),
+            borrow_origination_fee: Fee::zero(),
+            borrow_interest_rate_strategy: InterestRateStrategy::zero(),
+            borrow_maximum_duration_ms: None,
+            borrow_range: (1, None).try_into().unwrap(),
+            supply_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_fee: TimeBasedFee::zero(),
+            yield_weights: YieldWeights::new_with_supply_weight(9)
+                .with_static("revenue.tmplr.near".parse().unwrap(), 1),
+            protocol_account_id: "revenue.tmplr.near".parse().unwrap(),
+            liquidation_maximum_spread: dec!("0.05"),
+        };
+
+        let mut market = Market::new(b"m", configuration.clone());
+        market.borrow_asset_deposited_active += BorrowAssetAmount::new(100_000_000_000);
+        let snapshot_proof = market.snapshot();
+
+        let mut position = BorrowPositionGuard(BorrowPositionRef {
+            market: &mut market,
+            account_id: "borrower".parse().unwrap(),
+            position: BorrowPosition::new(1),
+        });
+
+        let interest_proof = position.accumulate_interest();
+        position.record_collateral_asset_deposit(
+            interest_proof,
+            CollateralAssetAmount::new(100_000_000),
+        );
+        let initial_borrow = position
+            .record_borrow_initial(
+                snapshot_proof,
+                interest_proof,
+                BorrowAssetAmount::new(85_000_000),
+                &PricePair::new(
+                    &pyth::Price {
+                        price: 5.into(),
+                        conf: 0.into(),
+                        expo: 24,
+                        publish_time: 10,
+                    },
+                    24,
+                    &pyth::Price {
+                        price: 1.into(),
+                        conf: 0.into(),
+                        expo: 24,
+                        publish_time: 10,
+                    },
+                    24,
+                )
+                .unwrap(),
+                env::block_timestamp_ms(),
+            )
+            .unwrap();
+        position.record_borrow_final(
+            snapshot_proof,
+            interest_proof,
+            &initial_borrow,
+            true,
+            env::block_timestamp_ms(),
+        );
+        let price_pair = PricePair::new(
+            &pyth::Price {
+                price: collateral_price.into(),
+                conf: collateral_conf.into(),
+                expo: 24,
+                publish_time: 10,
+            },
+            24,
+            &pyth::Price {
+                price: borrow_price.into(),
+                conf: borrow_conf.into(),
+                expo: 24,
+                publish_time: 10,
+            },
+            24,
+        )
+        .unwrap();
+        let starting_cr = position
+            .inner()
+            .collateralization_ratio(&price_pair)
+            .unwrap();
+        eprintln!("Starting collateralization ratio: {starting_cr}");
+        let liquidatable_collateral = position.liquidatable_collateral(&price_pair);
+
+        let minimum_acceptable = configuration
+            .minimum_acceptable_liquidation_amount(liquidatable_collateral, &price_pair)
+            .unwrap();
+
+        eprintln!("Liquidatable collateral: {liquidatable_collateral}");
+        eprintln!("Minimum acceptable: {minimum_acceptable}");
+
+        let initial_liquidation = position
+            .record_liquidation_initial(
+                interest_proof,
+                minimum_acceptable,
+                Some(liquidatable_collateral),
+                &price_pair,
+                env::block_timestamp_ms(),
+            )
+            .unwrap();
+        position.record_liquidation_final(
+            interest_proof,
+            "liquidator".parse().unwrap(),
+            &initial_liquidation,
+        );
+
+        let finishing_cr = position
+            .inner()
+            .collateralization_ratio(&price_pair)
+            .unwrap();
+        eprintln!("Finishing collateralization ratio: {finishing_cr}");
+        eprintln!("Target MCR: {mcr}");
+
+        assert!(finishing_cr >= mcr);
+        let delta = finishing_cr.abs_diff(mcr);
+        assert!(delta < Decimal::ONE.mul_pow10(-4).unwrap());
+    }
 
     #[test]
     fn test_borrow_position_deserialize_new_format() {
