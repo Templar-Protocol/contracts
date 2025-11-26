@@ -1240,35 +1240,117 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     c.set_supply_queue(vec![m1]);
 }
 
-#[test]
-#[should_panic = "abdicated set_is_allocator"]
-fn governance_abdicate_set_is_allocator_blocks_further_changes() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
+#[rstest(
+    method_name,
+    case("set_curator"),
+    case("set_is_allocator"),
+    case("submit_guardian"),
+    case("accept_guardian"),
+    case("revoke_pending_guardian"),
+    case("set_skim_recipient"),
+    case("set_fee_recipient"),
+    case("set_performance_fee"),
+    case("submit_timelock"),
+    case("accept_timelock"),
+    case("revoke_pending_timelock"),
+    case("submit_cap"),
+    case("accept_cap"),
+    case("revoke_pending_cap"),
+    case("submit_market_removal"),
+    case("revoke_pending_market_removal"),
+    case("set_supply_queue")
+)]
+fn governance_abdicate_blocks_further_changes(method_name: &str) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let vault_id = accounts(0);
+        let mut c = new_test_contract(&vault_id);
+        let owner = c.own_get_owner().unwrap();
 
-    setup_env(&vault_id, &owner, vec![]);
+        setup_env(&vault_id, &owner, vec![]);
 
-    c.set_is_allocator(accounts(4), true);
+        c.abdicate(method_name.to_string());
+        match method_name {
+            "set_curator" => {
+                c.set_curator(accounts(2));
+            }
+            "set_is_allocator" => {
+                c.set_is_allocator(accounts(4), false);
+            }
+            "submit_guardian" => {
+                c.submit_guardian(accounts(5));
+            }
+            "accept_guardian" => {
+                c.accept_guardian();
+            }
+            "revoke_pending_guardian" => {
+                c.revoke_pending_guardian();
+            }
+            "set_skim_recipient" => {
+                c.set_skim_recipient(accounts(1));
+            }
+            "set_fee_recipient" => {
+                c.set_fee_recipient(accounts(1));
+            }
+            "set_performance_fee" => {
+                c.set_performance_fee(Wad::one() / 10);
+            }
+            "submit_timelock" => {
+                let cur = c.get_configuration().initial_timelock_ns;
+                // value choice irrelevant; abdication check runs first
+                c.submit_timelock(cur);
+            }
+            "accept_timelock" => {
+                c.accept_timelock();
+            }
+            "revoke_pending_timelock" => {
+                c.revoke_pending_timelock();
+            }
+            "submit_cap" => {
+                let market = mk(9200);
+                c.submit_cap(market, U128(1));
+            }
+            "accept_cap" => {
+                let market = mk(9201);
+                c.accept_cap(market);
+            }
+            "revoke_pending_cap" => {
+                let market = mk(9202);
+                c.revoke_pending_cap(market);
+            }
+            "submit_market_removal" => {
+                let market = mk(9203);
+                c.submit_market_removal(market);
+            }
+            "revoke_pending_market_removal" => {
+                let market = mk(9204);
+                c.revoke_pending_market_removal(market);
+            }
+            "set_supply_queue" => {
+                c.set_supply_queue(vec![]);
+            }
+            _ => unreachable!("unsupported abdicated method case"),
+        }
+    }));
 
-    c.abdicate("set_is_allocator".to_string());
+    let expected = format!("abdicated {method_name}");
 
-    c.set_is_allocator(accounts(4), false);
-}
+    match result {
+        Ok(()) => panic!("expected panic for abdicated method {method_name}"),
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.as_str()
+            } else if let Some(s) = payload.downcast_ref::<&str>() {
+                s
+            } else {
+                ""
+            };
 
-#[test]
-#[should_panic = "abdicated submit_cap"]
-fn governance_abdicate_submit_cap_blocks_cap_changes() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-
-    setup_env(&vault_id, &owner, vec![]);
-
-    c.abdicate("submit_cap".to_string());
-
-    let market = mk(9200);
-    c.submit_cap(market, U128(1));
+            assert!(
+                msg.contains(&expected),
+                "expected panic message to contain '{expected}', got '{msg}'"
+            );
+        }
+    }
 }
 
 #[test]

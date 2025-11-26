@@ -7,7 +7,7 @@ pub struct Abdicator {
 }
 
 impl Abdicator {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             map: HashMap::new(),
         }
@@ -421,7 +421,7 @@ impl Contract {
     #[payable]
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
-        Abdicator::require_not_abdicated(self.abdicator.as_ref(), "set_supply_queue");
+        Abdicator::require_not_abdicated(&self.abdicator, "set_supply_queue");
         self.ensure_idle();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
