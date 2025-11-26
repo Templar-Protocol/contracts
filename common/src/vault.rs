@@ -575,6 +575,9 @@ pub enum Event {
     #[event_version("1.0.0")]
     PendingTimelockRevoked,
 
+    #[event_version("1.0.0")]
+    Abdicated { method_name: String },
+
     // Market and queue management
     #[event_version("1.0.0")]
     MarketCreated { market: AccountId },
