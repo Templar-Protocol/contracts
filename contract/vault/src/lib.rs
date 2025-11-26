@@ -166,7 +166,7 @@ pub struct Contract {
     // Keeper-provided withdraw route for the current Withdrawing op
     withdraw_route: Vec<AccountId>,
 
-    abdicator: Option<Abdicator>,
+    abdicator: Abdicator,
 }
 
 #[near]
@@ -234,7 +234,7 @@ impl Contract {
             next_withdraw_to_execute: 0,
             pending_market_exec: Vec::new(),
             withdraw_route: Vec::new(),
-            abdicator: None,
+            abdicator: Abdicator::new(),
         };
 
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
