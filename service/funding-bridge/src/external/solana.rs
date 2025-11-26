@@ -404,9 +404,7 @@ impl ExternalChainHandler for SolanaSdkHandler {
 /// Create Solana SDK handler from environment variables
 ///
 /// Required environment variables:
-/// - `SOLANA_KEYPAIR_JSON`: JSON array of keypair bytes (e.g., "[1,2,3,...]")
-///   OR
-/// - `SOLANA_KEYPAIR_BASE58`: Base58-encoded keypair
+/// - `SOLANA_PRIVATE_KEY`: Base58-encoded keypair
 ///
 /// Optional:
 /// - `SOLANA_NETWORK`: "mainnet" (default) or "devnet"
@@ -424,15 +422,13 @@ pub fn solana_sdk_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
         config.rpc_url = rpc_url;
     }
 
-    // Try JSON format first, then base58
-    let handler: Option<SolanaSdkHandler> =
-        if let Ok(json_bytes) = std::env::var("SOLANA_KEYPAIR_JSON") {
-            SolanaSdkHandler::from_json_bytes(config.clone(), &json_bytes).ok()
-        } else if let Ok(base58) = std::env::var("SOLANA_KEYPAIR_BASE58") {
-            SolanaSdkHandler::from_base58(config.clone(), &base58).ok()
-        } else {
-            None
-        };
+    // Load keypair from base58 format
+    let handler: Option<SolanaSdkHandler> = if let Ok(base58) = std::env::var("SOLANA_PRIVATE_KEY")
+    {
+        SolanaSdkHandler::from_base58(config.clone(), &base58).ok()
+    } else {
+        None
+    };
 
     if let Some(h) = handler {
         info!(

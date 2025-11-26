@@ -48,8 +48,7 @@
 //! # Start the service (dry-run mode)
 //! funding-bridge \
 //!   --network mainnet \
-//!   --near-enabled \
-//!   --near-treasury-account your-treasury.near \
+//!   --near-account your-treasury.near \
 //!   --near-signer-key "ed25519:..." \
 //!   --port 3000 \
 //!   --dry-run

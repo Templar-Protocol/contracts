@@ -52,9 +52,6 @@ pub struct WithdrawRequest {
     /// Destination chain (e.g., "ethereum", "solana")
     pub destination_chain: String,
 
-    /// Destination address on target chain
-    pub destination_address: String,
-
     /// Asset identifier
     pub asset: String,
 
@@ -169,9 +166,6 @@ pub struct ChainStatus {
 
     /// Is chain available
     pub available: bool,
-
-    /// Chain priority (0 = highest)
-    pub priority: u8,
 }
 
 /// Status of an external service dependency
@@ -230,7 +224,6 @@ mod tests {
     fn test_withdraw_request_serialization() {
         let req = WithdrawRequest {
             destination_chain: "ethereum".to_string(),
-            destination_address: "0x123".to_string(),
             asset: "usdt".to_string(),
             amount: "500000".to_string(),
             dry_run: true,
@@ -238,7 +231,6 @@ mod tests {
 
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("ethereum"));
-        assert!(json.contains("0x123"));
         assert!(json.contains("500000"));
     }
 
@@ -265,12 +257,10 @@ mod tests {
                 ChainStatus {
                     name: "near".to_string(),
                     available: true,
-                    priority: 0,
                 },
                 ChainStatus {
                     name: "ethereum".to_string(),
                     available: false,
-                    priority: 2,
                 },
             ],
             rpc_status: None,

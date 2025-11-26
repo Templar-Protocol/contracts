@@ -26,6 +26,9 @@ pub struct App {
     /// External chain registry for cross-chain deposits
     pub external_chains: Arc<ExternalChainRegistry>,
 
+    /// Configuration
+    pub config: Arc<Args>,
+
     /// Dry run mode
     pub dry_run: bool,
 
@@ -40,10 +43,7 @@ impl App {
 
         // NEAR handler is required
         let near_handler = {
-            let account = args
-                .near_treasury_account
-                .as_ref()
-                .expect("NEAR treasury account required");
+            let account = args.near_account.as_ref().expect("NEAR account required");
             let key = args
                 .near_signer_key
                 .as_ref()
@@ -58,7 +58,6 @@ impl App {
                 account.clone(),
                 key.clone(),
                 args.get_near_rpc_url(),
-                0, // Priority not used
                 args.dry_run,
             ))
         };
@@ -73,6 +72,7 @@ impl App {
             bridge_client,
             token_registry,
             external_chains,
+            config: Arc::new(args.clone()),
             dry_run: args.dry_run,
             version: VERSION,
         }
@@ -111,7 +111,7 @@ impl App {
                 );
             }
         } else {
-            tracing::warn!("ETH_PRIVATE_KEY not configured - EVM deposits disabled");
+            tracing::info!("ETH_PRIVATE_KEY not configured - EVM deposits disabled");
         }
 
         // Check for Solana configuration from environment

@@ -54,11 +54,11 @@ COPY --from=builder /app/target/release/funding-bridge /app/funding-bridge
 
 # Copy configuration templates
 COPY --chown=funding-bridge:funding-bridge service/funding-bridge/.env.example ./.env.example
-COPY --chown=funding-bridge:funding-bridge service/funding-bridge/run.sh ./run.sh
+COPY --chown=funding-bridge:funding-bridge service/funding-bridge/scripts/run_service.sh ./run_service.sh
 
 # Set ownership
 RUN chown -R funding-bridge:funding-bridge /app && \
-    chmod +x /app/funding-bridge /app/run.sh
+    chmod +x /app/funding-bridge /app/run_service.sh
 
 # Switch to non-root user
 USER funding-bridge

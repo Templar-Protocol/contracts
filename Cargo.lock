@@ -10107,6 +10107,7 @@ dependencies = [
  "axum 0.7.9",
  "axum-test",
  "base64 0.22.1",
+ "borsh 1.5.7",
  "bs58 0.5.1",
  "chrono",
  "clap",

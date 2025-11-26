@@ -56,6 +56,7 @@ near-crypto = "0.26"
 near-primitives = "0.26"
 near-jsonrpc-client = "0.13"
 near-jsonrpc-primitives = "0.26"
+borsh = "1.5"
 
 # Cryptography and encoding (for NEAR Intents integration)
 base64 = "0.22"

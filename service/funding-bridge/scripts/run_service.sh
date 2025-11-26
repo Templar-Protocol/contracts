@@ -1,7 +1,28 @@
 #!/bin/bash
+#
 # Templar Funding Bridge - Startup Script
+#
+# This script starts the funding bridge service with proper environment configuration.
+# It loads configuration from .env file and supports both development and production modes.
+#
+# Usage:
+#   ./scripts/run_service.sh [OPTIONS] [mainnet|testnet]
+#
+# Example:
+#   ./scripts/run_service.sh                    # Run with .env config
+#   ./scripts/run_service.sh mainnet            # Run on mainnet
+#   ./scripts/run_service.sh --skip-build       # Skip building binary
+#   ./scripts/run_service.sh --help             # Show help
+#
 
 set -e  # Exit on error
+
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Change to project directory
+cd "$PROJECT_DIR"
 
 # Colors for output
 RED='\033[0;31m'
@@ -9,10 +30,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
-
-# Script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
 
 # ============================================
 # Helper Functions
@@ -99,13 +116,8 @@ validate_config() {
     print_info "Validating configuration..."
 
     # Check required variables
-    if [ -z "$NEAR_ENABLED" ] || [ "$NEAR_ENABLED" != "true" ]; then
-        print_error "NEAR_ENABLED must be set to 'true'"
-        exit 1
-    fi
-
-    if [ -z "$NEAR_TREASURY_ACCOUNT" ]; then
-        print_error "NEAR_TREASURY_ACCOUNT is required"
+    if [ -z "$NEAR_ACCOUNT" ]; then
+        print_error "NEAR_ACCOUNT is required"
         exit 1
     fi
 
@@ -120,15 +132,6 @@ validate_config() {
         exit 1
     fi
 
-    # Warn about optional features
-    if [ -z "$ETH_PRIVATE_KEY" ]; then
-        print_warn "ETH_PRIVATE_KEY not set - EVM deposits disabled"
-    fi
-
-    if [ -z "$SOLANA_PRIVATE_KEY" ]; then
-        print_warn "SOLANA_PRIVATE_KEY not set - Solana deposits disabled"
-    fi
-
     # Check dry run mode
     if [ "$DRY_RUN" = "true" ]; then
         print_warn "Running in DRY RUN mode - transactions will be simulated"
@@ -137,40 +140,12 @@ validate_config() {
     print_info "Configuration validated"
 }
 
-build_args() {
-    ARGS=(
-        "--port" "${PORT:-3000}"
-        "--network" "${NETWORK:-mainnet}"
-    )
-
-    if [ -n "$NEAR_RPC_URL" ]; then
-        ARGS+=("--near-rpc-url" "$NEAR_RPC_URL")
-    fi
-
-    if [ -n "$BRIDGE_API_URL" ]; then
-        ARGS+=("--bridge-api-url" "$BRIDGE_API_URL")
-    fi
-
-    if [ "$DRY_RUN" = "true" ]; then
-        ARGS+=("--dry-run")
-    fi
-
-    # NEAR configuration
-    ARGS+=("--near-enabled")
-    ARGS+=("--near-treasury-account" "$NEAR_TREASURY_ACCOUNT")
-    ARGS+=("--near-signer-key" "$NEAR_SIGNER_KEY")
-
-    if [ -n "$NEAR_PRIORITY" ]; then
-        ARGS+=("--near-priority" "$NEAR_PRIORITY")
-    fi
-}
-
 print_config() {
     echo ""
     echo -e "${BLUE}Configuration:${NC}"
     echo "  Network: ${NETWORK:-mainnet}"
     echo "  Port: ${PORT:-3000}"
-    echo "  Treasury: $NEAR_TREASURY_ACCOUNT"
+    echo "  Treasury: $NEAR_ACCOUNT"
     echo "  Dry Run: ${DRY_RUN:-false}"
     echo "  Log Level: ${RUST_LOG:-info}"
 
@@ -188,6 +163,22 @@ print_config() {
     echo ""
 }
 
+check_running_instances() {
+    if pgrep -f "funding-bridge" > /dev/null; then
+        print_warn "Another instance of funding-bridge is running"
+        read -p "Kill existing instances? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Killing existing instances..."
+            pkill -f "funding-bridge" || true
+            sleep 2
+        else
+            print_info "Aborting..."
+            exit 1
+        fi
+    fi
+}
+
 # ============================================
 # Main Execution
 # ============================================
@@ -197,6 +188,7 @@ print_header
 # Parse command line arguments
 SKIP_BUILD=false
 SHOW_HELP=false
+NETWORK_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -208,6 +200,10 @@ while [[ $# -gt 0 ]]; do
             SHOW_HELP=true
             shift
             ;;
+        mainnet|testnet)
+            NETWORK_ARG="$1"
+            shift
+            ;;
         *)
             print_error "Unknown option: $1"
             SHOW_HELP=true
@@ -217,11 +213,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ "$SHOW_HELP" = true ]; then
-    echo "Usage: ./run.sh [OPTIONS]"
+    echo "Usage: ./scripts/run_service.sh [OPTIONS] [mainnet|testnet]"
     echo ""
     echo "Options:"
     echo "  --skip-build    Skip building the binary if it exists"
     echo "  --help, -h      Show this help message"
+    echo ""
+    echo "Arguments:"
+    echo "  mainnet|testnet Override NETWORK from .env file"
     echo ""
     echo "Environment variables are loaded from .env file"
     echo "See .env.example for configuration options"
@@ -234,10 +233,22 @@ check_env_file
 # Step 2: Load environment variables
 load_env
 
-# Step 3: Validate configuration
+# Step 3: Override network if specified
+if [ -n "$NETWORK_ARG" ]; then
+    export NETWORK="$NETWORK_ARG"
+    print_info "Network override: $NETWORK"
+fi
+
+# Step 4: Set default values
+export NETWORK="${NETWORK:-mainnet}"
+export DRY_RUN="${DRY_RUN:-false}"
+export RUST_LOG="${RUST_LOG:-info,templar_funding_bridge=debug}"
+export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
+
+# Step 5: Validate configuration
 validate_config
 
-# Step 4: Check/build binary
+# Step 6: Check/build binary
 if [ "$SKIP_BUILD" = false ]; then
     check_binary
 else
@@ -248,18 +259,18 @@ else
     fi
 fi
 
-# Step 5: Build command arguments
-build_args
-
-# Step 6: Print configuration
+# Step 7: Print configuration
 print_config
 
-# Step 7: Start the service
+# Step 8: Check for running instances
+check_running_instances
+
+# Step 9: Start the service
 print_info "Starting Funding Bridge Service..."
 echo ""
 
-# Run with explicit environment variables for logging
+# Run the binary (it will read configuration from environment variables)
 exec env \
-    RUST_LOG="${RUST_LOG:-info}" \
-    RUST_BACKTRACE="${RUST_BACKTRACE:-1}" \
-    "$BINARY_PATH" "${ARGS[@]}"
+    RUST_LOG="${RUST_LOG}" \
+    RUST_BACKTRACE="${RUST_BACKTRACE}" \
+    "$BINARY_PATH"

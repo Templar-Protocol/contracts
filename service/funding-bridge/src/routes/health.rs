@@ -12,14 +12,39 @@ use super::models::{ChainStatus, HealthResponse, ServiceStatus};
 /// Returns service health status and external service connectivity
 #[tracing::instrument(name = "health_check", skip(app))]
 pub async fn health(State(app): State<App>) -> impl IntoResponse {
-    let chains = vec![ChainStatus {
+    let mut chains = vec![ChainStatus {
         name: "near".to_string(),
         available: true,
-        priority: 0,
     }];
 
     // Update metrics for chain availability
     crate::metrics::set_chain_availability("near", true);
+
+    // Add external chains (for deposits)
+    for chain_id in app.available_external_chains() {
+        // Parse chain ID to get a readable name
+        let chain_name = if chain_id.starts_with("eth:") {
+            match chain_id.as_str() {
+                "eth:1" => "ethereum",
+                "eth:42161" => "arbitrum",
+                "eth:8453" => "base",
+                "eth:10" => "optimism",
+                "eth:137" => "polygon",
+                _ => &chain_id,
+            }
+        } else if chain_id.starts_with("sol:") {
+            "solana"
+        } else {
+            &chain_id
+        };
+
+        chains.push(ChainStatus {
+            name: chain_name.to_string(),
+            available: true,
+        });
+
+        crate::metrics::set_chain_availability(chain_name, true);
+    }
 
     let healthy = app.is_healthy();
 
@@ -83,14 +108,36 @@ mod tests {
     use std::{str::FromStr, sync::Arc};
 
     fn create_test_app() -> App {
-        let bridge_client = Arc::new(BridgeClient::new("https://test.api".to_string()));
+        use crate::config::Args;
+        use crate::rpc::Network;
+
+        let args = Args {
+            port: 3000,
+            network: Network::Testnet,
+            bridge_api_url: "https://test.api".to_string(),
+            dry_run: false,
+            near_account: Some(AccountId::from_str("test.near").unwrap()),
+            near_signer_key: Some(SecretKey::from_random(KeyType::ED25519)),
+            near_rpc_url: None,
+            eth_private_key: None,
+            eth_rpc_url: "https://eth.llamarpc.com".to_string(),
+            solana_private_key: None,
+            solana_rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
+            eth_withdraw_address: None,
+            arbitrum_withdraw_address: None,
+            base_withdraw_address: None,
+            optimism_withdraw_address: None,
+            polygon_withdraw_address: None,
+            solana_withdraw_address: None,
+        };
+
+        let bridge_client = Arc::new(BridgeClient::new(args.bridge_api_url.clone()));
         let token_registry = crate::tokens::TokenRegistry::new(Arc::clone(&bridge_client));
 
         let near_handler = Arc::new(NearHandler::new(
-            AccountId::from_str("test.near").unwrap(),
-            SecretKey::from_random(KeyType::ED25519),
-            "https://rpc.testnet.near.org".to_string(),
-            0,
+            args.near_account.clone().unwrap(),
+            args.near_signer_key.clone().unwrap(),
+            args.get_near_rpc_url(),
             true,
         ));
 
@@ -99,6 +146,7 @@ mod tests {
             bridge_client,
             token_registry,
             external_chains: std::sync::Arc::new(crate::external::ExternalChainRegistry::new()),
+            config: Arc::new(args),
             dry_run: false,
             version: "0.1.0-test",
         }

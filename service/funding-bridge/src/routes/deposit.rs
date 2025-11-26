@@ -1,6 +1,6 @@
 //! Deposit endpoint - Automated cross-chain deposits from external wallets
 //!
-//! Transfers tokens from configured external wallets (ETH/Arbitrum) to the
+//! Transfers tokens from configured external wallets (Ethereum, Arbitrum, Solana, etc.) to the
 //! NEAR Intents bridge, which credits the NEAR treasury with OMFT tokens.
 
 use axum::{
@@ -20,10 +20,10 @@ use super::models::{DepositRequest, DepositResponse};
 /// Transfers tokens from configured external wallet to bridge deposit address.
 /// The bridge then credits NEAR treasury with OMFT tokens.
 ///
-/// Requires ETH_PRIVATE_KEY to be configured for Ethereum/Arbitrum deposits.
+/// Requires ETH_PRIVATE_KEY for Ethereum/EVM deposits or SOLANA_PRIVATE_KEY for Solana deposits.
 #[tracing::instrument(
     name = "deposit",
-    skip(app),
+    skip(app, req),
     fields(
         source_chain = %req.source_chain,
         asset = %req.asset,
@@ -31,8 +31,6 @@ use super::models::{DepositRequest, DepositResponse};
     )
 )]
 pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) -> Response {
-    info!("Executing automated deposit from external wallet");
-
     let chain_id = normalize_chain_id(&req.source_chain);
 
     // Get chain handler from registry
@@ -84,14 +82,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
         .get_deposit_address(app.near_handler.treasury_account().as_str(), &chain_id)
         .await
     {
-        Ok(result) => {
-            info!(
-                address = %result.address,
-                chain = %result.chain,
-                "Got bridge deposit address"
-            );
-            result.address
-        }
+        Ok(result) => result.address,
         Err(e) => {
             error!(error = %e, "Failed to get deposit address from bridge");
             return (
@@ -132,8 +123,8 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
         Ok(result) => {
             info!(
                 tx_hash = %result.tx_hash,
-                confirmed = %result.confirmed,
-                "Transfer executed successfully"
+                bridge_address = %deposit_address,
+                "Deposit executed"
             );
             (
                 StatusCode::OK,

@@ -38,13 +38,9 @@ pub struct Args {
     pub dry_run: bool,
 
     // === NEAR Treasury (required) ===
-    /// Enable NEAR treasury (must be true)
-    #[arg(long, env = "NEAR_ENABLED", default_value_t = false)]
-    pub near_enabled: bool,
-
     /// NEAR treasury account ID
-    #[arg(long, env = "NEAR_TREASURY_ACCOUNT")]
-    pub near_treasury_account: Option<AccountId>,
+    #[arg(long, env = "NEAR_ACCOUNT")]
+    pub near_account: Option<AccountId>,
 
     /// NEAR signer key
     #[arg(long, env = "NEAR_SIGNER_KEY")]
@@ -53,10 +49,6 @@ pub struct Args {
     /// NEAR RPC URL (optional, uses network default if not specified)
     #[arg(long, env = "NEAR_RPC_URL")]
     pub near_rpc_url: Option<String>,
-
-    /// NEAR routing priority (0 = highest)
-    #[arg(long, env = "NEAR_PRIORITY", default_value_t = 0)]
-    pub near_priority: u8,
 
     // === Ethereum Wallet (for automated deposits) ===
     /// Ethereum private key (hex, with or without 0x prefix)
@@ -69,41 +61,72 @@ pub struct Args {
 
     // === Solana Wallet (for automated deposits) ===
     /// Solana private key (base58 encoded)
-    #[arg(long, env = "SOL_PRIVATE_KEY")]
-    pub sol_private_key: Option<String>,
+    #[arg(long, env = "SOLANA_PRIVATE_KEY")]
+    pub solana_private_key: Option<String>,
 
     /// Solana RPC URL
     #[arg(
         long,
-        env = "SOL_RPC_URL",
+        env = "SOLANA_RPC_URL",
         default_value = "https://api.mainnet-beta.solana.com"
     )]
-    pub sol_rpc_url: String,
+    pub solana_rpc_url: String,
+
+    // === Withdrawal Destinations (required for withdrawals) ===
+    /// Ethereum withdrawal destination address
+    #[arg(long, env = "ETH_WITHDRAW_ADDRESS")]
+    pub eth_withdraw_address: Option<String>,
+
+    /// Arbitrum withdrawal destination address
+    #[arg(long, env = "ARBITRUM_WITHDRAW_ADDRESS")]
+    pub arbitrum_withdraw_address: Option<String>,
+
+    /// Base withdrawal destination address
+    #[arg(long, env = "BASE_WITHDRAW_ADDRESS")]
+    pub base_withdraw_address: Option<String>,
+
+    /// Optimism withdrawal destination address
+    #[arg(long, env = "OPTIMISM_WITHDRAW_ADDRESS")]
+    pub optimism_withdraw_address: Option<String>,
+
+    /// Polygon withdrawal destination address
+    #[arg(long, env = "POLYGON_WITHDRAW_ADDRESS")]
+    pub polygon_withdraw_address: Option<String>,
+
+    /// Solana withdrawal destination address
+    #[arg(long, env = "SOLANA_WITHDRAW_ADDRESS")]
+    pub solana_withdraw_address: Option<String>,
 }
 
 impl Args {
     /// Validate configuration
     pub fn validate(&self) -> FundingResult<()> {
-        // NEAR treasury must be enabled
-        if !self.near_enabled {
-            return Err(FundingError::ConfigError(
-                "NEAR treasury must be enabled (--near-enabled)".to_string(),
-            ));
-        }
-
         // Validate NEAR config
-        if self.near_treasury_account.is_none() {
+        if self.near_account.is_none() {
             return Err(FundingError::ConfigError(
-                "NEAR_TREASURY_ACCOUNT required when NEAR_ENABLED=true".to_string(),
+                "NEAR_ACCOUNT is required".to_string(),
             ));
         }
         if self.near_signer_key.is_none() {
             return Err(FundingError::ConfigError(
-                "NEAR_SIGNER_KEY required when NEAR_ENABLED=true".to_string(),
+                "NEAR_SIGNER_KEY is required".to_string(),
             ));
         }
 
         Ok(())
+    }
+
+    /// Get withdrawal destination address for a chain
+    pub fn get_withdraw_address(&self, chain: &str) -> Option<String> {
+        match chain {
+            "ethereum" | "eth" | "eth:1" => self.eth_withdraw_address.clone(),
+            "arbitrum" | "arb" | "eth:42161" => self.arbitrum_withdraw_address.clone(),
+            "base" | "eth:8453" => self.base_withdraw_address.clone(),
+            "optimism" | "op" | "eth:10" => self.optimism_withdraw_address.clone(),
+            "polygon" | "matic" | "eth:137" => self.polygon_withdraw_address.clone(),
+            "solana" | "sol" | "sol:mainnet" => self.solana_withdraw_address.clone(),
+            _ => None,
+        }
     }
 
     /// Get NEAR RPC URL based on network
@@ -125,15 +148,19 @@ mod tests {
             network: Network::Testnet,
             bridge_api_url: "https://bridge.chaindefuser.com/rpc".to_string(),
             dry_run: false,
-            near_enabled: true,
-            near_treasury_account: Some(AccountId::from_str("treasury.near").unwrap()),
+            near_account: Some(AccountId::from_str("treasury.near").unwrap()),
             near_signer_key: Some(SecretKey::from_random(near_crypto::KeyType::ED25519)),
             near_rpc_url: None,
-            near_priority: 0,
             eth_private_key: None,
             eth_rpc_url: "https://eth.llamarpc.com".to_string(),
-            sol_private_key: None,
-            sol_rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
+            solana_private_key: None,
+            solana_rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
+            eth_withdraw_address: None,
+            arbitrum_withdraw_address: None,
+            base_withdraw_address: None,
+            optimism_withdraw_address: None,
+            polygon_withdraw_address: None,
+            solana_withdraw_address: None,
         }
     }
 
@@ -144,37 +171,22 @@ mod tests {
     }
 
     #[test]
-    fn test_near_not_enabled() {
+    fn test_near_missing_account() {
         let mut config = create_valid_config();
-        config.near_enabled = false;
+        config.near_account = None;
 
         let result = config.validate();
         assert!(result.is_err());
         match result {
             Err(FundingError::ConfigError(msg)) => {
-                assert!(msg.contains("NEAR treasury must be enabled"));
+                assert!(msg.contains("NEAR_ACCOUNT"));
             }
             _ => panic!("Expected ConfigError"),
         }
     }
 
     #[test]
-    fn test_near_enabled_missing_account() {
-        let mut config = create_valid_config();
-        config.near_treasury_account = None;
-
-        let result = config.validate();
-        assert!(result.is_err());
-        match result {
-            Err(FundingError::ConfigError(msg)) => {
-                assert!(msg.contains("NEAR_TREASURY_ACCOUNT"));
-            }
-            _ => panic!("Expected ConfigError"),
-        }
-    }
-
-    #[test]
-    fn test_near_enabled_missing_signer_key() {
+    fn test_near_missing_signer_key() {
         let mut config = create_valid_config();
         config.near_signer_key = None;
 

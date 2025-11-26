@@ -20,7 +20,6 @@ pub struct NearHandler {
     signer: Arc<near_crypto::InMemorySigner>,
     rpc_client: JsonRpcClient,
     enabled: bool,
-    priority: u8,
     dry_run: bool,
 }
 
@@ -30,7 +29,6 @@ impl NearHandler {
         treasury_account: AccountId,
         signer_key: SecretKey,
         rpc_url: String,
-        priority: u8,
         dry_run: bool,
     ) -> Self {
         let signer =
@@ -43,7 +41,6 @@ impl NearHandler {
             signer: Arc::new(signer),
             rpc_client,
             enabled: true,
-            priority,
             dry_run,
         }
     }
@@ -329,7 +326,7 @@ impl NearHandler {
             )));
         }
 
-        info!(
+        debug!(
             tx_hash = %result.transaction.hash,
             "Intent execution completed"
         );
@@ -395,11 +392,6 @@ impl NearHandler {
     pub fn chain_name(&self) -> &str {
         "near"
     }
-
-    /// Get routing priority
-    pub fn priority(&self) -> u8 {
-        self.priority
-    }
 }
 
 #[cfg(test)]
@@ -416,7 +408,6 @@ mod tests {
             treasury_account,
             signer_key,
             "https://rpc.testnet.near.org".to_string(),
-            0,
             true, // dry_run = true for tests
         )
     }
@@ -425,7 +416,6 @@ mod tests {
     fn test_near_handler_creation() {
         let handler = create_test_handler();
         assert_eq!(handler.chain_name(), "near");
-        assert_eq!(handler.priority(), 0);
         assert!(handler.is_available());
     }
 
@@ -467,21 +457,5 @@ mod tests {
             Err(ChainError::InvalidAddress(_)) => {}
             _ => panic!("Expected InvalidAddress error"),
         }
-    }
-
-    #[test]
-    fn test_handler_priority() {
-        let treasury = AccountId::from_str("treasury.near").unwrap();
-        let key = SecretKey::from_random(near_crypto::KeyType::ED25519);
-
-        let handler = NearHandler::new(
-            treasury,
-            key,
-            "https://rpc.testnet.near.org".to_string(),
-            5,
-            false,
-        );
-
-        assert_eq!(handler.priority(), 5);
     }
 }

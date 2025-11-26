@@ -7,6 +7,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{Duration, Utc};
 use near_crypto::{PublicKey, SecretKey, Signature};
+use near_sdk::borsh::{self, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -15,15 +16,18 @@ use std::collections::HashMap;
 pub const INTENTS_CONTRACT: &str = "intents.near";
 
 /// Intent types supported by NEAR Intents
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize)]
 #[serde(tag = "intent", rename_all = "snake_case")]
+#[borsh(use_discriminant = false)]
 pub enum Intent {
     /// Transfer tokens within NEAR Intents
+    #[serde(rename = "transfer")]
     Transfer {
         receiver_id: String,
         tokens: HashMap<String, String>,
     },
     /// Withdraw tokens to external chain
+    #[serde(rename = "ft_withdraw")]
     FtWithdraw {
         token: String,
         receiver_id: String,
@@ -31,20 +35,23 @@ pub enum Intent {
         memo: String,
     },
     /// Token difference for swaps
+    #[serde(rename = "token_diff")]
     TokenDiff {
         diff: HashMap<String, String>,
+        #[borsh(skip)]
         #[serde(skip_serializing_if = "Option::is_none")]
         referral: Option<String>,
     },
 }
 
 /// NEP-413 compliant message payload for signing
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize)]
 pub struct IntentMessage {
     pub signer_id: String,
     pub deadline: String,
     pub intents: Vec<Intent>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[borsh(skip)]
     pub nonce: Option<String>,
 }
 
@@ -57,12 +64,36 @@ pub struct SignedPayload {
     pub public_key: String,
 }
 
-/// Wrapper for payload data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Wrapper for payload data (NEP-413 format)
+/// IMPORTANT: Field order matters for Borsh serialization!
+/// NEP-413 specifies: message, nonce, recipient, callbackUrl
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize)]
 pub struct PayloadWrapper {
-    pub nonce: String,
     pub message: String,
+    #[serde(rename = "nonce")]
+    #[borsh(serialize_with = "borsh_serialize_nonce_as_array")]
+    pub nonce: String,
     pub recipient: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_url: Option<String>,
+}
+
+// Helper function to serialize nonce as [u8; 32] for Borsh
+fn borsh_serialize_nonce_as_array<W: std::io::Write>(
+    nonce: &String,
+    writer: &mut W,
+) -> Result<(), std::io::Error> {
+    let nonce_bytes = BASE64
+        .decode(nonce)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if nonce_bytes.len() != 32 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Nonce must be 32 bytes",
+        ));
+    }
+    let nonce_array: [u8; 32] = nonce_bytes.try_into().unwrap();
+    BorshSerialize::serialize(&nonce_array, writer)
 }
 
 /// Arguments for execute_intents call
@@ -132,11 +163,12 @@ impl WithdrawalIntentBuilder {
         let nonce = self.generate_nonce();
         let nonce_b64 = BASE64.encode(&nonce);
 
-        // Create payload wrapper
+        // Create payload wrapper (field order must match NEP-413: message, nonce, recipient, callbackUrl)
         let payload = PayloadWrapper {
-            nonce: nonce_b64,
             message: message_json,
+            nonce: nonce_b64,
             recipient: INTENTS_CONTRACT.to_string(),
+            callback_url: None,
         };
 
         // Sign the payload
@@ -161,18 +193,36 @@ impl WithdrawalIntentBuilder {
         nonce
     }
 
-    /// Sign the payload using NEP-413 standard
+    /// Sign the payload for NEAR Intents using NEP-413 standard
+    ///
+    /// NEP-413 requires:
+    /// 1. Borsh serialize (OFFCHAIN_PREFIX_TAG, payload) tuple
+    /// 2. SHA-256 hash the serialized bytes
+    /// 3. Sign the hash with Ed25519
     fn sign_payload(&self, payload: PayloadWrapper) -> Result<SignedPayload, IntentError> {
-        // Serialize payload for signing
-        let payload_json = serde_json::to_string(&payload)
+        // NEP-413 OFFCHAIN_PREFIX_TAG = (1 << 31) + 413 = 2147484061
+        const OFFCHAIN_PREFIX_TAG: u32 = 2147484061;
+
+        // Borsh serialize (tag, payload) tuple
+        let prehash = borsh::to_vec(&(OFFCHAIN_PREFIX_TAG, &payload))
             .map_err(|e| IntentError::Serialization(e.to_string()))?;
 
-        // Create the signable message (NEP-413 uses the payload JSON)
-        let message_bytes = payload_json.as_bytes();
+        // SHA-256 hash the serialized bytes
+        let hash = Sha256::digest(&prehash);
 
-        // Sign with the secret key
-        let signature = self.signer_key.sign(message_bytes);
+        // Sign the hash
+        let signature = self.signer_key.sign(&hash);
         let public_key = self.signer_key.public_key();
+
+        // Debug logging
+        tracing::debug!(
+            prehash_len = prehash.len(),
+            hash_hex = %hex::encode(hash),
+            public_key = %format_public_key(&public_key),
+            signer_id = %self.signer_id,
+            message_preview = %&payload.message[..payload.message.len().min(100)],
+            "Signed NEP-413 payload"
+        );
 
         Ok(SignedPayload {
             payload,

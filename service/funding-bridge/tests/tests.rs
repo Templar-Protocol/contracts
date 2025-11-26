@@ -8,7 +8,9 @@ use near_sdk::{json_types::U128, NearToken};
 use near_workspaces::{Account, Contract, Worker};
 use std::sync::Arc;
 
-use templar_funding_bridge::{app::App, bridge::BridgeClient, chain::NearHandler};
+use templar_funding_bridge::{
+    app::App, bridge::BridgeClient, chain::NearHandler, config::Args, rpc::Network,
+};
 
 const FT_WASM: &[u8] = include_bytes!("../../../mock/ft/res/mock_ft.wasm");
 
@@ -127,7 +129,6 @@ async fn test_near_handler_ft_transfer() {
         ctx.treasury.id().as_str().parse().unwrap(),
         ctx.treasury.secret_key().to_string().parse().unwrap(),
         ctx.worker.rpc_addr(),
-        0,
         false, // not dry run
     );
 
@@ -173,7 +174,6 @@ async fn test_near_handler_dry_run() {
         ctx.treasury.id().as_str().parse().unwrap(),
         ctx.treasury.secret_key().to_string().parse().unwrap(),
         ctx.worker.rpc_addr(),
-        0,
         true, // dry run
     );
 
@@ -206,7 +206,6 @@ async fn test_near_handler_check_balance() {
         ctx.treasury.id().as_str().parse().unwrap(),
         ctx.treasury.secret_key().to_string().parse().unwrap(),
         ctx.worker.rpc_addr(),
-        0,
         false,
     );
 
@@ -232,9 +231,28 @@ async fn test_app_initialization() {
         ctx.treasury.id().as_str().parse().unwrap(),
         ctx.treasury.secret_key().to_string().parse().unwrap(),
         ctx.worker.rpc_addr(),
-        0,
         false,
     ));
+
+    let args = Args {
+        port: 3000,
+        network: Network::Testnet,
+        bridge_api_url: "https://test.api".to_string(),
+        dry_run: false,
+        near_account: Some(ctx.treasury.id().as_str().parse().unwrap()),
+        near_signer_key: Some(ctx.treasury.secret_key().to_string().parse().unwrap()),
+        near_rpc_url: Some(ctx.worker.rpc_addr()),
+        eth_private_key: None,
+        eth_rpc_url: "https://eth.llamarpc.com".to_string(),
+        solana_private_key: None,
+        solana_rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
+        eth_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
+        arbitrum_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
+        base_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
+        optimism_withdraw_address: None,
+        polygon_withdraw_address: None,
+        solana_withdraw_address: Some("B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D".to_string()),
+    };
 
     let app = App {
         near_handler: near_handler.clone(),
@@ -243,6 +261,7 @@ async fn test_app_initialization() {
         external_chains: std::sync::Arc::new(
             templar_funding_bridge::external::ExternalChainRegistry::new(),
         ),
+        config: Arc::new(args),
         dry_run: false,
         version: "0.1.0-test",
     };
@@ -265,7 +284,6 @@ async fn test_end_to_end_transfer() {
         ctx.treasury.id().as_str().parse().unwrap(),
         ctx.treasury.secret_key().to_string().parse().unwrap(),
         ctx.worker.rpc_addr(),
-        0,
         false,
     );
 

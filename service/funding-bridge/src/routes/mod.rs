@@ -5,6 +5,8 @@ pub mod health;
 pub mod metrics;
 pub mod models;
 pub mod status;
+#[cfg(test)]
+pub mod test_utils;
 pub mod tokens;
 pub mod withdraw;
 

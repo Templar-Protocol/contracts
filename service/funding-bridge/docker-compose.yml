@@ -18,21 +18,22 @@ services:
       - NETWORK=${NETWORK:-mainnet}
 
       # NEAR
-      - NEAR_ENABLED=${NEAR_ENABLED:-true}
-      - NEAR_TREASURY_ACCOUNT=${NEAR_TREASURY_ACCOUNT}
+      - NEAR_ACCOUNT=${NEAR_ACCOUNT}
       - NEAR_SIGNER_KEY=${NEAR_SIGNER_KEY}
       - NEAR_RPC_URL=${NEAR_RPC_URL:-https://rpc.mainnet.near.org}
 
       # Bridge
       - BRIDGE_API_URL=${BRIDGE_API_URL:-https://bridge.chaindefuser.com/rpc}
 
-      # Ethereum (optional)
+      # Ethereum (optional - for automated deposits/withdrawals)
       - ETH_PRIVATE_KEY=${ETH_PRIVATE_KEY}
       - ETH_RPC_URL=${ETH_RPC_URL:-https://eth.llamarpc.com}
+      - ETH_WITHDRAW_ADDRESS=${ETH_WITHDRAW_ADDRESS}
 
-      # Solana (optional)
+      # Solana (optional - for automated deposits/withdrawals)
       - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY}
       - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+      - SOLANA_WITHDRAW_ADDRESS=${SOLANA_WITHDRAW_ADDRESS}
 
       # Testing
       - DRY_RUN=${DRY_RUN:-false}
@@ -83,9 +84,8 @@ services:
       - "3000"
       - "--network"
       - "${NETWORK:-mainnet}"
-      - "--near-enabled"
-      - "--near-treasury-account"
-      - "${NEAR_TREASURY_ACCOUNT}"
+      - "--near-account"
+      - "${NEAR_ACCOUNT}"
       - "--near-signer-key"
       - "${NEAR_SIGNER_KEY}"
 

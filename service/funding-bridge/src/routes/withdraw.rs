@@ -15,20 +15,18 @@ use super::models::{WithdrawRequest, WithdrawResponse, WithdrawStatus};
 /// POST /withdraw - Withdraw funds from NEAR to external chain
 ///
 /// Initiates a withdrawal from NEAR to external chains (EVM, Solana) via the bridge.
+/// The destination address is configured per-chain in the service configuration.
 /// Returns immediately with status - actual bridge transfer may take time.
 #[tracing::instrument(
     name = "withdraw",
-    skip(app),
+    skip(app, req),
     fields(
         dest_chain = %req.destination_chain,
-        dest_address = %req.destination_address,
         asset = %req.asset,
         amount = %req.amount
     )
 )]
 pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) -> Response {
-    info!("Processing withdraw request");
-
     // Parse amount
     let amount: u128 = match req.amount.parse() {
         Ok(amt) => amt,
@@ -61,6 +59,23 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         "Parsed destination chain"
     );
 
+    // Get destination address from config
+    let destination_address = match app.config.get_withdraw_address(&chain_name) {
+        Some(addr) => addr,
+        None => {
+            error!(chain = %chain_name, "No withdrawal destination configured for chain");
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "No withdrawal destination configured for {}. \
+                     Please set {}_WITHDRAW_ADDRESS in configuration.",
+                    chain_name,
+                    chain_name.to_uppercase()
+                ),
+            );
+        }
+    };
+
     // Validate token is supported by the bridge
     let token_info = match app
         .bridge_client
@@ -68,10 +83,11 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         .await
     {
         Ok(Some(info)) => {
-            info!(
+            debug!(
                 token = %info.asset_name,
                 near_token = %info.near_token_id,
-                "Found token in bridge"
+                destination = %destination_address,
+                "Token resolved"
             );
             Some(info)
         }
@@ -152,14 +168,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         }
     };
 
-    info!(
-        near_token = %near_token_id,
-        destination = %req.destination_address,
-        chain = %chain_id,
-        amount = %amount,
-        "Initiating withdrawal"
-    );
-
     // Build withdrawal intent using NEAR Intents protocol
     let intent_builder = crate::intents::WithdrawalIntentBuilder::new(
         app.near_handler.treasury_account().to_string(),
@@ -167,7 +175,7 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
     );
 
     let execute_args =
-        match intent_builder.build_withdrawal(&near_token_id, amount, &req.destination_address) {
+        match intent_builder.build_withdrawal(&near_token_id, amount, &destination_address) {
             Ok(args) => args,
             Err(e) => {
                 error!(error = %e, "Failed to build withdrawal intent");
@@ -184,9 +192,8 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
             info!(
                 tx_hash = %hash,
                 near_token = %near_token_id,
-                destination = %req.destination_address,
-                amount = %amount,
-                "Withdrawal intent executed successfully"
+                destination = %destination_address,
+                "Withdrawal executed"
             );
             hash
         }
@@ -205,13 +212,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
 
     // Record metrics
     crate::metrics::record_withdraw("PENDING", &chain_name);
-
-    info!(
-        tx_hash = %tx_hash,
-        near_token = %near_token_id,
-        chain = %chain_id,
-        "Withdrawal request completed"
-    );
 
     // Return pending status with transaction hash
     // Bridge will process the withdrawal asynchronously
@@ -283,14 +283,40 @@ mod tests {
     use std::{str::FromStr, sync::Arc};
 
     fn create_test_app() -> App {
-        let bridge_client = Arc::new(BridgeClient::new("https://test.api".to_string()));
+        use crate::config::Args;
+        use crate::rpc::Network;
+
+        let args = Args {
+            port: 3000,
+            network: Network::Testnet,
+            bridge_api_url: "https://test.api".to_string(),
+            dry_run: false,
+            near_account: Some(AccountId::from_str("test.near").unwrap()),
+            near_signer_key: Some(SecretKey::from_random(KeyType::ED25519)),
+            near_rpc_url: None,
+            eth_private_key: None,
+            eth_rpc_url: "https://eth.llamarpc.com".to_string(),
+            solana_private_key: None,
+            solana_rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
+            eth_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
+            arbitrum_withdraw_address: Some(
+                "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string(),
+            ),
+            base_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
+            optimism_withdraw_address: None,
+            polygon_withdraw_address: None,
+            solana_withdraw_address: Some(
+                "B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D".to_string(),
+            ),
+        };
+
+        let bridge_client = Arc::new(BridgeClient::new(args.bridge_api_url.clone()));
         let token_registry = crate::tokens::TokenRegistry::new(Arc::clone(&bridge_client));
 
         let near_handler = Arc::new(NearHandler::new(
-            AccountId::from_str("test.near").unwrap(),
-            SecretKey::from_random(KeyType::ED25519),
-            "https://rpc.testnet.near.org".to_string(),
-            0,
+            args.near_account.clone().unwrap(),
+            args.near_signer_key.clone().unwrap(),
+            args.get_near_rpc_url(),
             true,
         ));
 
@@ -299,6 +325,7 @@ mod tests {
             bridge_client,
             token_registry,
             external_chains: std::sync::Arc::new(crate::external::ExternalChainRegistry::new()),
+            config: Arc::new(args),
             dry_run: false,
             version: "0.1.0-test",
         }
@@ -344,7 +371,6 @@ mod tests {
 
         let req = WithdrawRequest {
             destination_chain: "ethereum".to_string(),
-            destination_address: "0x123".to_string(),
             asset: "usdc".to_string(),
             amount: "500000".to_string(),
             dry_run: false,
@@ -362,7 +388,6 @@ mod tests {
 
         let req = WithdrawRequest {
             destination_chain: "eth:42161".to_string(), // Arbitrum
-            destination_address: "0x456".to_string(),
             asset: "usdc".to_string(),
             amount: "1000000".to_string(),
             dry_run: false,
@@ -380,7 +405,6 @@ mod tests {
 
         let req = WithdrawRequest {
             destination_chain: "ethereum".to_string(),
-            destination_address: "0x123".to_string(),
             asset: "usdc".to_string(),
             amount: "invalid".to_string(),
             dry_run: false,
@@ -397,7 +421,6 @@ mod tests {
 
         let req = WithdrawRequest {
             destination_chain: "ethereum".to_string(),
-            destination_address: "0x123".to_string(),
             asset: "usdc".to_string(),
             amount: "0".to_string(),
             dry_run: false,
@@ -414,7 +437,6 @@ mod tests {
 
         let req = WithdrawRequest {
             destination_chain: "bitcoin".to_string(),
-            destination_address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2".to_string(),
             asset: "usdc".to_string(),
             amount: "500000".to_string(),
             dry_run: false,
@@ -431,7 +453,6 @@ mod tests {
 
         let req = WithdrawRequest {
             destination_chain: "arbitrum".to_string(),
-            destination_address: "0x789".to_string(),
             asset: "usdc".to_string(),
             amount: "500000".to_string(),
             dry_run: true,

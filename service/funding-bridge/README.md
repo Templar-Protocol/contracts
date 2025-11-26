@@ -47,8 +47,7 @@ The service is configured via environment variables or CLI arguments:
 
 ```bash
 # Required: NEAR treasury configuration
-export NEAR_ENABLED=true
-export NEAR_TREASURY_ACCOUNT=treasury.near
+export NEAR_ACCOUNT=treasury.near
 export NEAR_SIGNER_KEY="ed25519:YOUR_PRIVATE_KEY_HERE"
 
 # Optional: Service configuration
@@ -69,8 +68,7 @@ Or use CLI arguments:
 ./target/release/funding-bridge \
   --port 3000 \
   --network mainnet \
-  --near-enabled \
-  --near-treasury-account treasury.near \
+  --near-account treasury.near \
   --near-signer-key "ed25519:YOUR_PRIVATE_KEY_HERE"
 ```
 
@@ -80,8 +78,7 @@ For testing without executing real transactions:
 
 ```bash
 ./target/release/funding-bridge --dry-run \
-  --near-enabled \
-  --near-treasury-account treasury.near \
+  --near-account treasury.near \
   --near-signer-key "ed25519:YOUR_PRIVATE_KEY_HERE"
 ```
 
@@ -111,8 +108,7 @@ curl http://localhost:3000/health
   "chains": [
     {
       "name": "near",
-      "available": true,
-      "priority": 0
+      "available": true
     }
   ],
   "bridge_api_status": {
@@ -161,15 +157,14 @@ curl -X POST http://localhost:3000/deposit \
 
 #### 3. Withdraw Funds
 
-Withdraw funds from NEAR to external chain (via bridge).
+Withdraw funds from NEAR to external chain (via bridge). The destination address is configured in the service configuration per chain.
 
 ```bash
 curl -X POST http://localhost:3000/withdraw \
   -H "Content-Type: application/json" \
   -d '{
     "destination_chain": "ethereum",
-    "destination_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
-    "asset": "usdc",
+    "asset": "USDC",
     "amount": "500000",
     "dry_run": false
   }'
@@ -177,7 +172,6 @@ curl -X POST http://localhost:3000/withdraw \
 
 **Request Fields:**
 - `destination_chain` - Target chain (see supported formats below)
-- `destination_address` - Address on destination chain
 - `asset` - Asset identifier (e.g., "USDC", "USDT", "ETH")
 - `amount` - Amount in smallest units
 - `dry_run` (optional) - If true, simulate without executing
@@ -389,17 +383,11 @@ OPTIONS:
     --dry-run
         Log actions without executing transactions
 
-    --near-enabled
-        Enable NEAR treasury
-
-    --near-treasury-account <ACCOUNT>
+    --near-account <ACCOUNT>
         NEAR account holding treasury funds
 
     --near-signer-key <KEY>
         NEAR private key (ed25519:...)
-
-    --near-priority <NUM>
-        NEAR chain priority (0 = highest) [default: 0]
 
     --eth-enabled
         Enable Ethereum treasury (feature-gated, requires "ethereum" feature)
@@ -410,16 +398,32 @@ OPTIONS:
 All CLI arguments can be set via environment variables:
 
 ```bash
+# Server configuration
 PORT=3000
 NETWORK=mainnet
-NEAR_RPC_URL=https://rpc.mainnet.near.org
 BRIDGE_API_URL=https://bridge.chaindefuser.com/rpc
 DRY_RUN=false
 
-NEAR_ENABLED=true
-NEAR_TREASURY_ACCOUNT=treasury.near
+# NEAR treasury (required)
+NEAR_ACCOUNT=treasury.near
 NEAR_SIGNER_KEY="ed25519:..."
-NEAR_PRIORITY=0
+NEAR_RPC_URL=https://rpc.mainnet.near.org
+
+# Ethereum deposits (optional)
+ETH_PRIVATE_KEY=0x...
+ETH_RPC_URL=https://eth.llamarpc.com
+
+# Solana deposits (optional)
+SOLANA_PRIVATE_KEY=...
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+
+# Withdrawal destinations (required for withdrawals)
+ETH_WITHDRAW_ADDRESS=0x...
+ARBITRUM_WITHDRAW_ADDRESS=0x...
+BASE_WITHDRAW_ADDRESS=0x...
+OPTIMISM_WITHDRAW_ADDRESS=0x...
+POLYGON_WITHDRAW_ADDRESS=0x...
+SOLANA_WITHDRAW_ADDRESS=...
 ```
 
 ## Development
@@ -477,8 +481,7 @@ cargo build --release -p templar-funding-bridge
 # Run with debug logging
 RUST_LOG=debug cargo run -p templar-funding-bridge -- \
   --dry-run \
-  --near-enabled \
-  --near-treasury-account test.near \
+  --near-account test.near \
   --near-signer-key "ed25519:..."
 ```
 
@@ -571,8 +574,7 @@ Build and run:
 ```bash
 docker build -t funding-bridge .
 docker run -p 3000:3000 \
-  -e NEAR_ENABLED=true \
-  -e NEAR_TREASURY_ACCOUNT=treasury.near \
+  -e NEAR_ACCOUNT=treasury.near \
   -e NEAR_SIGNER_KEY="ed25519:..." \
   funding-bridge
 ```
@@ -589,8 +591,7 @@ Type=simple
 User=funding-bridge
 WorkingDirectory=/opt/funding-bridge
 ExecStart=/opt/funding-bridge/funding-bridge \
-  --near-enabled \
-  --near-treasury-account treasury.near \
+  --near-account treasury.near \
   --near-signer-key "ed25519:..."
 Restart=always
 RestartSec=10
