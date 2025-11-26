@@ -1,5 +1,6 @@
 #![allow(clippy::pedantic)]
 
+use crate::governance::Timelocks;
 use crate::impl_callbacks::reconcile_supply_outcome;
 use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
@@ -33,6 +34,7 @@ use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
 use templar_common::vault::Restrictions;
 use templar_common::vault::WithdrawingState;
+use templar_common::vault::MAX_TIMELOCK_NS;
 use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[fixture]
@@ -298,13 +300,8 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(
-        m1.clone(),
-        MarketRecord {
-            cfg,
-            principal: 0,
-        },
-    );
+    c.markets
+        .insert(m1.clone(), MarketRecord { cfg, principal: 0 });
     c.supply_queue.insert(m1.clone());
 
     // Idle = 100, so max_room (80) should clamp allocation
@@ -458,13 +455,8 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg,
-            principal: 0,
-        },
-    );
+    c.markets
+        .insert(m.clone(), MarketRecord { cfg, principal: 0 });
 
     // Lower cap to zero: should NOT disable the market anymore
     c.submit_cap(m.clone(), U128(0));
@@ -1417,7 +1409,7 @@ fn governance_accept_guardian_not_yet_panics() {
     setup_env(&vault_id, &owner, vec![]);
 
     // First, ensure a guardian is set by submitting and accepting once.
-    let initial_guardian = accounts(10);
+    let initial_guardian = accounts(1);
     c.submit_guardian(initial_guardian.clone());
     set_ctx(
         &vault_id,
@@ -1427,6 +1419,8 @@ fn governance_accept_guardian_not_yet_panics() {
     );
     c.accept_guardian();
 
+    let max_timelock = MAX_TIMELOCK_NS;
+    c.governance_timelocks = Timelocks::new(max_timelock, max_timelock, max_timelock, max_timelock);
     // Now submit another guardian change but do not advance time.
     let new_g = accounts(5);
     set_ctx(&vault_id, &owner, None, None);
@@ -1545,7 +1539,7 @@ fn governance_submit_timelock_rejects_duplicate_pending() {
 }
 
 #[test]
-#[should_panic = "No pending timelock change"]
+#[should_panic = "No pending change"]
 fn governance_accept_timelock_without_pending_panics() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1557,7 +1551,7 @@ fn governance_accept_timelock_without_pending_panics() {
 }
 
 #[test]
-#[should_panic = "No pending timelock change"]
+#[should_panic = "No pending change"]
 fn governance_revoke_pending_timelock_then_accept_panics() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -2395,7 +2389,6 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 10,
         },
     );
