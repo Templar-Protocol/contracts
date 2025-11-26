@@ -317,6 +317,7 @@ impl Contract {
     }
 
     /* ----- Timelocks / Pending ----- */
+
     /// Proposes a new governance timelock in nanoseconds.
     /// If increasing, applies immediately; if decreasing, starts a timelock equal to the current duration.
     pub fn submit_timelock(&mut self, new_timelock_ns: U64) {
@@ -361,6 +362,7 @@ impl Contract {
     }
 
     /// Accepts a pending cap increase for `market` once the timelock has elapsed.
+    ///
     /// # Panics
     /// If the market does not exist.
     #[payable]
@@ -423,11 +425,14 @@ impl Contract {
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
         Abdicator::require_not_abdicated(&self.abdicator, "submit_market_removal");
-        if self.revoke_timelocks(
+
+        self.revoke_timelocks(
             |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
-        ) {
-            Event::MarketRemovalRevoked { market }.emit();
-        }
+        );
+        self.markets.get_mut(&market).map(|m| {
+            m.cfg.removable_at = 0;
+        });
+        Event::MarketRemovalRevoked { market }.emit();
     }
 
     /// Sets the ordered supply queue.
@@ -446,6 +451,7 @@ impl Contract {
                 panic_with_message(&format!("Duplicate market {m}"));
             }
         }
+
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
             let cap = self.markets.get(m).map_or(0, |r| r.cfg.cap.into());
@@ -524,6 +530,15 @@ impl Contract {
                         cfg.removable_at == 0,
                         "Market removal pending, cannot change cap"
                     );
+                    require!(
+                        self.governance_timelocks
+                            .seek_pending_timelock(|p| matches!(
+                                p,
+                                TimelockedAction::MarketRemoval { market: m } if m == market
+                            ))
+                            .is_none(),
+                        "Market removal pending, cannot change cap"
+                    );
 
                     require!(new_cap != &cfg.cap, "New cap is same as current");
                     new_cap > &cfg.cap
@@ -539,9 +554,19 @@ impl Contract {
                     .markets
                     .get(market)
                     .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+
+                require!(
+                    self.governance_timelocks
+                        .seek_pending_timelock(|p| matches!(
+                            p,
+                            TimelockedAction::MarketRemoval { market: m } if m == market
+                        ))
+                        .is_none(),
+                    "Removal already pending for this market"
+                );
                 require!(
                     r.cfg.removable_at == 0,
-                    "Removal already pending for this market"
+                    "Removal already accepted for this market"
                 );
                 require!(
                     r.cfg.cap.0 == 0,

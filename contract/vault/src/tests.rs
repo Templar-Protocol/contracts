@@ -1683,7 +1683,6 @@ fn governance_submit_and_revoke_market_removal() {
     assert_eq!(after.cfg.removable_at, new_ts, "removal must be scheduled");
 
     // Revoke pending removal
-    // c.submit_market_removal(m.clone());
     c.revoke_pending_market_removal(m.clone());
     let after2 = c.markets.get(&m).unwrap();
     assert_eq!(after2.cfg.removable_at, 0, "removal must be revoked");
