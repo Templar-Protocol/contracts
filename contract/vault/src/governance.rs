@@ -6,6 +6,12 @@ pub struct Abdicator {
     map: HashMap<String, bool>,
 }
 
+impl Default for Abdicator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Abdicator {
     pub fn new() -> Self {
         Self {
