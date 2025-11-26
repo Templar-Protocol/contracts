@@ -824,10 +824,9 @@ mod tests {
     #[test]
     fn liquidatable_collateral(
         #[values("1.2", "1.25", "1.5", "2")] mcr: Decimal,
-        #[values(1000, 1010)] collateral_price: i64,
-        #[values(0, 10)] collateral_conf: u64,
-        #[values(1000, 1010)] borrow_price: i64,
-        #[values(0, 10)] borrow_conf: u64,
+        #[values(11, 1000, 1005, 999_999)] collateral_price: i64,
+        #[values(1000, 1005, 999_999)] borrow_price: i64,
+        #[values(0, 10)] conf: u64,
     ) {
         let c = VMContextBuilder::new()
             .block_timestamp(1_000_000_000_000_000)
@@ -877,28 +876,33 @@ mod tests {
             interest_proof,
             CollateralAssetAmount::new(100_000_000),
         );
+        let initial_price_pair = PricePair::new(
+            &pyth::Price {
+                price: 5.into(),
+                conf: 0.into(),
+                expo: 24,
+                publish_time: 10,
+            },
+            24,
+            &pyth::Price {
+                price: 1.into(),
+                conf: 0.into(),
+                expo: 24,
+                publish_time: 10,
+            },
+            24,
+        )
+        .unwrap();
+        assert_eq!(
+            position.liquidatable_collateral(&initial_price_pair),
+            CollateralAssetAmount::zero(),
+        );
         let initial_borrow = position
             .record_borrow_initial(
                 snapshot_proof,
                 interest_proof,
                 BorrowAssetAmount::new(85_000_000),
-                &PricePair::new(
-                    &pyth::Price {
-                        price: 5.into(),
-                        conf: 0.into(),
-                        expo: 24,
-                        publish_time: 10,
-                    },
-                    24,
-                    &pyth::Price {
-                        price: 1.into(),
-                        conf: 0.into(),
-                        expo: 24,
-                        publish_time: 10,
-                    },
-                    24,
-                )
-                .unwrap(),
+                &initial_price_pair,
                 env::block_timestamp_ms(),
             )
             .unwrap();
@@ -912,25 +916,22 @@ mod tests {
         let price_pair = PricePair::new(
             &pyth::Price {
                 price: collateral_price.into(),
-                conf: collateral_conf.into(),
+                conf: conf.into(),
                 expo: 24,
                 publish_time: 10,
             },
             24,
             &pyth::Price {
                 price: borrow_price.into(),
-                conf: borrow_conf.into(),
+                conf: conf.into(),
                 expo: 24,
                 publish_time: 10,
             },
             24,
         )
         .unwrap();
-        let starting_cr = position
-            .inner()
-            .collateralization_ratio(&price_pair)
-            .unwrap();
-        eprintln!("Starting collateralization ratio: {starting_cr}");
+        let starting_cr = position.inner().collateralization_ratio(&price_pair);
+        eprintln!("Starting collateralization ratio: {starting_cr:?}");
         let liquidatable_collateral = position.liquidatable_collateral(&price_pair);
 
         let minimum_acceptable = configuration
@@ -940,31 +941,54 @@ mod tests {
         eprintln!("Liquidatable collateral: {liquidatable_collateral}");
         eprintln!("Minimum acceptable: {minimum_acceptable}");
 
-        let initial_liquidation = position
-            .record_liquidation_initial(
-                interest_proof,
-                minimum_acceptable,
-                Some(liquidatable_collateral),
-                &price_pair,
-                env::block_timestamp_ms(),
-            )
-            .unwrap();
-        position.record_liquidation_final(
-            interest_proof,
-            "liquidator".parse().unwrap(),
-            &initial_liquidation,
-        );
+        match collateral_price.ilog10().cmp(&borrow_price.ilog10()) {
+            std::cmp::Ordering::Less => {
+                // Completely underwater
+                assert_eq!(
+                    liquidatable_collateral,
+                    CollateralAssetAmount::new(100_000_000),
+                    "All collateral should be eligible for liquidation"
+                );
+            }
+            std::cmp::Ordering::Equal => {
+                // Partial liquidation
 
-        let finishing_cr = position
-            .inner()
-            .collateralization_ratio(&price_pair)
-            .unwrap();
-        eprintln!("Finishing collateralization ratio: {finishing_cr}");
-        eprintln!("Target MCR: {mcr}");
+                let initial_liquidation = position
+                    .record_liquidation_initial(
+                        interest_proof,
+                        minimum_acceptable,
+                        Some(liquidatable_collateral),
+                        &price_pair,
+                        env::block_timestamp_ms(),
+                    )
+                    .unwrap();
+                position.record_liquidation_final(
+                    interest_proof,
+                    "liquidator".parse().unwrap(),
+                    &initial_liquidation,
+                );
 
-        assert!(finishing_cr >= mcr);
-        let delta = finishing_cr.abs_diff(mcr);
-        assert!(delta < Decimal::ONE.mul_pow10(-4).unwrap());
+                let finishing_cr = position
+                    .inner()
+                    .collateralization_ratio(&price_pair)
+                    .unwrap();
+                eprintln!("Finishing collateralization ratio: {finishing_cr}");
+                eprintln!("Target MCR: {mcr}");
+
+                assert!(finishing_cr >= mcr);
+                let delta = finishing_cr.abs_diff(mcr);
+                assert!(delta < Decimal::ONE.mul_pow10(-4).unwrap());
+            }
+            std::cmp::Ordering::Greater => {
+                // No liquidation
+
+                assert_eq!(
+                    liquidatable_collateral,
+                    CollateralAssetAmount::zero(),
+                    "No collateral should be liquidatable"
+                );
+            }
+        }
     }
 
     #[test]
