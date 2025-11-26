@@ -23,7 +23,6 @@ use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
 use rstest::{fixture, rstest};
-use std::u64;
 use templar_common::asset::FungibleAsset;
 use templar_common::vault::AllocatingState;
 use templar_common::vault::Error;
@@ -1257,6 +1256,7 @@ fn governance_accept_guardian_not_yet_panics() {
 }
 
 #[test]
+#[should_panic]
 fn governance_submit_accept_and_revoke_guardian() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1281,7 +1281,7 @@ fn governance_submit_accept_and_revoke_guardian() {
     c.submit_guardian(another);
     c.revoke_pending_guardian();
 
-    // No pending now; accept should no-op (but must not panic)
+    // No pending now; accept should panic due to no pending guardian change
     c.accept_guardian();
 }
 
@@ -1294,7 +1294,7 @@ fn governance_submit_guardian_rejects_duplicate_pending() {
     setup_env(&vault_id, &owner, vec![]);
 
     // Ensure there is an existing guardian so changes are timelocked.
-    let first = accounts(6);
+    let first = accounts(2);
     c.submit_guardian(first.clone());
     set_ctx(
         &vault_id,
@@ -1306,11 +1306,11 @@ fn governance_submit_guardian_rejects_duplicate_pending() {
 
     // Submit a new guardian change, then attempt to submit another one
     // before the first has been accepted or revoked.
-    let pending = accounts(7);
+    let pending = accounts(5);
     set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(pending.clone());
 
-    let another = accounts(8);
+    let another = accounts(1);
     c.submit_guardian(another);
 }
 
@@ -1348,7 +1348,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
 }
 
 #[test]
-#[should_panic = "Timelock change already pending"]
+#[should_panic = "Change already pending for this action and arguments"]
 fn governance_submit_timelock_rejects_duplicate_pending() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
