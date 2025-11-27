@@ -708,16 +708,11 @@ impl Contract {
         &mut self,
         find_fn: impl Fn(&TimelockedAction) -> bool,
     ) -> Option<TimelockedAction> {
-        self.governance_timelocks
-            .seek_pending_timelock(find_fn)
-            .inspect(|(_, pending)| {
-                pending.verify();
-            })
-            .map(|(i, entry)| (i, entry.clone()))
-            .map(|(i, entry)| {
-                self.governance_timelocks.pending_actions.remove(i);
-                entry.value
-            })
+        let (i, entry) = self.governance_timelocks.seek_pending_timelock(find_fn)?;
+        entry.verify();
+        let action = entry.value.clone();
+        self.governance_timelocks.pending_actions.remove(i);
+        Some(action)
     }
 
     /// Remove all pending actions that match `pred`.
