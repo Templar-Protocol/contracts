@@ -39,6 +39,9 @@ impl Abdicator {
         if a.is_abdicated(method_name) {
             templar_common::panic_with_message(&format!("abdicated {method_name}"));
         }
+    }
+}
+
 #[near(serializers = [borsh])]
 #[derive(Default)]
 pub struct Gate {
@@ -48,8 +51,6 @@ pub struct Gate {
     // restrictions currntly in the vault
     pub(crate) restrictions: Option<Restrictions>,
 }
-
-// FIXME: update list
 
 impl Gate {
     pub fn new(restrictions: Option<Restrictions>) -> Self {
@@ -97,9 +98,7 @@ impl Gate {
         t: &Nep141Transfer,
         on_err: impl FnOnce(TransferError),
     ) {
-        // Escrow shares into the vault; bypass transfer gates for this internal flow.
         c.gate.bypass_share_transfer_gates = true;
-        // FIXME: transfer_unchecked?? with event
         c.transfer(t).unwrap_or_else(on_err);
         c.gate.bypass_share_transfer_gates = false;
     }

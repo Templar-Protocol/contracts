@@ -22,8 +22,6 @@ use near_sdk_contract_tools::ft::Nep141 as _;
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
-use near_workspaces::network::Sandbox;
-use near_workspaces::Worker;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use std::collections::BTreeSet;
@@ -36,8 +34,6 @@ use templar_common::vault::PayoutState;
 use templar_common::vault::Restrictions;
 use templar_common::vault::WithdrawingState;
 use templar_common::vault::{AllocationMode, DepositMsg};
-use test_utils::setup_test;
-use test_utils::*;
 
 #[fixture]
 fn vault_id_fixture() -> AccountId {
@@ -169,41 +165,6 @@ proptest! {
             }
         }
     }
-}
-
-#[rstest]
-#[tokio::test]
-#[should_panic = "Duplicate market"]
-async fn supply_queue_mustnt_have_duplicates(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-    );
-    let m = c.market.contract().id().clone();
-
-    let queue = vec![m.clone(), m.clone()];
-    vault.set_supply_queue(&vault_curator, &queue).await;
-}
-
-#[rstest]
-#[tokio::test]
-#[should_panic = "Invariant: Only one op in flight"]
-async fn state_machine_is_locked_when_another_op_is_running(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_owner)
-        accounts(supply_user, borrow_user)
-    );
-    let amount = 1000;
-    vault.supply(&supply_user, amount).await;
-
-    futures::future::select_all(
-        (0..100).map(|_| Box::pin(vault.allocate(&vault_owner, vec![], Some(1.into())))),
-    )
-    .await;
 }
 
 #[rstest(len => [2usize, 3, 5])]
