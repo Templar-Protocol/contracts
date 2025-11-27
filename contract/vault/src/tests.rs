@@ -1343,7 +1343,7 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
             "submit_timelock" => {
                 let cur = c.get_configuration().initial_timelock_ns;
                 // value choice irrelevant; abdication check runs first
-                c.submit_timelock(cur);
+                c.submit_timelock(cur, None);
             }
             "accept_timelock" => {
                 c.accept_timelock();
