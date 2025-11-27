@@ -1,3 +1,7 @@
+use near_sdk::AccountIdRef;
+use near_sdk_contract_tools::ft::nep141::TransferError;
+use templar_common::{panic_with_message, vault::Restrictions};
+
 use super::*;
 
 #[derive(Clone)]
@@ -35,6 +39,94 @@ impl Abdicator {
         if a.is_abdicated(method_name) {
             templar_common::panic_with_message(&format!("abdicated {method_name}"));
         }
+    }
+}
+
+#[near(serializers = [borsh])]
+#[derive(Default)]
+pub struct Gate {
+    /// Internal flag to bypass transfer gates for trusted internal flows
+    /// (e.g. escrow/redemption settlement).
+    bypass_share_transfer_gates: bool,
+    // restrictions currntly in the vault
+    pub(crate) restrictions: Option<Restrictions>,
+}
+
+impl Gate {
+    pub fn new(restrictions: Option<Restrictions>) -> Self {
+        Self {
+            restrictions,
+            bypass_share_transfer_gates: false,
+        }
+    }
+
+    pub(crate) fn enforce_policy(&self, account: &AccountIdRef) {
+        if let Some(restrictions) = &self.restrictions {
+            if let Some(reason) = restrictions.is_restricted(account) {
+                templar_common::panic_with_message(&format!(
+                    "Account {account} is restricted: {reason:?}"
+                ));
+            }
+        }
+    }
+
+    // Common gate for NEP-141 share transfers (ft_transfer/ft_transfer_call).
+    /// Blocks transfers when globally paused or when sending to a blocked recipient
+    /// or a known market contract.
+    fn enforce_share_transfer_gates(
+        &self,
+        markets: &BTreeMap<AccountId, MarketRecord>,
+        t: &Nep141Transfer,
+    ) {
+        if self.bypass_share_transfer_gates {
+            return;
+        }
+
+        require!(
+            !markets.contains_key(t.receiver_id.as_ref()),
+            "Cannot transfer shares to a market contract that is managed by the vault"
+        );
+
+        self.enforce_policy(t.sender_id.as_ref());
+        self.enforce_policy(t.receiver_id.as_ref());
+    }
+
+    /// Bypass share transfer gates for a given transfer.
+    /// Utilises a closure to handle errors, allowing for custom error handling.
+    pub fn bypass_transfer_with(
+        c: &mut Contract,
+        t: &Nep141Transfer,
+        on_err: impl FnOnce(TransferError),
+    ) {
+        c.gate.bypass_share_transfer_gates = true;
+        c.transfer(t).unwrap_or_else(on_err);
+        c.gate.bypass_share_transfer_gates = false;
+    }
+
+    /// Bypass share transfer gates for a given transfer. Panics on error.
+    ///
+    /// # Panics
+    /// Panics if the transfer fails.
+    pub fn bypass_transfer(c: &mut Contract, t: &Nep141Transfer) {
+        // Escrow shares into the vault; bypass transfer gates for this internal flow.
+        c.gate.bypass_share_transfer_gates = true;
+
+        Gate::bypass_transfer_with(c, t, |e| panic_with_message(&e.to_string()));
+        c.gate.bypass_share_transfer_gates = false;
+    }
+}
+
+impl near_sdk_contract_tools::hook::Hook<Self, Nep141Transfer<'_>> for Contract {
+    fn hook<R>(
+        contract: &mut Self,
+        transfer: &Nep141Transfer<'_>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        // Gate all NEP-141 share transfers.
+        contract
+            .gate
+            .enforce_share_transfer_gates(&contract.markets, transfer);
+        f(contract)
     }
 }
 
@@ -244,7 +336,7 @@ impl Contract {
             .emit();
             self.pending_timelock = None;
         } else {
-            templar_common::panic_with_message("No pending timelock change");
+            panic_with_message("No pending timelock change");
         }
     }
 
@@ -276,7 +368,7 @@ impl Contract {
                 .emit();
                 self.markets
                     .get_mut(&market)
-                    .unwrap_or_else(|| templar_common::panic_with_message("Config not found"))
+                    .unwrap_or_else(|| panic_with_message("Config not found"))
             }
             Some(m) => m,
         };
@@ -325,12 +417,12 @@ impl Contract {
         let m = self
             .markets
             .get_mut(&market)
-            .unwrap_or_else(|| templar_common::panic_with_message("Config not found"));
+            .unwrap_or_else(|| panic_with_message("Config not found"));
 
         let was_enabled = m.cfg.enabled;
 
         let pending_value = m.pending_cap.as_ref().map_or_else(
-            || templar_common::panic_with_message("No pending cap change for this market"),
+            || panic_with_message("No pending cap change for this market"),
             |pending_cap| {
                 pending_cap.verify();
                 pending_cap.value
@@ -360,7 +452,7 @@ impl Contract {
 
         self.markets
             .get_mut(&market)
-            .unwrap_or_else(|| templar_common::panic_with_message("Config not found"))
+            .unwrap_or_else(|| panic_with_message("Config not found"))
             .pending_cap = None;
     }
 
@@ -388,9 +480,12 @@ impl Contract {
     pub fn submit_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
         Abdicator::require_not_abdicated(&self.abdicator, "submit_market_removal");
-        let rec = self.markets.get_mut(&market).unwrap_or_else(|| {
-            templar_common::panic_with_message(&format!("Unknown market: {market}"))
-        });
+
+        let rec = self
+            .markets
+            .get_mut(&market)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+
         require!(
             rec.cfg.removable_at == 0,
             "Removal already pending for this market"
@@ -435,7 +530,7 @@ impl Contract {
         let mut seen = HashSet::new();
         for m in &markets {
             if !seen.insert(m.clone()) {
-                templar_common::panic_with_message(&format!("Duplicate market {m}"));
+                panic_with_message(&format!("Duplicate market {m}"));
             }
         }
         // Validate all markets are authorized (cap > 0) before charging storage
@@ -460,5 +555,16 @@ impl Contract {
     pub fn abdicate(&mut self, method_name: String) {
         Self::assert_curator_or_owner();
         self.abdicator.abdicate(&method_name);
+    }
+
+    /// Sets the restrictions for the vault.
+    pub fn set_restrictions(&mut self, restrictions: Option<Restrictions>) {
+        Self::assert_guardian_or_owner();
+        env::log_str(&format!("Restrictions set to {restrictions:?}"));
+        self.gate.restrictions = restrictions;
+    }
+
+    pub fn get_restrictions(&self) -> Option<Restrictions> {
+        self.gate.restrictions.clone()
     }
 }
