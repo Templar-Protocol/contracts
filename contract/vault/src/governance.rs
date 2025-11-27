@@ -666,15 +666,12 @@ impl Contract {
                 if new_cap.0 > 0 {
                     if !was_enabled {
                         mkt.cfg.enabled = true;
+                        Event::MarketEnabled {
+                            market: market.clone(),
+                        }
+                        .emit();
                     }
                     mkt.cfg.removable_at = 0;
-                }
-
-                if new_cap.0 > 0 && !was_enabled {
-                    Event::MarketEnabled {
-                        market: market.clone(),
-                    }
-                    .emit();
                 }
 
                 Event::SupplyCapSet {
