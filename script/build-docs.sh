@@ -9,7 +9,9 @@ mkdir -p $ROOT_DIR/_site/{guide,doc}
 
 echo "Building guide..."
 cd "$ROOT_DIR/docs"
-mdbook build --dest-dir $ROOT_DIR/_site/guide
+mdbook clean
+mdbook build
+mv ./book/html/* $ROOT_DIR/_site/guide/
 
 echo "Building Rust documentation..."
 cd $ROOT_DIR
