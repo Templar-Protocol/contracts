@@ -3,7 +3,6 @@ use near_sdk_contract_tools::ft::nep141::TransferError;
 use templar_common::{panic_with_message, vault::Restrictions};
 
 use super::*;
-use near_sdk::assert_one_yocto;
 use std::collections::VecDeque;
 use templar_common::{panic_with_message, vault::PendingValue};
 
@@ -299,7 +298,6 @@ impl Contract {
 
     /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
     pub fn submit_guardian(&mut self, account: AccountId) {
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_guardian");
         let tl = TimelockedAction::GuardianChange { account };
         self.submit_change(tl);
     }
@@ -307,7 +305,6 @@ impl Contract {
     /// Accepts the pending Guardian change after the timelock has elapsed.
     pub fn accept_guardian(&mut self) {
         Self::require_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_guardian");
 
         if let Some(action) =
             self.take_timelock(|a| matches!(a, TimelockedAction::GuardianChange { .. }))
@@ -321,7 +318,6 @@ impl Contract {
     /// Revokes any pending Guardian change.
     pub fn revoke_pending_guardian(&mut self) {
         Self::assert_guardian_or_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_guardian");
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::GuardianChange { .. })) {
             Event::PendingTimelockRevoked.emit();
@@ -337,7 +333,6 @@ impl Contract {
     /// - `None`: update all governance timelock types to `new_timelock_ns`.
     /// - `Some`: update only the corresponding timelock type.
     pub fn submit_timelock(&mut self, new_timelock_ns: U64, kind: Option<TimelockKind>) {
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_timelock");
         let tl = TimelockedAction::TimelockConfigChange {
             kind,
             new_timelock_ns,
@@ -348,7 +343,6 @@ impl Contract {
     /// Accepts a pending timelock change after it becomes valid.
     pub fn accept_timelock(&mut self) {
         Self::require_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_timelock");
 
         if let Some(action) =
             self.take_timelock(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. }))
@@ -362,7 +356,6 @@ impl Contract {
     /// Revokes any pending timelock change.
     pub fn revoke_pending_timelock(&mut self) {
         Self::assert_guardian_or_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_timelock");
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. })) {
             Event::PendingTimelockRevoked.emit();
         }
@@ -373,7 +366,6 @@ impl Contract {
     ///
     /// If the market does not exist, it will be created when the timelock is executed.
     pub fn submit_cap(&mut self, market: AccountId, new_cap: U128) {
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
         self.submit_change(TimelockedAction::CapChange { market, new_cap });
     }
 
@@ -383,7 +375,6 @@ impl Contract {
     /// If there is no pending cap change for this market.
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
         self.ensure_idle();
 
         if let Some(action) = self.take_timelock(
@@ -398,7 +389,6 @@ impl Contract {
     /// Revokes any pending cap change for `market`.
     pub fn revoke_pending_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
 
         if self.revoke_timelocks(
             |a| matches!(a, TimelockedAction::CapChange { market: mkt, .. } if mkt == &market),
@@ -418,8 +408,6 @@ impl Contract {
     /// Begins the process to remove `market`.
     /// Requires cap == 0 and no pending cap changes; starts a timelock.
     pub fn submit_market_removal(&mut self, market: AccountId) {
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_market_removal");
-
         self.submit_change(TimelockedAction::MarketRemoval { market });
     }
 
@@ -439,7 +427,6 @@ impl Contract {
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "submit_market_removal");
 
         self.revoke_timelocks(
             |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
@@ -452,6 +439,7 @@ impl Contract {
 
     /// Sets the ordered supply queue.
     /// Rejects duplicates and markets without a positive cap. Requires the vault to be idle.
+    #[payable]
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
         Abdicator::require_not_abdicated(&self.abdicator, "set_supply_queue");
@@ -508,6 +496,7 @@ impl Contract {
             // Submit a timelocked governance change if there is already a guardian
             TimelockedAction::GuardianChange { .. } => {
                 Self::require_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_guardian");
 
                 Self::with_members_of(&Role::Guardian, |members| {
                     require!(
@@ -523,6 +512,7 @@ impl Contract {
                 new_timelock_ns,
             } => {
                 Self::assert_guardian_or_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_timelock");
 
                 let new = new_timelock_ns.0;
                 let current = match kind {
@@ -546,6 +536,7 @@ impl Contract {
             // Submit a timelocked governance change if the cap is greater than the current cap or there is a new market to be made
             TimelockedAction::CapChange { market, new_cap } => {
                 Self::assert_curator_or_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
                 self.ensure_idle();
 
                 let cfg = self.markets.get(market).map(|m| &m.cfg);
@@ -573,6 +564,7 @@ impl Contract {
             // Submit a timelocked governance change to remove a market
             TimelockedAction::MarketRemoval { market } => {
                 Self::assert_curator_or_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_market_removal");
 
                 let r = self
                     .markets

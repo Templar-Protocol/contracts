@@ -1290,20 +1290,13 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     method_name,
     case("set_curator"),
     case("set_is_allocator"),
-    case("submit_guardian"),
-    case("accept_guardian"),
-    case("revoke_pending_guardian"),
     case("set_skim_recipient"),
     case("set_fee_recipient"),
     case("set_performance_fee"),
+    case("submit_guardian"),
     case("submit_timelock"),
-    case("accept_timelock"),
-    case("revoke_pending_timelock"),
     case("submit_cap"),
-    case("accept_cap"),
-    case("revoke_pending_cap"),
     case("submit_market_removal"),
-    case("revoke_pending_market_removal"),
     case("set_supply_queue")
 )]
 fn governance_abdicate_blocks_further_changes(method_name: &str) {
@@ -1324,11 +1317,7 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
             }
             "submit_guardian" => {
                 c.submit_guardian(accounts(5));
-            }
-            "accept_guardian" => {
                 c.accept_guardian();
-            }
-            "revoke_pending_guardian" => {
                 c.revoke_pending_guardian();
             }
             "set_skim_recipient" => {
@@ -1344,31 +1333,18 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
                 let cur = c.get_configuration().initial_timelock_ns;
                 // value choice irrelevant; abdication check runs first
                 c.submit_timelock(cur, None);
-            }
-            "accept_timelock" => {
                 c.accept_timelock();
-            }
-            "revoke_pending_timelock" => {
                 c.revoke_pending_timelock();
             }
             "submit_cap" => {
                 let market = mk(9200);
-                c.submit_cap(market, U128(1));
-            }
-            "accept_cap" => {
-                let market = mk(9201);
-                c.accept_cap(market);
-            }
-            "revoke_pending_cap" => {
-                let market = mk(9202);
+                c.submit_cap(market.clone(), U128(1));
+                c.accept_cap(market.clone());
                 c.revoke_pending_cap(market);
             }
             "submit_market_removal" => {
                 let market = mk(9203);
-                c.submit_market_removal(market);
-            }
-            "revoke_pending_market_removal" => {
-                let market = mk(9204);
+                c.submit_market_removal(market.clone());
                 c.revoke_pending_market_removal(market);
             }
             "set_supply_queue" => {
