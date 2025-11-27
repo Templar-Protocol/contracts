@@ -36,9 +36,28 @@ pub struct JsonRpcResponse<T> {
 
 /// JSON-RPC error
 #[derive(Debug, Deserialize)]
-pub struct JsonRpcError {
-    pub code: i64,
-    pub message: String,
+#[serde(untagged)]
+pub enum JsonRpcError {
+    /// Standard JSON-RPC 2.0 error with code and message
+    Standard { code: i64, message: String },
+    /// Non-standard error (just a string)
+    Simple(String),
+}
+
+impl JsonRpcError {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Standard { message, .. } => message,
+            Self::Simple(msg) => msg,
+        }
+    }
+
+    pub fn code(&self) -> i64 {
+        match self {
+            Self::Standard { code, .. } => *code,
+            Self::Simple(_) => -32000, // Generic error code
+        }
+    }
 }
 
 // ============================================================================
@@ -274,80 +293,6 @@ pub struct NotifyDepositResult {
 }
 
 // ============================================================================
-// Withdrawal Status
-// ============================================================================
-
-#[derive(Debug, Serialize)]
-pub struct WithdrawalStatusParams {
-    /// NEAR transaction hash of the withdrawal
-    pub near_tx_hash: String,
-}
-
-/// Withdrawal status
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum WithdrawalStatus {
-    Pending,
-    Processing,
-    Completed,
-    Failed,
-}
-
-impl std::fmt::Display for WithdrawalStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Pending => write!(f, "PENDING"),
-            Self::Processing => write!(f, "PROCESSING"),
-            Self::Completed => write!(f, "COMPLETED"),
-            Self::Failed => write!(f, "FAILED"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct WithdrawalStatusResult {
-    /// Withdrawal status
-    pub status: WithdrawalStatus,
-    /// Destination chain
-    pub chain: String,
-    /// Transaction hash on destination chain (when completed)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination_tx_hash: Option<String>,
-    /// Amount withdrawn in smallest units
-    pub amount: String,
-    /// Defuse asset identifier
-    pub defuse_asset_identifier: String,
-}
-
-// ============================================================================
-// Deposit Status
-// ============================================================================
-
-#[derive(Debug, Serialize)]
-pub struct DepositStatusParams {
-    /// Source chain transaction hash
-    pub tx_hash: String,
-    /// Source chain identifier
-    pub chain: String,
-}
-
-/// Deposit status result from Bridge API
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DepositStatusResult {
-    /// Deposit status
-    pub status: String,
-    /// Source chain
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chain: Option<String>,
-    /// NEAR transaction hash (when completed)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub near_tx_hash: Option<String>,
-    /// Amount deposited
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub amount: Option<String>,
-}
-
-// ============================================================================
 // Token Mapping Helper
 // ============================================================================
 
@@ -533,22 +478,6 @@ mod tests {
         assert_eq!(info.tx_hash, "0x123abc");
         assert_eq!(info.status, DepositStatus::Completed);
         assert_eq!(info.near_tx_hash, Some("ABC123".to_string()));
-    }
-
-    #[test]
-    fn test_withdrawal_status() {
-        let json = r#"{
-            "status": "COMPLETED",
-            "chain": "eth:1",
-            "destination_tx_hash": "0x456def",
-            "amount": "950000",
-            "defuse_asset_identifier": "eth:1:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-        }"#;
-
-        let result: WithdrawalStatusResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.status, WithdrawalStatus::Completed);
-        assert_eq!(result.chain, "eth:1");
-        assert_eq!(result.destination_tx_hash, Some("0x456def".to_string()));
     }
 
     #[test]

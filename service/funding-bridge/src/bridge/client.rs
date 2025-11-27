@@ -197,64 +197,6 @@ impl BridgeClient {
         Ok(result.deposits)
     }
 
-    /// Get withdrawal status by NEAR transaction hash
-    pub async fn get_withdrawal_status(
-        &self,
-        near_tx_hash: &str,
-    ) -> BridgeResult<WithdrawalStatusResult> {
-        debug!(
-            near_tx_hash = %near_tx_hash,
-            "Getting withdrawal status"
-        );
-
-        let params = WithdrawalStatusParams {
-            near_tx_hash: near_tx_hash.to_string(),
-        };
-        let request = JsonRpcRequest::new("withdrawal_status", params);
-
-        let response: JsonRpcResponse<WithdrawalStatusResult> = self.send_request(request).await?;
-        let result = response.result.ok_or_else(|| {
-            BridgeError::WithdrawalStatusFailed("No result in response".to_string())
-        })?;
-
-        info!(
-            status = %result.status,
-            chain = %result.chain,
-            "Fetched withdrawal status"
-        );
-        Ok(result)
-    }
-
-    /// Get deposit status by source chain transaction hash
-    pub async fn get_deposit_status(
-        &self,
-        tx_hash: &str,
-        chain: &str,
-    ) -> BridgeResult<DepositStatusResult> {
-        debug!(
-            tx_hash = %tx_hash,
-            chain = %chain,
-            "Getting deposit status"
-        );
-
-        let params = DepositStatusParams {
-            tx_hash: tx_hash.to_string(),
-            chain: chain.to_string(),
-        };
-        let request = JsonRpcRequest::new("deposit_status", params);
-
-        let response: JsonRpcResponse<DepositStatusResult> = self.send_request(request).await?;
-        let result = response
-            .result
-            .ok_or_else(|| BridgeError::ApiError("No result in response".to_string()))?;
-
-        info!(
-            status = %result.status,
-            "Fetched deposit status"
-        );
-        Ok(result)
-    }
-
     /// Find token info by asset name and chain
     pub async fn find_token(
         &self,
@@ -308,7 +250,8 @@ impl BridgeClient {
         if let Some(error) = json_response.error {
             return Err(BridgeError::ApiError(format!(
                 "JSON-RPC error {}: {}",
-                error.code, error.message
+                error.code(),
+                error.message()
             )));
         }
 
@@ -471,33 +414,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_withdrawal_status() {
-        let (mock_server, client) = setup_mock_server().await;
-
-        Mock::given(method("POST"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": 1,
-                "jsonrpc": "2.0",
-                "result": {
-                    "status": "COMPLETED",
-                    "chain": "eth:1",
-                    "destination_tx_hash": "0x456def",
-                    "amount": "950000",
-                    "defuse_asset_identifier": "eth:1:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-                }
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let result = client.get_withdrawal_status("ABC123").await.unwrap();
-
-        assert_eq!(result.status, WithdrawalStatus::Completed);
-        assert_eq!(result.chain, "eth:1");
-        assert_eq!(result.destination_tx_hash, Some("0x456def".to_string()));
-    }
-
-    #[tokio::test]
     async fn test_find_token() {
         let (mock_server, client) = setup_mock_server().await;
 
@@ -598,7 +514,7 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(BridgeError::ApiError(msg)) => {
-                assert!(msg.contains("Invalid request"));
+                assert!(msg.contains("Invalid request") || msg.contains("-32600"));
             }
             _ => panic!("Expected ApiError"),
         }

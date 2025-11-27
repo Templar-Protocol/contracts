@@ -95,48 +95,6 @@ pub enum WithdrawStatus {
     Failed,
 }
 
-/// Response for withdrawal status check (from Bridge API)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WithdrawalStatusResponse {
-    /// NEAR transaction hash
-    pub near_tx_hash: String,
-
-    /// Current status
-    pub status: String,
-
-    /// Destination chain
-    pub chain: String,
-
-    /// Destination transaction hash (if completed)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination_tx_hash: Option<String>,
-
-    /// Amount transferred
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub amount: Option<String>,
-}
-
-/// Response for deposit status check (from Bridge API)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DepositStatusResponse {
-    /// Source chain transaction hash
-    pub tx_hash: String,
-
-    /// Current status
-    pub status: String,
-
-    /// Source chain
-    pub chain: String,
-
-    /// NEAR transaction hash (when completed)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub near_tx_hash: Option<String>,
-
-    /// Amount deposited
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub amount: Option<String>,
-}
-
 /// Health check response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {

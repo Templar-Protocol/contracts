@@ -5,7 +5,6 @@
 
 pub mod config;
 pub mod evm;
-#[cfg(feature = "solana")]
 pub mod solana;
 
 use async_trait::async_trait;
@@ -43,9 +42,6 @@ pub enum ExternalChainError {
 
     #[error("Transaction failed: {0}")]
     TransactionFailed(String),
-
-    #[error("Feature not enabled: {0}")]
-    FeatureNotEnabled(String),
 }
 
 /// Trait for external chain handlers

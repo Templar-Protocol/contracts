@@ -115,23 +115,15 @@ impl App {
         }
 
         // Check for Solana configuration from environment
-        #[cfg(feature = "solana")]
-        {
-            if let Some(solana_handler) = crate::external::solana::solana_sdk_handler_from_env() {
-                let chain_id = solana_handler.chain_id().to_string();
-                tracing::info!(
-                    chain_id = %chain_id,
-                    "Registered Solana chain handler"
-                );
-                registry.register(solana_handler);
-            } else {
-                tracing::info!("No Solana keypair configured - Solana deposits disabled");
-            }
-        }
-
-        #[cfg(not(feature = "solana"))]
-        {
-            tracing::info!("Solana feature not enabled - Solana deposits disabled");
+        if let Some(solana_handler) = crate::external::solana::solana_sdk_handler_from_env() {
+            let chain_id = solana_handler.chain_id().to_string();
+            tracing::info!(
+                chain_id = %chain_id,
+                "Registered Solana chain handler"
+            );
+            registry.register(solana_handler);
+        } else {
+            tracing::info!("No Solana keypair configured - Solana deposits disabled");
         }
 
         Arc::new(registry)

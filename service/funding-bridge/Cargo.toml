@@ -67,23 +67,18 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand = "0.8"
 
 # Ethereum client (for automated deposits)
-ethers = { version = "2.0", features = ["abigen", "ws"], optional = true }
+ethers = { version = "2.0", features = ["abigen", "ws"] }
 
 # Solana client (for automated SPL token deposits)
 # Using v3.0.0 which has modular dependencies and resolved zeroize conflicts
-solana-sdk = { version = "3.0", default-features = true, optional = true }
-solana-rpc-client = { version = "3.1", optional = true }
-spl-token = { version = "7.0", default-features = false, optional = true }
-spl-associated-token-account = { version = "6.0", default-features = false, optional = true }
+solana-sdk = { version = "3.0", default-features = true }
+solana-rpc-client = { version = "3.1" }
+spl-token = { version = "7.0", default-features = false }
+spl-associated-token-account = { version = "6.0", default-features = false }
 
 # Utilities
 ulid = "1.1"
 hex = "0.4"
-
-[features]
-default = []
-ethereum = ["dep:ethers"]
-solana = ["dep:solana-sdk", "dep:solana-rpc-client", "dep:spl-token", "dep:spl-associated-token-account"]
 
 [dev-dependencies]
 axum-test = "15.0"

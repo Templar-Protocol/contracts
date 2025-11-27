@@ -4,7 +4,6 @@ pub mod deposit;
 pub mod health;
 pub mod metrics;
 pub mod models;
-pub mod status;
 #[cfg(test)]
 pub mod test_utils;
 pub mod tokens;
@@ -23,14 +22,6 @@ pub fn create_router() -> Router<App> {
         .route("/deposit", routing::post(deposit::deposit))
         .route("/withdraw", routing::post(withdraw::withdraw))
         .route("/tokens/lookup", routing::get(tokens::token_lookup))
-        .route(
-            "/status/withdrawal/:tx_hash",
-            routing::get(status::get_withdrawal_status),
-        )
-        .route(
-            "/status/deposit/:tx_hash",
-            routing::get(status::get_deposit_status),
-        )
 }
 
 #[cfg(test)]

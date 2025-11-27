@@ -76,14 +76,6 @@ pub enum BridgeError {
     #[error("Failed to get deposit address: {0}")]
     DepositAddressFailed(String),
 
-    /// Deposit timeout
-    #[error("Deposit timed out after {0} seconds")]
-    DepositTimeout(u64),
-
-    /// Withdrawal status check failed
-    #[error("Failed to get withdrawal status: {0}")]
-    WithdrawalStatusFailed(String),
-
     /// Unsupported network
     #[error("Unsupported network: {0}")]
     UnsupportedNetwork(String),
@@ -196,12 +188,6 @@ mod tests {
     fn test_bridge_error_display() {
         let error = BridgeError::ApiError("rate limit exceeded".to_string());
         assert_eq!(error.to_string(), "Bridge API error: rate limit exceeded");
-    }
-
-    #[test]
-    fn test_bridge_deposit_timeout() {
-        let error = BridgeError::DepositTimeout(900);
-        assert_eq!(error.to_string(), "Deposit timed out after 900 seconds");
     }
 
     #[test]

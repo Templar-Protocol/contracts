@@ -4,9 +4,6 @@
 
 A NEAR-centric treasury management service with cross-chain deposits and withdrawals via [NEAR Intents Bridge API](https://docs.near-intents.org/). Supports Ethereum, Arbitrum, Base, Optimism, Polygon, and Solana.
 
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-
 ## Features
 
 - ✅ **NEAR Treasury** - Hold OMFT tokens on NEAR, withdraw to any chain
@@ -16,7 +13,6 @@ A NEAR-centric treasury management service with cross-chain deposits and withdra
 - ✅ **Token Resolution** - Automatic OMFT token ID and decimal handling
 - ✅ **Stateless Design** - No database required, horizontally scalable
 - ✅ **REST API** - Simple HTTP/JSON interface
-- ✅ **Status Tracking** - Query status via Bridge API using transaction hash
 - ✅ **Prometheus Metrics** - Production-grade observability
 - ✅ **Dry-Run Mode** - Test operations without executing transactions
 
@@ -202,48 +198,9 @@ solana / sol / sol:mainnet      → Solana Mainnet
 
 The service validates tokens against the NEAR Intents Bridge API and resolves NEAR token IDs automatically (e.g., `eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near` for USDC on Ethereum).
 
-#### 4. Query Status
+**Note:** To track transaction status, use the NEAR blockchain explorer (e.g., [nearblocks.io](https://nearblocks.io)) with the returned transaction hash, or check the destination chain explorer for withdrawal completion.
 
-Get status of a deposit or withdrawal by transaction hash via the Bridge API.
-
-**Withdrawal Status:**
-```bash
-curl http://localhost:3000/status/withdrawal/ABC123def456
-```
-
-**Response:**
-```json
-{
-  "near_tx_hash": "ABC123def456",
-  "status": "COMPLETED",
-  "chain": "eth:1",
-  "destination_tx_hash": "0x...",
-  "amount": "1000000"
-}
-```
-
-**Deposit Status:**
-```bash
-curl "http://localhost:3000/status/deposit/0xabc123?type=eth"
-```
-
-**Response:**
-```json
-{
-  "tx_hash": "0xabc123",
-  "status": "COMPLETED",
-  "chain": "eth:1",
-  "near_tx_hash": "7xyz...",
-  "amount": "1000000"
-}
-```
-
-**Status Values:**
-- `COMPLETED` - Operation completed successfully
-- `PENDING` - Operation is in progress
-- `FAILED` - Operation failed
-
-#### 5. Prometheus Metrics
+#### 4. Prometheus Metrics
 
 ```bash
 curl http://localhost:3000/metrics
@@ -265,7 +222,7 @@ funding_bridge_withdraw_operations_total{chain="ethereum",status="COMPLETED"} 3
 funding_bridge_withdraw_operations_total{chain="arbitrum",status="COMPLETED"} 2
 ```
 
-#### 6. Token Lookup
+#### 5. Token Lookup
 
 Look up OMFT token ID for an asset on a specific chain.
 
@@ -304,7 +261,6 @@ Automatically deposit USDC from Ethereum to top up NEAR treasury:
 curl -X POST http://localhost:3000/deposit \
   -H "Content-Type: application/json" \
   -d '{
-    "request_id": "liq-'$(date +%s)'",
     "source_chain": "ethereum",
     "asset": "USDC",
     "amount": "1000.0"
@@ -317,22 +273,16 @@ CLI script for depositing from different chains:
 
 ```bash
 #!/bin/bash
-REQUEST_ID="manual-$(date +%s)"
 CHAIN="$1"   # ethereum, arbitrum, solana
 AMOUNT="$2"  # e.g., "100.5"
 
 curl -X POST http://localhost:3000/deposit \
   -H "Content-Type: application/json" \
   -d "{
-    \"request_id\": \"$REQUEST_ID\",
     \"source_chain\": \"$CHAIN\",
     \"asset\": \"USDC\",
     \"amount\": \"$AMOUNT\"
   }"
-
-# Poll status
-sleep 2
-curl http://localhost:3000/status/$REQUEST_ID
 ```
 
 ### 3. Programmatic Deposit Integration
@@ -346,7 +296,6 @@ async fn deposit_from_ethereum(amount: &str) -> Result<String, Box<dyn std::erro
     let response = client
         .post("http://localhost:3000/deposit")
         .json(&json!({
-            "request_id": format!("auto-{}", chrono::Utc::now().timestamp()),
             "source_chain": "ethereum",
             "asset": "USDC",
             "amount": amount,
@@ -388,9 +337,6 @@ OPTIONS:
 
     --near-signer-key <KEY>
         NEAR private key (ed25519:...)
-
-    --eth-enabled
-        Enable Ethereum treasury (feature-gated, requires "ethereum" feature)
 ```
 
 ### Environment Variables
@@ -495,38 +441,42 @@ RUST_LOG=debug cargo run -p templar-funding-bridge -- \
 └──────┬──────┘
        │ HTTP/JSON
        ▼
-┌─────────────────────────────────────┐
-│   Funding Bridge (REST API)         │
-│                                     │
-│  ┌──────────────────────────────┐  │
-│  │   FundingManager             │  │
-│  │   - Smart chain selection    │  │
-│  │   - Priority routing         │  │
-│  │   - Balance checking         │  │
-│  └───────────┬──────────────────┘  │
-│              │                      │
-│       ┌──────┴───────┐              │
-│       ▼              ▼              │
-│  ChainHandlers   OperationTracker  │
-│  - NEAR          - In-memory state │
-│  - Ethereum*     - Status queries  │
-│  (*feature-gated)                  │
-└───────┬────────────────────────────┘
-        │
-        ▼
-  NEAR Protocol
-  (Mainnet/Testnet)
+┌──────────────────────────────────────────┐
+│   Funding Bridge (REST API)              │
+│                                          │
+│  ┌────────────────────────────────────┐ │
+│  │   App State                        │ │
+│  │   - BridgeClient (token lookup)   │ │
+│  │   - TokenRegistry (decimals)      │ │
+│  │   - NearHandler (intents)         │ │
+│  │   - ExternalChainRegistry         │ │
+│  │     (ETH/Solana wallets)          │ │
+│  └────────────────────────────────────┘ │
+│                                          │
+│  ┌────────────────────────────────────┐ │
+│  │   REST Endpoints                   │ │
+│  │   /deposit - Bridge deposits       │ │
+│  │   /withdraw - Intent signing       │ │
+│  │   /health - Service status         │ │
+│  │   /metrics - Prometheus            │ │
+│  │   /tokens/lookup - Token info      │ │
+│  └────────────────────────────────────┘ │
+└──────┬─────────────────────────────────┬─┘
+       │                                 │
+       ▼                                 ▼
+  NEAR Protocol                  Bridge API
+  (Mainnet/Testnet)             (chaindefuser.com)
 ```
 
 ### Key Components
 
-- **FundingManager** - Orchestrates multi-chain operations, chain selection logic
-- **ChainHandler** - Trait for chain-specific operations (balance, transfers)
+- **App** - Application state and dependency injection
 - **NearHandler** - NEAR blockchain integration via JSON-RPC
 - **BridgeClient** - NEAR Intents Bridge API wrapper with caching
 - **TokenRegistry** - Token info caching and decimal conversion utilities
-- **OperationTracker** - In-memory operation status tracking
-- **REST Routes** - Axum handlers for HTTP endpoints
+- **ExternalChainRegistry** - Ethereum and Solana wallet management for deposits
+- **IntentSigner** - NEP-413 signed intent generation for withdrawals
+- **REST Routes** - Axum handlers for HTTP endpoints (deposit, withdraw, health, metrics, tokens)
 - **Metrics** - Prometheus metrics for observability
 
 ### Module Structure
@@ -539,16 +489,26 @@ src/
 │   └── models.rs   # ChainId, TokenInfo, API types
 ├── chain/          # Chain handlers
 │   ├── near.rs     # NEAR Protocol handler
-│   └── ethereum.rs # Ethereum handler
-├── manager/        # Multi-chain orchestration
+│   └── mod.rs
+├── external/       # External chain wallets (EVM, Solana)
+│   ├── evm.rs      # Ethereum/EVM wallet integration
+│   ├── solana.rs   # Solana wallet integration
+│   ├── config.rs   # External chain configuration
+│   └── mod.rs
 ├── routes/         # HTTP endpoints
 │   ├── deposit.rs  # Deposit flow
-│   ├── withdraw.rs # Withdrawal with multi-chain support
+│   ├── withdraw.rs # Withdrawal with intent signing
 │   ├── health.rs   # Health checks with bridge status
-│   └── metrics.rs  # Prometheus metrics
+│   ├── metrics.rs  # Prometheus metrics
+│   ├── tokens.rs   # Token lookup endpoint
+│   └── models.rs   # API request/response models
+├── intents.rs      # NEP-413 intent signing
 ├── tokens.rs       # Token registry and decimal handling
 ├── metrics.rs      # Metrics collection
-└── tracker.rs      # Operation tracking
+├── error.rs        # Error types
+├── config.rs       # CLI and environment configuration
+├── rpc.rs          # RPC helpers
+└── main.rs         # Server entry point
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
@@ -690,4 +650,4 @@ GPL-3.0 - See [LICENSE](LICENSE) for details.
 ---
 
 **Version:** 0.1.0
-**Last Updated:** 2025-11-14
+**Last Updated:** 2025-11-26

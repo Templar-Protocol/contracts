@@ -1,7 +1,6 @@
 //! EVM chain handler for Ethereum and compatible chains
 
 use async_trait::async_trait;
-#[cfg(feature = "ethereum")]
 use tracing::{error, info};
 
 use super::{config::EvmChainConfig, ExternalChainError, ExternalChainHandler, TransferResult};
@@ -61,7 +60,6 @@ impl ExternalChainHandler for EvmChainHandler {
         self.config.get_token_address(asset).is_some()
     }
 
-    #[cfg(feature = "ethereum")]
     async fn transfer_tokens(
         &self,
         to_address: &str,
@@ -191,17 +189,5 @@ impl ExternalChainHandler for EvmChainHandler {
                 )))
             }
         }
-    }
-
-    #[cfg(not(feature = "ethereum"))]
-    async fn transfer_tokens(
-        &self,
-        _to_address: &str,
-        _asset: &str,
-        _amount: &str,
-    ) -> Result<TransferResult, ExternalChainError> {
-        Err(ExternalChainError::FeatureNotEnabled(
-            "Build with --features ethereum to enable EVM transfers".to_string(),
-        ))
     }
 }
