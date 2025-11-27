@@ -7,12 +7,25 @@ use std::collections::VecDeque;
 use templar_common::{panic_with_message, vault::PendingValue};
 
 #[near(serializers = [borsh, json])]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelockKind {
+    Guardian,
+    Config,
+    Cap,
+    MarketRemoval,
+}
+
+#[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimelockedAction {
     /// Change the guardian to `new_guardian`.
     GuardianChange { account: AccountId },
-    /// Change the base governance timelock configuration to `new_timelock_ns`.
-    TimelockConfigChange { new_timelock_ns: U64 },
+    /// Change the governance timelock configuration to `new_timelock_ns`.
+    /// If `kind` is `None`, all timelock types are updated; if `Some`, only the selected type.
+    TimelockConfigChange {
+        kind: Option<TimelockKind>,
+        new_timelock_ns: U64,
+    },
     /// Increase the cap for a given `market` to `new_cap`.
     CapChange { market: AccountId, new_cap: U128 },
     /// Mark a `market` for removal (timestamp is still stored on the config).
@@ -319,10 +332,16 @@ impl Contract {
 
     /// Proposes a new governance timelock in nanoseconds.
     /// If increasing, applies immediately; if decreasing, starts a timelock equal to the current duration.
-    pub fn submit_timelock(&mut self, new_timelock_ns: U64) {
+    ///
+    /// If `kind` is:
+    /// - `None`: update all governance timelock types to `new_timelock_ns`.
+    /// - `Some`: update only the corresponding timelock type.
+    pub fn submit_timelock(&mut self, new_timelock_ns: U64, kind: Option<TimelockKind>) {
         Abdicator::require_not_abdicated(&self.abdicator, "submit_timelock");
-
-        let tl = TimelockedAction::TimelockConfigChange { new_timelock_ns };
+        let tl = TimelockedAction::TimelockConfigChange {
+            kind,
+            new_timelock_ns,
+        };
         self.submit_change(tl);
     }
 
@@ -352,8 +371,7 @@ impl Contract {
     /// Submits a change to a market's supply cap.
     /// Decreases apply immediately; increases are subject to the governance timelock.
     ///
-    /// # Panics
-    /// If the market does not exist.
+    /// If the market does not exist, it will be created when the timelock is executed.
     #[payable]
     pub fn submit_cap(&mut self, market: AccountId, new_cap: U128) {
         Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
@@ -363,7 +381,7 @@ impl Contract {
     /// Accepts a pending cap increase for `market` once the timelock has elapsed.
     ///
     /// # Panics
-    /// If the market does not exist.
+    /// If there is no pending cap change for this market.
     #[payable]
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
@@ -502,12 +520,24 @@ impl Contract {
                     !members.is_empty()
                 })
             }
-            // Submit a timelocked governance change if  the global timelock is to be smaller than the current timelock
-            TimelockedAction::TimelockConfigChange { new_timelock_ns } => {
+            // Submit a timelocked governance change if the selected timelock is to be smaller than the current value
+            TimelockedAction::TimelockConfigChange {
+                kind,
+                new_timelock_ns,
+            } => {
                 Self::assert_guardian_or_owner();
 
                 let new = new_timelock_ns.0;
-                let current = self.governance_timelocks.timelock_config_ns;
+                let current = match kind {
+                    None | Some(TimelockKind::Config) => {
+                        self.governance_timelocks.timelock_config_ns
+                    }
+                    Some(TimelockKind::Guardian) => self.governance_timelocks.guardian_ns,
+                    Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,
+                    Some(TimelockKind::MarketRemoval) => {
+                        self.governance_timelocks.market_removal_ns
+                    }
+                };
 
                 require!(new != current, "Already set to this value");
                 require!(
@@ -596,11 +626,31 @@ impl Contract {
                 }
                 .emit();
             }
-            TimelockedAction::TimelockConfigChange { new_timelock_ns } => {
-                self.governance_timelocks.guardian_ns = new_timelock_ns.0;
-                self.governance_timelocks.timelock_config_ns = new_timelock_ns.0;
-                self.governance_timelocks.market_removal_ns = new_timelock_ns.0;
-                self.governance_timelocks.cap_ns = new_timelock_ns.0;
+            TimelockedAction::TimelockConfigChange {
+                kind,
+                new_timelock_ns,
+            } => {
+                let new_ns = new_timelock_ns.0;
+                match kind {
+                    None => {
+                        self.governance_timelocks.guardian_ns = new_ns;
+                        self.governance_timelocks.timelock_config_ns = new_ns;
+                        self.governance_timelocks.market_removal_ns = new_ns;
+                        self.governance_timelocks.cap_ns = new_ns;
+                    }
+                    Some(TimelockKind::Guardian) => {
+                        self.governance_timelocks.guardian_ns = new_ns;
+                    }
+                    Some(TimelockKind::Config) => {
+                        self.governance_timelocks.timelock_config_ns = new_ns;
+                    }
+                    Some(TimelockKind::Cap) => {
+                        self.governance_timelocks.cap_ns = new_ns;
+                    }
+                    Some(TimelockKind::MarketRemoval) => {
+                        self.governance_timelocks.market_removal_ns = new_ns;
+                    }
+                }
                 Event::TimelockSet {
                     seconds: *new_timelock_ns,
                 }
@@ -666,9 +716,12 @@ impl Contract {
     fn schedule_timelock(&mut self, action: &TimelockedAction) {
         let cur = match action {
             TimelockedAction::GuardianChange { .. } => self.governance_timelocks.guardian_ns,
-            TimelockedAction::TimelockConfigChange { .. } => {
-                self.governance_timelocks.timelock_config_ns
-            }
+            TimelockedAction::TimelockConfigChange { kind, .. } => match kind {
+                None | Some(TimelockKind::Config) => self.governance_timelocks.timelock_config_ns,
+                Some(TimelockKind::Guardian) => self.governance_timelocks.guardian_ns,
+                Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,
+                Some(TimelockKind::MarketRemoval) => self.governance_timelocks.market_removal_ns,
+            },
             TimelockedAction::CapChange { .. } => self.governance_timelocks.cap_ns,
             TimelockedAction::MarketRemoval { .. } => self.governance_timelocks.market_removal_ns,
         };
