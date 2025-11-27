@@ -66,7 +66,7 @@ impl<'de> Deserialize<'de> for Address {
 
 impl JsonSchema for Address {
     fn schema_name() -> String {
-        "VerifyKey".to_string()
+        "Address".to_string()
     }
 
     fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {

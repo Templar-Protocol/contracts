@@ -2,10 +2,9 @@ use alloy::signers::SignerSync;
 use alloy::sol_types::{Eip712Domain, SolStruct};
 use near_sdk::{
     near,
-    serde::{self, de::DeserializeOwned, Deserialize, Serialize},
+    serde::{self, de::DeserializeOwned, Serialize},
     serde_json,
 };
-use schemars::JsonSchema;
 
 use super::SolBytes;
 use super::{
@@ -40,14 +39,7 @@ impl<T> Message<T> {
 
 impl<T: serde::Serialize> SignableMessage for Message<T> {
     type Key = VerifyKey;
-    type Signature = SignatureAndDomain;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(crate = "near_sdk::serde")]
-pub struct SignatureAndDomain {
-    pub signature: encoding::ethereum::Signature,
-    pub domain: encoding::ethereum::Domain,
+    type Signature = encoding::ethereum::Signature;
 }
 
 impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
@@ -55,13 +47,14 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
         &self,
         mws: &super::MessageWithSignature<Message<T>>,
     ) -> Result<(), CheckSignatureError> {
+        let calculated_domain = Eip712Domain::from(mws.message.0.parsed.parameters.clone());
+
         let prehash = mws
             .message
-            .eip712_prehash(&mws.signature.domain.0)
+            .eip712_prehash(&calculated_domain)
             .map_err(CheckSignatureError::other)?;
 
         let recovered_address = mws
-            .signature
             .signature
             .0
             .recover_address_from_prehash(&prehash)
@@ -91,11 +84,8 @@ impl<T: serde::Serialize> Message<T> {
     ///
     /// - Serialization errors
     /// - Signing errors
-    pub fn sign(
-        self,
-        key: &alloy::signers::local::PrivateKeySigner,
-        domain: Eip712Domain,
-    ) -> MessageWithSignature<Self> {
+    pub fn sign(self, key: &alloy::signers::local::PrivateKeySigner) -> MessageWithSignature<Self> {
+        let domain = Eip712Domain::from(self.0.parsed.parameters.clone());
         #[allow(
             clippy::unwrap_used,
             reason = "This function should not be used in a case where panicking is unsafe"
@@ -105,10 +95,7 @@ impl<T: serde::Serialize> Message<T> {
             .unwrap();
         MessageWithSignature {
             message: self,
-            signature: SignatureAndDomain {
-                signature: signature.into(),
-                domain: domain.into(),
-            },
+            signature: signature.into(),
         }
     }
 }
@@ -127,12 +114,12 @@ impl<T: serde::Serialize> ExecutionContextProvider for MessageWithValidSignature
 
 #[cfg(test)]
 mod tests {
-    use alloy::{primitives::U256, signers::local::PrivateKeySigner};
+    use alloy::signers::local::PrivateKeySigner;
 
     use crate::{
         authentication::payload::Payload,
         transaction::{Action, Transaction},
-        ExecutionParameters,
+        KeyParameters, PayloadExecutionParameters,
     };
 
     use super::*;
@@ -140,8 +127,10 @@ mod tests {
     #[test]
     fn serialization() {
         let m = Message::from_parsed(Payload {
-            parameters: ExecutionParameters::default(),
-            account_id: "account_id".parse().unwrap(),
+            parameters: PayloadExecutionParameters::from_key(
+                KeyParameters::default(),
+                "account_id".parse().unwrap(),
+            ),
             payload: "hello, world".to_string(),
         });
 
@@ -164,8 +153,7 @@ mod tests {
 
     fn message() -> Message<Box<[Transaction]>> {
         Message::from_parsed(Payload {
-            parameters: ExecutionParameters::default(),
-            account_id: "account_id".parse().unwrap(),
+            parameters: PayloadExecutionParameters::new("account_id".parse().unwrap()),
             payload: vec![Transaction {
                 receiver_id: "receiver".parse().unwrap(),
                 actions: vec![Action::CreateAccount].into_boxed_slice(),
@@ -174,23 +162,12 @@ mod tests {
         })
     }
 
-    fn domain() -> Eip712Domain {
-        Eip712Domain {
-            name: Some("Templar Universal Account".into()),
-            version: Some("0.0.0".into()),
-            chain_id: Some(U256::from(397)),
-            verifying_contract: Some(alloy::primitives::Address([0x99_u8; 20].into())),
-            salt: None,
-        }
-    }
-
     #[test]
     fn sign_message() {
         let signer = signer();
         let message = message();
-        let domain = domain();
 
-        let mws = message.sign(&signer, domain.clone());
+        let mws = message.sign(&signer);
 
         let verify_key = VerifyKey(signer.address().into());
 
@@ -198,13 +175,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "InvalidSignatureError"]
+    #[should_panic = "InvalidSignature"]
     fn sign_message_fail_signer() {
         let signer = signer();
         let message = message();
-        let domain = domain();
 
-        let mws = message.sign(&signer, domain.clone());
+        let mws = message.sign(&signer);
 
         let verify_key = VerifyKey(signer2().address().into());
 
@@ -212,33 +188,35 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "InvalidSignatureError"]
+    #[should_panic = "InvalidSignature"]
     fn sign_message_fail_message() {
         let signer = signer();
         let message = message();
-        let domain = domain();
 
-        let mut mws = message.sign(&signer, domain.clone());
+        let mut mws = message.sign(&signer);
 
         let verify_key = VerifyKey(signer.address().into());
 
-        mws.message.0.parsed.payload[0].receiver_id = "different".parse().unwrap();
+        let mut payload_parsed = mws.message.0.parsed;
+        payload_parsed.payload[0].receiver_id = "different".parse().unwrap();
+        mws.message.0 = WithRawString::from_parsed(payload_parsed);
 
         verify_key.verify_signature(mws).unwrap();
     }
 
     #[test]
-    #[should_panic = "InvalidSignatureError"]
+    #[should_panic = "InvalidSignature"]
     fn sign_message_fail_domain() {
         let signer = signer();
         let message = message();
-        let domain = domain();
 
-        let mut mws = message.sign(&signer, domain.clone());
+        let mut mws = message.sign(&signer);
 
         let verify_key = VerifyKey(signer.address().into());
 
-        mws.signature.domain.0.name = Some("different".into());
+        let mut payload_parsed = mws.message.0.parsed;
+        payload_parsed.parameters.name = Some("different".to_string());
+        mws.message.0 = WithRawString::from_parsed(payload_parsed);
 
         verify_key.verify_signature(mws).unwrap();
     }

@@ -1,14 +1,13 @@
 use alloy::sol;
-use near_sdk::{near, AccountId};
+use near_sdk::near;
 
-use crate::ExecutionParameters;
+use crate::PayloadExecutionParameters;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
 #[serde(deny_unknown_fields)]
 pub struct Payload<T> {
-    pub parameters: ExecutionParameters,
-    pub account_id: AccountId,
+    pub parameters: PayloadExecutionParameters,
     pub payload: T,
 }
 

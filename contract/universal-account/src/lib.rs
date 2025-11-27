@@ -1,20 +1,25 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use near_sdk::{
-    borsh::BorshSerialize, env, json_types::U64, near, require, store::IterableMap,
+    borsh::BorshSerialize,
+    env,
+    json_types::{U128, U64},
+    near, require,
+    store::IterableMap,
     BorshStorageKey, PanicOnDefault, Promise,
 };
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    transaction::Transaction, ExecuteArgs, ExecutionParameters, KeyId,
+    transaction::Transaction, ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
 };
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
     next_key_index: u64,
-    keys: IterableMap<KeyId, ExecutionParameters>,
+    keys: IterableMap<KeyId, KeyParameters>,
+    chain_id: u128,
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshStorageKey)]
@@ -26,10 +31,11 @@ enum StorageKey {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(key: KeyId) -> Self {
+    pub fn new(key: KeyId, chain_id: U128) -> Self {
         let mut self_ = Self {
             next_key_index: 0,
             keys: IterableMap::new(StorageKey::Keys),
+            chain_id: chain_id.0,
         };
 
         self_.add_key(key);
@@ -37,8 +43,13 @@ impl Contract {
         self_
     }
 
-    pub fn get_key(&self, key: KeyId) -> Option<&ExecutionParameters> {
-        self.keys.get(&key)
+    fn payload_execution_parameters(&self, k: &KeyParameters) -> PayloadExecutionParameters {
+        PayloadExecutionParameters::construct_default(env::current_account_id(), *k, self.chain_id)
+    }
+
+    pub fn get_key(&self, key: KeyId) -> Option<PayloadExecutionParameters> {
+        let k = self.keys.get(&key)?;
+        Some(self.payload_execution_parameters(k))
     }
 
     pub fn list_keys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&KeyId> {
@@ -51,7 +62,7 @@ impl Contract {
         self.next_key_index += 1;
         self.keys.insert(
             key.clone(),
-            ExecutionParameters {
+            KeyParameters {
                 block_height: U64(env::block_height()),
                 index: U64(index),
                 nonce: U64(0),
@@ -76,16 +87,16 @@ impl Contract {
             templar_common::panic_with_message("Key does not exist")
         };
         *key_entry = key_entry.next();
+        let key_entry = *key_entry;
         templar_universal_account::Event::NonceExecution {
             key,
             nonce: key_entry.nonce,
         }
         .emit();
 
-        let current_account_id = env::current_account_id();
-
+        let execution_parameters = self.payload_execution_parameters(&key_entry);
         let transactions = args
-            .verify(&current_account_id, key_entry, |_| true)
+            .verify(&execution_parameters, |_| true)
             .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         require!(!transactions.is_empty(), "Transaction list is empty");

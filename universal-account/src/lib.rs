@@ -1,69 +1,194 @@
-use std::fmt::Display;
-
+use alloy::{primitives::U256, sol_types::Eip712Domain};
 use authentication::{
     ed25519_raw, eip712,
     passkey::{self, Passkey},
     CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
 };
 use near_sdk::{
-    json_types::U64,
+    json_types::{Base58CryptoHash, U64},
     near,
     serde::{self, de::DeserializeOwned},
-    AccountIdRef,
+    CryptoHash,
 };
+
+pub const NEAR_MAINNET_CHAIN_ID: u128 = 397;
+pub const NEAR_TESTNET_CHAIN_ID: u128 = 398;
 
 pub mod authentication;
 pub mod encoding;
 mod event;
 pub use event::Event;
+pub mod init_args;
+pub use init_args::InitArgs;
+pub mod key_id;
+pub use key_id::KeyId;
 pub mod transaction;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub struct InitArgs {
-    pub key: KeyId,
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json, borsh])]
+pub struct PayloadExecutionParameters {
+    /// Static. If a universal account is deleted and recreated with the same
+    /// keys, this ensures that old signatures are not replayable.
+    pub block_height: U64,
+    /// Static. If a key is deleted and re-added to the same account, this
+    /// ensures that that old signatures are not replayable.
+    pub index: U64,
+    /// Increments for each message executed by this key.
+    pub nonce: U64,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub chain_id: Option<near_sdk::json_types::U128>,
+    pub verifying_contract: near_sdk::AccountId,
+    pub salt: Option<Base58CryptoHash>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub enum KeyId {
-    Passkey(Passkey),
-    Ed25519RawKey(ed25519_raw::VerifyKey),
-    Eip712(eip712::VerifyKey),
-}
-
-impl Display for KeyId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Passkey(passkey) => write!(f, "{}", passkey.0),
-            Self::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
-            Self::Eip712(key) => write!(f, "{}", key.0),
+impl From<PayloadExecutionParameters> for Eip712Domain {
+    fn from(value: PayloadExecutionParameters) -> Self {
+        Self {
+            name: value.name.map(Into::into),
+            version: value.version.map(Into::into),
+            chain_id: value.chain_id.map(|i| U256::from(i.0)),
+            verifying_contract: Some(
+                #[allow(
+                    clippy::unwrap_used,
+                    reason = "hash len 32 >= 20 && slice len == array len"
+                )]
+                <[u8; 20]>::try_from(
+                    &near_sdk::env::keccak256_array(value.verifying_contract.as_bytes())[0..20],
+                )
+                .unwrap()
+                .into(),
+            ),
+            salt: value.salt.map(|c| CryptoHash::from(c).into()),
         }
     }
 }
 
-impl From<Passkey> for KeyId {
-    fn from(value: Passkey) -> Self {
-        Self::Passkey(value)
+impl PayloadExecutionParameters {
+    pub fn construct_default(
+        verifying_contract: near_sdk::AccountId,
+        key_parameters: KeyParameters,
+        chain_id: u128,
+    ) -> Self {
+        Self::new(verifying_contract)
+            .with_key_parameters(key_parameters)
+            .chain_id(chain_id)
+            .name("Templar Universal Account")
+            .version(env!("CARGO_PKG_VERSION"))
     }
-}
 
-impl From<ed25519_raw::VerifyKey> for KeyId {
-    fn from(value: ed25519_raw::VerifyKey) -> Self {
-        Self::Ed25519RawKey(value)
+    pub fn new(verifying_contract: near_sdk::AccountId) -> Self {
+        Self {
+            block_height: U64(0),
+            index: U64(0),
+            nonce: U64(0),
+            name: None,
+            version: None,
+            chain_id: None,
+            salt: None,
+            verifying_contract,
+        }
     }
-}
 
-impl From<eip712::VerifyKey> for KeyId {
-    fn from(value: eip712::VerifyKey) -> Self {
-        Self::Eip712(value)
+    #[must_use]
+    pub fn next_nonce(self) -> Self {
+        Self {
+            nonce: U64(self.nonce.0 + 1),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_key_parameters(self, key_parameters: KeyParameters) -> Self {
+        Self {
+            block_height: key_parameters.block_height,
+            index: key_parameters.index,
+            nonce: key_parameters.nonce,
+            ..self
+        }
+        .auto_salt()
+    }
+
+    #[must_use]
+    pub fn auto_salt(self) -> Self {
+        let salt = Base58CryptoHash::from(near_sdk::env::keccak256_array(
+            #[allow(clippy::unwrap_used, reason = "Infallible")]
+            &near_sdk::borsh::to_vec(&(self.block_height, self.index)).unwrap(),
+        ));
+        Self {
+            salt: Some(salt),
+            ..self
+        }
+    }
+
+    pub fn from_key(
+        key_parameters: KeyParameters,
+        verifying_contract: near_sdk::AccountId,
+    ) -> Self {
+        Self::new(verifying_contract).with_key_parameters(key_parameters)
+    }
+
+    #[must_use]
+    pub fn name(self, name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn version(self, version: impl Into<String>) -> Self {
+        Self {
+            version: Some(version.into()),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn chain_id(self, chain_id: u128) -> Self {
+        Self {
+            chain_id: Some(near_sdk::json_types::U128(chain_id)),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn salt(self, salt: impl Into<Base58CryptoHash>) -> Self {
+        Self {
+            salt: Some(salt.into()),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn nonce(self, nonce: impl Into<U64>) -> Self {
+        Self {
+            nonce: nonce.into(),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn index(self, index: impl Into<U64>) -> Self {
+        Self {
+            index: index.into(),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn block_height(self, block_height: impl Into<U64>) -> Self {
+        Self {
+            block_height: block_height.into(),
+            ..self
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 #[serde(deny_unknown_fields)]
-pub struct ExecutionParameters {
+pub struct KeyParameters {
     /// Static. If a universal account is deleted and recreated with the same
     /// keys, this ensures that old signatures are not replayable.
     pub block_height: U64,
@@ -74,7 +199,7 @@ pub struct ExecutionParameters {
     pub nonce: U64,
 }
 
-impl ExecutionParameters {
+impl KeyParameters {
     #[must_use]
     pub fn next(&self) -> Self {
         Self {
@@ -133,20 +258,19 @@ impl<T: serde::Serialize> ExecuteArgs<T> {
     /// - If execution parameters do not match
     pub fn verify(
         self,
-        executor_account_id: &AccountIdRef,
-        parameters: &ExecutionParameters,
+        parameters: &PayloadExecutionParameters,
         allowed_origin: impl FnOnce(Option<&str>) -> bool,
     ) -> Result<T, VerificationError> {
         Ok(match self {
             ExecuteArgs::Passkey { key, message } => key
                 .verify_signature(*message)?
-                .verify_execution(executor_account_id, parameters, allowed_origin)?,
+                .verify_execution(parameters, allowed_origin)?,
             ExecuteArgs::Ed25519Raw { key, message } => key
                 .verify_signature(*message)?
-                .verify_execution(executor_account_id, parameters, allowed_origin)?,
+                .verify_execution(parameters, allowed_origin)?,
             ExecuteArgs::Eip712 { key, message } => key
                 .verify_signature(*message)?
-                .verify_execution(executor_account_id, parameters, allowed_origin)?,
+                .verify_execution(parameters, allowed_origin)?,
         })
     }
 }
@@ -213,12 +337,14 @@ mod tests {
         .into_boxed_slice();
 
         Payload {
-            parameters: ExecutionParameters {
-                block_height: U64(12345),
-                index: U64(1),
-                nonce: U64(44),
-            },
-            account_id: "my-universal-account.near".parse().unwrap(),
+            parameters: PayloadExecutionParameters::from_key(
+                KeyParameters {
+                    block_height: U64(12345),
+                    index: U64(1),
+                    nonce: U64(44),
+                },
+                "my-universal-account.near".parse().unwrap(),
+            ),
             payload,
         }
     }
@@ -281,12 +407,14 @@ mod tests {
     ) {
         exec_args
             .verify(
-                &executor_account_id,
-                &ExecutionParameters {
-                    block_height: U64(block_height),
-                    index: U64(index),
-                    nonce: U64(nonce),
-                },
+                &PayloadExecutionParameters::from_key(
+                    KeyParameters {
+                        block_height: U64(block_height),
+                        index: U64(index),
+                        nonce: U64(nonce),
+                    },
+                    executor_account_id,
+                ),
                 |_| true,
             )
             .unwrap();
@@ -300,12 +428,14 @@ mod tests {
     fn verify_origin(#[case] allowed_origin: &str) {
         passkey_execute_args()
             .verify(
-                &AccountId::from_str("my-universal-account.near").unwrap(),
-                &ExecutionParameters {
-                    block_height: U64(12345),
-                    index: U64(1),
-                    nonce: U64(44),
-                },
+                &PayloadExecutionParameters::from_key(
+                    KeyParameters {
+                        block_height: U64(12345),
+                        index: U64(1),
+                        nonce: U64(44),
+                    },
+                    AccountId::from_str("my-universal-account.near").unwrap(),
+                ),
                 |o| o == Some(allowed_origin),
             )
             .unwrap();

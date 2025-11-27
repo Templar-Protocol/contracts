@@ -1,7 +1,7 @@
-use near_sdk::{near, AccountIdRef};
+use near_sdk::{near, serde_json};
 use schemars::JsonSchema;
 
-use crate::ExecutionParameters;
+use crate::PayloadExecutionParameters;
 
 pub mod ed25519_raw;
 pub mod eip712;
@@ -60,16 +60,28 @@ pub trait Key<M: SignableMessage> {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExecutionError {
-    #[error("Executor account ID mismatch")]
-    ExecutorAccountIdMismatch,
-    #[error("Block height mismatch")]
-    BlockHeightMismatch,
-    #[error("Key index mismatch")]
-    KeyIndexMismatch,
-    #[error("Nonce mismatch")]
-    NonceMismatch,
+    #[error("Execution parameter `{field}` mismatch: expected `{expected}`, got `{actual}`")]
+    Mismatch {
+        field: &'static str,
+        expected: Box<str>,
+        actual: Box<str>,
+    },
     #[error("Origin unknown")]
     OriginUnknown,
+}
+
+impl ExecutionError {
+    pub fn mismatch(
+        field: &'static str,
+        expected: impl Into<Box<str>>,
+        actual: impl Into<Box<str>>,
+    ) -> Self {
+        Self::Mismatch {
+            field,
+            expected: expected.into(),
+            actual: actual.into(),
+        }
+    }
 }
 
 pub trait ExecutionContextProvider
@@ -87,8 +99,7 @@ where
     /// - If the execution parameters (nonce, key index) do not match.
     fn verify_execution(
         self,
-        executor_account_id: &AccountIdRef,
-        parameters: &ExecutionParameters,
+        expected_parameters: &PayloadExecutionParameters,
         allowed_origin: impl FnOnce(Option<&str>) -> bool,
     ) -> Result<Self::Payload, ExecutionError> {
         let origin = self.origin();
@@ -97,21 +108,30 @@ where
         }
 
         let payload = self.payload();
-        if payload.account_id != executor_account_id {
-            return Err(ExecutionError::ExecutorAccountIdMismatch);
+
+        macro_rules! check_field {
+            ($field:ident.$($string_repr:tt)+) => {
+                if payload.parameters.$field != expected_parameters.$field {
+                    return Err(ExecutionError::Mismatch {
+                        field: stringify!($field).into(),
+                        expected: expected_parameters.$field.$($string_repr)+.into(),
+                        actual: payload.parameters.$field.$($string_repr)+.into(),
+                    });
+                }
+            };
         }
 
-        if payload.parameters.block_height != parameters.block_height {
-            return Err(ExecutionError::BlockHeightMismatch);
-        }
-
-        if payload.parameters.index != parameters.index {
-            return Err(ExecutionError::KeyIndexMismatch);
-        }
-
-        if payload.parameters.nonce != parameters.nonce {
-            return Err(ExecutionError::NonceMismatch);
-        }
+        check_field!(block_height.0.to_string());
+        check_field!(chain_id.map_or("<none>".to_string(), |c| c.0.to_string()));
+        check_field!(index.0.to_string());
+        check_field!(name.clone().unwrap_or("<none>".to_string()));
+        check_field!(nonce.0.to_string());
+        check_field!(salt.as_ref().map_or("<none>".to_string(), |s| {
+            #[allow(clippy::unwrap_used, reason = "Infallible")]
+            serde_json::to_string(&s).unwrap()
+        }));
+        check_field!(verifying_contract.as_str());
+        check_field!(version.clone().unwrap_or("<none>".to_string()));
 
         Ok(payload.payload)
     }

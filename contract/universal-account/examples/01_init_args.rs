@@ -4,6 +4,7 @@ use near_sdk::serde_json;
 
 use templar_universal_account::{
     authentication::passkey::Passkey, encoding::p256::PublicKey, InitArgs, KeyId,
+    NEAR_TESTNET_CHAIN_ID,
 };
 
 pub fn main() {
@@ -13,6 +14,7 @@ pub fn main() {
 
     let init = InitArgs {
         key: KeyId::Passkey(Passkey(public_key)),
+        chain_id: NEAR_TESTNET_CHAIN_ID.into(),
     };
 
     println!("{}", serde_json::to_string(&init).unwrap());

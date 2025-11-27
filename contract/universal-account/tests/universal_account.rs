@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-use alloy::signers::{Signer as _, SignerSync};
 use near_sdk::{
+    borsh, env,
     json_types::{U128, U64},
     serde_json::{self, json},
     NearToken,
@@ -20,9 +20,8 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         HashForSigning, MessageWithSignature, Payload,
     },
-    encoding,
     transaction::{FunctionCallAction, Transaction},
-    ExecuteArgs, ExecutionParameters, KeyId,
+    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::{
     controller::universal_account::UniversalAccountController, worker, ContractController,
@@ -112,16 +111,7 @@ impl TestSigner {
             }
             TestSigner::Eip712(key) => {
                 let message = eip712::Message(payload);
-                let mws = message.sign(
-                    key,
-                    alloy::sol_types::Eip712Domain {
-                        name: None,
-                        version: None,
-                        chain_id: None,
-                        verifying_contract: None,
-                        salt: None,
-                    },
-                );
+                let mws = message.sign(key);
                 ExecuteArgs::Eip712 {
                     key: eip712::VerifyKey(key.address().into()),
                     message: Box::new(mws),
@@ -151,7 +141,7 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner) -> Setup {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
     let (uac, ft) = tokio::join!(
-        UniversalAccountController::deploy(uni_account, sk.id()),
+        UniversalAccountController::deploy(uni_account, sk.id(), NEAR_TESTNET_CHAIN_ID),
         FtController::deploy(ft_account, "Fungible Token", "FT"),
     );
 
@@ -200,12 +190,15 @@ pub async fn universal_account(
     assert_eq!(key_entry.nonce.0, 0);
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            block_height,
-            index: U64(0),
-            nonce: U64(1),
-        },
-        account_id: uac.contract().id().clone(),
+        parameters: PayloadExecutionParameters::construct_default(
+            uac.contract().id().clone(),
+            KeyParameters {
+                block_height,
+                index: U64(0),
+                nonce: U64(1),
+            },
+            NEAR_TESTNET_CHAIN_ID,
+        ),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -229,16 +222,24 @@ pub async fn universal_account(
     assert_eq!(key_entry.block_height, block_height);
     assert_eq!(key_entry.index.0, 0);
     assert_eq!(key_entry.nonce.0, 1);
+    assert_eq!(key_entry.chain_id, Some(NEAR_TESTNET_CHAIN_ID.into()));
+    assert_eq!(key_entry.name, Some("Templar Universal Account".into()));
+    assert_eq!(&key_entry.verifying_contract, uac.contract().id());
+    assert_eq!(key_entry.version, Some("1.2.0".into()));
+    assert_eq!(
+        key_entry.salt,
+        Some(
+            env::keccak256_array(
+                &borsh::to_vec(&(key_entry.block_height, key_entry.index)).unwrap()
+            )
+            .into()
+        )
+    );
 
     // Second execution, check nonce advancement
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            block_height,
-            index: U64(0),
-            nonce: U64(2),
-        },
-        account_id: uac.contract().id().clone(),
+        parameters: key_entry.next_nonce(),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -266,7 +267,7 @@ pub async fn universal_account(
 
 #[rstest::rstest]
 #[tokio::test]
-#[should_panic = "Nonce mismatch"]
+#[should_panic = "Smart contract panicked: Execution parameter `nonce` mismatch: expected `2`, got `3`"]
 async fn skip_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
     #[values(
@@ -286,12 +287,15 @@ async fn skip_nonce(
     let block_height = key_entry.block_height;
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            block_height,
-            index: U64(0),
-            nonce: U64(1),
-        },
-        account_id: uac.contract().id().clone(),
+        parameters: PayloadExecutionParameters::construct_default(
+            uac.contract().id().clone(),
+            KeyParameters {
+                block_height,
+                index: U64(0),
+                nonce: U64(1),
+            },
+            NEAR_TESTNET_CHAIN_ID,
+        ),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -315,12 +319,15 @@ async fn skip_nonce(
     // Try to skip a nonce
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            block_height,
-            index: U64(0),
-            nonce: U64(3),
-        },
-        account_id: uac.contract().id().clone(),
+        parameters: PayloadExecutionParameters::construct_default(
+            uac.contract().id().clone(),
+            KeyParameters {
+                block_height,
+                index: U64(0),
+                nonce: U64(3),
+            },
+            NEAR_TESTNET_CHAIN_ID,
+        ),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -335,7 +342,7 @@ async fn skip_nonce(
 
 #[rstest::rstest]
 #[tokio::test]
-#[should_panic = "Nonce mismatch"]
+#[should_panic = "Smart contract panicked: Execution parameter `nonce` mismatch: expected `2`, got `1`"]
 async fn reuse_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
     #[values(
@@ -355,12 +362,15 @@ async fn reuse_nonce(
     let block_height = key_entry.block_height;
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            block_height,
-            index: U64(0),
-            nonce: U64(1),
-        },
-        account_id: uac.contract().id().clone(),
+        parameters: PayloadExecutionParameters::construct_default(
+            uac.contract().id().clone(),
+            KeyParameters {
+                block_height,
+                index: U64(0),
+                nonce: U64(1),
+            },
+            NEAR_TESTNET_CHAIN_ID,
+        ),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -384,12 +394,15 @@ async fn reuse_nonce(
     // Try to reuse a nonce
 
     let payload = WithRawString::from_parsed(Payload {
-        parameters: ExecutionParameters {
-            block_height,
-            index: U64(0),
-            nonce: U64(1),
-        },
-        account_id: uac.contract().id().clone(),
+        parameters: PayloadExecutionParameters::construct_default(
+            uac.contract().id().clone(),
+            KeyParameters {
+                block_height,
+                index: U64(0),
+                nonce: U64(1),
+            },
+            NEAR_TESTNET_CHAIN_ID,
+        ),
         payload: vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),

@@ -137,7 +137,8 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<Message<P>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ExecutionParameters;
+
+    use crate::PayloadExecutionParameters;
 
     use super::*;
 
@@ -154,8 +155,7 @@ mod tests {
 
     fn message() -> Message<String> {
         Message::from_parsed(Payload {
-            parameters: ExecutionParameters::default(),
-            account_id: "account_id".parse().unwrap(),
+            parameters: PayloadExecutionParameters::new("account_id".parse().unwrap()),
             payload: "payload".to_string(),
         })
     }

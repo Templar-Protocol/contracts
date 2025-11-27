@@ -85,7 +85,7 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<Message<P>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ExecutionParameters;
+    use crate::{KeyParameters, PayloadExecutionParameters};
 
     use super::*;
 
@@ -125,12 +125,14 @@ mod tests {
     #[test]
     fn valid_signature(keypair: Keypair) {
         let message: Message<_> = WithRawString::from_parsed(Payload {
-            parameters: ExecutionParameters {
-                block_height: U64(12345),
-                index: U64(0),
-                nonce: U64(0),
-            },
-            account_id: "account.near".parse().unwrap(),
+            parameters: PayloadExecutionParameters::from_key(
+                KeyParameters {
+                    block_height: U64(12345),
+                    index: U64(0),
+                    nonce: U64(0),
+                },
+                "account.near".parse().unwrap(),
+            ),
             payload: "Hello, world!",
         })
         .into();
@@ -152,12 +154,14 @@ mod tests {
     #[should_panic = "InvalidSignature"]
     fn invalid_signature(keypair: Keypair) {
         let message: Message<_> = WithRawString::from_parsed(Payload {
-            parameters: ExecutionParameters {
-                block_height: U64(12345),
-                index: U64(0),
-                nonce: U64(0),
-            },
-            account_id: "account.near".parse().unwrap(),
+            parameters: PayloadExecutionParameters::from_key(
+                KeyParameters {
+                    block_height: U64(12345),
+                    index: U64(0),
+                    nonce: U64(0),
+                },
+                "account.near".parse().unwrap(),
+            ),
             payload: "Hello, world!",
         })
         .into();
@@ -168,12 +172,14 @@ mod tests {
 
         let mws = MessageWithSignature {
             message: Message(WithRawString::from_parsed(Payload {
-                parameters: ExecutionParameters {
-                    block_height: U64(12345),
-                    index: U64(0),
-                    nonce: U64(1),
-                },
-                account_id: "account.near".parse().unwrap(),
+                parameters: PayloadExecutionParameters::from_key(
+                    KeyParameters {
+                        block_height: U64(12345),
+                        index: U64(0),
+                        nonce: U64(1),
+                    },
+                    "account.near".parse().unwrap(),
+                ),
                 payload: "Hello, world!",
             })),
             signature: sol_sig.into(),

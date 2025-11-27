@@ -1,7 +1,6 @@
-use near_sdk::{json_types::U64, serde_json::json};
 use near_workspaces::{Account, Contract};
 use templar_universal_account::{
-    transaction::Transaction, ExecuteArgs, ExecutionParameters, KeyId,
+    transaction::Transaction, ExecuteArgs, InitArgs, KeyId, PayloadExecutionParameters,
 };
 use tokio::sync::OnceCell;
 
@@ -33,14 +32,14 @@ impl UniversalAccountController {
         .await
     }
 
-    pub async fn deploy(account: Account, key: KeyId) -> Self {
+    pub async fn deploy(account: Account, key: KeyId, chain_id: u128) -> Self {
         let contract = account.deploy(Self::wasm().await).await.unwrap().unwrap();
         contract
             .call("new")
-            .args_json(json!({
-                "key": key,
-                "nonce": U64(0),
-            }))
+            .args_json(InitArgs {
+                key,
+                chain_id: chain_id.into(),
+            })
             .transact()
             .await
             .unwrap()
@@ -51,7 +50,7 @@ impl UniversalAccountController {
 
     define! {
         #[view]
-        pub fn get_key(key: KeyId) -> Option<ExecutionParameters>;
+        pub fn get_key(key: KeyId) -> Option<PayloadExecutionParameters>;
         #[view]
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
 
