@@ -3,6 +3,7 @@ use near_sdk_contract_tools::ft::nep141::TransferError;
 use templar_common::{panic_with_message, vault::Restrictions};
 
 use super::*;
+use near_sdk::assert_one_yocto;
 use std::collections::VecDeque;
 use templar_common::{panic_with_message, vault::PendingValue};
 
@@ -250,7 +251,6 @@ impl Contract {
     }
 
     /// Sets the performance fee recipient. Accrues pending fees with the current recipient first.
-    #[payable]
     pub fn set_fee_recipient(&mut self, account: AccountId) {
         Self::require_owner();
         Abdicator::require_not_abdicated(&self.abdicator, "set_fee_recipient");
@@ -372,7 +372,6 @@ impl Contract {
     /// Decreases apply immediately; increases are subject to the governance timelock.
     ///
     /// If the market does not exist, it will be created when the timelock is executed.
-    #[payable]
     pub fn submit_cap(&mut self, market: AccountId, new_cap: U128) {
         Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
         self.submit_change(TimelockedAction::CapChange { market, new_cap });
@@ -382,7 +381,6 @@ impl Contract {
     ///
     /// # Panics
     /// If there is no pending cap change for this market.
-    #[payable]
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
         Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
@@ -454,7 +452,6 @@ impl Contract {
 
     /// Sets the ordered supply queue.
     /// Rejects duplicates and markets without a positive cap. Requires the vault to be idle.
-    #[payable]
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
         Abdicator::require_not_abdicated(&self.abdicator, "set_supply_queue");
