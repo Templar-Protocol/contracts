@@ -499,7 +499,6 @@ impl Contract {
                         members.len() < 2,
                         "Invariant violation: Cannot have more than one Guardian"
                     );
-                    require!(!members.contains(account), "Already set to this address");
                     !members.is_empty()
                 })
             }
