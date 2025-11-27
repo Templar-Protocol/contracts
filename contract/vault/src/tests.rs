@@ -1468,7 +1468,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     let cur = c.get_configuration().initial_timelock_ns;
 
     // Increase applies immediately
-    c.submit_timelock((cur.0 + 1).into());
+    c.submit_timelock((cur.0 + 1).into(), None);
     assert_eq!(
         c.get_configuration().initial_timelock_ns.0,
         cur.0 + 1,
@@ -1476,7 +1476,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     );
 
     // Decrease schedules a pending change
-    c.submit_timelock(cur);
+    c.submit_timelock(cur, None);
     set_ctx(
         &vault_id,
         &owner,
@@ -1514,8 +1514,8 @@ fn governance_revoke_pending_timelock_then_accept_panics() {
     let cur = c.get_configuration().initial_timelock_ns;
 
     // Force a pending by first increasing then decreasing
-    c.submit_timelock((cur.0 + 1).into());
-    c.submit_timelock(cur);
+    c.submit_timelock((cur.0 + 1).into(), None);
+    c.submit_timelock(cur, None);
 
     // Revoke the pending change; accept must now panic
     c.revoke_pending_timelock();

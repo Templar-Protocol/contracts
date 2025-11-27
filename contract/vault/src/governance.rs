@@ -509,7 +509,7 @@ impl Contract {
     fn decide_should_queue(&self, action: &TimelockedAction) -> bool {
         match action {
             // Submit a timelocked governance change if there is already a guardian
-            TimelockedAction::GuardianChange { account } => {
+            TimelockedAction::GuardianChange { .. } => {
                 Self::require_owner();
 
                 Self::with_members_of(&Role::Guardian, |members| {
