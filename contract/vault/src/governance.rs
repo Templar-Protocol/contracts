@@ -1,10 +1,11 @@
+use super::*;
 use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
-use templar_common::{panic_with_message, vault::Restrictions};
-
-use super::*;
 use std::collections::VecDeque;
-use templar_common::{panic_with_message, vault::PendingValue};
+use templar_common::{
+    panic_with_message,
+    vault::{PendingValue, Restrictions},
+};
 
 #[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

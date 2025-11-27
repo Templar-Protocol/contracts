@@ -1,5 +1,7 @@
 #![allow(clippy::pedantic)]
 
+use std::collections::BTreeSet;
+
 use crate::governance::Timelocks;
 use crate::impl_callbacks::reconcile_supply_outcome;
 use crate::impl_callbacks::WithdrawReconciliation;
@@ -26,14 +28,12 @@ use near_sdk_contract_tools::owner::OwnerExternal;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
-use templar_common::vault::AllocatingState;
-use templar_common::vault::Error;
-use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
-use templar_common::vault::Restrictions;
-use templar_common::vault::WithdrawingState;
 use templar_common::vault::MAX_TIMELOCK_NS;
+use templar_common::vault::{
+    AllocatingState, Error, MarketConfiguration, Restrictions, WithdrawingState,
+};
 use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[fixture]
