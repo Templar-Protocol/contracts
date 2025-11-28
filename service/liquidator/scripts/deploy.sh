@@ -135,7 +135,7 @@ EOF
 deploy_git() {
     log_info "Deploying via git..."
     
-    BRANCH="${GIT_BRANCH:-main}"
+    BRANCH="${GIT_BRANCH:-dev}"
     
     ssh ${SERVER_USER}@${SERVER_IP} << EOF
         cd /opt/templar-liquidator
