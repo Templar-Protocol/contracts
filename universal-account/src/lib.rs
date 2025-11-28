@@ -65,19 +65,18 @@ impl From<PayloadExecutionParameters> for Eip712Domain {
 }
 
 impl PayloadExecutionParameters {
-    pub fn construct_default(
+    pub fn new_auto(
         verifying_contract: near_sdk::AccountId,
         key_parameters: KeyParameters,
         chain_id: u128,
     ) -> Self {
-        Self::new(verifying_contract)
+        Self::new_empty(verifying_contract)
             .with_key_parameters(key_parameters)
             .chain_id(chain_id)
-            .name("Templar Universal Account")
-            .version(env!("CARGO_PKG_VERSION"))
+            .auto()
     }
 
-    pub fn new(verifying_contract: near_sdk::AccountId) -> Self {
+    pub fn new_empty(verifying_contract: near_sdk::AccountId) -> Self {
         Self {
             block_height: U64(0),
             index: U64(0),
@@ -106,7 +105,11 @@ impl PayloadExecutionParameters {
             nonce: key_parameters.nonce,
             ..self
         }
-        .auto_salt()
+    }
+
+    #[must_use]
+    pub fn auto(self) -> Self {
+        self.auto_name().auto_version().auto_salt()
     }
 
     #[must_use]
@@ -121,11 +124,20 @@ impl PayloadExecutionParameters {
         }
     }
 
-    pub fn from_key(
-        key_parameters: KeyParameters,
-        verifying_contract: near_sdk::AccountId,
-    ) -> Self {
-        Self::new(verifying_contract).with_key_parameters(key_parameters)
+    #[must_use]
+    pub fn auto_name(self) -> Self {
+        Self {
+            name: Some("Templar Universal Account".to_string()),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn auto_version(self) -> Self {
+        Self {
+            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            ..self
+        }
     }
 
     #[must_use]
@@ -246,9 +258,9 @@ impl<T: serde::Serialize> ExecuteArgs<T> {
 
     pub fn message_unchecked(&self) -> &T {
         match self {
-            Self::Passkey { message, .. } => &message.message.0.parsed.payload,
-            Self::Ed25519Raw { message, .. } => &message.message.0.parsed.payload,
-            Self::Eip712 { message, .. } => &message.message.0.parsed.payload,
+            Self::Passkey { message, .. } => message.message.0.parsed.payload_ref(),
+            Self::Ed25519Raw { message, .. } => message.message.0.parsed.payload_ref(),
+            Self::Eip712 { message, .. } => message.message.0.parsed.payload_ref(),
         }
     }
 
@@ -336,17 +348,18 @@ mod tests {
         }]
         .into_boxed_slice();
 
-        Payload {
-            parameters: PayloadExecutionParameters::from_key(
+        Payload::new(
+            PayloadExecutionParameters::new_auto(
+                "my-universal-account.near".parse().unwrap(),
                 KeyParameters {
                     block_height: U64(12345),
                     index: U64(1),
                     nonce: U64(44),
                 },
-                "my-universal-account.near".parse().unwrap(),
+                NEAR_TESTNET_CHAIN_ID,
             ),
             payload,
-        }
+        )
     }
 
     fn ed25519_raw_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
@@ -407,13 +420,14 @@ mod tests {
     ) {
         exec_args
             .verify(
-                &PayloadExecutionParameters::from_key(
+                &PayloadExecutionParameters::new_auto(
+                    executor_account_id,
                     KeyParameters {
                         block_height: U64(block_height),
                         index: U64(index),
                         nonce: U64(nonce),
                     },
-                    executor_account_id,
+                    NEAR_TESTNET_CHAIN_ID,
                 ),
                 |_| true,
             )
@@ -428,13 +442,14 @@ mod tests {
     fn verify_origin(#[case] allowed_origin: &str) {
         passkey_execute_args()
             .verify(
-                &PayloadExecutionParameters::from_key(
+                &PayloadExecutionParameters::new_auto(
+                    AccountId::from_str("my-universal-account.near").unwrap(),
                     KeyParameters {
                         block_height: U64(12345),
                         index: U64(1),
                         nonce: U64(44),
                     },
-                    AccountId::from_str("my-universal-account.near").unwrap(),
+                    NEAR_TESTNET_CHAIN_ID,
                 ),
                 |o| o == Some(allowed_origin),
             )

@@ -44,7 +44,7 @@ impl Contract {
     }
 
     fn payload_execution_parameters(&self, k: &KeyParameters) -> PayloadExecutionParameters {
-        PayloadExecutionParameters::construct_default(env::current_account_id(), *k, self.chain_id)
+        PayloadExecutionParameters::new_auto(env::current_account_id(), *k, self.chain_id)
     }
 
     pub fn get_key(&self, key: KeyId) -> Option<PayloadExecutionParameters> {

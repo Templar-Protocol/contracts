@@ -24,7 +24,7 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         MessageWithSignature,
     },
-    ExecuteArgs, ExecutionParameters, KeyId,
+    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
 };
 
 use crate::{
@@ -92,7 +92,7 @@ impl CreateRequest {
                 .message
                 .0
                 .parsed
-                .payload
+                .payload_ref()
                 .payload_unchecked()
                 .key
                 .clone()
@@ -145,7 +145,14 @@ pub async fn create(
 
     let create = match request {
         CreateRequest::Passkey(mws) => {
-            let key_inner = mws.message.0.parsed.payload.payload_unchecked().key.clone();
+            let key_inner = mws
+                .message
+                .0
+                .parsed
+                .payload_ref()
+                .payload_unchecked()
+                .key
+                .clone();
             let exec_args = ExecuteArgs::Passkey {
                 key: key_inner.clone(),
                 message: Box::new(MessageWithSignature {
@@ -159,8 +166,11 @@ pub async fn create(
             };
 
             let m = match exec_args.verify(
-                &app.args.ua.account_id,
-                &ExecutionParameters::default(),
+                &PayloadExecutionParameters::new_auto(
+                    app.args.ua.account_id.clone(),
+                    KeyParameters::default(),
+                    app.args.ua.chain_id,
+                ),
                 |o| app.args.ua.is_origin_allowed(o),
             ) {
                 Ok(m) => m,
@@ -189,8 +199,11 @@ pub async fn create(
         }
         CreateRequest::ExecuteArgs(request) => {
             let m = match request.verify(
-                &app.args.ua.account_id,
-                &ExecutionParameters::default(),
+                &PayloadExecutionParameters::new_auto(
+                    app.args.ua.account_id.clone(),
+                    KeyParameters::default(),
+                    app.args.ua.chain_id,
+                ),
                 |o| app.args.ua.is_origin_allowed(o),
             ) {
                 Ok(m) => m,
@@ -287,7 +300,10 @@ pub async fn create(
             &DeployArgs::new(
                 account_slug,
                 app.args.ua.version_key.clone(),
-                &templar_universal_account::InitArgs { key: create.key },
+                &templar_universal_account::InitArgs {
+                    key: create.key,
+                    chain_id: app.args.ua.chain_id.into(),
+                },
                 None,
             ),
         )
@@ -360,9 +376,12 @@ mod tests {
     use near_sdk::serde_json;
     use p256::elliptic_curve::rand_core::OsRng;
     use solana_sdk::{signature::Keypair, signer::Signer};
-    use templar_universal_account::authentication::{
-        ed25519_raw::{self, VerifyKey},
-        HashForSigning, Payload,
+    use templar_universal_account::{
+        authentication::{
+            ed25519_raw::{self, VerifyKey},
+            HashForSigning, Payload,
+        },
+        NEAR_TESTNET_CHAIN_ID,
     };
 
     use super::*;
@@ -373,10 +392,13 @@ mod tests {
         let pubkey = VerifyKey(keypair.pubkey().to_bytes().into());
 
         let message = {
-            let m = ed25519_raw::Message::from_parsed(Payload {
-                parameters: ExecutionParameters::default(),
-                account_id: "my-universal-account.near".parse().unwrap(),
-                payload: Pow::mine(
+            let m = ed25519_raw::Message::from_parsed(Payload::new(
+                PayloadExecutionParameters::new_auto(
+                    "my-universal-account.near".parse().unwrap(),
+                    KeyParameters::default(),
+                    NEAR_TESTNET_CHAIN_ID,
+                ),
+                Pow::mine(
                     CreateUniversalAccount {
                         key: pubkey.clone().into(),
                         block_hash: CryptoHash([0u8; 32]),
@@ -385,7 +407,7 @@ mod tests {
                     10_000,
                 )
                 .unwrap(),
-            });
+            ));
             let h = m.preimage_for_signing();
             let signature = keypair.sign_message(&h);
             Box::new(m.with_signature(signature.into()))
@@ -422,10 +444,13 @@ mod tests {
         let cr = CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
             key: pubkey.clone(),
             message: {
-                let m = passkey::Message::from_parsed(Payload {
-                    parameters: ExecutionParameters::default(),
-                    account_id: "my-universal-account.near".parse().unwrap(),
-                    payload: Pow::mine(
+                let m = passkey::Message::from_parsed(Payload::new(
+                    PayloadExecutionParameters::new_auto(
+                        "my-universal-account.near".parse().unwrap(),
+                        KeyParameters::default(),
+                        NEAR_TESTNET_CHAIN_ID,
+                    ),
+                    Pow::mine(
                         CreateUniversalAccount {
                             key: pubkey.into(),
                             block_hash: CryptoHash([0u8; 32]),
@@ -434,7 +459,7 @@ mod tests {
                         10_000,
                     )
                     .unwrap(),
-                });
+                ));
                 let challenge = m.hash_for_signing().into();
                 Box::new(m.sign(
                     &keypair,

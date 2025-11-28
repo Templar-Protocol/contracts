@@ -110,30 +110,38 @@ where
         let payload = self.payload();
 
         macro_rules! check_field {
-            ($field:ident.$($string_repr:tt)+) => {
-                if payload.parameters.$field != expected_parameters.$field {
+            ($parameters:ident,$field:ident.$($string_repr:tt)+) => {
+                if $parameters.$field != expected_parameters.$field {
                     return Err(ExecutionError::Mismatch {
                         field: stringify!($field).into(),
                         expected: expected_parameters.$field.$($string_repr)+.into(),
-                        actual: payload.parameters.$field.$($string_repr)+.into(),
+                        actual: $parameters.$field.$($string_repr)+.into(),
                     });
                 }
             };
         }
 
-        check_field!(block_height.0.to_string());
-        check_field!(chain_id.map_or("<none>".to_string(), |c| c.0.to_string()));
-        check_field!(index.0.to_string());
-        check_field!(name.clone().unwrap_or("<none>".to_string()));
-        check_field!(nonce.0.to_string());
-        check_field!(salt.as_ref().map_or("<none>".to_string(), |s| {
-            #[allow(clippy::unwrap_used, reason = "Infallible")]
-            serde_json::to_string(&s).unwrap()
-        }));
-        check_field!(verifying_contract.as_str());
-        check_field!(version.clone().unwrap_or("<none>".to_string()));
+        let parameters = payload.parameters();
 
-        Ok(payload.payload)
+        check_field!(parameters, block_height.0.to_string());
+        check_field!(
+            parameters,
+            chain_id.map_or("<none>".to_string(), |c| c.0.to_string())
+        );
+        check_field!(parameters, index.0.to_string());
+        check_field!(parameters, name.clone().unwrap_or("<none>".to_string()));
+        check_field!(parameters, nonce.0.to_string());
+        check_field!(
+            parameters,
+            salt.as_ref().map_or("<none>".to_string(), |s| {
+                #[allow(clippy::unwrap_used, reason = "Infallible")]
+                serde_json::to_string(&s).unwrap()
+            })
+        );
+        check_field!(parameters, verifying_contract.as_str());
+        check_field!(parameters, version.clone().unwrap_or("<none>".to_string()));
+
+        Ok(payload.payload())
     }
 }
 

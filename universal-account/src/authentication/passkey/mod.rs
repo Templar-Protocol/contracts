@@ -154,10 +154,10 @@ mod tests {
     }
 
     fn message() -> Message<String> {
-        Message::from_parsed(Payload {
-            parameters: PayloadExecutionParameters::new("account_id".parse().unwrap()),
-            payload: "payload".to_string(),
-        })
+        Message::from_parsed(Payload::new(
+            PayloadExecutionParameters::new_empty("account_id".parse().unwrap()),
+            "payload".to_string(),
+        ))
     }
 
     fn authenticator_data() -> AuthenticatorData {

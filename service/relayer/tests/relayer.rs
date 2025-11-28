@@ -48,7 +48,7 @@ use templar_universal_account::{
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
-    ExecuteArgs, ExecutionParameters, KeyId,
+    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::*;
 
@@ -65,15 +65,10 @@ struct InitTest {
 
 fn create_message<T: near_sdk::serde::Serialize>(
     secret_key: &p256::SecretKey,
-    account_id: AccountId,
-    parameters: ExecutionParameters,
+    parameters: PayloadExecutionParameters,
     payload: T,
 ) -> MessageWithSignature<passkey::Message<T>> {
-    let payload = passkey::Message::from_parsed(Payload {
-        parameters,
-        account_id,
-        payload,
-    });
+    let payload = passkey::Message::from_parsed(Payload::new(parameters, payload));
 
     let challenge = payload.hash_for_signing().into();
 
@@ -92,14 +87,12 @@ fn create_message<T: near_sdk::serde::Serialize>(
 
 fn create_execute_message(
     secret_key: &p256::SecretKey,
-    account_id: AccountId,
-    parameters: ExecutionParameters,
+    parameters: PayloadExecutionParameters,
     receiver_id: AccountId,
     actions: impl Into<Box<[transaction::Action]>>,
 ) -> MessageWithSignature<passkey::Message<Box<[Transaction]>>> {
     create_message(
         secret_key,
-        account_id,
         parameters,
         vec![Transaction {
             receiver_id,
@@ -153,6 +146,8 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
             ua_deployer.contract().id().as_ref(),
             "--ua-version-key",
             "v1",
+            "--ua-chain-id",
+            &NEAR_TESTNET_CHAIN_ID.to_string(),
             "--intents-id",
             "intents.near",
         ]),
@@ -281,12 +276,15 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let message = create_message(
         &secret_key,
-        ua_deployer.contract().id().clone(),
-        ExecutionParameters {
-            block_height: U64(0),
-            index: U64(0),
-            nonce: U64(0),
-        },
+        PayloadExecutionParameters::new_auto(
+            ua_deployer.contract().id().clone(),
+            KeyParameters {
+                block_height: U64(0),
+                index: U64(0),
+                nonce: U64(0),
+            },
+            NEAR_TESTNET_CHAIN_ID,
+        ),
         Pow::mine(
             CreateUniversalAccount {
                 key: passkey.clone().into(),
@@ -348,8 +346,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         c.contract().id().clone(),
         vec![transaction::FunctionCallAction {
             function_name: "apply_interest".to_string(),
@@ -411,8 +408,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         "intents.near".parse().unwrap(),
         vec![transaction::FunctionCallAction {
             function_name: "add_public_key".to_string(),
@@ -535,12 +531,15 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let message = create_message(
         &secret_key,
-        ua_deployer.contract().id().clone(),
-        ExecutionParameters {
-            block_height: U64(0),
-            index: U64(0),
-            nonce: U64(0),
-        },
+        PayloadExecutionParameters::new_auto(
+            ua_deployer.contract().id().clone(),
+            KeyParameters {
+                block_height: U64(0),
+                index: U64(0),
+                nonce: U64(0),
+            },
+            NEAR_TESTNET_CHAIN_ID,
+        ),
         Pow::mine(
             CreateUniversalAccount {
                 key: passkey.clone().into(),
@@ -604,8 +603,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         ua_account_id.clone(),
         vec![transaction::FunctionCallAction {
             function_name: "add_key".to_string(),
@@ -672,8 +670,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key_2,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         ua_account_id.clone(),
         vec![transaction::FunctionCallAction {
             function_name: "execute".to_string(),

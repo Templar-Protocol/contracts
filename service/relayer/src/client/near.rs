@@ -32,7 +32,7 @@ use templar_common::{
     market::MarketConfiguration,
     oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier},
 };
-use templar_universal_account::{ExecuteArgs, ExecutionParameters, KeyId};
+use templar_universal_account::{ExecuteArgs, KeyId, PayloadExecutionParameters};
 
 use crate::{cache::Cache, MarketData};
 
@@ -605,7 +605,7 @@ impl Near {
         &self,
         ua_account_id: AccountId,
         key: KeyId,
-    ) -> Result<Option<ExecutionParameters>, ViewError> {
+    ) -> Result<Option<PayloadExecutionParameters>, ViewError> {
         self.view(ua_account_id, "get_key", json!({ "key": key }))
             .await
     }

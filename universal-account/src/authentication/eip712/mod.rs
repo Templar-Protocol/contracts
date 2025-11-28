@@ -47,7 +47,7 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
         &self,
         mws: &super::MessageWithSignature<Message<T>>,
     ) -> Result<(), CheckSignatureError> {
-        let calculated_domain = Eip712Domain::from(mws.message.0.parsed.parameters.clone());
+        let calculated_domain = Eip712Domain::from(mws.message.0.parsed.parameters());
 
         let prehash = mws
             .message
@@ -85,7 +85,7 @@ impl<T: serde::Serialize> Message<T> {
     /// - Serialization errors
     /// - Signing errors
     pub fn sign(self, key: &alloy::signers::local::PrivateKeySigner) -> MessageWithSignature<Self> {
-        let domain = Eip712Domain::from(self.0.parsed.parameters.clone());
+        let domain = Eip712Domain::from(self.0.parsed.parameters());
         #[allow(
             clippy::unwrap_used,
             reason = "This function should not be used in a case where panicking is unsafe"
@@ -119,20 +119,21 @@ mod tests {
     use crate::{
         authentication::payload::Payload,
         transaction::{Action, Transaction},
-        KeyParameters, PayloadExecutionParameters,
+        KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
     };
 
     use super::*;
 
     #[test]
     fn serialization() {
-        let m = Message::from_parsed(Payload {
-            parameters: PayloadExecutionParameters::from_key(
-                KeyParameters::default(),
+        let m = Message::from_parsed(Payload::new(
+            PayloadExecutionParameters::new_auto(
                 "account_id".parse().unwrap(),
+                KeyParameters::default(),
+                NEAR_TESTNET_CHAIN_ID,
             ),
-            payload: "hello, world".to_string(),
-        });
+            "hello, world".to_string(),
+        ));
 
         let json = serde_json::to_string(&m).unwrap();
 
@@ -152,14 +153,14 @@ mod tests {
     }
 
     fn message() -> Message<Box<[Transaction]>> {
-        Message::from_parsed(Payload {
-            parameters: PayloadExecutionParameters::new("account_id".parse().unwrap()),
-            payload: vec![Transaction {
+        Message::from_parsed(Payload::new(
+            PayloadExecutionParameters::new_empty("account_id".parse().unwrap()),
+            vec![Transaction {
                 receiver_id: "receiver".parse().unwrap(),
                 actions: vec![Action::CreateAccount].into_boxed_slice(),
             }]
             .into_boxed_slice(),
-        })
+        ))
     }
 
     #[test]
@@ -198,7 +199,7 @@ mod tests {
         let verify_key = VerifyKey(signer.address().into());
 
         let mut payload_parsed = mws.message.0.parsed;
-        payload_parsed.payload[0].receiver_id = "different".parse().unwrap();
+        payload_parsed.payload_mut()[0].receiver_id = "different".parse().unwrap();
         mws.message.0 = WithRawString::from_parsed(payload_parsed);
 
         verify_key.verify_signature(mws).unwrap();
@@ -214,9 +215,10 @@ mod tests {
 
         let verify_key = VerifyKey(signer.address().into());
 
-        let mut payload_parsed = mws.message.0.parsed;
-        payload_parsed.parameters.name = Some("different".to_string());
-        mws.message.0 = WithRawString::from_parsed(payload_parsed);
+        let mut parameters = mws.message.0.parsed.parameters();
+        parameters.name = Some("different".to_string());
+        mws.message.0 =
+            WithRawString::from_parsed(Payload::new(parameters, mws.message.0.parsed.payload()));
 
         verify_key.verify_signature(mws).unwrap();
     }

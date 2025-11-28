@@ -189,8 +189,8 @@ pub async fn universal_account(
     assert_eq!(key_entry.index.0, 0);
     assert_eq!(key_entry.nonce.0, 0);
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: PayloadExecutionParameters::construct_default(
+    let payload = WithRawString::from_parsed(Payload::new(
+        PayloadExecutionParameters::new_auto(
             uac.contract().id().clone(),
             KeyParameters {
                 block_height,
@@ -199,12 +199,12 @@ pub async fn universal_account(
             },
             NEAR_TESTNET_CHAIN_ID,
         ),
-        payload: vec![Transaction {
+        vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
-    });
+    ));
 
     let execute_args = sk.execute_args(payload);
 
@@ -238,14 +238,14 @@ pub async fn universal_account(
 
     // Second execution, check nonce advancement
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: key_entry.next_nonce(),
-        payload: vec![Transaction {
+    let payload = WithRawString::from_parsed(Payload::new(
+        key_entry.next_nonce(),
+        vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
-    });
+    ));
 
     let execute_args = sk.execute_args(payload);
 
@@ -286,8 +286,8 @@ async fn skip_nonce(
     let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: PayloadExecutionParameters::construct_default(
+    let payload = WithRawString::from_parsed(Payload::new(
+        PayloadExecutionParameters::new_auto(
             uac.contract().id().clone(),
             KeyParameters {
                 block_height,
@@ -296,12 +296,12 @@ async fn skip_nonce(
             },
             NEAR_TESTNET_CHAIN_ID,
         ),
-        payload: vec![Transaction {
+        vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
-    });
+    ));
 
     let execute_args = sk.execute_args(payload);
 
@@ -318,8 +318,8 @@ async fn skip_nonce(
 
     // Try to skip a nonce
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: PayloadExecutionParameters::construct_default(
+    let payload = WithRawString::from_parsed(Payload::new(
+        PayloadExecutionParameters::new_auto(
             uac.contract().id().clone(),
             KeyParameters {
                 block_height,
@@ -328,12 +328,12 @@ async fn skip_nonce(
             },
             NEAR_TESTNET_CHAIN_ID,
         ),
-        payload: vec![Transaction {
+        vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
-    });
+    ));
 
     let execute_args = sk.execute_args(payload);
 
@@ -361,8 +361,8 @@ async fn reuse_nonce(
     let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: PayloadExecutionParameters::construct_default(
+    let payload = WithRawString::from_parsed(Payload::new(
+        PayloadExecutionParameters::new_auto(
             uac.contract().id().clone(),
             KeyParameters {
                 block_height,
@@ -371,12 +371,12 @@ async fn reuse_nonce(
             },
             NEAR_TESTNET_CHAIN_ID,
         ),
-        payload: vec![Transaction {
+        vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
-    });
+    ));
 
     let execute_args = sk.execute_args(payload);
 
@@ -393,8 +393,8 @@ async fn reuse_nonce(
 
     // Try to reuse a nonce
 
-    let payload = WithRawString::from_parsed(Payload {
-        parameters: PayloadExecutionParameters::construct_default(
+    let payload = WithRawString::from_parsed(Payload::new(
+        PayloadExecutionParameters::new_auto(
             uac.contract().id().clone(),
             KeyParameters {
                 block_height,
@@ -403,12 +403,12 @@ async fn reuse_nonce(
             },
             NEAR_TESTNET_CHAIN_ID,
         ),
-        payload: vec![Transaction {
+        vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
-    });
+    ));
 
     let execute_args = sk.execute_args(payload);
 

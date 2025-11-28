@@ -214,6 +214,9 @@ pub struct UniversalAccount {
         value_delimiter = ','
     )]
     pub allowed_origin: Vec<String>,
+    /// Chain ID. NEAR mainnet = 397, NEAR testnet = 398.
+    #[arg(id = "ua-chain-id", long = "ua-chain-id", env = "UA_CHAIN_ID")]
+    pub chain_id: u128,
     /// Account ID of the registry from which to deploy universal accounts.
     #[arg(id = "ua-registry-id", long = "ua-registry-id", env = "UA_REGISTRY_ID")]
     pub registry_id: AccountId,

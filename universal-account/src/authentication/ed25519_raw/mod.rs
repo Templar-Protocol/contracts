@@ -85,7 +85,7 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<Message<P>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{KeyParameters, PayloadExecutionParameters};
+    use crate::{KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID};
 
     use super::*;
 
@@ -124,17 +124,18 @@ mod tests {
     #[rstest]
     #[test]
     fn valid_signature(keypair: Keypair) {
-        let message: Message<_> = WithRawString::from_parsed(Payload {
-            parameters: PayloadExecutionParameters::from_key(
+        let message: Message<_> = WithRawString::from_parsed(Payload::new(
+            PayloadExecutionParameters::new_auto(
+                "account.near".parse().unwrap(),
                 KeyParameters {
                     block_height: U64(12345),
                     index: U64(0),
                     nonce: U64(0),
                 },
-                "account.near".parse().unwrap(),
+                NEAR_TESTNET_CHAIN_ID,
             ),
-            payload: "Hello, world!",
-        })
+            "Hello, world!",
+        ))
         .into();
 
         let sol_sig = keypair.sign_message(&message.preimage_for_signing());
@@ -153,17 +154,18 @@ mod tests {
     #[test]
     #[should_panic = "InvalidSignature"]
     fn invalid_signature(keypair: Keypair) {
-        let message: Message<_> = WithRawString::from_parsed(Payload {
-            parameters: PayloadExecutionParameters::from_key(
+        let message: Message<_> = WithRawString::from_parsed(Payload::new(
+            PayloadExecutionParameters::new_auto(
+                "account.near".parse().unwrap(),
                 KeyParameters {
                     block_height: U64(12345),
                     index: U64(0),
                     nonce: U64(0),
                 },
-                "account.near".parse().unwrap(),
+                NEAR_TESTNET_CHAIN_ID,
             ),
-            payload: "Hello, world!",
-        })
+            "Hello, world!",
+        ))
         .into();
 
         let sol_sig = keypair.sign_message(&message.preimage_for_signing());
@@ -171,17 +173,18 @@ mod tests {
         let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
         let mws = MessageWithSignature {
-            message: Message(WithRawString::from_parsed(Payload {
-                parameters: PayloadExecutionParameters::from_key(
+            message: Message(WithRawString::from_parsed(Payload::new(
+                PayloadExecutionParameters::new_auto(
+                    "account.near".parse().unwrap(),
                     KeyParameters {
                         block_height: U64(12345),
                         index: U64(0),
                         nonce: U64(1),
                     },
-                    "account.near".parse().unwrap(),
+                    NEAR_TESTNET_CHAIN_ID,
                 ),
-                payload: "Hello, world!",
-            })),
+                "Hello, world!",
+            ))),
             signature: sol_sig.into(),
         };
 
