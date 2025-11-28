@@ -291,6 +291,7 @@ impl<T: serde::Serialize> ExecuteArgs<T> {
 mod tests {
     use std::str::FromStr;
 
+    use alloy::signers::local::PrivateKeySigner;
     use authentication::{
         ed25519_raw,
         passkey::{
@@ -362,6 +363,19 @@ mod tests {
         )
     }
 
+    fn eip712_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
+        let sk = PrivateKeySigner::random();
+
+        let message = eip712::Message::from_parsed(payload());
+
+        let signed_message = message.sign(&sk);
+
+        ExecuteArgs::Eip712 {
+            key: eip712::VerifyKey(sk.address().into()),
+            message: Box::new(signed_message),
+        }
+    }
+
     fn ed25519_raw_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
         let sk = Keypair::new();
 
@@ -400,19 +414,22 @@ mod tests {
 
     #[rstest]
     #[case("my-universal-account.near", 12345, 1, 44)]
-    #[should_panic = "Execution(ExecutorAccountIdMismatch)"]
+    #[should_panic = r#"Execution(Mismatch { field: "verifying_contract", expected: "my-universal-account.nearx", actual: "my-universal-account.near" })"#]
     #[case("my-universal-account.nearx", 12345, 1, 44)]
-    #[should_panic = "Execution(BlockHeightMismatch)"]
+    #[should_panic = r#"Execution(Mismatch { field: "block_height", expected: "12346", actual: "12345" })"#]
     #[case("my-universal-account.near", 12346, 1, 44)]
-    #[should_panic = "Execution(KeyIndexMismatch)"]
+    #[should_panic = r#"Execution(Mismatch { field: "index", expected: "0", actual: "1" })"#]
     #[case("my-universal-account.near", 12345, 0, 44)]
-    #[should_panic = "Execution(NonceMismatch)"]
+    #[should_panic = r#"Execution(Mismatch { field: "nonce", expected: "45", actual: "44" })"#]
     #[case("my-universal-account.near", 12345, 1, 45)]
     #[test]
     fn verify(
-        #[values(passkey_execute_args(), ed25519_raw_execute_args())] exec_args: ExecuteArgs<
-            Box<[Transaction]>,
-        >,
+        #[values(
+            passkey_execute_args(),
+            ed25519_raw_execute_args(),
+            eip712_execute_args()
+        )]
+        exec_args: ExecuteArgs<Box<[Transaction]>>,
         #[case] executor_account_id: AccountId,
         #[case] block_height: u64,
         #[case] index: u64,
