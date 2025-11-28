@@ -22,25 +22,11 @@ pub type AllocationPlan = Vec<(AccountId, u128)>;
 #[derive(Clone, Debug, Default)]
 #[near(serializers = [json, borsh])]
 pub enum AllocationMode {
-    /// When eager makes sense
+    /// Eager allocation mode.
     ///
-    ///  • Retail/auto-pilot vaults: users expect deposits to “start earning” immediately without an active allocator.
-    ///  • Small/simple vaults: stable caps/ordering, few markets; operational simplicity > fine-grained control.
-    ///  • Integrations that assume quick deployment of idle assets.
-    ///
-    /// Risks/trade-offs of eager
-    ///
-    ///  • Gas burden on depositors: ft_transfer_call into your vault must carry enough gas for multi-hop allocation.
-    ///    Under-provisioned gas leads to partial allocations and extra callbacks.
-    ///  • Timing control: depositors implicitly decide when allocation runs, which can fight the allocator’s planned rebalancing
-    ///    cadence.
-    ///  • Thrashing: many small deposits can trigger many allocation passes.
-    ///  • Current code is “eager-ish but incomplete”: it only auto-starts when Idle, and does not auto-restart after the op. Deposits
-    ///    that arrive during an allocation stay idle until someone triggers another pass.
-    ///
-    /// Behaviour
-    /// • On deposit: if Idle and idle_balance ≥ min_batch, start_allocation(idle_balance).
-    /// • Eager allocation can still honor a per-op plan if one is set (plan wins); otherwise fall back to supply_queue order.
+    /// Deposits can automatically trigger allocation when the vault is idle
+    /// and the idle balance is at least `min_batch`. See implementation for
+    /// the exact conditions and behaviour.
     Eager { min_batch: U128 },
     #[default]
     Lazy,
@@ -54,7 +40,7 @@ pub enum DepositMsg {
     Supply,
 }
 
-/// Confrete configuration for a market.
+/// Concrete configuration for a market.
 #[derive(Clone, Default, Debug)]
 #[near]
 pub struct MarketConfiguration {
@@ -600,7 +586,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
-    TimelockChangeSubmitted { new_ns: U64, valid_at_ns: U64 },
+    TimelockChangeSubmitted { valid_at_ns: U64 },
     #[event_version("1.0.0")]
     PendingTimelockRevoked,
 

@@ -1,5 +1,8 @@
 #![allow(clippy::pedantic)]
 
+use std::collections::BTreeSet;
+
+use crate::governance::Timelocks;
 use crate::impl_callbacks::reconcile_supply_outcome;
 use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
@@ -24,15 +27,13 @@ use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
-use std::collections::BTreeSet;
 use templar_common::asset::FungibleAsset;
-use templar_common::vault::AllocatingState;
-use templar_common::vault::Error;
-use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
-use templar_common::vault::Restrictions;
-use templar_common::vault::WithdrawingState;
+use templar_common::vault::MAX_TIMELOCK_NS;
+use templar_common::vault::{
+    AllocatingState, Error, MarketConfiguration, Restrictions, WithdrawingState,
+};
 use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[fixture]
@@ -298,14 +299,8 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(
-        m1.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        },
-    );
+    c.markets
+        .insert(m1.clone(), MarketRecord { cfg, principal: 0 });
     c.supply_queue.insert(m1.clone());
 
     // Idle = 100, so max_room (80) should clamp allocation
@@ -324,7 +319,6 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
             m1.clone(),
             MarketRecord {
                 cfg: MarketConfiguration::default(),
-                pending_cap: None,
                 principal: 80,
             },
         );
@@ -460,14 +454,8 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        },
-    );
+    c.markets
+        .insert(m.clone(), MarketRecord { cfg, principal: 0 });
 
     // Lower cap to zero: should NOT disable the market anymore
     c.submit_cap(m.clone(), U128(0));
@@ -497,7 +485,6 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 0,
         },
     );
@@ -621,7 +608,6 @@ fn clamp_allocation_total_matches_min_bounds_cases(
         m.clone(),
         MarketRecord {
             cfg,
-            pending_cap: None,
             principal: cur,
         },
     );
@@ -655,7 +641,6 @@ fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal,
         },
     );
@@ -1305,20 +1290,13 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     method_name,
     case("set_curator"),
     case("set_is_allocator"),
-    case("submit_guardian"),
-    case("accept_guardian"),
-    case("revoke_pending_guardian"),
     case("set_skim_recipient"),
     case("set_fee_recipient"),
     case("set_performance_fee"),
+    case("submit_guardian"),
     case("submit_timelock"),
-    case("accept_timelock"),
-    case("revoke_pending_timelock"),
     case("submit_cap"),
-    case("accept_cap"),
-    case("revoke_pending_cap"),
     case("submit_market_removal"),
-    case("revoke_pending_market_removal"),
     case("set_supply_queue")
 )]
 fn governance_abdicate_blocks_further_changes(method_name: &str) {
@@ -1339,11 +1317,7 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
             }
             "submit_guardian" => {
                 c.submit_guardian(accounts(5));
-            }
-            "accept_guardian" => {
                 c.accept_guardian();
-            }
-            "revoke_pending_guardian" => {
                 c.revoke_pending_guardian();
             }
             "set_skim_recipient" => {
@@ -1358,32 +1332,19 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
             "submit_timelock" => {
                 let cur = c.get_configuration().initial_timelock_ns;
                 // value choice irrelevant; abdication check runs first
-                c.submit_timelock(cur);
-            }
-            "accept_timelock" => {
+                c.submit_timelock(cur, None);
                 c.accept_timelock();
-            }
-            "revoke_pending_timelock" => {
                 c.revoke_pending_timelock();
             }
             "submit_cap" => {
                 let market = mk(9200);
-                c.submit_cap(market, U128(1));
-            }
-            "accept_cap" => {
-                let market = mk(9201);
-                c.accept_cap(market);
-            }
-            "revoke_pending_cap" => {
-                let market = mk(9202);
+                c.submit_cap(market.clone(), U128(1));
+                c.accept_cap(market.clone());
                 c.revoke_pending_cap(market);
             }
             "submit_market_removal" => {
                 let market = mk(9203);
-                c.submit_market_removal(market);
-            }
-            "revoke_pending_market_removal" => {
-                let market = mk(9204);
+                c.submit_market_removal(market.clone());
                 c.revoke_pending_market_removal(market);
             }
             "set_supply_queue" => {
@@ -1422,15 +1383,29 @@ fn governance_accept_guardian_not_yet_panics() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    c.timelock_ns = u64::MAX;
+    // First, ensure a guardian is set by submitting and accepting once.
+    let initial_guardian = accounts(1);
+    c.submit_guardian(initial_guardian.clone());
+    set_ctx(
+        &vault_id,
+        &owner,
+        Some(env::block_timestamp() + 1_000_000_000),
+        None,
+    );
+    c.accept_guardian();
 
+    let max_timelock = MAX_TIMELOCK_NS;
+    c.governance_timelocks = Timelocks::new(max_timelock, max_timelock, max_timelock, max_timelock);
+    // Now submit another guardian change but do not advance time.
     let new_g = accounts(5);
+    set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(new_g);
     // Timelock not advanced -> should panic
     c.accept_guardian();
 }
 
 #[test]
+#[should_panic]
 fn governance_submit_accept_and_revoke_guardian() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1455,7 +1430,7 @@ fn governance_submit_accept_and_revoke_guardian() {
     c.submit_guardian(another);
     c.revoke_pending_guardian();
 
-    // No pending now; accept should no-op (but must not panic)
+    // No pending now; accept should panic due to no pending guardian change
     c.accept_guardian();
 }
 
@@ -1469,7 +1444,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     let cur = c.get_configuration().initial_timelock_ns;
 
     // Increase applies immediately
-    c.submit_timelock((cur.0 + 1).into());
+    c.submit_timelock((cur.0 + 1).into(), None);
     assert_eq!(
         c.get_configuration().initial_timelock_ns.0,
         cur.0 + 1,
@@ -1477,7 +1452,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     );
 
     // Decrease schedules a pending change
-    c.submit_timelock(cur);
+    c.submit_timelock(cur, None);
     set_ctx(
         &vault_id,
         &owner,
@@ -1493,7 +1468,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
 }
 
 #[test]
-#[should_panic = "No pending timelock change"]
+#[should_panic = "No pending change"]
 fn governance_accept_timelock_without_pending_panics() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1505,7 +1480,7 @@ fn governance_accept_timelock_without_pending_panics() {
 }
 
 #[test]
-#[should_panic = "No pending timelock change"]
+#[should_panic = "No pending change"]
 fn governance_revoke_pending_timelock_then_accept_panics() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1515,8 +1490,8 @@ fn governance_revoke_pending_timelock_then_accept_panics() {
     let cur = c.get_configuration().initial_timelock_ns;
 
     // Force a pending by first increasing then decreasing
-    c.submit_timelock((cur.0 + 1).into());
-    c.submit_timelock(cur);
+    c.submit_timelock((cur.0 + 1).into(), None);
+    c.submit_timelock(cur, None);
 
     // Revoke the pending change; accept must now panic
     c.revoke_pending_timelock();
@@ -1599,20 +1574,23 @@ fn governance_submit_and_revoke_market_removal() {
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
+    let new_ts = env::block_timestamp() + 1_000_000_000;
+    set_ctx(&vault_id, &owner, Some(new_ts), None);
 
-    c.timelock_ns = 1;
     let m = mk(9107);
     let cfg = MarketConfiguration {
         cap: U128(0),
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(m.clone(), cfg.into());
+    let mut rec: MarketRecord = cfg.into();
+    rec.principal = 1;
+    c.markets.insert(m.clone(), rec);
 
-    // Submit removal (schedules timelock)
     c.submit_market_removal(m.clone());
+    c.accept_market_removal(m.clone());
     let after = c.markets.get(&m).unwrap();
-    assert!(after.cfg.removable_at > 0, "removal must be scheduled");
+    assert_eq!(after.cfg.removable_at, new_ts, "removal must be scheduled");
 
     // Revoke pending removal
     c.revoke_pending_market_removal(m.clone());
@@ -1817,7 +1795,6 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal,
         },
     );
@@ -1925,7 +1902,6 @@ fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 100,
         },
     );
@@ -1973,7 +1949,6 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: before,
         },
     );
@@ -2034,7 +2009,6 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 10,
         },
     );
@@ -2084,7 +2058,6 @@ fn refund_path_consistency() {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 10,
         },
     );
@@ -2299,7 +2272,6 @@ fn after_create_withdraw_req_success_returns_promise(
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 100,
         },
     );
@@ -2331,7 +2303,6 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 10,
         },
     );
@@ -2367,7 +2338,6 @@ fn after_exec_withdraw_read_advances_when_remaining(
     let m1 = mk(70);
     let record = MarketRecord {
         cfg: MarketConfiguration::default(),
-        pending_cap: None,
         principal: 10,
     };
     c.markets.insert(m1.clone(), record.clone());
