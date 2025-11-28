@@ -98,10 +98,44 @@ make help     # Show all commands
 
 ## Production Deployment
 
-1. Configure `.env` with production credentials
-2. Fund account with borrow assets for target markets
-3. Test: `DRY_RUN=true make run && make logs`
-4. Deploy: `DRY_RUN=false make prod`
+**📖 For complete deployment guide, see [DEPLOYMENT.md](./DEPLOYMENT.md)**
+
+### Quick Deploy to Cloud Server
+
+```bash
+# 1. Create Ubuntu 24.04 server (Hetzner, DigitalOcean, AWS, etc.)
+#    Minimum: 2 vCPU, 4GB RAM, 40GB SSD
+
+# 2. Initialize server (one-time setup)
+curl -fsSL https://raw.githubusercontent.com/Templar-Protocol/contracts/main/service/liquidator/scripts/init-server.sh | sudo bash
+
+# 3. Configure SSH access from your local machine
+ssh-copy-id liquidator@YOUR_SERVER_IP
+
+# 4. Deploy liquidator
+cd service/liquidator
+./scripts/deploy.sh YOUR_SERVER_IP
+
+# 5. Configure environment
+ssh liquidator@YOUR_SERVER_IP
+cd /opt/templar-liquidator/repo/service/liquidator
+nano .env  # Add your NEAR credentials
+
+# 6. Monitor logs
+docker compose logs -f
+```
+
+### Deployment Scripts
+
+| Script | Purpose |
+|--------|---------|
+| **`scripts/init-server.sh`** | One-time server setup (Docker, users, firewall) |
+| **`scripts/deploy.sh`** | Deploy or update liquidator |
+| **`scripts/setup-loki-grafana.sh`** | Install log monitoring (Grafana + Loki) |
+| **`scripts/run-mainnet.sh`** | Quick local mainnet test |
+| **`scripts/run-testnet.sh`** | Quick local testnet test |
+
+See **[DEPLOYMENT.md](./DEPLOYMENT.md)** for detailed documentation.
 
 ## Building
 
@@ -112,8 +146,13 @@ cargo build --release
 
 ## Documentation
 
-- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Architecture and development guide
-- [.env.example](./.env.example) - Full configuration reference
+- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Complete deployment guide and scripts documentation
+- **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** - Architecture and development guide
+- **[.env.example](./.env.example)** - Full configuration reference
+
+## Architecture
+
+See [IMPLEMENTATION.md](./IMPLEMENTATION.md) for detailed architecture, development guide, and testing instructions.
 
 ## License
 
