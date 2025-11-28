@@ -28,20 +28,16 @@ use near_sdk_contract_tools::owner::OwnerExternal;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
-use templar_common::vault::AllocatingState;
 use templar_common::vault::AllocationDelta;
 use templar_common::vault::Delta;
 use templar_common::vault::DepositMsg;
 use templar_common::vault::Error;
 use templar_common::vault::EscrowSettlement;
-use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
+use templar_common::vault::PendingWithdrawal;
 use templar_common::vault::MAX_TIMELOCK_NS;
-use templar_common::vault::{
-    AllocatingState, Error, MarketConfiguration, Restrictions, WithdrawingState,
-};
-use templar_common::vault::{AllocationMode, DepositMsg};
+use templar_common::vault::{AllocatingState, MarketConfiguration, Restrictions, WithdrawingState};
 
 #[fixture]
 fn vault_id() -> AccountId {
@@ -60,7 +56,7 @@ fn c_owner_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
     let owner = c
         .own_get_owner()
         .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
-    setup_env(&vault_id_fixture, &owner, vec![]);
+    setup_env(&vault_id, &owner, vec![]);
     c
 }
 
@@ -100,7 +96,6 @@ fn c(vault_id: AccountId, #[default(Vec::new())] markets: Vec<MarketFixture>) ->
                     enabled,
                     removable_at: 0,
                 },
-                pending_cap: None,
                 principal,
             },
         );
@@ -388,7 +383,6 @@ fn reallocate_withdraw_insufficient_principal_panics() {
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 0,
         },
     );
@@ -408,7 +402,6 @@ fn reallocate_withdraw_zero_amount_panics() {
     let m = mk(9202);
     let rec = MarketRecord {
         cfg: MarketConfiguration::default(),
-        pending_cap: None,
         principal: 0,
     };
     c.markets.insert(m.clone(), rec.clone());
@@ -429,7 +422,6 @@ fn reallocate_withdraw_returns_promise_and_does_not_mutate() {
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 40,
         },
     );
@@ -2604,9 +2596,9 @@ fn cancel_in_flight_withdrawal_refunds_and_dequeues() {
         c.next_withdraw_to_execute,
         id_before.saturating_add(1),
         "head should advance by one"
-        );
-        }
-        #[test]
+    );
+}
+#[test]
 fn no_fee_returns_zero() {
     assert_eq!(
         compute_fee_shares(1_000.into(), 900.into(), Wad::zero(), 1_000.into()),
@@ -2851,6 +2843,7 @@ fn fee_shares_upper_bound_by_total_supply(fee: Wad, ts: Number, last: Number, pr
     let cur = last.saturating_add(profit);
     let minted = compute_fee_shares(cur, last, fee, ts);
     assert!(minted <= ts || ts.is_zero());
+}
 
 #[test]
 fn peek_next_pending_withdrawal_id_empty_returns_none() {

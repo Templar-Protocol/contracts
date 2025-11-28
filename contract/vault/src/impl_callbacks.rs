@@ -3,10 +3,7 @@
 use core::cmp::Ordering;
 use std::fmt::Display;
 
-use crate::{
-    governance::Gate, near, Contract, ContractExt, Error, EscrowSettlement, Nep141Controller,
-    OpState,
-};
+use crate::{governance::Gate, near, Contract, ContractExt, Error, Nep141Controller, OpState};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{env, json_types::U128, AccountId, Gas, NearToken, PromiseError, PromiseOrValue};
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};

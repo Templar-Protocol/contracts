@@ -42,9 +42,15 @@ async fn state_machine_is_locked_when_another_op_is_running(
     let amount = 1000;
     vault.supply(&supply_user, amount).await;
 
-    futures::future::select_all(
-        (0..100).map(|_| Box::pin(vault.allocate(&vault_owner, vec![], Some(1.into())))),
-    )
+    futures::future::select_all((0..100).map(|_| {
+        Box::pin(vault.allocate(
+            &vault_owner,
+            AllocationDelta::Supply(Delta::new(
+                vault.market.market.contract().id().clone(),
+                U128(1),
+            )),
+        ))
+    }))
     .await;
 }
 

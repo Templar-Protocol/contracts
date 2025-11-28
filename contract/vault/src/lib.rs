@@ -1,10 +1,5 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    num::NonZeroU8,
-};
-
 use crate::{
     aum::AUM,
     governance::Abdicator,
@@ -40,11 +35,10 @@ use templar_common::{
     market::ext_market,
     vault::{
         require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
-        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingValue,
-        PendingWithdrawal, QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration,
-        WithdrawingState, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
-        WITHDRAW_GAS,
+        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
+        QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration, WithdrawingState,
+        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
