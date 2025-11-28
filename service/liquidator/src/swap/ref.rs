@@ -18,7 +18,6 @@ use near_sdk::{
     AccountId, Gas,
 };
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
-use tracing::{debug, info};
 
 use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
 
@@ -167,7 +166,7 @@ impl RefSwap {
                                 && pool.token_account_ids[1] == *token_in))
                         && pool.shares_total_supply != "0"
                     {
-                        info!(pool_id, "Found direct pool");
+                        tracing::info!(pool_id, "Found direct pool");
                         return Ok(Some(pool_id));
                     }
                 }
@@ -176,7 +175,7 @@ impl RefSwap {
             }
         }
 
-        info!(
+        tracing::info!(
             token_in = %token_in,
             token_out = %token_out,
             "No direct pool found after scanning common ranges"
@@ -186,6 +185,7 @@ impl RefSwap {
 
     /// Finds a two-hop route through wNEAR by querying the contract.
     /// Returns (`pool1_id`, `pool2_id`) if found.
+    #[allow(clippy::too_many_lines)]
     async fn find_two_hop_route(
         &self,
         token_in: &AccountId,
@@ -273,7 +273,7 @@ impl RefSwap {
                                     && pool.token_account_ids[1] == *token_in))
                         {
                             pool1_opt = Some(pool_id);
-                            info!(pool_id, "Found pool1: {} -> wNEAR", token_in);
+                            tracing::info!(pool_id, "Found pool1: {} -> wNEAR", token_in);
                         }
 
                         // Check for pool2: wNEAR -> token_out
@@ -284,12 +284,16 @@ impl RefSwap {
                                     && pool.token_account_ids[1] == self.wnear_contract))
                         {
                             pool2_opt = Some(pool_id);
-                            info!(pool_id, "Found pool2: wNEAR -> {}", token_out);
+                            tracing::info!(pool_id, "Found pool2: wNEAR -> {}", token_out);
                         }
 
                         // If we found both pools, we're done
                         if let (Some(p1), Some(p2)) = (pool1_opt, pool2_opt) {
-                            info!(pool1 = p1, pool2 = p2, "Found two-hop route through wNEAR");
+                            tracing::info!(
+                                pool1 = p1,
+                                pool2 = p2,
+                                "Found two-hop route through wNEAR"
+                            );
                             return Ok(Some((p1, p2)));
                         }
                     }
@@ -299,7 +303,7 @@ impl RefSwap {
             }
         }
 
-        info!(
+        tracing::info!(
             token_in = %token_in,
             token_out = %token_out,
             wnear = %self.wnear_contract,
@@ -370,7 +374,7 @@ impl SwapProvider for RefSwap {
         let token_in_owned: AccountId = token_in.into();
         let token_out_owned: AccountId = token_out.into();
 
-        info!(
+        tracing::info!(
             from_contract = %token_in_owned,
             to_contract = %token_out_owned,
             amount = %amount,
@@ -388,7 +392,7 @@ impl SwapProvider for RefSwap {
             let min_amount_out =
                 U128::from(amount_u128 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
 
-            debug!(
+            tracing::debug!(
                 pool_id,
                 min_amount_out = %min_amount_out.0,
                 slippage_bps = self.max_slippage_bps,
@@ -422,7 +426,7 @@ impl SwapProvider for RefSwap {
             let min_amount_out =
                 U128::from(amount_u128 * (10000 - u128::from(self.max_slippage_bps)) / 10000);
 
-            debug!(
+            tracing::debug!(
                 pool1,
                 pool2,
                 min_amount_out = %min_amount_out.0,
@@ -485,7 +489,7 @@ impl SwapProvider for RefSwap {
 
         let outcome = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx).await?;
 
-        info!("Ref Finance swap executed successfully");
+        tracing::info!("Ref Finance swap executed successfully");
 
         Ok(outcome.status)
     }
@@ -518,7 +522,7 @@ impl SwapProvider for RefSwap {
         )
         .await
         .map_err(|e| {
-            debug!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
+            tracing::debug!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
             AppError::Rpc(e)
         })?;
 
@@ -534,7 +538,7 @@ impl SwapProvider for RefSwap {
         #[allow(clippy::cast_precision_loss)]
         let min_deposit_near = min_deposit as f64 / 1e24;
 
-        debug!(
+        tracing::debug!(
             token = %token_contract.contract_id(),
             min_deposit_near = %min_deposit_near,
             "Using storage deposit minimum from contract"
@@ -568,7 +572,7 @@ impl SwapProvider for RefSwap {
 
         match send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx).await {
             Ok(_) => {
-                debug!(
+                tracing::debug!(
                     account = %account_id,
                     token = %token_contract.contract_id(),
                     "Storage registration successful"
@@ -580,7 +584,7 @@ impl SwapProvider for RefSwap {
                 let error_msg = e.to_string();
                 if error_msg.contains("The account") && error_msg.contains("is already registered")
                 {
-                    debug!(
+                    tracing::debug!(
                         account = %account_id,
                         token = %token_contract.contract_id(),
                         "Account already registered"

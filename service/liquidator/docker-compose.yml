@@ -2,7 +2,7 @@ services:
   liquidator:
     build:
       context: ../..
-      dockerfile: bots/liquidator/Dockerfile
+      dockerfile: service/liquidator/Dockerfile
     image: templar-liquidator:latest
     container_name: templar-liquidator
     restart: unless-stopped
@@ -22,16 +22,19 @@ services:
       "--signer-key", "${SIGNER_KEY}",
       "--registries", "${REGISTRY_ACCOUNT_IDS:-v1.tmplr.near}",
       "--liquidation-strategy", "${LIQUIDATION_STRATEGY:-partial}",
-      "--partial-percentage", "${PARTIAL_PERCENTAGE:-50}",
+      "--partial-percentage", "${PARTIAL_LIQUIDATION_PERCENTAGE:-50}",
       "--min-profit-bps", "${MIN_PROFIT_BPS:-50}",
       "--liquidation-scan-interval", "${LIQUIDATION_SCAN_INTERVAL:-600}",
       "--registry-refresh-interval", "${REGISTRY_REFRESH_INTERVAL:-3600}",
       "--concurrency", "${CONCURRENCY:-10}",
       "--transaction-timeout", "${TRANSACTION_TIMEOUT:-60}",
       "--collateral-strategy", "${COLLATERAL_STRATEGY:-hold}",
+      "--max-loop-iterations", "${MAX_LOOP_ITERATIONS:-10}",
+      # Uncomment to enable loop liquidation (repeatedly liquidate until healthy):
+      # "--loop-liquidation",
+      # "--fixed-liquidation-amount", "${FIXED_LIQUIDATION_AMOUNT}",
       # "--oneclick-api-token", "${ONECLICK_API_TOKEN}",
       # "--ref-contract", "${REF_CONTRACT:-v2.ref-finance.near}",
-      # "--primary-asset", "${PRIMARY_ASSET}",
       "--dry-run"
     ]
 

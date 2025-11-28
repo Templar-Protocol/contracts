@@ -14,7 +14,6 @@ use templar_common::{
         pyth::{OracleResponse, PriceIdentifier},
     },
 };
-use tracing::{debug, info, warn};
 
 use crate::{
     rpc::{view, RpcError},
@@ -58,14 +57,14 @@ impl OracleFetcher {
             view(&self.client, oracle.clone(), "oracle_id", json!({})).await;
 
         let result = if let Ok(underlying) = underlying_oracle {
-            debug!(
+            tracing::debug!(
                 oracle = %oracle,
                 underlying = %underlying,
                 "Detected LST oracle"
             );
             Some(underlying)
         } else {
-            debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
+            tracing::debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
             None
         };
 
@@ -92,7 +91,7 @@ impl OracleFetcher {
     ) -> LiquidatorResult<OracleResponse> {
         // Check if this is an LST oracle upfront
         if let Some(underlying_oracle) = self.is_lst_oracle(&oracle).await? {
-            debug!(
+            tracing::debug!(
                 oracle = %oracle,
                 underlying = %underlying_oracle,
                 "Using LST oracle approach with transformers"
@@ -115,12 +114,12 @@ impl OracleFetcher {
             Ok(response) => Ok(response),
             Err(e) => {
                 let error_msg = format!("{e:?}");
-                debug!("First oracle call failed for {}: {}", oracle, error_msg);
+                tracing::debug!("First oracle call failed for {}: {}", oracle, error_msg);
 
                 // If method not found, try the standard method with age validation
                 if error_msg.contains("MethodNotFound") || error_msg.contains("MethodResolveError")
                 {
-                    debug!(
+                    tracing::debug!(
                         "Oracle {} doesn't support list_ema_prices_unsafe, trying list_ema_prices_no_older_than",
                         oracle
                     );
@@ -134,7 +133,7 @@ impl OracleFetcher {
                     .await
                     {
                         Ok(response) => {
-                            info!(
+                            tracing::info!(
                                 "Successfully fetched prices from {} using list_ema_prices_no_older_than",
                                 oracle
                             );
@@ -158,7 +157,7 @@ impl OracleFetcher {
         age: u32,
         underlying_oracle: AccountId,
     ) -> LiquidatorResult<OracleResponse> {
-        info!(
+        tracing::info!(
             oracle = %lst_oracle,
             underlying = %underlying_oracle,
             "Fetching LST oracle prices with transformers"
@@ -178,7 +177,7 @@ impl OracleFetcher {
             .await
             {
                 Ok(Some(transformer)) => {
-                    debug!(
+                    tracing::debug!(
                         price_id = ?price_id,
                         underlying_id = ?transformer.price_id,
                         "Found price transformer"
@@ -187,11 +186,11 @@ impl OracleFetcher {
                     transformers.insert(price_id, transformer);
                 }
                 Ok(None) => {
-                    debug!(price_id = ?price_id, "No transformer, using price ID as-is");
+                    tracing::debug!(price_id = ?price_id, "No transformer, using price ID as-is");
                     underlying_price_ids.push(price_id);
                 }
                 Err(e) => {
-                    warn!(
+                    tracing::warn!(
                         price_id = ?price_id,
                         error = %e,
                         "Failed to get transformer, skipping market"
@@ -201,7 +200,7 @@ impl OracleFetcher {
             }
         }
 
-        debug!(
+        tracing::debug!(
             underlying_oracle = %underlying_oracle,
             underlying_price_ids = ?underlying_price_ids,
             "Fetching prices from underlying Pyth oracle"
@@ -213,7 +212,7 @@ impl OracleFetcher {
                 .await?;
 
         if underlying_prices.is_empty() {
-            warn!("Underlying oracle returned no prices, skipping market");
+            tracing::warn!("Underlying oracle returned no prices, skipping market");
             return Ok(HashMap::new());
         }
 
@@ -231,13 +230,13 @@ impl OracleFetcher {
                         if let Some(transformed_price) =
                             transformer.action.apply(underlying_price, input)
                         {
-                            debug!(
+                            tracing::debug!(
                                 price_id = ?original_price_id,
                                 "Successfully transformed price"
                             );
                             final_prices.insert(original_price_id, Some(transformed_price));
                         } else {
-                            warn!(
+                            tracing::warn!(
                                 price_id = ?original_price_id,
                                 "Price transformation returned None"
                             );
@@ -245,7 +244,7 @@ impl OracleFetcher {
                         }
                     }
                     Err(e) => {
-                        warn!(
+                        tracing::warn!(
                             price_id = ?original_price_id,
                             error = %e,
                             "Failed to fetch transformer input"
@@ -254,7 +253,7 @@ impl OracleFetcher {
                     }
                 }
             } else {
-                warn!(
+                tracing::warn!(
                     price_id = ?original_price_id,
                     underlying_id = ?transformer.price_id,
                     "Underlying price not found in oracle response"
@@ -272,7 +271,7 @@ impl OracleFetcher {
             }
         }
 
-        info!(
+        tracing::info!(
             oracle = %lst_oracle,
             price_count = final_prices.len(),
             "Successfully fetched and transformed LST oracle prices"

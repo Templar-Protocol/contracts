@@ -14,8 +14,8 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! use templar_bots::swap::{SwapProvider, RefSwap};
+//! ```ignore
+//! use templar_liquidator::swap::{SwapProvider, RefSwap};
 //! use near_jsonrpc_client::JsonRpcClient;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
