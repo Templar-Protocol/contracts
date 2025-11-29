@@ -21,7 +21,8 @@ use templar_universal_account::{
         HashForSigning, MessageWithSignature, Payload,
     },
     transaction::{FunctionCallAction, Transaction},
-    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
+    ExecuteArgs, ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters,
+    NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::{
     controller::universal_account::UniversalAccountController, worker, ContractController,
@@ -91,10 +92,11 @@ impl TestSigner {
                     },
                 );
 
-                ExecuteArgs::Passkey {
+                ExecuteArgsMessage {
                     key: Passkey(secret_key.public_key().into()),
-                    message: Box::new(message),
+                    mws: Box::new(message),
                 }
+                .into()
             }
             TestSigner::Ed25519Raw(signing_key) => {
                 let message = ed25519_raw::Message(payload);
@@ -102,20 +104,22 @@ impl TestSigner {
                     .sign(&message.preimage_for_signing())
                     .to_bytes()
                     .into();
-                let message = MessageWithSignature { message, signature };
+                let message = message.with_signature(signature);
 
-                ExecuteArgs::Ed25519Raw {
+                ExecuteArgsMessage {
                     key: ed25519_raw::VerifyKey(signing_key.verifying_key().to_bytes().into()),
-                    message: Box::new(message),
+                    mws: Box::new(message),
                 }
+                .into()
             }
             TestSigner::Eip712(key) => {
                 let message = eip712::Message(payload);
                 let mws = message.sign(key);
-                ExecuteArgs::Eip712 {
+                ExecuteArgsMessage {
                     key: eip712::VerifyKey(key.address().into()),
-                    message: Box::new(mws),
+                    mws: Box::new(mws),
                 }
+                .into()
             }
         }
     }

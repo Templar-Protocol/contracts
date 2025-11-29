@@ -44,7 +44,7 @@ impl<T> Key<Message<T>> for Passkey {
         mws: &super::MessageWithSignature<Message<T>>,
     ) -> Result<(), CheckSignatureError> {
         if mws.message.hash_for_signing()
-            != mws.signature.client_data_json.parsed.challenge.as_slice()
+            != mws.auxiliary.client_data_json.parsed.challenge.as_slice()
         {
             return Err(CheckSignatureError::Other(
                 "Computed hash does not match clientDataJSON.challenge".into(),
@@ -52,12 +52,12 @@ impl<T> Key<Message<T>> for Passkey {
         }
 
         let payload_prehash = sig_base(
-            &mws.signature.authenticator_data,
-            &mws.signature.client_data_json,
+            &mws.auxiliary.authenticator_data,
+            &mws.auxiliary.client_data_json,
         );
 
         if VerifyingKey::from(*self.0)
-            .verify(&payload_prehash, &*mws.signature.signature)
+            .verify(&payload_prehash, &*mws.signature)
             .is_ok()
         {
             Ok(())
@@ -74,7 +74,8 @@ pub struct Message<T>(pub WithRawString<Payload<T>>);
 
 impl<T> super::SignableMessage for Message<T> {
     type Key = Passkey;
-    type Signature = PasskeySignatureData;
+    type Signature = Signature;
+    type Auxiliary = PasskeySignatureData;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -82,7 +83,6 @@ impl<T> super::SignableMessage for Message<T> {
 pub struct PasskeySignatureData {
     pub authenticator_data: AuthenticatorData,
     pub client_data_json: WithRawString<ClientDataJson>,
-    pub signature: Signature,
 }
 
 impl<T> Message<T> {
@@ -106,10 +106,10 @@ impl<T> Message<T> {
 
         MessageWithSignature {
             message: self,
-            signature: PasskeySignatureData {
+            signature,
+            auxiliary: PasskeySignatureData {
                 authenticator_data,
                 client_data_json,
-                signature,
             },
         }
     }
@@ -131,7 +131,7 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<Message<P>> {
     }
 
     fn origin(&self) -> Option<&str> {
-        Some(self.0.signature.client_data_json.parsed.origin.as_str())
+        Some(self.0.auxiliary.client_data_json.parsed.origin.as_str())
     }
 }
 

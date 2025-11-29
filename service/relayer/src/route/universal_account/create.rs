@@ -24,7 +24,7 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         MessageWithSignature,
     },
-    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
+    ExecuteArgs, ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters,
 };
 
 use crate::{
@@ -153,17 +153,18 @@ pub async fn create(
                 .payload_unchecked()
                 .key
                 .clone();
-            let exec_args = ExecuteArgs::Passkey {
+            let exec_args: ExecuteArgs<_> = ExecuteArgsMessage {
                 key: key_inner.clone(),
-                message: Box::new(MessageWithSignature {
+                mws: Box::new(MessageWithSignature {
                     message: mws.message,
-                    signature: PasskeySignatureData {
+                    signature: mws.signature,
+                    auxiliary: PasskeySignatureData {
                         authenticator_data: mws.authenticator_data,
                         client_data_json: mws.client_data_json,
-                        signature: mws.signature,
                     },
                 }),
-            };
+            }
+            .into();
 
             let m = match exec_args.verify(
                 &PayloadExecutionParameters::new_auto(
@@ -413,10 +414,13 @@ mod tests {
             Box::new(m.with_signature(signature.into()))
         };
 
-        let cr = CreateRequest::ExecuteArgs(ExecuteArgs::Ed25519Raw {
-            key: pubkey.clone(),
-            message: message.clone(),
-        });
+        let cr = CreateRequest::ExecuteArgs(
+            ExecuteArgsMessage {
+                key: pubkey.clone(),
+                mws: message.clone(),
+            }
+            .into(),
+        );
 
         eprintln!("{cr:?}");
         eprintln!("{}", near_sdk::serde_json::to_string_pretty(&cr).unwrap());
@@ -428,7 +432,11 @@ mod tests {
 
         let original_message = message;
 
-        let CreateRequest::ExecuteArgs(ExecuteArgs::Ed25519Raw { key, message }) = parsed else {
+        let CreateRequest::ExecuteArgs(ExecuteArgs::Ed25519Raw(ExecuteArgsMessage {
+            key,
+            mws: message,
+        })) = parsed
+        else {
             panic!("invalid parse");
         };
 
@@ -441,39 +449,42 @@ mod tests {
         let keypair = p256::SecretKey::random(&mut OsRng);
         let pubkey = Passkey(keypair.public_key().into());
 
-        let cr = CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
-            key: pubkey.clone(),
-            message: {
-                let m = passkey::Message::from_parsed(Payload::new(
-                    PayloadExecutionParameters::new_auto(
-                        "my-universal-account.near".parse().unwrap(),
-                        KeyParameters::default(),
-                        NEAR_TESTNET_CHAIN_ID,
-                    ),
-                    Pow::mine(
-                        CreateUniversalAccount {
-                            key: pubkey.into(),
-                            block_hash: CryptoHash([0u8; 32]),
+        let cr = CreateRequest::ExecuteArgs(
+            ExecuteArgsMessage {
+                key: pubkey.clone(),
+                mws: {
+                    let m = passkey::Message::from_parsed(Payload::new(
+                        PayloadExecutionParameters::new_auto(
+                            "my-universal-account.near".parse().unwrap(),
+                            KeyParameters::default(),
+                            NEAR_TESTNET_CHAIN_ID,
+                        ),
+                        Pow::mine(
+                            CreateUniversalAccount {
+                                key: pubkey.into(),
+                                block_hash: CryptoHash([0u8; 32]),
+                            },
+                            2,
+                            10_000,
+                        )
+                        .unwrap(),
+                    ));
+                    let challenge = m.hash_for_signing().into();
+                    Box::new(m.sign(
+                        &keypair,
+                        passkey::data::AuthenticatorData([1u8; 32].into()),
+                        passkey::data::ClientDataJson {
+                            r#type: "type".to_string(),
+                            challenge,
+                            origin: "origin".to_string(),
+                            cross_origin: None,
+                            top_origin: None,
                         },
-                        2,
-                        10_000,
-                    )
-                    .unwrap(),
-                ));
-                let challenge = m.hash_for_signing().into();
-                Box::new(m.sign(
-                    &keypair,
-                    passkey::data::AuthenticatorData([1u8; 32].into()),
-                    passkey::data::ClientDataJson {
-                        r#type: "type".to_string(),
-                        challenge,
-                        origin: "origin".to_string(),
-                        cross_origin: None,
-                        top_origin: None,
-                    },
-                ))
-            },
-        });
+                    ))
+                },
+            }
+            .into(),
+        );
 
         eprintln!("{cr:?}");
         eprintln!("{}", near_sdk::serde_json::to_string_pretty(&cr).unwrap());
@@ -502,5 +513,37 @@ mod tests {
             }"#;
 
         let _: CreateRequest = serde_json::from_str(old).unwrap();
+    }
+
+    #[test]
+    fn parse_passkey_format() {
+        let s = r#"{
+          "Passkey": {
+            "key": "p256:P4c7jb4V1teuCyv73qfVgN1WcaJVAeCzQnkoxu5YHq1bwuPA5tuUCGRwja7hzsAUum5wtGHHK4XBC6PXHKr6naYh",
+            "message": {
+              "authenticator_data": "0101010101010101010101010101010101010101010101010101010101010101",
+              "message": "{\"parameters\":{\"block_height\":\"0\",\"index\":\"0\",\"nonce\":\"0\"},\"account_id\":\"my-universal-account.near\",\"payload\":{\"pow_nonce\":\"1\",\"key\":{\"Passkey\":\"p256:P4c7jb4V1teuCyv73qfVgN1WcaJVAeCzQnkoxu5YHq1bwuPA5tuUCGRwja7hzsAUum5wtGHHK4XBC6PXHKr6naYh\"},\"block_hash\":\"11111111111111111111111111111111\"}}",
+              "client_data_json": "{\"type\":\"type\",\"challenge\":\"3At7GUHxL-iY9xFau_22Gj3wdrwF-CposghU3ymMk-Q\",\"origin\":\"origin\",\"crossOrigin\":null,\"topOrigin\":null}",
+              "signature": "MEYCIQCeoz4IlQC0AmVqdUqr8KWhGw83RZ7tPAojhYbtNnpS3AIhAICzyzaaE_ZK-KUihjuHdYplsLSvVWHGi8fyYGu4I4m3"
+            }
+          }
+        }"#;
+
+        let _: CreateRequest = serde_json::from_str(s).unwrap();
+    }
+
+    #[test]
+    fn parse_ed25519_raw_format() {
+        let s = r#"{
+          "Ed25519Raw": {
+            "key": "ed25519:73B9bxzgHd7xskqX4Q2qGUZgY563JdrFwit12AYr8A2M",
+            "message": {
+              "message": "{\"parameters\":{\"block_height\":\"0\",\"index\":\"0\",\"nonce\":\"0\"},\"account_id\":\"my-universal-account.near\",\"payload\":{\"pow_nonce\":\"4\",\"key\":{\"Ed25519RawKey\":\"ed25519:73B9bxzgHd7xskqX4Q2qGUZgY563JdrFwit12AYr8A2M\"},\"block_hash\":\"11111111111111111111111111111111\"}}",
+              "signature": "ed25519:2S44PvfeEq68pJzQYNtUbnwfo5rWKr37ZBpKGijJaAm8AdrhXLQLEprw3e5DUCeK7tHRKFUrfXfeYcWU3ciysf5R"
+            }
+          }
+        }"#;
+
+        let _: CreateRequest = serde_json::from_str(s).unwrap();
     }
 }

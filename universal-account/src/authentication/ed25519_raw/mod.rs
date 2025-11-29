@@ -27,6 +27,7 @@ pub struct Message<T>(pub WithRawString<Payload<T>>);
 impl<T> super::SignableMessage for Message<T> {
     type Key = VerifyKey;
     type Signature = encoding::ed25519::Signature;
+    type Auxiliary = ();
 }
 
 impl<T: near_sdk::serde::Serialize> Message<T> {
@@ -41,6 +42,7 @@ impl<T: near_sdk::serde::Serialize> Message<T> {
         MessageWithSignature {
             message: self,
             signature,
+            auxiliary: (),
         }
     }
 }
@@ -143,6 +145,7 @@ mod tests {
         let message = MessageWithSignature {
             message,
             signature: sol_sig.into(),
+            auxiliary: (),
         };
 
         let key = VerifyKey((*keypair.pubkey().as_array()).into());
@@ -186,6 +189,7 @@ mod tests {
                 "Hello, world!",
             ))),
             signature: sol_sig.into(),
+            auxiliary: (),
         };
 
         key.verify_signature(mws).unwrap();

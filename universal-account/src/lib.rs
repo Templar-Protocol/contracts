@@ -1,14 +1,7 @@
 use alloy::{primitives::U256, sol_types::Eip712Domain};
-use authentication::{
-    ed25519_raw, eip712,
-    passkey::{self, Passkey},
-    CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
-};
 use near_sdk::{
     json_types::{Base58CryptoHash, U64},
-    near,
-    serde::{self, de::DeserializeOwned},
-    CryptoHash,
+    near, CryptoHash,
 };
 
 pub const NEAR_MAINNET_CHAIN_ID: u128 = 397;
@@ -18,6 +11,8 @@ pub mod authentication;
 pub mod encoding;
 mod event;
 pub use event::Event;
+mod execute_args;
+pub use execute_args::*;
 pub mod init_args;
 pub use init_args::InitArgs;
 pub mod key_id;
@@ -221,90 +216,13 @@ impl KeyParameters {
     }
 }
 
-#[derive(Debug, Clone)]
-#[near(serializers = [json])]
-#[serde(bound = "T: DeserializeOwned")]
-pub enum ExecuteArgs<T: serde::Serialize> {
-    Passkey {
-        key: Passkey,
-        message: Box<MessageWithSignature<passkey::Message<T>>>,
-    },
-    Ed25519Raw {
-        key: ed25519_raw::VerifyKey,
-        message: Box<MessageWithSignature<ed25519_raw::Message<T>>>,
-    },
-    Eip712 {
-        key: eip712::VerifyKey,
-        message: Box<MessageWithSignature<eip712::Message<T>>>,
-    },
-}
-
-#[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
-pub enum VerificationError {
-    #[error(transparent)]
-    Signature(#[from] CheckSignatureError),
-    #[error(transparent)]
-    Execution(#[from] ExecutionError),
-}
-
-impl<T: serde::Serialize> ExecuteArgs<T> {
-    pub fn key_id(&self) -> KeyId {
-        match self {
-            Self::Passkey { key, .. } => KeyId::Passkey(key.clone()),
-            Self::Ed25519Raw { key, .. } => KeyId::Ed25519RawKey(key.clone()),
-            Self::Eip712 { key, .. } => KeyId::Eip712(key.clone()),
-        }
-    }
-
-    pub fn message_unchecked(&self) -> &T {
-        match self {
-            Self::Passkey { message, .. } => message.message.0.parsed.payload_ref(),
-            Self::Ed25519Raw { message, .. } => message.message.0.parsed.payload_ref(),
-            Self::Eip712 { message, .. } => message.message.0.parsed.payload_ref(),
-        }
-    }
-
-    /// # Errors
-    ///
-    /// - If signature verification fails
-    /// - If execution parameters do not match
-    pub fn verify(
-        self,
-        parameters: &PayloadExecutionParameters,
-        allowed_origin: impl FnOnce(Option<&str>) -> bool,
-    ) -> Result<T, VerificationError> {
-        Ok(match self {
-            ExecuteArgs::Passkey { key, message } => key
-                .verify_signature(*message)?
-                .verify_execution(parameters, allowed_origin)?,
-            ExecuteArgs::Ed25519Raw { key, message } => key
-                .verify_signature(*message)?
-                .verify_execution(parameters, allowed_origin)?,
-            ExecuteArgs::Eip712 { key, message } => key
-                .verify_signature(*message)?
-                .verify_execution(parameters, allowed_origin)?,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use alloy::signers::local::PrivateKeySigner;
-    use authentication::{
-        ed25519_raw,
-        passkey::{
-            self,
-            data::{AuthenticatorData, ClientDataJson},
-        },
-        HashForSigning, Payload,
-    };
-    use near_sdk::{bs58, AccountId, NearToken};
+    use near_sdk::bs58;
     use p256::elliptic_curve::rand_core::OsRng;
-    use rstest::rstest;
     use solana_sdk::{signature::Keypair, signer::Signer};
-    use transaction::Transaction;
+
+    use crate::authentication::{ed25519_raw, passkey::Passkey};
 
     use super::*;
 
@@ -333,143 +251,5 @@ mod tests {
 
         let b = bs58::decode(b).into_vec().unwrap();
         assert_eq!(b.len(), 32);
-    }
-
-    fn payload() -> Payload<Box<[Transaction]>> {
-        let payload = vec![Transaction {
-            receiver_id: "token.near".parse().unwrap(),
-            actions: vec![transaction::FunctionCallAction::new(
-                "ft_transfer",
-                br#"{"receiver_id":"receiver.near","amount":"100"}"#,
-                NearToken::from_yoctonear(1),
-                near_sdk::Gas::from_tgas(30),
-            )
-            .into()]
-            .into_boxed_slice(),
-        }]
-        .into_boxed_slice();
-
-        Payload::new(
-            PayloadExecutionParameters::new_auto(
-                "my-universal-account.near".parse().unwrap(),
-                KeyParameters {
-                    block_height: U64(12345),
-                    index: U64(1),
-                    nonce: U64(44),
-                },
-                NEAR_TESTNET_CHAIN_ID,
-            ),
-            payload,
-        )
-    }
-
-    fn eip712_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
-        let sk = PrivateKeySigner::random();
-
-        let message = eip712::Message::from_parsed(payload());
-
-        let signed_message = message.sign(&sk);
-
-        ExecuteArgs::Eip712 {
-            key: eip712::VerifyKey(sk.address().into()),
-            message: Box::new(signed_message),
-        }
-    }
-
-    fn ed25519_raw_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
-        let sk = Keypair::new();
-
-        let message = ed25519_raw::Message::from_parsed(payload());
-        let preimage = message.preimage_for_signing();
-        let signed_message = message.with_signature(sk.sign_message(&preimage).into());
-
-        ExecuteArgs::Ed25519Raw {
-            key: ed25519_raw::VerifyKey(sk.pubkey().to_bytes().into()),
-            message: Box::new(signed_message),
-        }
-    }
-
-    fn passkey_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
-        let sk = p256::SecretKey::random(&mut OsRng);
-
-        let message = passkey::Message::from_parsed(payload());
-        let hash = message.hash_for_signing();
-        let signed_message: MessageWithSignature<_> = message.sign(
-            &sk,
-            AuthenticatorData(vec![1u8; 32].into_boxed_slice()),
-            ClientDataJson {
-                r#type: "type".to_string(),
-                challenge: hash.into(),
-                origin: "origin".to_string(),
-                cross_origin: None,
-                top_origin: None,
-            },
-        );
-
-        ExecuteArgs::Passkey {
-            key: Passkey(sk.public_key().into()),
-            message: Box::new(signed_message),
-        }
-    }
-
-    #[rstest]
-    #[case("my-universal-account.near", 12345, 1, 44)]
-    #[should_panic = r#"Execution(Mismatch { field: "verifying_contract", expected: "my-universal-account.nearx", actual: "my-universal-account.near" })"#]
-    #[case("my-universal-account.nearx", 12345, 1, 44)]
-    #[should_panic = r#"Execution(Mismatch { field: "block_height", expected: "12346", actual: "12345" })"#]
-    #[case("my-universal-account.near", 12346, 1, 44)]
-    #[should_panic = r#"Execution(Mismatch { field: "index", expected: "0", actual: "1" })"#]
-    #[case("my-universal-account.near", 12345, 0, 44)]
-    #[should_panic = r#"Execution(Mismatch { field: "nonce", expected: "45", actual: "44" })"#]
-    #[case("my-universal-account.near", 12345, 1, 45)]
-    #[test]
-    fn verify(
-        #[values(
-            passkey_execute_args(),
-            ed25519_raw_execute_args(),
-            eip712_execute_args()
-        )]
-        exec_args: ExecuteArgs<Box<[Transaction]>>,
-        #[case] executor_account_id: AccountId,
-        #[case] block_height: u64,
-        #[case] index: u64,
-        #[case] nonce: u64,
-    ) {
-        exec_args
-            .verify(
-                &PayloadExecutionParameters::new_auto(
-                    executor_account_id,
-                    KeyParameters {
-                        block_height: U64(block_height),
-                        index: U64(index),
-                        nonce: U64(nonce),
-                    },
-                    NEAR_TESTNET_CHAIN_ID,
-                ),
-                |_| true,
-            )
-            .unwrap();
-    }
-
-    #[rstest]
-    #[case("origin")]
-    #[should_panic = "Execution(OriginUnknown)"]
-    #[case("origin2")]
-    #[test]
-    fn verify_origin(#[case] allowed_origin: &str) {
-        passkey_execute_args()
-            .verify(
-                &PayloadExecutionParameters::new_auto(
-                    AccountId::from_str("my-universal-account.near").unwrap(),
-                    KeyParameters {
-                        block_height: U64(12345),
-                        index: U64(1),
-                        nonce: U64(44),
-                    },
-                    NEAR_TESTNET_CHAIN_ID,
-                ),
-                |o| o == Some(allowed_origin),
-            )
-            .unwrap();
     }
 }

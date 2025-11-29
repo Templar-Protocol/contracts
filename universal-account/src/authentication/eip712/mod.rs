@@ -40,6 +40,7 @@ impl<T> Message<T> {
 impl<T: serde::Serialize> SignableMessage for Message<T> {
     type Key = VerifyKey;
     type Signature = encoding::ethereum::Signature;
+    type Auxiliary = ();
 }
 
 impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
@@ -96,6 +97,7 @@ impl<T: serde::Serialize> Message<T> {
         MessageWithSignature {
             message: self,
             signature: signature.into(),
+            auxiliary: (),
         }
     }
 }

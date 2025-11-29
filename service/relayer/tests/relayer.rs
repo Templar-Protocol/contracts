@@ -48,7 +48,7 @@ use templar_universal_account::{
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
-    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
+    ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::*;
 
@@ -298,10 +298,13 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
-            key: passkey.clone(),
-            message: Box::new(message),
-        })),
+        Json(CreateRequest::ExecuteArgs(
+            ExecuteArgsMessage {
+                key: passkey.clone(),
+                mws: Box::new(message),
+            }
+            .into(),
+        )),
     )
     .await;
 
@@ -361,10 +364,11 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),
@@ -423,10 +427,11 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),
@@ -553,10 +558,13 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::ExecuteArgs(ExecuteArgs::Passkey {
-            key: passkey.clone(),
-            message: Box::new(message),
-        })),
+        Json(CreateRequest::ExecuteArgs(
+            ExecuteArgsMessage {
+                key: passkey.clone(),
+                mws: Box::new(message),
+            }
+            .into(),
+        )),
     )
     .await;
 
@@ -622,10 +630,11 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),
@@ -685,10 +694,11 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey_2.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),

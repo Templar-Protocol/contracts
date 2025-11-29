@@ -5,7 +5,9 @@ use crate::{KeyParameters, PayloadExecutionParameters};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
+#[serde(tag = "version")]
 pub enum Payload<T> {
+    #[serde(rename = "1")]
     V1(PayloadV1<T>),
     #[serde(untagged)]
     V0(PayloadV0<T>),

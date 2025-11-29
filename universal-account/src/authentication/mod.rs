@@ -1,4 +1,10 @@
-use near_sdk::{near, serde_json};
+use std::fmt::Debug;
+
+use near_sdk::{
+    near,
+    serde::{de::DeserializeOwned, Serialize},
+    serde_json,
+};
 use schemars::JsonSchema;
 
 use crate::PayloadExecutionParameters;
@@ -14,7 +20,8 @@ pub trait SignableMessage {
     type Key: Key<Self>
     where
         Self: Sized;
-    type Signature: JsonSchema;
+    type Signature: JsonSchema + Serialize + DeserializeOwned + Clone + Debug;
+    type Auxiliary: JsonSchema + Serialize + DeserializeOwned + Clone + Debug;
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -22,6 +29,8 @@ pub trait SignableMessage {
 pub struct MessageWithSignature<M: SignableMessage> {
     pub message: M,
     pub signature: M::Signature,
+    #[serde(flatten)]
+    pub auxiliary: M::Auxiliary,
 }
 
 pub struct MessageWithValidSignature<M: SignableMessage>(MessageWithSignature<M>);
