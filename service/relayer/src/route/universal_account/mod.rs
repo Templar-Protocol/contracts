@@ -13,7 +13,7 @@ use near_sdk::{
 };
 use sha2::{Digest, Sha256};
 use templar_universal_account::{
-    authentication::{ed25519_raw::VerifyKey, passkey::Passkey},
+    authentication::{ed25519_raw, eip712, passkey::Passkey},
     KeyId,
 };
 
@@ -65,7 +65,8 @@ pub async fn index(State(app): State<App>) -> impl IntoResponse {
 #[serde(crate = "near_sdk::serde", tag = "type")]
 pub enum KeyQuery {
     Passkey { key: Passkey },
-    Ed25519Raw { key: VerifyKey },
+    Ed25519Raw { key: ed25519_raw::VerifyKey },
+    Eip712 { key: eip712::VerifyKey },
 }
 
 impl From<KeyQuery> for KeyId {
@@ -73,6 +74,7 @@ impl From<KeyQuery> for KeyId {
         match value {
             KeyQuery::Passkey { key } => key.into(),
             KeyQuery::Ed25519Raw { key } => key.into(),
+            KeyQuery::Eip712 { key } => key.into(),
         }
     }
 }
@@ -101,8 +103,12 @@ mod tests {
         "549bca2d5a64",
     )]
     #[case(
-        VerifyKey("ed25519:DWYRtzDDtbX63hcXziJEXgXZamSPQT61YPFGM1oFTqVp".parse().unwrap()).into(),
+        ed25519_raw::VerifyKey("ed25519:DWYRtzDDtbX63hcXziJEXgXZamSPQT61YPFGM1oFTqVp".parse().unwrap()).into(),
         "e2cac2be8cef",
+    )]
+    #[case(
+        eip712::VerifyKey("0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E".parse().unwrap()).into(),
+        "8a98745b4d35",
     )]
     #[test]
     fn account_slug_regression(#[case] key: KeyId, #[case] expected_slug: &str) {

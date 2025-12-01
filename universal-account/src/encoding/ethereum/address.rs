@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use alloy::primitives::Address as AlloyAddress;
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
@@ -13,6 +14,14 @@ pub struct Address(pub AlloyAddress);
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Address {
+    type Err = alloy::hex::FromHexError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.parse()?))
     }
 }
 
@@ -108,9 +117,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serialization() {
+    fn json_serialization() {
         let key = Address(AlloyAddress::from_slice(&[0xff; 20]));
 
         eprintln!("{}", near_sdk::serde_json::to_string(&key).unwrap());
+    }
+
+    #[test]
+    fn to_from_str() {
+        let address = Address::from_str("0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E").unwrap();
+        assert_eq!(
+            address.to_string(),
+            "0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E",
+        );
+    }
+
+    #[test]
+    fn borsh() {
+        let address = Address::from_str("0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E").unwrap();
+        let borsh_bytes = near_sdk::borsh::to_vec(&address).unwrap();
+        let decoded: Address = near_sdk::borsh::from_slice(&borsh_bytes).unwrap();
+
+        assert_eq!(decoded, address);
     }
 }
