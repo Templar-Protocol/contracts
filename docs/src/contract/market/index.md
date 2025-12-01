@@ -49,7 +49,7 @@ Accounts can interact with markets in seven primary ways:
 
 ## Configuration
 
-[A market's configuration](../../../doc/templar_common/market/struct.MarketConfiguration.html) is immutable after deployment. It can be obtained from the market contract by calling [the `get_configuration` function](../../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.get_configuration).
+[A market's configuration](/doc/templar_common/market/struct.MarketConfiguration.html) is immutable after deployment. It can be obtained from the market contract by calling [the `get_configuration` function](/doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.get_configuration).
 
 ### Example
 
@@ -140,6 +140,6 @@ near contract \
 
 Interest and yield on borrow and supply positions are calculated using a snapshot system.
 
-After a ["time chunk"](../../../doc/templar_common/time_chunk/enum.TimeChunkConfiguration.html) (e.g. 1 hour) elapses, the contract takes a snapshot, recording such things as the total supply deposit, amount borrowed, timestamp, etc.
+After a ["time chunk"](/doc/templar_common/time_chunk/enum.TimeChunkConfiguration.html) (e.g. 1 hour) elapses, the contract takes a snapshot, recording such things as the total supply deposit, amount borrowed, timestamp, etc.
 
-Whenever a borrow or supply position update requires, interest/yield calculations are triggered. (They can also be triggered explicitly using [`harvest_yield`](../../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.harvest_yield) and [`apply_interest`](../../../doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.apply_interest).) These calculations iterate from the snapshot at which the record was last updated until the most-recently-finalized snapshot unless a snapshot limit is provided.
+Whenever a borrow or supply position update requires, interest/yield calculations are triggered. (They can also be triggered explicitly using [`harvest_yield`](/doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.harvest_yield) and [`apply_interest`](/doc/templar_common/market/trait.MarketExternalInterface.html#tymethod.apply_interest).) These calculations iterate from the snapshot at which the record was last updated until the most-recently-finalized snapshot unless a snapshot limit is provided.

@@ -25,7 +25,7 @@ For Liquid Staking Tokens (LSTs), Templar uses [a custom oracle adapter](./contr
 
 ## Price Feed Configuration
 
-Each market is [configured](../doc/templar_common/market/struct.PriceOracleConfiguration.html) with the following fields:
+Each market is [configured](/doc/templar_common/market/struct.PriceOracleConfiguration.html) with the following fields:
 
 ```rust
 pub struct PriceOracleConfiguration {

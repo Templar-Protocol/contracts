@@ -44,6 +44,7 @@ test-utils.workspace = true
 tokio.workspace = true
 templar-relayer = { path = "../../service/relayer" }
 rand = "0.8"
+proptest = "*"
 futures.workspace = true
 
 [lints]

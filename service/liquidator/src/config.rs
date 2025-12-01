@@ -21,6 +21,8 @@ pub enum LiquidationStrategyArg {
     Full,
     /// Partial liquidation (percentage specified separately)
     Partial,
+    /// Fixed amount liquidation (amount specified separately)
+    FixedAmount,
 }
 
 impl FromStr for LiquidationStrategyArg {
@@ -30,8 +32,9 @@ impl FromStr for LiquidationStrategyArg {
         match s.to_lowercase().as_str() {
             "full" => Ok(Self::Full),
             "partial" => Ok(Self::Partial),
+            "fixed-amount" | "fixed_amount" => Ok(Self::FixedAmount),
             _ => Err(format!(
-                "Invalid liquidation strategy: '{s}'. Valid options: 'full', 'partial'"
+                "Invalid liquidation strategy: '{s}'. Valid options: 'full', 'partial', 'fixed-amount'"
             )),
         }
     }
@@ -42,6 +45,7 @@ impl std::fmt::Display for LiquidationStrategyArg {
         match self {
             Self::Full => write!(f, "full"),
             Self::Partial => write!(f, "partial"),
+            Self::FixedAmount => write!(f, "fixed-amount"),
         }
     }
 }
@@ -111,8 +115,13 @@ pub struct Args {
     pub liquidation_strategy: LiquidationStrategyArg,
 
     /// Partial liquidation percentage (1-100, only used with partial strategy)
-    #[arg(long, env = "PARTIAL_PERCENTAGE", value_parser = validate_percentage, default_value = "50")]
+    #[arg(long, env = "PARTIAL_LIQUIDATION_PERCENTAGE", value_parser = validate_percentage, default_value = "50")]
     pub partial_percentage: u8,
+
+    /// Fixed liquidation amount in token base units (only used with fixed-amount strategy)
+    /// Example: 1000000000 for 1000 USDC (6 decimals)
+    #[arg(long, env = "FIXED_LIQUIDATION_AMOUNT")]
+    pub fixed_liquidation_amount: Option<u128>,
 
     /// Minimum profit margin in basis points
     #[arg(long, env = "MIN_PROFIT_BPS", default_value_t = 50)]
@@ -122,13 +131,9 @@ pub struct Args {
     #[arg(long, env = "DRY_RUN", default_value_t = false)]
     pub dry_run: bool,
 
-    /// Collateral strategy: "hold", "swap-to-primary", or "swap-to-borrow"
+    /// Collateral strategy: "hold" or "swap-to-borrow"
     #[arg(long, env = "COLLATERAL_STRATEGY", default_value = "hold")]
     pub collateral_strategy: String,
-
-    /// Primary asset for `SwapToPrimary` strategy
-    #[arg(long, env = "PRIMARY_ASSET")]
-    pub primary_asset: Option<String>,
 
     /// `OneClick` API token for swap authentication
     #[arg(long, env = "ONECLICK_API_TOKEN")]
@@ -145,6 +150,14 @@ pub struct Args {
     /// Collateral assets to ignore in market filtering
     #[arg(long, env = "IGNORED_COLLATERAL_ASSETS", value_delimiter = ',')]
     pub ignored_collateral_assets: Vec<String>,
+
+    /// Enable loop liquidation - repeatedly liquidate until position is healthy
+    #[arg(long, env = "LOOP_LIQUIDATION", default_value_t = false)]
+    pub loop_liquidation: bool,
+
+    /// Maximum iterations for loop liquidation (safety limit)
+    #[arg(long, env = "MAX_LOOP_ITERATIONS", default_value_t = 10)]
+    pub max_loop_iterations: u32,
 }
 
 impl Args {
@@ -170,33 +183,30 @@ impl Args {
                     self.min_profit_bps,
                 ))
             }
+            LiquidationStrategyArg::FixedAmount => {
+                let Some(fixed_amount) = self.fixed_liquidation_amount else {
+                    panic!("FIXED_LIQUIDATION_AMOUNT must be set when using fixed-amount strategy");
+                };
+                tracing::info!(
+                    fixed_amount = fixed_amount,
+                    "Using FixedAmountLiquidationStrategy"
+                );
+                Arc::new(
+                    crate::liquidation_strategy::FixedAmountLiquidationStrategy::new(
+                        fixed_amount,
+                        self.min_profit_bps,
+                    ),
+                )
+            }
         }
     }
 
     /// Parse collateral strategy from config
     fn parse_collateral_strategy(&self) -> CollateralStrategy {
-        use templar_common::asset::FungibleAsset;
-
         // Normalize: convert to lowercase and replace hyphens with underscores
         let normalized = self.collateral_strategy.to_lowercase().replace('-', "_");
 
         match normalized.as_str() {
-            "swap_to_primary" => {
-                let Some(ref primary_asset_str) = self.primary_asset else {
-                    panic!("COLLATERAL_STRATEGY=swap-to-primary requires PRIMARY_ASSET to be set");
-                };
-
-                let primary_asset = primary_asset_str.parse::<FungibleAsset<_>>()
-                    .unwrap_or_else(|_| panic!(
-                        "Failed to parse PRIMARY_ASSET: '{primary_asset_str}'. Expected format: nep141:contract_id or nep245:contract_id:token_id"
-                    ));
-
-                tracing::info!(
-                    primary_asset = %primary_asset,
-                    "Using SwapToPrimary strategy"
-                );
-                CollateralStrategy::SwapToPrimary { primary_asset }
-            }
             "swap_to_borrow" => {
                 tracing::info!("Using SwapToBorrow strategy");
                 CollateralStrategy::SwapToBorrow
@@ -206,7 +216,7 @@ impl Args {
                 CollateralStrategy::Hold
             }
             _ => panic!(
-                "Invalid collateral strategy: '{}'. Valid options: 'hold', 'swap-to-primary', 'swap-to-borrow'",
+                "Invalid collateral strategy: '{}'. Valid options: 'hold', 'swap-to-borrow'",
                 self.collateral_strategy
             ),
         }
@@ -286,6 +296,8 @@ impl Args {
             ref_contract: self.ref_contract.clone(),
             allowed_collateral_assets,
             ignored_collateral_assets,
+            loop_liquidation: self.loop_liquidation,
+            max_loop_iterations: self.max_loop_iterations,
         }
     }
 
@@ -323,25 +335,17 @@ mod tests {
             concurrency: 10,
             liquidation_strategy: LiquidationStrategyArg::Partial,
             partial_percentage: 50,
+            fixed_liquidation_amount: None,
             min_profit_bps: 100,
             dry_run: false,
             collateral_strategy: "hold".to_string(),
-            primary_asset: None,
             oneclick_api_token: None,
             ref_contract: None,
             allowed_collateral_assets: vec![],
             ignored_collateral_assets: vec![],
+            loop_liquidation: false,
+            max_loop_iterations: 10,
         }
-    }
-
-    #[test]
-    fn test_parse_collateral_strategy_swap_to_primary() {
-        let mut args = create_test_args();
-        args.collateral_strategy = "swap-to-primary".to_string();
-        args.primary_asset = Some("nep141:usdc.testnet".to_string());
-
-        let strategy = args.parse_collateral_strategy();
-        assert!(matches!(strategy, CollateralStrategy::SwapToPrimary { .. }));
     }
 
     #[test]

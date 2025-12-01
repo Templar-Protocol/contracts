@@ -1,12 +1,10 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    num::NonZeroU8,
-};
-
 use crate::{
     aum::AUM,
+    governance::Abdicator,
+    governance::Gate,
+    governance::Timelocks,
     storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -28,11 +26,15 @@ use near_sdk_contract_tools::{
 };
 use near_sdk_contract_tools::{owner::Owner, rbac};
 use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    num::NonZeroU8,
+};
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     vault::{
         require_at_least, AllocatingState, AllocationMode, AllocationPlan, AllocationWeights,
-        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState, PendingValue,
+        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState,
         PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
         AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
         ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
@@ -78,17 +80,12 @@ pub enum Role {
 #[derive(Debug, Clone, Default)]
 pub struct MarketRecord {
     pub cfg: MarketConfiguration,
-    pub pending_cap: Option<PendingValue<u128>>,
     pub principal: u128,
 }
 
 impl From<MarketConfiguration> for MarketRecord {
     fn from(cfg: MarketConfiguration) -> Self {
-        Self {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        }
+        Self { cfg, principal: 0 }
     }
 }
 
@@ -136,12 +133,8 @@ pub struct Contract {
     // Merged market record: cfg + pending_cap + principal (single persisted map; no per-entry storage keys)
     markets: BTreeMap<AccountId, MarketRecord>,
 
-    /// Any pending change to the vault's timelock
-    pending_timelock: Option<PendingValue<TimestampNs>>,
-    /// Any pending change to the vault's guardian
-    pending_guardian: Option<PendingValue<AccountId>>,
-    /// Current timelock duration for governance actions (ns)
-    timelock_ns: TimestampNs,
+    /// Per‑action governance timelock configuration.
+    governance_timelocks: Timelocks,
 
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
@@ -164,6 +157,9 @@ pub struct Contract {
 
     // Keeper-provided withdraw route for the current Withdrawing op
     withdraw_route: Vec<AccountId>,
+
+    abdicator: Abdicator,
+    gate: Gate,
 }
 
 #[near]
@@ -193,6 +189,7 @@ impl Contract {
             symbol,
             decimals,
             mode,
+            restrictions,
         } = configuration;
 
         require!(
@@ -203,13 +200,16 @@ impl Contract {
         let mut contract = Self {
             underlying_asset: underlying_token,
             aum: AUM::BalanceSheet,
-            timelock_ns: initial_timelock_ns.0,
             performance_fee: Wad::default(),
             fee_recipient,
             skim_recipient,
             markets: BTreeMap::new(),
-            pending_timelock: None,
-            pending_guardian: None,
+            governance_timelocks: governance::Timelocks::new(
+                initial_timelock_ns.0,
+                initial_timelock_ns.0,
+                initial_timelock_ns.0,
+                initial_timelock_ns.0,
+            ),
             supply_queue: BTreeSet::default(),
             last_total_assets: 0,
             virtual_shares: 1,
@@ -231,6 +231,8 @@ impl Contract {
             next_withdraw_to_execute: 0,
             pending_market_exec: Vec::new(),
             withdraw_route: Vec::new(),
+            abdicator: Abdicator::new(),
+            gate: Gate::new(restrictions),
         };
 
         contract.set_metadata(&ContractMetadata::new(name, symbol, decimals.into()));
@@ -263,17 +265,19 @@ impl Contract {
         let assets = self.convert_to_assets(U128(shares)).0;
         let sender = env::predecessor_account_id();
 
+        // Gate withdraw entrypoint: who is sending and who will receive assets.
+        self.gate.enforce_policy(&sender);
+        self.gate.enforce_policy(&receiver);
+
         require!(shares > 0, "Invalid shares");
         require!(assets > 0, "Dust redeem would yield 0 assets");
 
         let _ = require_attached_for_pending_withdrawal();
 
-        self.transfer(&Nep141Transfer::new(
-            shares,
-            &sender,
-            env::current_account_id(),
-        ))
-        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+        Gate::bypass_transfer(
+            self,
+            &Nep141Transfer::new(shares, &sender, env::current_account_id()),
+        );
 
         self.internal_accrue_fee();
 
@@ -526,13 +530,14 @@ impl Contract {
                     .clone()
             }),
             underlying_token: self.underlying_asset.clone(),
-            initial_timelock_ns: self.timelock_ns.into(),
+            initial_timelock_ns: self.governance_timelocks.timelock_config_ns.into(),
             fee_recipient: self.fee_recipient.clone(),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
             symbol: meta.symbol,
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
             mode: self.mode.clone(),
+            restrictions: self.gate.restrictions.clone(),
         }
     }
 
@@ -549,7 +554,10 @@ impl Contract {
         U128(self.total_supply())
     }
 
-    /// Returns the maximum additional amount that can be deposited across all markets given current caps.
+    /// Returns a best-effort estimate of the maximum additional amount that can be deposited
+    /// across all markets given current caps and the current `supply_queue`.
+    ///
+    /// This does not reserve capacity and may become stale immediately after it is read.
     pub fn get_max_deposit(&self) -> U128 {
         let total = self
             .supply_queue
@@ -559,6 +567,25 @@ impl Contract {
                 _ => acc,
             });
         U128(total)
+    }
+
+    /// Returns a best-effort estimate of the maximum additional amount that can be deposited
+    /// into any single market in the current `supply_queue`, given current caps.
+    ///
+    /// This is intended for UIs that want to route deposits in a way that is consistent with
+    /// the vault's `supply_queue`. It does not reserve capacity and may become stale
+    /// immediately after it is read.
+    pub fn get_max_single_market_deposit(&self) -> U128 {
+        let max_room = self
+            .supply_queue
+            .iter()
+            .fold(0u128, |acc, m| match self.markets.get(m) {
+                Some(rec) if rec.cfg.cap.0 > 0 => {
+                    acc.max(rec.cfg.cap.0.saturating_sub(rec.principal))
+                }
+                _ => acc,
+            });
+        U128(max_room)
     }
 
     /// Converts an amount of underlying assets to shares, flooring the result.

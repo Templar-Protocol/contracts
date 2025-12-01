@@ -10,7 +10,7 @@ Technical architecture for developers building on or contributing to the liquida
 │  - Registry management                          │
 │  - Market discovery                             │
 │  - Scheduling                                   │
-└──────────────────┬──────────────────────────────┘
+└──────────────────┬────────────────────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────────────────┐
@@ -22,7 +22,7 @@ Technical architecture for developers building on or contributing to the liquida
 │  │ Strategy: Calculate liquidation amount    │  │
 │  └───────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────┐  │
-│  │ Executor: Submit transactions             │  │
+│  │ Executor: Submit transactions + swaps     │  │
 │  └───────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────┘
                    │
@@ -30,14 +30,6 @@ Technical architecture for developers building on or contributing to the liquida
 ┌─────────────────────────────────────────────────┐
 │           InventoryManager                      │
 │  - Track available balances                     │
-│  - Record liquidation history                   │
-└─────────────────────────────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────────┐
-│          InventoryRebalancer                    │
-│  - Apply collateral strategy                    │
-│  - Execute swaps via providers                  │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -62,7 +54,6 @@ pub struct InventoryManager {
 - `refresh()` - Update borrow asset balances
 - `refresh_collateral()` - Update collateral asset balances
 - `get_available_balance()` - Query balance for asset
-- `record_liquidation()` - Track collateral→borrow mapping
 
 ### 2. LiquidationStrategy
 
@@ -83,27 +74,27 @@ pub trait LiquidationStrategy {
 ```
 
 **Implementations:**
-- `PartialLiquidationStrategy` - Liquidate percentage of liquidatable amount
-- `FullLiquidationStrategy` - Liquidate 100% of liquidatable amount (from contract)
+- `PartialLiquidationStrategy` - Use percentage of available funds per liquidation
+- `FullLiquidationStrategy` - Use 100% of available funds up to liquidatable amount
+- `FixedAmountLiquidationStrategy` - Use fixed amount per liquidation (ideal for loop liquidation)
 
 ### 3. CollateralStrategy
 
-Post-liquidation rebalancing.
+Immediate post-liquidation swap behavior.
 
-**Location:** `src/collateral_strategy.rs`
+**Location:** `src/liquidator.rs`, `src/executor.rs`
 
 ```rust
 pub enum CollateralStrategy {
     Hold,
-    SwapToPrimary { primary_asset: FungibleAsset<BorrowAsset> },
     SwapToBorrow,
 }
 ```
 
 **SwapToBorrow routing:**
-1. Check liquidation history for collateral asset
-2. Find markets that use this collateral
-3. Route to highest balance borrow asset
+- After each successful liquidation, immediately swaps received collateral back to borrow asset
+- Uses configured swap provider (OneClick or Ref Finance)
+- Executes in executor module as part of liquidation transaction flow
 
 ### 4. Liquidator
 
@@ -128,6 +119,8 @@ pub struct Liquidator {
 3. Strategy calculates amount (capped by inventory)
 4. Profitability check
 5. Executor submits transaction
+6. Immediate swap if CollateralStrategy::SwapToBorrow
+7. Loop liquidation: if enabled and position still liquidatable, repeat from step 2
 
 ### 5. SwapProvider
 
@@ -161,15 +154,17 @@ NETWORK=mainnet
 
 **Liquidation:**
 ```bash
-LIQUIDATION_STRATEGY=partial  # partial | full
-PARTIAL_PERCENTAGE=50
+LIQUIDATION_STRATEGY=partial  # partial | full | fixed-amount
+PARTIAL_LIQUIDATION_PERCENTAGE=50         # % of available funds to use
+FIXED_LIQUIDATION_AMOUNT=1000000000  # Token base units (for fixed-amount)
+LOOP_LIQUIDATION=false        # Repeatedly liquidate until healthy
+MAX_LOOP_ITERATIONS=10        # Safety limit for loop liquidation
 MIN_PROFIT_BPS=50
 ```
 
 **Collateral:**
 ```bash
-COLLATERAL_STRATEGY=swap-to-borrow  # hold | swap-to-primary | swap-to-borrow
-PRIMARY_ASSET=nep141:usdc.near      # For swap-to-primary
+COLLATERAL_STRATEGY=swap-to-borrow  # hold | swap-to-borrow
 ONECLICK_API_TOKEN=...              # Optional 1-Click auth
 REF_CONTRACT=v2.ref-finance.near    # Mainnet default
 ```
@@ -194,24 +189,18 @@ IGNORED_COLLATERAL_ASSETS=nep141:meta-pool.near
    ├─ Refresh inventory
    ├─ Run liquidation round
    │  ├─ Scan markets
-   │  ├─ Execute liquidations
-   │  └─ Refresh collateral inventory
-   ├─ Rebalance inventory (apply collateral strategy)
+   │  └─ Execute liquidations (with immediate swaps if configured)
    └─ Sleep LIQUIDATION_SCAN_INTERVAL
 
 2. Liquidation Round
    For each market:
-     ├─ Fetch liquidatable positions
-     ├─ Check inventory balance
-     ├─ Calculate amount (min: position, inventory, profitable amount)
-     ├─ Submit transaction
-     └─ Record collateral received
-
-3. Inventory Rebalancing
-   For each collateral holding:
-     ├─ Apply collateral strategy
-     ├─ If swap needed: query provider, execute swap
-     └─ Update inventory
+     For each position:
+       ├─ Check if liquidatable
+       ├─ Check inventory balance
+       ├─ Calculate amount (strategy: partial or full)
+       ├─ Submit liquidation transaction
+       ├─ Immediate swap if swap-to-borrow enabled
+       └─ If loop_liquidation enabled and position still unhealthy, repeat
 ```
 
 ## Adding New Features
@@ -225,7 +214,7 @@ IGNORED_COLLATERAL_ASSETS=nep141:meta-pool.near
 ### New Collateral Strategy
 
 1. Add variant to `CollateralStrategy` enum
-2. Implement routing logic in `InventoryRebalancer::rebalance()`
+2. Implement handling logic in `executor::execute_liquidation()`
 3. Update config parsing in `Args::build_config()`
 
 ### New Swap Provider
@@ -307,11 +296,9 @@ profitable = profit >= min_profit
 - `src/service.rs` - Main orchestrator
 - `src/liquidator.rs` - Liquidation coordinator
 - `src/scanner.rs` - Market scanning
-- `src/executor.rs` - Transaction execution
+- `src/executor.rs` - Transaction execution + immediate swaps
 - `src/inventory.rs` - Inventory management
-- `src/rebalancer.rs` - Collateral rebalancing
 - `src/liquidation_strategy.rs` - Liquidation strategies
-- `src/collateral_strategy.rs` - Collateral strategies
 - `src/swap/` - Swap provider implementations
 
 ## Monitoring
@@ -330,4 +317,4 @@ profitable = profit >= min_profit
 See [README.md](./README.md) for Docker commands.
 
 **Build context:** `contracts/` (repository root)
-**Dockerfile location:** `bots/liquidator/Dockerfile`
+**Dockerfile location:** `service/liquidator/Dockerfile`
