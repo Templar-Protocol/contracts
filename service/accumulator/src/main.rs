@@ -94,7 +94,8 @@ async fn run_service(
     args: Args,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let client = JsonRpcClient::connect(args.network.rpc_url());
+    let api_key = std::env::var("FASTNEAR_API_KEY").ok().unwrap_or_default();
+    let client = JsonRpcClient::connect(format!("{}?apiKey={api_key}", args.network.rpc_url()));
     let signer = Arc::new(InMemorySigner::from_secret_key(
         args.signer_account.clone(),
         args.signer_key.clone(),

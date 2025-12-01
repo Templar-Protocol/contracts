@@ -23,7 +23,7 @@ use near_jsonrpc_client::{
         send_tx::RpcSendTransactionRequest,
         tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
     },
-    JsonRpcClient, NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL,
+    JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
@@ -122,8 +122,8 @@ impl Network {
     #[must_use]
     pub fn rpc_url(&self) -> &str {
         match self {
-            Network::Mainnet => NEAR_MAINNET_RPC_URL,
-            Network::Testnet => NEAR_TESTNET_RPC_URL,
+            Network::Mainnet => "https://rpc.mainnet.fastnear.com",
+            Network::Testnet => "https://rpc.testnet.fastnear.com",
         }
     }
 }
@@ -166,6 +166,39 @@ pub async fn get_access_key_data(
     let block_hash = access_key_query_response.block_hash;
 
     Ok((nonce, block_hash))
+}
+
+/// Check if an account ID exists on NEAR.
+///
+/// # Arguments
+///
+/// * `client` - JSON-RPC client instance
+/// * `account_id` - Account ID to check
+///
+/// # Returns
+///
+/// True if the account exists, false otherwise
+#[instrument(skip(client), level = "debug")]
+pub async fn account_exists(client: &JsonRpcClient, account_id: &AccountId) -> RpcResult<bool> {
+    let result = client
+        .call(RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: QueryRequest::ViewAccount {
+                account_id: account_id.clone(),
+            },
+        })
+        .await;
+
+    match result {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if e.handler_error().is_some() {
+                Ok(false)
+            } else {
+                Err(RpcError::ViewMethodError(e))
+            }
+        }
+    }
 }
 
 /// Serialize and encode data for NEAR contract calls.
@@ -385,7 +418,16 @@ pub async fn list_all_deployments(
         .try_concat()
         .await?;
 
-    Ok(all_markets)
+    let existing = futures::stream::iter(all_markets.into_iter())
+        .filter(|market_id| {
+            let client = client.clone();
+            let market_id = market_id.clone();
+            async move { account_exists(&client, &market_id).await.unwrap_or(false) }
+        })
+        .collect::<Vec<AccountId>>()
+        .await;
+
+    Ok(existing)
 }
 
 #[cfg(test)]
