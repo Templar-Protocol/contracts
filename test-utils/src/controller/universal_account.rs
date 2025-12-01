@@ -1,6 +1,7 @@
 use near_workspaces::{Account, Contract};
 use templar_universal_account::{
-    transaction::Transaction, ExecuteArgs, InitArgs, KeyId, PayloadExecutionParameters,
+    contract_state::Migration, transaction::Transaction, ExecuteArgs, InitArgs, KeyId,
+    PayloadExecutionParameters,
 };
 use tokio::sync::OnceCell;
 
@@ -53,8 +54,16 @@ impl UniversalAccountController {
         pub fn get_key(key: KeyId) -> Option<PayloadExecutionParameters>;
         #[view]
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
+        #[view]
+        pub fn get_stored_state_version() -> u32;
+        #[view]
+        pub fn get_target_state_version() -> u32;
+        #[view]
+        pub fn needs_migration() -> bool;
 
         #[call(exec, tgas(300))]
         pub fn execute(args: ExecuteArgs<Box<[Transaction]>>);
+        #[call(exec, tgas(300))]
+        pub fn migrate(args: Migration);
     }
 }

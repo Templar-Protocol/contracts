@@ -20,6 +20,7 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         HashForSigning, MessageWithSignature, Payload,
     },
+    contract_state::Migration,
     transaction::{FunctionCallAction, Transaction},
     ExecuteArgs, ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters,
     NEAR_TESTNET_CHAIN_ID,
@@ -28,6 +29,8 @@ use test_utils::{
     controller::universal_account::UniversalAccountController, worker, ContractController,
     FtController, StorageManagementController,
 };
+
+static WASM_0_2_0: &[u8] = include_bytes!("./migration/0_2_0.wasm");
 
 fn mint(amount: u128) -> FunctionCallAction {
     FunctionCallAction {
@@ -141,11 +144,50 @@ struct Setup {
     third_party: near_workspaces::Account,
 }
 
-async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner) -> Setup {
+async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Setup {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
+    let make_uac = || async move {
+        if migrated {
+            let c = uni_account.deploy(WASM_0_2_0).await.unwrap().unwrap();
+            c.call("new")
+                .args_json(json!({
+                    "key": sk.id(),
+                }))
+                .transact()
+                .await
+                .unwrap()
+                .unwrap();
+
+            let ua = uni_account
+                .deploy(UniversalAccountController::wasm().await)
+                .await
+                .unwrap()
+                .unwrap();
+
+            let ua = UniversalAccountController { contract: ua };
+
+            let r = ua
+                .migrate(
+                    ua.contract().as_account(),
+                    Migration::V0 {
+                        chain_id: U128(NEAR_TESTNET_CHAIN_ID),
+                    },
+                )
+                .await;
+
+            for o in r.outcomes() {
+                o.clone().into_result().unwrap();
+            }
+
+            ua
+        } else {
+            UniversalAccountController::deploy(uni_account, sk.id(), NEAR_TESTNET_CHAIN_ID).await
+        }
+    };
+
     let (uac, ft) = tokio::join!(
-        UniversalAccountController::deploy(uni_account, sk.id(), NEAR_TESTNET_CHAIN_ID),
+        make_uac(),
         FtController::deploy(ft_account, "Fungible Token", "FT"),
     );
 
@@ -168,17 +210,19 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner) -> Setup {
 pub async fn universal_account(
     #[future(awt)] worker: Worker<Sandbox>,
     #[values(
-        TestSigner::random_passkey(),
-        TestSigner::random_ed25519_raw(),
-        TestSigner::random_eip712()
+        (TestSigner::random_passkey(), false),
+        (TestSigner::random_passkey(), true),
+        (TestSigner::random_ed25519_raw(), false),
+        (TestSigner::random_ed25519_raw(), true),
+        (TestSigner::random_eip712(), false),
     )]
-    sk: TestSigner,
+    (sk, migrated): (TestSigner, bool),
 ) {
     let Setup {
         uac,
         ft,
         third_party,
-    } = setup(&worker, &sk).await;
+    } = setup(&worker, &sk, migrated).await;
 
     let key_list = uac.list_keys(None, None).await;
     assert_eq!(
@@ -275,17 +319,19 @@ pub async fn universal_account(
 async fn skip_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
     #[values(
-        TestSigner::random_passkey(),
-        TestSigner::random_ed25519_raw(),
-        TestSigner::random_eip712()
+        (TestSigner::random_passkey(), false),
+        (TestSigner::random_passkey(), true),
+        (TestSigner::random_ed25519_raw(), false),
+        (TestSigner::random_ed25519_raw(), true),
+        (TestSigner::random_eip712(), false),
     )]
-    sk: TestSigner,
+    (sk, migrated): (TestSigner, bool),
 ) {
     let Setup {
         uac,
         ft,
         third_party,
-    } = setup(&worker, &sk).await;
+    } = setup(&worker, &sk, migrated).await;
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;
@@ -350,17 +396,19 @@ async fn skip_nonce(
 async fn reuse_nonce(
     #[future(awt)] worker: Worker<Sandbox>,
     #[values(
-        TestSigner::random_passkey(),
-        TestSigner::random_ed25519_raw(),
-        TestSigner::random_eip712()
+        (TestSigner::random_passkey(), false),
+        (TestSigner::random_passkey(), true),
+        (TestSigner::random_ed25519_raw(), false),
+        (TestSigner::random_ed25519_raw(), true),
+        (TestSigner::random_eip712(), false),
     )]
-    sk: TestSigner,
+    (sk, migrated): (TestSigner, bool),
 ) {
     let Setup {
         uac,
         ft,
         third_party,
-    } = setup(&worker, &sk).await;
+    } = setup(&worker, &sk, migrated).await;
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;

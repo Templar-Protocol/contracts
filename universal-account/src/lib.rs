@@ -8,6 +8,7 @@ pub const NEAR_MAINNET_CHAIN_ID: u128 = 397;
 pub const NEAR_TESTNET_CHAIN_ID: u128 = 398;
 
 pub mod authentication;
+pub mod contract_state;
 pub mod encoding;
 mod event;
 pub use event::Event;

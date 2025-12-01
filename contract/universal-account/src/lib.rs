@@ -1,5 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
+use std::ops::{Deref, DerefMut};
+
 use near_sdk::{
     borsh::BorshSerialize,
     env,
@@ -11,15 +13,28 @@ use near_sdk::{
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    transaction::Transaction, ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
+    contract_state::StateV1, transaction::Transaction, ExecuteArgs, KeyId, KeyParameters,
+    PayloadExecutionParameters,
 };
+
+mod impl_migrate;
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
-pub struct Contract {
-    next_key_index: u64,
-    keys: IterableMap<KeyId, KeyParameters>,
-    chain_id: u128,
+pub struct Contract(pub StateV1);
+
+impl Deref for Contract {
+    type Target = StateV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Contract {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshStorageKey)]
@@ -32,11 +47,11 @@ enum StorageKey {
 impl Contract {
     #[init]
     pub fn new(key: KeyId, chain_id: U128) -> Self {
-        let mut self_ = Self {
+        let mut self_ = Self(StateV1 {
             next_key_index: 0,
             keys: IterableMap::new(StorageKey::Keys),
             chain_id: chain_id.0,
-        };
+        });
 
         self_.add_key(key);
 
