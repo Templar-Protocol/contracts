@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::Write};
 
 use axum::{extract::State, Json};
 use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
@@ -6,10 +6,10 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId, NearToken,
 };
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_universal_account::{
-    authentication::{ExecutionContextProvider, Key},
-    transaction::Action,
-    ExecuteArgs, KeyId,
+    transaction::{Action, Transaction},
+    ExecuteArgs,
 };
 
 use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
@@ -18,9 +18,11 @@ use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayRequest {
     pub account_id: AccountId,
-    pub args: ExecuteArgs,
+    pub args: ExecuteArgs<Box<[Transaction]>>,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
+    #[serde(default)]
+    pub update_price_feeds: HashSet<PriceIdentifier>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -30,37 +32,27 @@ pub struct RelayResponse {
 }
 
 #[allow(clippy::too_many_lines)]
-#[tracing::instrument(
-    name = "relay_universal_account",
-    skip(app, args),
-    fields(
-        account_id = %account_id,
-        storage_deposit_count = %storage_deposit.len()
-    )
-)]
+#[tracing::instrument(name = "relay_universal_account", skip(app))]
 pub async fn relay(
     State(app): State<App>,
     Json(RelayRequest {
         account_id,
         args,
         storage_deposit,
+        update_price_feeds,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
-    let ExecuteArgs::Passkey {
-        ref key,
-        ref message,
-    } = args;
 
     let parameters = match app
         .ua_near
-        .load_ua_key(account_id.clone(), KeyId::Passkey(key.clone()))
+        .load_ua_key(account_id.clone(), args.key_id())
         .await
     {
         Ok(parameters) => parameters,
         Err(e) => {
             // Account might not exist, but we also might have connection issues.
-            tracing::warn!("Failed to load execution parameters for key \"{}\" from universal account \"{account_id}\": {e}", &key.0);
+            tracing::warn!("Failed to load execution parameters for key \"{}\" from universal account \"{account_id}\": {e}", args.key_id());
             return SimpleResponse::Failure {
                 error: "Failed to load execution parameters from universal account".to_string(),
             };
@@ -70,31 +62,21 @@ pub async fn relay(
     let Some(parameters) = parameters else {
         tracing::info!(
             "Key \"{}\" does not exist on account \"{account_id}\"",
-            key.0
+            args.key_id(),
         );
         return SimpleResponse::Rejected {
             reason: "Key does not exist on account".to_string(),
         };
     };
 
-    let valid_signature = match key.verify(message.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::info!("Signature verification failed: {e}");
-            return SimpleResponse::Rejected {
-                reason: "Signature verification failed".to_string(),
-            };
-        }
-    };
-
-    let payload = match valid_signature.verify(&account_id, &parameters.next(), |o| {
+    let payload = match args.clone().verify(&account_id, &parameters.next(), |o| {
         app.args.ua.is_origin_allowed(o)
     }) {
         Ok(p) => p,
         Err(e) => {
-            tracing::info!("Execution parameter verification failed: {e}");
+            tracing::info!("Verification failed: {e}");
             return SimpleResponse::Rejected {
-                reason: "Execution parameter verification failed".to_string(),
+                reason: format!("Verification failed: {e}"),
             };
         }
     };
@@ -102,7 +84,7 @@ pub async fn relay(
     let accounts = app.accounts.read().await;
 
     let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
-    let mut eligible_for_storage_deposit = HashSet::with_capacity(payload.len());
+    let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
         if receiver_id == &account_id {
@@ -134,12 +116,12 @@ pub async fn relay(
             tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
             continue;
         }
-        if !accounts.allowed_contract_data.contains_key(receiver_id) {
+        let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id) else {
             tracing::info!("Unknown receiver {receiver_id}");
             return SimpleResponse::Rejected {
                 reason: "Unknown receiver".to_string(),
             };
-        }
+        };
         let calls = match transaction
             .actions
             .iter()
@@ -152,35 +134,36 @@ pub async fn relay(
             .collect::<Result<Vec<_>, _>>()
         {
             Ok(calls) => calls,
-            Err(e) => {
-                tracing::info!("Unsupported action type: {e:?}");
+            Err(a) => {
+                tracing::info!("Disallowed action: {a:?}");
                 return SimpleResponse::Rejected {
-                    reason: "Unsupported action type".to_string(),
+                    reason: "Disallowed action".to_string(),
                 };
             }
         };
         let additional_interactions =
-            match app.actions_are_allowed(receiver_id, &accounts, calls.iter()) {
+            match app.actions_are_allowed(&accounts, receiver_id, contract_data, calls.iter()) {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::info!("Disallowed action: {e}");
-                    return SimpleResponse::Rejected {
-                        reason: "Disallowed action".to_string(),
-                    };
+                    tracing::info!("Rejecting payload for reason: {e:?}");
+                    let mut s = e[0].to_string();
+                    for err in &e[1..] {
+                        let _ = write!(&mut s, "\n{err}");
+                    }
+                    return SimpleResponse::Rejected { reason: s };
                 }
             };
-        eligible_for_storage_deposit.insert(receiver_id.clone());
-        eligible_for_storage_deposit.extend(additional_interactions.into_iter());
+        interacted_contract_ids.insert(receiver_id.to_owned());
+        interacted_contract_ids.extend(additional_interactions.into_iter());
         if let Some(market_data) = accounts.market_data.get(receiver_id) {
-            eligible_for_storage_deposit.insert(market_data.oracle_id.clone());
-            eligible_for_storage_deposit.insert(market_data.borrow_asset.contract_id().to_owned());
-            eligible_for_storage_deposit
-                .insert(market_data.collateral_asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.oracle_id.clone());
+            interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
         }
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
 
-    let storage_deposit = eligible_for_storage_deposit.intersection(&storage_deposit);
+    let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
 
     // Deposit for storage before sending the user's transaction.
     for contract_id in storage_deposit {
@@ -260,14 +243,38 @@ pub async fn relay(
         // Resolve synchronously.
         if let Err(e) = resolve_transaction.await {
             tracing::error!("Resolve transaction failure: {e}");
+            return SimpleResponse::Failure {
+                error: e.to_string(),
+            };
         }
     }
 
+    // Send any requested price updates
+    let mut interacted_price_identifiers = HashSet::with_capacity(2);
+    for contract_id in &interacted_contract_ids {
+        if let Some(market_data) = accounts.market_data.get(contract_id) {
+            interacted_price_identifiers.insert(market_data.collateral_asset_price_id);
+            interacted_price_identifiers.insert(market_data.borrow_asset_price_id);
+        }
+    }
+
+    let request_price_updates = interacted_price_identifiers
+        .intersection(&update_price_feeds)
+        .copied();
+
+    if let Err(e) = app.pyth.update(request_price_updates.collect()).await {
+        tracing::error!(error = ?e, "Failed to update requested Pyth prices");
+        return SimpleResponse::Failure {
+            error: e.to_string(),
+        };
+    }
+
+    // Send the user's transaction
     let signed_transaction = app
         .relay_near
         .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas)
         .await;
-    let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
+    let Some(cost_of_gas) = app.estimate_cost_of_gas(near_sdk::Gas::from_gas(gas)).await else {
         tracing::error!("Failed to estimate cost of gas");
         return SimpleResponse::Failure {
             error: "Failed to estimate cost of gas".to_string(),

@@ -1,0 +1,189 @@
+use near_sdk::near;
+use near_sdk::serde::de::DeserializeOwned;
+
+use crate::encoding;
+
+use super::with_raw_string::WithRawString;
+use super::{ExecutionContextProvider, HashForSigning, Key, Payload};
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json, borsh])]
+pub struct Ed25519RawKey(pub encoding::ed25519::PublicKey);
+
+impl std::fmt::Display for Ed25519RawKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json])]
+#[serde(bound = "T: DeserializeOwned")]
+pub struct Message<T>(pub WithRawString<Payload<T>>);
+
+impl<T: near_sdk::serde::Serialize> Message<T> {
+    pub fn from_parsed(payload: Payload<T>) -> Self {
+        Self(WithRawString::from_parsed(payload))
+    }
+
+    pub fn with_signature(
+        self,
+        signature: encoding::ed25519::Signature,
+    ) -> MessageWithSignature<T> {
+        MessageWithSignature {
+            message: self,
+            signature,
+        }
+    }
+}
+
+impl<T> From<WithRawString<Payload<T>>> for Message<T> {
+    fn from(value: WithRawString<Payload<T>>) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> HashForSigning for Message<T> {
+    const MAGIC_NUMBER: &'static [u8] = b"\x19UAccount Signed Message:\n";
+
+    fn content_bytes(&self) -> Vec<u8> {
+        self.0.raw.as_bytes().to_vec()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json])]
+#[serde(bound = "T: DeserializeOwned")]
+pub struct MessageWithSignature<T> {
+    pub message: Message<T>,
+    pub signature: encoding::ed25519::Signature,
+}
+
+#[derive(Debug)]
+pub struct MessageWithValidSignature<T>(MessageWithSignature<T>);
+
+impl<T> Key<MessageWithSignature<T>> for Ed25519RawKey {
+    type Verified = MessageWithValidSignature<T>;
+
+    fn verify_signature(
+        &self,
+        message: MessageWithSignature<T>,
+    ) -> Result<Self::Verified, crate::authentication::InvalidSignatureError> {
+        if (self.0).verify(&message.message.preimage_for_signing(), &message.signature) {
+            Ok(MessageWithValidSignature(message))
+        } else {
+            Err(super::InvalidSignatureError)
+        }
+    }
+}
+
+impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
+    type Payload = P;
+
+    fn payload(self) -> Payload<Self::Payload> {
+        self.0.message.0.parsed
+    }
+
+    fn origin(&self) -> Option<&str> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ExecutionParameters;
+
+    use super::*;
+
+    use near_sdk::{env, json_types::U64};
+    use rstest::{fixture, rstest};
+    use solana_sdk::{signature::Keypair, signer::Signer};
+
+    #[fixture]
+    fn keypair() -> Keypair {
+        let keypair_bytes = [
+            174, 47, 154, 16, 202, 193, 206, 113, 199, 190, 53, 133, 169, 175, 31, 56, 222, 53,
+            138, 189, 224, 216, 117, 173, 10, 149, 53, 45, 73, 251, 237, 246, 15, 185, 186, 82,
+            177, 240, 148, 69, 241, 227, 167, 80, 141, 89, 240, 121, 121, 35, 172, 247, 68, 251,
+            226, 218, 48, 63, 176, 109, 168, 89, 238, 135,
+        ];
+        Keypair::try_from(&keypair_bytes[..]).unwrap()
+    }
+
+    #[rstest]
+    #[test]
+    fn solana_and_near_agree(keypair: Keypair) {
+        let message = "The quick brown fox jumps over the lazy dog";
+
+        let signature = keypair.sign_message(message.as_bytes());
+        let is_valid_signature = signature.verify(&keypair.pubkey().to_bytes(), message.as_bytes());
+        assert!(is_valid_signature);
+
+        let near_verify = env::ed25519_verify(
+            signature.as_array(),
+            message.as_bytes(),
+            keypair.pubkey().as_array(),
+        );
+        assert!(near_verify);
+    }
+
+    #[rstest]
+    #[test]
+    fn valid_signature(keypair: Keypair) {
+        let message: Message<_> = WithRawString::from_parsed(Payload {
+            parameters: ExecutionParameters {
+                block_height: U64(12345),
+                index: U64(0),
+                nonce: U64(0),
+            },
+            account_id: "account.near".parse().unwrap(),
+            payload: "Hello, world!",
+        })
+        .into();
+
+        let sol_sig = keypair.sign_message(&message.preimage_for_signing());
+
+        let message = MessageWithSignature {
+            message,
+            signature: sol_sig.into(),
+        };
+
+        let key = Ed25519RawKey((*keypair.pubkey().as_array()).into());
+
+        key.verify_signature(message).unwrap();
+    }
+
+    #[rstest]
+    #[test]
+    #[should_panic = "InvalidSignatureError"]
+    fn invalid_signature(keypair: Keypair) {
+        let message: Message<_> = WithRawString::from_parsed(Payload {
+            parameters: ExecutionParameters {
+                block_height: U64(12345),
+                index: U64(0),
+                nonce: U64(0),
+            },
+            account_id: "account.near".parse().unwrap(),
+            payload: "Hello, world!",
+        })
+        .into();
+
+        let sol_sig = keypair.sign_message(&message.preimage_for_signing());
+
+        let key = Ed25519RawKey((*keypair.pubkey().as_array()).into());
+
+        key.verify_signature(MessageWithSignature {
+            message: Message(WithRawString::from_parsed(Payload {
+                parameters: ExecutionParameters {
+                    block_height: U64(12345),
+                    index: U64(0),
+                    nonce: U64(1),
+                },
+                account_id: "account.near".parse().unwrap(),
+                payload: "Hello, world!",
+            })),
+            signature: sol_sig.into(),
+        })
+        .unwrap();
+    }
+}

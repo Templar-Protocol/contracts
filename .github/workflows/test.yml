@@ -48,19 +48,48 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          # Remove unnecessary packages
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - uses: ./.github/actions/rust
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
+
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.16.1/cargo-near-installer.sh | sh
+
       - name: Run tests
         env:
           SQLX_OFFLINE: true
+          # Use nextest CI profile with reduced parallelism
+          NEXTEST_PROFILE: ci
+          # Optimize cargo build for faster compilation
+          CARGO_TERM_COLOR: always
+          CARGO_INCREMENTAL: 0
         run: ./script/test.sh
+
+      - name: Cleanup Docker resources
+        if: always()
+        run: |
+          docker compose --file ./service/relayer/compose.dev.yaml down -v || true
+          docker system prune -af --volumes || true
 
   coverage:
     name: Coverage
@@ -68,6 +97,19 @@ jobs:
     # Skip coverage when called from other workflows with skip_coverage=true
     if: ${{ !inputs.skip_coverage }}
     steps:
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          # Remove unnecessary pre-installed packages
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          echo "Disk space after cleanup:"
+          df -h
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -85,9 +127,15 @@ jobs:
           SQLX_OFFLINE: true
           CARGO_INCREMENTAL: 0
           RUSTFLAGS: "-Cinstrument-coverage"
+          # Use nextest CI profile with optimized parallelism
+          NEXTEST_PROFILE: ci
+          CARGO_TERM_COLOR: always
         run: |
           # --lib: unit tests only (excludes slow WASM integration tests)
           cargo llvm-cov nextest --lib --lcov --output-path coverage.lcov
+          # Clean up intermediate coverage files to save space
+          rm -rf target/llvm-cov-target/*/debug/deps/*.profraw 2>/dev/null || true
+          rm -rf target/llvm-cov-target/*/debug/incremental 2>/dev/null || true
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

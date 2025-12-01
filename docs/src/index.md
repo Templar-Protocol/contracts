@@ -15,10 +15,10 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 
 ## Market Operations
 
-- **[Market Overview](./market/README.md)** - Core market functionality
-- **[Supply Assets](./market/supply.md)** - How to supply assets to earn yield
-- **[Borrow Assets](./market/borrow.md)** - How to borrow against collateral
-- **[Liquidations](./market/liquidate.md)** - Liquidation mechanisms and procedures
+- **[Market Overview](./contract/market/index.md)** - Core market functionality
+- **[Supply Assets](./contract/market/supply.md)** - How to supply assets to earn yield
+- **[Borrow Assets](./contract/market/borrow.md)** - How to borrow against collateral
+- **[Liquidations](./contract/market/liquidate.md)** - Liquidation mechanisms and procedures
 
 ## Additional Resources
 

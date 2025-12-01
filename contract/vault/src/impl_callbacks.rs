@@ -3,7 +3,10 @@
 use core::cmp::Ordering;
 use std::fmt::Display;
 
-use crate::{near, Contract, ContractExt, Error, EscrowSettlement, Nep141Controller, OpState};
+use crate::{
+    governance::Gate, near, Contract, ContractExt, Error, EscrowSettlement, Nep141Controller,
+    OpState,
+};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{env, json_types::U128, AccountId, Gas, NearToken, PromiseError, PromiseOrValue};
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};
@@ -497,24 +500,21 @@ impl Contract {
 
             if refund > 0 {
                 // Note: this should be infallible since we are transferring to an existing owner, and they are unable to unregister from storage
-                self.transfer(&Nep141Transfer::new(
-                    refund,
-                    env::current_account_id(),
-                    &owner,
-                ))
-                // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
-                .unwrap_or_else(|e| env::log_str(&e.to_string()));
+                Gate::bypass_transfer_with(
+                    self,
+                    &Nep141Transfer::new(refund, env::current_account_id(), &owner),
+                    // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
+                    |e| env::log_str(&e.to_string()),
+                );
             }
         } else {
             // On payout failure, refund full escrow to owner and restore idle_balance
             self.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
-            self.transfer(&Nep141Transfer::new(
-                escrow_shares,
-                env::current_account_id(),
-                &owner,
-            ))
-            // If this fails, this is a serious issue as above
-            .unwrap_or_else(|e| env::log_str(&e.to_string()));
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
         }
         self.pending_market_exec.clear();
         self.remove_inflight_and_advance_head();

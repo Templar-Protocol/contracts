@@ -1,5 +1,8 @@
 #![allow(clippy::pedantic)]
 
+use std::collections::BTreeSet;
+
+use crate::governance::Timelocks;
 use crate::impl_callbacks::reconcile_supply_outcome;
 use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
@@ -9,6 +12,7 @@ use crate::wad::compute_fee_shares;
 use crate::wad::Wad;
 use crate::Contract;
 use crate::MarketRecord;
+use crate::Number;
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
 use near_sdk::serde_json;
@@ -21,14 +25,15 @@ use near_sdk_contract_tools::ft::Nep141 as _;
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
 use near_sdk_contract_tools::owner::OwnerExternal;
+use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
-use templar_common::vault::AllocatingState;
-use templar_common::vault::Error;
-use templar_common::vault::MarketConfiguration;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
-use templar_common::vault::WithdrawingState;
+use templar_common::vault::MAX_TIMELOCK_NS;
+use templar_common::vault::{
+    AllocatingState, Error, MarketConfiguration, Restrictions, WithdrawingState,
+};
 use templar_common::vault::{AllocationMode, DepositMsg};
 
 #[fixture]
@@ -104,6 +109,63 @@ fn receiver() -> AccountId {
 #[fixture]
 fn owner() -> AccountId {
     accounts(1)
+}
+
+proptest! {
+    #[test]
+    fn paused_restricts_all_accounts(account in any::<u32>().prop_map(mk)) {
+        let r = Restrictions::Paused;
+        let out = r.is_restricted(account.as_ref());
+        prop_assert_eq!(out, Some(Restrictions::Paused));
+    }
+
+    #[test]
+    fn blacklist_restricts_exact_members(
+        blacklist in prop::collection::vec(any::<u32>().prop_map(mk), 0..10),
+        account in any::<u32>().prop_map(mk)
+    ) {
+        let set: BTreeSet<AccountId> = blacklist.into_iter().collect();
+        let r = Restrictions::BlackList(set.clone());
+        let out = r.is_restricted(account.as_ref());
+
+        if set.contains(&account) {
+            match &out {
+                Some(Restrictions::BlackList(cloned)) => {
+                    prop_assert_eq!(cloned, &set);
+                    prop_assert!(cloned.contains(&account));
+                }
+                other => {
+                    prop_assert!(false, "expected Some(BlackList), got {:?}", other);
+                }
+            }
+        } else {
+            prop_assert_eq!(out, None);
+        }
+    }
+
+    #[test]
+    fn whitelist_restricts_exact_non_members(
+        whitelist in prop::collection::vec(any::<u32>().prop_map(mk), 0..10),
+        account in any::<u32>().prop_map(mk)
+    ) {
+        let set: BTreeSet<AccountId> = whitelist.into_iter().collect();
+        let r = Restrictions::WhiteList(set.clone());
+        let out = r.is_restricted(account.as_ref());
+
+        if set.contains(&account) {
+            prop_assert_eq!(out, None);
+        } else {
+            match &out {
+                Some(Restrictions::WhiteList(cloned)) => {
+                    prop_assert_eq!(cloned, &set);
+                    prop_assert!(!cloned.contains(&account));
+                }
+                other => {
+                    prop_assert!(false, "expected Some(WhiteList), got {:?}", other);
+                }
+            }
+        }
+    }
 }
 
 #[rstest(len => [2usize, 3, 5])]
@@ -237,14 +299,8 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(
-        m1.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        },
-    );
+    c.markets
+        .insert(m1.clone(), MarketRecord { cfg, principal: 0 });
     c.supply_queue.insert(m1.clone());
 
     // Idle = 100, so max_room (80) should clamp allocation
@@ -263,7 +319,6 @@ fn start_allocation_reserves_only_amount(c_vault_env: Contract) {
             m1.clone(),
             MarketRecord {
                 cfg: MarketConfiguration::default(),
-                pending_cap: None,
                 principal: 80,
             },
         );
@@ -399,14 +454,8 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg,
-            pending_cap: None,
-            principal: 0,
-        },
-    );
+    c.markets
+        .insert(m.clone(), MarketRecord { cfg, principal: 0 });
 
     // Lower cap to zero: should NOT disable the market anymore
     c.submit_cap(m.clone(), U128(0));
@@ -436,7 +485,6 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 0,
         },
     );
@@ -560,7 +608,6 @@ fn clamp_allocation_total_matches_min_bounds_cases(
         m.clone(),
         MarketRecord {
             cfg,
-            pending_cap: None,
             principal: cur,
         },
     );
@@ -594,7 +641,6 @@ fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal,
         },
     );
@@ -1240,6 +1286,95 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     c.set_supply_queue(vec![m1]);
 }
 
+#[rstest(
+    method_name,
+    case("set_curator"),
+    case("set_is_allocator"),
+    case("set_skim_recipient"),
+    case("set_fee_recipient"),
+    case("set_performance_fee"),
+    case("submit_guardian"),
+    case("submit_timelock"),
+    case("submit_cap"),
+    case("submit_market_removal"),
+    case("set_supply_queue")
+)]
+fn governance_abdicate_blocks_further_changes(method_name: &str) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let vault_id = accounts(0);
+        let mut c = new_test_contract(&vault_id);
+        let owner = c.own_get_owner().unwrap();
+
+        setup_env(&vault_id, &owner, vec![]);
+
+        c.abdicate(method_name.to_string());
+        match method_name {
+            "set_curator" => {
+                c.set_curator(accounts(2));
+            }
+            "set_is_allocator" => {
+                c.set_is_allocator(accounts(4), false);
+            }
+            "submit_guardian" => {
+                c.submit_guardian(accounts(5));
+                c.accept_guardian();
+                c.revoke_pending_guardian();
+            }
+            "set_skim_recipient" => {
+                c.set_skim_recipient(accounts(1));
+            }
+            "set_fee_recipient" => {
+                c.set_fee_recipient(accounts(1));
+            }
+            "set_performance_fee" => {
+                c.set_performance_fee(Wad::one() / 10);
+            }
+            "submit_timelock" => {
+                let cur = c.get_configuration().initial_timelock_ns;
+                // value choice irrelevant; abdication check runs first
+                c.submit_timelock(cur, None);
+                c.accept_timelock();
+                c.revoke_pending_timelock();
+            }
+            "submit_cap" => {
+                let market = mk(9200);
+                c.submit_cap(market.clone(), U128(1));
+                c.accept_cap(market.clone());
+                c.revoke_pending_cap(market);
+            }
+            "submit_market_removal" => {
+                let market = mk(9203);
+                c.submit_market_removal(market.clone());
+                c.revoke_pending_market_removal(market);
+            }
+            "set_supply_queue" => {
+                c.set_supply_queue(vec![]);
+            }
+            _ => unreachable!("unsupported abdicated method case"),
+        }
+    }));
+
+    let expected = format!("abdicated {method_name}");
+
+    match result {
+        Ok(()) => panic!("expected panic for abdicated method {method_name}"),
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.as_str()
+            } else if let Some(s) = payload.downcast_ref::<&str>() {
+                s
+            } else {
+                ""
+            };
+
+            assert!(
+                msg.contains(&expected),
+                "expected panic message to contain '{expected}', got '{msg}'"
+            );
+        }
+    }
+}
+
 #[test]
 #[should_panic = "Timelock not elapsed yet"]
 fn governance_accept_guardian_not_yet_panics() {
@@ -1248,15 +1383,29 @@ fn governance_accept_guardian_not_yet_panics() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    c.timelock_ns = u64::MAX;
+    // First, ensure a guardian is set by submitting and accepting once.
+    let initial_guardian = accounts(1);
+    c.submit_guardian(initial_guardian.clone());
+    set_ctx(
+        &vault_id,
+        &owner,
+        Some(env::block_timestamp() + 1_000_000_000),
+        None,
+    );
+    c.accept_guardian();
 
+    let max_timelock = MAX_TIMELOCK_NS;
+    c.governance_timelocks = Timelocks::new(max_timelock, max_timelock, max_timelock, max_timelock);
+    // Now submit another guardian change but do not advance time.
     let new_g = accounts(5);
+    set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(new_g);
     // Timelock not advanced -> should panic
     c.accept_guardian();
 }
 
 #[test]
+#[should_panic]
 fn governance_submit_accept_and_revoke_guardian() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1281,7 +1430,7 @@ fn governance_submit_accept_and_revoke_guardian() {
     c.submit_guardian(another);
     c.revoke_pending_guardian();
 
-    // No pending now; accept should no-op (but must not panic)
+    // No pending now; accept should panic due to no pending guardian change
     c.accept_guardian();
 }
 
@@ -1295,7 +1444,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     let cur = c.get_configuration().initial_timelock_ns;
 
     // Increase applies immediately
-    c.submit_timelock((cur.0 + 1).into());
+    c.submit_timelock((cur.0 + 1).into(), None);
     assert_eq!(
         c.get_configuration().initial_timelock_ns.0,
         cur.0 + 1,
@@ -1303,7 +1452,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
     );
 
     // Decrease schedules a pending change
-    c.submit_timelock(cur);
+    c.submit_timelock(cur, None);
     set_ctx(
         &vault_id,
         &owner,
@@ -1319,7 +1468,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
 }
 
 #[test]
-#[should_panic = "No pending timelock change"]
+#[should_panic = "No pending change"]
 fn governance_accept_timelock_without_pending_panics() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1331,7 +1480,7 @@ fn governance_accept_timelock_without_pending_panics() {
 }
 
 #[test]
-#[should_panic = "No pending timelock change"]
+#[should_panic = "No pending change"]
 fn governance_revoke_pending_timelock_then_accept_panics() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -1341,8 +1490,8 @@ fn governance_revoke_pending_timelock_then_accept_panics() {
     let cur = c.get_configuration().initial_timelock_ns;
 
     // Force a pending by first increasing then decreasing
-    c.submit_timelock((cur.0 + 1).into());
-    c.submit_timelock(cur);
+    c.submit_timelock((cur.0 + 1).into(), None);
+    c.submit_timelock(cur, None);
 
     // Revoke the pending change; accept must now panic
     c.revoke_pending_timelock();
@@ -1425,20 +1574,23 @@ fn governance_submit_and_revoke_market_removal() {
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
+    let new_ts = env::block_timestamp() + 1_000_000_000;
+    set_ctx(&vault_id, &owner, Some(new_ts), None);
 
-    c.timelock_ns = 1;
     let m = mk(9107);
     let cfg = MarketConfiguration {
         cap: U128(0),
         enabled: true,
         removable_at: 0,
     };
-    c.markets.insert(m.clone(), cfg.into());
+    let mut rec: MarketRecord = cfg.into();
+    rec.principal = 1;
+    c.markets.insert(m.clone(), rec);
 
-    // Submit removal (schedules timelock)
     c.submit_market_removal(m.clone());
+    c.accept_market_removal(m.clone());
     let after = c.markets.get(&m).unwrap();
-    assert!(after.cfg.removable_at > 0, "removal must be scheduled");
+    assert_eq!(after.cfg.removable_at, new_ts, "removal must be scheduled");
 
     // Revoke pending removal
     c.revoke_pending_market_removal(m.clone());
@@ -1643,7 +1795,6 @@ fn after_exec_withdraw_read_none_to_payout(mut c: Contract) {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal,
         },
     );
@@ -1751,7 +1902,6 @@ fn prop_after_create_withdraw_req_failure_skips(collected: u128, need: u128) {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 100,
         },
     );
@@ -1799,7 +1949,6 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: before,
         },
     );
@@ -1860,7 +2009,6 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 10,
         },
     );
@@ -1910,7 +2058,6 @@ fn refund_path_consistency() {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 10,
         },
     );
@@ -2125,7 +2272,6 @@ fn after_create_withdraw_req_success_returns_promise(
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 100,
         },
     );
@@ -2157,7 +2303,6 @@ fn after_exec_withdraw_req_returns_promise(mut c: Contract) {
         market.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
-            pending_cap: None,
             principal: 10,
         },
     );
@@ -2193,7 +2338,6 @@ fn after_exec_withdraw_read_advances_when_remaining(
     let m1 = mk(70);
     let record = MarketRecord {
         cfg: MarketConfiguration::default(),
-        pending_cap: None,
         principal: 10,
     };
     c.markets.insert(m1.clone(), record.clone());
@@ -2408,4 +2552,177 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
         owner_before,
         "Owner balance unchanged"
     );
+}
+
+#[test]
+fn no_fee_returns_zero() {
+    assert_eq!(
+        compute_fee_shares(1_000.into(), 900.into(), Wad::zero(), 1_000.into()),
+        Number::zero()
+    );
+}
+
+#[test]
+fn no_profit_returns_zero() {
+    assert_eq!(
+        compute_fee_shares(
+            1_000.into(),
+            1_000.into(),
+            Wad::one() / 10u128,
+            1_000.into()
+        ),
+        Number::zero()
+    );
+    assert_eq!(
+        compute_fee_shares(900.into(), 1_000.into(), Wad::one() / 10u128, 1_000.into()),
+        Number::zero()
+    );
+}
+
+#[test]
+fn zero_supply_returns_zero() {
+    assert_eq!(
+        compute_fee_shares(1_000.into(), 900.into(), Wad::one() / 10u128, 0u128.into()),
+        Number::zero()
+    );
+}
+
+#[test]
+fn simple_accrual_10_percent_fee() {
+    // cur=1200, last=1000, profit=200, fee_assets=20
+    // fee_shares = floor(20 * 1000 / (1200-20)) = floor(20000/1180) = 16
+    assert_eq!(
+        u128::from(compute_fee_shares(
+            1200u128.into(),
+            1000u128.into(),
+            Wad::one() / 10u128,
+            1000u128.into()
+        )),
+        16
+    );
+}
+
+#[test]
+fn full_fee_100_percent() {
+    // cur=1200, last=1000, profit=200, fee_assets=200
+    // denom = 1200 - 200 = 1000
+    // fee_shares = 200*1000/1000 = 200
+    assert_eq!(
+        u128::from(compute_fee_shares(
+            1200u128.into(),
+            1000u128.into(),
+            Wad::one(),
+            1000u128.into()
+        )),
+        200
+    );
+}
+
+// Property: Shares minting never panics, never mints more than `accept` when price ≥ 1
+// Model: minted = floor(accept * S / A); price ≥ 1 <=> A >= S => minted ≤ accept
+#[rstest(
+        accept => [0u128.into(), 1u128.into(), 2u128.into(), 10u128.into(), (1u128<<32).into(), (1u128<<64).into(), (u128::MAX/2).into(), (u128::MAX-1).into()],
+        supply => [0u128.into(), 1u128.into(), 10u128.into(), (1u128<<32).into(), (1u128<<64).into(), (u128::MAX/2).into()],
+        assets_base => [1u128.into(), 2u128.into(), 10u128.into(), (1u128<<32).into(), (1u128<<64).into(), (u128::MAX/2).into(), (u128::MAX-1).into()]
+    )]
+fn prop_minted_shares_le_accept_when_price_ge_one(
+    accept: Number,
+    supply: Number,
+    assets_base: Number,
+) {
+    use crate::mul_div_floor;
+
+    let assets = core::cmp::max(assets_base, supply); // enforce price ≥ 1
+    let minted = mul_div_floor(accept, supply, assets);
+    assert!(
+        minted <= accept,
+        "minted {minted:?} should be <= accept {accept:?} when price>=1 (S={supply:?}, A={assets:?})"
+    );
+}
+
+// Property: Fee shares are 0 when not profitable (cur_total_assets <= last_total_assets)
+#[rstest(
+    perf => [Wad::zero(), Wad::one() / Number::from(100u128), Wad::one() / Number::from(10u128)],
+    last => [0u128.into(), 1u128.into(), (1u128<<32).into()],
+    ts => [0u128.into(), 1u128.into(), (1u128<<64).into()]
+)]
+fn prop_fee_zero_when_not_profitable(perf: Wad, last: Number, ts: Number) {
+    let cur_equal = last;
+    let cur_lower = last.saturating_sub(Number::one());
+    assert_eq!(
+        compute_fee_shares(cur_equal, last, perf, ts),
+        Number::zero()
+    );
+    assert_eq!(
+        compute_fee_shares(cur_lower, last, perf, ts),
+        Number::zero()
+    );
+}
+
+#[rstest(
+        s =>[0u128.into(), 1u128.into(), 13u128.into(), (1u128<<32).into(), (1u128<<64).into()],
+        a =>[1u128.into(), 7u128.into(), (1u128<<32).into(), (1u128<<64).into(), ((1u128<<64) + 123).into()],
+        k =>[0u128.into(), 1u128.into(), 2u128.into(), 10u128.into(), (1u128<<16).into()]
+    )]
+fn deposit_is_monotone_in_assets(s: Number, a: Number, k: Number) {
+    // More assets never produce fewer shares (with fixed totals & offsets).
+
+    use crate::mul_div_floor;
+    let shares1 = mul_div_floor(a, s + Number::one(), a + k + Number::one());
+    let shares2 = mul_div_floor(
+        a + Number::one(),
+        s + Number::one(),
+        a + k + Number::from(2u128),
+    );
+    assert!(shares2 >= shares1);
+}
+
+// Property: Fee shares are monotone =>profit when fee>0 and total_supply>0
+#[rstest(
+        perf => [Wad::one()/100u128, Wad::one()/10u128],
+        last => [0u128.into(), (1u128<<32).into()],
+        ts => [1u128.into(), (1u128<<64).into()],
+        p1 => [0u128.into(), 1u128.into(), (1u128<<16).into()],
+        p2 => [1u128.into(), (1u128<<16).into(), (1u128<<32).into()]
+    )]
+fn prop_fee_monotone_in_profit(perf: Wad, last: Number, ts: Number, p1: Number, p2: Number) {
+    let p_low = core::cmp::min(p1, p2);
+    let p_high = core::cmp::max(p1, p2);
+    let s1 = compute_fee_shares(last.saturating_add(p_low), last, perf, ts);
+    let s2 = compute_fee_shares(last.saturating_add(p_high), last, perf, ts);
+    assert!(
+        s2 >= s1,
+        "fee shares should be monotone =>profit: s2 {s2:?} >= s1 {s1:?} (last={last:?}, perf={perf:?}, ts={ts:?})"
+    );
+}
+
+// Property: Withdrawal math never underflows:
+// withdrawn = before - new (saturating)
+// credited = min(withdrawn, need)
+// remaining = rem - credited (saturating)
+#[rstest(
+        before => [0u128, 1, 10, 1u128<<64, u128::MAX/2, u128::MAX-1],
+        newp => [0u128, 1, 10, 1u128<<64, u128::MAX/2],
+        need => [0u128, 1, 10, 1u128<<32, u128::MAX/4],
+        rem => [0u128, 1, 10, 1u128<<32, u128::MAX/4]
+    )]
+fn prop_withdraw_math_never_underflows(before: u128, newp: u128, need: u128, rem: u128) {
+    let withdrawn = before.saturating_sub(newp);
+    let credited = core::cmp::min(withdrawn, need);
+    let remaining = rem.saturating_sub(credited);
+    assert!(withdrawn <= before, "withdrawn should not exceed before");
+    assert!(credited <= need, "credited should be <= need");
+    assert!(remaining <= rem, "remaining should not exceed rem");
+}
+
+#[rstest(
+    fee =>[Wad::zero(), Wad::one()/100u128, Wad::one()/10u128],
+    ts =>[0u128.into(), 1u128.into(), (1u128<<32).into(), (1u128<<64).into()],
+    last =>[0u128.into(), 1u128.into(), (1u128<<32).into()],
+    profit =>[0u128.into(), 1u128.into(), 10u128.into(), (1u128<<32).into()]
+)]
+fn fee_shares_upper_bound_by_total_supply(fee: Wad, ts: Number, last: Number, profit: Number) {
+    let cur = last.saturating_add(profit);
+    let minted = compute_fee_shares(cur, last, fee, ts);
+    assert!(minted <= ts || ts.is_zero());
 }

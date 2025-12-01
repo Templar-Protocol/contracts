@@ -46,20 +46,27 @@ REGISTRY_ACCOUNT_IDS=v1.tmplr.near
 ### Liquidation
 
 ```bash
-LIQUIDATION_STRATEGY=partial    # partial | full
-PARTIAL_PERCENTAGE=50           # 1-100 (if partial)
+LIQUIDATION_STRATEGY=partial    # partial | full | fixed-amount
+PARTIAL_LIQUIDATION_PERCENTAGE=50           # 1-100 (% of available funds to use)
+FIXED_LIQUIDATION_AMOUNT=1000000000  # Token base units (e.g., 1000 USDC)
+LOOP_LIQUIDATION=false          # Repeatedly liquidate until healthy
+MAX_LOOP_ITERATIONS=10          # Safety limit for loop liquidation
 MIN_PROFIT_BPS=50              # Minimum profit (basis points)
 ```
+
+- **partial** - Use percentage of available funds per liquidation
+- **full** - Use 100% of available funds up to liquidatable amount
+- **fixed-amount** - Use a fixed amount per liquidation (ideal for loop liquidation)
+- **loop_liquidation** - When enabled, continues liquidating the same position until it becomes healthy or runs out of funds
+- **max_loop_iterations** - Safety limit to prevent infinite loops (default: 10)
 
 ### Collateral Strategy
 
 ```bash
-COLLATERAL_STRATEGY=hold  # hold | swap-to-primary | swap-to-borrow
-# PRIMARY_ASSET=nep141:usdc.near  # Required for swap-to-primary
+COLLATERAL_STRATEGY=hold  # hold | swap-to-borrow
 ```
 
 - **hold** - Keep collateral as received
-- **swap-to-primary** - Convert all to specified asset
 - **swap-to-borrow** - Route back to borrow assets
 
 ### Market Filtering
@@ -91,10 +98,44 @@ make help     # Show all commands
 
 ## Production Deployment
 
-1. Configure `.env` with production credentials
-2. Fund account with borrow assets for target markets
-3. Test: `DRY_RUN=true make run && make logs`
-4. Deploy: `DRY_RUN=false make prod`
+**📖 For complete deployment guide, see [DEPLOYMENT.md](./DEPLOYMENT.md)**
+
+### Quick Deploy to Cloud Server
+
+```bash
+# 1. Create Ubuntu 24.04 server (Hetzner, DigitalOcean, AWS, etc.)
+#    Minimum: 2 vCPU, 4GB RAM, 40GB SSD
+
+# 2. Initialize server (one-time setup)
+curl -fsSL https://raw.githubusercontent.com/Templar-Protocol/contracts/main/service/liquidator/scripts/init-server.sh | sudo bash
+
+# 3. Configure SSH access from your local machine
+ssh-copy-id liquidator@YOUR_SERVER_IP
+
+# 4. Deploy liquidator
+cd service/liquidator
+./scripts/deploy.sh YOUR_SERVER_IP
+
+# 5. Configure environment
+ssh liquidator@YOUR_SERVER_IP
+cd /opt/templar-liquidator/repo/service/liquidator
+nano .env  # Add your NEAR credentials
+
+# 6. Monitor logs
+docker compose logs -f
+```
+
+### Deployment Scripts
+
+| Script | Purpose |
+|--------|---------|
+| **`scripts/init-server.sh`** | One-time server setup (Docker, users, firewall) |
+| **`scripts/deploy.sh`** | Deploy or update liquidator |
+| **`scripts/setup-loki-grafana.sh`** | Install log monitoring (Grafana + Loki) |
+| **`scripts/run-mainnet.sh`** | Quick local mainnet test |
+| **`scripts/run-testnet.sh`** | Quick local testnet test |
+
+See **[DEPLOYMENT.md](./DEPLOYMENT.md)** for detailed documentation.
 
 ## Building
 
@@ -105,8 +146,13 @@ cargo build --release
 
 ## Documentation
 
-- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Architecture and development guide
-- [.env.example](./.env.example) - Full configuration reference
+- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Complete deployment guide and scripts documentation
+- **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** - Architecture and development guide
+- **[.env.example](./.env.example)** - Full configuration reference
+
+## Architecture
+
+See [IMPLEMENTATION.md](./IMPLEMENTATION.md) for detailed architecture, development guide, and testing instructions.
 
 ## License
 

@@ -20,7 +20,6 @@ use tracing::Instrument;
 use crate::{
     inventory::InventoryManager,
     liquidation_strategy::LiquidationStrategy,
-    rebalancer::InventoryRebalancer,
     rpc::{list_all_deployments, view, Network},
     CollateralStrategy, Liquidator, LiquidatorError,
 };
@@ -62,6 +61,10 @@ pub struct ServiceConfig {
     /// Collateral assets to ignore in market filtering
     pub ignored_collateral_assets:
         Vec<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>,
+    /// Enable loop liquidation - repeatedly liquidate until position is healthy
+    pub loop_liquidation: bool,
+    /// Maximum iterations for loop liquidation (safety limit)
+    pub max_loop_iterations: u32,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -71,10 +74,8 @@ pub struct LiquidatorService {
     signer: Signer,
     inventory: Arc<RwLock<InventoryManager>>,
     markets: HashMap<AccountId, Liquidator>,
-    /// Swap provider used by rebalancer
-    #[allow(dead_code)]
+    /// Swap provider passed to liquidators for immediate post-liquidation swaps
     oneclick_provider: Option<crate::swap::SwapProviderImpl>,
-    rebalancer: InventoryRebalancer,
 }
 
 impl LiquidatorService {
@@ -98,17 +99,9 @@ impl LiquidatorService {
             config.signer_account.clone(),
         )));
 
-        // Create swap provider for rebalancer
+        // Create swap provider for executor
         let (_, oneclick_provider) =
             Self::create_swap_providers(&config, &client, Arc::new(signer.clone()));
-
-        // Initialize rebalancer with swap provider
-        let rebalancer = InventoryRebalancer::new(
-            inventory.clone(),
-            oneclick_provider.clone(),
-            config.collateral_strategy.clone(),
-            config.dry_run,
-        );
 
         Self {
             config,
@@ -117,7 +110,6 @@ impl LiquidatorService {
             inventory,
             markets: HashMap::new(),
             oneclick_provider,
-            rebalancer,
         }
     }
 
@@ -255,12 +247,12 @@ impl LiquidatorService {
                     // Run liquidation round
                     self.run_liquidation_round().await;
 
-                    // Refresh collateral inventory after liquidations
+                    // Refresh collateral inventory after liquidations (for tracking)
                     match self.inventory.write().await.refresh_collateral().await {
                         Ok(balances) => {
                             let count = balances.len();
                             if count > 0 {
-                                tracing::info!(
+                                tracing::debug!(
                                     collateral_asset_count = count,
                                     "Collateral inventory refreshed"
                                 );
@@ -273,9 +265,6 @@ impl LiquidatorService {
                             );
                         }
                     }
-
-                    // Rebalance inventory based on collateral strategy
-                    self.rebalancer.rebalance().await;
 
                     tracing::info!(
                         interval_seconds = self.config.liquidation_scan_interval,
@@ -449,7 +438,7 @@ impl LiquidatorService {
                 // Clone Signer enum
                 let signer = Arc::new(self.signer.clone());
 
-                let liquidator = Liquidator::new(
+                let mut liquidator = Liquidator::new(
                     &self.client,
                     signer,
                     &self.inventory,
@@ -459,11 +448,21 @@ impl LiquidatorService {
                     self.config.collateral_strategy.clone(),
                     self.config.transaction_timeout,
                     self.config.dry_run,
-                    None,
+                    self.oneclick_provider.clone(),
+                    self.config.loop_liquidation,
+                    self.config.max_loop_iterations,
                 );
 
-                // Test market compatibility
-                match liquidator.scanner().test_market_compatibility().await {
+                // Fetch market version for version-specific liquidation logic
+                liquidator.fetch_market_version().await;
+
+                // Test market compatibility (including partial liquidation support if required)
+                let requires_partial = self.config.strategy.requires_partial_liquidation_support();
+                match liquidator
+                    .scanner()
+                    .check_market_compatibility(requires_partial)
+                    .await
+                {
                     Ok(()) => {
                         supported_markets.insert(market, liquidator);
                     }

@@ -16,16 +16,17 @@ accumulator \
 
 ## CLI Arguments
 
-| Argument | Env Variable | Default | Description |
-|----------|--------------|---------|-------------|
-| `--registries` | `REGISTRIES_ACCOUNT_IDS` | Required | Registry contracts (space-separated) |
-| `--signer-key` | `SIGNER_KEY` | Required | Private key (`ed25519:...`) |
-| `--signer-account` | `SIGNER_ACCOUNT_ID` | Required | NEAR account for signing |
-| `--network` | `NETWORK` | `testnet` | Network: `testnet` or `mainnet` |
-| `--timeout` | `TIMEOUT` | `60` | RPC timeout in seconds |
-| `--interval` | `INTERVAL` | `600` | Interval between runs (seconds) |
-| `--registry-refresh-interval` | `REGISTRY_REFRESH_INTERVAL` | `3600` | Market refresh interval (seconds) |
-| `--concurrency` | `CONCURRENCY` | `4` | Concurrent operations |
+| Argument                      | Env Variable                | Default   | Description                                     |
+| ----------------------------- | --------------------------- | --------- | ----------------------------------------------- |
+| `--registries`                | `REGISTRIES_ACCOUNT_IDS`    | Required  | Registry contracts (space-separated)            |
+| `--signer-key`                | `SIGNER_KEY`                | Required  | Private key (`ed25519:...`)                     |
+| `--signer-account`            | `SIGNER_ACCOUNT_ID`         | Required  | NEAR account for signing                        |
+| `--network`                   | `NETWORK`                   | `testnet` | Network: `testnet` or `mainnet`                 |
+| `--timeout`                   | `TIMEOUT`                   | `60`      | RPC timeout in seconds                          |
+| `--interval`                  | `INTERVAL`                  | `600`     | Interval between runs (seconds)                 |
+| `--static-interval`           | `STATIC_INTERVAL`           | `86400`   | Interval between static accumulations (seconds) |
+| `--registry-refresh-interval` | `REGISTRY_REFRESH_INTERVAL` | `3600`    | Market refresh interval (seconds)               |
+| `--concurrency`               | `CONCURRENCY`               | `4`       | Concurrent operations                           |
 
 ## Features
 
@@ -73,12 +74,14 @@ See `accumulator.service` file.
 ## Monitoring
 
 **Log Levels:**
+
 ```bash
 export RUST_LOG="info"                          # Production
 export RUST_LOG="debug,templar_accumulator=trace"  # Development
 ```
 
 **Key Metrics:**
+
 - Success rate (successful/failed accumulations)
 - Market coverage (number of markets monitored)
 - Position count (positions processed per run)
@@ -87,17 +90,20 @@ export RUST_LOG="debug,templar_accumulator=trace"  # Development
 ## Performance Tuning
 
 **Concurrency:**
+
 - Low (2-4): Conservative, lower RPC load
 - Medium (4-8): Balanced
 - High (8-16): Maximum throughput
 
 **Intervals:**
+
 - Accumulation: How often to apply interest (default 600s)
 - Registry Refresh: How often to discover markets (default 3600s)
 
 ## Cost Considerations
 
 **Gas Usage:**
+
 - Each `apply_interest()` call uses ~3.3 TGas in average
 - Cost per call: ~0.0003 NEAR
 - View calls (fetching positions) are free
@@ -110,10 +116,12 @@ export RUST_LOG="debug,templar_accumulator=trace"  # Development
 | 10,000 | 3.0 | $15.00 |
 
 **Notes:**
+
 - Actual gas usage varies by position complexity
 - NEAR refunds unused gas automatically
 
 **Optimize:**
+
 - Increase accumulation interval
 - Filter positions needing updates (requires changes)
 - Batch accounts (requires contract changes)
@@ -135,11 +143,13 @@ export RUST_LOG="debug,templar_accumulator=trace"  # Development
 ## Troubleshooting
 
 **No accumulations:**
+
 - Check borrow positions exist: `near contract call-function as-read-only market.testnet list_borrow_positions json-args '{"offset": 0, "count": 10}' network-config testnet now`
 - Verify bot running: `systemctl status accumulator`
 - Check balance: `near account view-account-summary accumulator.testnet network-config testnet now`
 
 **High failure rate:**
+
 - Increase `--timeout` (default: 60s)
 - Reduce `--concurrency` (default: 4)
 - Check RPC endpoint health
