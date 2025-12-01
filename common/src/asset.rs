@@ -83,7 +83,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 ref contract_id,
                 ref token_id,
             } => Promise::new(contract_id.clone()).function_call(
-                <&str as Into<String>>::into("mt_transfer"),
+                "mt_transfer".into(),
                 serde_json::to_vec(&json!({
                    "receiver_id": receiver_id,
                    "token_id": token_id,
@@ -121,7 +121,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 ref contract_id,
                 ref token_id,
             } => Promise::new(contract_id.clone()).function_call(
-                <&str as Into<String>>::into("mt_transfer_call"),
+                "mt_transfer_call".into(),
                 serde_json::to_vec(&json!({
                    "receiver_id": receiver_id,
                    "token_id": token_id,
@@ -294,7 +294,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 ref contract_id,
                 ref token_id,
             } => Promise::new(contract_id.clone()).function_call(
-                <&str as Into<String>>::into("mt_balance_of"),
+                "mt_balance_of".into(),
                 serde_json::to_vec(&json!({
                     "account_id": current_account_id,
                     "token_id": token_id,

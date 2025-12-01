@@ -84,5 +84,5 @@ hex = "0.4"
 axum-test = "15.0"
 # Testing
 near-workspaces = "0.14"
-wiremock = "0.6"
+wiremock = { workspace = true }
 tokio-test = "0.4"
