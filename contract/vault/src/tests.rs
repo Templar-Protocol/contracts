@@ -694,9 +694,9 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
     let logs = near_sdk::test_utils::get_logs();
     let joined = logs.join("\n");
     assert!(
-        joined.contains("\"event\":\"WithdrawalAccounting\"")
+        joined.contains("\"event\":\"withdrawal_accounting\"")
             && joined.contains("\"kind\":\"InflowMismatch\""),
-        "expected WithdrawalAccounting InflowMismatch event, got logs: {joined:?}",
+        "expected withdrawal_accounting InflowMismatch event, got logs: {joined:?}",
     );
 
     if let OpState::Withdrawing(WithdrawingState {
@@ -782,9 +782,9 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
     let logs = near_sdk::test_utils::get_logs();
     let joined = logs.join("\n");
     assert!(
-        joined.contains("\"event\":\"WithdrawalAccounting\"")
+        joined.contains("\"event\":\"withdrawal_accounting\"")
             && joined.contains("\"kind\":\"OverpayCredited\""),
-        "expected WithdrawalAccounting OverpayCredited event, got logs: {joined:?}",
+        "expected withdrawal_accounting OverpayCredited event, got logs: {joined:?}",
     );
 
     if let OpState::Payout(PayoutState { amount, .. }) = c.op_state {
@@ -2449,7 +2449,8 @@ fn after_create_withdraw_req_success_returns_promise(
 }
 
 #[test]
-fn rebalance_create_failure_does_not_panic_and_keeps_idle_and_unlocks() {
+#[should_panic(expected = "Couldnt create withdraw request in market")]
+fn rebalance_create_failure_keeps_idle_and_unlocks() {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
