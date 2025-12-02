@@ -351,7 +351,7 @@ impl Contract {
 
         if let Err(e) = self.resolve_withdraw_market(market_index) {
             return self.stop_and_exit(Some(&e));
-        };
+        }
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())

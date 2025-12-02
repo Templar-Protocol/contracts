@@ -720,7 +720,7 @@ impl<'a> BorrowPositionGuard<'a> {
     ///
     /// - If this record is not eligible for liquidation.
     /// - If the liquidator requests to liquidate too much collateral from the
-    ///     position.
+    ///   position.
     /// - If the calculation of the collateral value fails.
     /// - If the liquidator offers too little to purchase the collateral.
     pub fn record_liquidation_initial(

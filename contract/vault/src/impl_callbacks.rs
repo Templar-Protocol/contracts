@@ -43,7 +43,7 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
-        };
+        }
 
         match accepted {
             Err(_) => {
