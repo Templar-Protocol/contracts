@@ -16,8 +16,8 @@ use templar_common::{
     vault::{
         AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
         IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
-        WithdrawingState, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_03_SETTLE_GAS,
-        GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
+        WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_03_SETTLE_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
     },
 };
 
@@ -569,10 +569,10 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    #[private]
-    pub fn unbrick_01_reconcile_payout(
+    fn payout_resync_and_refund(
         &mut self,
-        #[callback_result] balance: Result<U128, PromiseError>,
+        balance: Result<U128, PromiseError>,
+        reason: Option<Reason>,
     ) -> PromiseOrValue<()> {
         let PayoutState {
             op_id,
@@ -588,16 +588,14 @@ impl Contract {
             }
         };
 
-        // Emit a diagnostic that we are force-unbricking this payout.
         Event::PayoutStopped {
             op_id: op_id.into(),
             receiver: receiver.clone(),
             amount: U128(amount),
-            reason: Some(Reason::Other("unbrick_payout".to_string())),
+            reason,
         }
         .emit();
 
-        // Re-sync idle_balance with the actual underlying FT balance if possible.
         if let Ok(U128(actual_idle)) = balance {
             let current_idle = self.idle_balance;
             if actual_idle > current_idle {
@@ -610,12 +608,9 @@ impl Contract {
                 )));
             }
         } else {
-            // If we cannot read the balance, fall back to treating this as a failed payout
-            // and restore idle by the expected amount.
             self.update_idle_balance(IdleBalanceDelta::Increase(U128(amount)));
         }
 
-        // Treat unbricked payout as failure: refund full escrow_shares to the owner.
         if escrow_shares > 0 {
             Gate::bypass_transfer_with(
                 self,
@@ -630,6 +625,15 @@ impl Contract {
         self.op_state = OpState::Idle;
 
         PromiseOrValue::Value(())
+    }
+
+    #[private]
+    pub fn stop_and_exit_payout_01_reconcile(
+        &mut self,
+        #[callback_result] balance: Result<U128, PromiseError>,
+        reason: Option<Reason>,
+    ) -> PromiseOrValue<()> {
+        self.payout_resync_and_refund(balance, reason)
     }
 
     /// Cash flow:
@@ -819,7 +823,19 @@ impl Contract {
         match &self.op_state {
             OpState::Allocating(_) => self.stop_and_exit_allocating(msg),
             OpState::Withdrawing(_) => self.stop_and_exit_withdrawing(msg),
-            OpState::Payout(_) => self.stop_and_exit_payout(msg),
+            OpState::Payout(_) => {
+                let reason = msg.map(|m| Reason::Other(m.to_string()));
+                return PromiseOrValue::Promise(
+                    ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                        .with_static_gas(Gas::from_tgas(5))
+                        .ft_balance_of(env::current_account_id())
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_SEND_TO_USER_GAS)
+                                .stop_and_exit_payout_01_reconcile(reason),
+                        ),
+                );
+            }
             OpState::Idle => {
                 Event::OperationStoppedWhileIdle {
                     reason: msg.map(|m| Reason::Other(m.to_string())),

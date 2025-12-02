@@ -478,7 +478,9 @@ impl Contract {
                         .then(
                             Self::ext(env::current_account_id())
                                 .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .unbrick_01_reconcile_payout(),
+                                .stop_and_exit_payout_01_reconcile(Some(Reason::Other(
+                                    "unbrick_payout".to_string(),
+                                ))),
                         ),
                 )
             }
