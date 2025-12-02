@@ -167,28 +167,36 @@ const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 = 20;
 pub const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS: Gas =
     Gas::from_tgas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
-// ?
-pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
+// Extra gas reserved for post-supply verification callbacks, used in
+// paths where we want a conservative safety margin beyond the base
+// estimate.
+pub const SUPPLY_POST_VERIFY_GAS: Gas = Gas::from_tgas(30);
 
-// Our callback roots
+// Callback gas roots for withdraw/supply orchestration.
 
-// TODO: rename
-pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas =
+// Root budget for callbacks after creating a market-side
+// supply-withdrawal request. Encodes: create request, read supply
+// position and settle withdraw accounting.
+pub const WITHDRAW_CREATE_REQUEST_CALLBACK_GAS: Gas =
     buffer(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ + AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
-// TODO: rename
+// Budget for the final "settle" phase of a withdraw execution:
+// reconcile principal and idle_balance, and potentially transition to
+// payout or the next market.
 const AFTER_EXECUTE_NEXT_WITHDRAW: u64 = 5 + 5 + AFTER_SEND_TO_USER;
-pub const EXECUTE_WITHDRAW_03_SETTLE_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
+pub const WITHDRAW_SETTLE_CALLBACK_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
 
-// todo: rename
+// Budget for executing the next supply-withdrawal request on a market
+// and fetching the updated supply position before the settle step.
 const AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 =
     GET_SUPPLY_POSITION + AFTER_EXECUTE_NEXT_WITHDRAW;
-pub const EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS: Gas =
+pub const WITHDRAW_EXECUTE_FETCH_POSITION_GAS: Gas =
     buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
 const AFTER_SUPPLY_2_READ: u64 = 5;
-pub const SUPPLY_02_POSITION_READ_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
-pub const AFTER_SUPPLY_1_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
+pub const SUPPLY_POSITION_READ_CALLBACK_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
+pub const SUPPLY_AFTER_TRANSFER_CHECK_GAS: Gas =
+    buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
 
 // NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);

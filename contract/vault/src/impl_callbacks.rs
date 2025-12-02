@@ -17,7 +17,7 @@ use templar_common::{
         AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
         IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
         WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_03_SETTLE_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
+        GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
 
@@ -67,7 +67,7 @@ impl Contract {
                         .get_supply_position(env::current_account_id())
                         .then(
                             Self::ext(env::current_account_id())
-                                .with_static_gas(SUPPLY_02_POSITION_READ_GAS)
+                                .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
                                 .supply_02_position_read(
                                     market.clone(),
                                     op_id,
@@ -202,6 +202,10 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
+    /// Callback for allocator-only rebalance after attempting to create a
+    /// market-side supply withdrawal request. On success, this only emits a
+    /// diagnostic event and does not change op_state; on failure, it logs and
+    /// leaves the vault Idle.
     #[private]
     pub fn rebalance_withdraw_01_after_create_request(
         &mut self,
@@ -211,7 +215,9 @@ impl Contract {
     ) {
         match did_create {
             Ok(()) => Event::WithdrawRequestCreated { market, amount }.emit(),
-            Err(_) => panic_with_message("Couldnt create withdraw request in market"),
+            Err(_) => {
+                panic_with_message("Couldnt create withdraw request in market");
+            }
         }
     }
 
@@ -240,7 +246,7 @@ impl Contract {
             self.market_execute_withdraw_and_fetch_position(market.clone(), batch_limit)
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
+                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                         .execute_withdraw_02_reconcile_position(
                             op_id,
                             market_index,
@@ -321,7 +327,7 @@ impl Contract {
                 .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
+                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                         .execute_withdraw_03_settle(
                             op_id,
                             market_index,
@@ -475,7 +481,7 @@ impl Contract {
             self.market_execute_withdraw_and_fetch_position(market.clone(), batch_limit)
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
+                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                         .rebalance_withdraw_02_reconcile_position(
                             op_id,
                             market,
@@ -524,7 +530,7 @@ impl Contract {
                 .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
+                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                         .rebalance_withdraw_03_settle(
                             op_id,
                             market,
@@ -778,7 +784,7 @@ impl Contract {
         self.market_execution_lock.unlock(s.index);
 
         let owner = s.owner.clone();
- 
+
         if s.escrow_shares > 0 {
             Gate::bypass_transfer_with(
                 self,
@@ -786,7 +792,6 @@ impl Contract {
                 |e| env::log_str(&e.to_string()),
             );
         }
-
 
         self.pop_head();
         self.withdraw_route.clear();

@@ -85,6 +85,11 @@ impl VaultController {
         #[call(exec, tgas(300))]
         pub fn reallocate(delta: AllocationDelta);
 
+        // Allocator-only: executes an existing market-side supply withdrawal
+        // request and credits any returned funds to the vault's idle balance.
+        #[call(exec, tgas(300))]
+        pub fn execute_rebalance_withdrawal(market: AccountId, batch_limit: Option<u32>);
+
         #[call(exec, tgas(30), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn withdraw(amount: U128, receiver: AccountId);
 
@@ -283,7 +288,24 @@ impl UnifiedVaultController {
         e
     }
 
+    pub async fn execute_rebalance_withdrawal(
+        &self,
+        allocator: &Account,
+        market: AccountId,
+        batch_limit: Option<u32>,
+    ) -> ExecutionSuccess {
+        let e = self
+            .vault
+            .execute_rebalance_withdrawal(allocator, market, batch_limit)
+            .await;
+        if self.debug {
+            print_execution(&e);
+        }
+        e
+    }
+ 
     pub async fn withdraw(
+
         &self,
         withdrawer: &Account,
         amount: U128,

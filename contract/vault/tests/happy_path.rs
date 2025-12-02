@@ -176,10 +176,67 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Resupply and wait
     vault.supply(&supply_user, amount.0).await;
+    let mkt = c.market.contract().id();
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Supply(Delta::new(c.market.contract().id().clone(), amount)),
+            AllocationDelta::Supply(Delta::new(mkt.clone(), amount)),
+        )
+        .await;
+    harvest(&c, &vault).await;
+
+    // --- Allocator-only rebalance withdrawal into idle (no user withdrawal) ---
+    let total_assets_before_rebalance = vault.get_total_assets().await;
+    assert_eq!(
+        total_assets_before_rebalance, amount,
+        "Sanity: total assets should equal supplied amount before rebalance",
+    );
+    assert_eq!(
+        vault.get_idle_balance().await.0,
+        0,
+        "Idle balance should be zero before rebalance withdrawal",
+    );
+
+    // Create a market-side withdrawal request via allocator reallocation.
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Withdraw(Delta::new(mkt.clone(), amount)),
+        )
+        .await;
+
+    // Executing the rebalance withdrawal should pull funds back to idle without
+    // touching the user withdrawal queue.
+    vault
+        .execute_rebalance_withdrawal(&vault_curator, mkt.clone(), None)
+        .await;
+
+    assert_eq!(
+        vault.get_total_assets().await,
+        total_assets_before_rebalance,
+        "Rebalance withdrawal must preserve total assets",
+    );
+    assert_eq!(
+        vault.get_total_supply().await,
+        amount,
+        "Rebalance withdrawal must not mint or burn shares",
+    );
+    assert_eq!(
+        vault.get_idle_balance().await.0,
+        amount.0,
+        "Rebalance withdrawal should move principal back to idle",
+    );
+    assert!(
+        vault.get_withdrawing_op_id().await.is_none(),
+        "Rebalance withdrawal must not create a user withdrawing op",
+    );
+
+    // Re-allocate idle back into the market so the later borrow/withdraw path
+    // in this test continues to exercise the existing state machine behavior.
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(mkt.clone(), amount)),
         )
         .await;
     harvest(&c, &vault).await;

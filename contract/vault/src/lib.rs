@@ -38,9 +38,8 @@ use templar_common::{
         require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
         QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
-        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS,
-        MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
     },
 };
 pub use wad::*;
@@ -102,16 +101,21 @@ impl From<MarketConfiguration> for MarketRecord {
 ///
 /// What this contract does
 /// - Issues a share token (NEP-141) that represents a vault over an underlying NEP-141 “BorrowAsset”.
-/// - Allocates deposits across “markets” via a supply queue; withdrawals are keeper-routed via a queueless mechanism.
+/// - Allocates deposits across “markets” via a supply queue.
+/// - User withdrawals are enqueued in a FIFO pending-withdrawals queue, while the
+///   actual market route for each withdrawal is keeper-routed and provided per
+///   execution (no persistent global withdraw route).
 /// - Governance uses Owner + RBAC (Curator/Guardian/Allocator) with a timelock for certain changes.
 /// - Withdraw flow escrows shares, builds market-side withdrawal requests, then pays out and burns proportional escrow.
 /// - Performance fees accrue by minting fee shares based on increases in total assets.
+///
 /// Critical invariants
 /// - Assets accounting is correct: total_assets = idle_balance + sum(all principals in markets).
 /// - Only one op in flight (op_state); mutating ops require Idle.
 /// - Governance changes obey timelocks; Guardian may revoke pending changes.
 ///
 /// Note: RBAC storage is paid by the contract; callers are not charged deposits for RBAC changes.
+
 pub struct Contract {
     /// The underlying asset that the vault manages
     underlying_asset: FungibleAsset<BorrowAsset>,
@@ -236,7 +240,7 @@ impl Contract {
     /// Internally calls `redeem` after computing the share amount.
     #[payable]
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
-        require_at_least(WITHDRAW_GAS);
+        require_at_least(templar_common::vault::WITHDRAW_GAS);
         let shares_needed = self.preview_withdraw(amount).0;
         Event::WithdrawPreview {
             shares: U128(shares_needed),
@@ -388,9 +392,22 @@ impl Contract {
         )
     }
 
-    /// Allocator-only. Executes a market-side supply withdrawal request for `market`
-    /// and credits any returned underlying to the vault's idle balance, without
-    /// touching the user withdrawal queue or payout state machine.
+    /// Allocator-only. Executes an existing market-side supply withdrawal request
+    /// for `market` and credits any returned underlying to the vault's
+    /// `idle_balance`, without touching the user withdrawal queue
+    /// (`pending_withdrawals`) or the payout state machine.
+    ///
+    /// This is a pure rebalance operation:
+    /// - `total_assets` and `total_supply` are preserved.
+    /// - Only per-market principal and `idle_balance` are updated.
+    /// - No pending user withdrawal is dequeued or paid out.
+    ///
+    /// Implementation details:
+    /// - Uses `OpState::Allocating` as a generic in-flight guard for this
+    ///   rebalance op.
+    /// - Locks `REBALANCE_MARKET_LOCK_INDEX` in `market_execution_lock` to
+    ///   serialize the underlying market call without conflicting with
+    ///   normal per-market locks.
     ///
     /// Expects that a supply withdrawal request for this vault already exists
     /// in the given `market` and is ready to be executed.
@@ -488,7 +505,6 @@ impl Contract {
         }
     }
 
-
     /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
     pub fn skim(&mut self, token: AccountId) -> Promise {
         Self::require_owner();
@@ -550,7 +566,7 @@ impl Contract {
                 self.start_allocation(total, plan)
             }
             AllocationDelta::Withdraw(delta) => {
-                require_at_least(AFTER_CREATE_WITHDRAW_REQ_GAS);
+                require_at_least(WITHDRAW_CREATE_REQUEST_CALLBACK_GAS);
 
                 let to_request = self.principal_of(&delta.market).min(delta.amount.0);
                 require!(to_request > 0, "Insufficient principal");
@@ -570,7 +586,7 @@ impl Contract {
                         .create_supply_withdrawal_request(BorrowAssetAmount::from(amount))
                         .then(
                             Self::ext(env::current_account_id())
-                                .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
+                                .with_static_gas(WITHDRAW_CREATE_REQUEST_CALLBACK_GAS)
                                 .rebalance_withdraw_01_after_create_request(market, amount),
                         ),
                 )
@@ -779,8 +795,12 @@ impl Contract {
         }
     }
 
+    /// Returns `true` if any market execution lock is currently held.
+    ///
+    /// This is a coarse signal that a withdrawal or allocator-only
+    /// rebalance is in-flight against at least one market.
     pub fn has_pending_market_withdrawal(&self) -> bool {
-        !self.market_execution_lock.is_locked_all()
+        self.market_execution_lock.is_locked_all()
     }
 
     pub fn get_current_withdraw_request_id(&self) -> Option<U64> {
@@ -997,7 +1017,9 @@ impl Contract {
         index: u32,
         remaining_before: u128,
     ) -> Promise {
-        self::require_at_least(AFTER_SUPPLY_1_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL));
+        self::require_at_least(
+            SUPPLY_AFTER_TRANSFER_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL),
+        );
         self.underlying_asset
             .transfer_call(
                 market,
@@ -1011,7 +1033,7 @@ impl Contract {
             )
             .then(
                 Self::ext(env::current_account_id())
-                    .with_static_gas(AFTER_SUPPLY_1_CHECK_GAS)
+                    .with_static_gas(SUPPLY_AFTER_TRANSFER_CHECK_GAS)
                     .supply_01_handle_transfer(
                         market.clone(),
                         op_id,

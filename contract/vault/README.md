@@ -73,8 +73,8 @@ Note
     - get_supply_position(vault_id) to verify changes and reconcile accounting.
 - Gas model
   - Cross-contract calls use fixed gas budgets:
-    - AFTER_SUPPLY_ENSURE_GAS, GET_SUPPLY_POSITION_GAS, AFTER_SUPPLY_POSITION_CHECK_GAS
-    - AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS
+    - SUPPLY_POST_VERIFY_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS
+    - WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, WITHDRAW_EXECUTE_FETCH_POSITION_GAS, WITHDRAW_SETTLE_CALLBACK_GAS, AFTER_SEND_TO_USER_GAS
   - On any callback mismatch or failure, the operation gracefully stops and reverts to Idle with safe reconciliation.
 
 ## Integrating a new market
@@ -194,53 +194,53 @@ Exit:
   - start_allocation reserves only the planned amount (idle_balance -= amount).
   - On completion or on any failure, remaining is returned to idle_balance.
 
-## Withdrawal and redeem flow (queue-less, keeper-routed)
+## Withdrawal and redeem flow (queued requests, keeper-routed execution)
 
 Two phases: user requests (escrow) and keeper-routed execution (pull liquidity, pay out).
 
 1. User request (escrow shares)
 
-- withdraw(amount, receiver)
-  - Computes shares_needed via preview_withdraw and defers to redeem.
-- redeem(shares, receiver)
+- `withdraw(amount, receiver)`
+  - Computes `shares_needed` via `preview_withdraw` and defers to `redeem`.
+- `redeem(shares, receiver)`
   - Transfers shares from owner to the vault (escrow) without burning.
-  - Converts shares to assets via convert_to_assets (estimated).
-  - Emits WithdrawQueued; enqueues pending withdrawal (owner, receiver, escrow_shares, expected_assets).
-  - Does NOT start withdrawal; keeper (Allocator) must call execute_next_withdrawal_request(route).
+  - Converts shares to assets via `convert_to_assets` (estimated).
+  - Enqueues a `PendingWithdrawal` in a FIFO queue (owner, receiver, escrow_shares, expected_assets, requested_at).
+  - Does **not** start execution; a keeper (Allocator) must call `execute_withdrawal(route)`.
 
 2. Execution by Allocator/keeper (Idle -> Withdrawing -> Payout -> Idle)
 
-- execute_next_withdrawal_request(route: Vec<AccountId>):
-  - Pops the next pending withdrawal by id and calls start_withdraw(expected_assets, receiver, owner, escrow_shares) with the provided per-op route.
-  - Idle-first: collected = min(idle_balance, amount), remaining = amount - collected.
-  - Sets OpState::Withdrawing { index=0, remaining, receiver, collected, owner, escrow_shares }.
+- `execute_withdrawal(route: Vec<AccountId>)`:
+  - Peeks the next pending withdrawal by id and starts a `Withdrawing` op with the provided per-op route.
+  - Idle-first: `collected = min(idle_balance, amount)`, `remaining = amount - collected`.
+  - Sets `OpState::Withdrawing { index = 0, remaining, receiver, collected, owner, escrow_shares }` and records the route for this op.
 
 - For each market in route:
-  - If remaining == 0, skip to payout.
-  - If market principal is zero, skip to next.
-  - The vault creates a market withdrawal request up to min(remaining, principal) via create_supply_withdrawal_request(...).
-  - By default, requests are created with deferment (defer_market_execute = true). The keeper then calls execute_next_market_withdrawal(op_id) to execute created requests (may be called multiple times).
-  - After execution, the vault queries get_supply_position(...) and reconciles:
-    - credited = min(before - after, remaining)
-    - idle_balance += credited
-    - remaining -= credited; collected += credited
+  - If `remaining == 0`, the vault transitions to payout.
+  - If market principal is zero, it skips to the next market.
+  - The vault creates a market withdrawal request up to `min(remaining, principal)` via `create_supply_withdrawal_request(...)`.
+  - Requests are created with deferment by default; the keeper then calls `execute_market_withdrawal(op_id, index, batch_limit)` to execute created requests (possibly multiple times per market).
+  - After execution, the vault queries `get_supply_position(...)` and reconciles:
+    - `credited = min(before - after, remaining)`
+    - `idle_balance += credited`
+    - `remaining -= credited; collected += credited`
 
 - Completion/parking:
-  - If remaining hits zero, the vault pays the receiver and burns the proportional escrowed shares.
+  - If `remaining` hits zero, the vault pays the receiver and burns the proportional escrowed shares.
   - If the route is exhausted before need is satisfied, the vault parks the request (escrow remains). The keeper can retry later with a new route.
 
-- Payout finalization (after_send_to_user):
+- Payout finalization (`after_send_to_user`):
   - On success:
-    - idle_balance -= payout_amount
-    - Burn only the proportional shares and refund the remainder to the owner.
-    - Go Idle.
+    - `idle_balance -= payout_amount`
+    - Burns only the proportional shares and refunds the remainder to the owner.
+    - Returns to Idle.
   - On failure:
-    - Refund full escrow to owner; leave idle unchanged; go Idle.
+    - Refunds full escrow to owner; leaves idle unchanged; returns to Idle.
 
 Important
 
-- The route applies only to the current withdrawal op and is not stored. There is no persistent withdraw order on-chain.
-- The vault will skip markets with zero principal; it will not exceed principal, and it reconciles actual results after each market call.
+- The route applies only to the current withdrawal op and is not stored as a global on-chain order; it is provided per execution.
+- The vault skips markets with zero principal; it never withdraws more than principal, and it reconciles actual results after each market call.
 
 ## Typical routing policies (off-chain)
 
@@ -253,15 +253,18 @@ Important
 
 ## Queues and market management
 
-- set_supply_queue(markets):
+- `set_supply_queue(markets)`:
   - Requires Idle; rejects duplicates; each market must have cap > 0.
-- Note:
-  - There is no withdraw_queue. Withdrawals are routed per operation by the keeper/caller.
 
-- submit_cap(market, new_cap), accept_cap(market):
-  - Lowering cap applies immediately (and may disable the market if cap == 0).
+- Pending withdrawals queue:
+  - User `withdraw`/`redeem` calls enqueue `PendingWithdrawal` records in a FIFO queue.
+  - The queue head is tracked by `next_withdraw_to_execute`; each successful payout dequeues a single request.
+  - Withdrawal routing is **not** stored globally; the keeper provides a per-op `route` to `execute_withdrawal(route)`.
+
+- `submit_cap(market, new_cap)`, `accept_cap(market)`:
+  - Lowering cap applies immediately (and may disable the market if `cap == 0`).
   - Raising cap is timelocked; accept after timelock.
-  - Enabling/disabling does not affect any on-chain withdraw order (there is none).
+  - Enabling/disabling does not affect any on-chain withdraw route (routes are provided per execution).
 
 - submit_market_removal(market), revoke_pending_market_removal(market):
   - Start/stop a removal timelock; actual removal occurs once conditions are met by governance.
@@ -279,20 +282,23 @@ Important
 ## Reference: primary external methods by role
 
 - Deposits:
-  - User: ft_transfer_call to the vault (see token receiver), or application-level front-end wraps this.
-- Allocation:
-  - Allocator: allocate(weights, amount)
+  - User: `ft_transfer_call` to the vault (see token receiver), or an application-level front-end wraps this.
+- Allocation and rebalance:
+  - Allocator/Curator/Owner: `reallocate(AllocationDelta::{Supply, Withdraw})`
+  - Allocator/Curator/Owner: `execute_rebalance_withdrawal(market, batch_limit)` for allocator-only rebalance flows
 - Withdrawals:
-  - User: redeem(shares, receiver) or withdraw(amount, receiver)
-  - Allocator: execute_next_withdrawal_request(route), execute_next_market_withdrawal(op_id)
+  - User: `redeem(shares, receiver)` or `withdraw(amount, receiver)`
+  - Allocator/Curator/Owner: `execute_withdrawal(route)`, `execute_market_withdrawal(op_id, index, batch_limit)`, `unbrick()`
 - Governance:
   - Owner/Curator/Guardian as listed above.
+ 
+## API notes (for integrators/keepers)
 
-## API changes (for integrators/keepers)
-
-- execute_next_withdrawal_request now requires a route: Vec<AccountId> (ordered preference for this withdrawal).
-- allocator_execute_next_market_withdrawal(op_id) executes the next created market request when deferment is enabled (default).
+- `execute_withdrawal` requires a per-op `route: Vec<AccountId>` (ordered preference for this withdrawal).
+- `execute_market_withdrawal(op_id, index, batch_limit)` executes created market-side supply withdrawal requests for the given withdrawing op.
+- `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault and credits the returned funds to `idle_balance` without touching the user queue.
 - Curator is granted Allocator by default at initialization; keepers must use an account that has the Allocator role (or be the Curator/Owner).
+
 
 ## Error handling and stop semantics
 

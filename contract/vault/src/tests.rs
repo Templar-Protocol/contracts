@@ -606,7 +606,6 @@ fn reconcile_withdraw_outcome_invariants_cases(
 
 #[test]
 fn withdraw_reconcile_uses_creditable_when_principal_exceeds_inflow() {
-
     // before_principal drops by 60, but only 50 tokens actually arrive.
     let before_principal = 100u128;
     let reported_principal = 40u128; // principal_delta = 60
@@ -642,6 +641,167 @@ fn withdraw_reconcile_uses_creditable_when_principal_exceeds_inflow() {
     assert_eq!(res.remaining_next, rem.saturating_sub(creditable));
     assert_eq!(res.collected_next, coll.saturating_add(creditable));
     assert_eq!(res.idle_delta, creditable);
+}
+
+#[test]
+fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(8008);
+    let before_principal = 1_000u128;
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: before_principal,
+        },
+    );
+    c.withdraw_route = vec![market.clone()];
+
+    let need = 150u128;
+    let collected_start = 0u128;
+
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 1,
+        index: 0,
+        remaining: need,
+        receiver: mk(9),
+        collected: collected_start,
+        owner: accounts(1),
+        escrow_shares: 100,
+    });
+
+    let before_idle = c.idle_balance;
+
+    let before_balance = U128(1_000_000);
+    let after_balance = Ok(U128(1_000_100)); // inflow = 100
+    let reported_principal = U128(100); // principal_delta = 900 >> inflow
+
+    let res = c.execute_withdraw_03_settle(
+        after_balance,
+        1,
+        0,
+        U128(before_principal),
+        reported_principal,
+        before_balance,
+    );
+    match res {
+        PromiseOrValue::Value(()) | PromiseOrValue::Promise(_) => {}
+    }
+
+    let logs = near_sdk::test_utils::get_logs();
+    let joined = logs.join("\n");
+    assert!(
+        joined.contains("\"event\":\"WithdrawalAccounting\"")
+            && joined.contains("\"kind\":\"InflowMismatch\""),
+        "expected WithdrawalAccounting InflowMismatch event, got logs: {joined:?}",
+    );
+
+    if let OpState::Withdrawing(WithdrawingState {
+        remaining,
+        collected,
+        ..
+    }) = c.op_state
+    {
+        let requested = need + collected_start;
+        assert!(
+            collected <= requested,
+            "collected must not exceed requested total"
+        );
+        assert_eq!(
+            remaining.saturating_add(collected),
+            requested,
+            "remaining + collected must stay constant",
+        );
+    } else {
+        panic!("expected Withdrawing state after under-credit scenario");
+    }
+
+    let rec = c.markets.get(&market).expect("market must exist");
+    assert!(
+        rec.principal <= before_principal,
+        "principal must not increase during withdraw settlement",
+    );
+    assert!(
+        c.idle_balance >= before_idle,
+        "idle balance must not decrease during settlement",
+    );
+}
+
+#[test]
+fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(8009);
+    let before_principal = 1_000u128;
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: before_principal,
+        },
+    );
+    c.withdraw_route = vec![market.clone()];
+
+    let need = 120u128;
+
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 2,
+        index: 0,
+        remaining: need,
+        receiver: mk(10),
+        collected: 0,
+        owner: accounts(2),
+        escrow_shares: 50,
+    });
+
+    let before_idle = c.idle_balance;
+
+    let inflow = 500u128;
+    let before_balance_val = 2_000_000u128;
+    let before_balance = U128(before_balance_val);
+    let after_balance = Ok(U128(before_balance_val + inflow));
+    let reported_principal = U128(900); // principal_delta = 100 << inflow
+
+    let res = c.execute_withdraw_03_settle(
+        after_balance,
+        2,
+        0,
+        U128(before_principal),
+        reported_principal,
+        before_balance,
+    );
+    match res {
+        PromiseOrValue::Value(()) | PromiseOrValue::Promise(_) => {}
+    }
+
+    let logs = near_sdk::test_utils::get_logs();
+    let joined = logs.join("\n");
+    assert!(
+        joined.contains("\"event\":\"WithdrawalAccounting\"")
+            && joined.contains("\"kind\":\"OverpayCredited\""),
+        "expected WithdrawalAccounting OverpayCredited event, got logs: {joined:?}",
+    );
+
+    if let OpState::Payout(PayoutState { amount, .. }) = c.op_state {
+        assert_eq!(amount, need, "payout amount must be clamped to requested",);
+    } else {
+        panic!("expected Payout state after over-credit scenario");
+    }
+
+    let rec = c.markets.get(&market).expect("market must exist");
+    assert!(
+        rec.principal <= before_principal,
+        "principal must not increase during withdraw settlement",
+    );
+    assert!(
+        c.idle_balance <= before_idle + inflow,
+        "idle balance must not exceed initial + inflow",
+    );
 }
 
 #[rstest(
@@ -2285,6 +2445,37 @@ fn after_create_withdraw_req_success_returns_promise(
     }
     // State remains Withdrawing; keeper must call execute_next_market_withdrawal
     assert!(matches!(c.op_state, OpState::Withdrawing { .. }));
+}
+
+#[test]
+fn rebalance_create_failure_does_not_panic_and_keeps_idle_and_unlocks() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert!(
+        !c.market_execution_lock.is_locked_all(),
+        "no locks should be held initially",
+    );
+
+    let market = mk(51);
+    let amount = U128(100);
+
+    c.rebalance_withdraw_01_after_create_request(
+        Err(near_sdk::PromiseError::Failed),
+        market,
+        amount,
+    );
+
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "vault should remain Idle after rebalance create failure",
+    );
+    assert!(
+        !c.market_execution_lock.is_locked_all(),
+        "market execution lock must not be held after failure",
+    );
 }
 
 #[rstest]
