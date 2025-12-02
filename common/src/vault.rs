@@ -724,7 +724,9 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     SupplyWithdrawRequestCreated { market: AccountId, amount: U128 },
-
+    #[event_version("1.0.0")]
+    WithdrawRequestCreated { market: AccountId, amount: U128 },
+    #[event_version("1.0.0")]
     // Allocation read/settlement diagnostics
     #[event_version("1.0.0")]
     AllocationPositionIssue {
@@ -780,6 +782,12 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     OperationStoppedWhileIdle { reason: Option<Reason> },
+    #[event_version("1.0.0")]
+    UnbrickInvoked {
+        phase: String,
+        op_id: Option<U64>,
+        id: Option<U64>,
+    },
 
     // Skim and deposits
     #[event_version("1.0.0")]

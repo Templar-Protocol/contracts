@@ -33,15 +33,19 @@ use std::{
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
     market::ext_market,
+    panic_with_message,
     vault::{
         require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
         QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
+        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS, WITHDRAW_GAS,
     },
 };
 pub use wad::*;
+
+pub(crate) const REBALANCE_MARKET_LOCK_INDEX: u32 = u32::MAX;
 
 pub mod aum;
 pub mod governance;
@@ -352,7 +356,7 @@ impl Contract {
 
         let ctx = match self.ctx_withdrawing(op_id.0) {
             Ok(s) => s.clone(),
-            Err(e) => return self.stop_and_exit(Some(&e)),
+            Err(_) => panic_with_message("Not withdrawing"),
         };
 
         if let Err(e) = self.resolve_withdraw_market(market_index) {
@@ -384,25 +388,104 @@ impl Contract {
         )
     }
 
-    /// Allocator/Curator/Owner only. Cancels the current in-flight withdrawal:
-    /// - Refunds escrowed shares to the owner
-    /// - Releases the current market execution lock
-    /// - Clears withdraw state and dequeues the pending request (advance head)
+    /// Allocator-only. Executes a market-side supply withdrawal request for `market`
+    /// and credits any returned underlying to the vault's idle balance, without
+    /// touching the user withdrawal queue or payout state machine.
     ///
-    /// If the vault is not currently Withdrawing, this is a no-op.
-    pub fn cancel_in_flight_withdrawal(&mut self) -> PromiseOrValue<()> {
+    /// Expects that a supply withdrawal request for this vault already exists
+    /// in the given `market` and is ready to be executed.
+    pub fn execute_rebalance_withdrawal(
+        &mut self,
+        market: AccountId,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<()> {
+        require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
 
-        match &self.op_state {
-            OpState::Withdrawing(_) => {
+        self.ensure_idle();
+
+        let principal = self.principal_of(&market);
+        require!(principal > 0, "No principal to withdraw");
+
+        self.market_execution_lock.lock(REBALANCE_MARKET_LOCK_INDEX);
+
+        // Use Allocating as a generic in-flight guard for this rebalancing op.
+        let op_id = self.next_op_id;
+        self.next_op_id = op_id.saturating_add(1);
+        self.op_state = OpState::Allocating(AllocatingState {
+            op_id,
+            index: 0,
+            remaining: 0,
+            plan: Vec::new(),
+        });
+
+        PromiseOrValue::Promise(
+            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                .with_static_gas(Gas::from_tgas(5))
+                .with_unused_gas_weight(0)
+                .ft_balance_of(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_unused_gas_weight(100)
+                        .rebalance_withdraw_01_execute_withdraw_fetch_position(
+                            op_id,
+                            market,
+                            batch_limit,
+                            U128(principal),
+                        ),
+                ),
+        )
+    }
+
+    /// Allocator/Curator/Owner only. Unbricks the current in-flight withdrawal or payout:
+    /// - If Withdrawing: refunds escrowed shares to the owner and dequeues the pending request.
+    /// - If in Payout: re-syncs idle_balance with the underlying FT balance,
+    ///   refunds escrowed shares to the owner, and dequeues the pending request.
+    /// - Clears withdraw state and market execution locks and returns the vault to Idle.
+    pub fn unbrick(&mut self) -> PromiseOrValue<()> {
+        Self::assert_allocator();
+
+        match self.op_state.clone() {
+            OpState::Withdrawing(s) => {
+                let id = self.next_withdraw_to_execute;
+                Event::UnbrickInvoked {
+                    phase: "withdrawing".to_string(),
+                    op_id: Some(s.op_id.into()),
+                    id: Some(id.into()),
+                }
+                .emit();
+
                 // stop_and_exit_withdrawing refunds escrow, unlocks current index, clears route,
                 // dequeues the inflight request and sets the vault back to Idle.
                 self.stop_and_exit_withdrawing::<&str>(None);
                 PromiseOrValue::Value(())
             }
+            OpState::Payout(s) => {
+                let id = self.next_withdraw_to_execute;
+                Event::UnbrickInvoked {
+                    phase: "payout".to_string(),
+                    op_id: Some(s.op_id.into()),
+                    id: Some(id.into()),
+                }
+                .emit();
+
+                // Treat stuck payout as failure, but re-sync idle_balance using
+                // the actual underlying FT balance held by the vault account.
+                PromiseOrValue::Promise(
+                    ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                        .with_static_gas(Gas::from_tgas(5))
+                        .ft_balance_of(env::current_account_id())
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_SEND_TO_USER_GAS)
+                                .unbrick_01_reconcile_payout(),
+                        ),
+                )
+            }
             _ => PromiseOrValue::Value(()),
         }
     }
+
 
     /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
     pub fn skim(&mut self, token: AccountId) -> Promise {
@@ -465,7 +548,7 @@ impl Contract {
                 self.start_allocation(total, plan)
             }
             AllocationDelta::Withdraw(delta) => {
-                require_at_least(CREATE_WITHDRAW_REQ_GAS);
+                require_at_least(AFTER_CREATE_WITHDRAW_REQ_GAS);
 
                 let to_request = self.principal_of(&delta.market).min(delta.amount.0);
                 require!(to_request > 0, "Insufficient principal");
@@ -476,23 +559,27 @@ impl Contract {
                 }
                 .emit();
 
+                let market = delta.market.clone();
+                let amount = U128(to_request);
+
                 PromiseOrValue::Promise(
-                    ext_market::ext(delta.market.clone())
+                    ext_market::ext(market.clone())
                         .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
-                        .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(
-                            to_request,
-                        ))),
+                        .create_supply_withdrawal_request(BorrowAssetAmount::from(amount))
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
+                                .rebalance_withdraw_01_after_create_request(market, amount),
+                        ),
                 )
             }
         }
     }
 
-    // Derive queue tail = head + pending.len()
     fn queue_tail(&self) -> u64 {
         self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
     }
 
-    // Return the current head id if queue is non-empty
     fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
         let tail = self.queue_tail();
         if self.next_withdraw_to_execute < tail {
@@ -512,7 +599,6 @@ impl Contract {
         }
     }
 
-    // Remove the head pending withdrawal and advance the queue head
     fn pop_head(&mut self) {
         let id = self.next_withdraw_to_execute;
         let removed = self.pending_withdrawals.remove(&id);
@@ -525,7 +611,6 @@ impl Contract {
         .emit();
     }
 
-    // Keep the head pending and emit telemetry; can be retried later
     fn park_head_for_retry(&mut self) {
         Event::WithdrawQueueUpdate {
             action: QueueAction::Parked,
@@ -707,9 +792,6 @@ impl Contract {
 }
 
 /* ----- Private Helpers ----- */
-// Internal helper value object describing idle coverage for a requested amount.
-// remaining_unmet = max(amount - idle_balance, 0)
-// collected_from_idle = min(idle_balance, amount)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleCoverage {
     pub remaining_unmet: u128,
@@ -717,7 +799,6 @@ pub struct IdleCoverage {
 }
 
 impl Contract {
-    // Principal (vault-supplied) units currently recorded for a market
     fn principal_of(&self, market: &AccountId) -> u128 {
         self.markets.get(market).map_or(0, |r| r.principal)
     }
@@ -726,14 +807,11 @@ impl Contract {
         self.markets.get(market).map_or(0, |r| r.cfg.cap.0)
     }
 
-    // Remaining room until cap for a market
     fn room_of(&self, market: &AccountId) -> u128 {
         self.cap_of(market)
             .saturating_sub(self.principal_of(market))
     }
 
-    /// Enqueue a vault-level pending withdrawal request.
-    /// At this point the escrow shares are already taken.
     fn enqueue_pending_withdrawal(
         &mut self,
         owner: &AccountId,
@@ -1060,8 +1138,7 @@ impl Contract {
 
         if remaining == 0 {
             // FIXME: event for coveredbyidle
-            // Already fully covered by idle => payout
-            self.pay(
+            return self.pay(
                 op_id,
                 &receiver,
                 collected,

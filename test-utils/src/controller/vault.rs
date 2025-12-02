@@ -95,7 +95,7 @@ impl VaultController {
         pub fn execute_market_withdrawal(op_id: U64, market_index: u32, batch_limit: Option<u32>);
 
         #[call(exec, tgas(300))]
-        pub fn cancel_in_flight_withdrawal();
+        pub fn unbrick["unbrick"]();
 
         #[call(exec, tgas(300), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn redeem(shares: U128, receiver: AccountId);

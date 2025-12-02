@@ -604,6 +604,46 @@ fn reconcile_withdraw_outcome_invariants_cases(
     assert_eq!(idle_delta, payout_delta);
 }
 
+#[test]
+fn withdraw_reconcile_uses_creditable_when_principal_exceeds_inflow() {
+
+    // before_principal drops by 60, but only 50 tokens actually arrive.
+    let before_principal = 100u128;
+    let reported_principal = 40u128; // principal_delta = 60
+    let before_balance = U128(1_000);
+    let after_balance = Ok(U128(1_050)); // inflow = 50
+
+    let (principal_delta, inflow, creditable) = Contract::compute_withdraw_deltas(
+        U128(before_principal),
+        U128(reported_principal),
+        after_balance,
+        before_balance,
+    );
+
+    assert_eq!(principal_delta, 60);
+    assert_eq!(inflow, 50);
+    assert_eq!(creditable, 50, "creditable must be min(delta, inflow)");
+
+    let effective_principal = before_principal.saturating_sub(creditable);
+    let need = 100u128;
+    let rem = need;
+    let coll = 0u128;
+
+    let res = crate::impl_callbacks::reconcile_withdraw_outcome(
+        before_principal,
+        effective_principal,
+        rem,
+        coll,
+    );
+
+    // We should only ever credit up to the inflow/creditable amount.
+    assert_eq!(res.payout_delta, creditable);
+    assert!(res.payout_delta <= inflow);
+    assert_eq!(res.remaining_next, rem.saturating_sub(creditable));
+    assert_eq!(res.collected_next, coll.saturating_add(creditable));
+    assert_eq!(res.idle_delta, creditable);
+}
+
 #[rstest(
     assets,
     shares,
@@ -2519,7 +2559,7 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
 }
 
 #[test]
-fn cancel_in_flight_withdrawal_refunds_and_dequeues() {
+fn unbrick_withdrawing_refunds_and_dequeues() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
@@ -2561,10 +2601,10 @@ fn cancel_in_flight_withdrawal_refunds_and_dequeues() {
     let owner_before = c.balance_of(&owner);
     let len_before = c.pending_withdrawals.len();
 
-    let res = c.cancel_in_flight_withdrawal();
+    let res = c.unbrick();
     match res {
         PromiseOrValue::Value(()) => {}
-        _ => panic!("Expected Value(()) from cancel_in_flight_withdrawal"),
+        _ => panic!("Expected Value(()) from unbrick"),
     }
 
     // Escrow refunded, head advanced, state reset
@@ -2647,7 +2687,7 @@ fn simple_accrual_10_percent_fee() {
 }
 
 #[test]
-fn cancel_in_flight_withdrawal_noop_when_not_withdrawing() {
+fn unbrick_noop_when_not_withdrawing() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
@@ -2662,10 +2702,10 @@ fn cancel_in_flight_withdrawal_noop_when_not_withdrawing() {
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
     let owner_before = c.balance_of(&owner);
 
-    let res = c.cancel_in_flight_withdrawal();
+    let res = c.unbrick();
     match res {
         PromiseOrValue::Value(()) => {}
-        _ => panic!("Expected Value(()) from cancel_in_flight_withdrawal"),
+        _ => panic!("Expected Value(()) from unbrick"),
     }
 
     // No changes expected when not Withdrawing

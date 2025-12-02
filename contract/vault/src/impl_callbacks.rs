@@ -5,10 +5,13 @@ use std::fmt::Display;
 
 use crate::{governance::Gate, near, Contract, ContractExt, Error, Nep141Controller, OpState};
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{env, json_types::U128, AccountId, Gas, NearToken, PromiseError, PromiseOrValue};
+use near_sdk::{
+    env, json_types::U128, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
+};
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};
 use templar_common::{
     market::ext_market,
+    panic_with_message,
     supply::SupplyPosition,
     vault::{
         AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
@@ -200,6 +203,19 @@ impl Contract {
     }
 
     #[private]
+    pub fn rebalance_withdraw_01_after_create_request(
+        &mut self,
+        #[callback_result] did_create: Result<(), PromiseError>,
+        market: AccountId,
+        amount: U128,
+    ) {
+        match did_create {
+            Ok(()) => Event::WithdrawRequestCreated { market, amount }.emit(),
+            Err(_) => panic_with_message("Couldnt create withdraw request in market"),
+        }
+    }
+
+    #[private]
     pub fn execute_withdraw_01_execute_withdraw_fetch_position(
         &mut self,
         #[callback_result] before_balance: Result<U128, PromiseError>,
@@ -221,20 +237,7 @@ impl Contract {
         .emit();
 
         PromiseOrValue::Promise(
-            ext_market::ext(market.clone())
-                // NOTE: gas might be incorrect here
-                .with_static_gas(Gas::from_tgas(
-                    EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS.as_tgas()
-                        * (u64::from(batch_limit.unwrap_or(1))),
-                ))
-                .with_unused_gas_weight(0)
-                .execute_next_supply_withdrawal_request(batch_limit)
-                .then(
-                    ext_market::ext(market.clone())
-                        .with_static_gas(GET_SUPPLY_POSITION_GAS)
-                        .with_unused_gas_weight(0)
-                        .get_supply_position(env::current_account_id()),
-                )
+            self.market_execute_withdraw_and_fetch_position(market.clone(), batch_limit)
                 .then(
                     Self::ext(env::current_account_id())
                         .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
@@ -346,12 +349,14 @@ impl Contract {
             Err(p) => return p,
         };
 
-        let (principal_delta, inflow, creditable) = Self::compute_withdraw_deltas(
+        let (principal_delta, inflow, creditable) = self.settle_market_principal_and_idle(
+            &market,
             before_principal,
             reported_principal,
             after_balance,
             before_balance,
         );
+        let effective_principal = before_principal.0.saturating_sub(creditable);
         let extra = inflow.saturating_sub(principal_delta);
 
         match principal_delta.cmp(&inflow) {
@@ -380,15 +385,6 @@ impl Contract {
                 .emit();
             }
             Ordering::Equal => {}
-        }
-
-        let effective_principal = before_principal.0.saturating_sub(creditable);
-
-        if let Some(rec) = self.markets.get_mut(&market) {
-            rec.principal = effective_principal;
-        }
-        if inflow > 0 {
-            self.update_idle_balance(IdleBalanceDelta::Increase(inflow.into()));
         }
 
         self.market_execution_lock.unlock(market_index);
@@ -450,6 +446,190 @@ impl Contract {
         );
         self.op_state = next_state;
         self.pay_or_signal_next_withdraw()
+    }
+
+    #[private]
+    pub fn rebalance_withdraw_01_execute_withdraw_fetch_position(
+        &mut self,
+        #[callback_result] before_balance: Result<U128, PromiseError>,
+        op_id: u64,
+        market: AccountId,
+        batch_limit: Option<u32>,
+        before_principal: U128,
+    ) -> PromiseOrValue<()> {
+        if let Err(e) = self.ctx_allocating(op_id) {
+            return self.stop_and_exit(Some(&e));
+        }
+
+        let before_balance = match before_balance {
+            Ok(v) => v,
+            Err(_) => panic_with_message("Failed to read balance"),
+        };
+
+        Event::VaultBalance {
+            amount: before_balance,
+        }
+        .emit();
+
+        PromiseOrValue::Promise(
+            self.market_execute_withdraw_and_fetch_position(market.clone(), batch_limit)
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
+                        .rebalance_withdraw_02_reconcile_position(
+                            op_id,
+                            market,
+                            before_principal,
+                            before_balance,
+                        ),
+                ),
+        )
+    }
+
+    #[private]
+    pub fn rebalance_withdraw_02_reconcile_position(
+        &mut self,
+        #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
+        op_id: u64,
+        market: AccountId,
+        before_principal: U128,
+        before_balance: U128,
+    ) -> PromiseOrValue<()> {
+        // Ensure this callback still belongs to the active Allocating op.
+        if let Err(e) = self.ctx_allocating(op_id) {
+            return self.stop_and_exit(Some(&e));
+        }
+
+        let reported_principal: u128 = match position {
+            Ok(Some(position)) => {
+                // Treat the reported principal as the new benchmark.
+                position.get_deposit().total().into()
+            }
+            Ok(None) => {
+                // No position for this vault in the market: consider principal fully exited.
+                0
+            }
+            Err(_) => {
+                // On read failure, leave principal/idle unchanged and clear synthetic op state.
+                self.market_execution_lock
+                    .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
+                self.op_state = OpState::Idle;
+                return PromiseOrValue::Value(());
+            }
+        };
+
+        PromiseOrValue::Promise(
+            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                .with_static_gas(Gas::from_tgas(5))
+                .ft_balance_of(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
+                        .rebalance_withdraw_03_settle(
+                            op_id,
+                            market,
+                            before_principal,
+                            U128(reported_principal),
+                            before_balance,
+                        ),
+                ),
+        )
+    }
+
+    #[private]
+    pub fn rebalance_withdraw_03_settle(
+        &mut self,
+        #[callback_result] after_balance: Result<U128, PromiseError>,
+        op_id: u64,
+        market: AccountId,
+        before_principal: U128,
+        reported_principal: U128,
+        before_balance: U128,
+    ) -> PromiseOrValue<()> {
+        // Ensure this callback still belongs to the active Allocating op.
+        if let Err(e) = self.ctx_allocating(op_id) {
+            return self.stop_and_exit(Some(&e));
+        }
+
+        let _ = self.settle_market_principal_and_idle(
+            &market,
+            before_principal,
+            reported_principal,
+            after_balance,
+            before_balance,
+        );
+
+        self.market_execution_lock
+            .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
+
+        // We deliberately do not touch the withdrawal queue or payout state.
+        // This is a pure rebalance: funds stay in the vault as idle.
+        self.op_state = OpState::Idle;
+
+        PromiseOrValue::Value(())
+    }
+
+    #[private]
+    pub fn unbrick_01_reconcile_payout(
+        &mut self,
+        #[callback_result] balance: Result<U128, PromiseError>,
+    ) -> PromiseOrValue<()> {
+        let PayoutState {
+            op_id,
+            receiver,
+            amount,
+            owner,
+            escrow_shares,
+            burn_shares: _,
+        } = match &self.op_state {
+            OpState::Payout(s) => s.clone(),
+            _ => {
+                return PromiseOrValue::Value(());
+            }
+        };
+
+        // Emit a diagnostic that we are force-unbricking this payout.
+        Event::PayoutStopped {
+            op_id: op_id.into(),
+            receiver: receiver.clone(),
+            amount: U128(amount),
+            reason: Some(Reason::Other("unbrick_payout".to_string())),
+        }
+        .emit();
+
+        // Re-sync idle_balance with the actual underlying FT balance if possible.
+        if let Ok(U128(actual_idle)) = balance {
+            let current_idle = self.idle_balance;
+            if actual_idle > current_idle {
+                self.update_idle_balance(IdleBalanceDelta::Increase(U128(
+                    actual_idle.saturating_sub(current_idle),
+                )));
+            } else if actual_idle < current_idle {
+                self.update_idle_balance(IdleBalanceDelta::Decrease(U128(
+                    current_idle.saturating_sub(actual_idle),
+                )));
+            }
+        } else {
+            // If we cannot read the balance, fall back to treating this as a failed payout
+            // and restore idle by the expected amount.
+            self.update_idle_balance(IdleBalanceDelta::Increase(U128(amount)));
+        }
+
+        // Treat unbricked payout as failure: refund full escrow_shares to the owner.
+        if escrow_shares > 0 {
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
+        }
+
+        self.pop_head();
+        self.withdraw_route.clear();
+        self.market_execution_lock.clear();
+        self.op_state = OpState::Idle;
+
+        PromiseOrValue::Value(())
     }
 
     /// Cash flow:
@@ -569,6 +749,8 @@ impl Contract {
         .emit();
 
         self.update_idle_balance(IdleBalanceDelta::Increase(s.remaining.into()));
+
+        self.market_execution_lock.clear();
 
         self.op_state = OpState::Idle;
     }
@@ -730,6 +912,55 @@ impl Contract {
     pub fn update_idle_balance(&mut self, delta: IdleBalanceDelta) {
         let idle_balance = self.idle_balance;
         self.idle_balance = delta.apply(idle_balance);
+    }
+
+    fn market_execute_withdraw_and_fetch_position(
+        &self,
+        market: AccountId,
+        batch_limit: Option<u32>,
+    ) -> Promise {
+        ext_market::ext(market.clone())
+            // NOTE: gas might be incorrect here
+            .with_static_gas(Gas::from_tgas(
+                EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS.as_tgas()
+                    * u64::from(batch_limit.unwrap_or(1)),
+            ))
+            .with_unused_gas_weight(0)
+            .execute_next_supply_withdrawal_request(batch_limit)
+            .then(
+                ext_market::ext(market)
+                    .with_static_gas(GET_SUPPLY_POSITION_GAS)
+                    .with_unused_gas_weight(0)
+                    .get_supply_position(env::current_account_id()),
+            )
+    }
+
+    fn settle_market_principal_and_idle(
+        &mut self,
+        market: &AccountId,
+        before_principal: U128,
+        reported_principal: U128,
+        after_balance: Result<U128, PromiseError>,
+        before_balance: U128,
+    ) -> (u128, u128, u128) {
+        let (principal_delta, inflow, creditable) = Self::compute_withdraw_deltas(
+            before_principal,
+            reported_principal,
+            after_balance,
+            before_balance,
+        );
+
+        let effective_principal = before_principal.0.saturating_sub(creditable);
+
+        if let Some(rec) = self.markets.get_mut(market) {
+            rec.principal = effective_principal;
+        }
+
+        if inflow > 0 {
+            self.update_idle_balance(IdleBalanceDelta::Increase(inflow.into()));
+        }
+
+        (principal_delta, inflow, creditable)
     }
 }
 
