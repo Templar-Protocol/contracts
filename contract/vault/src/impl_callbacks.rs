@@ -441,7 +441,7 @@ impl Contract {
             );
         }
 
-        let next_state = withdrawal_state_if_principal(
+        let next_state = state_on_delta_inflow(
             principal_delta,
             inflow,
             op_id,
@@ -501,25 +501,18 @@ impl Contract {
         before_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        // Ensure this callback still belongs to the active Allocating op.
         if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
         }
 
         let reported_principal: u128 = match position {
-            Ok(Some(position)) => {
-                // Treat the reported principal as the new benchmark.
-                position.get_deposit().total().into()
-            }
-            Ok(None) => {
-                // No position for this vault in the market: consider principal fully exited.
-                0
-            }
+            Ok(Some(position)) => position.get_deposit().total().into(),
+            Ok(None) => 0,
             Err(_) => {
-                // On read failure, leave principal/idle unchanged and clear synthetic op state.
                 self.market_execution_lock
                     .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
                 self.op_state = OpState::Idle;
+                // FIXME: emit an event here
                 return PromiseOrValue::Value(());
             }
         };
@@ -552,7 +545,6 @@ impl Contract {
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        // Ensure this callback still belongs to the active Allocating op.
         if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
         }
@@ -568,9 +560,8 @@ impl Contract {
         self.market_execution_lock
             .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
 
-        // We deliberately do not touch the withdrawal queue or payout state.
-        // This is a pure rebalance: funds stay in the vault as idle.
         self.op_state = OpState::Idle;
+        // FIXME: emit an event here
 
         PromiseOrValue::Value(())
     }
@@ -682,7 +673,6 @@ impl Contract {
                 refund,
             } = EscrowSettlement::new(escrow_shares, burn_shares);
 
-            // Burn only the proportional shares and refund the remainder to the owner.
             if burn_shares > 0 {
                 // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
                 let _ = self
@@ -700,7 +690,6 @@ impl Contract {
                 );
             }
         } else {
-            // On payout failure, refund full escrow to owner and restore idle_balance
             self.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
             Gate::bypass_transfer_with(
                 self,
@@ -722,15 +711,7 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         let amount = match balance {
             Ok(U128(v)) if v > 0 => v,
-            _ => {
-                // Invariant: Skim does nothing for zero balance
-                Event::SkimNoop {
-                    token: token.clone(),
-                    recipient: recipient.clone(),
-                }
-                .emit();
-                return PromiseOrValue::Value(());
-            }
+            _ => panic_with_message("No balance to skim"),
         };
         PromiseOrValue::Promise(
             ext_ft_core::ext(token)
@@ -765,7 +746,6 @@ impl Contract {
         self.op_state = OpState::Idle;
     }
 
-    /// Stop helper for Withdrawing: refund escrowed shares to owner and go Idle.
     pub fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
@@ -798,7 +778,6 @@ impl Contract {
         self.op_state = OpState::Idle;
     }
 
-    /// refund escrowed shares to owner and go Idle.
     pub fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
@@ -857,7 +836,7 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Validate current op is Allocating and return (index, remaining)
+    /// Validate current op is Allocating and return (index, remaining, plan)
     pub(crate) fn ctx_allocating(
         &self,
         op_id: u64,
@@ -1051,7 +1030,7 @@ pub fn determine_payout_delta(
     (payout_delta, remaining_next, collected_next)
 }
 
-pub fn withdrawal_state_if_principal(
+pub fn state_on_delta_inflow(
     principal_delta: u128,
     inflow: u128,
     op_id: u64,
@@ -1060,30 +1039,25 @@ pub fn withdrawal_state_if_principal(
     collected_next: u128,
     ctx: WithdrawingState,
 ) -> OpState {
-    match principal_delta.cmp(&inflow) {
-        Ordering::Less | Ordering::Equal if principal_delta > 0 => {
-            // Fully executed for this market: advance to next and continue
-            OpState::Withdrawing(WithdrawingState {
-                op_id,
-                index: market_index.saturating_add(1),
-                remaining: remaining_next,
-                receiver: ctx.receiver,
-                collected: collected_next,
-                owner: ctx.owner,
-                escrow_shares: ctx.escrow_shares,
-            })
-        }
-        _ => {
-            // Partial or zero inflow: do not advance; keeper must re-execute this market later
-            OpState::Withdrawing(WithdrawingState {
-                op_id,
-                index: market_index,
-                remaining: remaining_next,
-                receiver: ctx.receiver,
-                collected: collected_next,
-                owner: ctx.owner,
-                escrow_shares: ctx.escrow_shares,
-            })
-        }
-    }
+    let state = match principal_delta.cmp(&inflow) {
+        Ordering::Less | Ordering::Equal if principal_delta > 0 => WithdrawingState {
+            op_id,
+            index: market_index.saturating_add(1),
+            remaining: remaining_next,
+            receiver: ctx.receiver,
+            collected: collected_next,
+            owner: ctx.owner,
+            escrow_shares: ctx.escrow_shares,
+        },
+        _ => WithdrawingState {
+            op_id,
+            index: market_index,
+            remaining: remaining_next,
+            receiver: ctx.receiver,
+            collected: collected_next,
+            owner: ctx.owner,
+            escrow_shares: ctx.escrow_shares,
+        },
+    };
+    OpState::Withdrawing(state)
 }

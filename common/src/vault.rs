@@ -190,13 +190,11 @@ pub const WITHDRAW_SETTLE_CALLBACK_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW
 // and fetching the updated supply position before the settle step.
 const AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 =
     GET_SUPPLY_POSITION + AFTER_EXECUTE_NEXT_WITHDRAW;
-pub const WITHDRAW_EXECUTE_FETCH_POSITION_GAS: Gas =
-    buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
+pub const WITHDRAW_EXECUTE_FETCH_POSITION_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
 const AFTER_SUPPLY_2_READ: u64 = 5;
 pub const SUPPLY_POSITION_READ_CALLBACK_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
-pub const SUPPLY_AFTER_TRANSFER_CHECK_GAS: Gas =
-    buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
+pub const SUPPLY_AFTER_TRANSFER_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
 
 // NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);
@@ -795,13 +793,6 @@ pub enum Event {
         phase: String,
         op_id: Option<U64>,
         id: Option<U64>,
-    },
-
-    // Skim and deposits
-    #[event_version("1.0.0")]
-    SkimNoop {
-        token: AccountId,
-        recipient: AccountId,
     },
 
     #[event_version("1.0.0")]
