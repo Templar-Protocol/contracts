@@ -351,7 +351,7 @@ impl Contract {
             self.apply_immediately(&action);
         } else {
             panic_with_message("No pending change");
-        };
+        }
     }
 
     /// Revokes any pending timelock change.
@@ -384,7 +384,7 @@ impl Contract {
             self.apply_immediately(&action);
         } else {
             panic_with_message("No pending cap change for this market");
-        };
+        }
     }
 
     /// Revokes any pending cap change for `market`.

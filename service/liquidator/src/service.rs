@@ -235,7 +235,6 @@ impl LiquidatorService {
 
                             if self.markets.is_empty() {
                                 tracing::warn!("No markets available yet, skipping liquidation round");
-                                continue;
                             }
                         }
                     }

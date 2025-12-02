@@ -57,7 +57,7 @@ jobs:
           rpc_api_key: "${{ secrets.NEAR_CONTRACT_STAGING_RPC_API_KEY }}"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
+        uses: dtolnay/rust-toolchain@1.86.0
 
       - uses: actions/cache@v4
         with:

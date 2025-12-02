@@ -164,7 +164,7 @@ pub trait VaultExt {
 // Add a 20% buffer to a gas estimate
 #[must_use]
 pub const fn buffer(size: u64) -> Gas {
-    Gas::from_tgas((size * 6 + 4) / 5)
+    Gas::from_tgas((size * 6).div_ceil(5))
 }
 
 // Fetching a position
