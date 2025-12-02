@@ -2039,6 +2039,7 @@ fn after_exec_withdraw_read_none_to_payout(
 }
 
 #[test]
+#[should_panic(expected = "No balance to skim")]
 fn after_skim_balance_zero_noop() {
     let vault_id = accounts(0);
     setup_env(&vault_id, &vault_id, vec![]);

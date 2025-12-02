@@ -39,7 +39,8 @@ use templar_common::{
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
         QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration, WithdrawingState,
         AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
+        WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
     },
 };
 pub use wad::*;
@@ -1161,7 +1162,18 @@ impl Contract {
         };
 
         if remaining == 0 {
-            // FIXME: event for coveredbyidle
+            Event::WithdrawProgress {
+                phase: "covered_by_idle".to_string(),
+                op_id: Some(op_id.into()),
+                id: Some(self.next_withdraw_to_execute.into()),
+                market_index: None,
+                owner: None,
+                receiver: None,
+                escrow_shares: None,
+                expected_assets: None,
+                requested_at: None,
+            }
+            .emit();
             return self.pay(
                 op_id,
                 &receiver,

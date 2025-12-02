@@ -512,7 +512,12 @@ impl Contract {
                 self.market_execution_lock
                     .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
                 self.op_state = OpState::Idle;
-                // FIXME: emit an event here
+                Event::RebalanceWithdrawStopped {
+                    op_id: op_id.into(),
+                    market,
+                    reason: Some(Reason::Other("PositionReadFailed".to_string())),
+                }
+                .emit();
                 return PromiseOrValue::Value(());
             }
         };
@@ -561,7 +566,11 @@ impl Contract {
             .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
 
         self.op_state = OpState::Idle;
-        // FIXME: emit an event here
+        Event::RebalanceWithdrawCompleted {
+            op_id: op_id.into(),
+            market,
+        }
+        .emit();
 
         PromiseOrValue::Value(())
     }

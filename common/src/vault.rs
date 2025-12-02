@@ -699,7 +699,21 @@ pub enum Event {
         id: Option<U64>,
     },
 
+    // Rebalance-only withdraw flows
+    #[event_version("1.0.0")]
+    RebalanceWithdrawCompleted {
+        op_id: U64,
+        market: AccountId,
+    },
+    #[event_version("1.0.0")]
+    RebalanceWithdrawStopped {
+        op_id: U64,
+        market: AccountId,
+        reason: Option<Reason>,
+    },
+ 
     // User flows
+
     #[event_version("1.0.0")]
     RedeemRequested {
         shares: U128,
