@@ -303,9 +303,8 @@ impl UnifiedVaultController {
         }
         e
     }
- 
-    pub async fn withdraw(
 
+    pub async fn withdraw(
         &self,
         withdrawer: &Account,
         amount: U128,
