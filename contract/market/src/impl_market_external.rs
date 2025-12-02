@@ -233,7 +233,6 @@ impl MarketExternalInterface for Contract {
                 WithdrawalAttempt::EmptyPosition => {
                     self.withdrawal_queue.pop();
                     depth_cleared += requested_amount;
-                    continue;
                 }
                 WithdrawalAttempt::NoLiquidity => {
                     break;

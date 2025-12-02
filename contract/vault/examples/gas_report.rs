@@ -1,4 +1,4 @@
-#![allow(clippy::pedantic)]
+#![allow(clippy::pedantic, clippy::unwrap_used)]
 
 use near_sdk::{json_types::U128, Gas};
 use rand::Rng as _;

@@ -247,7 +247,11 @@ impl InventoryManager {
                         if balance.0 != old_balance {
                             updated_assets.push(format!(
                                 "{}({}→{})",
-                                asset.to_string().split(':').last().unwrap_or("unknown"),
+                                asset
+                                    .to_string()
+                                    .split(':')
+                                    .next_back()
+                                    .unwrap_or("unknown"),
                                 old_balance,
                                 balance.0
                             ));
@@ -291,7 +295,11 @@ impl InventoryManager {
                         "unknown".to_string()
                     }
                 } else {
-                    asset_str.split(':').last().unwrap_or("unknown").to_string()
+                    asset_str
+                        .split(':')
+                        .next_back()
+                        .unwrap_or("unknown")
+                        .to_string()
                 };
                 Some(readable_name)
             })

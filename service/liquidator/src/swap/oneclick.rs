@@ -8,25 +8,26 @@
 //! 2. **Deposit**: Transfer tokens to deposit address
 //! 3. **Poll**: Monitor swap status until completion
 
-use near_crypto::Signer;
-use near_jsonrpc_client::JsonRpcClient;
-use near_primitives::views::FinalExecutionStatus;
-use near_sdk::{
-    json_types::U128,
-    serde::{Deserialize, Serialize},
-};
-use std::sync::Arc;
-use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
-
-use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
-use crate::swap::SwapProvider;
+use std::{fmt::Write, sync::Arc};
 
 use near_account_id::AccountType;
+use near_crypto::Signer;
+use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     action::Action,
     transaction::{Transaction, TransactionV0},
     types::AccountId,
+    views::FinalExecutionStatus,
 };
+use near_sdk::{
+    json_types::U128,
+    serde::{Deserialize, Serialize},
+};
+
+use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
+
+use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
+use crate::swap::SwapProvider;
 
 /// 1-Click API base URL
 const ONECLICK_API_BASE: &str = "https://1click.chaindefuser.com";
@@ -668,7 +669,7 @@ impl OneClickSwap {
             _ => {
                 tracing::warn!(status = ?outcome.status, "Unexpected transaction status");
             }
-        };
+        }
 
         // Check if the deposit was refunded by fetching transaction outcome and checking receipts
         match self
@@ -879,7 +880,7 @@ impl OneClickSwap {
 
             let mut url = format!("{ONECLICK_API_BASE}/v0/status?depositAddress={deposit_address}");
             if let Some(m) = memo {
-                url.push_str(&format!("&depositMemo={m}"));
+                let _ = write!(url, "&depositMemo={m}");
             }
 
             let mut req = self.http_client.get(&url);
