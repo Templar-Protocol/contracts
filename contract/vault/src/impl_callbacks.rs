@@ -778,12 +778,15 @@ impl Contract {
         self.market_execution_lock.unlock(s.index);
 
         let owner = s.owner.clone();
-
+ 
         if s.escrow_shares > 0 {
-            #[allow(clippy::expect_used, reason = "No side effects")]
-            self.transfer_unchecked(&env::current_account_id(), &owner, s.escrow_shares)
-                .unwrap_or_else(|e| env::log_str(&e.to_string()));
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
         }
+
 
         self.pop_head();
         self.withdraw_route.clear();
@@ -806,8 +809,11 @@ impl Contract {
 
         let owner = s.owner.clone();
         if s.escrow_shares > 0 {
-            self.transfer_unchecked(&env::current_account_id(), &owner, s.escrow_shares)
-                .unwrap_or_else(|e| env::log_str(&e.to_string()));
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
         }
 
         self.market_execution_lock.clear();
