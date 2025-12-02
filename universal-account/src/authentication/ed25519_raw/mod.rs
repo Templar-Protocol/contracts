@@ -140,7 +140,9 @@ mod tests {
         ))
         .into();
 
-        let sol_sig = keypair.sign_message(&message.preimage_for_signing());
+        let sol_sig = *keypair
+            .sign_message(&message.preimage_for_signing())
+            .as_array();
 
         let message = MessageWithSignature {
             message,
@@ -171,7 +173,9 @@ mod tests {
         ))
         .into();
 
-        let sol_sig = keypair.sign_message(&message.preimage_for_signing());
+        let sol_sig = *keypair
+            .sign_message(&message.preimage_for_signing())
+            .as_array();
 
         let key = VerifyKey((*keypair.pubkey().as_array()).into());
 

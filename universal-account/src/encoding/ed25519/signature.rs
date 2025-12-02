@@ -43,18 +43,6 @@ impl From<Signature> for ByteEncoding {
     }
 }
 
-impl From<solana_sdk::signature::Signature> for Signature {
-    fn from(value: solana_sdk::signature::Signature) -> Self {
-        Self(value.into())
-    }
-}
-
-impl From<Signature> for solana_sdk::signature::Signature {
-    fn from(value: Signature) -> Self {
-        Self::from(value.0)
-    }
-}
-
 impl Display for Signature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{PREFIX}{}", bs58::encode(self.0).into_string())
@@ -123,8 +111,10 @@ mod tests {
     #[test]
     fn borsh_serialization() {
         let keypair = Keypair::new();
-        let signature = super::Signature::from(keypair.sign_message(b"borsh serialization"));
-        let signature_2 = super::Signature::from(keypair.sign_message(b"borsh serialization 2"));
+        let signature =
+            super::Signature::from(*keypair.sign_message(b"borsh serialization").as_array());
+        let signature_2 =
+            super::Signature::from(*keypair.sign_message(b"borsh serialization 2").as_array());
 
         assert_ne!(signature, signature_2);
 
@@ -145,8 +135,10 @@ mod tests {
     #[test]
     fn json_serialization() {
         let keypair = Keypair::new();
-        let signature = super::Signature::from(keypair.sign_message(b"json serialization"));
-        let signature_2 = super::Signature::from(keypair.sign_message(b"json serialization 2"));
+        let signature =
+            super::Signature::from(*keypair.sign_message(b"json serialization").as_array());
+        let signature_2 =
+            super::Signature::from(*keypair.sign_message(b"json serialization 2").as_array());
 
         assert_ne!(signature, signature_2);
 
@@ -167,8 +159,11 @@ mod tests {
     #[test]
     fn to_from_string() {
         let keypair = Keypair::new();
-        let signature =
-            super::Signature::from(keypair.sign_message(b"test ToString/FromStr implementation"));
+        let signature = super::Signature::from(
+            *keypair
+                .sign_message(b"test ToString/FromStr implementation")
+                .as_array(),
+        );
         let sig_str = signature.to_string();
 
         let Some(b) = sig_str.strip_prefix("ed25519:") else {
@@ -183,7 +178,8 @@ mod tests {
         assert_eq!(parsed, signature);
 
         let sig_str_2 =
-            super::Signature::from(keypair.sign_message(b"A different message")).to_string();
+            super::Signature::from(*keypair.sign_message(b"A different message").as_array())
+                .to_string();
 
         assert_ne!(sig_str, sig_str_2);
     }

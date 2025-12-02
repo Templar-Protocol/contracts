@@ -230,7 +230,8 @@ mod tests {
 
         let message = ed25519_raw::Message::from_parsed(payload());
         let preimage = message.preimage_for_signing();
-        let signed_message = message.with_signature(sk.sign_message(&preimage).into());
+        let signed_message =
+            message.with_signature((*sk.sign_message(&preimage).as_array()).into());
 
         ExecuteArgsMessage {
             key: ed25519_raw::VerifyKey(sk.pubkey().to_bytes().into()),

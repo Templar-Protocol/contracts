@@ -410,7 +410,7 @@ mod tests {
                 .unwrap(),
             ));
             let h = m.preimage_for_signing();
-            let signature = keypair.sign_message(&h);
+            let signature = *keypair.sign_message(&h).as_array();
             Box::new(m.with_signature(signature.into()))
         };
 
