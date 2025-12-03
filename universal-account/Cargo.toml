@@ -13,6 +13,7 @@ near-account-id.workspace = true
 near-sdk = { workspace = true, features = ["global-contracts"] }
 p256.workspace = true
 schemars.workspace = true
+stellar-strkey = { version = "0.0.14", default-features = false, features = ["serde"] }
 thiserror.workspace = true
 
 [dev-dependencies]
