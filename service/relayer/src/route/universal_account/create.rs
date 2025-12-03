@@ -44,6 +44,18 @@ pub struct OldPasskey {
     pub signature: passkey::signature::Signature,
 }
 
+impl OldPasskey {
+    pub fn passkey(&self) -> Passkey {
+        self.message
+            .0
+            .parsed
+            .payload_ref()
+            .payload_unchecked()
+            .key
+            .clone()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct CreatePasskeyAccount {
@@ -88,15 +100,7 @@ struct KeyIdMismatchError {
 impl CreateRequest {
     fn key_id_to_add(&self) -> Result<KeyId, Box<KeyIdMismatchError>> {
         match self {
-            Self::Passkey(m) => Ok(m
-                .message
-                .0
-                .parsed
-                .payload_ref()
-                .payload_unchecked()
-                .key
-                .clone()
-                .into()),
+            Self::Passkey(m) => Ok(m.passkey().into()),
             Self::ExecuteArgs(ea) => {
                 let signer = ea.key_id();
                 let to_add = &ea.message_unchecked().payload_unchecked().key;
@@ -145,14 +149,7 @@ pub async fn create(
 
     let create = match request {
         CreateRequest::Passkey(mws) => {
-            let key_inner = mws
-                .message
-                .0
-                .parsed
-                .payload_ref()
-                .payload_unchecked()
-                .key
-                .clone();
+            let key_inner = mws.passkey();
             let exec_args: ExecuteArgs<_> = ExecuteArgsMessage {
                 key: key_inner.clone(),
                 mws: Box::new(MessageWithSignature {
