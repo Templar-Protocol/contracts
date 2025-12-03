@@ -2954,20 +2954,6 @@ fn compute_idle_coverage_cases(
         "compute_idle_coverage must not mutate idle_balance"
     );
 }
-fn full_fee_100_percent() {
-    // cur=1200, last=1000, profit=200, fee_assets=200
-    // denom = 1200 - 200 = 1000
-    // fee_shares = 200*1000/1000 = 200
-    assert_eq!(
-        u128::from(compute_fee_shares(
-            1200u128.into(),
-            1000u128.into(),
-            Wad::one(),
-            1000u128.into()
-        )),
-        200
-    );
-}
 
 // Property: Shares minting never panics, never mints more than `accept` when price ≥ 1
 // Model: minted = floor(accept * S / A); price ≥ 1 <=> A >= S => minted ≤ accept

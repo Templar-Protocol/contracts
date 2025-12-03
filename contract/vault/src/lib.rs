@@ -116,7 +116,6 @@ impl From<MarketConfiguration> for MarketRecord {
 /// - Governance changes obey timelocks; Guardian may revoke pending changes.
 ///
 /// Note: RBAC storage is paid by the contract; callers are not charged deposits for RBAC changes.
-
 pub struct Contract {
     /// The underlying asset that the vault manages
     underlying_asset: FungibleAsset<BorrowAsset>,

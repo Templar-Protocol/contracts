@@ -243,17 +243,16 @@ impl Contract {
         .emit();
 
         PromiseOrValue::Promise(
-            self.market_execute_withdraw_and_fetch_position(market.clone(), batch_limit)
-                .then(
-                    Self::ext(env::current_account_id())
-                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
-                        .execute_withdraw_02_reconcile_position(
-                            op_id,
-                            market_index,
-                            U128(principal),
-                            before_balance,
-                        ),
-                ),
+            Self::market_execute_withdraw_and_fetch_position(market.clone(), batch_limit).then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
+                    .execute_withdraw_02_reconcile_position(
+                        op_id,
+                        market_index,
+                        U128(principal),
+                        before_balance,
+                    ),
+            ),
         )
     }
 
@@ -466,10 +465,8 @@ impl Contract {
         if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
         }
-
-        let before_balance = match before_balance {
-            Ok(v) => v,
-            Err(_) => panic_with_message("Failed to read balance"),
+        let Ok(before_balance) = before_balance else {
+            panic_with_message("Failed to read balance")
         };
 
         Event::VaultBalance {
@@ -478,17 +475,16 @@ impl Contract {
         .emit();
 
         PromiseOrValue::Promise(
-            self.market_execute_withdraw_and_fetch_position(market.clone(), batch_limit)
-                .then(
-                    Self::ext(env::current_account_id())
-                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
-                        .rebalance_withdraw_02_reconcile_position(
-                            op_id,
-                            market,
-                            before_principal,
-                            before_balance,
-                        ),
-                ),
+            Self::market_execute_withdraw_and_fetch_position(market.clone(), batch_limit).then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
+                    .rebalance_withdraw_02_reconcile_position(
+                        op_id,
+                        market,
+                        before_principal,
+                        before_balance,
+                    ),
+            ),
         )
     }
 
@@ -604,14 +600,18 @@ impl Contract {
 
         if let Ok(U128(actual_idle)) = balance {
             let current_idle = self.idle_balance;
-            if actual_idle > current_idle {
-                self.update_idle_balance(IdleBalanceDelta::Increase(U128(
-                    actual_idle.saturating_sub(current_idle),
-                )));
-            } else if actual_idle < current_idle {
-                self.update_idle_balance(IdleBalanceDelta::Decrease(U128(
-                    current_idle.saturating_sub(actual_idle),
-                )));
+            match actual_idle.cmp(&current_idle) {
+                Ordering::Greater => {
+                    self.update_idle_balance(IdleBalanceDelta::Increase(U128(
+                        actual_idle.saturating_sub(current_idle),
+                    )));
+                }
+                Ordering::Less => {
+                    self.update_idle_balance(IdleBalanceDelta::Decrease(U128(
+                        current_idle.saturating_sub(actual_idle),
+                    )));
+                }
+                Ordering::Equal => {}
             }
         } else {
             self.update_idle_balance(IdleBalanceDelta::Increase(U128(amount)));
@@ -930,7 +930,6 @@ impl Contract {
     }
 
     fn market_execute_withdraw_and_fetch_position(
-        &self,
         market: AccountId,
         batch_limit: Option<u32>,
     ) -> Promise {
