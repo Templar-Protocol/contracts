@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use alloy::signers::Signature as AlloySignature;
 use near_sdk::serde::{self, Deserialize, Serialize};
 
@@ -21,7 +23,7 @@ impl Serialize for Signature {
     where
         S: serde::Serializer,
     {
-        <AlloySignature as serde::Serialize>::serialize(&self.0, serializer)
+        <String as serde::Serialize>::serialize(&self.0.to_string(), serializer)
     }
 }
 
@@ -30,7 +32,8 @@ impl<'de> Deserialize<'de> for Signature {
     where
         D: serde::Deserializer<'de>,
     {
-        let sig = <AlloySignature as serde::Deserialize>::deserialize(deserializer)?;
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let sig = AlloySignature::from_str(&s).map_err(serde::de::Error::custom)?;
         Ok(Self(sig))
     }
 }
