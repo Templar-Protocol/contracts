@@ -13,7 +13,6 @@ use near_primitives::{
     views::TxExecutionStatus,
 };
 use near_sdk::{
-    json_types::U64,
     serde_json::{self, json},
     AccountId, NearToken,
 };
@@ -48,7 +47,7 @@ use templar_universal_account::{
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
-    ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
+    ExecuteArgsMessage, KeyId, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::*;
 
@@ -276,15 +275,10 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let message = create_message(
         &secret_key,
-        PayloadExecutionParameters::new_auto(
-            ua_deployer.contract().id().clone(),
-            KeyParameters {
-                block_height: U64(0),
-                index: U64(0),
-                nonce: U64(0),
-            },
-            NEAR_TESTNET_CHAIN_ID,
-        ),
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .zero()
+            .verifying_contract(ua_deployer.contract().id().clone())
+            .build_salt(),
         Pow::mine(
             CreateUniversalAccount {
                 key: passkey.clone().into(),
@@ -536,15 +530,10 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let message = create_message(
         &secret_key,
-        PayloadExecutionParameters::new_auto(
-            ua_deployer.contract().id().clone(),
-            KeyParameters {
-                block_height: U64(0),
-                index: U64(0),
-                nonce: U64(0),
-            },
-            NEAR_TESTNET_CHAIN_ID,
-        ),
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .zero()
+            .verifying_contract(ua_deployer.contract().id().clone())
+            .build_salt(),
         Pow::mine(
             CreateUniversalAccount {
                 key: passkey.clone().into(),

@@ -116,12 +116,15 @@ impl<T: serde::Serialize> ExecutionContextProvider for MessageWithValidSignature
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use alloy::signers::local::PrivateKeySigner;
+    use near_sdk::AccountId;
 
     use crate::{
         authentication::payload::Payload,
         transaction::{Action, Transaction},
-        KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
+        PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
     };
 
     use super::*;
@@ -129,11 +132,10 @@ mod tests {
     #[test]
     fn serialization() {
         let m = Message::from_parsed(Payload::new(
-            PayloadExecutionParameters::new_auto(
-                "account_id".parse().unwrap(),
-                KeyParameters::default(),
-                NEAR_TESTNET_CHAIN_ID,
-            ),
+            PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                .zero()
+                .verifying_contract(AccountId::from_str("account_id").unwrap())
+                .build_salt(),
             "hello, world".to_string(),
         ));
 

@@ -87,11 +87,13 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<Message<P>> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use crate::{KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID};
 
     use super::*;
 
-    use near_sdk::{env, json_types::U64};
+    use near_sdk::{env, json_types::U64, AccountId};
     use rstest::{fixture, rstest};
     use solana_sdk::{signature::Keypair, signer::Signer};
 
@@ -127,15 +129,14 @@ mod tests {
     #[test]
     fn valid_signature(keypair: Keypair) {
         let message: Message<_> = WithRawString::from_parsed(Payload::new(
-            PayloadExecutionParameters::new_auto(
-                "account.near".parse().unwrap(),
-                KeyParameters {
+            PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                .with_key_parameters(KeyParameters {
                     block_height: U64(12345),
                     index: U64(0),
                     nonce: U64(0),
-                },
-                NEAR_TESTNET_CHAIN_ID,
-            ),
+                })
+                .verifying_contract(AccountId::from_str("account.near").unwrap())
+                .build_salt(),
             "Hello, world!",
         ))
         .into();
@@ -158,15 +159,14 @@ mod tests {
     #[should_panic = "InvalidSignature"]
     fn invalid_signature(keypair: Keypair) {
         let message: Message<_> = WithRawString::from_parsed(Payload::new(
-            PayloadExecutionParameters::new_auto(
-                "account.near".parse().unwrap(),
-                KeyParameters {
+            PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                .with_key_parameters(KeyParameters {
                     block_height: U64(12345),
                     index: U64(0),
                     nonce: U64(0),
-                },
-                NEAR_TESTNET_CHAIN_ID,
-            ),
+                })
+                .verifying_contract(AccountId::from_str("account.near").unwrap())
+                .build_salt(),
             "Hello, world!",
         ))
         .into();
@@ -177,15 +177,14 @@ mod tests {
 
         let mws = MessageWithSignature {
             message: Message(WithRawString::from_parsed(Payload::new(
-                PayloadExecutionParameters::new_auto(
-                    "account.near".parse().unwrap(),
-                    KeyParameters {
+                PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                    .with_key_parameters(KeyParameters {
                         block_height: U64(12345),
                         index: U64(0),
                         nonce: U64(1),
-                    },
-                    NEAR_TESTNET_CHAIN_ID,
-                ),
+                    })
+                    .verifying_contract(AccountId::from_str("account.near").unwrap())
+                    .build_salt(),
                 "Hello, world!",
             ))),
             signature: sol_sig.into(),
