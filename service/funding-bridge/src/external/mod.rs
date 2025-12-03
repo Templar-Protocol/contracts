@@ -1,11 +1,12 @@
 //! External chain handlers for cross-chain deposits
 //!
 //! This module provides abstractions for interacting with external blockchains
-//! (Ethereum, Solana, etc.) to transfer tokens to bridge deposit addresses.
+//! (Ethereum, Solana, Stellar, etc.) to transfer tokens to bridge deposit addresses.
 
 pub mod config;
 pub mod evm;
 pub mod solana;
+pub mod stellar;
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -59,11 +60,13 @@ pub trait ExternalChainHandler: Send + Sync {
     /// * `to_address` - Destination address (bridge deposit address)
     /// * `asset` - Token symbol (e.g., "USDC", "USDT")
     /// * `amount` - Human-readable amount (e.g., "100.5")
+    /// * `memo` - Optional memo for chains that require it (e.g., Stellar)
     async fn transfer_tokens(
         &self,
         to_address: &str,
         asset: &str,
         amount: &str,
+        memo: Option<&str>,
     ) -> Result<TransferResult, ExternalChainError>;
 }
 

@@ -11,10 +11,6 @@ path = "src/main.rs"
 name = "templar_funding_bridge"
 path = "src/lib.rs"
 
-[[example]]
-name = "test_real_api"
-path = "examples/test_real_api.rs"
-
 [dependencies]
 # Workspace dependencies
 templar-common = { path = "../../common" }
@@ -75,6 +71,10 @@ solana-sdk = { version = "3.0", default-features = true }
 solana-rpc-client = { version = "3.1" }
 spl-token = { version = "7.0", default-features = false }
 spl-associated-token-account = { version = "6.0", default-features = false }
+
+# Stellar client (for automated Stellar asset deposits)
+stellar-strkey = "0.0.8"
+stellar-base = "0.7"
 
 # Utilities
 ulid = "1.1"

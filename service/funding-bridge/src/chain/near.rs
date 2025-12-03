@@ -392,6 +392,132 @@ impl NearHandler {
     pub fn chain_name(&self) -> &str {
         "near"
     }
+
+    /// Register storage on NEP-245 multi-token contract
+    ///
+    /// Required before an account can receive NEP-245 tokens
+    ///
+    /// # Arguments
+    /// * `token_contract` - NEP-245 contract account ID
+    /// * `account_id` - Account to register (None = self)
+    /// * `storage_deposit` - Amount of NEAR to attach (e.g. 0.01 NEAR)
+    ///
+    /// # Returns
+    /// Transaction hash
+    pub async fn storage_deposit(
+        &self,
+        token_contract: &AccountId,
+        account_id: Option<&AccountId>,
+        storage_deposit: u128,
+    ) -> ChainResult<String> {
+        if self.dry_run {
+            info!(
+                contract = %token_contract,
+                account = ?account_id,
+                deposit = %storage_deposit,
+                "DRY RUN: Would register storage"
+            );
+            return Ok(format!("dry-run-storage-{}", storage_deposit));
+        }
+
+        debug!(
+            contract = %token_contract,
+            account = ?account_id,
+            deposit = %storage_deposit,
+            "Registering storage on NEP-245 contract"
+        );
+
+        // Create storage_deposit action
+        let args = if let Some(acc) = account_id {
+            serde_json::json!({
+                "account_id": acc.to_string(),
+            })
+        } else {
+            serde_json::json!({})
+        };
+
+        let action = Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "storage_deposit".to_string(),
+            args: args.to_string().into_bytes(),
+            gas: 30_000_000_000_000, // 30 TGas
+            deposit: storage_deposit,
+        }));
+
+        // Get access key
+        let access_key_query = methods::query::RpcQueryRequest {
+            block_reference: near_primitives::types::BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::ViewAccessKey {
+                account_id: self.treasury_account.clone(),
+                public_key: self.signer.public_key.clone(),
+            },
+        };
+
+        let access_key_response = self
+            .rpc_client
+            .call(access_key_query)
+            .await
+            .map_err(|e| ChainError::RpcError(format!("Failed to get access key: {}", e)))?;
+
+        let nonce = match access_key_response.kind {
+            QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
+            _ => {
+                return Err(ChainError::RpcError(
+                    "Unexpected query response".to_string(),
+                ))
+            }
+        };
+
+        // Get block hash
+        let block_query = methods::block::RpcBlockRequest {
+            block_reference: near_primitives::types::BlockReference::latest(),
+        };
+
+        let block = self
+            .rpc_client
+            .call(block_query)
+            .await
+            .map_err(|e| ChainError::RpcError(format!("Failed to get block: {}", e)))?;
+
+        // Create and sign transaction
+        let transaction = Transaction::V0(TransactionV0 {
+            signer_id: self.treasury_account.clone(),
+            public_key: self.signer.public_key.clone(),
+            nonce,
+            receiver_id: token_contract.clone(),
+            block_hash: block.header.hash,
+            actions: vec![action],
+        });
+
+        // Sign transaction
+        let (hash, _) = transaction.get_hash_and_size();
+        let signature = self.signer.sign(hash.as_ref());
+        let signed_transaction = SignedTransaction::new(signature, transaction);
+
+        // Send transaction
+        let tx_request =
+            methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction };
+
+        let result =
+            self.rpc_client.call(tx_request).await.map_err(|e| {
+                ChainError::TransactionFailed(format!("Storage deposit failed: {}", e))
+            })?;
+
+        // Check if transaction succeeded
+        if let near_primitives::views::FinalExecutionStatus::Failure(failure) = result.status {
+            return Err(ChainError::TransactionFailed(format!(
+                "Storage deposit failed: {:?}",
+                failure
+            )));
+        }
+
+        info!(
+            tx_hash = %result.transaction.hash,
+            contract = %token_contract,
+            "Storage registered successfully"
+        );
+
+        Ok(result.transaction.hash.to_string())
+    }
 }
 
 #[cfg(test)]

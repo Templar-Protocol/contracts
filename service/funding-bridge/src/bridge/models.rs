@@ -167,6 +167,14 @@ pub struct TokenInfo {
     /// Withdrawal fee in smallest units
     #[serde(default)]
     pub withdrawal_fee: Option<String>,
+
+    /// Full token ID for intents.near (NEP-245 format if applicable)
+    #[serde(default)]
+    pub intents_token_id: Option<String>,
+
+    /// Multi-token ID component (for NEP-245 tokens)
+    #[serde(default)]
+    pub multi_token_id: Option<String>,
 }
 
 impl TokenInfo {
@@ -194,6 +202,31 @@ impl TokenInfo {
     pub fn is_native(&self) -> bool {
         self.defuse_asset_identifier.ends_with(":native")
     }
+
+    /// Check if this is a NEP-245 multi-token
+    pub fn is_nep245(&self) -> bool {
+        self.intents_token_id
+            .as_ref()
+            .map(|id| id.starts_with("nep245:"))
+            .unwrap_or(false)
+            || self.multi_token_id.is_some()
+    }
+
+    /// Get the full token ID for withdrawals
+    /// For NEP-245 tokens on intents.near, use the intents_token_id format
+    /// For NEP-141 tokens, use the near_token_id
+    pub fn withdrawal_token_id(&self) -> String {
+        if let Some(intents_id) = &self.intents_token_id {
+            // Use the full intents_token_id (e.g., "nep245:v2_1.omni.hot.tg:1100_111...")
+            intents_id.clone()
+        } else if let Some(multi_token_id) = &self.multi_token_id {
+            // Fallback: construct from parts
+            format!("{}:{}", self.near_token_id, multi_token_id)
+        } else {
+            // NEP-141 token
+            self.near_token_id.clone()
+        }
+    }
 }
 
 // ============================================================================
@@ -206,6 +239,9 @@ pub struct DepositAddressParams {
     pub account_id: String,
     /// Chain in format "type:id" (e.g., "eth:1")
     pub chain: String,
+    /// Deposit mode ("SIMPLE" for unique addresses, "MEMO" for shared address with memo)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deposit_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -214,6 +250,9 @@ pub struct DepositAddressResult {
     pub address: String,
     /// Chain identifier
     pub chain: String,
+    /// Memo for MEMO-based deposits (Stellar, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memo: Option<String>,
 }
 
 // ============================================================================

@@ -107,6 +107,7 @@ impl BridgeClient {
     ///
     /// This generates a unique deposit address for the given NEAR account.
     /// The user must send tokens to this address on the external chain.
+    /// For MEMO-based chains (Stellar), returns a shared address with a unique memo.
     pub async fn get_deposit_address(
         &self,
         account_id: &str,
@@ -118,9 +119,17 @@ impl BridgeClient {
             "Getting deposit address"
         );
 
+        // Determine if chain requires MEMO mode (Stellar)
+        let deposit_mode = if chain.starts_with("stellar:") {
+            Some("MEMO".to_string())
+        } else {
+            None
+        };
+
         let params = DepositAddressParams {
             account_id: account_id.to_string(),
             chain: chain.to_string(),
+            deposit_mode,
         };
         let request = JsonRpcRequest::new("deposit_address", params);
 
@@ -129,11 +138,20 @@ impl BridgeClient {
             BridgeError::DepositAddressFailed("No result in response".to_string())
         })?;
 
-        info!(
-            address = %result.address,
-            chain = %result.chain,
-            "Generated deposit address"
-        );
+        if let Some(ref memo) = result.memo {
+            info!(
+                address = %result.address,
+                memo = %memo,
+                chain = %result.chain,
+                "Generated deposit address with memo"
+            );
+        } else {
+            info!(
+                address = %result.address,
+                chain = %result.chain,
+                "Generated deposit address"
+            );
+        }
         Ok(result)
     }
 

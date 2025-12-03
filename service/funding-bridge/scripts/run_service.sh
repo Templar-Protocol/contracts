@@ -160,6 +160,12 @@ print_config() {
     else
         echo "  Solana Deposits: Disabled"
     fi
+
+    if [ -n "$STELLAR_SECRET_KEY" ]; then
+        echo "  Stellar Deposits: Enabled"
+    else
+        echo "  Stellar Deposits: Disabled"
+    fi
     echo ""
 }
 

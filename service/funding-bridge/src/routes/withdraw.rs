@@ -174,17 +174,58 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         app.near_handler.signer_key().clone(),
     );
 
-    let execute_args =
-        match intent_builder.build_withdrawal(&near_token_id, amount, &destination_address) {
+    // Detect token type and use appropriate withdrawal method
+    let is_nep245 = token_info
+        .as_ref()
+        .map(|info| info.is_nep245())
+        .unwrap_or_else(|| near_token_id.starts_with("nep245:") || near_token_id.contains(':'));
+
+    let execute_args = if is_nep245 {
+        // NEP-245 multi-token withdrawal
+        let token_id = if let Some(info) = &token_info {
+            // Use the withdrawal_token_id helper which formats contract:multi_token_id
+            info.withdrawal_token_id()
+        } else {
+            // Remove nep245: prefix if present
+            near_token_id
+                .strip_prefix("nep245:")
+                .unwrap_or(&near_token_id)
+                .to_string()
+        };
+
+        debug!(
+            token_id = %token_id,
+            "Building NEP-245 withdrawal"
+        );
+
+        match intent_builder.build_mt_withdrawal(&token_id, amount, &destination_address) {
             Ok(args) => args,
             Err(e) => {
-                error!(error = %e, "Failed to build withdrawal intent");
+                error!(error = %e, "Failed to build NEP-245 withdrawal intent");
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Failed to build withdrawal intent: {}", e),
                 );
             }
-        };
+        }
+    } else {
+        // NEP-141 fungible token withdrawal
+        debug!(
+            token = %near_token_id,
+            "Building NEP-141 withdrawal"
+        );
+
+        match intent_builder.build_withdrawal(&near_token_id, amount, &destination_address) {
+            Ok(args) => args,
+            Err(e) => {
+                error!(error = %e, "Failed to build NEP-141 withdrawal intent");
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to build withdrawal intent: {}", e),
+                );
+            }
+        }
+    };
 
     // Execute the withdrawal intent on intents.near
     let tx_hash = match app.near_handler.execute_intents(&execute_args).await {
@@ -239,6 +280,7 @@ fn parse_chain(chain: &str) -> Result<(ChainId, String), String> {
             ("eth", "10") => "optimism",
             ("eth", "137") => "polygon",
             ("sol", _) => "solana",
+            ("stellar", _) => "stellar",
             _ => "unknown",
         };
         return Ok((parsed, name.to_string()));
@@ -252,10 +294,11 @@ fn parse_chain(chain: &str) -> Result<(ChainId, String), String> {
         "optimism" | "op" => Ok((ChainId::new("eth", "10"), "optimism".to_string())),
         "polygon" | "matic" => Ok((ChainId::new("eth", "137"), "polygon".to_string())),
         "solana" | "sol" => Ok((ChainId::new("sol", "mainnet"), "solana".to_string())),
+        "stellar" => Ok((ChainId::new("stellar", "mainnet"), "stellar".to_string())),
         _ => Err(format!(
             "Unsupported destination chain: {}. \
              Supported: ethereum (eth:1), arbitrum (eth:42161), base (eth:8453), \
-             optimism (eth:10), polygon (eth:137), solana (sol:mainnet)",
+             optimism (eth:10), polygon (eth:137), solana (sol:mainnet), stellar (stellar:mainnet)",
             chain
         )),
     }
@@ -308,6 +351,10 @@ mod tests {
             solana_withdraw_address: Some(
                 "B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D".to_string(),
             ),
+            stellar_secret_key: None,
+            stellar_horizon_url: "https://horizon.stellar.org".to_string(),
+            stellar_network: "mainnet".to_string(),
+            stellar_withdraw_address: None,
         };
 
         let bridge_client = Arc::new(BridgeClient::new(args.bridge_api_url.clone()));

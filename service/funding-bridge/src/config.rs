@@ -72,6 +72,23 @@ pub struct Args {
     )]
     pub solana_rpc_url: String,
 
+    // === Stellar Wallet (for automated deposits) ===
+    /// Stellar secret key (S...)
+    #[arg(long, env = "STELLAR_SECRET_KEY")]
+    pub stellar_secret_key: Option<String>,
+
+    /// Stellar Horizon URL
+    #[arg(
+        long,
+        env = "STELLAR_HORIZON_URL",
+        default_value = "https://horizon.stellar.org"
+    )]
+    pub stellar_horizon_url: String,
+
+    /// Stellar network (mainnet or testnet)
+    #[arg(long, env = "STELLAR_NETWORK", default_value = "mainnet")]
+    pub stellar_network: String,
+
     // === Withdrawal Destinations (required for withdrawals) ===
     /// Ethereum withdrawal destination address
     #[arg(long, env = "ETH_WITHDRAW_ADDRESS")]
@@ -96,6 +113,10 @@ pub struct Args {
     /// Solana withdrawal destination address
     #[arg(long, env = "SOLANA_WITHDRAW_ADDRESS")]
     pub solana_withdraw_address: Option<String>,
+
+    /// Stellar withdrawal destination address
+    #[arg(long, env = "STELLAR_WITHDRAW_ADDRESS")]
+    pub stellar_withdraw_address: Option<String>,
 }
 
 impl Args {
@@ -125,6 +146,9 @@ impl Args {
             "optimism" | "op" | "eth:10" => self.optimism_withdraw_address.clone(),
             "polygon" | "matic" | "eth:137" => self.polygon_withdraw_address.clone(),
             "solana" | "sol" | "sol:mainnet" => self.solana_withdraw_address.clone(),
+            "stellar" | "stellar:mainnet" | "stellar:testnet" => {
+                self.stellar_withdraw_address.clone()
+            }
             _ => None,
         }
     }
@@ -161,6 +185,10 @@ mod tests {
             optimism_withdraw_address: None,
             polygon_withdraw_address: None,
             solana_withdraw_address: None,
+            stellar_secret_key: None,
+            stellar_horizon_url: "https://horizon.stellar.org".to_string(),
+            stellar_network: "mainnet".to_string(),
+            stellar_withdraw_address: None,
         }
     }
 

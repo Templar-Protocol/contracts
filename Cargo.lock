@@ -489,6 +489,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
+name = "base32"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23ce669cd6c8588f79e15cf450314f9638f967fc5770ff1c7c1deb0925ea7cfa"
+
+[[package]]
+name = "base32"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
+
+[[package]]
 name = "base64"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1357,6 +1369,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "crate-git-revision"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c521bf1f43d31ed2f73441775ed31935d77901cb3451e44b38a1c1612fcbaf98"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "serde_json",
+]
+
+[[package]]
 name = "crc"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1370,6 +1393,12 @@ name = "crc-catalog"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
+
+[[package]]
+name = "crc16"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
 
 [[package]]
 name = "crc32fast"
@@ -2014,6 +2043,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "escape-bytes"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bfcf67fea2815c2fc3b90873fae90957be12ff417335dfadc7f52927feb03b2"
+
+[[package]]
 name = "etcetera"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2342,6 +2377,12 @@ dependencies = [
  "walkdir",
  "yansi 0.5.1",
 ]
+
+[[package]]
+name = "ethnum"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
 
 [[package]]
 name = "event-listener"
@@ -3617,6 +3658,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "json"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "078e285eafdfb6c4b434e0d31e8cfcb5115b651496faca5749b88fafd4f23bfd"
+
+[[package]]
 name = "json-patch"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4137,7 +4184,7 @@ dependencies = [
  "near-parameters 0.26.0",
  "near-primitives 0.26.0",
  "near-time 0.26.0",
- "num-rational",
+ "num-rational 0.3.2",
  "once_cell",
  "serde",
  "serde_json",
@@ -4162,7 +4209,7 @@ dependencies = [
  "near-parameters 0.31.1",
  "near-primitives 0.31.1",
  "near-time 0.31.1",
- "num-rational",
+ "num-rational 0.3.2",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4369,7 +4416,7 @@ dependencies = [
  "enum-map",
  "near-account-id",
  "near-primitives-core 0.26.0",
- "num-rational",
+ "num-rational 0.3.2",
  "serde",
  "serde_repr",
  "serde_yaml",
@@ -4388,7 +4435,7 @@ dependencies = [
  "near-account-id",
  "near-primitives-core 0.31.1",
  "near-schema-checker-lib",
- "num-rational",
+ "num-rational 0.3.2",
  "serde",
  "serde_repr",
  "serde_yaml",
@@ -4422,7 +4469,7 @@ dependencies = [
  "near-stdx 0.26.0",
  "near-structs-checker-lib",
  "near-time 0.26.0",
- "num-rational",
+ "num-rational 0.3.2",
  "once_cell",
  "ordered-float",
  "primitive-types 0.10.1",
@@ -4464,7 +4511,7 @@ dependencies = [
  "near-schema-checker-lib",
  "near-stdx 0.31.1",
  "near-time 0.31.1",
- "num-rational",
+ "num-rational 0.3.2",
  "ordered-float",
  "primitive-types 0.10.1",
  "rand 0.8.5",
@@ -4494,7 +4541,7 @@ dependencies = [
  "enum-map",
  "near-account-id",
  "near-structs-checker-lib",
- "num-rational",
+ "num-rational 0.3.2",
  "serde",
  "serde_repr",
  "sha2 0.10.9",
@@ -4515,7 +4562,7 @@ dependencies = [
  "enum-map",
  "near-account-id",
  "near-schema-checker-lib",
- "num-rational",
+ "num-rational 0.3.2",
  "serde",
  "serde_repr",
  "sha2 0.10.9",
@@ -4748,7 +4795,7 @@ dependencies = [
  "near-primitives-core 0.31.1",
  "near-schema-checker-lib",
  "near-stdx 0.31.1",
- "num-rational",
+ "num-rational 0.3.2",
  "parking_lot",
  "rand 0.8.5",
  "rayon",
@@ -4989,6 +5036,17 @@ dependencies = [
  "num-integer",
  "num-traits",
  "serde",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -5728,7 +5786,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.1",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6322,7 +6380,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9925,6 +9983,69 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stellar-base"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6eea012fa40fcb31851ced9bc2380b0d4f3dfc77817d118809073aebed1a1947"
+dependencies = [
+ "base32 0.5.1",
+ "base64 0.22.1",
+ "bitflags 2.9.4",
+ "byteorder",
+ "chrono",
+ "crc16",
+ "ed25519",
+ "ed25519-dalek",
+ "json",
+ "num-bigint 0.4.6",
+ "num-rational 0.4.2",
+ "num-traits",
+ "rand 0.8.5",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "stellar-xdr",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "stellar-strkey"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12d2bf45e114117ea91d820a846fd1afbe3ba7d717988fee094ce8227a3bf8bd"
+dependencies = [
+ "base32 0.4.0",
+ "crate-git-revision",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "stellar-strkey"
+version = "0.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee1832fb50c651ad10f734aaf5d31ca5acdfb197a6ecda64d93fcdb8885af913"
+dependencies = [
+ "crate-git-revision",
+ "data-encoding",
+]
+
+[[package]]
+name = "stellar-xdr"
+version = "24.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f251bec16969e6b305232f288d3f09c1ae4a90bcaeb541d43d9a801505bfca7"
+dependencies = [
+ "cfg_eval",
+ "crate-git-revision",
+ "escape-bytes",
+ "ethnum",
+ "hex",
+ "sha2 0.10.9",
+ "stellar-strkey 0.0.13",
+]
+
+[[package]]
 name = "string_cache"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10183,7 +10304,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10256,6 +10377,8 @@ dependencies = [
  "solana-sdk",
  "spl-associated-token-account",
  "spl-token",
+ "stellar-base",
+ "stellar-strkey 0.0.8",
  "templar-common",
  "thiserror 1.0.69",
  "tokio",
@@ -11472,7 +11595,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

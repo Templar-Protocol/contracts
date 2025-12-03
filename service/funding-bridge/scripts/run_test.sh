@@ -10,12 +10,13 @@
 #
 # Arguments:
 #   direction   - deposit or withdraw
-#   network     - eth, arbitrum, base, solana
+#   network     - eth, arbitrum, base, solana, stellar
 #   amount      - Amount in USDC (e.g., 1.5 for 1.5 USDC)
 #
 # Examples:
 #   ./scripts/run_test.sh deposit solana 1.0     # Deposit 1 USDC from Solana to NEAR
 #   ./scripts/run_test.sh withdraw eth 0.5       # Withdraw 0.5 USDC from NEAR to Ethereum
+#   ./scripts/run_test.sh deposit stellar 2.0    # Deposit 2 USDC from Stellar to NEAR
 #   ./scripts/run_test.sh deposit arbitrum 10    # Deposit 10 USDC from Arbitrum to NEAR
 #
 
@@ -43,12 +44,13 @@ show_usage() {
     echo ""
     echo "Arguments:"
     echo "  direction   deposit or withdraw"
-    echo "  network     eth, arbitrum, base, optimism, solana"
+    echo "  network     eth, arbitrum, base, optimism, solana, stellar"
     echo "  amount      Amount in USDC (e.g., 1.0)"
     echo ""
     echo "Examples:"
     echo "  $0 deposit solana 1.0     # Deposit from Solana to NEAR treasury"
     echo "  $0 withdraw eth 0.5       # Withdraw from NEAR treasury to Ethereum"
+    echo "  $0 deposit stellar 2.0    # Deposit from Stellar to NEAR treasury"
     echo "  $0 deposit arbitrum 10    # Deposit from Arbitrum to NEAR treasury"
     echo ""
     echo "Note: Withdrawal destinations are configured in .env file:"
@@ -91,9 +93,12 @@ case "$NETWORK" in
     sol|solana)
         CHAIN_NAME="solana"
         ;;
+    xlm|stellar)
+        CHAIN_NAME="stellar"
+        ;;
     *)
         echo -e "${RED}Error: Invalid network '$NETWORK'${NC}"
-        echo "Must be 'eth', 'arbitrum', 'base', 'optimism', or 'solana'"
+        echo "Must be 'eth', 'arbitrum', 'base', 'optimism', 'solana', or 'stellar'"
         exit 1
         ;;
 esac
@@ -213,11 +218,16 @@ if [ "$DIRECTION" = "deposit" ]; then
         echo -e "${GREEN}✅ Deposit submitted successfully (pending bridge processing)${NC}"
         TX_HASH=$(echo "$RESPONSE" | grep -o '"source_tx_hash":"[^"]*"' | cut -d'"' -f4)
         BRIDGE_ADDR=$(echo "$RESPONSE" | grep -o '"bridge_deposit_address":"[^"]*"' | cut -d'"' -f4)
+        BRIDGE_MEMO=$(echo "$RESPONSE" | grep -o '"bridge_deposit_memo":"[^"]*"' | cut -d'"' -f4)
         if [ -n "$TX_HASH" ]; then
             echo -e "Source TX Hash: ${BLUE}$TX_HASH${NC}"
         fi
         if [ -n "$BRIDGE_ADDR" ]; then
             echo -e "Bridge Address: ${BLUE}$BRIDGE_ADDR${NC}"
+        fi
+        if [ -n "$BRIDGE_MEMO" ]; then
+            echo -e "Bridge Memo:    ${BLUE}$BRIDGE_MEMO${NC}"
+            echo -e "${YELLOW}Note: Include this memo when sending to the bridge address${NC}"
         fi
         exit 0
     elif echo "$RESPONSE" | grep -q '"status":"SUBMITTED"'; then
@@ -229,6 +239,15 @@ if [ "$DIRECTION" = "deposit" ]; then
         exit 0
     elif echo "$RESPONSE" | grep -q '"status":"DRY_RUN"'; then
         echo -e "${YELLOW}ℹ️  Dry run mode - no actual transaction executed${NC}"
+        BRIDGE_ADDR=$(echo "$RESPONSE" | grep -o '"bridge_deposit_address":"[^"]*"' | cut -d'"' -f4)
+        BRIDGE_MEMO=$(echo "$RESPONSE" | grep -o '"bridge_deposit_memo":"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$BRIDGE_ADDR" ]; then
+            echo -e "Bridge Address: ${BLUE}$BRIDGE_ADDR${NC}"
+        fi
+        if [ -n "$BRIDGE_MEMO" ]; then
+            echo -e "Bridge Memo:    ${BLUE}$BRIDGE_MEMO${NC}"
+            echo -e "${CYAN}To complete deposit manually: Send USDC to the bridge address with this memo${NC}"
+        fi
         exit 0
     else
         echo -e "${YELLOW}⚠️  Unknown response status${NC}"

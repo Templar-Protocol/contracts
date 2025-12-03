@@ -65,7 +65,9 @@ impl ExternalChainHandler for EvmChainHandler {
         to_address: &str,
         asset: &str,
         amount: &str,
+        _memo: Option<&str>,
     ) -> Result<TransferResult, ExternalChainError> {
+        // EVM chains don't use memos, ignore the parameter
         use ethers::{
             middleware::SignerMiddleware,
             providers::{Http, Middleware, Provider},

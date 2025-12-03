@@ -348,7 +348,9 @@ impl ExternalChainHandler for SolanaSdkHandler {
         to_address: &str,
         asset: &str,
         amount: &str,
+        _memo: Option<&str>,
     ) -> Result<TransferResult, ExternalChainError> {
+        // Solana uses unique addresses, not memos
         info!(
             chain = %self.config.chain_id,
             to = %to_address,
@@ -567,7 +569,7 @@ mod tests {
         let handler = SolanaSdkHandler::from_json_bytes(config, &json).unwrap();
 
         let result = handler
-            .transfer_tokens("11111111111111111111111111111111", "UNKNOWN", "100")
+            .transfer_tokens("11111111111111111111111111111111", "UNKNOWN", "100", None)
             .await;
 
         assert!(matches!(
@@ -594,7 +596,7 @@ mod tests {
         let handler = SolanaSdkHandler::from_json_bytes(config, &json).unwrap();
 
         let result = handler
-            .transfer_tokens("11111111111111111111111111111111", "USDC", "invalid")
+            .transfer_tokens("11111111111111111111111111111111", "USDC", "invalid", None)
             .await;
 
         assert!(matches!(result, Err(ExternalChainError::InvalidAmount(_))));

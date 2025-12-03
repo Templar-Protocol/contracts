@@ -26,13 +26,23 @@ pub enum Intent {
         receiver_id: String,
         tokens: HashMap<String, String>,
     },
-    /// Withdraw tokens to external chain
+    /// Withdraw NEP-141 tokens to external chain
     #[serde(rename = "ft_withdraw")]
     FtWithdraw {
         token: String,
         receiver_id: String,
         amount: String,
         memo: String,
+    },
+    /// Withdraw NEP-245 multi-tokens to external chain
+    #[serde(rename = "mt_withdraw")]
+    MtWithdraw {
+        token: String,          // MT contract account ID
+        receiver_id: String,    // Receiver account ID
+        token_ids: Vec<String>, // Array of token IDs within the MT contract
+        amounts: Vec<String>,   // Array of amounts (one per token_id)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memo: Option<String>,
     },
     /// Token difference for swaps
     #[serde(rename = "token_diff")]
@@ -126,7 +136,7 @@ impl WithdrawalIntentBuilder {
         self
     }
 
-    /// Create a cross-chain withdrawal intent
+    /// Create a cross-chain withdrawal intent for NEP-141 tokens
     ///
     /// # Arguments
     /// * `token` - NEAR OMFT token contract (e.g., "eth-0x....omft.near", "sol-EPj....omft.near")
@@ -146,6 +156,56 @@ impl WithdrawalIntentBuilder {
             memo: format!("WITHDRAW_TO:{}", destination_address),
         };
 
+        self.build_intent(intent)
+    }
+
+    /// Create a cross-chain withdrawal intent for NEP-245 multi-tokens
+    ///
+    /// # Arguments
+    /// * `token` - Full intents token ID (e.g., "nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu")
+    /// * `amount` - Amount in smallest units
+    /// * `destination_address` - Address on destination chain
+    pub fn build_mt_withdrawal(
+        &self,
+        token: &str,
+        amount: u128,
+        destination_address: &str,
+    ) -> Result<ExecuteIntentsArgs, IntentError> {
+        // Token input is in intents format: "nep245:contract:multi_token_id"
+        // Parse this format
+        let token_str = token.strip_prefix("nep245:").unwrap_or(token);
+        let parts: Vec<&str> = token_str.split(':').collect();
+
+        let (contract_id, multi_token_id) = if parts.len() >= 2 {
+            (parts[0], parts[1..].join(":"))
+        } else {
+            return Err(IntentError::Serialization(format!(
+                "Invalid NEP-245 token format. Expected 'nep245:contract:multi_token_id', got: {}",
+                token
+            )));
+        };
+
+        // Create the NEP-245 withdrawal intent
+        // Based on MtWithdraw struct definition from intents.near:
+        // - token: MT contract account ID (e.g., "v2_1.omni.hot.tg")
+        // - token_ids: Array of token IDs within that contract
+        // - amounts: Array of amounts (parallel to token_ids)
+        // - receiver_id: Receiver account ID (same as token for bridge withdrawals)
+        // - memo: Plain text string with destination address
+
+        let intent = Intent::MtWithdraw {
+            token: contract_id.to_string(),
+            receiver_id: contract_id.to_string(),
+            token_ids: vec![multi_token_id],
+            amounts: vec![amount.to_string()],
+            memo: Some(format!("WITHDRAW_TO:{}", destination_address)),
+        };
+
+        self.build_intent(intent)
+    }
+
+    /// Build and sign an intent
+    fn build_intent(&self, intent: Intent) -> Result<ExecuteIntentsArgs, IntentError> {
         // Create the message
         let deadline = Utc::now() + Duration::minutes(self.deadline_minutes);
         let message = IntentMessage {

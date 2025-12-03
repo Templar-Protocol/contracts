@@ -45,6 +45,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
                     status: "FAILED".to_string(),
                     source_chain: chain_id.clone(),
                     bridge_deposit_address: None,
+                    bridge_deposit_memo: None,
                     error: Some(format!(
                         "Chain {} not configured. Available chains: {:?}",
                         chain_id,
@@ -66,6 +67,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
                 status: "FAILED".to_string(),
                 source_chain: chain_id,
                 bridge_deposit_address: None,
+                bridge_deposit_memo: None,
                 error: Some(format!(
                     "Token {} not supported on {}",
                     req.asset,
@@ -77,12 +79,12 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
     }
 
     // Get bridge deposit address for NEAR treasury
-    let deposit_address = match app
+    let deposit_info = match app
         .bridge_client
         .get_deposit_address(app.near_handler.treasury_account().as_str(), &chain_id)
         .await
     {
-        Ok(result) => result.address,
+        Ok(result) => result,
         Err(e) => {
             error!(error = %e, "Failed to get deposit address from bridge");
             return (
@@ -92,12 +94,16 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
                     status: "FAILED".to_string(),
                     source_chain: chain_id,
                     bridge_deposit_address: None,
+                    bridge_deposit_memo: None,
                     error: Some(format!("Failed to get bridge deposit address: {}", e)),
                 }),
             )
                 .into_response();
         }
     };
+
+    let deposit_address = deposit_info.address.clone();
+    let deposit_memo = deposit_info.memo.clone();
 
     // If dry run, return success without executing
     if app.dry_run || req.dry_run {
@@ -109,6 +115,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
                 status: "DRY_RUN".to_string(),
                 source_chain: chain_id,
                 bridge_deposit_address: Some(deposit_address),
+                bridge_deposit_memo: deposit_memo,
                 error: None,
             }),
         )
@@ -117,7 +124,12 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
 
     // Execute transfer via chain handler
     match chain_handler
-        .transfer_tokens(&deposit_address, &req.asset, &req.amount)
+        .transfer_tokens(
+            &deposit_address,
+            &req.asset,
+            &req.amount,
+            deposit_memo.as_deref(),
+        )
         .await
     {
         Ok(result) => {
@@ -137,6 +149,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
                     },
                     source_chain: chain_id,
                     bridge_deposit_address: Some(deposit_address),
+                    bridge_deposit_memo: deposit_memo,
                     error: None,
                 }),
             )
@@ -151,6 +164,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
                     status: "FAILED".to_string(),
                     source_chain: chain_id,
                     bridge_deposit_address: Some(deposit_address),
+                    bridge_deposit_memo: deposit_memo,
                     error: Some(format!("Transfer failed: {}", e)),
                 }),
             )
@@ -165,6 +179,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
 /// - "ethereum" -> "eth:1"
 /// - "arbitrum" -> "eth:42161"
 /// - "solana" -> "sol:mainnet"
+/// - "stellar" -> "stellar:mainnet"
 /// - "eth:1" -> "eth:1" (unchanged)
 pub fn normalize_chain_id(chain: &str) -> String {
     match chain.to_lowercase().as_str() {
@@ -174,6 +189,7 @@ pub fn normalize_chain_id(chain: &str) -> String {
         "optimism" | "op" => "eth:10".to_string(),
         "polygon" | "matic" => "eth:137".to_string(),
         "solana" | "sol" => "sol:mainnet".to_string(),
+        "stellar" => "stellar:mainnet".to_string(),
         _ => chain.to_string(),
     }
 }

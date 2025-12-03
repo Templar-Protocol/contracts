@@ -34,6 +34,8 @@ pub async fn health(State(app): State<App>) -> impl IntoResponse {
             }
         } else if chain_id.starts_with("sol:") {
             "solana"
+        } else if chain_id.starts_with("stellar:") {
+            "stellar"
         } else {
             &chain_id
         };

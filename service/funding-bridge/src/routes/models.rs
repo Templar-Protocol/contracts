@@ -41,6 +41,10 @@ pub struct DepositResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_deposit_address: Option<String>,
 
+    /// Memo for MEMO-based deposits (Stellar, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_deposit_memo: Option<String>,
+
     /// Error message if failed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
