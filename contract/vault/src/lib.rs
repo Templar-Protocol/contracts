@@ -35,7 +35,7 @@ use templar_common::{
     market::ext_market,
     panic_with_message,
     vault::{
-        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
+        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event, CapGroupId, CapGroupRecord,
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
         QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
         WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
@@ -144,6 +144,8 @@ pub struct Contract {
 
     /// Markets controlled by the vault
     markets: BTreeMap<AccountId, MarketRecord>,
+    /// Cap groups for correlated risk throttling
+    cap_groups: BTreeMap<CapGroupId, CapGroupRecord>,
 
     /// Per‑action governance timelock configuration.
     governance_timelocks: Timelocks,
@@ -198,6 +200,7 @@ impl Contract {
             fee_recipient,
             skim_recipient,
             markets: BTreeMap::new(),
+            cap_groups: BTreeMap::new(),
             governance_timelocks: governance::Timelocks::new(
                 initial_timelock_ns.0,
                 initial_timelock_ns.0,
@@ -731,18 +734,44 @@ impl Contract {
         U128(self.total_supply())
     }
 
+    pub fn get_cap_groups(&self) -> Vec<(CapGroupId, CapGroupRecord)> {
+        self.cap_groups
+            .iter()
+            .map(|(id, rec)| (id.clone(), rec.clone()))
+            .collect()
+    }
+
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
     /// across all markets given current caps and the current `supply_queue`.
     ///
     /// This does not reserve capacity and may become stale immediately after it is read.
     pub fn get_max_deposit(&self) -> U128 {
-        let total = self
-            .supply_queue
+        let mut total = 0u128;
+        let mut group_remaining: BTreeMap<CapGroupId, u128> = self
+            .cap_groups
             .iter()
-            .fold(0u128, |acc, m| match self.markets.get(m) {
-                Some(rec) if rec.cfg.cap.0 > 0 => acc + rec.cfg.cap.0.saturating_sub(rec.principal),
-                _ => acc,
-            });
+            .map(|(id, rec)| (id.clone(), rec.cap.0.saturating_sub(rec.principal)))
+            .collect();
+
+        for market in self.supply_queue.iter() {
+            let market_room = self.market_cap_room(market);
+            if market_room == 0 {
+                continue;
+            }
+            if let Some(group_id) = self.market_cap_group_id(market) {
+                let entry = group_remaining
+                    .entry(group_id.clone())
+                    .or_insert_with(|| self.cap_group_room_remaining(&group_id));
+                if *entry == 0 {
+                    continue;
+                }
+                let room = market_room.min(*entry);
+                total = total.saturating_add(room);
+                *entry = entry.saturating_sub(room);
+            } else {
+                total = total.saturating_add(market_room);
+            }
+        }
         U128(total)
     }
 
@@ -756,12 +785,7 @@ impl Contract {
         let max_room = self
             .supply_queue
             .iter()
-            .fold(0u128, |acc, m| match self.markets.get(m) {
-                Some(rec) if rec.cfg.cap.0 > 0 => {
-                    acc.max(rec.cfg.cap.0.saturating_sub(rec.principal))
-                }
-                _ => acc,
-            });
+            .fold(0u128, |acc, m| acc.max(self.room_of(m)));
         U128(max_room)
     }
 
@@ -862,9 +886,70 @@ impl Contract {
         self.markets.get(market).map_or(0, |r| r.cfg.cap.0)
     }
 
-    fn room_of(&self, market: &AccountId) -> u128 {
+    fn market_cap_room(&self, market: &AccountId) -> u128 {
         self.cap_of(market)
             .saturating_sub(self.principal_of(market))
+    }
+
+    fn market_cap_group_id(&self, market: &AccountId) -> Option<CapGroupId> {
+        self.markets
+            .get(market)
+            .and_then(|r| r.cfg.cap_group_id.clone())
+    }
+
+    fn cap_group_room_remaining(&self, cap_group: &CapGroupId) -> u128 {
+        self.cap_groups
+            .get(cap_group)
+            .map_or(0, |rec| rec.cap.0.saturating_sub(rec.principal))
+    }
+
+    fn room_of(&self, market: &AccountId) -> u128 {
+        let market_room = self.market_cap_room(market);
+        if market_room == 0 {
+            return 0;
+        }
+        if let Some(cap_group) = self.market_cap_group_id(market) {
+            return market_room.min(self.cap_group_room_remaining(&cap_group));
+        }
+        market_room
+    }
+
+    pub(crate) fn update_cap_group_principal(
+        &mut self,
+        cap_group: &CapGroupId,
+        old: u128,
+        new: u128,
+    ) {
+        if old == new {
+            return;
+        }
+        let entry = self
+            .cap_groups
+            .entry(cap_group.clone())
+            .or_insert_with(CapGroupRecord::default);
+        if new >= old {
+            entry.principal = entry.principal.saturating_add(new - old);
+        } else {
+            entry.principal = entry.principal.saturating_sub(old - new);
+        }
+        Event::CapGroupPrincipalUpdated {
+            cap_group: cap_group.clone(),
+            principal: U128(entry.principal),
+        }
+        .emit();
+    }
+
+    pub(crate) fn set_market_principal(&mut self, market: &AccountId, new_principal: u128) {
+        if let Some(rec) = self.markets.get_mut(market) {
+            let old = rec.principal;
+            if old == new_principal {
+                return;
+            }
+            rec.principal = new_principal;
+            if let Some(cap_group) = rec.cfg.cap_group_id.clone() {
+                self.update_cap_group_principal(&cap_group, old, new_principal);
+            }
+        }
     }
 
     fn enqueue_pending_withdrawal(

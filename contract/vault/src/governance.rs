@@ -34,6 +34,16 @@ pub enum TimelockedAction {
     },
     /// Increase the cap for a given `market` to `new_cap`.
     CapChange { market: AccountId, new_cap: U128 },
+    /// Increase the cap for a correlated-risk cap group.
+    CapGroupChange {
+        cap_group: CapGroupId,
+        new_cap: U128,
+    },
+    /// Assign (or remove) a market to/from a cap group.
+    CapGroupMembership {
+        market: AccountId,
+        cap_group: Option<CapGroupId>,
+    },
     /// Mark a `market` for removal (timestamp is still stored on the config).
     MarketRemoval { market: AccountId },
 }
@@ -445,6 +455,80 @@ impl Contract {
         }
     }
 
+    pub fn submit_cap_group(&mut self, cap_group: CapGroupId, new_cap: U128) {
+        self.submit_change(TimelockedAction::CapGroupChange { cap_group, new_cap });
+    }
+
+    pub fn accept_cap_group(&mut self, cap_group: CapGroupId) {
+        Self::assert_curator_or_owner();
+        self.ensure_idle();
+
+        if let Some(action) = self.take_timelock(|a| {
+            matches!(
+                a,
+                TimelockedAction::CapGroupChange {
+                    cap_group: pending,
+                    ..
+                } if pending == &cap_group
+            )
+        }) {
+            self.apply_immediately(&action);
+        } else {
+            panic_with_message("No pending cap group change for this id");
+        }
+    }
+
+    pub fn revoke_pending_cap_group(&mut self, cap_group: CapGroupId) {
+        Self::assert_curator_or_owner();
+
+        if self.revoke_timelocks(|a| {
+            matches!(
+                a,
+                TimelockedAction::CapGroupChange {
+                    cap_group: pending,
+                    ..
+                } if pending == &cap_group
+            )
+        }) {
+            Event::CapGroupRaiseRevoked { cap_group }.emit();
+        }
+    }
+
+    pub fn submit_market_cap_group(&mut self, market: AccountId, cap_group: Option<CapGroupId>) {
+        self.submit_change(TimelockedAction::CapGroupMembership { market, cap_group });
+    }
+
+    pub fn accept_market_cap_group(&mut self, market: AccountId) {
+        Self::assert_curator_or_owner();
+        self.ensure_idle();
+
+        if let Some(action) = self.take_timelock(|a| {
+            matches!(
+                a,
+                TimelockedAction::CapGroupMembership { market: pending, .. }
+                    if pending == &market
+            )
+        }) {
+            self.apply_immediately(&action);
+        } else {
+            panic_with_message("No pending cap group membership change for this market");
+        }
+    }
+
+    pub fn revoke_pending_market_cap_group(&mut self, market: AccountId) {
+        Self::assert_curator_or_owner();
+
+        if self.revoke_timelocks(|a| {
+            matches!(
+                a,
+                TimelockedAction::CapGroupMembership { market: pending, .. }
+                    if pending == &market
+            )
+        }) {
+            Event::CapGroupMembershipRevoked { market }.emit();
+        }
+    }
+
     /// To remove a market entirely, the curator:
     /// - first sets its cap to 0 (disabling new deposits)
     /// - then calls submit_market_removal.
@@ -620,6 +704,57 @@ impl Contract {
                     true
                 }
             }
+            TimelockedAction::CapGroupChange { cap_group, new_cap } => {
+                Self::assert_curator_or_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group");
+                self.ensure_idle();
+
+                require!(
+                    self.governance_timelocks
+                        .seek_pending_timelock(|p| matches!(
+                            p,
+                            TimelockedAction::CapGroupChange { cap_group: pending, .. }
+                                if pending == cap_group
+                        ))
+                        .is_none(),
+                    "Cap group change already pending"
+                );
+
+                if let Some(record) = self.cap_groups.get(cap_group) {
+                    require!(new_cap != &record.cap, "New cap is same as current");
+                    new_cap > &record.cap
+                } else {
+                    true
+                }
+            }
+            TimelockedAction::CapGroupMembership { market, cap_group } => {
+                Self::assert_curator_or_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_market_cap_group");
+                self.ensure_idle();
+
+                let rec = self
+                    .markets
+                    .get(market)
+                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+
+                require!(
+                    rec.cfg.cap_group_id != *cap_group,
+                    "Market already assigned to this cap group"
+                );
+
+                require!(
+                    self.governance_timelocks
+                        .seek_pending_timelock(|p| matches!(
+                            p,
+                            TimelockedAction::CapGroupMembership { market: pending, .. }
+                                if pending == market
+                        ))
+                        .is_none(),
+                    "Cap group membership change already pending"
+                );
+
+                true
+            }
             // Submit a timelocked governance change to remove a market
             TimelockedAction::MarketRemoval { market } => {
                 Self::assert_curator_or_owner();
@@ -753,6 +888,50 @@ impl Contract {
                 .emit();
                 mkt.cfg.cap = *new_cap;
             }
+            TimelockedAction::CapGroupChange { cap_group, new_cap } => {
+                let record = self
+                    .cap_groups
+                    .entry(cap_group.clone())
+                    .or_insert_with(CapGroupRecord::default);
+                record.cap = *new_cap;
+                Event::CapGroupSet {
+                    cap_group: cap_group.clone(),
+                    new_cap: *new_cap,
+                }
+                .emit();
+            }
+            TimelockedAction::CapGroupMembership { market, cap_group } => {
+                let (old_group, principal) = {
+                    let rec = self.markets.get(market).unwrap_or_else(|| {
+                        panic_with_message(&format!("Unknown market: {market}"))
+                    });
+
+                    if rec.cfg.cap_group_id == *cap_group {
+                        return;
+                    }
+
+                    (rec.cfg.cap_group_id.clone(), rec.principal)
+                };
+
+                if let Some(old_group) = old_group {
+                    self.update_cap_group_principal(&old_group, principal, 0);
+                }
+
+                if let Some(new_group) = cap_group.clone() {
+                    self.update_cap_group_principal(&new_group, 0, principal);
+                }
+
+                let rec = self
+                    .markets
+                    .get_mut(market)
+                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+                rec.cfg.cap_group_id = cap_group.clone();
+                Event::CapGroupMembershipSet {
+                    market: market.clone(),
+                    cap_group: cap_group.clone(),
+                }
+                .emit();
+            }
             TimelockedAction::MarketRemoval { market } => {
                 let rec = self
                     .markets
@@ -783,7 +962,9 @@ impl Contract {
                 Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,
                 Some(TimelockKind::MarketRemoval) => self.governance_timelocks.market_removal_ns,
             },
-            TimelockedAction::CapChange { .. } => self.governance_timelocks.cap_ns,
+            TimelockedAction::CapChange { .. }
+            | TimelockedAction::CapGroupChange { .. }
+            | TimelockedAction::CapGroupMembership { .. } => self.governance_timelocks.cap_ns,
             TimelockedAction::MarketRemoval { .. } => self.governance_timelocks.market_removal_ns,
         };
 
@@ -807,6 +988,15 @@ impl Contract {
                 value: action.clone(),
                 valid_at_ns,
             });
+
+        if let TimelockedAction::CapGroupChange { cap_group, new_cap } = action {
+            Event::CapGroupRaiseSubmitted {
+                cap_group: cap_group.clone(),
+                new_cap: *new_cap,
+                valid_at_ns,
+            }
+            .emit();
+        }
 
         Event::TimelockChangeSubmitted {
             valid_at_ns: valid_at_ns.into(),

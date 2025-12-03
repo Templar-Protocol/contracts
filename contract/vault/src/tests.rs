@@ -37,7 +37,10 @@ use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
 use templar_common::vault::PendingWithdrawal;
 use templar_common::vault::MAX_TIMELOCK_NS;
-use templar_common::vault::{AllocatingState, MarketConfiguration, Restrictions, WithdrawingState};
+use templar_common::vault::{
+    AllocatingState, CapGroupId, CapGroupRecord, MarketConfiguration, Restrictions,
+    WithdrawingState,
+};
 
 #[fixture]
 fn vault_id() -> AccountId {
@@ -94,6 +97,7 @@ fn enabled_market_100() -> (AccountId, MarketConfiguration) {
         cap: U128(100),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
     (m, cfg)
 }
@@ -114,6 +118,7 @@ fn c(vault_id: AccountId, #[default(Vec::new())] markets: Vec<MarketFixture>) ->
                     cap: U128(cap),
                     enabled,
                     removable_at: 0,
+                    cap_group_id: None,
                 },
                 principal,
             },
@@ -619,6 +624,7 @@ fn cap_zero_keeps_enabled_and_submit_removal_works(owner_env: OwnerEnv) {
         cap: U128(10),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
     contract
         .markets
@@ -1262,6 +1268,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
         cap: U128(cap),
         enabled: cap > 0,
         removable_at: 0,
+        cap_group_id: None,
     };
     c.markets.insert(
         m.clone(),
@@ -1631,6 +1638,81 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
 }
 
 #[test]
+fn cap_group_limits_total_room() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let group = CapGroupId("group-a".to_string());
+    c.cap_groups.insert(
+        group.clone(),
+        CapGroupRecord {
+            cap: U128(150),
+            principal: 0,
+        },
+    );
+
+    for offset in 0..2 {
+        let market = mk(9200 + offset);
+        let cfg = MarketConfiguration {
+            cap: U128(100),
+            enabled: true,
+            removable_at: 0,
+            cap_group_id: Some(group.clone()),
+        };
+        c.markets.insert(market.clone(), cfg.into());
+        c.supply_queue.insert(market);
+    }
+
+    assert_eq!(c.get_max_single_market_deposit().0, 100);
+    assert_eq!(c.get_max_deposit().0, 150);
+}
+
+#[test]
+fn cap_group_refunds_when_saturated() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let asset: AccountId = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id, &asset, vec![]);
+
+    let group = CapGroupId("group-b".to_string());
+    c.cap_groups.insert(
+        group.clone(),
+        CapGroupRecord {
+            cap: U128(50),
+            principal: 0,
+        },
+    );
+
+    let market = mk(9300);
+    let cfg = MarketConfiguration {
+        cap: U128(100),
+        enabled: true,
+        removable_at: 0,
+        cap_group_id: Some(group.clone()),
+    };
+    c.markets.insert(market.clone(), cfg.into());
+    c.supply_queue.insert(market.clone());
+    c.set_market_principal(&market, 50);
+
+    assert_eq!(c.get_max_deposit().0, 0);
+
+    let sender = accounts(5);
+    let res = c.ft_on_transfer(
+        sender,
+        U128(25),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 25),
+        _ => panic!("expected refund"),
+    }
+
+    assert_eq!(c.idle_balance, 0);
+    assert_eq!(c.get_max_deposit().0, 0);
+}
+
+#[test]
 #[should_panic = "Invalid token ID"]
 fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
     let vault_id = mk(0);
@@ -1642,6 +1724,7 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
         cap: U128(100),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
     c.markets.insert(m.clone(), cfg.into());
     c.supply_queue.insert(m);
@@ -1802,6 +1885,7 @@ fn governance_set_curator_grants_allocator() {
         cap: U128(1),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
     c.markets.insert(m1.clone(), cfg.into());
 
@@ -1833,6 +1917,7 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
         cap: U128(1),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
     c.markets.insert(m1.clone(), cfg.into());
 
@@ -1865,6 +1950,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
         cap: U128(1),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
 
     c.markets.insert(m1.clone(), cfg.into());
@@ -2162,15 +2248,69 @@ fn governance_submit_cap_immediate_decrease() {
 
     let m = mk(9104);
     let cfg = MarketConfiguration {
-        cap: U128(10),
+        cap: U128(100),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
+
     c.markets.insert(m.clone(), cfg.into());
 
-    c.submit_cap(m.clone(), U128(3));
-    let after = c.markets.get(&m).unwrap();
-    assert_eq!(after.cfg.cap, U128(3));
+    c.submit_cap(m.clone(), U128(50));
+    let cfg_after = c.markets.get(&m).expect("market must exist");
+    assert_eq!(
+        cfg_after.cfg.cap.0, 50,
+        "cap decrease must apply immediately"
+    );
+}
+
+#[test]
+fn cap_group_membership_moves_principal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.governance_timelocks = Timelocks::new(0, 0, 0, 0);
+
+    let group_a = CapGroupId("ga".to_string());
+    let group_b = CapGroupId("gb".to_string());
+
+    c.submit_cap_group(group_a.clone(), U128(200));
+    c.accept_cap_group(group_a.clone());
+    c.submit_cap_group(group_b.clone(), U128(300));
+    c.accept_cap_group(group_b.clone());
+
+    let market = mk(9400);
+    let cfg = MarketConfiguration {
+        cap: U128(200),
+        enabled: true,
+        removable_at: 0,
+        cap_group_id: Some(group_a.clone()),
+    };
+    c.markets.insert(market.clone(), cfg.into());
+    c.set_market_principal(&market, 80);
+
+    c.submit_market_cap_group(market.clone(), Some(group_b.clone()));
+    c.accept_market_cap_group(market.clone());
+
+    let rec = c.markets.get(&market).expect("market must exist");
+    assert_eq!(rec.cfg.cap_group_id, Some(group_b.clone()));
+
+    assert_eq!(
+        c.cap_groups
+            .get(&group_a)
+            .expect("group a must exist")
+            .principal,
+        0
+    );
+    assert_eq!(
+        c.cap_groups
+            .get(&group_b)
+            .expect("group b must exist")
+            .principal,
+        80
+    );
 }
 
 #[test]
@@ -2230,10 +2370,12 @@ fn governance_submit_and_revoke_market_removal() {
 
     let m = mk(9107);
     let cfg = MarketConfiguration {
-        cap: U128(0),
+        cap: U128(100),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
+
     let mut rec: MarketRecord = cfg.into();
     rec.principal = 1;
     c.markets.insert(m.clone(), rec);

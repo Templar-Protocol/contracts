@@ -22,6 +22,35 @@ pub type ActualIdx = u32;
 pub type AllocationWeights = Vec<(AccountId, U128)>;
 pub type AllocationPlan = Vec<(AccountId, u128)>;
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[near(serializers = [borsh, json])]
+pub struct CapGroupId(pub String);
+
+impl From<String> for CapGroupId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for CapGroupId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl core::fmt::Display for CapGroupId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+#[near(serializers = [borsh, json])]
+pub struct CapGroupRecord {
+    pub cap: U128,
+    pub principal: u128,
+}
+
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
 #[near(serializers = [json])]
@@ -40,6 +69,8 @@ pub struct MarketConfiguration {
     pub enabled: bool,
     /// Timestamp (ns) after which market can be removed (if pending removal)
     pub removable_at: TimestampNs,
+    /// Optional cap group identifier used to throttle correlated exposure
+    pub cap_group_id: Option<CapGroupId>,
 }
 
 /// Configuration for the setup of a metavault.
@@ -129,6 +160,12 @@ pub trait VaultExt {
     fn submit_cap(market: AccountId, new_cap: U128);
     fn accept_cap(market: AccountId);
     fn revoke_pending_cap(market: AccountId);
+    fn submit_cap_group(cap_group: CapGroupId, new_cap: U128);
+    fn accept_cap_group(cap_group: CapGroupId);
+    fn revoke_pending_cap_group(cap_group: CapGroupId);
+    fn submit_market_cap_group(market: AccountId, cap_group: Option<CapGroupId>);
+    fn accept_market_cap_group(market: AccountId);
+    fn revoke_pending_market_cap_group(market: AccountId);
     fn submit_market_removal(market: AccountId);
     fn revoke_pending_market_removal(market: AccountId);
     fn set_supply_queue(markets: Vec<AccountId>);
@@ -152,6 +189,7 @@ pub trait VaultExt {
     fn preview_mint(shares: U128) -> U128;
     fn preview_withdraw(assets: U128) -> U128;
     fn preview_redeem(shares: U128) -> U128;
+    fn get_cap_groups() -> Vec<(CapGroupId, CapGroupRecord)>;
 }
 
 // Add a 20% buffer to a gas estimate
@@ -717,6 +755,31 @@ pub enum Event {
     SupplyCapRaiseRevoked { market: AccountId },
     #[event_version("1.0.0")]
     SupplyCapSet { market: AccountId, new_cap: U128 },
+    #[event_version("1.0.0")]
+    CapGroupRaiseSubmitted {
+        cap_group: CapGroupId,
+        new_cap: U128,
+        valid_at_ns: u64,
+    },
+    #[event_version("1.0.0")]
+    CapGroupRaiseRevoked { cap_group: CapGroupId },
+    #[event_version("1.0.0")]
+    CapGroupSet {
+        cap_group: CapGroupId,
+        new_cap: U128,
+    },
+    #[event_version("1.0.0")]
+    CapGroupPrincipalUpdated {
+        cap_group: CapGroupId,
+        principal: U128,
+    },
+    #[event_version("1.0.0")]
+    CapGroupMembershipSet {
+        market: AccountId,
+        cap_group: Option<CapGroupId>,
+    },
+    #[event_version("1.0.0")]
+    CapGroupMembershipRevoked { market: AccountId },
 
     #[event_version("1.0.0")]
     WithdrawQueueUpdate { action: QueueAction, id: U64 },

@@ -181,9 +181,7 @@ impl Contract {
 
         let plan: AllocationPlan = ctx.plan.iter().filter(|m| m.0 != market).cloned().collect();
 
-        if let Some(rec) = self.markets.get_mut(&market) {
-            rec.principal = new_principal;
-        }
+        self.set_market_principal(&market, new_principal);
 
         self.op_state = OpState::Allocating(AllocatingState {
             op_id,
@@ -1004,9 +1002,7 @@ impl Contract {
 
         let effective_principal = before_principal.0.saturating_sub(creditable);
 
-        if let Some(rec) = self.markets.get_mut(market) {
-            rec.principal = effective_principal;
-        }
+        self.set_market_principal(market, effective_principal);
 
         self.resync_idle_balance(after_balance.0);
 
