@@ -6,7 +6,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-alloy = { workspace = true, default-features = false, features = ["eip712", "sol-types", "signers", "signer-local"] }
+alloy = { workspace = true, default-features = false, features = ["eip712", "signers", "sol-types"] }
 borsh.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
@@ -17,7 +17,7 @@ solana-sdk.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-# alloy = { workspace = true, features = ["signer-local"] }
+alloy = { workspace = true, default-features = false, features = ["signer-local"] }
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 rstest.workspace = true
 
@@ -26,6 +26,10 @@ near-chain-configs.workspace = true
 near-parameters.workspace = true
 near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
+
+[features]
+default = []
+signing = ["alloy/signer-local"]
 
 [lints]
 workspace = true

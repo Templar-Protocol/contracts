@@ -1,4 +1,3 @@
-use alloy::signers::SignerSync;
 use alloy::sol_types::{Eip712Domain, SolStruct};
 use near_sdk::{
     near,
@@ -6,10 +5,9 @@ use near_sdk::{
     serde_json,
 };
 
-use super::SolBytes;
 use super::{
     with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
-    MessageWithSignature, MessageWithValidSignature, Payload, SignableMessage,
+    MessageWithValidSignature, Payload, SignableMessage, SolBytes,
 };
 use crate::encoding;
 
@@ -85,7 +83,12 @@ impl<T: serde::Serialize> Message<T> {
     ///
     /// - Serialization errors
     /// - Signing errors
-    pub fn sign(self, key: &alloy::signers::local::PrivateKeySigner) -> MessageWithSignature<Self> {
+    #[cfg(any(test, feature = "signing"))]
+    pub fn sign(
+        self,
+        key: &alloy::signers::local::PrivateKeySigner,
+    ) -> super::MessageWithSignature<Self> {
+        use alloy::signers::SignerSync;
         let domain = Eip712Domain::from(self.0.parsed.parameters());
         #[allow(
             clippy::unwrap_used,
@@ -94,7 +97,7 @@ impl<T: serde::Serialize> Message<T> {
         let signature = key
             .sign_hash_sync(&self.eip712_prehash(&domain).unwrap())
             .unwrap();
-        MessageWithSignature {
+        super::MessageWithSignature {
             message: self,
             signature: signature.into(),
             auxiliary: (),
