@@ -241,6 +241,7 @@ impl Contract {
     #[payable]
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
         require_at_least(templar_common::vault::WITHDRAW_GAS);
+        self.internal_accrue_fee();
         let shares_needed = self.preview_withdraw(amount).0;
         Event::WithdrawPreview {
             shares: U128(shares_needed),
@@ -290,6 +291,7 @@ impl Contract {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
+        self.internal_accrue_fee();
 
         if let Some(id) = self.peek_next_pending_withdrawal_id() {
             let pending = self
@@ -357,6 +359,7 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
+        self.internal_accrue_fee();
 
         let ctx = match self.ctx_withdrawing(op_id.0) {
             Ok(s) => s.clone(),
@@ -420,6 +423,7 @@ impl Contract {
         Self::assert_allocator();
 
         self.ensure_idle();
+        self.internal_accrue_fee();
 
         let principal = self.principal_of(&market);
         require!(principal > 0, "No principal to withdraw");
@@ -544,6 +548,7 @@ impl Contract {
     pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
         Self::assert_allocator();
         self.ensure_idle();
+        self.internal_accrue_fee();
         delta.as_ref().validate();
 
         match delta {

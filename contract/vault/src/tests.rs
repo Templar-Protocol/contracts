@@ -446,6 +446,50 @@ fn reallocate_withdraw_returns_promise_and_does_not_mutate() {
     );
 }
 
+#[test]
+fn reallocate_accrues_pending_fee_shares() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.deposit_unchecked(&owner, 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.performance_fee = Wad::one() / 10;
+    c.idle_balance += 500;
+
+    let market = mk(9204);
+    let cfg = MarketConfiguration {
+        cap: U128(10_000),
+        enabled: true,
+        removable_at: 0,
+    };
+    c.markets.insert(market.clone(), cfg.into());
+    c.supply_queue.insert(market.clone());
+
+    let fee_recipient = c.fee_recipient.clone();
+    let balance_before = c.balance_of(&fee_recipient);
+    let assets_before = c.get_total_assets().0;
+
+    owner_call_env(vault_id.clone(), &owner);
+    let res = c.reallocate(AllocationDelta::Supply(Delta::new(market, 50)));
+    match res {
+        PromiseOrValue::Promise(_) => {}
+        _ => panic!("Expected Promise for supply reallocation"),
+    }
+
+    let balance_after = c.balance_of(&fee_recipient);
+    assert!(
+        balance_after > balance_before,
+        "reallocate should mint fee shares when profit exists before planning allocation",
+    );
+    assert_eq!(
+        c.last_total_assets,
+        assets_before,
+        "accrual should snapshot assets before allocation bookkeeping",
+    );
+}
+
 #[rstest(
     escrow, collected, requested, expect,
     case(100u128, 200u128, 500u128, 40u128),  // 40%
@@ -3184,6 +3228,39 @@ fn execute_withdrawal_empty_queue_noop() {
         "no current request id when idle"
     );
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
+}
+
+#[test]
+fn execute_withdrawal_accrues_fee_shares() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.deposit_unchecked(&owner, 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    c.performance_fee = Wad::one() / 10;
+    c.idle_balance += 250;
+
+    let fee_recipient = c.fee_recipient.clone();
+    let balance_before = c.balance_of(&fee_recipient);
+
+    let res = c.execute_withdrawal(vec![]);
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) when queue is empty"),
+    }
+
+    let balance_after = c.balance_of(&fee_recipient);
+    assert!(
+        balance_after > balance_before,
+        "execute_withdrawal should mint pending performance fees",
+    );
+    assert_eq!(
+        c.last_total_assets,
+        c.get_total_assets().0,
+        "last_total_assets should sync with current assets after accrual",
+    );
 }
 
 #[rstest]
