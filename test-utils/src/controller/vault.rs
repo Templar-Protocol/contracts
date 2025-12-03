@@ -139,6 +139,15 @@ impl VaultController {
         pub fn revoke_pending_guardian();
 
         #[call(exec, tgas(50))]
+        pub fn submit_sentinel(new_s: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn accept_sentinel();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_sentinel();
+
+        #[call(exec, tgas(50))]
         pub fn set_skim_recipient(account: AccountId);
 
         #[call(exec, tgas(50))]

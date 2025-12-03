@@ -144,6 +144,7 @@ pub fn vault_configuration(
     owner_id: AccountId,
     curator_id: AccountId,
     guardian_id: AccountId,
+    sentinel_id: AccountId,
     borrow_asset_id: AccountId,
     skim_recipient_id: AccountId,
     fee_recipient_id: AccountId,
@@ -152,6 +153,7 @@ pub fn vault_configuration(
         owner: owner_id,
         curator: curator_id,
         guardian: guardian_id,
+        sentinel: sentinel_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
         initial_timelock_ns: templar_common::vault::MIN_TIMELOCK_NS.into(),
         fee_recipient: fee_recipient_id,
@@ -195,6 +197,7 @@ pub struct SetupEverything {
     pub vault_owner: Account,
     pub vault_curator: Account,
     pub vault_guardian: Account,
+    pub vault_sentinel: Account,
     pub skim_recipient: Account,
     pub fee_recipient: Account,
 }
@@ -216,6 +219,7 @@ pub async fn setup_everything(
         vault_owner,
         vault_curator,
         vault_guardian,
+        vault_sentinel,
         skim_recipient,
         fee_recipient
     );
@@ -234,6 +238,7 @@ pub async fn setup_everything(
         vault_owner.id().clone(),
         vault_curator.id().clone(),
         vault_guardian.id().clone(),
+        vault_sentinel.id().clone(),
         borrow_asset.id().clone(),
         skim_recipient.id().clone(),
         fee_recipient.id().clone(),
@@ -305,6 +310,7 @@ pub async fn setup_everything(
         vault_owner,
         vault_curator,
         vault_guardian,
+        vault_sentinel,
         skim_recipient,
         fee_recipient,
     }

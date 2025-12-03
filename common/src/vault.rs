@@ -50,8 +50,10 @@ pub struct VaultConfiguration {
     pub owner: AccountId,
     /// The account that can submit allocation plans. See [AllocationMode].
     pub curator: AccountId,
-    /// The account that can set guardianship. See [AllocationMode].
+    /// The safety role that can revoke pending governance actions.
     pub guardian: AccountId,
+    /// The emergency role that can cancel withdrawals and trigger deallocations.
+    pub sentinel: AccountId,
     /// The underlying asset for this vault.
     pub underlying_token: FungibleAsset<BorrowAsset>,
     /// The initial timelock for this vault used for modifying the configuration.
@@ -113,6 +115,9 @@ pub trait VaultExt {
     fn submit_guardian(new_g: AccountId);
     fn accept_guardian();
     fn revoke_pending_guardian();
+    fn submit_sentinel(new_s: AccountId);
+    fn accept_sentinel();
+    fn revoke_pending_sentinel();
     fn set_skim_recipient(account: AccountId);
     fn set_fee_recipient(account: AccountId);
     fn set_performance_fee(fee: U128);
@@ -670,6 +675,8 @@ pub enum Event {
     CuratorSet { account: AccountId },
     #[event_version("1.0.0")]
     GuardianSet { account: AccountId },
+    #[event_version("1.0.0")]
+    SentinelSet { account: AccountId },
     #[event_version("1.0.0")]
     AllocatorRoleSet { account: AccountId, allowed: bool },
     #[event_version("1.0.0")]

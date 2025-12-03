@@ -40,6 +40,7 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     let owner = accounts(1);
     let curator = accounts(2);
     let guardian = accounts(3);
+    let sentinel = mk(7);
     let fee_recipient = accounts(4);
     let skim_recipient = accounts(5);
     let underlying_token_id = mk(6);
@@ -48,6 +49,7 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
         owner.clone(),
         curator.clone(),
         guardian.clone(),
+        sentinel.clone(),
         underlying_token_id.clone(),
         skim_recipient.clone(),
         fee_recipient.clone(),
@@ -69,6 +71,7 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     c.storage_deposit(Some(owner), None);
     c.storage_deposit(Some(curator), None);
     c.storage_deposit(Some(guardian), None);
+    c.storage_deposit(Some(sentinel), None);
     c.storage_deposit(Some(fee_recipient), None);
     c.storage_deposit(Some(skim_recipient), None);
     c.storage_deposit(Some(underlying_token_id), None);

@@ -496,6 +496,58 @@ fn reallocate_accrues_pending_fee_shares() {
     assert_eq!(
         c.last_total_assets, assets_before,
         "accrual should snapshot assets before allocation bookkeeping",
+        }
+        #[test]
+fn sentinel_can_only_reallocate_withdrawals() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let sentinel = c.get_configuration().sentinel;
+    setup_env(&vault_id, &sentinel, vec![]);
+
+    let market = mk(9300);
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: 50,
+        },
+    );
+
+    let withdraw_res = c.reallocate(AllocationDelta::Withdraw(Delta::new(market.clone(), 10)));
+    assert!(
+        matches!(withdraw_res, PromiseOrValue::Promise(_)),
+        "Sentinel withdraw reallocation should return a Promise"
+    );
+
+    let supply_attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.reallocate(AllocationDelta::Supply(Delta::new(market.clone(), 10)))
+    }));
+    assert!(
+        supply_attempt.is_err(),
+        "Sentinel must not be allowed to run supply allocations"
+    );
+}
+
+#[test]
+fn sentinel_can_execute_rebalance_withdrawal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let sentinel = c.get_configuration().sentinel;
+    setup_env(&vault_id, &sentinel, vec![]);
+
+    let market = mk(9400);
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: 25,
+        },
+    );
+
+    let res = c.execute_rebalance_withdrawal(market.clone(), None);
+    assert!(
+        matches!(res, PromiseOrValue::Promise(_)),
+        "Sentinel rebalance should return a Promise"
     );
 }
 
@@ -1935,7 +1987,13 @@ fn governance_accept_guardian_not_yet_panics() {
     c.accept_guardian();
 
     let max_timelock = MAX_TIMELOCK_NS;
-    c.governance_timelocks = Timelocks::new(max_timelock, max_timelock, max_timelock, max_timelock);
+    c.governance_timelocks = Timelocks::new(
+        max_timelock,
+        max_timelock,
+        max_timelock,
+        max_timelock,
+        max_timelock,
+    );
     // Now submit another guardian change but do not advance time.
     let new_g = accounts(5);
     set_ctx(&vault_id, &owner, None, None);
@@ -1969,6 +2027,66 @@ fn governance_submit_accept_and_revoke_guardian() {
     c.revoke_pending_guardian();
 
     c.accept_guardian();
+}
+
+#[test]
+fn governance_submit_accept_and_revoke_sentinel() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let new_sentinel = accounts(4);
+    c.submit_sentinel(new_sentinel.clone());
+
+    let future = env::block_timestamp().saturating_add(1_000_000_000);
+    set_ctx(&vault_id, &owner, Some(future), None);
+    c.accept_sentinel();
+
+    let cfg = c.get_configuration();
+    assert_eq!(
+        cfg.sentinel, new_sentinel,
+        "Sentinel should update after accept"
+    );
+
+    // Stage another change and revoke it as the sentinel
+    let another = accounts(3);
+    set_ctx(&vault_id, &owner, None, None);
+    c.submit_sentinel(another);
+
+    let sentinel = cfg.sentinel;
+    set_ctx(&vault_id, &sentinel, None, None);
+    c.revoke_pending_sentinel();
+
+    set_ctx(&vault_id, &owner, None, None);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.accept_sentinel()));
+    assert!(
+        result.is_err(),
+        "accept_sentinel should panic when nothing pending"
+    );
+}
+
+#[test]
+fn sentinel_can_revoke_pending_cap_change() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let market = mk(9020);
+    let new_cap = U128(1);
+    c.submit_cap(market.clone(), new_cap);
+
+    assert_eq!(c.governance_timelocks.pending_len(), 1);
+
+    let sentinel = c.get_configuration().sentinel;
+    set_ctx(&vault_id, &sentinel, None, None);
+    c.revoke_pending_cap(market.clone());
+
+    assert!(
+        !c.governance_timelocks.has_pending(),
+        "Sentinel should be able to revoke pending caps"
+    );
 }
 
 #[test]
@@ -3256,6 +3374,60 @@ fn unbrick_noop_when_not_withdrawing() {
         vault_before
     );
     assert_eq!(c.balance_of(&owner), owner_before);
+}
+
+#[test]
+fn sentinel_can_unbrick_withdrawing_state() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let escrow: u128 = 10;
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    let id_before = c.queue_tail();
+    let receiver = mk(19);
+    c.pending_withdrawals.insert(
+        id_before,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    c.withdraw_route = vec![mk(1901)];
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 77,
+        index: 0,
+        remaining: 1,
+        receiver,
+        collected: 0,
+        owner: owner.clone(),
+        escrow_shares: escrow,
+    });
+
+    let len_before = c.pending_withdrawals.len();
+    let sentinel = c.get_configuration().sentinel;
+    setup_env(&vault_id, &sentinel, vec![]);
+
+    let res = c.unbrick();
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from sentinel unbrick"),
+    }
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert!(c.withdraw_route.is_empty());
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        len_before.saturating_sub(1),
+        "Sentinel unbrick should dequeue head"
+    );
 }
 
 #[rstest(

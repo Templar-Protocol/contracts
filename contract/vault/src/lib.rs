@@ -73,6 +73,9 @@ pub enum Role {
     /// Safety backstop that can revoke pending governance changes (e.g., timelock/guardian).
     /// Has no authority to change caps or the supply queue on its own.
     Guardian,
+    /// Emergency role distinct from the guardian.
+    /// Can revoke pending governance, perform emergency deallocations, and cancel stuck withdrawals.
+    Sentinel,
     /// Operational role for allocation and withdrawal execution.
     /// May set the supply_queue while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
@@ -172,6 +175,7 @@ impl Contract {
             owner,
             curator,
             guardian,
+            sentinel,
             underlying_token,
             initial_timelock_ns,
             fee_recipient,
@@ -195,6 +199,7 @@ impl Contract {
             skim_recipient,
             markets: BTreeMap::new(),
             governance_timelocks: governance::Timelocks::new(
+                initial_timelock_ns.0,
                 initial_timelock_ns.0,
                 initial_timelock_ns.0,
                 initial_timelock_ns.0,
@@ -226,6 +231,7 @@ impl Contract {
         Rbac::add_role(&mut contract, &curator, &Role::Curator);
         Rbac::add_role(&mut contract, &curator, &Role::Allocator);
         Rbac::add_role(&mut contract, &guardian, &Role::Guardian);
+        Rbac::add_role(&mut contract, &sentinel, &Role::Sentinel);
 
         contract.set_storage_balance_bounds(&StorageBalanceBounds {
             min: NearToken::from_millinear(2),
@@ -417,7 +423,7 @@ impl Contract {
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
-        Self::assert_allocator();
+        Self::assert_allocator_or_sentinel();
 
         self.ensure_idle();
         self.internal_accrue_fee();
@@ -472,7 +478,7 @@ impl Contract {
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
     /// - Clears withdraw state and market execution locks and returns the vault to Idle.
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
-        Self::assert_allocator();
+        Self::assert_allocator_or_sentinel();
 
         match self.op_state.clone() {
             OpState::Withdrawing(s) => {
@@ -554,7 +560,10 @@ impl Contract {
     ///
     /// NOTE: When we rewrite this we should use a delta based approach
     pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
-        Self::assert_allocator();
+        match &delta {
+            AllocationDelta::Supply(_) => Self::assert_allocator(),
+            AllocationDelta::Withdraw(_) => Self::assert_allocator_or_sentinel(),
+        }
         self.ensure_idle();
         self.internal_accrue_fee();
         delta.as_ref().validate();
@@ -685,6 +694,17 @@ impl Contract {
                     .iter()
                     .next()
                     .expect("Guardian not set in get_configuration")
+                    .clone()
+            }),
+            sentinel: Self::with_members_of(&Role::Sentinel, |members| {
+                require!(
+                    members.len() == 1,
+                    "Invariant violation: Cannot have more than one Sentinel"
+                );
+                members
+                    .iter()
+                    .next()
+                    .expect("Sentinel not set in get_configuration")
                     .clone()
             }),
             underlying_token: self.underlying_asset.clone(),
@@ -968,6 +988,13 @@ impl Contract {
         }
     }
 
+    fn assert_guardian_or_sentinel_or_owner() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Guardian) && !Self::has_role(&p, &Role::Sentinel) {
+            Self::require_owner();
+        }
+    }
+
     fn assert_curator_or_owner() {
         let p = env::predecessor_account_id();
         if !Self::has_role(&p, &Role::Curator) {
@@ -975,9 +1002,26 @@ impl Contract {
         }
     }
 
+    fn assert_curator_or_sentinel_or_owner() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Curator) && !Self::has_role(&p, &Role::Sentinel) {
+            Self::require_owner();
+        }
+    }
+
     fn assert_allocator() {
         let p = env::predecessor_account_id();
         if !Self::has_role(&p, &Role::Allocator) && !Self::has_role(&p, &Role::Curator) {
+            Self::require_owner();
+        }
+    }
+
+    fn assert_allocator_or_sentinel() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Allocator)
+            && !Self::has_role(&p, &Role::Curator)
+            && !Self::has_role(&p, &Role::Sentinel)
+        {
             Self::require_owner();
         }
     }
