@@ -567,4 +567,278 @@ mod tests {
             chrono::DateTime::parse_from_rfc3339(&message.deadline).expect("Should parse deadline");
         assert!(deadline > Utc::now());
     }
+
+    #[test]
+    fn test_encode_receiver_ethereum() {
+        let address = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0";
+        let encoded = encode_receiver(chain_ids::ETHEREUM, address).expect("Should encode");
+
+        // Should be base58 encoded hex bytes
+        assert!(!encoded.is_empty());
+        assert!(!encoded.starts_with("0x"));
+    }
+
+    #[test]
+    fn test_encode_receiver_solana() {
+        let address = "B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D";
+        let encoded = encode_receiver(chain_ids::SOLANA, address).expect("Should encode");
+
+        // Solana addresses are already base58, should pass through
+        assert_eq!(encoded, address);
+    }
+
+    #[test]
+    fn test_encode_receiver_near() {
+        let address = "user.near";
+        let encoded = encode_receiver(chain_ids::NEAR, address).expect("Should encode");
+
+        // NEAR addresses pass through
+        assert_eq!(encoded, address);
+    }
+
+    #[test]
+    fn test_encode_receiver_invalid_ethereum_address() {
+        let address = "not-a-valid-hex";
+        let result = encode_receiver(chain_ids::ETHEREUM, address);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_mt_withdrawal() {
+        let builder = WithdrawalIntentBuilder::new("treasury.near".to_string(), test_key());
+
+        let args = builder
+            .build_mt_withdrawal(
+                "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu",
+                1_000_000u128,
+                "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+                chain_ids::ETHEREUM,
+            )
+            .expect("Should build MT withdrawal");
+
+        assert_eq!(args.signed.len(), 1);
+
+        // Parse the message
+        let message: IntentMessage =
+            serde_json::from_str(&args.signed[0].payload.message).expect("Should parse message");
+
+        // Verify it's an MtWithdraw intent
+        match &message.intents[0] {
+            Intent::MtWithdraw {
+                token,
+                receiver_id,
+                token_ids,
+                amounts,
+                msg,
+                ..
+            } => {
+                assert_eq!(token, "intents.near");
+                assert_eq!(receiver_id, "bridge-refuel.hot.tg");
+                assert_eq!(token_ids.len(), 1);
+                assert_eq!(amounts[0], "1000000");
+                assert!(msg.is_some());
+
+                // Parse the msg payload
+                let msg_json: serde_json::Value =
+                    serde_json::from_str(msg.as_ref().unwrap()).expect("Should parse msg");
+                assert!(msg_json.get("receiver_id").is_some());
+                assert_eq!(msg_json["amount_native"], "0");
+                assert_eq!(msg_json["block_number"], 0);
+            }
+            _ => panic!("Expected MtWithdraw intent"),
+        }
+    }
+
+    #[test]
+    fn test_build_mt_withdrawal_invalid_format() {
+        let builder = WithdrawalIntentBuilder::new("treasury.near".to_string(), test_key());
+
+        // Missing nep245: prefix
+        let result = builder.build_mt_withdrawal(
+            "invalid-format",
+            1_000_000u128,
+            "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+            chain_ids::ETHEREUM,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_format_signature() {
+        let key = test_key();
+        let data = b"test data";
+        let signature = key.sign(data);
+
+        let formatted = format_signature(&signature);
+        assert!(formatted.starts_with("ed25519:"));
+
+        // Should be base58 encoded after the prefix
+        let parts: Vec<&str> = formatted.split(':').collect();
+        assert_eq!(parts.len(), 2);
+        assert!(!parts[1].is_empty());
+    }
+
+    #[test]
+    fn test_format_public_key() {
+        let key = test_key();
+        let public_key = key.public_key();
+
+        let formatted = format_public_key(&public_key);
+        assert!(formatted.starts_with("ed25519:"));
+
+        // Should be base58 encoded after the prefix
+        let parts: Vec<&str> = formatted.split(':').collect();
+        assert_eq!(parts.len(), 2);
+        assert!(!parts[1].is_empty());
+    }
+
+    #[test]
+    fn test_nonce_generation() {
+        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+
+        let nonce1 = builder.generate_nonce();
+        let nonce2 = builder.generate_nonce();
+
+        // Nonces should be 32 bytes
+        assert_eq!(nonce1.len(), 32);
+        assert_eq!(nonce2.len(), 32);
+
+        // Nonces should be different (time-based)
+        // Note: This might rarely fail if executed too quickly
+        // but in practice should work
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let nonce3 = builder.generate_nonce();
+        assert_ne!(nonce1, nonce3);
+    }
+
+    #[test]
+    fn test_payload_wrapper_serialization() {
+        let payload = PayloadWrapper {
+            message: r#"{"test":"value"}"#.to_string(),
+            nonce: BASE64.encode([0u8; 32]),
+            recipient: "intents.near".to_string(),
+            callback_url: None,
+        };
+
+        let json = serde_json::to_string(&payload).expect("Should serialize");
+        assert!(json.contains("\"message\""));
+        assert!(json.contains("\"nonce\""));
+        assert!(json.contains("\"recipient\""));
+    }
+
+    #[test]
+    fn test_payload_wrapper_with_callback() {
+        let payload = PayloadWrapper {
+            message: r#"{"test":"value"}"#.to_string(),
+            nonce: BASE64.encode([0u8; 32]),
+            recipient: "intents.near".to_string(),
+            callback_url: Some("https://callback.example.com".to_string()),
+        };
+
+        let json = serde_json::to_string(&payload).expect("Should serialize");
+        assert!(json.contains("\"callback_url\""));
+        assert!(json.contains("https://callback.example.com"));
+    }
+
+    #[test]
+    fn test_signed_payload_structure() {
+        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+        let args = builder
+            .build_withdrawal("eth.omft.near", 1000, "0x123")
+            .expect("Should build");
+
+        let signed = &args.signed[0];
+
+        // Verify all required fields are present
+        assert_eq!(signed.standard, "nep413");
+        assert!(!signed.signature.is_empty());
+        assert!(!signed.public_key.is_empty());
+        assert!(!signed.payload.message.is_empty());
+        assert!(!signed.payload.nonce.is_empty());
+        assert_eq!(signed.payload.recipient, "intents.near");
+    }
+
+    #[test]
+    fn test_execute_intents_args_serialization() {
+        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+        let args = builder
+            .build_withdrawal("eth.omft.near", 1000, "0x123")
+            .expect("Should build");
+
+        // Should serialize to valid JSON
+        let json = serde_json::to_string(&args).expect("Should serialize");
+        assert!(json.contains("\"signed\""));
+
+        // Should deserialize back
+        let _deserialized: ExecuteIntentsArgs =
+            serde_json::from_str(&json).expect("Should deserialize");
+    }
+
+    #[test]
+    fn test_intent_message_with_nonce() {
+        let mut tokens = HashMap::new();
+        tokens.insert("eth.omft.near".to_string(), "1000".to_string());
+
+        let message = IntentMessage {
+            signer_id: "test.near".to_string(),
+            deadline: "2025-12-31T23:59:59.999Z".to_string(),
+            intents: vec![Intent::Transfer {
+                receiver_id: "user.near".to_string(),
+                tokens,
+            }],
+            nonce: Some("custom-nonce".to_string()),
+        };
+
+        let json = serde_json::to_string(&message).expect("Should serialize");
+        assert!(json.contains("\"nonce\":\"custom-nonce\""));
+    }
+
+    #[test]
+    fn test_chain_ids() {
+        assert_eq!(chain_ids::ETHEREUM, 1);
+        assert_eq!(chain_ids::STELLAR, 1100);
+        assert_eq!(chain_ids::SOLANA, 1151);
+        assert_eq!(chain_ids::NEAR, 1313161554);
+    }
+
+    #[test]
+    fn test_intents_contract_constant() {
+        assert_eq!(INTENTS_CONTRACT, "intents.near");
+    }
+
+    #[test]
+    fn test_multiple_intents_in_one_transaction() {
+        // Note: While technically possible, the current builder only supports single intents
+        // This test verifies the data structure can handle multiple intents
+        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+
+        let intent1 = Intent::FtWithdraw {
+            token: "eth.omft.near".to_string(),
+            receiver_id: "eth.omft.near".to_string(),
+            amount: "1000".to_string(),
+            memo: "WITHDRAW_TO:0x123".to_string(),
+        };
+
+        let intent2 = Intent::FtWithdraw {
+            token: "sol.omft.near".to_string(),
+            receiver_id: "sol.omft.near".to_string(),
+            amount: "2000".to_string(),
+            memo: "WITHDRAW_TO:ABC123".to_string(),
+        };
+
+        let deadline = Utc::now() + Duration::minutes(5);
+        let message = IntentMessage {
+            signer_id: builder.signer_id.clone(),
+            deadline: deadline.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            intents: vec![intent1, intent2],
+            nonce: None,
+        };
+
+        // Should serialize properly
+        let json = serde_json::to_string(&message).expect("Should serialize");
+        assert!(json.contains("eth.omft.near"));
+        assert!(json.contains("sol.omft.near"));
+    }
 }

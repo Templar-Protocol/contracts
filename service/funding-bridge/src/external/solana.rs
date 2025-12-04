@@ -601,4 +601,90 @@ mod tests {
 
         assert!(matches!(result, Err(ExternalChainError::InvalidAmount(_))));
     }
+
+    #[test]
+    fn test_solana_config_token_decimals() {
+        let config = SolanaSdkConfig::mainnet();
+
+        // USDC and USDT should be 6 decimals
+        assert_eq!(config.token_decimals.get("USDC"), Some(&6));
+        assert_eq!(config.token_decimals.get("USDT"), Some(&6));
+
+        // Wrapped SOL should be 9 decimals
+        assert_eq!(config.token_decimals.get("WSOL"), Some(&9));
+    }
+
+    #[test]
+    fn test_solana_config_token_mints() {
+        let config = SolanaSdkConfig::mainnet();
+
+        // Check that major tokens have mints configured
+        assert!(config.token_mints.contains_key("USDC"));
+        assert!(config.token_mints.contains_key("USDT"));
+        assert!(config.token_mints.contains_key("WSOL"));
+
+        // Token mints should be valid base58 strings
+        for mint in config.token_mints.values() {
+            assert!(!mint.is_empty());
+            assert!(mint.len() >= 32);
+        }
+    }
+
+    #[test]
+    fn test_solana_mainnet_vs_devnet() {
+        let mainnet = SolanaSdkConfig::mainnet();
+        let devnet = SolanaSdkConfig::devnet();
+
+        assert_ne!(mainnet.chain_id, devnet.chain_id);
+        assert_ne!(mainnet.rpc_url, devnet.rpc_url);
+
+        // Mainnet should have more tokens configured
+        assert!(mainnet.token_mints.len() >= devnet.token_mints.len());
+    }
+
+    #[test]
+    fn test_handler_supports_multiple_tokens() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        let mut keypair_bytes = vec![0u8; 64];
+        keypair_bytes[..32].copy_from_slice(signing_key.as_bytes());
+        keypair_bytes[32..].copy_from_slice(verifying_key.as_bytes());
+
+        let json = serde_json::to_string(&keypair_bytes).unwrap();
+
+        let config = SolanaSdkConfig::mainnet();
+        let handler = SolanaSdkHandler::from_json_bytes(config, &json).unwrap();
+
+        // Should support all configured tokens (case sensitive)
+        assert!(handler.supports_token("USDC"));
+        assert!(handler.supports_token("USDT"));
+        assert!(handler.supports_token("WSOL"));
+
+        // Should not support tokens that aren't configured
+        assert!(!handler.supports_token("BTC"));
+        assert!(!handler.supports_token("UNKNOWN"));
+    }
+
+    #[test]
+    fn test_handler_invalid_json_bytes() {
+        let config = SolanaSdkConfig::mainnet();
+
+        // Invalid JSON
+        let result = SolanaSdkHandler::from_json_bytes(config.clone(), "not json");
+        assert!(result.is_err());
+
+        // Valid JSON but wrong format
+        let result = SolanaSdkHandler::from_json_bytes(config.clone(), "[]");
+        assert!(result.is_err());
+
+        // Valid JSON but wrong length
+        let short_array = vec![1u8, 2, 3];
+        let json = serde_json::to_string(&short_array).unwrap();
+        let result = SolanaSdkHandler::from_json_bytes(config, &json);
+        assert!(result.is_err());
+    }
 }
