@@ -7,19 +7,29 @@ use crate::encoding;
 
 use super::with_raw_string::WithRawString;
 use super::{
-    CheckSignatureError, ExecutionContextProvider, Key, MessageWithSignature,
+    CheckSignatureError, ExecutionContextProvider, HashForSigning, Key, MessageWithSignature,
     MessageWithValidSignature, Payload,
 };
 
 pub mod raw;
 pub mod sep53;
 
-pub trait Ed25519Variant {}
+pub trait Ed25519Variant {
+    const PREFIX: &'static [u8];
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
 #[serde(bound = "T: DeserializeOwned")]
 pub struct Message<K: Ed25519Variant, T>(pub WithRawString<Payload<T>>, pub PhantomData<K>);
+
+impl<K: Ed25519Variant, T> HashForSigning for Message<K, T> {
+    const MAGIC_NUMBER: &'static [u8] = K::PREFIX;
+
+    fn content_bytes(&self) -> Vec<u8> {
+        self.0.raw.as_bytes().to_vec()
+    }
+}
 
 impl<K: Ed25519Variant + Key<Self>, T> super::SignableMessage for Message<K, T> {
     type Key = K;

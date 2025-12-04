@@ -7,18 +7,12 @@ use crate::{
 
 pub type Message<T> = super::Message<VerifyKey, T>;
 
-impl<T> HashForSigning for Message<T> {
-    const MAGIC_NUMBER: &'static [u8] = b"\x19UAccount Signed Message:\n";
-
-    fn content_bytes(&self) -> Vec<u8> {
-        self.0.raw.as_bytes().to_vec()
-    }
-}
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 pub struct VerifyKey(pub encoding::ed25519::PublicKey);
-impl super::Ed25519Variant for VerifyKey {}
+impl super::Ed25519Variant for VerifyKey {
+    const PREFIX: &'static [u8] = b"\x19UAccount Signed Message:\n";
+}
 
 impl std::fmt::Display for VerifyKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
