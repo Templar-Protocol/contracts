@@ -195,15 +195,14 @@ mod tests {
         .into_boxed_slice();
 
         Payload::new(
-            PayloadExecutionParameters::new_auto(
-                "my-universal-account.near".parse().unwrap(),
-                KeyParameters {
+            PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                .with_key_parameters(KeyParameters {
                     block_height: U64(12345),
                     index: U64(1),
                     nonce: U64(44),
-                },
-                NEAR_TESTNET_CHAIN_ID,
-            ),
+                })
+                .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
+                .build_salt(),
             payload,
         )
     }
@@ -291,15 +290,14 @@ mod tests {
     ) {
         exec_args
             .verify(
-                &PayloadExecutionParameters::new_auto(
-                    executor_account_id,
-                    KeyParameters {
+                &PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                    .with_key_parameters(KeyParameters {
                         block_height: U64(block_height),
                         index: U64(index),
                         nonce: U64(nonce),
-                    },
-                    NEAR_TESTNET_CHAIN_ID,
-                ),
+                    })
+                    .verifying_contract(executor_account_id)
+                    .build_salt(),
                 |_| true,
             )
             .unwrap();
@@ -313,15 +311,14 @@ mod tests {
     fn verify_origin(#[case] allowed_origin: &str) {
         passkey_execute_args()
             .verify(
-                &PayloadExecutionParameters::new_auto(
-                    AccountId::from_str("my-universal-account.near").unwrap(),
-                    KeyParameters {
+                &PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                    .with_key_parameters(KeyParameters {
                         block_height: U64(12345),
                         index: U64(1),
                         nonce: U64(44),
-                    },
-                    NEAR_TESTNET_CHAIN_ID,
-                ),
+                    })
+                    .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
+                    .build_salt(),
                 |o| o == Some(allowed_origin),
             )
             .unwrap();
@@ -341,13 +338,14 @@ mod tests {
         let json = serde_json::from_str::<ExecuteArgs<Box<[Transaction]>>>(text).unwrap();
 
         json.verify(
-            &PayloadExecutionParameters::new_empty(verifying_account).with_key_parameters(
-                KeyParameters {
+            &PayloadExecutionParameters::builder_empty()
+                .verifying_contract(verifying_account)
+                .with_key_parameters(KeyParameters {
                     block_height: block_height.into(),
                     index: 0.into(),
                     nonce: nonce.into(),
-                },
-            ),
+                })
+                .build(),
             |o| o.is_none_or(|o| o == "https://app.templarfi.org"),
         )
         .unwrap();

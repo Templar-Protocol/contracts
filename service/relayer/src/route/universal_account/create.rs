@@ -24,7 +24,7 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         MessageWithSignature,
     },
-    ExecuteArgs, ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters,
+    ExecuteArgs, ExecuteArgsMessage, KeyId, PayloadExecutionParameters,
 };
 
 use crate::{
@@ -42,6 +42,18 @@ pub struct OldPasskey {
     pub authenticator_data: AuthenticatorData,
     pub client_data_json: WithRawString<ClientDataJson>,
     pub signature: passkey::signature::Signature,
+}
+
+impl OldPasskey {
+    pub fn passkey(&self) -> Passkey {
+        self.message
+            .0
+            .parsed
+            .payload_ref()
+            .payload_unchecked()
+            .key
+            .clone()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -88,15 +100,7 @@ struct KeyIdMismatchError {
 impl CreateRequest {
     fn key_id_to_add(&self) -> Result<KeyId, Box<KeyIdMismatchError>> {
         match self {
-            Self::Passkey(m) => Ok(m
-                .message
-                .0
-                .parsed
-                .payload_ref()
-                .payload_unchecked()
-                .key
-                .clone()
-                .into()),
+            Self::Passkey(m) => Ok(m.passkey().into()),
             Self::ExecuteArgs(ea) => {
                 let signer = ea.key_id();
                 let to_add = &ea.message_unchecked().payload_unchecked().key;
@@ -145,14 +149,7 @@ pub async fn create(
 
     let create = match request {
         CreateRequest::Passkey(mws) => {
-            let key_inner = mws
-                .message
-                .0
-                .parsed
-                .payload_ref()
-                .payload_unchecked()
-                .key
-                .clone();
+            let key_inner = mws.passkey();
             let exec_args: ExecuteArgs<_> = ExecuteArgsMessage {
                 key: key_inner.clone(),
                 mws: Box::new(MessageWithSignature {
@@ -167,11 +164,10 @@ pub async fn create(
             .into();
 
             let m = match exec_args.verify(
-                &PayloadExecutionParameters::new_auto(
-                    app.args.ua.account_id.clone(),
-                    KeyParameters::default(),
-                    app.args.ua.chain_id,
-                ),
+                &PayloadExecutionParameters::builder(app.args.ua.chain_id)
+                    .zero()
+                    .verifying_contract(app.args.ua.account_id.clone())
+                    .build_salt(),
                 |o| app.args.ua.is_origin_allowed(o),
             ) {
                 Ok(m) => m,
@@ -200,11 +196,10 @@ pub async fn create(
         }
         CreateRequest::ExecuteArgs(request) => {
             let m = match request.verify(
-                &PayloadExecutionParameters::new_auto(
-                    app.args.ua.account_id.clone(),
-                    KeyParameters::default(),
-                    app.args.ua.chain_id,
-                ),
+                &PayloadExecutionParameters::builder(app.args.ua.chain_id)
+                    .zero()
+                    .verifying_contract(app.args.ua.account_id.clone())
+                    .build_salt(),
                 |o| app.args.ua.is_origin_allowed(o),
             ) {
                 Ok(m) => m,
@@ -391,11 +386,10 @@ mod tests {
 
         let message = {
             let m = raw::Message::from_parsed(Payload::new(
-                PayloadExecutionParameters::new_auto(
-                    "my-universal-account.near".parse().unwrap(),
-                    KeyParameters::default(),
-                    NEAR_TESTNET_CHAIN_ID,
-                ),
+                PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                    .zero()
+                    .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
+                    .build_salt(),
                 Pow::mine(
                     CreateUniversalAccount {
                         key: pubkey.clone().into(),
@@ -451,11 +445,12 @@ mod tests {
                 key: pubkey.clone(),
                 mws: {
                     let m = passkey::Message::from_parsed(Payload::new(
-                        PayloadExecutionParameters::new_auto(
-                            "my-universal-account.near".parse().unwrap(),
-                            KeyParameters::default(),
-                            NEAR_TESTNET_CHAIN_ID,
-                        ),
+                        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                            .zero()
+                            .verifying_contract(
+                                AccountId::from_str("my-universal-account.near").unwrap(),
+                            )
+                            .build_salt(),
                         Pow::mine(
                             CreateUniversalAccount {
                                 key: pubkey.into(),

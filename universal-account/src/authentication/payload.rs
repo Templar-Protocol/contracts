@@ -45,8 +45,10 @@ impl<T> Payload<T> {
     pub fn parameters(&self) -> PayloadExecutionParameters {
         match self {
             Self::V1(v1) => v1.parameters.clone(),
-            Self::V0(v0) => PayloadExecutionParameters::new_empty(v0.account_id.clone())
-                .with_key_parameters(v0.parameters),
+            Self::V0(v0) => PayloadExecutionParameters::builder_empty()
+                .verifying_contract(v0.account_id.clone())
+                .with_key_parameters(v0.parameters)
+                .build(),
         }
     }
 }

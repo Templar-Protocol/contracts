@@ -40,6 +40,7 @@ near-sdk = { workspace = true, features = ["unit-testing"] }
 near-workspaces.workspace = true
 p256.workspace = true
 rstest.workspace = true
+templar-universal-account = { workspace = true, features = ["signing"] }
 test-utils.workspace = true
 tokio.workspace = true
 

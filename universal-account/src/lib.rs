@@ -1,7 +1,7 @@
 use alloy::{primitives::U256, sol_types::Eip712Domain};
 use near_sdk::{
     json_types::{Base58CryptoHash, U64},
-    near, CryptoHash,
+    near, AccountId, CryptoHash,
 };
 
 pub const NEAR_MAINNET_CHAIN_ID: u128 = 397;
@@ -61,15 +61,12 @@ impl From<PayloadExecutionParameters> for Eip712Domain {
 }
 
 impl PayloadExecutionParameters {
-    pub fn new_auto(
-        verifying_contract: near_sdk::AccountId,
-        key_parameters: KeyParameters,
-        chain_id: u128,
-    ) -> Self {
-        Self::new_empty(verifying_contract)
-            .with_key_parameters(key_parameters)
-            .chain_id(chain_id)
-            .auto()
+    pub fn builder(chain_id: u128) -> PayloadExecutionParametersBuilder<(), (), (), (), ()> {
+        PayloadExecutionParametersBuilder::new(chain_id)
+    }
+
+    pub fn builder_empty() -> PayloadExecutionParametersBuilder<(), (), (), (), Option<[u8; 32]>> {
+        PayloadExecutionParametersBuilder::empty()
     }
 
     pub fn new_empty(verifying_contract: near_sdk::AccountId) -> Self {
@@ -89,105 +86,6 @@ impl PayloadExecutionParameters {
     pub fn next_nonce(self) -> Self {
         Self {
             nonce: U64(self.nonce.0 + 1),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn with_key_parameters(self, key_parameters: KeyParameters) -> Self {
-        Self {
-            block_height: key_parameters.block_height,
-            index: key_parameters.index,
-            nonce: key_parameters.nonce,
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn auto(self) -> Self {
-        self.auto_name().auto_version().auto_salt()
-    }
-
-    #[must_use]
-    pub fn auto_salt(self) -> Self {
-        let salt = Base58CryptoHash::from(near_sdk::env::keccak256_array(
-            #[allow(clippy::unwrap_used, reason = "Infallible")]
-            &near_sdk::borsh::to_vec(&(self.block_height, self.index)).unwrap(),
-        ));
-        Self {
-            salt: Some(salt),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn auto_name(self) -> Self {
-        Self {
-            name: Some("Templar Universal Account".to_string()),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn auto_version(self) -> Self {
-        Self {
-            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn name(self, name: impl Into<String>) -> Self {
-        Self {
-            name: Some(name.into()),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn version(self, version: impl Into<String>) -> Self {
-        Self {
-            version: Some(version.into()),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn chain_id(self, chain_id: u128) -> Self {
-        Self {
-            chain_id: Some(near_sdk::json_types::U128(chain_id)),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn salt(self, salt: impl Into<Base58CryptoHash>) -> Self {
-        Self {
-            salt: Some(salt.into()),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn nonce(self, nonce: impl Into<U64>) -> Self {
-        Self {
-            nonce: nonce.into(),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn index(self, index: impl Into<U64>) -> Self {
-        Self {
-            index: index.into(),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub fn block_height(self, block_height: impl Into<U64>) -> Self {
-        Self {
-            block_height: block_height.into(),
             ..self
         }
     }
@@ -213,6 +111,205 @@ impl KeyParameters {
         Self {
             nonce: U64(self.nonce.0 + 1),
             ..*self
+        }
+    }
+}
+
+pub struct PayloadExecutionParametersBuilder<BlockHeight, Index, Nonce, VerifyingContract, Salt> {
+    block_height: BlockHeight,
+    index: Index,
+    nonce: Nonce,
+    name: Option<String>,
+    version: Option<String>,
+    chain_id: Option<u128>,
+    verifying_contract: VerifyingContract,
+    salt: Salt,
+}
+
+macro_rules! builder {
+    (@single $field:ident: $t:ty {$($other:ident ,)*}) => {
+        #[must_use]
+        pub fn $field(self, value: impl Into<$t>) -> Self {
+            let Self {
+                $($other,)*
+            } = self;
+            let _ = $field;
+            let $field = Some(value.into());
+            Self {
+                $($other,)*
+            }
+        }
+    };
+
+    (@single $field:ident: $t:ty => <$($g:path),*> {$($other:ident ,)*}) => {
+        #[must_use]
+        pub fn $field(self, value: impl Into<$t>) -> PayloadExecutionParametersBuilder<$($g),*> {
+            let Self {
+                $($other,)*
+            } = self;
+            let _ = $field;
+            let $field = value.into();
+            PayloadExecutionParametersBuilder {
+                $($other,)*
+            }
+        }
+    };
+
+    (
+        $( $before:ident : $bt:ty $(=> <$($bg:path),*>)? ,)*
+        @mark $field:ident : $t:ty $(=> <$($g:path),*>)? ,
+        $($after:ident : $at:ty $(=> <$($ag:path),*>)? ,)*
+    ) => {
+        builder! { @single $field : $t $(=> <$($g),*>)?
+            {
+                $($before ,)*
+                $field ,
+                $($after ,)*
+            }
+        }
+
+        builder! {
+            $( $before : $bt $(=> <$($bg),*>)? ,)*
+            $field : $t $(=> <$($g),*>)? ,
+            @mark
+            $($after : $at $(=> <$($ag),*>)? ,)*
+        }
+    };
+
+    ( $( $before:ident : $bt:ty $(=> <$($bg:path),*>)? ,)* @mark ) => {};
+
+    ($( $field:ident : $t:ty $(=> <$($g:path),*>)? , )*) => {
+        builder! {
+            @mark $(
+                $field : $t $(=> <$($g),*>)? ,
+            )*
+        }
+    };
+}
+
+impl PayloadExecutionParametersBuilder<(), (), (), (), Option<[u8; 32]>> {
+    pub fn empty() -> Self {
+        Self {
+            block_height: (),
+            index: (),
+            nonce: (),
+            name: None,
+            version: None,
+            chain_id: None,
+            verifying_contract: (),
+            salt: None,
+        }
+    }
+}
+
+impl PayloadExecutionParametersBuilder<(), (), (), (), ()> {
+    pub fn new(chain_id: u128) -> Self {
+        Self {
+            block_height: (),
+            index: (),
+            nonce: (),
+            name: Some("Templar Universal Account".to_string()),
+            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            chain_id: Some(chain_id),
+            verifying_contract: (),
+            salt: (),
+        }
+    }
+}
+
+impl<B, I, N, V, S> PayloadExecutionParametersBuilder<B, I, N, V, S> {
+    builder! {
+        block_height: u64 => <u64, I, N, V, S>,
+        index: u64 => <B, u64, N, V, S>,
+        nonce: u64 => <B, I, u64, V, S>,
+        name: String,
+        version: String,
+        chain_id: u128,
+        verifying_contract: AccountId => <B, I, N, AccountId, S>,
+        salt: Option<[u8; 32]> => <B, I, N, V, Option<[u8; 32]>>,
+    }
+
+    #[must_use]
+    pub fn zero(self) -> PayloadExecutionParametersBuilder<u64, u64, u64, V, S> {
+        let Self {
+            name,
+            version,
+            chain_id,
+            verifying_contract,
+            salt,
+            ..
+        } = self;
+        PayloadExecutionParametersBuilder {
+            block_height: 0,
+            index: 0,
+            nonce: 0,
+            name,
+            version,
+            chain_id,
+            verifying_contract,
+            salt,
+        }
+    }
+
+    #[must_use]
+    pub fn with_key_parameters(
+        self,
+        key_parameters: KeyParameters,
+    ) -> PayloadExecutionParametersBuilder<u64, u64, u64, V, S> {
+        let Self {
+            name,
+            version,
+            chain_id,
+            verifying_contract,
+            salt,
+            ..
+        } = self;
+        PayloadExecutionParametersBuilder {
+            block_height: key_parameters.block_height.0,
+            index: key_parameters.index.0,
+            nonce: key_parameters.nonce.0,
+            name,
+            version,
+            chain_id,
+            verifying_contract,
+            salt,
+        }
+    }
+}
+
+impl PayloadExecutionParametersBuilder<u64, u64, u64, AccountId, Option<[u8; 32]>> {
+    #[must_use]
+    pub fn build(self) -> PayloadExecutionParameters {
+        PayloadExecutionParameters {
+            block_height: self.block_height.into(),
+            index: self.index.into(),
+            nonce: self.nonce.into(),
+            name: self.name,
+            version: self.version,
+            chain_id: self.chain_id.map(Into::into),
+            verifying_contract: self.verifying_contract,
+            salt: self.salt.map(Into::into),
+        }
+    }
+}
+
+impl PayloadExecutionParametersBuilder<u64, u64, u64, AccountId, ()> {
+    #[must_use]
+    pub fn build_salt(self) -> PayloadExecutionParameters {
+        let salt = Base58CryptoHash::from(near_sdk::env::keccak256_array(
+            #[allow(clippy::unwrap_used, reason = "Infallible")]
+            &near_sdk::borsh::to_vec(&(U64(self.block_height), U64(self.index))).unwrap(),
+        ));
+
+        PayloadExecutionParameters {
+            block_height: self.block_height.into(),
+            index: self.index.into(),
+            nonce: self.nonce.into(),
+            name: self.name,
+            version: self.version,
+            chain_id: self.chain_id.map(Into::into),
+            verifying_contract: self.verifying_contract,
+            salt: Some(salt),
         }
     }
 }

@@ -238,15 +238,14 @@ pub async fn universal_account(
     assert_eq!(key_entry.nonce.0, 0);
 
     let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::new_auto(
-            uac.contract().id().clone(),
-            KeyParameters {
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .with_key_parameters(KeyParameters {
                 block_height,
                 index: U64(0),
                 nonce: U64(1),
-            },
-            NEAR_TESTNET_CHAIN_ID,
-        ),
+            })
+            .verifying_contract(uac.contract().id().clone())
+            .build_salt(),
         vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -337,15 +336,14 @@ async fn skip_nonce(
     let block_height = key_entry.block_height;
 
     let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::new_auto(
-            uac.contract().id().clone(),
-            KeyParameters {
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .with_key_parameters(KeyParameters {
                 block_height,
                 index: U64(0),
                 nonce: U64(1),
-            },
-            NEAR_TESTNET_CHAIN_ID,
-        ),
+            })
+            .verifying_contract(uac.contract().id().clone())
+            .build_salt(),
         vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -369,15 +367,14 @@ async fn skip_nonce(
     // Try to skip a nonce
 
     let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::new_auto(
-            uac.contract().id().clone(),
-            KeyParameters {
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .with_key_parameters(KeyParameters {
                 block_height,
                 index: U64(0),
                 nonce: U64(3),
-            },
-            NEAR_TESTNET_CHAIN_ID,
-        ),
+            })
+            .verifying_contract(uac.contract().id().clone())
+            .build_salt(),
         vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -414,15 +411,14 @@ async fn reuse_nonce(
     let block_height = key_entry.block_height;
 
     let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::new_auto(
-            uac.contract().id().clone(),
-            KeyParameters {
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .with_key_parameters(KeyParameters {
                 block_height,
                 index: U64(0),
                 nonce: U64(1),
-            },
-            NEAR_TESTNET_CHAIN_ID,
-        ),
+            })
+            .verifying_contract(uac.contract().id().clone())
+            .build_salt(),
         vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
@@ -446,15 +442,14 @@ async fn reuse_nonce(
     // Try to reuse a nonce
 
     let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::new_auto(
-            uac.contract().id().clone(),
-            KeyParameters {
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .with_key_parameters(KeyParameters {
                 block_height,
                 index: U64(0),
                 nonce: U64(1),
-            },
-            NEAR_TESTNET_CHAIN_ID,
-        ),
+            })
+            .verifying_contract(uac.contract().id().clone())
+            .build_salt(),
         vec![Transaction {
             receiver_id: ft.contract().id().clone(),
             actions: vec![mint(100).into()].into(),
