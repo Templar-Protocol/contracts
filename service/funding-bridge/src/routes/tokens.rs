@@ -138,16 +138,11 @@ pub async fn token_lookup(
     // Get decimals if not already available
     let final_decimals = match decimals {
         Some(d) => Some(d),
-        None => {
-            match app
-                .token_registry
-                .get_decimals(&query.asset, &chain_str)
-                .await
-            {
-                Ok(d) => Some(d),
-                Err(_) => None,
-            }
-        }
+        None => app
+            .token_registry
+            .get_decimals(&query.asset, &chain_str)
+            .await
+            .ok(),
     };
 
     info!(
