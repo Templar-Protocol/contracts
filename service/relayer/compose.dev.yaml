@@ -12,7 +12,7 @@ services:
       - 5432:5432
 
   relayer:
-    image: rust:1.85.0
+    image: rust:1.86.0
     volumes:
       - ../..:/usr/src/relayer
       - rustup_home:/usr/local/rustup
