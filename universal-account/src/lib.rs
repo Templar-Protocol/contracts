@@ -223,7 +223,7 @@ mod tests {
     use p256::elliptic_curve::rand_core::OsRng;
     use solana_sdk::{signature::Keypair, signer::Signer};
 
-    use crate::authentication::{ed25519_raw, passkey::Passkey};
+    use crate::authentication::{ed25519::raw, passkey::Passkey};
 
     use super::*;
 
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(b.len(), 65);
 
         let sk_ed25519 = Keypair::new();
-        let ed25519_raw = ed25519_raw::VerifyKey(sk_ed25519.pubkey().to_bytes().into());
+        let ed25519_raw = raw::VerifyKey(sk_ed25519.pubkey().to_bytes().into());
         let ed25519_raw_id: KeyId = ed25519_raw.into();
         let ed25519_raw_id_str = ed25519_raw_id.to_string();
 

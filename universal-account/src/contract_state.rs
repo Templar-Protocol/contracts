@@ -70,7 +70,7 @@ pub struct FailedToDeserializeOldState;
 mod tests {
     use near_sdk::{test_utils::VMContextBuilder, testing_env};
 
-    use crate::authentication::{ed25519_raw, passkey::Passkey};
+    use crate::authentication::{ed25519::raw, passkey::Passkey};
 
     use super::*;
 
@@ -95,7 +95,7 @@ mod tests {
             },
         );
         old.keys.insert(
-            KeyId::Ed25519RawKey(ed25519_raw::VerifyKey([0xee_u8; 32].into())),
+            KeyId::Ed25519RawKey(raw::VerifyKey([0xee_u8; 32].into())),
             KeyParameters {
                 block_height: 4444.into(),
                 index: 5555.into(),

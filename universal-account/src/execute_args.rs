@@ -5,7 +5,8 @@ use near_sdk::{
 
 use crate::{
     authentication::{
-        ed25519_raw, eip712,
+        ed25519::raw,
+        eip712,
         passkey::{self, Passkey},
         CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
         MessageWithValidSignature, SignableMessage,
@@ -18,7 +19,7 @@ use crate::{
 #[serde(bound = "T: DeserializeOwned")]
 pub enum ExecuteArgs<T: serde::Serialize> {
     Passkey(ExecuteArgsMessage<Passkey, passkey::Message<T>>),
-    Ed25519Raw(ExecuteArgsMessage<ed25519_raw::VerifyKey, ed25519_raw::Message<T>>),
+    Ed25519Raw(ExecuteArgsMessage<raw::VerifyKey, raw::Message<T>>),
     Eip712(ExecuteArgsMessage<eip712::VerifyKey, eip712::Message<T>>),
 }
 
@@ -30,10 +31,10 @@ impl<T: serde::Serialize> From<ExecuteArgsMessage<Passkey, passkey::Message<T>>>
     }
 }
 
-impl<T: serde::Serialize> From<ExecuteArgsMessage<ed25519_raw::VerifyKey, ed25519_raw::Message<T>>>
+impl<T: serde::Serialize> From<ExecuteArgsMessage<raw::VerifyKey, raw::Message<T>>>
     for ExecuteArgs<T>
 {
-    fn from(value: ExecuteArgsMessage<ed25519_raw::VerifyKey, ed25519_raw::Message<T>>) -> Self {
+    fn from(value: ExecuteArgsMessage<raw::VerifyKey, raw::Message<T>>) -> Self {
         Self::Ed25519Raw(value)
     }
 }
@@ -169,6 +170,7 @@ mod tests {
 
     use crate::{
         authentication::{
+            ed25519::raw,
             passkey::data::{AuthenticatorData, ClientDataJson},
             HashForSigning, Payload,
         },
@@ -228,13 +230,13 @@ mod tests {
     fn ed25519_raw_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
         let sk = Keypair::new();
 
-        let message = ed25519_raw::Message::from_parsed(payload());
+        let message = raw::Message::from_parsed(payload());
         let preimage = message.preimage_for_signing();
         let signed_message =
             message.with_signature((*sk.sign_message(&preimage).as_array()).into());
 
         ExecuteArgsMessage {
-            key: ed25519_raw::VerifyKey(sk.pubkey().to_bytes().into()),
+            key: raw::VerifyKey(sk.pubkey().to_bytes().into()),
             mws: Box::new(signed_message),
         }
         .into()
