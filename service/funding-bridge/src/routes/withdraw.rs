@@ -59,14 +59,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         "Parsed destination chain"
     );
 
-    // Stellar withdrawals not yet supported
-    if chain_name == "stellar" {
-        return error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "Stellar withdrawals are not yet supported. Coming in a future release.".to_string(),
-        );
-    }
-
     // Get destination address from config
     let destination_address = match app.config.get_withdraw_address(&chain_name) {
         Some(addr) => addr,
@@ -221,14 +213,11 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
             "Extracted numeric chain ID from token"
         );
 
-        let use_gasless = true;
-
         match intent_builder.build_mt_withdrawal(
             &token_id,
             amount,
             &destination_address,
             numeric_chain_id,
-            use_gasless,
         ) {
             Ok(args) => args,
             Err(e) => {

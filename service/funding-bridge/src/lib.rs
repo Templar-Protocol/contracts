@@ -18,8 +18,6 @@
 //! - `GET /tokens/lookup?asset=USDT&chain=ethereum` - Resolve OMFT token IDs
 //! - `POST /deposit` - **Automated deposit from external wallet** (ETH/Arbitrum)
 //! - `POST /withdraw` - Initiate cross-chain withdrawal via NEAR Intents
-//! - `GET /status/withdrawal/:tx_hash` - Check withdrawal status via Bridge API
-//! - `GET /status/deposit/:tx_hash` - Check deposit status via Bridge API
 //!
 //! ## Quick Start
 //!

@@ -217,19 +217,19 @@ impl WithdrawalIntentBuilder {
 
     /// Create a cross-chain withdrawal intent for NEP-245 multi-tokens
     ///
+    /// Uses gasless withdrawal via bridge-refuel.hot.tg for zero-fee bridging.
+    ///
     /// # Arguments
     /// * `token` - Full token ID in format "nep245:contract:token_id"
     /// * `amount` - Amount in smallest units
     /// * `destination_address` - Destination address on target chain
     /// * `chain_id` - Target chain ID (1 for Ethereum, 1151 for Solana, etc.)
-    /// * `use_gasless` - Whether to use gasless withdrawal via bridge-refuel.hot.tg
     pub fn build_mt_withdrawal(
         &self,
         token: &str,
         amount: u128,
         destination_address: &str,
         chain_id: u32,
-        use_gasless: bool,
     ) -> Result<ExecuteIntentsArgs, IntentError> {
         // Token input is in intents format: "nep245:contract:multi_token_id"
         // Parse this format
@@ -248,32 +248,20 @@ impl WithdrawalIntentBuilder {
         // Encode the destination address based on the chain
         let encoded_receiver = encode_receiver(chain_id, destination_address)?;
 
-        // Build intent - always use msg field format
-        // Try sending directly to v2_1.omni.hot.tg with msg (not memo)
+        // Build gasless withdrawal intent via bridge-refuel.hot.tg
         let msg_payload = serde_json::json!({
             "receiver_id": encoded_receiver,
             "amount_native": "0",
             "block_number": 0
         });
 
-        let intent = if use_gasless {
-            Intent::MtWithdraw {
-                token: contract_id.to_string(),
-                receiver_id: "bridge-refuel.hot.tg".to_string(),
-                token_ids: vec![multi_token_id],
-                amounts: vec![amount.to_string()],
-                memo: None,
-                msg: Some(msg_payload.to_string()),
-            }
-        } else {
-            Intent::MtWithdraw {
-                token: contract_id.to_string(),
-                receiver_id: contract_id.to_string(),
-                token_ids: vec![multi_token_id],
-                amounts: vec![amount.to_string()],
-                memo: None,
-                msg: Some(msg_payload.to_string()),
-            }
+        let intent = Intent::MtWithdraw {
+            token: contract_id.to_string(),
+            receiver_id: "bridge-refuel.hot.tg".to_string(),
+            token_ids: vec![multi_token_id],
+            amounts: vec![amount.to_string()],
+            memo: None,
+            msg: Some(msg_payload.to_string()),
         };
 
         self.build_intent(intent)
@@ -483,14 +471,15 @@ mod tests {
         assert!(args.signed[0].signature.starts_with("ed25519:"));
         assert!(args.signed[0].public_key.starts_with("ed25519:"));
 
-        // Verify the payload contains the withdrawal
+        // Check PayloadWrapper structure (NEP-413 format)
         let payload = &args.signed[0].payload;
         assert_eq!(payload.recipient, "intents.near");
         assert!(!payload.nonce.is_empty());
 
-        // Parse the message
+        // Parse the message field as IntentMessage JSON
         let message: IntentMessage =
             serde_json::from_str(&payload.message).expect("Should parse message");
+
         assert_eq!(message.signer_id, "treasury.near");
         assert_eq!(message.intents.len(), 1);
 
@@ -569,6 +558,7 @@ mod tests {
             .build_withdrawal("eth.omft.near", 1000, "0x123")
             .expect("Should build");
 
+        // Parse the message field from PayloadWrapper (NEP-413 format)
         let message: IntentMessage =
             serde_json::from_str(&args.signed[0].payload.message).expect("Should parse message");
 

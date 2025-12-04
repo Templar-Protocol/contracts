@@ -275,8 +275,5 @@ check_running_instances
 print_info "Starting Funding Bridge Service..."
 echo ""
 
-# Run the binary (it will read configuration from environment variables)
-exec env \
-    RUST_LOG="${RUST_LOG}" \
-    RUST_BACKTRACE="${RUST_BACKTRACE}" \
-    "$BINARY_PATH"
+# Run the binary (environment variables already exported via set -a)
+exec "$BINARY_PATH"

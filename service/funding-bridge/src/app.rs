@@ -126,8 +126,17 @@ impl App {
             tracing::info!("No Solana keypair configured - Solana deposits disabled");
         }
 
-        // Stellar support planned for future release
-        // TODO: Enable when Stellar integration is production-ready
+        // Check for Stellar configuration from environment
+        if let Some(stellar_handler) = crate::external::stellar::stellar_handler_from_env() {
+            let chain_id = stellar_handler.chain_id().to_string();
+            tracing::info!(
+                chain_id = %chain_id,
+                "Registered Stellar chain handler"
+            );
+            registry.register(stellar_handler);
+        } else {
+            tracing::info!("No Stellar keypair configured - Stellar deposits disabled");
+        }
 
         Arc::new(registry)
     }
