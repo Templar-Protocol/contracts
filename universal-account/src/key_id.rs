@@ -1,6 +1,10 @@
 use near_sdk::near;
 
-use crate::authentication::{ed25519::raw, eip712, passkey::Passkey};
+use crate::authentication::{
+    ed25519::{raw, sep53},
+    eip712,
+    passkey::Passkey,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
@@ -8,14 +12,16 @@ pub enum KeyId {
     Passkey(Passkey),
     Ed25519RawKey(raw::VerifyKey),
     Eip712(eip712::VerifyKey),
+    Sep53(sep53::VerifyKey),
 }
 
 impl std::fmt::Display for KeyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Passkey(passkey) => write!(f, "{}", passkey.0),
-            Self::Ed25519RawKey(ed25519_raw_key) => write!(f, "{}", ed25519_raw_key.0),
+            Self::Passkey(key) => write!(f, "{}", key.0),
+            Self::Ed25519RawKey(key) => write!(f, "{}", key.0),
             Self::Eip712(key) => write!(f, "{}", key.0),
+            Self::Sep53(key) => write!(f, "{}", key.0),
         }
     }
 }
