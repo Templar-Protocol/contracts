@@ -252,6 +252,10 @@ async fn test_app_initialization() {
         optimism_withdraw_address: None,
         polygon_withdraw_address: None,
         solana_withdraw_address: Some("B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D".to_string()),
+        stellar_secret_key: None,
+        stellar_horizon_url: "https://horizon.stellar.org".to_string(),
+        stellar_network: "mainnet".to_string(),
+        stellar_withdraw_address: None,
     };
 
     let app = App {

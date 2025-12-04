@@ -131,6 +131,10 @@ mod tests {
             optimism_withdraw_address: None,
             polygon_withdraw_address: None,
             solana_withdraw_address: None,
+            stellar_secret_key: None,
+            stellar_horizon_url: "https://horizon.stellar.org".to_string(),
+            stellar_network: "mainnet".to_string(),
+            stellar_withdraw_address: None,
         };
 
         let bridge_client = Arc::new(BridgeClient::new(args.bridge_api_url.clone()));

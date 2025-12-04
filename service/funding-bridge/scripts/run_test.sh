@@ -166,8 +166,16 @@ EOF
 
 else
     # For withdrawals, destination address comes from service config
-    # Convert amount to smallest units (USDC has 6 decimals)
-    AMOUNT_INT=$(echo "$AMOUNT * 1000000" | bc | cut -d'.' -f1)
+    # Convert amount to smallest units
+    # Note: Stellar uses 7 decimals, EVM/Solana use 6 decimals
+    if [ "$CHAIN_NAME" = "stellar" ]; then
+        DECIMALS=7
+        MULTIPLIER=10000000
+    else
+        DECIMALS=6
+        MULTIPLIER=1000000
+    fi
+    AMOUNT_INT=$(echo "$AMOUNT * $MULTIPLIER" | bc | cut -d'.' -f1)
 
     # Create withdrawal request
     REQUEST_FILE="/tmp/funding_bridge_test_withdraw.json"
@@ -185,7 +193,7 @@ EOF
     echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
     echo -e "Destination Chain: ${BLUE}$CHAIN_NAME${NC}"
     echo -e "Asset:             ${BLUE}USDC${NC}"
-    echo -e "Amount:            ${BLUE}$AMOUNT USDC ($AMOUNT_INT smallest units)${NC}"
+    echo -e "Amount:            ${BLUE}$AMOUNT USDC ($AMOUNT_INT smallest units, $DECIMALS decimals)${NC}"
     echo ""
 
     # Make request

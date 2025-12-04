@@ -116,84 +116,64 @@ Test deposit and withdrawal functionality of the running service.
 ```
 
 **Withdrawal Destinations:**
-Withdrawal destination addresses are configured in the service `.env` file:
-- `ETH_WITHDRAW_ADDRESS` - Ethereum address for withdrawals
-- `ARBITRUM_WITHDRAW_ADDRESS` - Arbitrum address for withdrawals
-- `BASE_WITHDRAW_ADDRESS` - Base address for withdrawals
-- `OPTIMISM_WITHDRAW_ADDRESS` - Optimism address for withdrawals
-- `POLYGON_WITHDRAW_ADDRESS` - Polygon address for withdrawals
-- `SOLANA_WITHDRAW_ADDRESS` - Solana address for withdrawals
+Configure in service `.env` file:
+- `ETH_WITHDRAW_ADDRESS` - Ethereum
+- `ARBITRUM_WITHDRAW_ADDRESS` - Arbitrum
+- `BASE_WITHDRAW_ADDRESS` - Base
+- `OPTIMISM_WITHDRAW_ADDRESS` - Optimism
+- `POLYGON_WITHDRAW_ADDRESS` - Polygon
+- `SOLANA_WITHDRAW_ADDRESS` - Solana
+- `STELLAR_WITHDRAW_ADDRESS` - Stellar (planned for future release)
 
 ---
 
 ## Quick Start
 
-1. **Install Node.js dependencies (one-time setup):**
-   ```bash
-   npm install
-   ```
+```bash
+# 1. Install Node.js dependencies (one-time)
+npm install
 
-2. **Generate Solana keypair from seed phrase:**
-   ```bash
-   node scripts/derive-solana-key.js "your seed phrase here"
-   ```
+# 2. Generate Solana keypair (optional)
+node scripts/derive-solana-key.js "your seed phrase"
 
-3. **Configure environment:**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your keys
-   ```
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your keys
 
-4. **Build the service:**
-   ```bash
-   cargo build --release -p templar-funding-bridge
-   ```
+# 4. Build service
+cargo build --release -p templar-funding-bridge
 
-5. **Start the service:**
-   ```bash
-   ./scripts/run_service.sh
-   ```
+# 5. Start service
+./scripts/run_service.sh
 
-6. **Test withdrawals (in another terminal):**
-   ```bash
-   ./scripts/run_test.sh withdraw solana 1.0
-   ```
+# 6. Test withdrawals (in another terminal)
+./scripts/run_test.sh withdraw solana 1.0
+```
 
 ---
 
 ## Troubleshooting
 
-### Service won't start
-- Check that the binary exists: `ls -la ../../target/release/funding-bridge`
-- Verify `.env` file exists and has required variables
-- Check for port conflicts (default port is 3000)
+**Service won't start:**
+- Check binary exists: `ls -la ../../target/release/funding-bridge`
+- Verify `.env` file has required variables
+- Check port 3000 is available
 
-### Tests fail with "Service not responding"
-- Make sure the service is running: `./scripts/run_service.sh`
-- Check service is listening: `curl http://localhost:3000/health`
+**Tests fail with "Service not responding":**
+- Start service: `./scripts/run_service.sh`
+- Verify health: `curl http://localhost:3000/health`
 
-### "insufficient balance" error
-- This means NEP-413 signing is working correctly
-- The treasury account needs USDC balance in NEAR Intents
-- Deposit USDC to NEAR Intents first before testing withdrawals
+**"Insufficient balance" error:**
+- NEP-413 signing is working correctly
+- Treasury needs USDC balance in NEAR Intents
+- Deposit USDC before testing withdrawals
 
 ---
 
 ## Security Best Practices
 
-1. **Never commit private keys** - Add `.env` to `.gitignore`
-2. **Use environment variables** - Don't hardcode keys in scripts
-3. **Rotate keys regularly** - Especially for production accounts
-4. **Test on testnet first** - Before using real funds
-5. **Monitor logs** - Check for suspicious activity
-
----
-
-## Development
-
-To modify scripts:
-
-1. **Make changes** - Edit scripts in `scripts/` directory
-2. **Make executable** - `chmod +x scripts/*.sh`
-3. **Test** - Run scripts with test configuration
-4. **Document** - Update this README with changes
+- Never commit private keys (add `.env` to `.gitignore`)
+- Use environment variables for keys
+- Rotate keys regularly for production
+- Test on testnet before using real funds
+- Monitor logs for suspicious activity

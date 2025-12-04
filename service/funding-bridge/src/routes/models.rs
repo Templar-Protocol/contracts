@@ -173,6 +173,7 @@ mod tests {
             status: "PENDING".to_string(),
             source_chain: "eth:42161".to_string(),
             bridge_deposit_address: Some("0xdef456".to_string()),
+            bridge_deposit_memo: None,
             error: None,
         };
 

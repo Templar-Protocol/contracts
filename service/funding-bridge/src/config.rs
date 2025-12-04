@@ -73,11 +73,14 @@ pub struct Args {
     pub solana_rpc_url: String,
 
     // === Stellar Wallet (for automated deposits) ===
+    // Planned for future release
     /// Stellar secret key (S...)
+    #[allow(dead_code)]
     #[arg(long, env = "STELLAR_SECRET_KEY")]
     pub stellar_secret_key: Option<String>,
 
     /// Stellar Horizon URL
+    #[allow(dead_code)]
     #[arg(
         long,
         env = "STELLAR_HORIZON_URL",
@@ -86,6 +89,7 @@ pub struct Args {
     pub stellar_horizon_url: String,
 
     /// Stellar network (mainnet or testnet)
+    #[allow(dead_code)]
     #[arg(long, env = "STELLAR_NETWORK", default_value = "mainnet")]
     pub stellar_network: String,
 
@@ -114,7 +118,8 @@ pub struct Args {
     #[arg(long, env = "SOLANA_WITHDRAW_ADDRESS")]
     pub solana_withdraw_address: Option<String>,
 
-    /// Stellar withdrawal destination address
+    /// Stellar withdrawal destination address (planned for future release)
+    #[allow(dead_code)]
     #[arg(long, env = "STELLAR_WITHDRAW_ADDRESS")]
     pub stellar_withdraw_address: Option<String>,
 }

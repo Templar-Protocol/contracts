@@ -59,6 +59,14 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         "Parsed destination chain"
     );
 
+    // Stellar withdrawals not yet supported
+    if chain_name == "stellar" {
+        return error_response(
+            StatusCode::NOT_IMPLEMENTED,
+            "Stellar withdrawals are not yet supported. Coming in a future release.".to_string(),
+        );
+    }
+
     // Get destination address from config
     let destination_address = match app.config.get_withdraw_address(&chain_name) {
         Some(addr) => addr,
@@ -181,12 +189,9 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         .unwrap_or_else(|| near_token_id.starts_with("nep245:") || near_token_id.contains(':'));
 
     let execute_args = if is_nep245 {
-        // NEP-245 multi-token withdrawal
         let token_id = if let Some(info) = &token_info {
-            // Use the withdrawal_token_id helper which formats contract:multi_token_id
             info.withdrawal_token_id()
         } else {
-            // Remove nep245: prefix if present
             near_token_id
                 .strip_prefix("nep245:")
                 .unwrap_or(&near_token_id)
@@ -198,7 +203,33 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
             "Building NEP-245 withdrawal"
         );
 
-        match intent_builder.build_mt_withdrawal(&token_id, amount, &destination_address) {
+        let numeric_chain_id = if let Some(colon_pos) = token_id.find(':') {
+            let after_colon = &token_id[colon_pos + 1..];
+            if let Some(underscore_pos) = after_colon.find('_') {
+                after_colon[..underscore_pos].parse::<u32>().unwrap_or(1100)
+            } else {
+                1100
+            }
+        } else if let Some(underscore_pos) = token_id.find('_') {
+            token_id[..underscore_pos].parse::<u32>().unwrap_or(1100)
+        } else {
+            1100
+        };
+
+        debug!(
+            numeric_chain_id = %numeric_chain_id,
+            "Extracted numeric chain ID from token"
+        );
+
+        let use_gasless = true;
+
+        match intent_builder.build_mt_withdrawal(
+            &token_id,
+            amount,
+            &destination_address,
+            numeric_chain_id,
+            use_gasless,
+        ) {
             Ok(args) => args,
             Err(e) => {
                 error!(error = %e, "Failed to build NEP-245 withdrawal intent");

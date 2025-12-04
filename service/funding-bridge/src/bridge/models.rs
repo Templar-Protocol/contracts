@@ -470,6 +470,7 @@ mod tests {
         let params = DepositAddressParams {
             account_id: "tmplr-liq.near".to_string(),
             chain: "eth:1".to_string(),
+            deposit_mode: None,
         };
 
         let json = serde_json::to_string(&params).unwrap();

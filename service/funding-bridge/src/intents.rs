@@ -15,6 +15,60 @@ use std::collections::HashMap;
 /// Verifier contract on NEAR
 pub const INTENTS_CONTRACT: &str = "intents.near";
 
+/// Chain IDs for supported networks
+pub mod chain_ids {
+    pub const ETHEREUM: u32 = 1;
+    pub const STELLAR: u32 = 1100;
+    pub const SOLANA: u32 = 1151;
+    pub const NEAR: u32 = 1313161554; // NEAR mainnet
+}
+
+/// Encode receiver address for cross-chain withdrawals
+///
+/// Encodes the destination address to base58 format required by the bridge.
+/// Different chains use different encoding schemes.
+fn encode_receiver(chain_id: u32, address: &str) -> Result<String, IntentError> {
+    match chain_id {
+        // NEAR - pass through
+        chain_ids::NEAR => Ok(address.to_string()),
+
+        // Solana - pass through (already in base58)
+        chain_ids::SOLANA => Ok(address.to_string()),
+
+        // Stellar - encode as XDR ScVal Address
+        chain_ids::STELLAR => {
+            use std::str::FromStr;
+            use stellar_xdr::curr::{Limited, ScAddress, ScVal, WriteXdr};
+
+            let sc_address = ScAddress::from_str(address).map_err(|_| {
+                IntentError::Serialization(format!("Invalid Stellar address: {}", address))
+            })?;
+
+            let sc_val = ScVal::Address(sc_address);
+
+            let mut xdr_bytes = Vec::new();
+            let mut limited_writer =
+                Limited::new(&mut xdr_bytes, stellar_xdr::curr::Limits::none());
+            sc_val.write_xdr(&mut limited_writer).map_err(|e| {
+                IntentError::Serialization(format!("Failed to encode ScVal to XDR: {}", e))
+            })?;
+
+            Ok(bs58::encode(&xdr_bytes).into_string())
+        }
+
+        // EVM chains (Ethereum, BSC, Polygon, Arbitrum, etc.)
+        // TON and other chains that use hex addresses
+        _ => {
+            // Decode hex address (strip 0x prefix if present)
+            let hex_str = address.strip_prefix("0x").unwrap_or(address);
+            let bytes = hex::decode(hex_str)
+                .map_err(|e| IntentError::Serialization(format!("Invalid hex address: {}", e)))?;
+
+            Ok(bs58::encode(&bytes).into_string())
+        }
+    }
+}
+
 /// Intent types supported by NEAR Intents
 #[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize)]
 #[serde(tag = "intent", rename_all = "snake_case")]
@@ -42,7 +96,9 @@ pub enum Intent {
         token_ids: Vec<String>, // Array of token IDs within the MT contract
         amounts: Vec<String>,   // Array of amounts (one per token_id)
         #[serde(skip_serializing_if = "Option::is_none")]
-        memo: Option<String>,
+        memo: Option<String>, // Simple withdrawal: base58-encoded address
+        #[serde(skip_serializing_if = "Option::is_none")]
+        msg: Option<String>, // Gasless withdrawal: JSON with receiver_id, amount_native, block_number
     },
     /// Token difference for swaps
     #[serde(rename = "token_diff")]
@@ -162,14 +218,18 @@ impl WithdrawalIntentBuilder {
     /// Create a cross-chain withdrawal intent for NEP-245 multi-tokens
     ///
     /// # Arguments
-    /// * `token` - Full intents token ID (e.g., "nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu")
+    /// * `token` - Full token ID in format "nep245:contract:token_id"
     /// * `amount` - Amount in smallest units
-    /// * `destination_address` - Address on destination chain
+    /// * `destination_address` - Destination address on target chain
+    /// * `chain_id` - Target chain ID (1 for Ethereum, 1151 for Solana, etc.)
+    /// * `use_gasless` - Whether to use gasless withdrawal via bridge-refuel.hot.tg
     pub fn build_mt_withdrawal(
         &self,
         token: &str,
         amount: u128,
         destination_address: &str,
+        chain_id: u32,
+        use_gasless: bool,
     ) -> Result<ExecuteIntentsArgs, IntentError> {
         // Token input is in intents format: "nep245:contract:multi_token_id"
         // Parse this format
@@ -185,20 +245,35 @@ impl WithdrawalIntentBuilder {
             )));
         };
 
-        // Create the NEP-245 withdrawal intent
-        // Based on MtWithdraw struct definition from intents.near:
-        // - token: MT contract account ID (e.g., "v2_1.omni.hot.tg")
-        // - token_ids: Array of token IDs within that contract
-        // - amounts: Array of amounts (parallel to token_ids)
-        // - receiver_id: Receiver account ID (same as token for bridge withdrawals)
-        // - memo: Plain text string with destination address
+        // Encode the destination address based on the chain
+        let encoded_receiver = encode_receiver(chain_id, destination_address)?;
 
-        let intent = Intent::MtWithdraw {
-            token: contract_id.to_string(),
-            receiver_id: contract_id.to_string(),
-            token_ids: vec![multi_token_id],
-            amounts: vec![amount.to_string()],
-            memo: Some(format!("WITHDRAW_TO:{}", destination_address)),
+        // Build intent - always use msg field format
+        // Try sending directly to v2_1.omni.hot.tg with msg (not memo)
+        let msg_payload = serde_json::json!({
+            "receiver_id": encoded_receiver,
+            "amount_native": "0",
+            "block_number": 0
+        });
+
+        let intent = if use_gasless {
+            Intent::MtWithdraw {
+                token: contract_id.to_string(),
+                receiver_id: "bridge-refuel.hot.tg".to_string(),
+                token_ids: vec![multi_token_id],
+                amounts: vec![amount.to_string()],
+                memo: None,
+                msg: Some(msg_payload.to_string()),
+            }
+        } else {
+            Intent::MtWithdraw {
+                token: contract_id.to_string(),
+                receiver_id: contract_id.to_string(),
+                token_ids: vec![multi_token_id],
+                amounts: vec![amount.to_string()],
+                memo: None,
+                msg: Some(msg_payload.to_string()),
+            }
         };
 
         self.build_intent(intent)
@@ -219,11 +294,9 @@ impl WithdrawalIntentBuilder {
         let message_json = serde_json::to_string(&message)
             .map_err(|e| IntentError::Serialization(e.to_string()))?;
 
-        // Generate random nonce
         let nonce = self.generate_nonce();
         let nonce_b64 = BASE64.encode(&nonce);
 
-        // Create payload wrapper (field order must match NEP-413: message, nonce, recipient, callbackUrl)
         let payload = PayloadWrapper {
             message: message_json,
             nonce: nonce_b64,
@@ -239,10 +312,8 @@ impl WithdrawalIntentBuilder {
         })
     }
 
-    /// Generate a random nonce
     fn generate_nonce(&self) -> Vec<u8> {
         let mut nonce = vec![0u8; 32];
-        // Use SHA256 of current time + signer_id as pseudo-random
         let data = format!(
             "{}{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0),

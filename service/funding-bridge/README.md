@@ -2,19 +2,20 @@
 
 **Multi-Chain Treasury Management for NEAR Protocol**
 
-A NEAR-centric treasury management service with cross-chain deposits and withdrawals via [NEAR Intents Bridge API](https://docs.near-intents.org/). Supports Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, and Stellar.
+A NEAR-centric treasury management service with cross-chain deposits and withdrawals via [NEAR Intents Bridge API](https://docs.near-intents.org/). Supports Ethereum, Arbitrum, Base, Optimism, Polygon, and Solana.
 
 ## Features
 
 - ✅ **NEAR Treasury** - Hold OMFT tokens on NEAR, withdraw to any chain
-- ✅ **Cross-Chain Withdrawals** - NEP-413 signed intents to external chains (all supported chains)
-- ✅ **Automated Deposits** - Transfer from ETH/Solana/Stellar wallets to NEAR treasury via bridge
-- ✅ **Multi-Chain Support** - Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, Stellar
+- ✅ **Cross-Chain Withdrawals** - NEP-413 signed intents to external chains
+- ✅ **Automated Deposits** - Transfer from ETH/Solana wallets to NEAR treasury via bridge
+- ✅ **Multi-Chain Support** - Ethereum, Arbitrum, Base, Optimism, Polygon, Solana
 - ✅ **Token Resolution** - Automatic OMFT token ID and decimal handling
 - ✅ **Stateless Design** - No database required, horizontally scalable
 - ✅ **REST API** - Simple HTTP/JSON interface
 - ✅ **Prometheus Metrics** - Production-grade observability
 - ✅ **Dry-Run Mode** - Test operations without executing transactions
+- 🔜 **Stellar Support** - Planned for future release
 
 ## Quick Start
 
@@ -180,6 +181,7 @@ base / eth:8453                 → Base
 optimism / op / eth:10          → Optimism
 polygon / matic / eth:137       → Polygon
 solana / sol / sol:mainnet      → Solana Mainnet
+stellar                         → Coming in future release (returns 501 Not Implemented)
 ```
 
 **Response:**
@@ -363,12 +365,6 @@ ETH_RPC_URL=https://eth.llamarpc.com
 SOLANA_PRIVATE_KEY=...
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 
-# Stellar deposits (optional)
-STELLAR_SECRET_KEY=S...
-STELLAR_HORIZON_URL=https://horizon.stellar.org
-STELLAR_NETWORK=mainnet  # or testnet
-# Generate from seed phrase: node scripts/derive-stellar-key.js "your seed phrase"
-
 # Withdrawal destinations (required for withdrawals)
 ETH_WITHDRAW_ADDRESS=0x...
 ARBITRUM_WITHDRAW_ADDRESS=0x...
@@ -376,7 +372,12 @@ BASE_WITHDRAW_ADDRESS=0x...
 OPTIMISM_WITHDRAW_ADDRESS=0x...
 POLYGON_WITHDRAW_ADDRESS=0x...
 SOLANA_WITHDRAW_ADDRESS=...
-STELLAR_WITHDRAW_ADDRESS=G...
+
+# Stellar support (planned for future release)
+# STELLAR_SECRET_KEY=S...
+# STELLAR_HORIZON_URL=https://horizon.stellar.org
+# STELLAR_NETWORK=mainnet
+# STELLAR_WITHDRAW_ADDRESS=G...
 ```
 
 ## Development
@@ -518,8 +519,6 @@ src/
 └── main.rs         # Server entry point
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
-
 ## Deployment
 
 ### Docker (Recommended)
@@ -657,4 +656,4 @@ GPL-3.0 - See [LICENSE](LICENSE) for details.
 ---
 
 **Version:** 0.1.0
-**Last Updated:** 2025-11-26
+**Last Updated:** 2025-12-03

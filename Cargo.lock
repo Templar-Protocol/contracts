@@ -10379,6 +10379,7 @@ dependencies = [
  "spl-token",
  "stellar-base",
  "stellar-strkey 0.0.8",
+ "stellar-xdr",
  "templar-common",
  "thiserror 1.0.69",
  "tokio",

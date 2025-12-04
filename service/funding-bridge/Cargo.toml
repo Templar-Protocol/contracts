@@ -72,9 +72,11 @@ solana-rpc-client = { version = "3.1" }
 spl-token = { version = "7.0", default-features = false }
 spl-associated-token-account = { version = "6.0", default-features = false }
 
-# Stellar client (for automated Stellar asset deposits)
+# Stellar client (for automated Stellar asset deposits and withdrawals)
 stellar-strkey = "0.0.8"
 stellar-base = "0.7"
+# For Soroban smart contract interactions
+stellar-xdr = { version = "24.0", default-features = false, features = ["curr", "std"] }
 
 # Utilities
 ulid = "1.1"
