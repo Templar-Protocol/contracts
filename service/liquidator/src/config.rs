@@ -6,10 +6,10 @@ use std::{str::FromStr, sync::Arc};
 
 use clap::Parser;
 use near_sdk::AccountId;
+use templar_common::utils::Network;
 
 use crate::{
     liquidation_strategy::{FullLiquidationStrategy, PartialLiquidationStrategy},
-    rpc::Network,
     service::ServiceConfig,
     CollateralStrategy,
 };
@@ -317,8 +317,9 @@ impl Args {
 
 #[cfg(test)]
 mod tests {
+    use templar_common::utils::Network;
+
     use super::*;
-    use crate::rpc::Network;
 
     fn create_test_args() -> Args {
         Args {
