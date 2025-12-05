@@ -20,8 +20,11 @@ pub trait Ed25519Variant {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
-#[serde(bound = "T: DeserializeOwned")]
-pub struct Message<K: Ed25519Variant, T>(pub WithRawString<Payload<T>>, pub PhantomData<K>);
+#[serde(transparent, bound = "T: DeserializeOwned")]
+pub struct Message<K: Ed25519Variant, T>(
+    pub WithRawString<Payload<T>>,
+    #[serde(skip)] pub PhantomData<K>,
+);
 
 impl<K: Ed25519Variant, T> HashForSigning for Message<K, T> {
     const MAGIC_NUMBER: &'static [u8] = K::PREFIX;
