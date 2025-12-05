@@ -38,6 +38,12 @@ impl From<raw::VerifyKey> for KeyId {
     }
 }
 
+impl From<sep53::VerifyKey> for KeyId {
+    fn from(value: sep53::VerifyKey) -> Self {
+        Self::Sep53(value)
+    }
+}
+
 impl From<eip712::VerifyKey> for KeyId {
     fn from(value: eip712::VerifyKey) -> Self {
         Self::Eip712(value)

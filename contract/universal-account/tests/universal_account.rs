@@ -11,7 +11,8 @@ use p256::{ecdsa::signature::Signer, elliptic_curve::rand_core::OsRng};
 use rstest::rstest;
 use templar_universal_account::{
     authentication::{
-        ed25519, eip712,
+        ed25519::{raw, sep53},
+        eip712,
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
@@ -49,6 +50,7 @@ enum TestSigner {
     Passkey(p256::SecretKey),
     Ed25519Raw(ed25519_dalek::SigningKey),
     Eip712(alloy::signers::local::PrivateKeySigner),
+    Sep53(ed25519_dalek::SigningKey),
 }
 
 impl TestSigner {
@@ -64,13 +66,20 @@ impl TestSigner {
         Self::Eip712(alloy::signers::local::PrivateKeySigner::random())
     }
 
+    fn random_sep53() -> Self {
+        Self::Sep53(ed25519_dalek::SigningKey::generate(&mut OsRng))
+    }
+
     fn id(&self) -> KeyId {
         match self {
             Self::Passkey(key) => KeyId::Passkey(Passkey(key.public_key().into())),
-            Self::Ed25519Raw(key) => KeyId::Ed25519RawKey(ed25519::raw::VerifyKey(
-                key.verifying_key().to_bytes().into(),
-            )),
+            Self::Ed25519Raw(key) => {
+                KeyId::Ed25519RawKey(raw::VerifyKey(key.verifying_key().to_bytes().into()))
+            }
             Self::Eip712(key) => KeyId::Eip712(eip712::VerifyKey(key.address().into())),
+            Self::Sep53(key) => {
+                KeyId::Sep53(sep53::VerifyKey(key.verifying_key().to_bytes().into()))
+            }
         }
     }
 
@@ -101,16 +110,13 @@ impl TestSigner {
                 }
                 .into()
             }
-            TestSigner::Ed25519Raw(signing_key) => {
-                let message = ed25519::raw::Message::new(payload);
-                let signature = signing_key
-                    .sign(&message.preimage_for_signing())
-                    .to_bytes()
-                    .into();
+            TestSigner::Ed25519Raw(key) => {
+                let message = raw::Message::new(payload);
+                let signature = key.sign(&message.preimage_for_signing()).to_bytes().into();
                 let message = message.with_signature(signature);
 
                 ExecuteArgsMessage {
-                    key: ed25519::raw::VerifyKey(signing_key.verifying_key().to_bytes().into()),
+                    key: raw::VerifyKey(key.verifying_key().to_bytes().into()),
                     mws: Box::new(message),
                 }
                 .into()
@@ -121,6 +127,17 @@ impl TestSigner {
                 ExecuteArgsMessage {
                     key: eip712::VerifyKey(key.address().into()),
                     mws: Box::new(mws),
+                }
+                .into()
+            }
+            TestSigner::Sep53(key) => {
+                let message = sep53::Message::new(payload);
+                let signature = key.sign(&message.preimage_for_signing()).to_bytes().into();
+                let message = message.with_signature(signature);
+
+                ExecuteArgsMessage {
+                    key: sep53::VerifyKey(key.verifying_key().to_bytes().into()),
+                    mws: Box::new(message),
                 }
                 .into()
             }
@@ -215,6 +232,7 @@ pub async fn universal_account(
         (TestSigner::random_ed25519_raw(), false),
         (TestSigner::random_ed25519_raw(), true),
         (TestSigner::random_eip712(), false),
+        (TestSigner::random_sep53(), false),
     )]
     (sk, migrated): (TestSigner, bool),
 ) {
@@ -323,6 +341,7 @@ async fn skip_nonce(
         (TestSigner::random_ed25519_raw(), false),
         (TestSigner::random_ed25519_raw(), true),
         (TestSigner::random_eip712(), false),
+        (TestSigner::random_sep53(), false),
     )]
     (sk, migrated): (TestSigner, bool),
 ) {
@@ -398,6 +417,7 @@ async fn reuse_nonce(
         (TestSigner::random_ed25519_raw(), false),
         (TestSigner::random_ed25519_raw(), true),
         (TestSigner::random_eip712(), false),
+        (TestSigner::random_sep53(), false),
     )]
     (sk, migrated): (TestSigner, bool),
 ) {

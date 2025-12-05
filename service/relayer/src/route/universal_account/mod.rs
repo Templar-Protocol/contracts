@@ -13,7 +13,11 @@ use near_sdk::{
 };
 use sha2::{Digest, Sha256};
 use templar_universal_account::{
-    authentication::{ed25519::raw, eip712, passkey::Passkey},
+    authentication::{
+        ed25519::{raw, sep53},
+        eip712,
+        passkey::Passkey,
+    },
     KeyId,
 };
 
@@ -67,6 +71,7 @@ pub enum KeyQuery {
     Passkey { key: Passkey },
     Ed25519Raw { key: raw::VerifyKey },
     Eip712 { key: eip712::VerifyKey },
+    Sep53 { key: sep53::VerifyKey },
 }
 
 impl From<KeyQuery> for KeyId {
@@ -75,6 +80,7 @@ impl From<KeyQuery> for KeyId {
             KeyQuery::Passkey { key } => key.into(),
             KeyQuery::Ed25519Raw { key } => key.into(),
             KeyQuery::Eip712 { key } => key.into(),
+            KeyQuery::Sep53 { key } => key.into(),
         }
     }
 }
@@ -98,15 +104,19 @@ mod tests {
     use super::*;
 
     #[rstest]
-    #[case(
+    #[case::passkey(
         Passkey("p256:NKzTCoSPccskQudsdyjoKyMLXTC6GQ9WYwsV9SJebAdb1gzbZEQcfwo4nikCWMHGBAXCFGCD5EZcPnqDFxdjzdDJ".parse().unwrap()).into(),
         "549bca2d5a64",
     )]
-    #[case(
+    #[case::ed25519_raw(
         raw::VerifyKey("ed25519:DWYRtzDDtbX63hcXziJEXgXZamSPQT61YPFGM1oFTqVp".parse().unwrap()).into(),
         "e2cac2be8cef",
     )]
-    #[case(
+    #[case::sep53(
+        sep53::VerifyKey("GBPNJTA5DARWSGLGPAGUHZBE44IOCFSKCL525WK7VZK6BEX4DPLIJXZ7".parse().unwrap()).into(),
+        "3ccc6b968690",
+    )]
+    #[case::eip712(
         eip712::VerifyKey("0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E".parse().unwrap()).into(),
         "8a98745b4d35",
     )]
