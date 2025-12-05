@@ -123,7 +123,7 @@ Configure in service `.env` file:
 - `OPTIMISM_WITHDRAW_ADDRESS` - Optimism
 - `POLYGON_WITHDRAW_ADDRESS` - Polygon
 - `SOLANA_WITHDRAW_ADDRESS` - Solana
-- `STELLAR_WITHDRAW_ADDRESS` - Stellar (planned for future release)
+- `STELLAR_WITHDRAW_ADDRESS` - Stellar
 
 ---
 

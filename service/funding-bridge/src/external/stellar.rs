@@ -471,6 +471,37 @@ mod tests {
         assert_eq!(config.chain_id, "stellar:mainnet");
         assert!(config.assets.contains_key("USDC"));
         assert!(config.assets.contains_key("XLM"));
+        assert_eq!(config.horizon_url, "https://horizon.stellar.org");
+        assert!(config.network_passphrase.contains("Public"));
+    }
+
+    #[test]
+    fn test_stellar_config_testnet() {
+        let config = StellarConfig::testnet();
+        assert_eq!(config.chain_id, "stellar:testnet");
+        assert!(config.assets.contains_key("XLM"));
+        assert_eq!(config.horizon_url, "https://horizon-testnet.stellar.org");
+        assert!(config.network_passphrase.contains("Test"));
+    }
+
+    #[test]
+    fn test_stellar_asset_mainnet_usdc() {
+        let config = StellarConfig::mainnet();
+        let usdc = config.assets.get("USDC").unwrap();
+
+        assert_eq!(usdc.code, "USDC");
+        assert!(usdc.issuer.is_some());
+        assert_eq!(usdc.decimals, 7);
+    }
+
+    #[test]
+    fn test_stellar_asset_native_xlm() {
+        let config = StellarConfig::mainnet();
+        let xlm = config.assets.get("XLM").unwrap();
+
+        assert_eq!(xlm.code, "XLM");
+        assert!(xlm.issuer.is_none()); // Native asset
+        assert_eq!(xlm.decimals, 7);
     }
 
     #[test]
@@ -484,5 +515,113 @@ mod tests {
             assert_eq!(handler.parse_amount("1.5", 7).unwrap(), 15_000_000);
             assert_eq!(handler.parse_amount("0.0000001", 7).unwrap(), 1);
         }
+    }
+
+    #[test]
+    fn test_parse_amount_edge_cases() {
+        let config = StellarConfig::mainnet();
+        let secret = "SAMPLEKEYTHATISNOTREALSAMPLEKEYTHATISNOTREALSAMPLE";
+
+        if let Ok(handler) = StellarHandler::new(config, secret) {
+            // Zero
+            assert_eq!(handler.parse_amount("0", 7).unwrap(), 0);
+            assert_eq!(handler.parse_amount("0.0", 7).unwrap(), 0);
+
+            // Large number
+            assert_eq!(
+                handler.parse_amount("1000000", 7).unwrap(),
+                10_000_000_000_000
+            );
+
+            // Very small number
+            assert_eq!(handler.parse_amount("0.0000001", 7).unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn test_parse_amount_decimal_precision() {
+        let config = StellarConfig::mainnet();
+        let secret = "SAMPLEKEYTHATISNOTREALSAMPLEKEYTHATISNOTREALSAMPLE";
+
+        if let Ok(handler) = StellarHandler::new(config, secret) {
+            // Test 6 decimals (USDC-like)
+            assert_eq!(handler.parse_amount("100", 6).unwrap(), 100_000_000);
+            assert_eq!(handler.parse_amount("1.5", 6).unwrap(), 1_500_000);
+
+            // Test 18 decimals (ETH-like, though not used on Stellar)
+            assert_eq!(
+                handler.parse_amount("1", 18).unwrap(),
+                1_000_000_000_000_000_000
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_amount_invalid() {
+        let config = StellarConfig::mainnet();
+        let secret = "SAMPLEKEYTHATISNOTREALSAMPLEKEYTHATISNOTREALSAMPLE";
+
+        if let Ok(handler) = StellarHandler::new(config, secret) {
+            // Invalid format
+            assert!(handler.parse_amount("abc", 7).is_err());
+            assert!(handler.parse_amount("", 7).is_err());
+            assert!(handler.parse_amount("1.2.3", 7).is_err());
+        }
+    }
+
+    #[test]
+    fn test_stellar_handler_supports_token() {
+        let config = StellarConfig::mainnet();
+        let secret = "SAMPLEKEYTHATISNOTREALSAMPLEKEYTHATISNOTREALSAMPLE";
+
+        if let Ok(handler) = StellarHandler::new(config, secret) {
+            // Supported assets
+            assert!(handler.supports_token("USDC"));
+            assert!(handler.supports_token("XLM"));
+
+            // Unsupported asset
+            assert!(!handler.supports_token("BTC"));
+            assert!(!handler.supports_token("UNKNOWN"));
+        }
+    }
+
+    #[test]
+    fn test_stellar_handler_chain_id() {
+        let config = StellarConfig::mainnet();
+        let secret = "SAMPLEKEYTHATISNOTREALSAMPLEKEYTHATISNOTREALSAMPLE";
+
+        if let Ok(handler) = StellarHandler::new(config, secret) {
+            assert_eq!(handler.chain_id(), "stellar:mainnet");
+        }
+    }
+
+    #[test]
+    fn test_stellar_config_multiple_assets() {
+        let config = StellarConfig::mainnet();
+
+        // Should have multiple stablecoins configured
+        assert!(config.assets.len() >= 2);
+        assert!(config.assets.contains_key("USDC"));
+        assert!(config.assets.contains_key("XLM"));
+    }
+
+    #[test]
+    fn test_horizon_url_configuration() {
+        let mainnet = StellarConfig::mainnet();
+        let testnet = StellarConfig::testnet();
+
+        assert_ne!(mainnet.horizon_url, testnet.horizon_url);
+        assert!(mainnet.horizon_url.contains("horizon.stellar.org"));
+        assert!(testnet.horizon_url.contains("testnet"));
+    }
+
+    #[test]
+    fn test_network_passphrase_configuration() {
+        let mainnet = StellarConfig::mainnet();
+        let testnet = StellarConfig::testnet();
+
+        assert_ne!(mainnet.network_passphrase, testnet.network_passphrase);
+        assert!(mainnet.network_passphrase.contains("Public"));
+        assert!(testnet.network_passphrase.contains("Test"));
     }
 }
