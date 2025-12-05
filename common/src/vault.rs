@@ -162,6 +162,9 @@ pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(GET_SUPPLY_POSITION);
 // Create a withdrawal request
 pub const CREATE_WITHDRAW_REQ_GAS: Gas = buffer(5);
 
+// Balance reads against the underlying NEP-141
+pub const FT_BALANCE_OF_GAS: Gas = Gas::from_tgas(5);
+
 // Execute the next withdrawal request on a market
 const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 = 20;
 pub const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS: Gas =
@@ -171,6 +174,8 @@ pub const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS: Gas =
 // paths where we want a conservative safety margin beyond the base
 // estimate.
 pub const SUPPLY_POST_VERIFY_GAS: Gas = Gas::from_tgas(30);
+
+
 
 // Callback gas roots for withdraw/supply orchestration.
 

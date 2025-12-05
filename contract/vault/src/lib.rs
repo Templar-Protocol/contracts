@@ -39,7 +39,7 @@ use templar_common::{
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
         QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
         WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS,
+        CREATE_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS,
         EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
     },
@@ -378,7 +378,7 @@ impl Contract {
         }
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
                 .with_unused_gas_weight(0)
                 .ft_balance_of(env::current_account_id())
                 .then(
@@ -439,7 +439,7 @@ impl Contract {
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
                 .with_unused_gas_weight(0)
                 .ft_balance_of(env::current_account_id())
                 .then(
@@ -491,7 +491,7 @@ impl Contract {
                 // the actual underlying FT balance held by the vault account.
                 PromiseOrValue::Promise(
                     ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                        .with_static_gas(Gas::from_tgas(5))
+                        .with_static_gas(FT_BALANCE_OF_GAS)
                         .ft_balance_of(env::current_account_id())
                         .then(
                             Self::ext(env::current_account_id())

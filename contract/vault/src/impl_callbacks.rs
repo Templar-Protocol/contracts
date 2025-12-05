@@ -17,7 +17,8 @@ use templar_common::{
         AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
         IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
         WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
-        GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
+        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
+        WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
 
@@ -327,7 +328,7 @@ impl Contract {
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
                 .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
@@ -532,7 +533,7 @@ impl Contract {
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
                 .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
@@ -740,7 +741,7 @@ impl Contract {
         PromiseOrValue::Promise(
             ext_ft_core::ext(token)
                 .with_attached_deposit(NearToken::from_yoctonear(1))
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
                 .ft_transfer(recipient, U128(amount), None),
         )
     }
@@ -841,7 +842,7 @@ impl Contract {
                 let reason = msg.map(|m| Reason::Other(m.to_string()));
                 return PromiseOrValue::Promise(
                     ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                        .with_static_gas(Gas::from_tgas(5))
+                        .with_static_gas(FT_BALANCE_OF_GAS)
                         .ft_balance_of(env::current_account_id())
                         .then(
                             Self::ext(env::current_account_id())
