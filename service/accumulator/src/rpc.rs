@@ -441,6 +441,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use wiremock::matchers::body_string_contains;
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, Request, ResponseTemplate,
@@ -547,6 +548,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/"))
+            .and(body_string_contains("list_deployments"))
             .respond_with(move |req: &Request| {
                 let (params, id) = parse_query_request(req);
                 assert_eq!(
@@ -569,6 +571,25 @@ mod tests {
                 };
                 let payload = call_result_response(near_sdk::serde_json::to_vec(&markets).unwrap());
                 ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("view_account"))
+            .respond_with(move |req: &Request| {
+                let (_params, id) = parse_query_request(req);
+                let response = json!({
+                    "amount": "4686230356236922693424338633",
+                    "block_hash": "5dFRkorSHHyeMc77auarw2jJ67CAnBiExh3bbhNStfC9",
+                    "block_height": 175_548_555,
+                    "code_hash": "11111111111111111111111111111111",
+                    "locked": "0",
+                    "storage_paid_at": 0,
+                    "storage_usage": 28677,
+                });
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&response, &id))
             })
             .mount(&server)
             .await;
