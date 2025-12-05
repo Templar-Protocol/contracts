@@ -26,7 +26,7 @@ near-jsonrpc-client = { workspace = true }
 near-jsonrpc-primitives = { workspace = true }
 near-primitives = { workspace = true }
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
-templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
