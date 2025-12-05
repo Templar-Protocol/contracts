@@ -610,12 +610,11 @@ fn withdraw_reconcile_uses_creditable_when_principal_exceeds_inflow() {
     let before_principal = 100u128;
     let reported_principal = 40u128; // principal_delta = 60
     let before_balance = U128(1_000);
-    let after_balance = Ok(U128(1_050)); // inflow = 50
 
     let (principal_delta, inflow, creditable) = Contract::compute_withdraw_deltas(
         U128(before_principal),
         U128(reported_principal),
-        after_balance,
+        U128(1_050),
         before_balance,
     );
 
@@ -756,20 +755,154 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         receiver: mk(10),
         collected: 0,
         owner: accounts(2),
-        escrow_shares: 50,
+        escrow_shares: 100,
     });
 
-    let before_idle = c.idle_balance;
-
-    let inflow = 500u128;
-    let before_balance_val = 2_000_000u128;
-    let before_balance = U128(before_balance_val);
-    let after_balance = Ok(U128(before_balance_val + inflow));
-    let reported_principal = U128(900); // principal_delta = 100 << inflow
+    let before_balance = U128(1_000_000);
+    let after_balance = Ok(U128(1_000_200)); // inflow = 200
+    let reported_principal = U128(850); // principal_delta = 150
 
     let res = c.execute_withdraw_03_settle(
         after_balance,
         2,
+        0,
+        U128(before_principal),
+        reported_principal,
+        before_balance,
+    );
+    match res {
+        PromiseOrValue::Value(()) | PromiseOrValue::Promise(_) => {}
+    }
+
+    let logs = near_sdk::test_utils::get_logs();
+    let joined = logs.join("\n");
+    assert!(
+        joined.contains("\"event\":\"withdrawal_accounting\"")
+            && joined.contains("\"kind\":\"OverpayCredited\""),
+        "expected withdrawal_accounting OverpayCredited event, got logs: {joined:?}",
+    );
+
+    if let OpState::Withdrawing(WithdrawingState {
+        remaining,
+        collected,
+        ..
+    }) = c.op_state
+    {
+        let requested = need;
+        assert!(
+            collected <= requested,
+            "collected must not exceed requested total"
+        );
+        assert_eq!(
+            remaining.saturating_add(collected),
+            requested,
+            "remaining + collected must stay constant",
+        );
+    } else {
+        panic!("expected Withdrawing state after over-credit scenario");
+    }
+}
+
+#[test]
+fn withdraw_idle_balance_resyncs_on_external_deposit() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(8010);
+    let before_principal = 1_000u128;
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: before_principal,
+        },
+    );
+    c.withdraw_route = vec![market.clone()];
+
+    c.idle_balance = 1_150; // simulate deposit arriving after before_balance snapshot
+
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 42,
+        index: 0,
+        remaining: 300,
+        receiver: mk(11),
+        collected: 0,
+        owner: accounts(3),
+        escrow_shares: 200,
+    });
+
+    let before_balance = U128(1_000);
+    let after_balance = Ok(U128(1_150));
+    let reported_principal = U128(before_principal);
+
+    let res = c.execute_withdraw_03_settle(
+        after_balance,
+        42,
+        0,
+        U128(before_principal),
+        reported_principal,
+        before_balance,
+    );
+    match res {
+        PromiseOrValue::Value(()) | PromiseOrValue::Promise(_) => {}
+    }
+
+    assert_eq!(c.idle_balance, 1_150, "idle must resync to actual balance");
+
+    match &c.op_state {
+        OpState::Withdrawing(WithdrawingState {
+            remaining,
+            collected,
+            index,
+            ..
+        }) => {
+            assert_eq!(*index, 0);
+            assert_eq!(*remaining, 150, "extra inflow should reduce remaining");
+            assert_eq!(*collected, 150, "extra inflow should increase collected");
+        }
+        other => panic!("expected Withdrawing state after settlement, got {other:?}"),
+    }
+}
+
+#[test]
+fn withdraw_over_credit_triggers_payout_with_capped_amount() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(8011);
+    let before_principal = 1_000u128;
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: before_principal,
+        },
+    );
+    c.withdraw_route = vec![market.clone()];
+
+    let need = 120u128;
+    let inflow = 200u128;
+    let before_idle = c.idle_balance;
+
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 43,
+        index: 0,
+        remaining: need,
+        receiver: mk(12),
+        collected: 0,
+        owner: accounts(4),
+        escrow_shares: 150,
+    });
+
+    let before_balance = U128(1_000_000);
+    let after_balance = Ok(U128(1_000_000 + inflow));
+    let reported_principal = U128(before_principal);
+
+    let res = c.execute_withdraw_03_settle(
+        after_balance,
+        43,
         0,
         U128(before_principal),
         reported_principal,
@@ -804,6 +937,165 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
     );
 }
 
+#[test]
+fn withdraw_balance_read_failure_stops_operation() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(8012);
+    let before_principal = 500u128;
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: before_principal,
+        },
+    );
+    c.withdraw_route = vec![market.clone()];
+
+    let owner = accounts(5);
+    let receiver = mk(13);
+    c.pending_withdrawals.insert(
+        0,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: 100,
+            expected_assets: 200,
+            requested_at: 0,
+        },
+    );
+    c.next_withdraw_to_execute = 0;
+
+    let op_id = 9;
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id,
+        index: 0,
+        remaining: 200,
+        receiver,
+        collected: 0,
+        owner,
+        escrow_shares: 100,
+    });
+
+    let res = c.execute_withdraw_03_settle(
+        Err(near_sdk::PromiseError::Failed),
+        op_id,
+        0,
+        U128(before_principal),
+        U128(before_principal),
+        U128(1_000),
+    );
+
+    assert!(matches!(res, PromiseOrValue::Value(())));
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert!(c.withdraw_route.is_empty(), "route must be cleared on stop");
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        0,
+        "pending withdrawal should be dequeued"
+    );
+}
+
+#[test]
+fn rebalance_resyncs_idle_on_external_deposit() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(8012);
+    let before_principal = 500u128;
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: before_principal,
+        },
+    );
+
+    c.idle_balance = 1_150;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id: 7,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    let before_balance = U128(1_000);
+    let after_balance = Ok(U128(1_150));
+
+    let res = c.rebalance_withdraw_03_settle(
+        after_balance,
+        7,
+        market.clone(),
+        U128(before_principal),
+        U128(before_principal),
+        before_balance,
+    );
+    match res {
+        PromiseOrValue::Value(()) | PromiseOrValue::Promise(_) => {}
+    }
+
+    assert_eq!(
+        c.idle_balance, 1_150,
+        "rebalance must resync to actual balance"
+    );
+    assert!(matches!(c.op_state, OpState::Idle));
+
+    let rec = c.markets.get(&market).expect("market must exist");
+    assert_eq!(rec.principal, before_principal);
+}
+
+#[test]
+fn rebalance_balance_read_failure_stops_operation() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(8014);
+    let before_principal = 600u128;
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: before_principal,
+        },
+    );
+
+    let op_id = 11;
+    c.market_execution_lock.lock(crate::REBALANCE_MARKET_LOCK_INDEX);
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    let res = c.rebalance_withdraw_03_settle(
+        Err(near_sdk::PromiseError::Failed),
+        op_id,
+        market.clone(),
+        U128(before_principal),
+        U128(before_principal),
+        U128(1_000),
+    );
+
+    assert!(matches!(res, PromiseOrValue::Value(())));
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert!(
+        !c.market_execution_lock.is_locked_all(),
+        "locks should be cleared on stop"
+    );
+
+    let logs = near_sdk::test_utils::get_logs();
+    let joined = logs.join("\n");
+    assert!(
+        joined.contains("\"event\":\"rebalance_withdraw_stopped\"")
+            && joined.contains("BalanceReadFailed"),
+        "expected rebalance stop event with BalanceReadFailed reason"
+    );
+}
 #[rstest(
     assets,
     shares,

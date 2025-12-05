@@ -479,6 +479,7 @@ pub enum Error {
     MarketTransferFailed,
     MissingSupplyPosition,
     PositionReadFailed,
+    BalanceReadFailed,
     // Insufficient liquidity across all markets to satisfy withdrawal
     InsufficientLiquidity,
     ZeroAmount,
@@ -582,6 +583,13 @@ pub enum PositionReportOutcome {
     Ok,
     Missing,
     ReadFailed,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum UnbrickPhase {
+    Withdrawing,
+    Payout,
 }
 
 #[near(event_json(standard = "templar-vault"))]
@@ -800,7 +808,7 @@ pub enum Event {
     OperationStoppedWhileIdle { reason: Option<Reason> },
     #[event_version("1.0.0")]
     UnbrickInvoked {
-        phase: String,
+        phase: UnbrickPhase,
         op_id: Option<U64>,
         id: Option<U64>,
     },

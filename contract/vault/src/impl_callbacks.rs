@@ -354,6 +354,13 @@ impl Contract {
             Err(p) => return p,
         };
 
+        let after_balance = match after_balance {
+            Ok(v) => v,
+            Err(_) => {
+                return self.stop_and_exit(Some(&Error::BalanceReadFailed));
+            }
+        };
+
         let (principal_delta, inflow, creditable) = self.settle_market_principal_and_idle(
             &market,
             before_principal,
@@ -511,7 +518,7 @@ impl Contract {
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
                     market,
-                    reason: Some(Reason::Other("PositionReadFailed".to_string())),
+                    reason: Some(Reason::Other(Error::PositionReadFailed.to_string())),
                 }
                 .emit();
                 return PromiseOrValue::Value(());
@@ -549,6 +556,22 @@ impl Contract {
         if let Err(e) = self.ctx_allocating(op_id) {
             return self.stop_and_exit(Some(&e));
         }
+
+        let after_balance = match after_balance {
+            Ok(v) => v,
+            Err(_) => {
+                self.market_execution_lock
+                    .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
+                self.op_state = OpState::Idle;
+                Event::RebalanceWithdrawStopped {
+                    op_id: op_id.into(),
+                    market,
+                    reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
+                }
+                .emit();
+                return PromiseOrValue::Value(());
+            }
+        };
 
         let _ = self.settle_market_principal_and_idle(
             &market,
@@ -598,24 +621,11 @@ impl Contract {
         }
         .emit();
 
-        if let Ok(U128(actual_idle)) = balance {
-            let current_idle = self.idle_balance;
-            match actual_idle.cmp(&current_idle) {
-                Ordering::Greater => {
-                    self.update_idle_balance(IdleBalanceDelta::Increase(U128(
-                        actual_idle.saturating_sub(current_idle),
-                    )));
-                }
-                Ordering::Less => {
-                    self.update_idle_balance(IdleBalanceDelta::Decrease(U128(
-                        current_idle.saturating_sub(actual_idle),
-                    )));
-                }
-                Ordering::Equal => {}
-            }
-        } else {
-            self.update_idle_balance(IdleBalanceDelta::Increase(U128(amount)));
-        }
+        let actual_idle = match balance {
+            Ok(U128(v)) => v,
+            Err(_) => panic_with_message("Failed to read idle balance for payout resync"),
+        };
+        self.resync_idle_balance(actual_idle);
 
         if escrow_shares > 0 {
             Gate::bypass_transfer_with(
@@ -907,17 +917,13 @@ impl Contract {
     pub fn compute_withdraw_deltas(
         before_principal: U128,
         new_principal_reported: U128,
-        after_balance: Result<U128, PromiseError>,
+        after_balance: U128,
         before_balance: U128,
     ) -> (u128, u128, u128) {
         // Principal drop as reported by the market
         let principal_delta = before_principal.0.saturating_sub(new_principal_reported.0);
 
-        let after_balance = match after_balance {
-            Ok(U128(v)) => v,
-            Err(_) => 0,
-        };
-        let inflow = after_balance.saturating_sub(before_balance.0);
+        let inflow = after_balance.0.saturating_sub(before_balance.0);
 
         // Compute effective principal drop we can book (conservative on shortfall)
         let creditable = principal_delta.min(inflow);
@@ -927,6 +933,18 @@ impl Contract {
     pub fn update_idle_balance(&mut self, delta: IdleBalanceDelta) {
         let idle_balance = self.idle_balance;
         self.idle_balance = delta.apply(idle_balance);
+    }
+
+    fn resync_idle_balance(&mut self, actual: u128) {
+        match actual.cmp(&self.idle_balance) {
+            Ordering::Greater => self.update_idle_balance(IdleBalanceDelta::Increase(U128(
+                actual.saturating_sub(self.idle_balance),
+            ))),
+            Ordering::Less => self.update_idle_balance(IdleBalanceDelta::Decrease(U128(
+                self.idle_balance.saturating_sub(actual),
+            ))),
+            Ordering::Equal => {}
+        }
     }
 
     fn market_execute_withdraw_and_fetch_position(
@@ -954,7 +972,7 @@ impl Contract {
         market: &AccountId,
         before_principal: U128,
         reported_principal: U128,
-        after_balance: Result<U128, PromiseError>,
+        after_balance: U128,
         before_balance: U128,
     ) -> (u128, u128, u128) {
         let (principal_delta, inflow, creditable) = Self::compute_withdraw_deltas(
@@ -970,9 +988,7 @@ impl Contract {
             rec.principal = effective_principal;
         }
 
-        if inflow > 0 {
-            self.update_idle_balance(IdleBalanceDelta::Increase(inflow.into()));
-        }
+        self.resync_idle_balance(after_balance.0);
 
         (principal_delta, inflow, creditable)
     }

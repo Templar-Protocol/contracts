@@ -37,9 +37,9 @@ use templar_common::{
     vault::{
         require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
-        QueueAction, QueueStatus, Reason, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
+        QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
+        WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
     },
 };
@@ -466,7 +466,7 @@ impl Contract {
             OpState::Withdrawing(s) => {
                 let id = self.next_withdraw_to_execute;
                 Event::UnbrickInvoked {
-                    phase: "withdrawing".to_string(),
+                    phase: UnbrickPhase::Withdrawing,
                     op_id: Some(s.op_id.into()),
                     id: Some(id.into()),
                 }
@@ -480,7 +480,7 @@ impl Contract {
             OpState::Payout(s) => {
                 let id = self.next_withdraw_to_execute;
                 Event::UnbrickInvoked {
-                    phase: "payout".to_string(),
+                    phase: UnbrickPhase::Payout,
                     op_id: Some(s.op_id.into()),
                     id: Some(id.into()),
                 }

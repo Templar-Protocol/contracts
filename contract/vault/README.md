@@ -222,8 +222,8 @@ Two phases: user requests (escrow) and keeper-routed execution (pull liquidity, 
   - Requests are created with deferment by default; the keeper then calls `execute_market_withdrawal(op_id, index, batch_limit)` to execute created requests (possibly multiple times per market).
   - After execution, the vault queries `get_supply_position(...)` and reconciles:
     - `credited = min(before - after, remaining)`
-    - `idle_balance += credited`
     - `remaining -= credited; collected += credited`
+    - `idle_balance` is re-synced to the vault’s actual underlying FT balance after every callback so external deposits/refunds between callbacks cannot inflate accounting. If the balance read fails, the withdraw op stops immediately and no reconciliation occurs.
 
 - Completion/parking:
   - If `remaining` hits zero, the vault pays the receiver and burns the proportional escrowed shares.
@@ -296,7 +296,7 @@ Important
 
 - `execute_withdrawal` requires a per-op `route: Vec<AccountId>` (ordered preference for this withdrawal).
 - `execute_market_withdrawal(op_id, index, batch_limit)` executes created market-side supply withdrawal requests for the given withdrawing op.
-- `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault and credits the returned funds to `idle_balance` without touching the user queue.
+- `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault, re-syncs `idle_balance` to the vault’s actual FT balance, and credits returned funds without touching the user queue. If the balance read fails, the rebalance operation halts and emits `RebalanceWithdrawStopped`.
 - Curator is granted Allocator by default at initialization; keepers must use an account that has the Allocator role (or be the Curator/Owner).
 
 
