@@ -269,7 +269,7 @@ mod tests {
     fn test_metrics_endpoint_idempotent() {
         // Record a metric to ensure we have data
         record_deposit("COMPLETED", "test-chain");
-        
+
         // Getting metrics multiple times should work
         let metrics1 = get_metrics();
         let metrics2 = get_metrics();
