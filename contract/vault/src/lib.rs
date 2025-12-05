@@ -38,7 +38,8 @@ use templar_common::{
         require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
         QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
-        WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
+        CREATE_WITHDRAW_REQ_GAS,
         EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
     },
@@ -297,7 +298,7 @@ impl Contract {
                 .get(&id)
                 .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
             Event::WithdrawProgress {
-                phase: "execution_started".to_string(),
+                phase: WithdrawProgressPhase::ExecutionStarted,
                 op_id: None,
                 id: Some(id.into()),
                 market_index: None,
@@ -314,7 +315,7 @@ impl Contract {
 
             if pending.expected_assets == 0 {
                 Event::WithdrawProgress {
-                    phase: "skipped_dust".to_string(),
+                    phase: WithdrawProgressPhase::SkippedDust,
                     op_id: None,
                     id: Some(id.into()),
                     market_index: None,
@@ -1162,7 +1163,7 @@ impl Contract {
 
         if remaining == 0 {
             Event::WithdrawProgress {
-                phase: "covered_by_idle".to_string(),
+                phase: WithdrawProgressPhase::CoveredByIdle,
                 op_id: Some(op_id.into()),
                 id: Some(self.next_withdraw_to_execute.into()),
                 market_index: None,
@@ -1184,7 +1185,7 @@ impl Contract {
         }
         if self.withdraw_route.get(index as usize).is_some() {
             Event::WithdrawProgress {
-                phase: "execution_required".to_string(),
+                phase: WithdrawProgressPhase::ExecutionRequired,
                 op_id: Some(op_id.into()),
                 id: Some(self.next_withdraw_to_execute.into()),
                 market_index: Some(index),

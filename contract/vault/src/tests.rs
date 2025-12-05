@@ -52,12 +52,7 @@ fn c_vault_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
 
 #[fixture]
 fn c_owner_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
-    let c = new_test_contract(&vault_id);
-    let owner = c
-        .own_get_owner()
-        .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
-    setup_env(&vault_id, &owner, vec![]);
-    c
+    build_owner_env(vault_id).contract
 }
 
 #[fixture]
@@ -66,6 +61,31 @@ fn c_asset_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
     let asset: AccountId = c.underlying_asset.contract_id().into();
     setup_env(&vault_id, &asset, vec![]);
     c
+}
+
+#[derive(Debug)]
+struct OwnerEnv {
+    vault_id: AccountId,
+    owner: AccountId,
+    contract: Contract,
+}
+
+fn build_owner_env(vault_id: AccountId) -> OwnerEnv {
+    let mut contract = new_test_contract(&vault_id);
+    let owner = contract
+        .own_get_owner()
+        .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
+    setup_env(&vault_id, &owner, vec![]);
+    OwnerEnv {
+        vault_id,
+        owner,
+        contract,
+    }
+}
+
+#[fixture]
+fn owner_env(#[default(vault_id())] vault_id: AccountId) -> OwnerEnv {
+    build_owner_env(vault_id)
 }
 
 #[fixture]
@@ -369,17 +389,16 @@ fn start_allocation_reserves_only_amount(
     );
 }
 
-#[test]
+#[rstest]
 #[should_panic = "Insufficient principal"]
-fn reallocate_withdraw_insufficient_principal_panics() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
+fn reallocate_withdraw_insufficient_principal_panics(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Known market with zero principal -> cannot request any withdrawal
     let m = mk(9201);
-    c.markets.insert(
+    contract.markets.insert(
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
@@ -387,16 +406,15 @@ fn reallocate_withdraw_insufficient_principal_panics() {
         },
     );
 
-    let _ = c.reallocate(AllocationDelta::Withdraw(Delta::new(m, 1)));
+    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(m, 1)));
 }
 
-#[test]
+#[rstest]
 #[should_panic = "Insufficient principal"]
-fn reallocate_withdraw_zero_amount_panics() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
+fn reallocate_withdraw_zero_amount_panics(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Principal exists but requested amount is zero -> to_request = 0 -> panic
     let m = mk(9202);
@@ -404,21 +422,20 @@ fn reallocate_withdraw_zero_amount_panics() {
         cfg: MarketConfiguration::default(),
         principal: 0,
     };
-    c.markets.insert(m.clone(), rec.clone());
+    contract.markets.insert(m.clone(), rec.clone());
 
-    let _ = c.reallocate(AllocationDelta::Withdraw(Delta::new(m, 100)));
+    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(m, 100)));
 }
 
-#[test]
-fn reallocate_withdraw_returns_promise_and_does_not_mutate() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-    setup_env(&vault_id, &owner, vec![]);
+#[rstest]
+fn reallocate_withdraw_returns_promise_and_does_not_mutate(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Principal exists; request larger than principal should cap to principal internally
     let m = mk(9203);
-    c.markets.insert(
+    contract.markets.insert(
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
@@ -426,21 +443,21 @@ fn reallocate_withdraw_returns_promise_and_does_not_mutate() {
         },
     );
 
-    let principal_before = c.principal_of(&m);
+    let principal_before = contract.principal_of(&m);
     assert_eq!(principal_before, 40, "sanity: principal set");
 
-    let res = c.reallocate(AllocationDelta::Withdraw(Delta::new(m.clone(), 100)));
+    let res = contract.reallocate(AllocationDelta::Withdraw(Delta::new(m.clone(), 100)));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise for withdraw reallocation"),
     }
 
     assert!(
-        matches!(c.op_state, OpState::Idle),
+        matches!(contract.op_state, OpState::Idle),
         "reallocate withdraw should not change op_state"
     );
     assert_eq!(
-        c.principal_of(&m),
+        contract.principal_of(&m),
         principal_before,
         "principal must not change when only creating a withdraw request"
     );
@@ -497,13 +514,13 @@ fn compute_escrow_settlement_burns_min_and_refunds_rest() {
     assert_eq!(s3, (0u128, 0u128));
 }
 
-#[test]
-fn cap_zero_keeps_enabled_and_submit_removal_works() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
-
-    setup_env(&vault_id, &owner, vec![]);
+#[rstest]
+fn cap_zero_keeps_enabled_and_submit_removal_works(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        owner,
+        mut contract,
+    } = owner_env;
 
     let m = mk(8001);
 
@@ -513,31 +530,33 @@ fn cap_zero_keeps_enabled_and_submit_removal_works() {
         enabled: true,
         removable_at: 0,
     };
-    c.markets
+    contract
+        .markets
         .insert(m.clone(), MarketRecord { cfg, principal: 0 });
 
-    c.submit_cap(m.clone(), U128(0));
-    let cfg_after = &c.markets.get(&m).expect("market must exist").cfg;
+    contract.submit_cap(m.clone(), U128(0));
+    let cfg_after = &contract.markets.get(&m).expect("market must exist").cfg;
     assert_eq!(cfg_after.cap.0, 0, "cap must be updated to 0");
     assert!(cfg_after.enabled, "enabled must remain true when cap is 0");
 
     set_block_ts(&vault_id, &owner, 2);
 
-    c.submit_market_removal(m.clone());
-    let cfg_after2 = c.markets.get(&m).expect("market must exist");
+    contract.submit_market_removal(m.clone());
+    let cfg_after2 = contract.markets.get(&m).expect("market must exist");
     assert!(cfg_after2.cfg.removable_at > 0, "removal must be scheduled");
 }
-#[test]
-fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c.own_get_owner().unwrap();
 
-    setup_env(&vault_id, &owner, vec![]);
+#[rstest]
+fn accept_cap_raise_enables_and_cap_zero_keeps_enabled(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        owner,
+        mut contract,
+    } = owner_env;
 
     let m = mk(8002);
 
-    c.markets.insert(
+    contract.markets.insert(
         m.clone(),
         MarketRecord {
             cfg: MarketConfiguration::default(),
@@ -548,7 +567,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
     // Submit raise -> pending
     let raise = 5u128;
     set_ctx(&vault_id, &owner, None, Some(yocto_for_bytes(10_000)));
-    c.submit_cap(m.clone(), U128(raise));
+    contract.submit_cap(m.clone(), U128(raise));
 
     set_ctx(
         &vault_id,
@@ -556,15 +575,15 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled() {
         Some(env::block_timestamp() + 1_000_000_000),
         None,
     );
-    c.accept_cap(m.clone());
+    contract.accept_cap(m.clone());
 
-    let cfg1 = &c.markets.get(&m).unwrap().cfg;
+    let cfg1 = &contract.markets.get(&m).unwrap().cfg;
     assert_eq!(cfg1.cap.0, raise);
     assert!(cfg1.enabled, "market should be enabled after raise");
 
     // Now lower back to 0 and ensure enabled stays true
-    c.submit_cap(m.clone(), U128(0));
-    let cfg2 = &c.markets.get(&m).unwrap().cfg;
+    contract.submit_cap(m.clone(), U128(0));
+    let cfg2 = &contract.markets.get(&m).unwrap().cfg;
     assert_eq!(cfg2.cap.0, 0);
     assert!(cfg2.enabled, "enabled must remain true on cap=0");
 }
@@ -1196,251 +1215,248 @@ fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
     assert_eq!(c.get_total_assets().0, idle.saturating_add(principal));
 }
 
-#[test]
-fn set_fee_recipient_accrues_before_switch() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = accounts(1);
-    setup_env(&vault_id, &owner, vec![]);
+#[rstest]
+fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Seed supply so fee shares can mint
-    c.deposit_unchecked(&accounts(1), 1_000)
+    contract
+        .deposit_unchecked(&accounts(1), 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=1000, current=1500
-    c.idle_balance = 1_500;
-    c.last_total_assets = 1_000;
-    c.performance_fee = Wad::one() / 10;
+    contract.idle_balance = 1_500;
+    contract.last_total_assets = 1_000;
+    contract.performance_fee = Wad::one() / 10;
 
-    let cur = c.get_total_assets().0;
-    let ts_before = c.total_supply();
+    let cur = contract.get_total_assets().0;
+    let ts_before = contract.total_supply();
     let expect = compute_fee_shares(
         cur.into(),
         1_000.into(),
-        c.performance_fee,
+        contract.performance_fee,
         ts_before.into(),
     );
 
-    let old_recipient = c.fee_recipient.clone();
-    let old_balance = c.balance_of(&old_recipient);
+    let old_recipient = contract.fee_recipient.clone();
+    let old_balance = contract.balance_of(&old_recipient);
 
     // Switch fee recipient; should accrue to old recipient first
     let new_recipient = accounts(3);
-    c.set_fee_recipient(new_recipient.clone());
+    contract.set_fee_recipient(new_recipient.clone());
 
     assert_eq!(
-        c.balance_of(&old_recipient),
+        contract.balance_of(&old_recipient),
         old_balance + expect.as_u128_trunc(),
         "fees must accrue to the old recipient before switching"
     );
     assert_eq!(
-        c.total_supply(),
+        contract.total_supply(),
         ts_before + expect.as_u128_trunc(),
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
-        c.fee_recipient, new_recipient,
+        contract.fee_recipient, new_recipient,
         "recipient should be updated"
     );
     assert_eq!(
-        c.last_total_assets, cur,
+        contract.last_total_assets, cur,
         "last_total_assets must update to current after accrual"
     );
 }
 
-#[test]
-fn set_fee_recipient_accrues_before_switch_variant() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = accounts(1);
-    setup_env(&vault_id, &owner, vec![]);
+#[rstest]
+fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Seed supply so fee shares can mint
-    c.deposit_unchecked(&accounts(2), 2_000)
+    contract
+        .deposit_unchecked(&accounts(2), 2_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=2000, current=2400
-    c.idle_balance = 2_400;
-    c.last_total_assets = 2_000;
-    c.performance_fee = Wad::one() / 20;
+    contract.idle_balance = 2_400;
+    contract.last_total_assets = 2_000;
+    contract.performance_fee = Wad::one() / 20;
 
-    let cur = c.get_total_assets().0;
-    let ts_before = c.total_supply();
+    let cur = contract.get_total_assets().0;
+    let ts_before = contract.total_supply();
     let expect = compute_fee_shares(
         cur.into(),
         2_000.into(),
-        c.performance_fee,
+        contract.performance_fee,
         ts_before.into(),
     );
 
-    let old_recipient = c.fee_recipient.clone();
-    let old_balance = c.balance_of(&old_recipient);
+    let old_recipient = contract.fee_recipient.clone();
+    let old_balance = contract.balance_of(&old_recipient);
 
     // Switch fee recipient; should accrue to old recipient first
     let new_recipient = accounts(3);
-    c.set_fee_recipient(new_recipient.clone());
+    contract.set_fee_recipient(new_recipient.clone());
 
     assert_eq!(
-        c.balance_of(&old_recipient),
+        contract.balance_of(&old_recipient),
         old_balance + expect.as_u128_trunc(),
         "fees must accrue to the old recipient before switching"
     );
     assert_eq!(
-        c.total_supply(),
+        contract.total_supply(),
         ts_before + expect.as_u128_trunc(),
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
-        c.fee_recipient, new_recipient,
+        contract.fee_recipient, new_recipient,
         "recipient should be updated"
     );
     assert_eq!(
-        c.last_total_assets, cur,
+        contract.last_total_assets, cur,
         "last_total_assets must update to current after accrual"
     );
 }
 
-#[test]
-fn set_performance_fee_accrues_with_old_rate_then_updates() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c
-        .own_get_owner()
-        .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
-    setup_env(&vault_id, &owner, vec![]);
+#[rstest]
+fn set_performance_fee_accrues_with_old_rate_then_updates(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Seed supply so fee shares can mint
-    c.deposit_unchecked(&accounts(1), 1_000)
+    contract
+        .deposit_unchecked(&accounts(1), 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=1000, current=1500
-    c.idle_balance = 1_500;
-    c.last_total_assets = 1_000;
+    contract.idle_balance = 1_500;
+    contract.last_total_assets = 1_000;
 
     // Old rate = 10%, new rate = 1%
-    c.performance_fee = Wad::one() / 10;
-    let cur = c.get_total_assets().0;
-    let ts_before = c.total_supply();
+    contract.performance_fee = Wad::one() / 10;
+    let cur = contract.get_total_assets().0;
+    let ts_before = contract.total_supply();
     let expect_old = compute_fee_shares(
         cur.into(),
         1_000.into(),
-        c.performance_fee,
+        contract.performance_fee,
         ts_before.into(),
     );
 
-    let recipient = c.fee_recipient.clone();
-    let bal_before = c.balance_of(&recipient);
+    let recipient = contract.fee_recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
 
-    c.set_performance_fee(Wad::one() / 100);
+    contract.set_performance_fee(Wad::one() / 100);
 
     assert_eq!(
-        c.balance_of(&recipient),
+        contract.balance_of(&recipient),
         bal_before + expect_old.as_u128_trunc(),
         "accrual must use the old fee rate before updating"
     );
     assert_eq!(
-        c.total_supply(),
+        contract.total_supply(),
         ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
-        c.performance_fee,
+        contract.performance_fee,
         crate::wad::Wad::one() / 100,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        c.last_total_assets, cur,
+        contract.last_total_assets, cur,
         "last_total_assets must update to current after accrual"
     );
 }
 
-#[test]
-fn set_performance_fee_accrues_with_old_rate_then_updates_variant() {
-    let vault_id = accounts(0);
-    let mut c = new_test_contract(&vault_id);
-    let owner = c
-        .own_get_owner()
-        .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
-    setup_env(&vault_id, &owner, vec![]);
+#[rstest]
+fn set_performance_fee_accrues_with_old_rate_then_updates_variant(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Seed supply so fee shares can mint
-    c.deposit_unchecked(&accounts(2), 2_000)
+    contract
+        .deposit_unchecked(&accounts(2), 2_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=2000, current=2400
-    c.idle_balance = 2_400;
-    c.last_total_assets = 2_000;
+    contract.idle_balance = 2_400;
+    contract.last_total_assets = 2_000;
 
     // Old rate = 5%, new rate = 0.5%
-    c.performance_fee = Wad::one() / 20;
-    let cur = c.get_total_assets().0;
-    let ts_before = c.total_supply();
+    contract.performance_fee = Wad::one() / 20;
+    let cur = contract.get_total_assets().0;
+    let ts_before = contract.total_supply();
     let expect_old = compute_fee_shares(
         cur.into(),
         2_000.into(),
-        c.performance_fee,
+        contract.performance_fee,
         ts_before.into(),
     );
 
-    let recipient = c.fee_recipient.clone();
-    let bal_before = c.balance_of(&recipient);
+    let recipient = contract.fee_recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
 
-    c.set_performance_fee(Wad::one() / 200);
+    contract.set_performance_fee(Wad::one() / 200);
 
     assert_eq!(
-        c.balance_of(&recipient),
+        contract.balance_of(&recipient),
         bal_before + expect_old.as_u128_trunc(),
         "accrual must use the old fee rate before updating"
     );
     assert_eq!(
-        c.total_supply(),
+        contract.total_supply(),
         ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
-        c.performance_fee,
+        contract.performance_fee,
         crate::wad::Wad::one() / 200,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        c.last_total_assets, cur,
+        contract.last_total_assets, cur,
         "last_total_assets must update to current after accrual"
     );
 }
 
-#[test]
-fn internal_accrue_fee_mints_zero_on_loss_and_updates_last() {
-    let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-    let mut c = new_test_contract(&vault_id);
+#[rstest]
+fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        mut contract, ..
+    } = owner_env;
 
     // Seed supply so total_supply > 0
-    c.deposit_unchecked(&accounts(1), 1_000)
+    contract
+        .deposit_unchecked(&accounts(1), 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Loss scenario: last=1000, current=800
-    c.idle_balance = 800;
-    c.last_total_assets = 1_000;
-    c.performance_fee = Wad::one() / 10;
+    contract.idle_balance = 800;
+    contract.last_total_assets = 1_000;
+    contract.performance_fee = Wad::one() / 10;
 
-    let ts_before = c.total_supply();
-    let fr = c.fee_recipient.clone();
-    let bal_before = c.balance_of(&fr);
-    let cur = c.get_total_assets().0;
+    let ts_before = contract.total_supply();
+    let fr = contract.fee_recipient.clone();
+    let bal_before = contract.balance_of(&fr);
+    let cur = contract.get_total_assets().0;
 
-    c.internal_accrue_fee();
+    contract.internal_accrue_fee();
 
     assert_eq!(
-        c.total_supply(),
+        contract.total_supply(),
         ts_before,
         "no shares should be minted when cur < last_total_assets"
     );
     assert_eq!(
-        c.balance_of(&fr),
+        contract.balance_of(&fr),
         bal_before,
         "fee recipient balance must remain unchanged on loss"
     );
     assert_eq!(
-        c.last_total_assets, cur,
+        contract.last_total_assets, cur,
         "last_total_assets must update to current even on loss"
     );
 }
@@ -2590,8 +2606,16 @@ fn ctx_allocating_ok_and_err() {
         plan: Default::default(),
     });
 
-    let ok = c.ctx_allocating(42).expect("ctx_allocating should succeed");
-    assert_eq!(ok, (&3, &77, &Default::default()));
+    let ctx = c.ctx_allocating(42).expect("ctx_allocating should succeed");
+    assert_eq!(
+        ctx,
+        &AllocatingState {
+            op_id: 42,
+            index: 3,
+            remaining: 77,
+            plan: Default::default(),
+        }
+    );
 
     // Wrong op_id => error
     assert!(c.ctx_allocating(43).is_err());

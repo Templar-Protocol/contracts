@@ -96,13 +96,13 @@ impl Contract {
         accepted: U128,
         remaining_before: U128,
     ) -> PromiseOrValue<()> {
-        let (i, _, plan) = match self.ctx_allocating(op_id) {
+        let ctx = match self.ctx_allocating(op_id) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        if i != &market_index {
-            return self.stop_and_exit(Some(&Error::IndexDrifted(*i, market_index)));
+        if ctx.index != market_index {
+            return self.stop_and_exit(Some(&Error::IndexDrifted(ctx.index, market_index)));
         }
 
         let SupplyReconciliation {
@@ -157,7 +157,12 @@ impl Contract {
         }
         .emit();
 
-        let plan = plan.iter().filter(|m| m.0 != market).cloned().collect();
+        let plan: AllocationPlan = ctx
+            .plan
+            .iter()
+            .filter(|m| m.0 != market)
+            .cloned()
+            .collect();
 
         if let Some(rec) = self.markets.get_mut(&market) {
             rec.principal = new_principal;
@@ -855,18 +860,10 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Validate current op is Allocating and return (index, remaining, plan)
-    pub(crate) fn ctx_allocating(
-        &self,
-        op_id: u64,
-    ) -> Result<(&u32, &u128, &AllocationPlan), Error> {
+    /// Validate current op is Allocating and return the state reference.
+    pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<&AllocatingState, Error> {
         match &self.op_state {
-            OpState::Allocating(AllocatingState {
-                op_id: cur,
-                index,
-                remaining,
-                plan,
-            }) if *cur == op_id => Ok((index, remaining, plan)),
+            OpState::Allocating(state) if state.op_id == op_id => Ok(state),
             _ => Err(Error::NotAllocating),
         }
     }

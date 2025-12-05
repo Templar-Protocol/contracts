@@ -565,6 +565,15 @@ pub enum QueueStatus {
 
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
+pub enum WithdrawProgressPhase {
+    ExecutionStarted,
+    SkippedDust,
+    CoveredByIdle,
+    ExecutionRequired,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
 pub enum AllocationPositionIssueKind {
     Missing,
     ReadFailed,
@@ -736,7 +745,7 @@ pub enum Event {
     WithdrawPreview { shares: U128, receiver: AccountId },
     #[event_version("1.0.0")]
     WithdrawProgress {
-        phase: String,
+        phase: WithdrawProgressPhase,
         op_id: Option<U64>,
         id: Option<U64>,
         market_index: Option<u32>,
