@@ -481,6 +481,7 @@ pub enum Error {
     MissingMarket(u32),
     NotWithdrawing,
     NotAllocating,
+    NotPayout,
     MarketTransferFailed,
     MissingSupplyPosition,
     PositionReadFailed,

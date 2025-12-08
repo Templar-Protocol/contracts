@@ -378,12 +378,12 @@ impl Contract {
     /// If there is no pending cap change for this market.
     pub fn accept_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_owner();
-        self.ensure_idle();
+        let mut idle = self.idle_guard();
 
-        if let Some(action) = self.take_timelock(
+        if let Some(action) = idle.contract().take_timelock(
             |a| matches!(a, TimelockedAction::CapChange { market: mkt, .. } if mkt == &market),
         ) {
-            self.apply_immediately(&action);
+            idle.contract().apply_immediately(&action);
         } else {
             panic_with_message("No pending cap change for this market");
         };
@@ -446,7 +446,7 @@ impl Contract {
     pub fn set_supply_queue(&mut self, markets: Vec<AccountId>) {
         Self::assert_allocator();
         Abdicator::require_not_abdicated(&self.abdicator, "set_supply_queue");
-        self.ensure_idle();
+        let mut idle = self.idle_guard();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
         // Invariant: supply_queue has no duplicates
@@ -459,19 +459,19 @@ impl Contract {
 
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
-            let cap = self.markets.get(m).map_or(0, |r| r.cfg.cap.into());
+            let cap = idle.contract().markets.get(m).map_or(0, |r| r.cfg.cap.into());
             require!(cap > 0, "unauthorized market");
         }
 
         // Compute and require storage for additions (no refunds for removals in this pass)
-        let current: BTreeSet<AccountId> = self.supply_queue.iter().cloned().collect();
+        let current: BTreeSet<AccountId> = idle.contract().supply_queue.iter().cloned().collect();
         let required_yocto = storage_management::yocto_for_queue_additions(&current, &markets);
         let _ = require_attached_at_least(required_yocto, "supply queue update");
 
-        self.supply_queue.clear();
+        idle.contract().supply_queue.clear();
 
         for m in &markets {
-            self.supply_queue.insert(m.clone());
+            idle.contract().supply_queue.insert(m.clone());
         }
     }
 
@@ -494,7 +494,7 @@ impl Contract {
 }
 
 impl Contract {
-    fn decide_should_queue(&self, action: &TimelockedAction) -> bool {
+    fn decide_should_queue(&mut self, action: &TimelockedAction) -> bool {
         match action {
             // Submit a timelocked governance change if there is already a guardian
             TimelockedAction::GuardianChange { .. } => {
@@ -540,24 +540,24 @@ impl Contract {
             TimelockedAction::CapChange { market, new_cap } => {
                 Self::assert_curator_or_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
-                self.ensure_idle();
+                let mut idle = self.idle_guard();
 
-                let cfg = self.markets.get(market).map(|m| &m.cfg);
+                let cfg = idle
+                    .contract()
+                    .markets
+                    .get(market)
+                    .map(|m| m.cfg.clone());
 
                 if let Some(cfg) = cfg {
-                    require!(
-                        self.governance_timelocks
-                            .seek_pending_timelock(|p| matches!(
-                                p,
-                                TimelockedAction::MarketRemoval { market: m } if m == market
-                            ))
-                            .is_none(),
-                        "Market removal pending, cannot change cap"
-                    );
-                    require!(
-                        cfg.removable_at == 0,
-                        "Market removal pending, cannot change cap"
-                    );
+                    let removal_pending = idle
+                        .contract()
+                        .governance_timelocks
+                        .seek_pending_timelock(|p| {
+                            matches!(p, TimelockedAction::MarketRemoval { market: m } if m == market)
+                        })
+                        .is_some();
+                    require!(!removal_pending, "Market removal pending, cannot change cap");
+                    require!(cfg.removable_at == 0, "Market removal pending, cannot change cap");
                     require!(new_cap != &cfg.cap, "New cap is same as current");
                     new_cap > &cfg.cap
                 } else {

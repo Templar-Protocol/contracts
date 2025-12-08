@@ -5,6 +5,7 @@ use crate::{
     governance::Abdicator,
     governance::Gate,
     governance::Timelocks,
+    op_state_guard::{AllocatingGuard, IdleGuard, PayoutGuard, WithdrawingGuard},
     storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -52,6 +53,7 @@ pub mod aum;
 pub mod governance;
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
+pub mod op_state_guard;
 pub mod storage_management;
 pub mod wad;
 
@@ -289,13 +291,20 @@ impl Contract {
     /// If `route` is empty, try to settle with the idle balance
     pub fn execute_withdrawal(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
-        self.ensure_idle();
         Self::assert_allocator();
+        let mut idle = self.idle_guard();
 
-        if let Some(id) = self.peek_next_pending_withdrawal_id() {
-            let pending = self
+        if let Some(id) = idle.peek_next_pending_withdrawal_id() {
+            let pending = idle
                 .pending_withdrawals
                 .get(&id)
+                .map(|p| PendingWithdrawal {
+                    owner: p.owner.clone(),
+                    receiver: p.receiver.clone(),
+                    escrow_shares: p.escrow_shares,
+                    expected_assets: p.expected_assets,
+                    requested_at: p.requested_at,
+                })
                 .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
             Event::WithdrawProgress {
                 phase: WithdrawProgressPhase::ExecutionStarted,
@@ -309,9 +318,6 @@ impl Contract {
                 requested_at: Some(pending.requested_at.into()),
             }
             .emit();
-
-            let owner = pending.owner.clone();
-            let receiver = pending.receiver.clone();
 
             if pending.expected_assets == 0 {
                 Event::WithdrawProgress {
@@ -327,14 +333,15 @@ impl Contract {
                 }
                 .emit();
                 // Skip dust request to avoid wedging the queue
-                self.pop_head();
-                return self.execute_withdrawal(route);
+                idle.pop_head();
+                return idle.execute_withdrawal(route);
             }
 
-            return self.start_withdraw(
+            return Self::start_withdraw(
+                idle,
                 pending.expected_assets,
-                &receiver,
-                &owner,
+                &pending.receiver,
+                &pending.owner,
                 pending.escrow_shares,
                 route,
             );
@@ -347,6 +354,7 @@ impl Contract {
 
         PromiseOrValue::Value(())
     }
+
 
     /// Allocator-only. Progress the current Withdrawing op by executing the market at `market_index`
     /// from the `withdraw_route`. Use when offchain signals the vault is next in the market queue.
@@ -420,25 +428,27 @@ impl Contract {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
 
-        self.ensure_idle();
+        let mut idle = self.idle_guard();
 
-        let principal = self.principal_of(&market);
+        let principal = idle.principal_of(&market);
         require!(principal > 0, "No principal to withdraw");
 
-        self.market_execution_lock.lock(REBALANCE_MARKET_LOCK_INDEX);
+        idle.market_execution_lock.lock(REBALANCE_MARKET_LOCK_INDEX);
 
         // Use Allocating as a generic in-flight guard for this rebalancing op.
-        let op_id = self.next_op_id;
-        self.next_op_id = op_id.saturating_add(1);
-        self.op_state = OpState::Allocating(AllocatingState {
+        let op_id = idle.next_op_id;
+        idle.next_op_id = op_id.saturating_add(1);
+        let guard = idle.start_allocation(AllocatingState {
             op_id,
             index: 0,
             remaining: 0,
             plan: Vec::new(),
         });
 
+        let underlying = guard.underlying_asset.contract_id().into();
+
         PromiseOrValue::Promise(
-            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+            ext_ft_core::ext(underlying)
                 .with_static_gas(FT_BALANCE_OF_GAS)
                 .with_unused_gas_weight(0)
                 .ft_balance_of(env::current_account_id())
@@ -520,7 +530,7 @@ impl Contract {
             "Refusing to skim the underlying token"
         );
 
-        self.ensure_idle();
+        let mut idle = self.idle_guard();
 
         ext_ft_core::ext(token.clone())
             .with_static_gas(Gas::from_tgas(3))
@@ -528,7 +538,7 @@ impl Contract {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(Gas::from_tgas(10))
-                    .skim_01_read_balance(token, self.skim_recipient.clone()),
+                    .skim_01_read_balance(token, idle.contract().skim_recipient.clone()),
             )
     }
 
@@ -544,7 +554,7 @@ impl Contract {
     /// NOTE: When we rewrite this we should use a delta based approach
     pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
         Self::assert_allocator();
-        self.ensure_idle();
+        let _idle = self.idle_guard();
         delta.as_ref().validate();
 
         match delta {
@@ -564,7 +574,7 @@ impl Contract {
                 }
                 .emit();
 
-                self.start_allocation(total, plan)
+                self.start_allocation_from_idle(total, plan)
             }
             AllocationDelta::Withdraw(delta) => {
                 require_at_least(WITHDRAW_CREATE_REQUEST_CALLBACK_GAS);
@@ -971,21 +981,55 @@ impl Contract {
     }
 
     /* ----- Internal: op orchestration ----- */
-    fn ensure_idle(&self) {
-        // Invariant: Only one op in flight; ensure_idle() guards all mutating ops.
-        if !matches!(self.op_state, OpState::Idle) {
-            templar_common::panic_with_message(&format!(
-                "Invariant: Only one op in flight; current op_state = {:?}",
-                self.op_state
-            ));
+    pub(crate) fn idle_guard(&mut self) -> IdleGuard<'_> {
+        IdleGuard::new(self)
+    }
+
+    pub(crate) fn allocating_guard_any(&mut self, op_id: u64) -> Result<AllocatingGuard<'_>, Error> {
+        if matches!(self.op_state, OpState::Allocating(AllocatingState { op_id: id, .. }) if id == op_id)
+        {
+            AllocatingGuard::expect(self, Some(op_id))
+        } else {
+            Err(Error::NotAllocating)
         }
     }
 
-    fn start_allocation(&mut self, amount: u128, plan: AllocationPlan) -> PromiseOrValue<()> {
+    pub(crate) fn withdrawing_guard(&mut self, op_id: Option<u64>) -> Result<WithdrawingGuard<'_>, Error> {
+        WithdrawingGuard::expect(self, op_id)
+    }
+
+    pub(crate) fn withdrawing_guard_any(&mut self, op_id: u64) -> Result<WithdrawingGuard<'_>, Error> {
+        if matches!(
+            self.op_state,
+            OpState::Withdrawing(WithdrawingState { op_id: id, .. }) if id == op_id
+        ) {
+            WithdrawingGuard::expect(self, Some(op_id))
+        } else {
+            Err(Error::NotWithdrawing)
+        }
+    }
+
+    pub(crate) fn payout_guard(&mut self, op_id: Option<u64>) -> Result<PayoutGuard<'_>, Error> {
+        PayoutGuard::expect(self, op_id)
+    }
+
+    pub(crate) fn payout_guard_any(&mut self, op_id: u64) -> Result<PayoutGuard<'_>, Error> {
+        if matches!(self.op_state, OpState::Payout(PayoutState { op_id: id, .. }) if id == op_id)
+        {
+            PayoutGuard::expect(self, Some(op_id))
+        } else {
+            Err(Error::NotPayout)
+        }
+    }
+
+    fn start_allocation_from_idle(
+        &mut self,
+        amount: u128,
+        plan: AllocationPlan,
+    ) -> PromiseOrValue<()> {
         if amount == 0 {
             return PromiseOrValue::Value(());
         }
-        self.ensure_idle();
 
         require!(
             amount <= self.idle_balance,
@@ -995,12 +1039,16 @@ impl Contract {
 
         let op_id = self.next_op_id;
         self.next_op_id += 1;
-        self.op_state = OpState::Allocating(AllocatingState {
-            op_id,
-            index: 0,
-            remaining: amount,
-            plan,
-        });
+
+        let _guard = self
+            .idle_guard()
+            .start_allocation(AllocatingState {
+                op_id,
+                index: 0,
+                remaining: amount,
+                plan,
+            });
+
         Event::AllocationStarted {
             op_id: op_id.into(),
             remaining: U128(amount),
@@ -1117,25 +1165,28 @@ impl Contract {
     }
 
     fn start_withdraw(
-        &mut self,
+        mut guard: IdleGuard<'_>,
         amount: u128,
         receiver: &AccountId,
         owner: &AccountId,
         escrow_shares: u128,
         route: Vec<AccountId>,
     ) -> PromiseOrValue<()> {
-        if amount == 0 {
-            return self.stop_and_exit(Some(&Error::ZeroAmount));
-        }
-        self.ensure_idle();
-        let op_id = self.next_op_id;
-        self.next_op_id += 1;
+        let (op_id, cov) = {
+            if amount == 0 {
+                return guard.stop_and_exit(Some(&Error::ZeroAmount));
+            }
+            let op_id = guard.next_op_id;
+            guard.next_op_id += 1;
 
-        // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
-        let cov = self.compute_idle_coverage(amount);
+            // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
+            let cov = guard.compute_idle_coverage(amount);
 
-        self.withdraw_route = route;
-        self.op_state = OpState::Withdrawing(WithdrawingState {
+            guard.withdraw_route = route;
+            (op_id, cov)
+        };
+
+        let mut withdrawing_guard = guard.start_withdrawal(WithdrawingState {
             op_id,
             index: Default::default(),
             remaining: cov.remaining_unmet,
@@ -1144,7 +1195,7 @@ impl Contract {
             owner: owner.clone(),
             escrow_shares,
         });
-        self.pay_or_signal_next_withdraw()
+        withdrawing_guard.pay_or_signal_next_withdraw()
     }
 
     fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
@@ -1209,9 +1260,10 @@ impl Contract {
                 escrow_shares,
                 burn_shares,
                 |self_| {
-                    self_.withdraw_route.clear();
-                    self_.op_state = OpState::Idle;
-                    self_.park_head_for_retry();
+                    let mut guard = self_.withdrawing_guard(None).expect("withdrawing");
+                    guard.withdraw_route.clear();
+                    guard.park_head_for_retry();
+                    let _ = guard.into_idle();
                     PromiseOrValue::Value(())
                 },
             )
