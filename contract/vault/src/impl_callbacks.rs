@@ -22,6 +22,27 @@ use templar_common::{
     },
 };
 
+macro_rules! guard_op_state {
+    ($self:expr, Idle, $err:expr) => {{
+        match &$self.op_state {
+            OpState::Idle => Ok(()),
+            _ => Err($err),
+        }
+    }};
+    ($self:expr, $variant:ident, $err:expr) => {{
+        match &$self.op_state {
+            OpState::$variant(state) => Ok(state),
+            _ => Err($err),
+        }
+    }};
+    ($self:expr, $variant:ident, $op_id:expr, $err:expr) => {{
+        match &$self.op_state {
+            OpState::$variant(state) if state.op_id == $op_id => Ok(state),
+            _ => Err($err),
+        }
+    }};
+}
+
 /// State machine:
 ///
 /// - Allocating -> Withdrawing (or Idle via stop)
@@ -863,10 +884,7 @@ impl Contract {
 
     /// Validate current op is Allocating and return the state reference.
     pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<&AllocatingState, Error> {
-        match &self.op_state {
-            OpState::Allocating(state) if state.op_id == op_id => Ok(state),
-            _ => Err(Error::NotAllocating),
-        }
+        guard_op_state!(self, Allocating, op_id, Error::NotAllocating)
     }
 
     /// Validate current op is Withdrawing and return context tuple
@@ -874,10 +892,7 @@ impl Contract {
     /// # Errors
     /// Returns an error if the operation is not currently withdrawing.
     pub fn ctx_withdrawing(&self, op_id: u64) -> Result<&WithdrawingState, Error> {
-        match &self.op_state {
-            OpState::Withdrawing(s) if s.op_id == op_id => Ok(s),
-            _ => Err(Error::NotWithdrawing),
-        }
+        guard_op_state!(self, Withdrawing, op_id, Error::NotWithdrawing)
     }
 
     /// Combined helper for withdrawing callbacks: validate ctx and resolve market.
