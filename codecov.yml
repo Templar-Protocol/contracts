@@ -13,8 +13,8 @@ coverage:
 
     patch:
       default:
-        target: 15%  # Low threshold for new code
-        threshold: 5%
+        target: 60%  # Low threshold for new code
+        threshold: 50%
         only_pulls: true
 
 # PR comment configuration
