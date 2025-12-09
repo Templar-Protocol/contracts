@@ -77,7 +77,7 @@ impl NearConfig {
         Self {
             chain_id: "near:mainnet".to_string(),
             name: "NEAR Mainnet".to_string(),
-            rpc_url: "https://rpc.mainnet.near.org".to_string(),
+            rpc_url: "https://free.rpc.fastnear.com".to_string(),
             assets,
         }
     }
@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(config.chain_id, "near:mainnet");
         assert!(config.assets.contains_key("USDC"));
         assert!(config.assets.contains_key("USDT"));
-        assert_eq!(config.rpc_url, "https://rpc.mainnet.near.org");
+        assert_eq!(config.rpc_url, "https://free.rpc.fastnear.com");
     }
 
     #[test]

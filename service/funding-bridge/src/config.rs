@@ -46,9 +46,9 @@ pub struct Args {
     #[arg(long, env = "NEAR_TREASURY_KEY")]
     pub near_treasury_key: Option<SecretKey>,
 
-    /// NEAR treasury RPC URL (optional, uses network default if not specified)
-    #[arg(long, env = "NEAR_TREASURY_RPC_URL")]
-    pub near_treasury_rpc_url: Option<String>,
+    /// NEAR RPC URL (optional, uses network default if not specified)
+    #[arg(long, env = "NEAR_RPC_URL")]
+    pub near_rpc_url: Option<String>,
 
     // === Ethereum Wallet (for automated deposits) ===
     /// Ethereum private key (hex, with or without 0x prefix)
@@ -153,9 +153,9 @@ impl Args {
         }
     }
 
-    /// Get NEAR treasury RPC URL based on network
+    /// Get NEAR RPC URL based on network
     pub fn get_near_treasury_rpc_url(&self) -> String {
-        self.near_treasury_rpc_url
+        self.near_rpc_url
             .clone()
             .unwrap_or_else(|| self.network.rpc_url().to_string())
     }
@@ -174,7 +174,7 @@ mod tests {
             dry_run: false,
             near_treasury_account: Some(AccountId::from_str("treasury.near").unwrap()),
             near_treasury_key: Some(SecretKey::from_random(near_crypto::KeyType::ED25519)),
-            near_treasury_rpc_url: None,
+            near_rpc_url: None,
             eth_private_key: None,
             eth_rpc_url: "https://eth.llamarpc.com".to_string(),
             solana_private_key: None,
@@ -231,11 +231,11 @@ mod tests {
     fn test_get_near_treasury_rpc_url_mainnet() {
         let mut config = create_valid_config();
         config.network = Network::Mainnet;
-        config.near_treasury_rpc_url = None;
+        config.near_rpc_url = None;
 
         assert_eq!(
             config.get_near_treasury_rpc_url(),
-            "https://rpc.mainnet.near.org"
+            "https://free.rpc.fastnear.com"
         );
     }
 
@@ -243,7 +243,7 @@ mod tests {
     fn test_get_near_treasury_rpc_url_testnet() {
         let mut config = create_valid_config();
         config.network = Network::Testnet;
-        config.near_treasury_rpc_url = None;
+        config.near_rpc_url = None;
 
         assert_eq!(
             config.get_near_treasury_rpc_url(),
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_get_near_treasury_rpc_url_custom() {
         let mut config = create_valid_config();
-        config.near_treasury_rpc_url = Some("https://custom.rpc.near.org".to_string());
+        config.near_rpc_url = Some("https://custom.rpc.near.org".to_string());
 
         assert_eq!(
             config.get_near_treasury_rpc_url(),

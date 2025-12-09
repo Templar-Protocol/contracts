@@ -579,7 +579,7 @@ mod tests {
         let handler = NearHandler::new(
             treasury_account,
             signer_key,
-            "https://rpc.mainnet.near.org".to_string(),
+            "https://free.rpc.fastnear.com".to_string(),
             true,
         );
 

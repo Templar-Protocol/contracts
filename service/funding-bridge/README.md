@@ -49,7 +49,6 @@ export NEAR_TREASURY_KEY="ed25519:YOUR_PRIVATE_KEY_HERE"
 # Optional: Service configuration
 export PORT=3000
 export NETWORK=mainnet
-export NEAR_TREASURY_RPC_URL=https://rpc.mainnet.near.org
 
 # Optional: Bridge API (default: https://bridge.chaindefuser.com/rpc)
 export BRIDGE_API_URL=https://bridge.chaindefuser.com/rpc
@@ -102,6 +101,18 @@ curl http://localhost:3000/health
   "healthy": true,
   "version": "0.1.0",
   "chains": [
+    {
+      "name": "ethereum",
+      "available": true
+    },
+    {
+      "name": "solana",
+      "available": true
+    },
+    {
+      "name": "stellar",
+      "available": true
+    },
     {
       "name": "near",
       "available": true
@@ -283,7 +294,7 @@ CLI script for depositing from different chains:
 
 ```bash
 #!/bin/bash
-CHAIN="$1"   # ethereum, arbitrum, solana
+CHAIN="$1"   # ethereum, arbitrum, solana, stellar, near
 AMOUNT="$2"  # e.g., "100.5"
 
 curl -X POST http://localhost:3000/deposit \
@@ -363,7 +374,6 @@ DRY_RUN=false
 # NEAR treasury
 NEAR_TREASURY_ACCOUNT=treasury.near
 NEAR_TREASURY_KEY="ed25519:..."
-NEAR_TREASURY_RPC_URL=https://rpc.mainnet.near.org
 
 # Ethereum
 ETH_PRIVATE_KEY=0x...
@@ -380,7 +390,6 @@ STELLAR_HORIZON_URL=https://horizon.stellar.org
 # NEAR external wallet
 NEAR_ACCOUNT=external-wallet.near
 NEAR_KEY=ed25519:...
-NEAR_RPC_URL=https://rpc.mainnet.near.org
 
 # Withdrawal destinations (required for withdrawals)
 ETH_WITHDRAW_ADDRESS=0x...
@@ -390,7 +399,8 @@ OPTIMISM_WITHDRAW_ADDRESS=0x...
 POLYGON_WITHDRAW_ADDRESS=0x...
 SOLANA_WITHDRAW_ADDRESS=...
 STELLAR_WITHDRAW_ADDRESS=G...
-# Note: NEAR uses NEAR_ACCOUNT for withdrawals
+NEAR_WITHDRAW_ADDRESS=receiver.near
+# Note: NEAR withdrawals use direct ft_transfer to NEAR_WITHDRAW_ADDRESS
 ```
 
 ### Stellar Requirements
@@ -563,6 +573,49 @@ docker run -p 3000:3000 \
   -e NEAR_TREASURY_KEY="ed25519:..." \
   funding-bridge
 ```
+
+### Docker Compose
+
+#### Development Mode
+
+Use `docker-compose.yml` for local development with dry-run enabled:
+
+```bash
+# Copy .env.example to .env and configure
+cp .env.example .env
+# Edit .env with your configuration
+
+# Build and start the service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f funding-bridge
+
+# Stop the service
+docker-compose down
+```
+
+#### Production Mode
+
+Use `docker-compose.prod.yml` for production deployments:
+
+```bash
+# Build the image first
+docker-compose build
+
+# Start with production configuration
+docker-compose -f docker-compose.prod.yml up -d
+
+# View logs
+docker-compose -f docker-compose.prod.yml logs -f funding-bridge
+
+# Stop
+docker-compose -f docker-compose.prod.yml down
+```
+
+**Key differences:**
+- **Development**: Dry-run mode, debug logging, lower memory limits
+- **Production**: Live mode, info logging, higher memory limits, compressed logs, security hardening
 
 ### Systemd Service
 

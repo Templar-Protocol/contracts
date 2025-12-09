@@ -1,54 +1,53 @@
 services:
   funding-bridge:
-    build:
-      context: ../..
-      dockerfile: service/funding-bridge/Dockerfile
     image: templar-funding-bridge:latest
-    container_name: templar-funding-bridge
-    restart: unless-stopped
+    container_name: templar-funding-bridge-prod
+    restart: always
 
-    # Environment variables from .env file
     env_file:
       - .env
 
-    # Additional environment variables
     environment:
-      - RUST_LOG=${RUST_LOG:-info,templar_funding_bridge=debug}
-      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+      - RUST_LOG=info,templar_funding_bridge=info
+      - RUST_BACKTRACE=0
 
     command: [
       "--port", "${PORT:-3000}",
       "--network", "${NETWORK:-mainnet}",
       "--near-treasury-account", "${NEAR_TREASURY_ACCOUNT}",
-      "--near-treasury-key", "${NEAR_TREASURY_KEY}",
-      "--dry-run"
+      "--near-treasury-key", "${NEAR_TREASURY_KEY}"
     ]
 
-    # Expose HTTP port
     ports:
       - "${PORT:-3000}:3000"
 
-    # Resource limits
     deploy:
       resources:
         limits:
           cpus: '2'
-          memory: 1G
+          memory: 2G
         reservations:
           cpus: '0.5'
-          memory: 256M
+          memory: 512M
 
-    # Logging configuration
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
 
     # Health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 30s
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp
