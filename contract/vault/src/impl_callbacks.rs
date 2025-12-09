@@ -179,12 +179,7 @@ impl Contract {
         }
         .emit();
 
-        let plan: AllocationPlan = ctx
-            .plan
-            .iter()
-            .filter(|m| m.0 != market)
-            .cloned()
-            .collect();
+        let plan: AllocationPlan = ctx.plan.iter().filter(|m| m.0 != market).cloned().collect();
 
         if let Some(rec) = self.markets.get_mut(&market) {
             rec.principal = new_principal;
@@ -381,11 +376,8 @@ impl Contract {
             Err(p) => return p,
         };
 
-        let after_balance = match after_balance {
-            Ok(v) => v,
-            Err(_) => {
-                return self.stop_and_exit(Some(&Error::BalanceReadFailed));
-            }
+        let Ok(after_balance) = after_balance else {
+            return self.stop_and_exit(Some(&Error::BalanceReadFailed));
         };
 
         let (principal_delta, inflow, creditable) = self.settle_market_principal_and_idle(
@@ -496,11 +488,21 @@ impl Contract {
         batch_limit: Option<u32>,
         before_principal: U128,
     ) -> PromiseOrValue<()> {
-        if let Err(e) = self.ctx_allocating(op_id) {
-            return self.stop_and_exit(Some(&e));
-        }
+        let state = match self.ctx_allocating(op_id) {
+            Ok(state) => state,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
         let Ok(before_balance) = before_balance else {
-            panic_with_message("Failed to read balance")
+            self.market_execution_lock.unlock(state.index);
+            self.op_state = OpState::Idle;
+            Event::RebalanceWithdrawStopped {
+                op_id: op_id.into(),
+                market,
+                reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
+            }
+            .emit();
+            return PromiseOrValue::Value(());
         };
 
         Event::VaultBalance {
@@ -531,16 +533,16 @@ impl Contract {
         before_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        if let Err(e) = self.ctx_allocating(op_id) {
-            return self.stop_and_exit(Some(&e));
-        }
+        let state = match self.ctx_allocating(op_id) {
+            Ok(state) => state,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
 
         let reported_principal: u128 = match position {
             Ok(Some(position)) => position.get_deposit().total().into(),
             Ok(None) => 0,
             Err(_) => {
-                self.market_execution_lock
-                    .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
+                self.market_execution_lock.unlock(state.index);
                 self.op_state = OpState::Idle;
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
@@ -580,24 +582,21 @@ impl Contract {
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        if let Err(e) = self.ctx_allocating(op_id) {
-            return self.stop_and_exit(Some(&e));
-        }
+        let index = match self.ctx_allocating(op_id) {
+            Ok(state) => state.index,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
 
-        let after_balance = match after_balance {
-            Ok(v) => v,
-            Err(_) => {
-                self.market_execution_lock
-                    .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
-                self.op_state = OpState::Idle;
-                Event::RebalanceWithdrawStopped {
-                    op_id: op_id.into(),
-                    market,
-                    reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
-                }
-                .emit();
-                return PromiseOrValue::Value(());
+        let Ok(after_balance) = after_balance else {
+            self.market_execution_lock.unlock(index);
+            self.op_state = OpState::Idle;
+            Event::RebalanceWithdrawStopped {
+                op_id: op_id.into(),
+                market,
+                reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
             }
+            .emit();
+            return PromiseOrValue::Value(());
         };
 
         let _ = self.settle_market_principal_and_idle(
@@ -608,8 +607,7 @@ impl Contract {
             before_balance,
         );
 
-        self.market_execution_lock
-            .unlock(crate::REBALANCE_MARKET_LOCK_INDEX);
+        self.market_execution_lock.unlock(index);
 
         self.op_state = OpState::Idle;
         Event::RebalanceWithdrawCompleted {
@@ -640,19 +638,28 @@ impl Contract {
             }
         };
 
+        let (actual_idle, stop_reason) = match balance {
+            Ok(U128(v)) => (Some(v), reason),
+            Err(_) => (
+                None,
+                Some(Reason::Other(reason.map_or_else(
+                    || Error::BalanceReadFailed.to_string(),
+                    |r| format!("{r:?}; {}", Error::BalanceReadFailed),
+                ))),
+            ),
+        };
+
         Event::PayoutStopped {
             op_id: op_id.into(),
             receiver: receiver.clone(),
             amount: U128(amount),
-            reason,
+            reason: stop_reason,
         }
         .emit();
 
-        let actual_idle = match balance {
-            Ok(U128(v)) => v,
-            Err(_) => panic_with_message("Failed to read idle balance for payout resync"),
-        };
-        self.resync_idle_balance(actual_idle);
+        if let Some(actual_idle) = actual_idle {
+            self.resync_idle_balance(actual_idle);
+        }
 
         if escrow_shares > 0 {
             Gate::bypass_transfer_with(

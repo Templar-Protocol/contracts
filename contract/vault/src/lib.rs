@@ -39,14 +39,11 @@ use templar_common::{
         IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
         QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
         WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
-        WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
+        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
     },
 };
 pub use wad::*;
-
-pub(crate) const REBALANCE_MARKET_LOCK_INDEX: u32 = u32::MAX;
 
 pub mod aum;
 pub mod governance;
@@ -406,9 +403,8 @@ impl Contract {
     /// Implementation details:
     /// - Uses `OpState::Allocating` as a generic in-flight guard for this
     ///   rebalance op.
-    /// - Locks `REBALANCE_MARKET_LOCK_INDEX` in `market_execution_lock` to
-    ///   serialize the underlying market call without conflicting with
-    ///   normal per-market locks.
+    /// - Locks the target market index in `market_execution_lock` to serialize
+    ///   the underlying market call.
     ///
     /// Expects that a supply withdrawal request for this vault already exists
     /// in the given `market` and is ready to be executed.
@@ -425,14 +421,25 @@ impl Contract {
         let principal = self.principal_of(&market);
         require!(principal > 0, "No principal to withdraw");
 
-        self.market_execution_lock.lock(REBALANCE_MARKET_LOCK_INDEX);
+        let op_id = self.next_op_id;
+
+        let Some(market_index) = self.rebalance_lock_index(&market) else {
+            Event::RebalanceWithdrawStopped {
+                op_id: op_id.into(),
+                market,
+                reason: Some(Reason::Other("Missing market record".to_string())),
+            }
+            .emit();
+            return PromiseOrValue::Value(());
+        };
+
+        self.market_execution_lock.lock(market_index);
 
         // Use Allocating as a generic in-flight guard for this rebalancing op.
-        let op_id = self.next_op_id;
         self.next_op_id = op_id.saturating_add(1);
         self.op_state = OpState::Allocating(AllocatingState {
             op_id,
-            index: 0,
+            index: market_index,
             remaining: 0,
             plan: Vec::new(),
         });
@@ -1266,6 +1273,13 @@ impl Contract {
                         .payment_01_reconcile_idle_or_refund(op_id, receiver.clone(), U128(amount)),
                 ),
         )
+    }
+
+    fn rebalance_lock_index(&self, market: &AccountId) -> Option<u32> {
+        self.markets
+            .keys()
+            .position(|m| m == market)
+            .and_then(|idx| u32::try_from(idx).ok())
     }
 
     /// Computes how much of `amount` can be covered by idle balance without mutating state.

@@ -63,7 +63,6 @@ fn c_asset_env(#[default(vault_id())] vault_id: AccountId) -> Contract {
     c
 }
 
-#[derive(Debug)]
 struct OwnerEnv {
     vault_id: AccountId,
     owner: AccountId,
@@ -71,7 +70,7 @@ struct OwnerEnv {
 }
 
 fn build_owner_env(vault_id: AccountId) -> OwnerEnv {
-    let mut contract = new_test_contract(&vault_id);
+    let contract = new_test_contract(&vault_id);
     let owner = contract
         .own_get_owner()
         .unwrap_or_else(|| templar_common::panic_with_message("Owner not set"));
@@ -392,9 +391,7 @@ fn start_allocation_reserves_only_amount(
 #[rstest]
 #[should_panic = "Insufficient principal"]
 fn reallocate_withdraw_insufficient_principal_panics(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Known market with zero principal -> cannot request any withdrawal
     let m = mk(9201);
@@ -412,9 +409,7 @@ fn reallocate_withdraw_insufficient_principal_panics(owner_env: OwnerEnv) {
 #[rstest]
 #[should_panic = "Insufficient principal"]
 fn reallocate_withdraw_zero_amount_panics(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Principal exists but requested amount is zero -> to_request = 0 -> panic
     let m = mk(9202);
@@ -429,9 +424,7 @@ fn reallocate_withdraw_zero_amount_panics(owner_env: OwnerEnv) {
 
 #[rstest]
 fn reallocate_withdraw_returns_promise_and_does_not_mutate(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Principal exists; request larger than principal should cap to principal internally
     let m = mk(9203);
@@ -691,10 +684,12 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         escrow_shares: 100,
     });
 
-    let before_idle = c.idle_balance;
+    let _before_idle = c.idle_balance;
 
     let before_balance = U128(1_000_000);
     let after_balance = Ok(U128(1_000_100)); // inflow = 100
+    let after_balance_val = after_balance.as_ref().unwrap().0;
+    let _inflow = after_balance_val.saturating_sub(before_balance.0);
     let reported_principal = U128(100); // principal_delta = 900 >> inflow
 
     let res = c.execute_withdraw_03_settle(
@@ -742,9 +737,10 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         rec.principal <= before_principal,
         "principal must not increase during withdraw settlement",
     );
-    assert!(
-        c.idle_balance >= before_idle,
-        "idle balance must not decrease during settlement",
+
+    assert_eq!(
+        c.idle_balance, after_balance_val,
+        "idle balance should resync to actual balance",
     );
 }
 
@@ -779,6 +775,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
 
     let before_balance = U128(1_000_000);
     let after_balance = Ok(U128(1_000_200)); // inflow = 200
+    let after_balance_val = after_balance.as_ref().unwrap().0;
     let reported_principal = U128(850); // principal_delta = 150
 
     let res = c.execute_withdraw_03_settle(
@@ -801,24 +798,15 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         "expected withdrawal_accounting OverpayCredited event, got logs: {joined:?}",
     );
 
-    if let OpState::Withdrawing(WithdrawingState {
-        remaining,
-        collected,
-        ..
-    }) = c.op_state
-    {
-        let requested = need;
-        assert!(
-            collected <= requested,
-            "collected must not exceed requested total"
-        );
+    if let OpState::Payout(PayoutState { amount, .. }) = c.op_state {
+        assert_eq!(amount, need, "payout amount must be capped at requested");
         assert_eq!(
-            remaining.saturating_add(collected),
-            requested,
-            "remaining + collected must stay constant",
+            c.idle_balance,
+            after_balance_val.saturating_sub(need),
+            "idle should reflect actual balance minus payout",
         );
     } else {
-        panic!("expected Withdrawing state after over-credit scenario");
+        panic!("expected Payout state after over-credit scenario");
     }
 }
 
@@ -903,7 +891,6 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
 
     let need = 120u128;
     let inflow = 200u128;
-    let before_idle = c.idle_balance;
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 43,
@@ -917,6 +904,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
 
     let before_balance = U128(1_000_000);
     let after_balance = Ok(U128(1_000_000 + inflow));
+    let after_balance_val = after_balance.as_ref().unwrap().0;
     let reported_principal = U128(before_principal);
 
     let res = c.execute_withdraw_03_settle(
@@ -950,9 +938,11 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         rec.principal <= before_principal,
         "principal must not increase during withdraw settlement",
     );
-    assert!(
-        c.idle_balance <= before_idle + inflow,
-        "idle balance must not exceed initial + inflow",
+
+    let expected_idle = after_balance_val.saturating_sub(need);
+    assert_eq!(
+        c.idle_balance, expected_idle,
+        "idle balance should reflect actual balance minus payout",
     );
 }
 
@@ -1083,10 +1073,16 @@ fn rebalance_balance_read_failure_stops_operation() {
     );
 
     let op_id = 11;
-    c.market_execution_lock.lock(crate::REBALANCE_MARKET_LOCK_INDEX);
+    let market_index = c
+        .markets
+        .keys()
+        .position(|m| m == &market)
+        .expect("market must exist") as u32;
+
+    c.market_execution_lock.lock(market_index);
     c.op_state = OpState::Allocating(AllocatingState {
         op_id,
-        index: 0,
+        index: market_index,
         remaining: 0,
         plan: vec![],
     });
@@ -1217,9 +1213,7 @@ fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
 
 #[rstest]
 fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
@@ -1268,9 +1262,7 @@ fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
 
 #[rstest]
 fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
@@ -1320,9 +1312,7 @@ fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
 
 #[rstest]
 fn set_performance_fee_accrues_with_old_rate_then_updates(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
@@ -1372,9 +1362,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates(owner_env: OwnerEnv) {
 
 #[rstest]
 fn set_performance_fee_accrues_with_old_rate_then_updates_variant(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
@@ -1424,9 +1412,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant(owner_env: Own
 
 #[rstest]
 fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) {
-    let OwnerEnv {
-        mut contract, ..
-    } = owner_env;
+    let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so total_supply > 0
     contract

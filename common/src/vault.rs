@@ -175,8 +175,6 @@ pub const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS: Gas =
 // estimate.
 pub const SUPPLY_POST_VERIFY_GAS: Gas = Gas::from_tgas(30);
 
-
-
 // Callback gas roots for withdraw/supply orchestration.
 
 // Root budget for callbacks after creating a market-side
