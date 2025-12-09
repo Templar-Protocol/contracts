@@ -17,7 +17,7 @@ pub fn create_test_app() -> App {
         dry_run: false,
         near_treasury_account: Some(AccountId::from_str("test.near").unwrap()),
         near_treasury_key: Some(SecretKey::from_random(KeyType::ED25519)),
-        near_treasury_rpc_url: None,
+        near_rpc_url: None,
         eth_private_key: None,
         eth_rpc_url: "https://eth.llamarpc.com".to_string(),
         solana_private_key: None,

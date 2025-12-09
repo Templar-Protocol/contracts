@@ -241,7 +241,7 @@ async fn test_app_initialization() {
         dry_run: false,
         near_treasury_account: Some(ctx.treasury.id().as_str().parse().unwrap()),
         near_treasury_key: Some(ctx.treasury.secret_key().to_string().parse().unwrap()),
-        near_treasury_rpc_url: Some(ctx.worker.rpc_addr()),
+        near_rpc_url: Some(ctx.worker.rpc_addr()),
         eth_private_key: None,
         eth_rpc_url: "https://eth.llamarpc.com".to_string(),
         solana_private_key: None,
