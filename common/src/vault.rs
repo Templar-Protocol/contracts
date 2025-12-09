@@ -6,7 +6,10 @@ use near_sdk::{
     near, require, AccountId, AccountIdRef, Gas, Promise, PromiseOrValue,
 };
 
-use crate::asset::{BorrowAsset, FungibleAsset};
+use crate::{
+    asset::{BorrowAsset, FungibleAsset},
+    supply::SupplyPosition,
+};
 
 pub type TimestampNs = u64;
 
@@ -18,19 +21,6 @@ pub type ExpectedIdx = u32;
 pub type ActualIdx = u32;
 pub type AllocationWeights = Vec<(AccountId, U128)>;
 pub type AllocationPlan = Vec<(AccountId, u128)>;
-
-#[derive(Clone, Debug, Default)]
-#[near(serializers = [json, borsh])]
-pub enum AllocationMode {
-    /// Eager allocation mode.
-    ///
-    /// Deposits can automatically trigger allocation when the vault is idle
-    /// and the idle balance is at least `min_batch`. See implementation for
-    /// the exact conditions and behaviour.
-    Eager { min_batch: U128 },
-    #[default]
-    Lazy,
-}
 
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
@@ -56,8 +46,6 @@ pub struct MarketConfiguration {
 #[derive(Clone)]
 #[near(serializers = [json, borsh])]
 pub struct VaultConfiguration {
-    /// The allocation mode for this vault.
-    pub mode: AllocationMode,
     /// The account that owns this vault.
     pub owner: AccountId,
     /// The account that can submit allocation plans. See [AllocationMode].
@@ -174,33 +162,42 @@ pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(GET_SUPPLY_POSITION);
 // Create a withdrawal request
 pub const CREATE_WITHDRAW_REQ_GAS: Gas = buffer(5);
 
+// Balance reads against the underlying NEP-141
+pub const FT_BALANCE_OF_GAS: Gas = Gas::from_tgas(5);
+
 // Execute the next withdrawal request on a market
 const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 = 20;
 pub const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS: Gas =
     Gas::from_tgas(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
-// ?
-pub const AFTER_SUPPLY_ENSURE_GAS: Gas = Gas::from_tgas(30);
+// Extra gas reserved for post-supply verification callbacks, used in
+// paths where we want a conservative safety margin beyond the base
+// estimate.
+pub const SUPPLY_POST_VERIFY_GAS: Gas = Gas::from_tgas(30);
 
-// Our callback roots
+// Callback gas roots for withdraw/supply orchestration.
 
-// TODO: rename
-pub const AFTER_CREATE_WITHDRAW_REQ_GAS: Gas =
+// Root budget for callbacks after creating a market-side
+// supply-withdrawal request. Encodes: create request, read supply
+// position and settle withdraw accounting.
+pub const WITHDRAW_CREATE_REQUEST_CALLBACK_GAS: Gas =
     buffer(EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ + AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
-// TODO: rename
+// Budget for the final "settle" phase of a withdraw execution:
+// reconcile principal and idle_balance, and potentially transition to
+// payout or the next market.
 const AFTER_EXECUTE_NEXT_WITHDRAW: u64 = 5 + 5 + AFTER_SEND_TO_USER;
-pub const EXECUTE_WITHDRAW_03_SETTLE_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
+pub const WITHDRAW_SETTLE_CALLBACK_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
 
-// todo: rename
+// Budget for executing the next supply-withdrawal request on a market
+// and fetching the updated supply position before the settle step.
 const AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 =
     GET_SUPPLY_POSITION + AFTER_EXECUTE_NEXT_WITHDRAW;
-pub const EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS: Gas =
-    buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
+pub const WITHDRAW_EXECUTE_FETCH_POSITION_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ);
 
 const AFTER_SUPPLY_2_READ: u64 = 5;
-pub const SUPPLY_02_POSITION_READ_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
-pub const AFTER_SUPPLY_1_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
+pub const SUPPLY_POSITION_READ_CALLBACK_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
+pub const SUPPLY_AFTER_TRANSFER_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
 
 // NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);
@@ -256,6 +253,8 @@ pub struct AllocatingState {
     pub index: u32,
     /// Amount of underlying (in asset units) still to allocate during this operation.
     pub remaining: u128,
+    /// Plan for allocation.
+    pub plan: Vec<(AccountId, u128)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,6 +413,63 @@ impl AsRef<PayoutState> for OpState {
     }
 }
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub struct Delta {
+    pub market: AccountId,
+    pub amount: U128,
+}
+
+impl Delta {
+    pub fn new<T: Into<U128>>(market: AccountId, amount: T) -> Self {
+        Delta {
+            market,
+            amount: amount.into(),
+        }
+    }
+    pub fn validate(&self) {
+        require!(self.amount.0 > 0, "Delta amount must be greater than zero");
+    }
+}
+
+// + Supply: forward-supply idle assets to a market
+// - Withdraw: ONLY creates a supply-withdrawal request in the market; does not execute it.
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum AllocationDelta {
+    Supply(Delta),
+    Withdraw(Delta),
+}
+
+impl AsRef<Delta> for AllocationDelta {
+    fn as_ref(&self) -> &Delta {
+        match self {
+            AllocationDelta::Supply(d) | AllocationDelta::Withdraw(d) => d,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EscrowSettlement {
+    pub to_burn: u128,
+    pub refund: u128,
+}
+
+impl EscrowSettlement {
+    pub fn new(escrow_shares: u128, burn_shares: u128) -> Self {
+        let to_burn = burn_shares.min(escrow_shares);
+        let refund = escrow_shares.saturating_sub(to_burn);
+
+        Self { to_burn, refund }
+    }
+}
+
+impl From<EscrowSettlement> for (u128, u128) {
+    fn from(tuple: EscrowSettlement) -> Self {
+        (tuple.to_burn, tuple.refund)
+    }
+}
+
 #[derive(Debug)]
 #[near(serializers = [json])]
 pub enum Error {
@@ -426,6 +482,7 @@ pub enum Error {
     MarketTransferFailed,
     MissingSupplyPosition,
     PositionReadFailed,
+    BalanceReadFailed,
     // Insufficient liquidity across all markets to satisfy withdrawal
     InsufficientLiquidity,
     ZeroAmount,
@@ -487,28 +544,88 @@ impl IdleBalanceDelta {
     }
 }
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum Reason {
+    NoRoom,
+    ZeroTarget,
+    Other(String),
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum QueueAction {
+    Dequeued,
+    Parked,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum QueueStatus {
+    NextFound,
+    Empty,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum WithdrawProgressPhase {
+    ExecutionStarted,
+    SkippedDust,
+    CoveredByIdle,
+    ExecutionRequired,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum AllocationPositionIssueKind {
+    Missing,
+    ReadFailed,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum WithdrawalAccountingKind {
+    InflowMismatch,
+    OverpayCredited,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum PositionReportOutcome {
+    Ok,
+    Missing,
+    ReadFailed,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub enum UnbrickPhase {
+    Withdrawing,
+    Payout,
+}
+
 #[near(event_json(standard = "templar-vault"))]
 pub enum Event {
     #[event_version("1.0.0")]
-    MintedShares { amount: U128, receiver: AccountId },
-    #[event_version("1.0.0")]
-    AllocationStarted { op_id: U64, remaining: U128 },
-    #[event_version("1.0.0")]
     IdleBalanceUpdated { prev: U128, delta: IdleBalanceDelta },
-
-    // Allocation lifecycle (plan/request)
     #[event_version("1.0.0")]
-    AllocationRequestedQueue { op_id: U64, total: U128 },
+    PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
+    #[event_version("1.0.0")]
+    PerformanceFeeMintFailed { error: String },
+    #[event_version("1.0.0")]
+    LockChange { is_locked: bool, market_index: u32 },
+
+    // Allocation
     #[event_version("1.0.0")]
     AllocationPlanSet {
         op_id: U64,
         total: U128,
         plan: Vec<(AccountId, U128)>,
     },
-
-    // Per-step planning and outcomes
     #[event_version("1.0.0")]
-    AllocationStepPlanned {
+    AllocationStarted { op_id: U64, remaining: U128 },
+    #[event_version("1.0.0")]
+    AllocationStepPlan {
         op_id: U64,
         index: u32,
         market: AccountId,
@@ -517,14 +634,7 @@ pub enum Event {
         to_supply: U128,
         remaining_before: U128,
         planned: bool,
-    },
-    #[event_version("1.0.0")]
-    AllocationStepSkipped {
-        op_id: U64,
-        index: u32,
-        market: AccountId,
-        reason: String,
-        remaining: U128,
+        reason: Option<Reason>,
     },
     #[event_version("1.0.0")]
     AllocationTransferFailed {
@@ -545,8 +655,6 @@ pub enum Event {
         refunded: U128,
         remaining_after: U128,
     },
-
-    // Completion and stop
     #[event_version("1.0.0")]
     AllocationCompleted { op_id: u64 },
     #[event_version("1.0.0")]
@@ -554,20 +662,8 @@ pub enum Event {
         op_id: U64,
         index: u32,
         remaining: U128,
-        reason: Option<String>,
+        reason: Option<Reason>,
     },
-
-    // Eager
-    #[event_version("1.0.0")]
-    AllocationEagerTriggered {
-        op_id: U64,
-        idle_balance: U128,
-        min_batch: U128,
-        deposit_accepted: U128,
-    },
-
-    #[event_version("1.0.0")]
-    PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
 
     // Admin and configuration events
     #[event_version("1.0.0")]
@@ -582,7 +678,6 @@ pub enum Event {
     FeeRecipientSet { account: AccountId },
     #[event_version("1.0.0")]
     PerformanceFeeSet { fee: U128 },
-
     #[event_version("1.0.0")]
     TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
@@ -597,26 +692,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     MarketCreated { market: AccountId },
     #[event_version("1.0.0")]
-    SupplyCapRaiseSubmitted {
-        market: AccountId,
-        new_cap: U128,
-        valid_at_ns: u64,
-    },
-    #[event_version("1.0.0")]
-    SupplyCapRaiseRevoked { market: AccountId },
-
-    #[event_version("1.0.0")]
-    SupplyCapSet { market: AccountId, new_cap: U128 },
-    #[event_version("1.0.0")]
     MarketEnabled { market: AccountId },
-    #[event_version("1.0.0")]
-    MarketAlreadyInWithdrawQueue { market: AccountId },
-    #[event_version("1.0.0")]
-    WithdrawQueueMarketAdded { market: AccountId },
-    #[event_version("1.0.0")]
-    WithdrawDequeued { index: U64 },
-    #[event_version("1.0.0")]
-    WithdrawalParked { id: U64 },
     #[event_version("1.0.0")]
     MarketRemovalSubmitted {
         market: AccountId,
@@ -625,7 +701,33 @@ pub enum Event {
     #[event_version("1.0.0")]
     MarketRemovalRevoked { market: AccountId },
     #[event_version("1.0.0")]
-    WithdrawQueueUpdated { markets: Vec<AccountId> },
+    SupplyCapRaiseSubmitted {
+        market: AccountId,
+        new_cap: U128,
+        valid_at_ns: u64,
+    },
+    #[event_version("1.0.0")]
+    SupplyCapRaiseRevoked { market: AccountId },
+    #[event_version("1.0.0")]
+    SupplyCapSet { market: AccountId, new_cap: U128 },
+
+    #[event_version("1.0.0")]
+    WithdrawQueueUpdate { action: QueueAction, id: U64 },
+    #[event_version("1.0.0")]
+    WithdrawQueueStatus {
+        status: QueueStatus,
+        id: Option<U64>,
+    },
+
+    // Rebalance-only withdraw flows
+    #[event_version("1.0.0")]
+    RebalanceWithdrawCompleted { op_id: U64, market: AccountId },
+    #[event_version("1.0.0")]
+    RebalanceWithdrawStopped {
+        op_id: U64,
+        market: AccountId,
+        reason: Option<Reason>,
+    },
 
     // User flows
     #[event_version("1.0.0")]
@@ -642,40 +744,54 @@ pub enum Event {
         expected_assets: U128,
         requested_at: U64,
     },
-
-    // Allocation read/settlement diagnostics
     #[event_version("1.0.0")]
-    AllocationPositionMissing {
-        op_id: U64,
-        index: u32,
-        market: AccountId,
-        attempted: U128,
-        accepted: U128,
+    WithdrawPreview { shares: U128, receiver: AccountId },
+    #[event_version("1.0.0")]
+    WithdrawProgress {
+        phase: WithdrawProgressPhase,
+        op_id: Option<U64>,
+        id: Option<U64>,
+        market_index: Option<u32>,
+        owner: Option<AccountId>,
+        receiver: Option<AccountId>,
+        escrow_shares: Option<U128>,
+        expected_assets: Option<U128>,
+        requested_at: Option<U64>,
     },
     #[event_version("1.0.0")]
-    AllocationPositionReadFailed {
+    SupplyWithdrawRequestCreated { market: AccountId, amount: U128 },
+    #[event_version("1.0.0")]
+    WithdrawRequestCreated { market: AccountId, amount: U128 },
+    #[event_version("1.0.0")]
+    // Allocation read/settlement diagnostics
+    #[event_version("1.0.0")]
+    AllocationPositionIssue {
         op_id: U64,
         index: u32,
         market: AccountId,
         attempted: U128,
         accepted: U128,
+        kind: AllocationPositionIssueKind,
     },
 
     // Withdrawal read diagnostics
-    #[event_version("1.0.0")]
-    WithdrawalPositionReadFailed {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        before: U128,
-    },
-
     #[event_version("1.0.0")]
     CreateWithdrawalFailed {
         op_id: U64,
         market: AccountId,
         index: u32,
         need: U128,
+    },
+
+    #[event_version("1.0.0")]
+    WithdrawalAccounting {
+        kind: WithdrawalAccountingKind,
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        delta: Option<U128>,
+        inflow: Option<U128>,
+        extra: Option<U128>,
     },
 
     // Payout and stop diagnostics
@@ -691,45 +807,77 @@ pub enum Event {
         index: u32,
         remaining: U128,
         collected: U128,
-        reason: Option<String>,
+        reason: Option<Reason>,
     },
     #[event_version("1.0.0")]
     PayoutStopped {
         op_id: U64,
         receiver: AccountId,
         amount: U128,
-        reason: Option<String>,
+        reason: Option<Reason>,
     },
     #[event_version("1.0.0")]
-    OperationStoppedWhileIdle { reason: Option<String> },
+    OperationStoppedWhileIdle { reason: Option<Reason> },
+    #[event_version("1.0.0")]
+    UnbrickInvoked {
+        phase: UnbrickPhase,
+        op_id: Option<U64>,
+        id: Option<U64>,
+    },
 
-    // Skim and deposits
     #[event_version("1.0.0")]
-    SkimNoop {
-        token: AccountId,
-        recipient: AccountId,
+    WithdrawPositionReport {
+        outcome: PositionReportOutcome,
+        op_id: U64,
+        market: AccountId,
+        index: u32,
+        position: Option<SupplyPosition>,
+        before: Option<U128>,
     },
 
     #[event_version("1.0.0")]
-    WithdrawalPositionMissing {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        before: U128,
-    },
-    #[event_version("1.0.0")]
-    WithdrawalInflowMismatch {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        delta: U128,
-        inflow: U128,
-    },
-    #[event_version("1.0.0")]
-    WithdrawalOverpayCredited {
-        op_id: U64,
-        market: AccountId,
-        index: u32,
-        extra: U128,
-    },
+    VaultBalance { amount: U128 },
+}
+
+#[derive(Default)]
+#[near(serializers = [borsh, serde])]
+pub struct Locker {
+    to_lock: Vec<u32>,
+}
+
+impl Locker {
+    pub fn lock(&mut self, i: u32) {
+        if self.is_locked(i) {
+            env::panic_str("Market is locked for index");
+        }
+        Event::LockChange {
+            is_locked: true,
+            market_index: i,
+        }
+        .emit();
+        self.to_lock.push(i);
+    }
+
+    pub fn unlock(&mut self, i: u32) {
+        Event::LockChange {
+            is_locked: false,
+            market_index: i,
+        }
+        .emit();
+        self.to_lock.retain(|&x| x != i);
+    }
+
+    /// Clears the lock status for all markets.
+    /// This method should be used with caution as it will unlock all markets
+    pub fn clear(&mut self) {
+        self.to_lock.clear();
+    }
+
+    pub fn is_locked(&self, i: u32) -> bool {
+        self.to_lock.contains(&i)
+    }
+
+    pub fn is_locked_all(&self) -> bool {
+        !self.to_lock.is_empty()
+    }
 }

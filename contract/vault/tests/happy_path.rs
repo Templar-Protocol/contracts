@@ -3,7 +3,11 @@
 use near_sdk::json_types::U128;
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::{interest_rate_strategy::InterestRateStrategy, number::Decimal};
+use templar_common::{
+    interest_rate_strategy::InterestRateStrategy,
+    number::Decimal,
+    vault::{AllocationDelta, Delta},
+};
 use test_utils::{
     controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
     UnifiedMarketController,
@@ -38,9 +42,15 @@ async fn state_machine_is_locked_when_another_op_is_running(
     let amount = 1000;
     vault.supply(&supply_user, amount).await;
 
-    futures::future::select_all(
-        (0..100).map(|_| Box::pin(vault.allocate(&vault_owner, vec![], Some(1.into())))),
-    )
+    futures::future::select_all((0..100).map(|_| {
+        Box::pin(vault.allocate(
+            &vault_owner,
+            AllocationDelta::Supply(Delta::new(
+                vault.market.market.contract().id().clone(),
+                U128(1),
+            )),
+        ))
+    }))
     .await;
 }
 
@@ -75,9 +85,11 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     println!("After supply of {}: {}", amount.0, after_supply_balance);
     c.collateralize(&borrow_user, 2000).await;
 
-    let weights = vec![(c.market.contract().id().clone(), U128(1))];
     vault
-        .allocate(&vault_curator, weights.clone(), Some(amount))
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(c.market.contract().id().clone(), amount)),
+        )
         .await;
 
     assert_eq!(
@@ -112,36 +124,45 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     harvest(&c, &vault).await;
 
-    let supply_position = c.get_supply_position(v).await.unwrap();
-
     assert_eq!(
-        u128::from(supply_position.get_deposit().active),
+        u128::from(c.get_supply_position(v).await.unwrap().get_deposit().active),
         amount.0,
         "Supply position should match amount of tokens supplied to contract",
     );
 
-    let user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
+    let balance_before_withdraw = c.borrow_asset.balance_of(supply_user.id()).await;
 
     vault.withdraw(&supply_user, amount, None).await;
-    // Ensure deposits are activated before we attempt to route and execute the withdrawal
+
     harvest(&c, &vault).await;
-    // Plan the withdraw route (single market) and execute it via allocator methods
-    let withdraw_route = vec![c.market.contract().id().clone()];
+
+    let mkt = c.market.contract().id();
+
     vault
-        .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Withdraw(Delta::new(mkt.clone(), amount)),
+        )
         .await;
+
+    // Plan the withdraw route (single market) and execute it via allocator methods
+    let withdraw_route = vec![mkt.clone()];
+    vault
+        .execute_withdrawal(&vault_curator, withdraw_route.clone())
+        .await;
+
     let op_id = vault
         .vault
         .get_withdrawing_op_id()
         .await
         .expect("Failed to get withdrawing op id");
     vault
-        .execute_next_market_withdrawal(&vault_curator, op_id)
+        .execute_market_withdrawal(&vault_curator, op_id, 0, Some(10))
         .await;
 
     assert_eq!(
         c.borrow_asset.balance_of(supply_user.id()).await,
-        amount.0 + user_balance,
+        amount.0 + balance_before_withdraw,
         "Supply user should have received their tokens back"
     );
 
@@ -155,8 +176,69 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Resupply and wait
     vault.supply(&supply_user, amount.0).await;
-    // FIXME:Storage issue:         Error: Error { repr: Custom { kind: Execution, error: ActionError(ActionError { index: Some(0), kind: FunctionCallError(ExecutionError("Smart contract panicked: Storage error: Account vault0251007104533-70674114756315 has insufficient balance: 0.005 NEAR available, but attempted to use 0.008 NEAR")) }) } }
-    vault.allocate(&vault_curator, weights, Some(amount)).await;
+    let mkt = c.market.contract().id();
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(mkt.clone(), amount)),
+        )
+        .await;
+    harvest(&c, &vault).await;
+
+    // --- Allocator-only rebalance withdrawal into idle (no user withdrawal) ---
+    let total_assets_before_rebalance = vault.get_total_assets().await;
+    assert_eq!(
+        total_assets_before_rebalance, amount,
+        "Sanity: total assets should equal supplied amount before rebalance",
+    );
+    assert_eq!(
+        vault.get_idle_balance().await.0,
+        0,
+        "Idle balance should be zero before rebalance withdrawal",
+    );
+
+    // Create a market-side withdrawal request via allocator reallocation.
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Withdraw(Delta::new(mkt.clone(), amount)),
+        )
+        .await;
+
+    // Executing the rebalance withdrawal should pull funds back to idle without
+    // touching the user withdrawal queue.
+    vault
+        .execute_rebalance_withdrawal(&vault_curator, mkt.clone(), None)
+        .await;
+
+    assert_eq!(
+        vault.get_total_assets().await,
+        total_assets_before_rebalance,
+        "Rebalance withdrawal must preserve total assets",
+    );
+    assert_eq!(
+        vault.get_total_supply().await,
+        amount,
+        "Rebalance withdrawal must not mint or burn shares",
+    );
+    assert_eq!(
+        vault.get_idle_balance().await.0,
+        amount.0,
+        "Rebalance withdrawal should move principal back to idle",
+    );
+    assert!(
+        vault.get_withdrawing_op_id().await.is_none(),
+        "Rebalance withdrawal must not create a user withdrawing op",
+    );
+
+    // Re-allocate idle back into the market so the later borrow/withdraw path
+    // in this test continues to exercise the existing state machine behavior.
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(mkt.clone(), amount)),
+        )
+        .await;
     harvest(&c, &vault).await;
 
     println!(
@@ -177,7 +259,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     // Plan the withdraw route (single market) and execute it via allocator methods
     let withdraw_route = vec![c.market.contract().id().clone()];
     vault
-        .execute_next_withdrawal_request(&vault_curator, withdraw_route.clone())
+        .execute_withdrawal(&vault_curator, withdraw_route.clone())
         .await;
     let op_id = vault
         .vault
@@ -185,7 +267,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .expect("Failed to get withdrawing operation ID");
     vault
-        .execute_next_market_withdrawal(&vault_curator, op_id)
+        .execute_market_withdrawal(&vault_curator, op_id, 0, None)
         .await;
 }
 
