@@ -27,7 +27,6 @@ use super::models::{WithdrawRequest, WithdrawResponse, WithdrawStatus};
     )
 )]
 pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) -> Response {
-    // Parse amount
     let amount: u128 = match req.amount.parse() {
         Ok(amt) => amt,
         Err(e) => {
@@ -59,7 +58,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         "Parsed destination chain"
     );
 
-    // Get destination address from config
     let destination_address = match app.config.get_withdraw_address(&chain_name) {
         Some(addr) => addr,
         None => {
@@ -76,7 +74,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         }
     };
 
-    // Validate token is supported by the bridge
     let token_info = match app
         .bridge_client
         .find_token(&req.asset, &chain_id.to_string())
@@ -112,7 +109,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
     if app.dry_run || req.dry_run {
         info!("Dry run mode - no actual withdrawal");
 
-        // Record metrics
         crate::metrics::record_withdraw("COMPLETED", &chain_name);
 
         return (
@@ -127,12 +123,94 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
             .into_response();
     }
 
-    // Prepare withdrawal
-    // For NEAR → External chain withdrawals:
-    // 1. User must transfer bridged tokens (e.g., eth.omft.near) to the bridge contract
-    // 2. Bridge burns/locks tokens and releases on external chain
-    // 3. We track the withdrawal status
+    // NEAR → NEAR: Direct ft_transfer from treasury to external account
+    if chain_name == "near" {
+        let token_contract = match app.external_chains.get("near:mainnet") {
+            Some(handler) => {
+                if !handler.supports_token(&req.asset) {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!("Asset {} not supported on NEAR", req.asset),
+                    );
+                }
 
+                if let Some(near_handler) = handler
+                    .as_any()
+                    .downcast_ref::<crate::external::near::NearExternalHandler>(
+                ) {
+                    match near_handler.get_token_contract(&req.asset) {
+                        Some(contract) => contract,
+                        None => {
+                            return error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("Token contract not found for asset {}", req.asset),
+                            );
+                        }
+                    }
+                } else {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to get NEAR handler".to_string(),
+                    );
+                }
+            }
+            None => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "NEAR external handler not configured".to_string(),
+                );
+            }
+        };
+
+        info!(
+            asset = %req.asset,
+            token_contract = %token_contract,
+            destination = %destination_address,
+            amount = %amount,
+            "Executing NEAR → NEAR direct transfer"
+        );
+
+        let tx_hash = match app
+            .near_handler
+            .send_tokens(&destination_address, &token_contract, amount)
+            .await
+        {
+            Ok(hash) => {
+                info!(
+                    tx_hash = %hash,
+                    asset = %req.asset,
+                    destination = %destination_address,
+                    "NEAR transfer completed"
+                );
+                hash
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to execute NEAR transfer");
+
+                crate::metrics::record_withdraw("FAILED", &chain_name);
+
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to execute NEAR transfer: {}", e),
+                );
+            }
+        };
+
+        crate::metrics::record_withdraw("COMPLETED", &chain_name);
+
+        return (
+            StatusCode::OK,
+            Json(WithdrawResponse {
+                source_tx_hash: tx_hash.clone(),
+                status: WithdrawStatus::Completed,
+                destination_tx_hash: Some(tx_hash),
+                error: None,
+            }),
+        )
+            .into_response();
+    }
+
+    // For cross-chain withdrawals, resolve to OMFT token ID
     let near_token_id = if let Some(info) = &token_info {
         info.near_token_id.clone()
     } else {
@@ -168,7 +246,7 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         }
     };
 
-    // Build withdrawal intent using NEAR Intents protocol
+    // Build withdrawal intent using NEAR Intents protocol for cross-chain transfers
     let intent_builder = crate::intents::WithdrawalIntentBuilder::new(
         app.near_handler.treasury_account().to_string(),
         app.near_handler.signer_key().clone(),
@@ -247,7 +325,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         }
     };
 
-    // Execute the withdrawal intent on intents.near
     let tx_hash = match app.near_handler.execute_intents(&execute_args).await {
         Ok(hash) => {
             info!(
@@ -261,7 +338,6 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         Err(e) => {
             error!(error = %e, "Failed to execute withdrawal intent");
 
-            // Record metrics
             crate::metrics::record_withdraw("FAILED", &chain_name);
 
             return error_response(
@@ -271,11 +347,8 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         }
     };
 
-    // Record metrics
     crate::metrics::record_withdraw("PENDING", &chain_name);
 
-    // Return pending status with transaction hash
-    // Bridge will process the withdrawal asynchronously
     (
         StatusCode::OK,
         Json(WithdrawResponse {
@@ -301,6 +374,7 @@ fn parse_chain(chain: &str) -> Result<(ChainId, String), String> {
             ("eth", "137") => "polygon",
             ("sol", _) => "solana",
             ("stellar", _) => "stellar",
+            ("near", _) => "near",
             _ => "unknown",
         };
         return Ok((parsed, name.to_string()));
@@ -315,10 +389,12 @@ fn parse_chain(chain: &str) -> Result<(ChainId, String), String> {
         "polygon" | "matic" => Ok((ChainId::new("eth", "137"), "polygon".to_string())),
         "solana" | "sol" => Ok((ChainId::new("sol", "mainnet"), "solana".to_string())),
         "stellar" => Ok((ChainId::new("stellar", "mainnet"), "stellar".to_string())),
+        "near" => Ok((ChainId::new("near", "mainnet"), "near".to_string())),
         _ => Err(format!(
             "Unsupported destination chain: {}. \
              Supported: ethereum (eth:1), arbitrum (eth:42161), base (eth:8453), \
-             optimism (eth:10), polygon (eth:137), solana (sol:mainnet), stellar (stellar:mainnet)",
+             optimism (eth:10), polygon (eth:137), solana (sol:mainnet), \
+             stellar (stellar:mainnet), near (near:mainnet)",
             chain
         )),
     }
@@ -340,7 +416,7 @@ fn error_response(status_code: StatusCode, error: String) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bridge::BridgeClient, chain::NearHandler};
+    use crate::{bridge::BridgeClient, treasury::NearHandler};
     use near_crypto::{KeyType, SecretKey};
     use near_primitives::types::AccountId;
     use std::{str::FromStr, sync::Arc};
@@ -351,12 +427,12 @@ mod tests {
 
         let args = Args {
             port: 3000,
-            network: Network::Testnet,
+            network: Network::Mainnet,
             bridge_api_url: "https://test.api".to_string(),
             dry_run: false,
-            near_account: Some(AccountId::from_str("test.near").unwrap()),
-            near_signer_key: Some(SecretKey::from_random(KeyType::ED25519)),
-            near_rpc_url: None,
+            near_treasury_account: Some(AccountId::from_str("test.near").unwrap()),
+            near_treasury_key: Some(SecretKey::from_random(KeyType::ED25519)),
+            near_treasury_rpc_url: None,
             eth_private_key: None,
             eth_rpc_url: "https://eth.llamarpc.com".to_string(),
             solana_private_key: None,
@@ -373,7 +449,6 @@ mod tests {
             ),
             stellar_secret_key: None,
             stellar_horizon_url: "https://horizon.stellar.org".to_string(),
-            stellar_network: "mainnet".to_string(),
             stellar_withdraw_address: None,
         };
 
@@ -381,9 +456,9 @@ mod tests {
         let token_registry = crate::tokens::TokenRegistry::new(Arc::clone(&bridge_client));
 
         let near_handler = Arc::new(NearHandler::new(
-            args.near_account.clone().unwrap(),
-            args.near_signer_key.clone().unwrap(),
-            args.get_near_rpc_url(),
+            args.near_treasury_account.clone().unwrap(),
+            args.near_treasury_key.clone().unwrap(),
+            args.get_near_treasury_rpc_url(),
             true,
         ));
 
@@ -424,6 +499,20 @@ mod tests {
         let (chain_id, name) = parse_chain("base").unwrap();
         assert_eq!(chain_id.to_string(), "eth:8453");
         assert_eq!(name, "base");
+    }
+
+    #[test]
+    fn test_parse_chain_near() {
+        let (chain_id, name) = parse_chain("near").unwrap();
+        assert_eq!(chain_id.to_string(), "near:mainnet");
+        assert_eq!(name, "near");
+    }
+
+    #[test]
+    fn test_parse_chain_near_format() {
+        let (chain_id, name) = parse_chain("near:mainnet").unwrap();
+        assert_eq!(chain_id.to_string(), "near:mainnet");
+        assert_eq!(name, "near");
     }
 
     #[test]
@@ -528,5 +617,51 @@ mod tests {
         let response = withdraw(State(app), Json(req)).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_near_to_near() {
+        // Set NEAR_ACCOUNT env var for withdrawal destination
+        std::env::set_var("NEAR_ACCOUNT", "destination.near");
+
+        let app = create_test_app();
+
+        let req = WithdrawRequest {
+            destination_chain: "near".to_string(),
+            asset: "usdc".to_string(),
+            amount: "1000000".to_string(),
+            dry_run: true, // Use dry run to skip bridge API calls
+        };
+
+        let response = withdraw(State(app), Json(req)).await;
+
+        // Should succeed in dry run mode
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Cleanup
+        std::env::remove_var("NEAR_ACCOUNT");
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_near_with_chain_format() {
+        // Set NEAR_ACCOUNT env var for withdrawal destination
+        std::env::set_var("NEAR_ACCOUNT", "destination.near");
+
+        let app = create_test_app();
+
+        let req = WithdrawRequest {
+            destination_chain: "near:mainnet".to_string(),
+            asset: "usdt".to_string(),
+            amount: "2000000".to_string(),
+            dry_run: true, // Use dry run to skip bridge API calls
+        };
+
+        let response = withdraw(State(app), Json(req)).await;
+
+        // Should succeed in dry run mode
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Cleanup
+        std::env::remove_var("NEAR_ACCOUNT");
     }
 }

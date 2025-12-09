@@ -9,7 +9,7 @@ use near_workspaces::{Account, Contract, Worker};
 use std::sync::Arc;
 
 use templar_funding_bridge::{
-    app::App, bridge::BridgeClient, chain::NearHandler, config::Args, rpc::Network,
+    app::App, bridge::BridgeClient, config::Args, rpc::Network, treasury::NearHandler,
 };
 
 const FT_WASM: &[u8] = include_bytes!("../../../mock/ft/res/mock_ft.wasm");
@@ -239,9 +239,9 @@ async fn test_app_initialization() {
         network: Network::Testnet,
         bridge_api_url: "https://test.api".to_string(),
         dry_run: false,
-        near_account: Some(ctx.treasury.id().as_str().parse().unwrap()),
-        near_signer_key: Some(ctx.treasury.secret_key().to_string().parse().unwrap()),
-        near_rpc_url: Some(ctx.worker.rpc_addr()),
+        near_treasury_account: Some(ctx.treasury.id().as_str().parse().unwrap()),
+        near_treasury_key: Some(ctx.treasury.secret_key().to_string().parse().unwrap()),
+        near_treasury_rpc_url: Some(ctx.worker.rpc_addr()),
         eth_private_key: None,
         eth_rpc_url: "https://eth.llamarpc.com".to_string(),
         solana_private_key: None,
@@ -254,7 +254,6 @@ async fn test_app_initialization() {
         solana_withdraw_address: Some("B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D".to_string()),
         stellar_secret_key: None,
         stellar_horizon_url: "https://horizon.stellar.org".to_string(),
-        stellar_network: "mainnet".to_string(),
         stellar_withdraw_address: None,
     };
 

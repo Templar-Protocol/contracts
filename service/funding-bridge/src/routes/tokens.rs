@@ -167,7 +167,7 @@ pub async fn token_lookup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bridge::BridgeClient, chain::NearHandler};
+    use crate::{bridge::BridgeClient, treasury::NearHandler};
     use near_crypto::{KeyType, SecretKey};
     use near_primitives::types::AccountId;
     use std::{str::FromStr, sync::Arc};
@@ -178,12 +178,12 @@ mod tests {
 
         let args = Args {
             port: 3000,
-            network: Network::Testnet,
+            network: Network::Mainnet,
             bridge_api_url: "https://test.api".to_string(),
             dry_run: false,
-            near_account: Some(AccountId::from_str("test.near").unwrap()),
-            near_signer_key: Some(SecretKey::from_random(KeyType::ED25519)),
-            near_rpc_url: None,
+            near_treasury_account: Some(AccountId::from_str("test.near").unwrap()),
+            near_treasury_key: Some(SecretKey::from_random(KeyType::ED25519)),
+            near_treasury_rpc_url: None,
             eth_private_key: None,
             eth_rpc_url: "https://eth.llamarpc.com".to_string(),
             solana_private_key: None,
@@ -196,7 +196,6 @@ mod tests {
             solana_withdraw_address: None,
             stellar_secret_key: None,
             stellar_horizon_url: "https://horizon.stellar.org".to_string(),
-            stellar_network: "mainnet".to_string(),
             stellar_withdraw_address: None,
         };
 
@@ -204,9 +203,9 @@ mod tests {
         let token_registry = crate::tokens::TokenRegistry::new(Arc::clone(&bridge_client));
 
         let near_handler = Arc::new(NearHandler::new(
-            args.near_account.clone().unwrap(),
-            args.near_signer_key.clone().unwrap(),
-            args.get_near_rpc_url(),
+            args.near_treasury_account.clone().unwrap(),
+            args.near_treasury_key.clone().unwrap(),
+            args.get_near_treasury_rpc_url(),
             true,
         ));
 

@@ -72,15 +72,18 @@ Start the Funding Bridge service with proper configuration.
 - Supports network override via command line
 
 **Required Environment Variables:**
-- `NEAR_ACCOUNT` - NEAR account that signs intents
-- `NEAR_SIGNER_KEY` - Private key for NEAR account (ed25519:...)
+- `NEAR_TREASURY_ACCOUNT` - Treasury account that holds OMFT balances and signs withdrawal intents
+- `NEAR_TREASURY_KEY` - Private key for treasury account (ed25519:...)
 
 **Optional Environment Variables:**
-- `NETWORK` - mainnet or testnet (default: mainnet)
+- `NETWORK` - NEAR network (mainnet)
 - `DRY_RUN` - true or false (default: false)
 - `RUST_LOG` - Logging level (default: info,templar_funding_bridge=debug)
-- `SOLANA_PRIVATE_KEY` - Solana private key for deposits (base58 format)
-- `ETH_PRIVATE_KEY` - Ethereum private key for deposits
+- `ETH_PRIVATE_KEY` - Ethereum private key for EVM chain deposits
+- `SOLANA_PRIVATE_KEY` - Solana private key (base58 format)
+- `STELLAR_SECRET_KEY` - Stellar secret key (S... format)
+- `NEAR_ACCOUNT` - External NEAR account for deposits/withdrawals
+- `NEAR_KEY` - External NEAR private key for deposits/withdrawals
 
 ---
 
@@ -95,7 +98,7 @@ Test deposit and withdrawal functionality of the running service.
 
 **Arguments:**
 - `direction` - `deposit` or `withdraw`
-- `network` - `eth` (Ethereum) or `solana`
+- `network` - `eth`, `arbitrum`, `base`, `optimism`, `solana`, `stellar`, `near`
 - `amount` - Amount in USDC (e.g., 1.0 for 1 USDC)
 
 **Examples:**
@@ -106,8 +109,17 @@ Test deposit and withdrawal functionality of the running service.
 # Test withdrawal of 0.5 USDC to Ethereum
 ./scripts/run_test.sh withdraw eth 0.5
 
-# Deposit testing info
+# Test withdrawal to NEAR
+./scripts/run_test.sh withdraw near 2.0
+
+# Test deposit from Solana
 ./scripts/run_test.sh deposit solana 10
+
+# Test deposit from external NEAR wallet
+./scripts/run_test.sh deposit near 5.0
+
+# Test deposit from Stellar
+./scripts/run_test.sh deposit stellar 2.0
 ```
 
 **Note:** The service must be running before running tests. Start it with:
@@ -124,6 +136,7 @@ Configure in service `.env` file:
 - `POLYGON_WITHDRAW_ADDRESS` - Polygon
 - `SOLANA_WITHDRAW_ADDRESS` - Solana
 - `STELLAR_WITHDRAW_ADDRESS` - Stellar
+- NEAR uses `NEAR_ACCOUNT` for withdrawals
 
 ---
 

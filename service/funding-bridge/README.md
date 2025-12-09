@@ -2,14 +2,14 @@
 
 **Multi-Chain Treasury Management for NEAR Protocol**
 
-A NEAR-centric treasury management service with cross-chain deposits and withdrawals via [NEAR Intents Bridge API](https://docs.near-intents.org/). Supports Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, and Stellar.
+A NEAR-centric treasury management service with cross-chain deposits and withdrawals via [NEAR Intents Bridge API](https://docs.near-intents.org/). Supports Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, Stellar, and NEAR.
 
 ## Features
 
 - ✅ **NEAR Treasury** - Hold OMFT tokens on NEAR, withdraw to any chain
 - ✅ **Cross-Chain Withdrawals** - NEP-413 signed intents to external chains
-- ✅ **Automated Deposits** - Transfer from ETH/Solana/Stellar wallets to NEAR treasury via bridge
-- ✅ **Multi-Chain Support** - Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, Stellar
+- ✅ **Automated Deposits** - Transfer from ETH/Solana/Stellar/NEAR wallets to NEAR treasury via bridge
+- ✅ **Multi-Chain Support** - Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, Stellar, NEAR
 - ✅ **Token Resolution** - Automatic OMFT token ID and decimal handling
 - ✅ **Stateless Design** - No database required, horizontally scalable
 - ✅ **REST API** - Simple HTTP/JSON interface
@@ -43,13 +43,13 @@ The service is configured via environment variables or CLI arguments:
 
 ```bash
 # Required: NEAR treasury configuration
-export NEAR_ACCOUNT=treasury.near
-export NEAR_SIGNER_KEY="ed25519:YOUR_PRIVATE_KEY_HERE"
+export NEAR_TREASURY_ACCOUNT=treasury.near
+export NEAR_TREASURY_KEY="ed25519:YOUR_PRIVATE_KEY_HERE"
 
 # Optional: Service configuration
 export PORT=3000
 export NETWORK=mainnet
-export NEAR_RPC_URL=https://rpc.mainnet.near.org
+export NEAR_TREASURY_RPC_URL=https://rpc.mainnet.near.org
 
 # Optional: Bridge API (default: https://bridge.chaindefuser.com/rpc)
 export BRIDGE_API_URL=https://bridge.chaindefuser.com/rpc
@@ -64,8 +64,8 @@ Or use CLI arguments:
 ./target/release/funding-bridge \
   --port 3000 \
   --network mainnet \
-  --near-account treasury.near \
-  --near-signer-key "ed25519:YOUR_PRIVATE_KEY_HERE"
+  --near-treasury-account treasury.near \
+  --near-treasury-key "ed25519:YOUR_PRIVATE_KEY_HERE"
 ```
 
 ### Dry-Run Mode
@@ -74,8 +74,8 @@ For testing without executing real transactions:
 
 ```bash
 ./target/release/funding-bridge --dry-run \
-  --near-account treasury.near \
-  --near-signer-key "ed25519:YOUR_PRIVATE_KEY_HERE"
+  --near-treasury-account treasury.near \
+  --near-treasury-key "ed25519:YOUR_PRIVATE_KEY_HERE"
 ```
 
 ## API Documentation
@@ -116,7 +116,10 @@ curl http://localhost:3000/health
 
 #### 2. Deposit Funds
 
-Transfer tokens from external chain (Ethereum, Solana, etc.) to NEAR treasury via the bridge.
+Transfer tokens to NEAR treasury.
+
+**NEAR → NEAR**: Direct ft_transfer to treasury (same-chain transfer)
+**External → NEAR**: Via NEAR Intents Bridge (cross-chain transfer)
 
 ```bash
 curl -X POST http://localhost:3000/deposit \
@@ -153,7 +156,12 @@ curl -X POST http://localhost:3000/deposit \
 
 #### 3. Withdraw Funds
 
-Withdraw funds from NEAR to external chain (via bridge). The destination address is configured in the service configuration per chain.
+Withdraw funds from NEAR treasury to external chains or NEAR accounts.
+
+**NEAR → NEAR**: Direct ft_transfer from treasury (same-chain transfer)
+**NEAR → External**: Withdrawal intent via NEAR Intents Bridge (cross-chain)
+
+The destination address is configured in the service configuration per chain.
 
 ```bash
 curl -X POST http://localhost:3000/withdraw \
@@ -181,7 +189,7 @@ optimism / op / eth:10          → Optimism
 polygon / matic / eth:137       → Polygon
 solana / sol / sol:mainnet      → Solana Mainnet
 stellar / stellar:mainnet       → Stellar Mainnet
-stellar:testnet                 → Stellar Testnet
+near / near:mainnet             → NEAR Mainnet (direct transfer)
 ```
 
 **Response:**
@@ -323,10 +331,10 @@ OPTIONS:
         HTTP server port [default: 3000]
 
     --network <NETWORK>
-        NEAR network: mainnet or testnet [default: testnet]
+        NEAR network [default: mainnet]
 
-    --near-rpc-url <URL>
-        Custom NEAR RPC URL (overrides network default)
+    --near-treasury-rpc-url <URL>
+        Custom NEAR treasury RPC URL (overrides network default)
 
     --bridge-api-url <URL>
         NEAR Intents Bridge API URL [default: https://bridge.chaindefuser.com/rpc]
@@ -334,10 +342,10 @@ OPTIONS:
     --dry-run
         Log actions without executing transactions
 
-    --near-account <ACCOUNT>
+    --near-treasury-account <ACCOUNT>
         NEAR account holding treasury funds
 
-    --near-signer-key <KEY>
+    --near-treasury-key <KEY>
         NEAR private key (ed25519:...)
 ```
 
@@ -352,23 +360,27 @@ NETWORK=mainnet
 BRIDGE_API_URL=https://bridge.chaindefuser.com/rpc
 DRY_RUN=false
 
-# NEAR treasury (required)
-NEAR_ACCOUNT=treasury.near
-NEAR_SIGNER_KEY="ed25519:..."
-NEAR_RPC_URL=https://rpc.mainnet.near.org
+# NEAR treasury
+NEAR_TREASURY_ACCOUNT=treasury.near
+NEAR_TREASURY_KEY="ed25519:..."
+NEAR_TREASURY_RPC_URL=https://rpc.mainnet.near.org
 
-# Ethereum deposits (optional)
+# Ethereum
 ETH_PRIVATE_KEY=0x...
 ETH_RPC_URL=https://eth.llamarpc.com
 
-# Solana deposits (optional)
+# Solana
 SOLANA_PRIVATE_KEY=...
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 
-# Stellar deposits (optional)
+# Stellar
 STELLAR_SECRET_KEY=S...
 STELLAR_HORIZON_URL=https://horizon.stellar.org
-STELLAR_NETWORK=mainnet
+
+# NEAR external wallet
+NEAR_ACCOUNT=external-wallet.near
+NEAR_KEY=ed25519:...
+NEAR_RPC_URL=https://rpc.mainnet.near.org
 
 # Withdrawal destinations (required for withdrawals)
 ETH_WITHDRAW_ADDRESS=0x...
@@ -378,26 +390,14 @@ OPTIMISM_WITHDRAW_ADDRESS=0x...
 POLYGON_WITHDRAW_ADDRESS=0x...
 SOLANA_WITHDRAW_ADDRESS=...
 STELLAR_WITHDRAW_ADDRESS=G...
+# Note: NEAR uses NEAR_ACCOUNT for withdrawals
 ```
 
-### Stellar Account Requirements
+### Stellar Requirements
 
-**IMPORTANT:** Before using Stellar withdrawals, ensure your withdrawal address meets these requirements:
-
-1. **Account Activation**
-   - Account must exist on Stellar network
-   - Minimum balance: 1 XLM (for account reserve)
-   - Testnet: Use Stellar's friendbot to fund test accounts
-
-2. **Trustlines**
-   - Must have trustline established for each token you plan to withdraw
-   - Example: To withdraw USDC, account needs USDC trustline
-   - Without trustline, withdrawal will fail at bridge level
-
-3. **Network Matching**
-   - Ensure `STELLAR_NETWORK` matches your withdrawal address network
-   - `mainnet` addresses start with `G`
-   - Don't mix testnet addresses with mainnet configuration
+Withdrawal addresses must:
+- Be activated (minimum 1 XLM balance)
+- Have trustlines for tokens being withdrawn
 
 ## Development
 
@@ -454,8 +454,8 @@ cargo build --release -p templar-funding-bridge
 # Run with debug logging
 RUST_LOG=debug cargo run -p templar-funding-bridge -- \
   --dry-run \
-  --near-account test.near \
-  --near-signer-key "ed25519:..."
+  --near-treasury-account test.near \
+  --near-treasury-key "ed25519:..."
 ```
 
 ## Architecture
@@ -498,10 +498,10 @@ RUST_LOG=debug cargo run -p templar-funding-bridge -- \
 ### Key Components
 
 - **App** - Application state and dependency injection
-- **NearHandler** - NEAR blockchain integration via JSON-RPC
+- **Treasury (NearHandler)** - NEAR treasury blockchain integration for withdrawals/intents
 - **BridgeClient** - NEAR Intents Bridge API wrapper with caching
 - **TokenRegistry** - Token info caching and decimal conversion utilities
-- **ExternalChainRegistry** - Ethereum and Solana wallet management for deposits
+- **ExternalChainRegistry** - External wallet management (ETH, Solana, Stellar, NEAR) for deposits
 - **IntentSigner** - NEP-413 signed intent generation for withdrawals
 - **REST Routes** - Axum handlers for HTTP endpoints (deposit, withdraw, health, metrics, tokens)
 - **Metrics** - Prometheus metrics for observability
@@ -514,12 +514,12 @@ src/
 ├── bridge/         # NEAR Intents Bridge API client
 │   ├── client.rs   # HTTP client with token caching
 │   └── models.rs   # ChainId, TokenInfo, API types
-├── chain/          # Chain handlers
-│   ├── near.rs     # NEAR Protocol handler
-│   └── mod.rs
-├── external/       # External chain wallets (EVM, Solana)
+├── treasury.rs     # NEAR treasury handler (withdrawals/intents)
+├── external/       # External chain wallets (deposits)
 │   ├── evm.rs      # Ethereum/EVM wallet integration
 │   ├── solana.rs   # Solana wallet integration
+│   ├── stellar.rs  # Stellar wallet integration
+│   ├── near.rs     # NEAR external wallet integration
 │   ├── config.rs   # External chain configuration
 │   └── mod.rs
 ├── routes/         # HTTP endpoints
@@ -559,8 +559,8 @@ Build and run:
 ```bash
 docker build -t funding-bridge .
 docker run -p 3000:3000 \
-  -e NEAR_ACCOUNT=treasury.near \
-  -e NEAR_SIGNER_KEY="ed25519:..." \
+  -e NEAR_TREASURY_ACCOUNT=treasury.near \
+  -e NEAR_TREASURY_KEY="ed25519:..." \
   funding-bridge
 ```
 
@@ -576,8 +576,8 @@ Type=simple
 User=funding-bridge
 WorkingDirectory=/opt/funding-bridge
 ExecStart=/opt/funding-bridge/funding-bridge \
-  --near-account treasury.near \
-  --near-signer-key "ed25519:..."
+  --near-treasury-account treasury.near \
+  --near-treasury-key "ed25519:..."
 Restart=always
 RestartSec=10
 
@@ -603,28 +603,20 @@ curl -s http://localhost:3000/health | jq '.bridge_api_status'
 
 ## Security Considerations
 
-### Private Key Management
+### Security
 
-**IMPORTANT:** Never commit private keys to version control.
-
-Production recommendations:
-- Use environment variables or secure secrets management (HashiCorp Vault, AWS Secrets Manager)
-- Consider NEAR account with limited permissions (separate hot wallet)
+**Keys:**
+- Never commit private keys
+- Use environment variables or secrets management
 - Rotate keys regularly
-- Monitor transaction activity
 
-### Network Security
+**Network:**
+- Run behind reverse proxy with TLS
+- Use firewall rules and rate limiting
 
-- Run behind reverse proxy (nginx, Caddy) with TLS
-- Use firewall rules to restrict access
-- Consider API authentication for production
-- Rate limit requests
-
-### Gas and Storage
-
-- Service pays gas fees for NEAR transactions from treasury account
-- Monitor treasury balance to ensure sufficient NEAR for gas
-- NEP-141 storage deposits are automatically handled
+**Gas:**
+- Treasury account pays gas fees for NEAR transactions
+- Monitor treasury balance for sufficient NEAR
 
 ## Troubleshooting
 
@@ -635,7 +627,7 @@ Production recommendations:
 ./target/release/funding-bridge --help
 
 # Validate NEAR key format
-echo $NEAR_SIGNER_KEY | grep -E '^ed25519:[a-zA-Z0-9]{88}$'
+echo $NEAR_TREASURY_KEY | grep -E '^ed25519:[a-zA-Z0-9]{88}$'
 
 # Test RPC connectivity
 curl -s https://rpc.testnet.near.org/status

@@ -25,8 +25,8 @@
 //! # Start the service (dry-run mode)
 //! funding-bridge \
 //!   --network mainnet \
-//!   --near-account your-treasury.near \
-//!   --near-signer-key "ed25519:..." \
+//!   --near-treasury-account your-treasury.near \
+//!   --near-treasury-key "ed25519:..." \
 //!   --port 3000 \
 //!   --dry-run
 //! ```
@@ -35,7 +35,8 @@
 //!
 //! - [`app`] - Application state and initialization
 //! - [`bridge`] - NEAR Intents Bridge API client
-//! - [`chain`] - NEAR treasury handler
+//! - [`treasury`] - NEAR treasury handler (withdrawals/intents)
+//! - [`external`] - External chain wallet handlers (deposits)
 //! - [`config`] - CLI arguments and configuration
 //! - [`error`] - Error types and handling
 //! - [`intents`] - NEAR Intents protocol (NEP-413 signing)
@@ -46,7 +47,6 @@
 
 pub mod app;
 pub mod bridge;
-pub mod chain;
 pub mod config;
 pub mod error;
 pub mod external;
@@ -55,6 +55,7 @@ pub mod metrics;
 pub mod routes;
 pub mod rpc;
 pub mod tokens;
+pub mod treasury;
 
 // Re-export commonly used types
 pub use config::Args;
