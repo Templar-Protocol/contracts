@@ -63,6 +63,71 @@ async fn successful_liquidation_totally_underwater(#[future(awt)] worker: Worker
     );
 }
 
+#[rstest]
+#[tokio::test]
+async fn successful_liquidation_exactly_to_zero(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 500),
+    );
+
+    c.borrow(&borrow_user, 300).await;
+
+    let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
+    let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
+
+    // Set price to liquidate 100% of both collateral and liability.
+    c.set_collateral_asset_price(2_f64 / 3_f64).await;
+    let (collateral, price) = c.liquidatable_collateral_fmv(borrow_user.id()).await;
+    assert_eq!(
+        collateral,
+        500.into(),
+        "All collateral should be liquidatable",
+    );
+
+    let storage_before = c
+        .storage_balance_of(borrow_user.id().clone())
+        .await
+        .unwrap();
+    eprintln!("Storage before: {storage_before:?}");
+
+    c.liquidate(&liquidator_user, borrow_user.id(), collateral, price)
+        .await;
+
+    let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
+    let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
+
+    assert_eq!(
+        collateral_balance_after - collateral_balance_before,
+        collateral.into(),
+        "Liquidator should obtain all collateral after a successful liquidation",
+    );
+    assert_eq!(
+        borrow_balance_before - borrow_balance_after,
+        price.into(),
+        "Liquidation should transfer correct amount of tokens",
+    );
+
+    // Should clean up borrow position when liquidation brings both liability and collateral down to zero.
+    let position = c.get_borrow_position(borrow_user.id()).await;
+    assert_eq!(position, None);
+
+    let storage_after = c
+        .storage_balance_of(borrow_user.id().clone())
+        .await
+        .unwrap();
+
+    eprintln!("Storage after: {storage_after:?}");
+
+    assert!(storage_after.available > storage_before.available);
+}
+
 // Caveat to this test: Make sure that the yield distribution value is
 // divisible by 10 for easy maths.
 #[rstest]
