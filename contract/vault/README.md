@@ -113,8 +113,8 @@ Note
   - convert_to_shares(assets), convert_to_assets(shares)
   - preview_deposit/mint/withdraw/redeem
 - Fees:
-  - internal_accrue_fee() mints fee shares only on growth (current_total_assets > last_total_assets).
-  - Conversions simulate fee accrual and include virtual offsets via compute_effective_totals.
+  - internal_accrue_fee() mints management fees pro-rata over time (annualized over YEAR_NS) and performance fees only on growth.
+  - Conversions simulate fee accrual (management first, then performance) and include virtual offsets via compute_effective_totals.
 
 - Effective totals
   - All previews and conversions simulate fee accrual first and apply virtual_shares and virtual_assets to stabilize edge cases at low supply/assets.
@@ -276,7 +276,7 @@ Important
 
 ## Fee policy
 
-- set_performance_fee(fee) sets the WAD fraction (capped; fees accrue only on profits).
+- set_fees(fees) updates performance/management rates and recipients atomically (capped; accrues under the prior configuration first).
 - internal_accrue_fee() mints fee shares to fee_recipient and updates last_total_assets.
 - Conversions use compute_effective_totals to simulate fee shares and apply virtual offsets.
 

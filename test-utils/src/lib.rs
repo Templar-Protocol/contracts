@@ -29,7 +29,10 @@ use templar_common::{
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
     registry::DeployMode,
-    vault::VaultConfiguration,
+    vault::{
+        wad::{Wad, MAX_FEE_WAD},
+        Fee as VaultFee, Fees as VaultFees, VaultConfiguration,
+    },
 };
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
@@ -156,7 +159,16 @@ pub fn vault_configuration(
         sentinel: sentinel_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
         initial_timelock_ns: templar_common::vault::MIN_TIMELOCK_NS.into(),
-        fee_recipient: fee_recipient_id,
+        fees: VaultFees {
+            performance: VaultFee {
+                fee: Wad::from(MAX_FEE_WAD),
+                recipient: fee_recipient_id.clone(),
+            },
+            management: VaultFee {
+                fee: Wad::from(MAX_FEE_WAD),
+                recipient: fee_recipient_id,
+            },
+        },
         skim_recipient: skim_recipient_id,
         name: "Vault".to_string(),
         symbol: "VAULT".to_string(),

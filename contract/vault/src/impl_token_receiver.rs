@@ -130,7 +130,8 @@ impl Contract {
             .unwrap_or_else(|_| templar_common::panic_with_message("Failed to mint shares"));
 
         self.update_idle_balance(IdleBalanceDelta::Increase(accept.into()));
-        self.last_total_assets = self.last_total_assets.saturating_add(accept);
+        self.fee_anchor.total_assets = self.fee_anchor.total_assets.saturating_add(accept);
+        self.fee_anchor.timestamp_ns = env::block_timestamp();
 
         refund
     }

@@ -1,20 +1,26 @@
 use std::{collections::BTreeSet, num::NonZeroU8};
 
+use crate::{
+    asset::{BorrowAsset, FungibleAsset},
+    supply::SupplyPosition,
+    vault::wad::Wad,
+};
 use near_sdk::{
     env,
     json_types::{U128, U64},
     near, require, AccountId, AccountIdRef, Gas, Promise, PromiseOrValue,
 };
 
-use crate::{
-    asset::{BorrowAsset, FungibleAsset},
-    supply::SupplyPosition,
-};
+pub mod wad;
 
 pub type TimestampNs = u64;
 
+pub const DAY_NS: u64 = 86_400_000_000_000;
+pub const YEAR_NS: u64 = 365 * DAY_NS;
+
 pub const MIN_TIMELOCK_NS: u64 = 0;
-pub const MAX_TIMELOCK_NS: u64 = 30 * 86_400_000_000_000; // 30 days
+pub const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
+
 pub const MAX_QUEUE_LEN: usize = 64;
 
 pub type ExpectedIdx = u32;
@@ -67,10 +73,24 @@ pub struct MarketConfiguration {
     pub cap: U128,
     /// Whether market is enabled for deposits/withdrawals
     pub enabled: bool,
-    /// Timestamp (ns) after which market can be removed (if pending removal)
+    /// Timestamp after which market can be removed (if pending removal)
     pub removable_at: TimestampNs,
-    /// Optional cap group identifier used to throttle correlated exposure
+    /// Cap group identifier used to throttle correlated exposure
     pub cap_group_id: Option<CapGroupId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct Fee<T> {
+    pub fee: T,
+    pub recipient: AccountId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct Fees<T> {
+    pub performance: Fee<T>,
+    pub management: Fee<T>,
 }
 
 /// Configuration for the setup of a metavault.
@@ -89,8 +109,8 @@ pub struct VaultConfiguration {
     pub underlying_token: FungibleAsset<BorrowAsset>,
     /// The initial timelock for this vault used for modifying the configuration.
     pub initial_timelock_ns: U64,
-    /// The account that receives fees for this vault.
-    pub fee_recipient: AccountId,
+    /// Fee configuration for performance and management fees as well as their recipients.
+    pub fees: Fees<Wad>,
     /// The skim account that can unorphan any assets erroneously sent to this vault.
     pub skim_recipient: AccountId,
     /// The name of the share token.
@@ -150,8 +170,7 @@ pub trait VaultExt {
     fn accept_sentinel();
     fn revoke_pending_sentinel();
     fn set_skim_recipient(account: AccountId);
-    fn set_fee_recipient(account: AccountId);
-    fn set_performance_fee(fee: U128);
+    fn set_fees(fees: Fees<U128>);
     fn submit_timelock(new_timelock_ns: U64);
     fn accept_timelock();
     fn revoke_pending_timelock();
@@ -181,6 +200,7 @@ pub trait VaultExt {
     // Views
     fn get_configuration() -> VaultConfiguration;
     fn get_total_assets() -> U128;
+    fn get_last_total_assets() -> U128;
     fn get_total_supply() -> U128;
     fn get_max_deposit() -> U128;
     fn convert_to_shares(assets: U128) -> U128;
@@ -190,6 +210,8 @@ pub trait VaultExt {
     fn preview_withdraw(assets: U128) -> U128;
     fn preview_redeem(shares: U128) -> U128;
     fn get_cap_groups() -> Vec<(CapGroupId, CapGroupRecord)>;
+    fn get_fee_anchor_timestamp() -> U64;
+    fn get_fees() -> Fees<U128>;
 }
 
 // Add a 20% buffer to a gas estimate
@@ -655,6 +677,14 @@ pub enum Event {
     PerformanceFeeAccrued { recipient: AccountId, shares: U128 },
     #[event_version("1.0.0")]
     PerformanceFeeMintFailed { error: String },
+    #[event_version("1.0.0")]
+    ManagementFeeAccrued { recipient: AccountId, shares: U128 },
+    #[event_version("1.0.0")]
+    ManagementFeeMintFailed { error: String },
+    #[event_version("1.0.0")]
+    ManagementFeeSet { fee: U128 },
+    #[event_version("1.0.0")]
+    ManagementFeeRecipientSet { account: AccountId },
     #[event_version("1.0.0")]
     LockChange { is_locked: bool, market_index: u32 },
 

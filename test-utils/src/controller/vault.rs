@@ -12,7 +12,7 @@ use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use std::{env, ops::Deref};
-use templar_common::vault::{AllocationDelta, DepositMsg, VaultConfiguration};
+use templar_common::vault::{AllocationDelta, DepositMsg, Fees, VaultConfiguration};
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
@@ -56,7 +56,6 @@ impl VaultController {
     define! {
         /* -------- Views -------- */
         #[view] pub fn get_configuration() -> VaultConfiguration;
-        #[view] pub fn get_fee_recipient() -> AccountId;
         #[view] pub fn get_last_total_assets() -> U128;
         #[view] pub fn get_total_assets() -> U128;
         #[view] pub fn get_total_supply() -> U128;
@@ -65,6 +64,8 @@ impl VaultController {
         #[view] pub fn get_withdrawing_op_id() -> Option<U64>;
         #[view] pub fn get_current_withdraw_request_id() -> Option<U64>;
         #[view] pub fn has_pending_market_withdrawal() -> bool;
+        #[view] pub fn get_fee_anchor_timestamp() -> U64;
+        #[view] pub fn get_fees() -> Fees<U128>;
 
 
         #[view] pub fn get_market_supply(market: &AccountId) -> U128;
@@ -151,10 +152,7 @@ impl VaultController {
         pub fn set_skim_recipient(account: AccountId);
 
         #[call(exec, tgas(50))]
-        pub fn set_fee_recipient(account: AccountId);
-
-        #[call(exec, tgas(50))]
-        pub fn set_performance_fee(fee: U128);
+        pub fn set_fees(fees: Fees<U128>);
 
         #[call(exec, tgas(50))]
         pub fn submit_timelock(new_timelock_ns: U64);

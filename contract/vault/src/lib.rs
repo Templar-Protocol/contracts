@@ -35,22 +35,26 @@ use templar_common::{
     market::ext_market,
     panic_with_message,
     vault::{
-        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event, CapGroupId, CapGroupRecord,
-        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
-        QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
-        WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, MAX_TIMELOCK_NS,
-        MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
+        require_at_least,
+        wad::{
+            compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
+            Number, Wad,
+        },
+        AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
+        Fee, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState,
+        PendingWithdrawal, QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase,
+        VaultConfiguration, WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS,
+        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
+        WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
-pub use wad::*;
 
 pub mod aum;
 pub mod governance;
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
 pub mod storage_management;
-pub mod wad;
 
 #[cfg(test)]
 mod test_utils;
@@ -61,6 +65,13 @@ mod test_utils;
 /// Internal storage keys used by persistent collections.
 pub enum StorageKey {
     PendingWithdrawals,
+}
+
+#[near(serializers = [borsh])]
+#[derive(Debug, Clone, Default)]
+pub struct FeeAccrualAnchor {
+    pub total_assets: u128,
+    pub timestamp_ns: u64,
 }
 
 #[derive(BorshStorageKey)]
@@ -122,14 +133,12 @@ pub struct Contract {
     underlying_asset: FungibleAsset<BorrowAsset>,
     /// The process in which the vault calculates its assets under management
     aum: AUM,
-    /// Performance fee
-    performance_fee: Wad,
-    /// The recipient of performance fees
-    fee_recipient: AccountId,
+    /// Fees (rate + recipient)
+    fees: Fees<Wad>,
     /// The recipient of any skimmed tokens that are erroneously held by the vault
     skim_recipient: AccountId,
-    /// Last recorded total assets (for fee accrual)
-    last_total_assets: u128,
+    /// Fee accrual anchor (assets + timestamp)
+    fee_anchor: FeeAccrualAnchor,
     /// Vaults liquidity buffer
     idle_balance: u128,
 
@@ -180,12 +189,12 @@ impl Contract {
             sentinel,
             underlying_token,
             initial_timelock_ns,
-            fee_recipient,
             skim_recipient,
             name,
             symbol,
             decimals,
             restrictions,
+            fees,
         } = configuration;
 
         require!(
@@ -196,9 +205,12 @@ impl Contract {
         let mut contract = Self {
             underlying_asset: underlying_token,
             aum: AUM::BalanceSheet,
-            performance_fee: Wad::default(),
-            fee_recipient,
+            fees,
             skim_recipient,
+            fee_anchor: FeeAccrualAnchor {
+                total_assets: 0,
+                timestamp_ns: env::block_timestamp(),
+            },
             markets: BTreeMap::new(),
             cap_groups: BTreeMap::new(),
             governance_timelocks: governance::Timelocks::new(
@@ -209,7 +221,6 @@ impl Contract {
                 initial_timelock_ns.0,
             ),
             supply_queue: BTreeSet::default(),
-            last_total_assets: 0,
             virtual_shares: 1,
             virtual_assets: 1,
             idle_balance: 0,
@@ -712,7 +723,7 @@ impl Contract {
             }),
             underlying_token: self.underlying_asset.clone(),
             initial_timelock_ns: self.governance_timelocks.timelock_config_ns.into(),
-            fee_recipient: self.fee_recipient.clone(),
+            fees: self.fees.clone(),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
             symbol: meta.symbol,
@@ -724,6 +735,10 @@ impl Contract {
     /// Returns total assets under management = idle balance + sum of market principals.
     pub fn get_total_assets(&self) -> U128 {
         self.aum.get_total_assets(self)
+    }
+
+    pub fn get_last_total_assets(&self) -> U128 {
+        U128(self.fee_anchor.total_assets)
     }
 
     pub fn get_idle_balance(&self) -> U128 {
@@ -739,6 +754,23 @@ impl Contract {
             .iter()
             .map(|(id, rec)| (id.clone(), rec.clone()))
             .collect()
+    }
+
+    pub fn get_fee_anchor_timestamp(&self) -> U64 {
+        U64(self.fee_anchor.timestamp_ns)
+    }
+
+    pub fn get_fees(&self) -> Fees<U128> {
+        Fees {
+            performance: Fee {
+                fee: U128(u128::from(self.fees.performance.fee)),
+                recipient: self.fees.performance.recipient.clone(),
+            },
+            management: Fee {
+                fee: U128(u128::from(self.fees.management.fee)),
+                recipient: self.fees.management.recipient.clone(),
+            },
+        }
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
@@ -989,12 +1021,16 @@ impl Contract {
     /// - Apply virtual offsets: +`virtual_shares` to supply and +`virtual_assets` to assets.
     fn effective_totals_fee_aware(&self) -> (u128, u128) {
         let cur = self.get_total_assets().0;
+        let now = env::block_timestamp();
         let ts = self.total_supply();
+        let mgmt_shares =
+            self.compute_management_fee_shares(cur, ts, self.fee_anchor.timestamp_ns, now);
+        let ts_after_mgmt = Number::from(ts).saturating_add(mgmt_shares);
         let (new_total_supply, new_total_assets) = Self::compute_effective_totals(
             cur.into(),
-            self.last_total_assets.into(),
-            self.performance_fee,
-            ts.into(),
+            self.fee_anchor.total_assets.into(),
+            self.fees.performance.fee,
+            ts_after_mgmt,
             self.virtual_shares.into(),
             self.virtual_assets.into(),
         );
@@ -1029,6 +1065,26 @@ impl Contract {
         (new_total_supply, new_total_assets)
     }
 
+    fn compute_management_fee_shares(
+        &self,
+        cur_assets: u128,
+        total_supply: u128,
+        last_timestamp_ns: u64,
+        now: u64,
+    ) -> Number {
+        if self.fees.management.fee.is_zero() || total_supply == 0 || now <= last_timestamp_ns {
+            return Number::zero();
+        }
+        let elapsed_ns = now - last_timestamp_ns;
+        let annual_fee_assets = self.fees.management.fee.apply_floored(cur_assets.into());
+        let fee_assets = mul_div_floor(
+            annual_fee_assets,
+            Number::from(u128::from(elapsed_ns)),
+            Number::from(u128::from(YEAR_NS)),
+        );
+        compute_fee_shares_from_assets(fee_assets, cur_assets.into(), total_supply.into())
+    }
+
     pub fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
         let requested = requested.unwrap_or(self.idle_balance);
         let max_room = self.get_max_deposit().0;
@@ -1036,17 +1092,43 @@ impl Contract {
     }
 
     pub fn internal_accrue_fee(&mut self) {
-        // Invariant: Fees are minted only when total_assets() > last_total_assets (no fees on losses/flat).
+        let now = env::block_timestamp();
         let cur = self.get_total_assets().0;
-        let fee_shares = compute_fee_shares(
+        let mut total_supply = self.total_supply();
+        let anchor = self.fee_anchor.clone();
+
+        let mgmt_shares =
+            self.compute_management_fee_shares(cur, total_supply, anchor.timestamp_ns, now);
+        if mgmt_shares > Number::zero() {
+            let minted: u128 = mgmt_shares.into();
+            let recipient = self.fees.management.recipient.clone();
+            let minted_res = self
+                .mint(&Nep141Mint::new(minted, &recipient))
+                .inspect_err(|e| {
+                    Event::ManagementFeeMintFailed {
+                        error: e.to_string(),
+                    }
+                    .emit();
+                });
+            if minted_res.is_ok() {
+                Event::ManagementFeeAccrued {
+                    recipient,
+                    shares: U128(minted),
+                }
+                .emit();
+            }
+            total_supply = self.total_supply();
+        }
+
+        let performance_shares = compute_fee_shares(
             cur.into(),
-            self.last_total_assets.into(),
-            self.performance_fee,
-            self.total_supply().into(),
+            anchor.total_assets.into(),
+            self.fees.performance.fee,
+            total_supply.into(),
         );
-        if fee_shares > Number::zero() {
-            let minted: u128 = fee_shares.into();
-            let recipient = self.fee_recipient.clone();
+        if performance_shares > Number::zero() {
+            let minted: u128 = performance_shares.into();
+            let recipient = self.fees.performance.recipient.clone();
             let _ = self
                 .mint(&Nep141Mint::new(minted, &recipient))
                 .inspect_err(|e| {
@@ -1061,7 +1143,11 @@ impl Contract {
             }
             .emit();
         }
-        self.last_total_assets = cur;
+
+        self.fee_anchor = FeeAccrualAnchor {
+            total_assets: cur,
+            timestamp_ns: now,
+        };
     }
 
     /* ----- Auth ----- */

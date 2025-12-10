@@ -6,7 +6,10 @@ use near_sdk::borsh::schema::{add_definition, Declaration, Definition};
 use near_sdk::borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use primitive_types::{U256, U512};
-use templar_common::schemars::JsonSchema;
+use schemars::JsonSchema;
+
+use crate::schemars::r#gen::SchemaGenerator;
+use crate::schemars::schema::Schema;
 
 pub type WIDE = U512;
 
@@ -185,9 +188,7 @@ impl JsonSchema for Number {
         "Number".to_string()
     }
 
-    fn json_schema(
-        generator: &mut templar_common::schemars::r#gen::SchemaGenerator,
-    ) -> templar_common::schemars::schema::Schema {
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let mut g = generator.subschema_for::<[u8; 32]>().into_object();
         g.metadata().description = Some("256-bit Unsigned Integer".to_string());
         g.string().pattern = Some("^(0|[1-9][0-9]{0,77})$".to_string());
@@ -313,9 +314,7 @@ impl JsonSchema for Wad {
         "Wad".to_string()
     }
 
-    fn json_schema(
-        generator: &mut templar_common::schemars::r#gen::SchemaGenerator,
-    ) -> templar_common::schemars::schema::Schema {
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let mut schema = generator.subschema_for::<Number>().into_object();
         schema.metadata().description =
             Some("Wad fixed faction back by 256-bit unsigned integer".to_string());
@@ -340,16 +339,24 @@ pub fn compute_fee_shares(
     performance_fee: Wad,
     total_supply: Number,
 ) -> Number {
-    if performance_fee.is_zero() || total_supply.is_zero() || cur_total_assets <= last_total_assets
-    {
-        return Number::zero();
-    }
     let profit = cur_total_assets.saturating_sub(last_total_assets);
-    if profit.is_zero() {
-        return Number::zero();
-    }
-    let fee_assets = performance_fee.apply_floored(profit);
-    if fee_assets.is_zero() {
+    compute_fee_shares_from_assets(
+        performance_fee.apply_floored(profit),
+        cur_total_assets,
+        total_supply,
+    )
+}
+
+/// Computes fee shares to mint from a raw `fee_assets` amount, given current total assets and supply.
+/// Returns 0 when fee is zero, supply is zero, or fee consumes all assets.
+#[inline]
+#[must_use]
+pub fn compute_fee_shares_from_assets(
+    fee_assets: Number,
+    cur_total_assets: Number,
+    total_supply: Number,
+) -> Number {
+    if fee_assets.is_zero() || total_supply.is_zero() {
         return Number::zero();
     }
     if fee_assets.0 >= cur_total_assets.0 {

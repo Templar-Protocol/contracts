@@ -8,8 +8,6 @@ use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::test_utils::*;
-use crate::wad::compute_fee_shares;
-use crate::wad::Wad;
 use crate::Contract;
 use crate::MarketRecord;
 use crate::Number;
@@ -28,18 +26,23 @@ use near_sdk_contract_tools::owner::OwnerExternal;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
+use templar_common::vault::wad::{
+    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad,
+};
 use templar_common::vault::AllocationDelta;
 use templar_common::vault::Delta;
 use templar_common::vault::DepositMsg;
 use templar_common::vault::Error;
 use templar_common::vault::EscrowSettlement;
+use templar_common::vault::Fee;
+use templar_common::vault::Fees;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
 use templar_common::vault::PendingWithdrawal;
 use templar_common::vault::MAX_TIMELOCK_NS;
 use templar_common::vault::{
     AllocatingState, CapGroupId, CapGroupRecord, MarketConfiguration, Restrictions,
-    WithdrawingState,
+    WithdrawingState, YEAR_NS,
 };
 
 #[fixture]
@@ -82,6 +85,24 @@ fn build_owner_env(vault_id: AccountId) -> OwnerEnv {
         vault_id,
         owner,
         contract,
+    }
+}
+
+fn build_fees(
+    performance_fee: Wad,
+    management_fee: Wad,
+    performance_recipient: AccountId,
+    management_recipient: AccountId,
+) -> Fees<U128> {
+    Fees {
+        performance: Fee {
+            fee: U128(u128::from(performance_fee)),
+            recipient: performance_recipient,
+        },
+        management: Fee {
+            fee: U128(u128::from(management_fee)),
+            recipient: management_recipient,
+        },
     }
 }
 
@@ -244,10 +265,11 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_000;
 
-    c.performance_fee = Wad::one() / 10;
+    c.fees.performance.fee = Wad::one() / 10;
 
-    // Baseline: last_total_assets = current, so no profit => no fee
-    c.last_total_assets = c.get_total_assets().0;
+    // Baseline: anchor = current, so no profit => no fee
+    c.fee_anchor.total_assets = c.get_total_assets().0;
+    c.fee_anchor.timestamp_ns = env::block_timestamp();
     let ts_before = c.total_supply();
     c.internal_accrue_fee();
     assert_eq!(c.total_supply(), ts_before, "no profit => no fee minted");
@@ -256,8 +278,8 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     c.idle_balance = 1_500;
     let expect = compute_fee_shares(
         c.get_total_assets().0.into(),
-        c.last_total_assets.into(),
-        c.performance_fee,
+        c.fee_anchor.total_assets.into(),
+        c.fees.performance.fee,
         c.total_supply().into(),
     );
     c.internal_accrue_fee();
@@ -1316,7 +1338,7 @@ fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
 }
 
 #[rstest]
-fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
+fn set_fees_accrues_before_switching_recipient(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
@@ -1325,24 +1347,30 @@ fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=1000, current=1500
     contract.idle_balance = 1_500;
-    contract.last_total_assets = 1_000;
-    contract.performance_fee = Wad::one() / 10;
+    contract.fee_anchor.total_assets = 1_000;
+    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fees.performance.fee = Wad::one() / 10;
 
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect = compute_fee_shares(
         cur.into(),
         1_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let old_recipient = contract.fee_recipient.clone();
+    let old_recipient = contract.fees.performance.recipient.clone();
     let old_balance = contract.balance_of(&old_recipient);
 
     // Switch fee recipient; should accrue to old recipient first
     let new_recipient = mk(3);
-    contract.set_fee_recipient(new_recipient.clone());
+    contract.set_fees(build_fees(
+        contract.fees.performance.fee,
+        contract.fees.management.fee,
+        new_recipient.clone(),
+        new_recipient.clone(),
+    ));
 
     assert_eq!(
         contract.balance_of(&old_recipient),
@@ -1355,17 +1383,18 @@ fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
-        contract.fee_recipient, new_recipient,
+        contract.fees.performance.recipient.clone(),
+        new_recipient,
         "recipient should be updated"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets, cur,
+        "fee anchor must update to current after accrual"
     );
 }
 
 #[rstest]
-fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
+fn set_fees_accrues_before_switching_recipient_variant(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
@@ -1375,24 +1404,30 @@ fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
 
     // Simulate profit: last=2000, current=2400
     contract.idle_balance = 2_400;
-    contract.last_total_assets = 2_000;
-    contract.performance_fee = Wad::one() / 20;
+    contract.fee_anchor.total_assets = 2_000;
+    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fees.performance.fee = Wad::one() / 20;
 
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect = compute_fee_shares(
         cur.into(),
         2_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let old_recipient = contract.fee_recipient.clone();
+    let old_recipient = contract.fees.performance.recipient.clone();
     let old_balance = contract.balance_of(&old_recipient);
 
     // Switch fee recipient; should accrue to old recipient first
     let new_recipient = mk(3);
-    contract.set_fee_recipient(new_recipient.clone());
+    contract.set_fees(build_fees(
+        contract.fees.performance.fee,
+        contract.fees.management.fee,
+        new_recipient.clone(),
+        new_recipient.clone(),
+    ));
 
     assert_eq!(
         contract.balance_of(&old_recipient),
@@ -1405,17 +1440,18 @@ fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
-        contract.fee_recipient, new_recipient,
+        contract.fees.performance.recipient, new_recipient,
         "recipient should be updated"
     );
+
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets, cur,
+        "fee anchor must update to current after accrual"
     );
 }
 
 #[rstest]
-fn set_performance_fee_accrues_with_old_rate_then_updates(owner_env: OwnerEnv) {
+fn set_fees_accrues_with_old_rate_then_updates_performance(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
@@ -1425,47 +1461,60 @@ fn set_performance_fee_accrues_with_old_rate_then_updates(owner_env: OwnerEnv) {
 
     // Simulate profit: last=1000, current=1500
     contract.idle_balance = 1_500;
-    contract.last_total_assets = 1_000;
+    contract.fee_anchor.total_assets = 1_000;
+    contract.fee_anchor.timestamp_ns = env::block_timestamp();
 
     // Old rate = 10%, new rate = 1%
-    contract.performance_fee = Wad::one() / 10;
+    contract.fees.performance.fee = Wad::one() / 10;
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect_old = compute_fee_shares(
         cur.into(),
         1_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let recipient = contract.fee_recipient.clone();
+    let recipient = contract.fees.performance.recipient.clone();
     let bal_before = contract.balance_of(&recipient);
 
-    contract.set_performance_fee(Wad::one() / 100);
+    contract.set_fees(build_fees(
+        Wad::one() / 100,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
 
     assert_eq!(
         contract.balance_of(&recipient),
         bal_before + expect_old.as_u128_trunc(),
-        "accrual must use the old fee rate before updating"
+        "accrual must use the old fee rate before updating",
     );
+
+    assert_eq!(
+        contract.fees.performance.fee,
+        Wad::one() / 100,
+        "performance fee must be updated to the new rate"
+    );
+
     assert_eq!(
         contract.total_supply(),
         ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
-        contract.performance_fee,
-        crate::wad::Wad::one() / 100,
+        contract.fees.performance.fee,
+        Wad::one() / 100,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets, cur,
+        "fee anchor must update to current after accrual"
     );
 }
 
 #[rstest]
-fn set_performance_fee_accrues_with_old_rate_then_updates_variant(owner_env: OwnerEnv) {
+fn set_fees_accrues_with_old_rate_then_updates_performance_variant(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
@@ -1475,42 +1524,149 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant(owner_env: Own
 
     // Simulate profit: last=2000, current=2400
     contract.idle_balance = 2_400;
-    contract.last_total_assets = 2_000;
+    contract.fee_anchor.total_assets = 2_000;
+    contract.fee_anchor.timestamp_ns = env::block_timestamp();
 
     // Old rate = 5%, new rate = 0.5%
-    contract.performance_fee = Wad::one() / 20;
+    contract.fees.performance.fee = Wad::one() / 20;
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect_old = compute_fee_shares(
         cur.into(),
         2_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let recipient = contract.fee_recipient.clone();
+    let recipient = contract.fees.performance.recipient.clone();
     let bal_before = contract.balance_of(&recipient);
 
-    contract.set_performance_fee(Wad::one() / 200);
+    contract.set_fees(build_fees(
+        Wad::one() / 200,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
 
     assert_eq!(
         contract.balance_of(&recipient),
         bal_before + expect_old.as_u128_trunc(),
-        "accrual must use the old fee rate before updating"
+        "accrual must use the old fee rate before updating",
     );
+
+    assert_eq!(
+        contract.fees.performance.fee,
+        Wad::one() / 200,
+        "performance fee must be updated to the new rate"
+    );
+
     assert_eq!(
         contract.total_supply(),
         ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
-        contract.performance_fee,
-        crate::wad::Wad::one() / 200,
+        contract.fees.performance.fee,
+        Wad::one() / 200,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets, cur,
+        "fee anchor must update to current after accrual"
+    );
+}
+
+#[rstest]
+fn management_fee_accrues_proportionally(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    contract.fees.management.fee = Wad::one() / 10;
+    contract.fees.performance.fee = Wad::zero();
+
+    contract
+        .deposit_unchecked(&accounts(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    contract.idle_balance = 1_000;
+
+    let initial_supply = contract.total_supply();
+    let cur_assets = contract.get_total_assets().0;
+    let recipient = contract.fees.management.recipient.clone();
+    let elapsed = YEAR_NS / 2;
+
+    set_block_ts(&vault_id, &vault_id, elapsed);
+    contract.internal_accrue_fee();
+
+    let expected_fee_assets = mul_div_floor(
+        contract
+            .fees
+            .management
+            .fee
+            .apply_floored(Number::from(cur_assets)),
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let expected_shares = compute_fee_shares_from_assets(
+        expected_fee_assets,
+        cur_assets.into(),
+        initial_supply.into(),
+    );
+
+    assert_eq!(
+        contract.total_supply(),
+        initial_supply + expected_shares.as_u128_trunc(),
+        "management fee shares must mint proportionally to elapsed time",
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        expected_shares.as_u128_trunc(),
+        "management fee recipient must receive minted shares",
+    );
+    assert_eq!(
+        contract.fee_anchor.total_assets, cur_assets,
+        "fee anchor assets must remain unchanged after management accrual",
+    );
+    assert_eq!(
+        contract.fee_anchor.timestamp_ns, elapsed,
+        "fee anchor timestamp must update to now after accrual",
+    );
+}
+
+#[rstest]
+fn management_fee_zero_elapsed_is_noop(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    contract.fees.management.fee = Wad::one() / 10;
+    contract.fees.performance.fee = Wad::zero();
+
+    contract
+        .deposit_unchecked(&accounts(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    contract.idle_balance = 1_000;
+
+    let initial_supply = contract.total_supply();
+    let recipient = contract.fees.management.recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
+
+    set_block_ts(&vault_id, &vault_id, env::block_timestamp());
+    contract.internal_accrue_fee();
+
+    assert_eq!(
+        contract.total_supply(),
+        initial_supply,
+        "no mint when elapsed is zero"
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        bal_before,
+        "recipient balance unchanged when elapsed is zero"
     );
 }
 
@@ -1525,11 +1681,12 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) 
 
     // Loss scenario: last=1000, current=800
     contract.idle_balance = 800;
-    contract.last_total_assets = 1_000;
-    contract.performance_fee = Wad::one() / 10;
+    contract.fee_anchor.total_assets = 1_000;
+    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fees.performance.fee = Wad::one() / 10;
 
     let ts_before = contract.total_supply();
-    let fr = contract.fee_recipient.clone();
+    let fr = contract.fees.performance.recipient.clone();
     let bal_before = contract.balance_of(&fr);
     let cur = contract.get_total_assets().0;
 
@@ -1546,8 +1703,8 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) 
         "fee recipient balance must remain unchanged on loss"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current even on loss"
+        contract.fee_anchor.total_assets, cur,
+        "fee anchor must update to current after accrual"
     );
 }
 
@@ -1586,9 +1743,10 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
         "idle must increase by accepted deposit"
     );
     assert_eq!(
-        c.last_total_assets, deposit,
-        "last_total_assets must increase by accepted deposit"
+        c.fee_anchor.total_assets, deposit,
+        "fee anchor must increase by accepted deposit"
     );
+
     assert!(
         matches!(c.op_state, OpState::Idle),
         "must remain idle when min_batch not reached"
@@ -1632,8 +1790,8 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
         "idle increases by accepted amount only"
     );
     assert_eq!(
-        c.last_total_assets, accept,
-        "last_total_assets increases by accepted amount only"
+        c.fee_anchor.total_assets, accept,
+        "fee anchor increases by accepted amount only"
     );
 }
 
@@ -1971,8 +2129,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     case("set_curator"),
     case("set_is_allocator"),
     case("set_skim_recipient"),
-    case("set_fee_recipient"),
-    case("set_performance_fee"),
+    case("set_fees"),
     case("submit_guardian"),
     case("submit_timelock"),
     case("submit_cap"),
@@ -2003,11 +2160,13 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
             "set_skim_recipient" => {
                 c.set_skim_recipient(mk(1));
             }
-            "set_fee_recipient" => {
-                c.set_fee_recipient(mk(1));
-            }
-            "set_performance_fee" => {
-                c.set_performance_fee(Wad::one() / 10);
+            "set_fees" => {
+                c.set_fees(build_fees(
+                    Wad::one() / 10,
+                    c.fees.management.fee,
+                    accounts(1),
+                    c.fees.management.recipient.clone(),
+                ));
             }
             "submit_timelock" => {
                 let cur = c.get_configuration().initial_timelock_ns;
@@ -2403,7 +2562,7 @@ fn governance_set_skim_recipient_updates_field() {
 }
 
 #[test]
-fn governance_set_fee_recipient_no_fee_does_not_accrue() {
+fn governance_set_fees_zero_fee_recipient_change_no_accrue() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = mk(1);
@@ -2413,15 +2572,21 @@ fn governance_set_fee_recipient_no_fee_does_not_accrue() {
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_500;
-    c.last_total_assets = 1_000;
-    c.performance_fee = Wad::zero();
+    c.fee_anchor.total_assets = 1_000;
+    c.fee_anchor.timestamp_ns = env::block_timestamp();
+    c.fees.performance.fee = Wad::zero();
 
     let ts_before = c.total_supply();
-    let last_before = c.last_total_assets;
+    let last_before = c.fee_anchor.total_assets;
 
     let new_recipient = mk(5);
 
-    c.set_fee_recipient(new_recipient.clone());
+    c.set_fees(build_fees(
+        c.fees.performance.fee,
+        c.fees.management.fee,
+        new_recipient.clone(),
+        new_recipient.clone(),
+    ));
 
     assert_eq!(
         c.total_supply(),
@@ -2429,10 +2594,10 @@ fn governance_set_fee_recipient_no_fee_does_not_accrue() {
         "no fee shares minted when fee=0"
     );
     assert_eq!(
-        c.last_total_assets, last_before,
-        "last_total_assets should not change when fee=0"
+        c.fee_anchor.total_assets, last_before,
+        "fee anchor should not change when fee=0"
     );
-    assert_eq!(c.fee_recipient, new_recipient);
+    assert_eq!(c.fees.performance.recipient, new_recipient);
 }
 
 fn owner_call_env(vault_id: AccountId, owner: &AccountId) {

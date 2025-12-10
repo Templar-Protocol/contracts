@@ -1,4 +1,7 @@
-use templar_common::vault::MAX_QUEUE_LEN;
+use templar_common::vault::{
+    wad::{Wad, MAX_FEE_WAD},
+    MAX_QUEUE_LEN,
+};
 
 use super::*;
 use near_sdk::AccountIdRef;
@@ -276,41 +279,89 @@ impl Contract {
         .emit();
     }
 
-    /// Sets the performance fee recipient. Accrues pending fees with the current recipient first.
-    pub fn set_fee_recipient(&mut self, account: AccountId) {
+    /// Sets both performance and management fee rates and recipients atomically.
+    /// Accrues pending fees under the previous configuration before applying updates.
+    pub fn set_fees(&mut self, fees: Fees<U128>) {
         Self::require_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "set_fee_recipient");
-        require!(account != self.fee_recipient, "Already set to this address");
+        Abdicator::require_not_abdicated(&self.abdicator, "set_fees");
 
-        if self.performance_fee != wad::Wad::zero() {
+        let performance_fee = Wad::from(fees.performance.fee.0);
+        let management_fee = Wad::from(fees.management.fee.0);
+
+        require!(performance_fee <= Wad::from(MAX_FEE_WAD), "fee too high");
+        require!(management_fee <= Wad::from(MAX_FEE_WAD), "fee too high");
+
+        let performance_fee_changed = performance_fee != self.fees.performance.fee;
+        let management_fee_changed = management_fee != self.fees.management.fee;
+        let performance_recipient_changed =
+            fees.performance.recipient != self.fees.performance.recipient;
+        let management_recipient_changed =
+            fees.management.recipient != self.fees.management.recipient;
+
+        require!(
+            performance_fee_changed
+                || management_fee_changed
+                || performance_recipient_changed
+                || management_recipient_changed,
+            "No fee changes"
+        );
+
+        if performance_fee_changed
+            || management_fee_changed
+            || ((!self.fees.performance.fee.is_zero() || !self.fees.management.fee.is_zero())
+                && (performance_recipient_changed || management_recipient_changed))
+        {
             self.internal_accrue_fee();
         }
-        Event::FeeRecipientSet {
-            account: account.clone(),
+
+        for account in [
+            fees.performance.recipient.clone(),
+            fees.management.recipient.clone(),
+        ] {
+            if self.storage_balance_of(account.clone()).is_none() {
+                self.storage_deposit(Some(account), Some(true));
+            }
         }
-        .emit();
-        if self.storage_balance_of(account.clone()).is_none() {
-            self.storage_deposit(Some(account.clone()), Some(true));
+
+        if performance_fee_changed {
+            self.fees.performance.fee = performance_fee;
+            Event::PerformanceFeeSet {
+                fee: fees.performance.fee,
+            }
+            .emit();
         }
 
-        self.fee_recipient = account;
-    }
-
-    /// Sets the performance fee as a `WAD`. Accrues fees at the old rate first.
-    pub fn set_performance_fee(&mut self, fee: Wad) {
-        Self::require_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "set_performance_fee");
-
-        require!(fee != self.performance_fee, "Fee already set to this value");
-        require!(fee <= Wad::from(MAX_FEE_WAD), "fee too high");
-
-        self.internal_accrue_fee();
-
-        self.performance_fee = fee;
-        Event::PerformanceFeeSet {
-            fee: U128(u128::from(fee)),
+        if management_fee_changed {
+            self.fees.management.fee = management_fee;
+            Event::ManagementFeeSet {
+                fee: fees.management.fee,
+            }
+            .emit();
         }
-        .emit();
+
+        if performance_recipient_changed {
+            self.fees.performance.recipient = fees.performance.recipient.clone();
+            Event::FeeRecipientSet {
+                account: self.fees.performance.recipient.clone(),
+            }
+            .emit();
+        }
+
+        if management_recipient_changed {
+            self.fees.management.recipient = fees.management.recipient.clone();
+            Event::ManagementFeeRecipientSet {
+                account: self.fees.management.recipient.clone(),
+            }
+            .emit();
+        }
+
+        if !performance_recipient_changed {
+            self.fees.performance.recipient = fees.performance.recipient.clone();
+        }
+
+        if !management_recipient_changed {
+            self.fees.management.recipient = fees.management.recipient.clone();
+        }
     }
 
     pub fn submit_change(&mut self, action: TimelockedAction) {
