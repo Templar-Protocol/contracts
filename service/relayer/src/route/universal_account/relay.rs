@@ -69,7 +69,7 @@ pub async fn relay(
         };
     };
 
-    let payload = match args.clone().verify(&account_id, &parameters.next(), |o| {
+    let payload = match args.clone().verify(&parameters.next_nonce(), |o| {
         app.args.ua.is_origin_allowed(o)
     }) {
         Ok(p) => p,

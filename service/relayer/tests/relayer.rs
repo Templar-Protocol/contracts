@@ -13,7 +13,6 @@ use near_primitives::{
     views::TxExecutionStatus,
 };
 use near_sdk::{
-    json_types::U64,
     serde_json::{self, json},
     AccountId, NearToken,
 };
@@ -30,7 +29,7 @@ use templar_relayer::{
     route::{
         relay::RelayRequest as SdaRelayRequest,
         universal_account::{
-            create::{CreatePasskeyAccount, CreateRequest},
+            create::{CreateRequest, CreateUniversalAccount},
             pow::Pow,
             relay::RelayRequest as UaRelayRequest,
         },
@@ -44,11 +43,11 @@ use templar_universal_account::{
             data::{AuthenticatorData, ClientDataJson},
             Passkey,
         },
-        HashForSigning, Payload,
+        HashForSigning, MessageWithSignature, Payload,
     },
     encoding::p256::PublicKey,
     transaction::{self, Transaction},
-    ExecuteArgs, ExecutionParameters, KeyId,
+    ExecuteArgsMessage, KeyId, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::*;
 
@@ -65,44 +64,34 @@ struct InitTest {
 
 fn create_message<T: near_sdk::serde::Serialize>(
     secret_key: &p256::SecretKey,
-    account_id: AccountId,
-    parameters: ExecutionParameters,
+    parameters: PayloadExecutionParameters,
     payload: T,
-) -> passkey::MessageWithSignature<T> {
-    let payload = passkey::Message::from_parsed(Payload {
-        parameters,
-        account_id,
-        payload,
-    });
+) -> MessageWithSignature<passkey::Message<T>> {
+    let payload = passkey::Message::from_parsed(Payload::new(parameters, payload));
 
     let challenge = payload.hash_for_signing().into();
 
-    payload
-        .sign(
-            secret_key,
-            AuthenticatorData(Box::new([0xffu8; 32])),
-            ClientDataJson {
-                r#type: "type".to_string(),
-                challenge,
-                origin: "origin".to_string(),
-                cross_origin: None,
-                top_origin: None,
-            },
-        )
-        .try_into()
-        .unwrap()
+    payload.sign(
+        secret_key,
+        AuthenticatorData(Box::new([0xffu8; 32])),
+        ClientDataJson {
+            r#type: "type".to_string(),
+            challenge,
+            origin: "origin".to_string(),
+            cross_origin: None,
+            top_origin: None,
+        },
+    )
 }
 
 fn create_execute_message(
     secret_key: &p256::SecretKey,
-    account_id: AccountId,
-    parameters: ExecutionParameters,
+    parameters: PayloadExecutionParameters,
     receiver_id: AccountId,
     actions: impl Into<Box<[transaction::Action]>>,
-) -> passkey::MessageWithSignature<Box<[Transaction]>> {
+) -> MessageWithSignature<passkey::Message<Box<[Transaction]>>> {
     create_message(
         secret_key,
-        account_id,
         parameters,
         vec![Transaction {
             receiver_id,
@@ -115,7 +104,7 @@ fn create_execute_message(
 #[fixture]
 async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::WARN)
         .try_init();
 
     setup_test!(worker extract(c) accounts(borrow_user, relay_user, ua_deployer));
@@ -125,7 +114,7 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
     ua_deployer
         .add_version(
             ua_deployer.contract().as_account(),
-            NearToken::from_near(40),
+            NearToken::from_near(80),
             "v1",
             DeployMode::GlobalHash,
             UniversalAccountController::wasm().await,
@@ -156,6 +145,8 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
             ua_deployer.contract().id().as_ref(),
             "--ua-version-key",
             "v1",
+            "--ua-chain-id",
+            &NEAR_TESTNET_CHAIN_ID.to_string(),
             "--intents-id",
             "intents.near",
         ]),
@@ -284,15 +275,13 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let message = create_message(
         &secret_key,
-        ua_deployer.contract().id().clone(),
-        ExecutionParameters {
-            block_height: U64(0),
-            index: U64(0),
-            nonce: U64(0),
-        },
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .zero()
+            .verifying_contract(ua_deployer.contract().id().clone())
+            .build_salt(),
         Pow::mine(
-            CreatePasskeyAccount {
-                key: passkey.clone(),
+            CreateUniversalAccount {
+                key: passkey.clone().into(),
                 block_hash: fetch_nonce.block_hash,
             },
             POW_DIFFICULTY,
@@ -303,7 +292,13 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(Box::new(message))),
+        Json(CreateRequest::ExecuteArgs(
+            ExecuteArgsMessage {
+                key: passkey.clone(),
+                mws: Box::new(message),
+            }
+            .into(),
+        )),
     )
     .await;
 
@@ -348,8 +343,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         c.contract().id().clone(),
         vec![transaction::FunctionCallAction {
             function_name: "apply_interest".to_string(),
@@ -364,10 +358,11 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),
@@ -411,8 +406,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         "intents.near".parse().unwrap(),
         vec![transaction::FunctionCallAction {
             function_name: "add_public_key".to_string(),
@@ -427,10 +421,11 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),
@@ -535,15 +530,13 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let message = create_message(
         &secret_key,
-        ua_deployer.contract().id().clone(),
-        ExecutionParameters {
-            block_height: U64(0),
-            index: U64(0),
-            nonce: U64(0),
-        },
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .zero()
+            .verifying_contract(ua_deployer.contract().id().clone())
+            .build_salt(),
         Pow::mine(
-            CreatePasskeyAccount {
-                key: passkey.clone(),
+            CreateUniversalAccount {
+                key: passkey.clone().into(),
                 block_hash: fetch_nonce.block_hash,
             },
             POW_DIFFICULTY,
@@ -554,7 +547,13 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::create::create(
         State(app.clone()),
-        Json(CreateRequest::Passkey(Box::new(message))),
+        Json(CreateRequest::ExecuteArgs(
+            ExecuteArgsMessage {
+                key: passkey.clone(),
+                mws: Box::new(message),
+            }
+            .into(),
+        )),
     )
     .await;
 
@@ -601,8 +600,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         ua_account_id.clone(),
         vec![transaction::FunctionCallAction {
             function_name: "add_key".to_string(),
@@ -621,10 +619,11 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),
@@ -669,8 +668,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let message = create_execute_message(
         &secret_key_2,
-        ua_account_id.clone(),
-        parameters.next(),
+        parameters.next_nonce(),
         ua_account_id.clone(),
         vec![transaction::FunctionCallAction {
             function_name: "execute".to_string(),
@@ -685,10 +683,11 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         State(app.clone()),
         Json(UaRelayRequest {
             account_id: ua_account_id.clone(),
-            args: ExecuteArgs::Passkey {
+            args: ExecuteArgsMessage {
                 key: passkey_2.clone(),
-                message: Box::new(message),
-            },
+                mws: Box::new(message),
+            }
+            .into(),
             storage_deposit: HashSet::default(),
             update_price_feeds: HashSet::default(),
         }),

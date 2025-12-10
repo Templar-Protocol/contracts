@@ -4,13 +4,16 @@ use near_sdk::serde::de::DeserializeOwned;
 use crate::encoding;
 
 use super::with_raw_string::WithRawString;
-use super::{ExecutionContextProvider, HashForSigning, Key, Payload};
+use super::{
+    CheckSignatureError, ExecutionContextProvider, HashForSigning, Key, MessageWithSignature,
+    MessageWithValidSignature, Payload,
+};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
-pub struct Ed25519RawKey(pub encoding::ed25519::PublicKey);
+pub struct VerifyKey(pub encoding::ed25519::PublicKey);
 
-impl std::fmt::Display for Ed25519RawKey {
+impl std::fmt::Display for VerifyKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -21,6 +24,12 @@ impl std::fmt::Display for Ed25519RawKey {
 #[serde(bound = "T: DeserializeOwned")]
 pub struct Message<T>(pub WithRawString<Payload<T>>);
 
+impl<T> super::SignableMessage for Message<T> {
+    type Key = VerifyKey;
+    type Signature = encoding::ed25519::Signature;
+    type Auxiliary = ();
+}
+
 impl<T: near_sdk::serde::Serialize> Message<T> {
     pub fn from_parsed(payload: Payload<T>) -> Self {
         Self(WithRawString::from_parsed(payload))
@@ -29,10 +38,11 @@ impl<T: near_sdk::serde::Serialize> Message<T> {
     pub fn with_signature(
         self,
         signature: encoding::ed25519::Signature,
-    ) -> MessageWithSignature<T> {
+    ) -> MessageWithSignature<Self> {
         MessageWithSignature {
             message: self,
             signature,
+            auxiliary: (),
         }
     }
 }
@@ -51,33 +61,19 @@ impl<T> HashForSigning for Message<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json])]
-#[serde(bound = "T: DeserializeOwned")]
-pub struct MessageWithSignature<T> {
-    pub message: Message<T>,
-    pub signature: encoding::ed25519::Signature,
-}
-
-#[derive(Debug)]
-pub struct MessageWithValidSignature<T>(MessageWithSignature<T>);
-
-impl<T> Key<MessageWithSignature<T>> for Ed25519RawKey {
-    type Verified = MessageWithValidSignature<T>;
-
-    fn verify_signature(
+impl<T> Key<Message<T>> for VerifyKey {
+    fn check_signature(
         &self,
-        message: MessageWithSignature<T>,
-    ) -> Result<Self::Verified, crate::authentication::InvalidSignatureError> {
-        if (self.0).verify(&message.message.preimage_for_signing(), &message.signature) {
-            Ok(MessageWithValidSignature(message))
-        } else {
-            Err(super::InvalidSignatureError)
-        }
+        message: &super::MessageWithSignature<Message<T>>,
+    ) -> Result<(), CheckSignatureError> {
+        (self.0)
+            .verify(&message.message.preimage_for_signing(), &message.signature)
+            .then_some(())
+            .ok_or(CheckSignatureError::InvalidSignature)
     }
 }
 
-impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
+impl<P> ExecutionContextProvider for MessageWithValidSignature<Message<P>> {
     type Payload = P;
 
     fn payload(self) -> Payload<Self::Payload> {
@@ -91,11 +87,13 @@ impl<P> ExecutionContextProvider for MessageWithValidSignature<P> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ExecutionParameters;
+    use std::str::FromStr;
+
+    use crate::{KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID};
 
     use super::*;
 
-    use near_sdk::{env, json_types::U64};
+    use near_sdk::{env, json_types::U64, AccountId};
     use rstest::{fixture, rstest};
     use solana_sdk::{signature::Keypair, signer::Signer};
 
@@ -130,15 +128,17 @@ mod tests {
     #[rstest]
     #[test]
     fn valid_signature(keypair: Keypair) {
-        let message: Message<_> = WithRawString::from_parsed(Payload {
-            parameters: ExecutionParameters {
-                block_height: U64(12345),
-                index: U64(0),
-                nonce: U64(0),
-            },
-            account_id: "account.near".parse().unwrap(),
-            payload: "Hello, world!",
-        })
+        let message: Message<_> = WithRawString::from_parsed(Payload::new(
+            PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                .with_key_parameters(KeyParameters {
+                    block_height: U64(12345),
+                    index: U64(0),
+                    nonce: U64(0),
+                })
+                .verifying_contract(AccountId::from_str("account.near").unwrap())
+                .build_salt(),
+            "Hello, world!",
+        ))
         .into();
 
         let sol_sig = keypair.sign_message(&message.preimage_for_signing());
@@ -146,44 +146,51 @@ mod tests {
         let message = MessageWithSignature {
             message,
             signature: sol_sig.into(),
+            auxiliary: (),
         };
 
-        let key = Ed25519RawKey((*keypair.pubkey().as_array()).into());
+        let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
         key.verify_signature(message).unwrap();
     }
 
     #[rstest]
     #[test]
-    #[should_panic = "InvalidSignatureError"]
+    #[should_panic = "InvalidSignature"]
     fn invalid_signature(keypair: Keypair) {
-        let message: Message<_> = WithRawString::from_parsed(Payload {
-            parameters: ExecutionParameters {
-                block_height: U64(12345),
-                index: U64(0),
-                nonce: U64(0),
-            },
-            account_id: "account.near".parse().unwrap(),
-            payload: "Hello, world!",
-        })
+        let message: Message<_> = WithRawString::from_parsed(Payload::new(
+            PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                .with_key_parameters(KeyParameters {
+                    block_height: U64(12345),
+                    index: U64(0),
+                    nonce: U64(0),
+                })
+                .verifying_contract(AccountId::from_str("account.near").unwrap())
+                .build_salt(),
+            "Hello, world!",
+        ))
         .into();
 
         let sol_sig = keypair.sign_message(&message.preimage_for_signing());
 
-        let key = Ed25519RawKey((*keypair.pubkey().as_array()).into());
+        let key = VerifyKey((*keypair.pubkey().as_array()).into());
 
-        key.verify_signature(MessageWithSignature {
-            message: Message(WithRawString::from_parsed(Payload {
-                parameters: ExecutionParameters {
-                    block_height: U64(12345),
-                    index: U64(0),
-                    nonce: U64(1),
-                },
-                account_id: "account.near".parse().unwrap(),
-                payload: "Hello, world!",
-            })),
+        let mws = MessageWithSignature {
+            message: Message(WithRawString::from_parsed(Payload::new(
+                PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                    .with_key_parameters(KeyParameters {
+                        block_height: U64(12345),
+                        index: U64(0),
+                        nonce: U64(1),
+                    })
+                    .verifying_contract(AccountId::from_str("account.near").unwrap())
+                    .build_salt(),
+                "Hello, world!",
+            ))),
             signature: sol_sig.into(),
-        })
-        .unwrap();
+            auxiliary: (),
+        };
+
+        key.verify_signature(mws).unwrap();
     }
 }

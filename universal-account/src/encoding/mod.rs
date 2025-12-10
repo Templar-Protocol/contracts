@@ -1,6 +1,7 @@
 use std::error::Error;
 
 pub mod ed25519;
+pub mod ethereum;
 pub mod p256;
 
 #[derive(thiserror::Error, Debug)]

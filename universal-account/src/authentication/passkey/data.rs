@@ -5,6 +5,7 @@ use near_sdk::{
     near,
     serde::{self, de, Deserialize, Serialize},
 };
+use schemars::JsonSchema;
 
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh])]
@@ -75,9 +76,9 @@ impl schemars::JsonSchema for Challenge {
     }
 }
 
-#[derive(Clone, Debug)]
-#[near(serializers = [json, borsh])]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[near(serializers = [borsh])]
+#[serde(crate = "near_sdk::serde", rename_all = "camelCase")]
 pub struct ClientDataJson {
     pub r#type: String,
     pub challenge: Challenge,

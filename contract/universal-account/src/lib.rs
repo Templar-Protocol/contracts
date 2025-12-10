@@ -1,20 +1,40 @@
 #![allow(clippy::needless_pass_by_value)]
 
+use std::ops::{Deref, DerefMut};
+
 use near_sdk::{
-    borsh::BorshSerialize, env, json_types::U64, near, require, store::IterableMap,
+    borsh::BorshSerialize,
+    env,
+    json_types::{U128, U64},
+    near, require,
+    store::IterableMap,
     BorshStorageKey, PanicOnDefault, Promise,
 };
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    transaction::Transaction, ExecuteArgs, ExecutionParameters, KeyId,
+    contract_state::StateV1, transaction::Transaction, ExecuteArgs, KeyId, KeyParameters,
+    PayloadExecutionParameters,
 };
+
+mod impl_migrate;
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
-pub struct Contract {
-    next_key_index: u64,
-    keys: IterableMap<KeyId, ExecutionParameters>,
+pub struct Contract(pub StateV1);
+
+impl Deref for Contract {
+    type Target = StateV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Contract {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshStorageKey)]
@@ -26,19 +46,28 @@ enum StorageKey {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(key: KeyId) -> Self {
-        let mut self_ = Self {
+    pub fn new(key: KeyId, chain_id: U128) -> Self {
+        let mut self_ = Self(StateV1 {
             next_key_index: 0,
             keys: IterableMap::new(StorageKey::Keys),
-        };
+            chain_id: chain_id.0,
+        });
 
         self_.add_key(key);
 
         self_
     }
 
-    pub fn get_key(&self, key: KeyId) -> Option<&ExecutionParameters> {
-        self.keys.get(&key)
+    fn payload_execution_parameters(&self, k: &KeyParameters) -> PayloadExecutionParameters {
+        PayloadExecutionParameters::builder(self.chain_id)
+            .with_key_parameters(*k)
+            .verifying_contract(env::current_account_id())
+            .build_salt()
+    }
+
+    pub fn get_key(&self, key: KeyId) -> Option<PayloadExecutionParameters> {
+        let k = self.keys.get(&key)?;
+        Some(self.payload_execution_parameters(k))
     }
 
     pub fn list_keys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<&KeyId> {
@@ -51,7 +80,7 @@ impl Contract {
         self.next_key_index += 1;
         self.keys.insert(
             key.clone(),
-            ExecutionParameters {
+            KeyParameters {
                 block_height: U64(env::block_height()),
                 index: U64(index),
                 nonce: U64(0),
@@ -76,16 +105,16 @@ impl Contract {
             templar_common::panic_with_message("Key does not exist")
         };
         *key_entry = key_entry.next();
+        let key_entry = *key_entry;
         templar_universal_account::Event::NonceExecution {
             key,
             nonce: key_entry.nonce,
         }
         .emit();
 
-        let current_account_id = env::current_account_id();
-
+        let execution_parameters = self.payload_execution_parameters(&key_entry);
         let transactions = args
-            .verify(&current_account_id, key_entry, |_| true)
+            .verify(&execution_parameters, |_| true)
             .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         require!(!transactions.is_empty(), "Transaction list is empty");

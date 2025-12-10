@@ -1,45 +1,96 @@
-use near_sdk::{near, AccountId, AccountIdRef};
+use std::fmt::Debug;
 
-use crate::ExecutionParameters;
+use near_sdk::{
+    near,
+    serde::{de::DeserializeOwned, Serialize},
+    serde_json,
+};
+use schemars::JsonSchema;
+
+use crate::PayloadExecutionParameters;
 
 pub mod ed25519_raw;
+pub mod eip712;
 pub mod passkey;
+mod payload;
+pub use payload::*;
 pub mod with_raw_string;
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
-#[error("Invalid signature")]
-pub struct InvalidSignatureError;
+pub trait SignableMessage {
+    type Key: Key<Self>
+    where
+        Self: Sized;
+    type Signature: JsonSchema + Serialize + DeserializeOwned + Clone + Debug;
+    type Auxiliary: JsonSchema + Serialize + DeserializeOwned + Clone + Debug;
+}
 
-pub trait Key<M> {
-    type Verified;
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json, borsh])]
+pub struct MessageWithSignature<M: SignableMessage> {
+    pub message: M,
+    pub signature: M::Signature,
+    #[serde(flatten)]
+    pub auxiliary: M::Auxiliary,
+}
+
+pub struct MessageWithValidSignature<M: SignableMessage>(MessageWithSignature<M>);
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CheckSignatureError {
+    #[error("Invalid signature")]
+    InvalidSignature,
+    #[error("Signature verification error: {0}")]
+    Other(Box<str>),
+}
+
+impl CheckSignatureError {
+    pub fn other(e: impl std::error::Error) -> Self {
+        Self::Other(e.to_string().into())
+    }
+}
+
+pub trait Key<M: SignableMessage> {
+    /// # Errors
+    ///
+    /// - If the signature is not valid.
+    fn check_signature(&self, mws: &MessageWithSignature<M>) -> Result<(), CheckSignatureError>;
 
     /// # Errors
     ///
-    /// - If checking the signature fails
-    fn verify_signature(&self, message: M) -> Result<Self::Verified, InvalidSignatureError>;
+    /// - If [`Key::check_signature`] returns an error.
+    fn verify_signature(
+        &self,
+        mws: MessageWithSignature<M>,
+    ) -> Result<MessageWithValidSignature<M>, CheckSignatureError> {
+        self.check_signature(&mws)
+            .map(|()| MessageWithValidSignature(mws))
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExecutionError {
-    #[error("Executor account ID mismatch")]
-    ExecutorAccountIdMismatch,
-    #[error("Block height mismatch")]
-    BlockHeightMismatch,
-    #[error("Key index mismatch")]
-    KeyIndexMismatch,
-    #[error("Nonce mismatch")]
-    NonceMismatch,
+    #[error("Execution parameter `{field}` mismatch: expected `{expected}`, got `{actual}`")]
+    Mismatch {
+        field: &'static str,
+        expected: Box<str>,
+        actual: Box<str>,
+    },
     #[error("Origin unknown")]
     OriginUnknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json])]
-#[serde(deny_unknown_fields)]
-pub struct Payload<T> {
-    pub parameters: ExecutionParameters,
-    pub account_id: AccountId,
-    pub payload: T,
+impl ExecutionError {
+    pub fn mismatch(
+        field: &'static str,
+        expected: impl Into<Box<str>>,
+        actual: impl Into<Box<str>>,
+    ) -> Self {
+        Self::Mismatch {
+            field,
+            expected: expected.into(),
+            actual: actual.into(),
+        }
+    }
 }
 
 pub trait ExecutionContextProvider
@@ -57,8 +108,7 @@ where
     /// - If the execution parameters (nonce, key index) do not match.
     fn verify_execution(
         self,
-        executor_account_id: &AccountIdRef,
-        parameters: &ExecutionParameters,
+        expected_parameters: &PayloadExecutionParameters,
         allowed_origin: impl FnOnce(Option<&str>) -> bool,
     ) -> Result<Self::Payload, ExecutionError> {
         let origin = self.origin();
@@ -67,23 +117,40 @@ where
         }
 
         let payload = self.payload();
-        if payload.account_id != executor_account_id {
-            return Err(ExecutionError::ExecutorAccountIdMismatch);
+
+        macro_rules! check_field {
+            ($parameters:ident,$field:ident.$($string_repr:tt)+) => {
+                if $parameters.$field != expected_parameters.$field {
+                    return Err(ExecutionError::Mismatch {
+                        field: stringify!($field).into(),
+                        expected: expected_parameters.$field.$($string_repr)+.into(),
+                        actual: $parameters.$field.$($string_repr)+.into(),
+                    });
+                }
+            };
         }
 
-        if payload.parameters.block_height != parameters.block_height {
-            return Err(ExecutionError::BlockHeightMismatch);
-        }
+        let parameters = payload.parameters();
 
-        if payload.parameters.index != parameters.index {
-            return Err(ExecutionError::KeyIndexMismatch);
-        }
+        check_field!(parameters, block_height.0.to_string());
+        check_field!(
+            parameters,
+            chain_id.map_or("<none>".to_string(), |c| c.0.to_string())
+        );
+        check_field!(parameters, index.0.to_string());
+        check_field!(parameters, name.clone().unwrap_or("<none>".to_string()));
+        check_field!(parameters, nonce.0.to_string());
+        check_field!(
+            parameters,
+            salt.as_ref().map_or("<none>".to_string(), |s| {
+                #[allow(clippy::unwrap_used, reason = "Infallible")]
+                serde_json::to_string(&s).unwrap()
+            })
+        );
+        check_field!(parameters, verifying_contract.as_str());
+        check_field!(parameters, version.clone().unwrap_or("<none>".to_string()));
 
-        if payload.parameters.nonce != parameters.nonce {
-            return Err(ExecutionError::NonceMismatch);
-        }
-
-        Ok(payload.payload)
+        Ok(payload.payload())
     }
 }
 
