@@ -2,20 +2,19 @@
 
 **Multi-Chain Treasury Management for NEAR Protocol**
 
-A NEAR-centric treasury management service with cross-chain deposits and withdrawals via [NEAR Intents Bridge API](https://docs.near-intents.org/). Supports Ethereum, Arbitrum, Base, Optimism, Polygon, and Solana.
+A NEAR-centric treasury management service with cross-chain deposits and withdrawals via [NEAR Intents Bridge API](https://docs.near-intents.org/). Supports Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, and Stellar.
 
 ## Features
 
 - ✅ **NEAR Treasury** - Hold OMFT tokens on NEAR, withdraw to any chain
 - ✅ **Cross-Chain Withdrawals** - NEP-413 signed intents to external chains
-- ✅ **Automated Deposits** - Transfer from ETH/Solana wallets to NEAR treasury via bridge
-- ✅ **Multi-Chain Support** - Ethereum, Arbitrum, Base, Optimism, Polygon, Solana
+- ✅ **Automated Deposits** - Transfer from ETH/Solana/Stellar wallets to NEAR treasury via bridge
+- ✅ **Multi-Chain Support** - Ethereum, Arbitrum, Base, Optimism, Polygon, Solana, Stellar
 - ✅ **Token Resolution** - Automatic OMFT token ID and decimal handling
 - ✅ **Stateless Design** - No database required, horizontally scalable
 - ✅ **REST API** - Simple HTTP/JSON interface
 - ✅ **Prometheus Metrics** - Production-grade observability
 - ✅ **Dry-Run Mode** - Test operations without executing transactions
-- 🔜 **Stellar Support** - Planned for future release
 
 ## Quick Start
 
@@ -181,7 +180,8 @@ base / eth:8453                 → Base
 optimism / op / eth:10          → Optimism
 polygon / matic / eth:137       → Polygon
 solana / sol / sol:mainnet      → Solana Mainnet
-stellar                         → Coming in future release (returns 501 Not Implemented)
+stellar / stellar:mainnet       → Stellar Mainnet
+stellar:testnet                 → Stellar Testnet
 ```
 
 **Response:**
@@ -365,6 +365,11 @@ ETH_RPC_URL=https://eth.llamarpc.com
 SOLANA_PRIVATE_KEY=...
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 
+# Stellar deposits (optional)
+STELLAR_SECRET_KEY=S...
+STELLAR_HORIZON_URL=https://horizon.stellar.org
+STELLAR_NETWORK=mainnet
+
 # Withdrawal destinations (required for withdrawals)
 ETH_WITHDRAW_ADDRESS=0x...
 ARBITRUM_WITHDRAW_ADDRESS=0x...
@@ -372,13 +377,27 @@ BASE_WITHDRAW_ADDRESS=0x...
 OPTIMISM_WITHDRAW_ADDRESS=0x...
 POLYGON_WITHDRAW_ADDRESS=0x...
 SOLANA_WITHDRAW_ADDRESS=...
-
-# Stellar support (planned for future release)
-# STELLAR_SECRET_KEY=S...
-# STELLAR_HORIZON_URL=https://horizon.stellar.org
-# STELLAR_NETWORK=mainnet
-# STELLAR_WITHDRAW_ADDRESS=G...
+STELLAR_WITHDRAW_ADDRESS=G...
 ```
+
+### Stellar Account Requirements
+
+**IMPORTANT:** Before using Stellar withdrawals, ensure your withdrawal address meets these requirements:
+
+1. **Account Activation**
+   - Account must exist on Stellar network
+   - Minimum balance: 1 XLM (for account reserve)
+   - Testnet: Use Stellar's friendbot to fund test accounts
+
+2. **Trustlines**
+   - Must have trustline established for each token you plan to withdraw
+   - Example: To withdraw USDC, account needs USDC trustline
+   - Without trustline, withdrawal will fail at bridge level
+
+3. **Network Matching**
+   - Ensure `STELLAR_NETWORK` matches your withdrawal address network
+   - `mainnet` addresses start with `G`
+   - Don't mix testnet addresses with mainnet configuration
 
 ## Development
 

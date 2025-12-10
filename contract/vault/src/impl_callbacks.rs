@@ -3,22 +3,45 @@
 use core::cmp::Ordering;
 use std::fmt::Display;
 
-use crate::{
-    governance::Gate, near, Contract, ContractExt, Error, EscrowSettlement, Nep141Controller,
-    OpState,
-};
+use crate::{governance::Gate, near, Contract, ContractExt, Error, Nep141Controller, OpState};
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{env, json_types::U128, AccountId, Gas, NearToken, PromiseError, PromiseOrValue};
+use near_sdk::{
+    env, json_types::U128, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
+};
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};
 use templar_common::{
     market::ext_market,
+    panic_with_message,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, Event, IdleBalanceDelta, PayoutState, WithdrawingState,
-        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_03_SETTLE_GAS,
-        GET_SUPPLY_POSITION_GAS, SUPPLY_02_POSITION_READ_GAS,
+        AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
+        IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
+        WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
+        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
+        WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
+
+macro_rules! guard_op_state {
+    ($self:expr, Idle, $err:expr) => {{
+        match &$self.op_state {
+            OpState::Idle => Ok(()),
+            _ => Err($err),
+        }
+    }};
+    ($self:expr, $variant:ident, $err:expr) => {{
+        match &$self.op_state {
+            OpState::$variant(state) => Ok(state),
+            _ => Err($err),
+        }
+    }};
+    ($self:expr, $variant:ident, $op_id:expr, $err:expr) => {{
+        match &$self.op_state {
+            OpState::$variant(state) if state.op_id == $op_id => Ok(state),
+            _ => Err($err),
+        }
+    }};
+}
 
 /// State machine:
 ///
@@ -66,7 +89,7 @@ impl Contract {
                         .get_supply_position(env::current_account_id())
                         .then(
                             Self::ext(env::current_account_id())
-                                .with_static_gas(SUPPLY_02_POSITION_READ_GAS)
+                                .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
                                 .supply_02_position_read(
                                     market.clone(),
                                     op_id,
@@ -95,13 +118,13 @@ impl Contract {
         accepted: U128,
         remaining_before: U128,
     ) -> PromiseOrValue<()> {
-        let (i, _remaining_ctx) = match self.ctx_allocating(op_id) {
+        let ctx = match self.ctx_allocating(op_id) {
             Ok(v) => v,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
-        if i != market_index {
-            return self.stop_and_exit(Some(&Error::IndexDrifted(i, market_index)));
+        if ctx.index != market_index {
+            return self.stop_and_exit(Some(&Error::IndexDrifted(ctx.index, market_index)));
         }
 
         let SupplyReconciliation {
@@ -115,24 +138,26 @@ impl Contract {
                 &remaining_before.0,
             ),
             Ok(None) => {
-                Event::AllocationPositionMissing {
+                Event::AllocationPositionIssue {
                     op_id: op_id.into(),
                     index: market_index,
                     market: market.clone(),
                     attempted,
                     accepted,
+                    kind: AllocationPositionIssueKind::Missing,
                 }
                 .emit();
 
                 return self.stop_and_exit(Some(&Error::MissingSupplyPosition));
             }
             Err(_) => {
-                Event::AllocationPositionReadFailed {
+                Event::AllocationPositionIssue {
                     op_id: op_id.into(),
                     index: market_index,
                     market: market.clone(),
                     attempted,
                     accepted,
+                    kind: AllocationPositionIssueKind::ReadFailed,
                 }
                 .emit();
                 return self.stop_and_exit(Some(&Error::PositionReadFailed));
@@ -154,6 +179,8 @@ impl Contract {
         }
         .emit();
 
+        let plan: AllocationPlan = ctx.plan.iter().filter(|m| m.0 != market).cloned().collect();
+
         if let Some(rec) = self.markets.get_mut(&market) {
             rec.principal = new_principal;
         }
@@ -162,6 +189,7 @@ impl Contract {
             op_id,
             index: market_index.saturating_add(1),
             remaining: remaining_next,
+            plan,
         });
         if remaining_next == 0 {
             return self.stop_and_exit(None::<&String>);
@@ -183,8 +211,7 @@ impl Contract {
         };
 
         if did_create.is_ok() {
-            self.pending_market_exec.push(market_index);
-            PromiseOrValue::Value(())
+            self.market_execution_lock.lock(market_index);
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -193,21 +220,31 @@ impl Contract {
                 need,
             }
             .emit();
-            self.op_state = OpState::Withdrawing(WithdrawingState {
-                op_id,
-                index: market_index.saturating_add(1),
-                remaining: ctx.remaining,
-                receiver: ctx.receiver.clone(),
-                collected: ctx.collected,
-                owner: ctx.owner.clone(),
-                escrow_shares: ctx.escrow_shares,
-            });
-            self.step_withdraw()
+        }
+        PromiseOrValue::Value(())
+    }
+
+    /// Callback for allocator-only rebalance after attempting to create a
+    /// market-side supply withdrawal request. On success, this only emits a
+    /// diagnostic event and does not change op_state; on failure, it logs and
+    /// leaves the vault Idle.
+    #[private]
+    pub fn rebalance_withdraw_01_after_create_request(
+        &mut self,
+        #[callback_result] did_create: Result<(), PromiseError>,
+        market: AccountId,
+        amount: U128,
+    ) {
+        match did_create {
+            Ok(()) => Event::WithdrawRequestCreated { market, amount }.emit(),
+            Err(_) => {
+                panic_with_message("Couldnt create withdraw request in market");
+            }
         }
     }
 
     #[private]
-    pub fn execute_withdraw_01_call_market_fetch_position(
+    pub fn execute_withdraw_01_execute_withdraw_fetch_position(
         &mut self,
         #[callback_result] before_balance: Result<U128, PromiseError>,
         op_id: u64,
@@ -220,32 +257,24 @@ impl Contract {
         };
 
         let principal = self.principal_of(&market);
-        let before_balance = before_balance.unwrap_or(U128(0));
+        let before_balance = before_balance.unwrap_or(U128(self.idle_balance));
+
+        Event::VaultBalance {
+            amount: before_balance,
+        }
+        .emit();
 
         PromiseOrValue::Promise(
-            ext_market::ext(market.clone())
-                .with_static_gas(Gas::from_tgas(
-                    EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS.as_tgas()
-                        * (u64::from(batch_limit.unwrap_or(1))),
-                ))
-                .with_unused_gas_weight(0)
-                .execute_next_supply_withdrawal_request(batch_limit)
-                .then(
-                    ext_market::ext(market.clone())
-                        .with_static_gas(GET_SUPPLY_POSITION_GAS)
-                        .with_unused_gas_weight(0)
-                        .get_supply_position(env::current_account_id()),
-                )
-                .then(
-                    Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
-                        .execute_withdraw_02_reconcile_position(
-                            op_id,
-                            market_index,
-                            U128(principal),
-                            before_balance,
-                        ),
-                ),
+            Self::market_execute_withdraw_and_fetch_position(market.clone(), batch_limit).then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
+                    .execute_withdraw_02_reconcile_position(
+                        op_id,
+                        market_index,
+                        U128(principal),
+                        before_balance,
+                    ),
+            ),
         )
     }
 
@@ -273,37 +302,53 @@ impl Contract {
         };
 
         let reported_principal: u128 = match position {
-            Ok(Some(position)) => position.get_deposit().total().into(),
-            Ok(None) => {
-                Event::WithdrawalPositionMissing {
+            Ok(Some(position)) => {
+                Event::WithdrawPositionReport {
+                    outcome: PositionReportOutcome::Ok,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    before: principal,
+                    position: Some(position.clone()),
+                    before: None,
+                }
+                .emit();
+                position.get_deposit().total().into()
+            }
+            Ok(None) => {
+                Event::WithdrawPositionReport {
+                    outcome: PositionReportOutcome::Missing,
+                    op_id: op_id.into(),
+                    market: market.clone(),
+                    index: market_index,
+                    position: None,
+                    before: Some(principal),
                 }
                 .emit();
                 // Treat missing position as zero principal and continue to balance settlement
                 0
             }
             Err(_) => {
-                Event::WithdrawalPositionReadFailed {
+                Event::WithdrawPositionReport {
+                    outcome: PositionReportOutcome::ReadFailed,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    before: principal,
+                    position: None,
+                    before: Some(principal),
                 }
                 .emit();
+
                 return self.stop_and_exit(Some(&Error::PositionReadFailed));
             }
         };
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
                 .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_03_SETTLE_GAS)
+                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                         .execute_withdraw_03_settle(
                             op_id,
                             market_index,
@@ -331,47 +376,49 @@ impl Contract {
             Err(p) => return p,
         };
 
-        let (principal_delta, inflow, creditable) = Self::compute_withdraw_deltas(
+        let Ok(after_balance) = after_balance else {
+            return self.stop_and_exit(Some(&Error::BalanceReadFailed));
+        };
+
+        let (principal_delta, inflow, creditable) = self.settle_market_principal_and_idle(
+            &market,
             before_principal,
             reported_principal,
             after_balance,
             before_balance,
         );
+        let effective_principal = before_principal.0.saturating_sub(creditable);
         let extra = inflow.saturating_sub(principal_delta);
 
         match principal_delta.cmp(&inflow) {
             Ordering::Greater => {
-                Event::WithdrawalInflowMismatch {
+                Event::WithdrawalAccounting {
+                    kind: WithdrawalAccountingKind::InflowMismatch,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    delta: U128(principal_delta),
-                    inflow: U128(inflow),
+                    delta: Some(U128(principal_delta)),
+                    inflow: Some(U128(inflow)),
+                    extra: None,
                 }
                 .emit();
             }
             Ordering::Less => {
-                Event::WithdrawalOverpayCredited {
+                Event::WithdrawalAccounting {
+                    kind: WithdrawalAccountingKind::OverpayCredited,
                     op_id: op_id.into(),
                     market: market.clone(),
                     index: market_index,
-                    extra: U128(extra),
+                    delta: None,
+                    inflow: None,
+                    extra: Some(U128(extra)),
                 }
                 .emit();
             }
             Ordering::Equal => {}
         }
 
-        let effective_principal = before_principal.0.saturating_sub(creditable);
-
-        if let Some(rec) = self.markets.get_mut(&market) {
-            rec.principal = effective_principal;
-        }
-        if inflow > 0 {
-            self.update_idle_balance(IdleBalanceDelta::Increase(inflow.into()));
-        }
-
-        self.try_settle_pending_market_exec(market_index, creditable, principal_delta);
+        self.market_execution_lock.unlock(market_index);
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -386,12 +433,11 @@ impl Contract {
         );
 
         // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
-        let extra_payout = extra.min(remaining_next);
-        let remaining_next = remaining_next.saturating_sub(extra_payout);
-        let collected_next = collected_next.saturating_add(extra_payout);
+        let (_, remaining_next, collected_next) =
+            determine_payout_delta(remaining_next, collected_next, extra);
 
         if remaining_next == 0 {
-            return self.pay_collected(
+            return self.pay_or_else(
                 op_id,
                 &ctx.receiver,
                 collected_next,
@@ -412,8 +458,7 @@ impl Contract {
                                 "Failed to refund escrowed shares {e}"
                             ))
                         });
-                    self_.pending_market_exec.clear();
-                    self_.remove_inflight_and_advance_head();
+                    self_.pop_head();
                     self_.withdraw_route.clear();
                     self_.op_state = OpState::Idle;
                     PromiseOrValue::Value(())
@@ -421,35 +466,226 @@ impl Contract {
             );
         }
 
-        match principal_delta.cmp(&inflow) {
-            Ordering::Less | Ordering::Equal if principal_delta > 0 => {
-                // Fully executed for this market: advance to next and continue
-                self.op_state = OpState::Withdrawing(WithdrawingState {
-                    op_id,
-                    index: market_index.saturating_add(1),
-                    remaining: remaining_next,
-                    receiver: ctx.receiver,
-                    collected: collected_next,
-                    owner: ctx.owner,
-                    escrow_shares: ctx.escrow_shares,
-                });
-                self.step_withdraw()
-            }
-            _ => {
-                // Partial or zero inflow: do not advance; keeper must re-execute this market later
-                self.op_state = OpState::Withdrawing(WithdrawingState {
-                    op_id,
-                    index: market_index,
-                    remaining: remaining_next,
-                    receiver: ctx.receiver,
-                    collected: collected_next,
-                    owner: ctx.owner,
-                    escrow_shares: ctx.escrow_shares,
-                });
-                PromiseOrValue::Value(())
-            }
-        }
+        let next_state = state_on_delta_inflow(
+            principal_delta,
+            inflow,
+            op_id,
+            market_index,
+            remaining_next,
+            collected_next,
+            ctx,
+        );
+        self.op_state = next_state;
+        self.pay_or_signal_next_withdraw()
     }
+
+    #[private]
+    pub fn rebalance_withdraw_01_execute_withdraw_fetch_position(
+        &mut self,
+        #[callback_result] before_balance: Result<U128, PromiseError>,
+        op_id: u64,
+        market: AccountId,
+        batch_limit: Option<u32>,
+        before_principal: U128,
+    ) -> PromiseOrValue<()> {
+        let state = match self.ctx_allocating(op_id) {
+            Ok(state) => state,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        let Ok(before_balance) = before_balance else {
+            self.market_execution_lock.unlock(state.index);
+            self.op_state = OpState::Idle;
+            Event::RebalanceWithdrawStopped {
+                op_id: op_id.into(),
+                market,
+                reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
+            }
+            .emit();
+            return PromiseOrValue::Value(());
+        };
+
+        Event::VaultBalance {
+            amount: before_balance,
+        }
+        .emit();
+
+        PromiseOrValue::Promise(
+            Self::market_execute_withdraw_and_fetch_position(market.clone(), batch_limit).then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
+                    .rebalance_withdraw_02_reconcile_position(
+                        op_id,
+                        market,
+                        before_principal,
+                        before_balance,
+                    ),
+            ),
+        )
+    }
+
+    #[private]
+    pub fn rebalance_withdraw_02_reconcile_position(
+        &mut self,
+        #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
+        op_id: u64,
+        market: AccountId,
+        before_principal: U128,
+        before_balance: U128,
+    ) -> PromiseOrValue<()> {
+        let state = match self.ctx_allocating(op_id) {
+            Ok(state) => state,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        let reported_principal: u128 = match position {
+            Ok(Some(position)) => position.get_deposit().total().into(),
+            Ok(None) => 0,
+            Err(_) => {
+                self.market_execution_lock.unlock(state.index);
+                self.op_state = OpState::Idle;
+                Event::RebalanceWithdrawStopped {
+                    op_id: op_id.into(),
+                    market,
+                    reason: Some(Reason::Other(Error::PositionReadFailed.to_string())),
+                }
+                .emit();
+                return PromiseOrValue::Value(());
+            }
+        };
+
+        PromiseOrValue::Promise(
+            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                .with_static_gas(FT_BALANCE_OF_GAS)
+                .ft_balance_of(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
+                        .rebalance_withdraw_03_settle(
+                            op_id,
+                            market,
+                            before_principal,
+                            U128(reported_principal),
+                            before_balance,
+                        ),
+                ),
+        )
+    }
+
+    #[private]
+    pub fn rebalance_withdraw_03_settle(
+        &mut self,
+        #[callback_result] after_balance: Result<U128, PromiseError>,
+        op_id: u64,
+        market: AccountId,
+        before_principal: U128,
+        reported_principal: U128,
+        before_balance: U128,
+    ) -> PromiseOrValue<()> {
+        let index = match self.ctx_allocating(op_id) {
+            Ok(state) => state.index,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        let Ok(after_balance) = after_balance else {
+            self.market_execution_lock.unlock(index);
+            self.op_state = OpState::Idle;
+            Event::RebalanceWithdrawStopped {
+                op_id: op_id.into(),
+                market,
+                reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
+            }
+            .emit();
+            return PromiseOrValue::Value(());
+        };
+
+        let _ = self.settle_market_principal_and_idle(
+            &market,
+            before_principal,
+            reported_principal,
+            after_balance,
+            before_balance,
+        );
+
+        self.market_execution_lock.unlock(index);
+
+        self.op_state = OpState::Idle;
+        Event::RebalanceWithdrawCompleted {
+            op_id: op_id.into(),
+            market,
+        }
+        .emit();
+
+        PromiseOrValue::Value(())
+    }
+
+    fn payout_resync_and_refund(
+        &mut self,
+        balance: Result<U128, PromiseError>,
+        reason: Option<Reason>,
+    ) -> PromiseOrValue<()> {
+        let PayoutState {
+            op_id,
+            receiver,
+            amount,
+            owner,
+            escrow_shares,
+            burn_shares: _,
+        } = match &self.op_state {
+            OpState::Payout(s) => s.clone(),
+            _ => {
+                return PromiseOrValue::Value(());
+            }
+        };
+
+        let (actual_idle, stop_reason) = match balance {
+            Ok(U128(v)) => (Some(v), reason),
+            Err(_) => (
+                None,
+                Some(Reason::Other(reason.map_or_else(
+                    || Error::BalanceReadFailed.to_string(),
+                    |r| format!("{r:?}; {}", Error::BalanceReadFailed),
+                ))),
+            ),
+        };
+
+        Event::PayoutStopped {
+            op_id: op_id.into(),
+            receiver: receiver.clone(),
+            amount: U128(amount),
+            reason: stop_reason,
+        }
+        .emit();
+
+        if let Some(actual_idle) = actual_idle {
+            self.resync_idle_balance(actual_idle);
+        }
+
+        if escrow_shares > 0 {
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
+        }
+
+        self.pop_head();
+        self.withdraw_route.clear();
+        self.market_execution_lock.clear();
+        self.op_state = OpState::Idle;
+
+        PromiseOrValue::Value(())
+    }
+
+    #[private]
+    pub fn stop_and_exit_payout_01_reconcile(
+        &mut self,
+        #[callback_result] balance: Result<U128, PromiseError>,
+        reason: Option<Reason>,
+    ) -> PromiseOrValue<()> {
+        self.payout_resync_and_refund(balance, reason)
+    }
+
     /// Cash flow:
     /// - Runs in Payout context after funds were credited in after_exec_withdraw_read.
     /// - On success: idle_balance was pre-decremented before transfer; burn a portion of escrow_shares and refund the rest to the owner.
@@ -488,9 +724,8 @@ impl Contract {
             let EscrowSettlement {
                 to_burn: burn_shares,
                 refund,
-            } = Self::compute_escrow_settlement(escrow_shares, burn_shares);
+            } = EscrowSettlement::new(escrow_shares, burn_shares);
 
-            // Burn only the proportional shares and refund the remainder to the owner.
             if burn_shares > 0 {
                 // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
                 let _ = self
@@ -508,7 +743,6 @@ impl Contract {
                 );
             }
         } else {
-            // On payout failure, refund full escrow to owner and restore idle_balance
             self.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
             Gate::bypass_transfer_with(
                 self,
@@ -516,8 +750,7 @@ impl Contract {
                 |e| env::log_str(&e.to_string()),
             );
         }
-        self.pending_market_exec.clear();
-        self.remove_inflight_and_advance_head();
+        self.pop_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
@@ -531,20 +764,12 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         let amount = match balance {
             Ok(U128(v)) if v > 0 => v,
-            _ => {
-                // Invariant: Skim does nothing for zero balance
-                Event::SkimNoop {
-                    token: token.clone(),
-                    recipient: recipient.clone(),
-                }
-                .emit();
-                return PromiseOrValue::Value(());
-            }
+            _ => panic_with_message("No balance to skim"),
         };
         PromiseOrValue::Promise(
             ext_ft_core::ext(token)
                 .with_attached_deposit(NearToken::from_yoctonear(1))
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
                 .ft_transfer(recipient, U128(amount), None),
         )
     }
@@ -562,18 +787,18 @@ impl Contract {
                 op_id: s.op_id.into(),
                 index: s.index,
                 remaining: U128(s.remaining),
-                reason: Some(m.to_string()),
+                reason: Some(Reason::Other(m.to_string())),
             }
         })
         .emit();
 
         self.update_idle_balance(IdleBalanceDelta::Increase(s.remaining.into()));
 
-        self.plan = None;
+        self.market_execution_lock.clear();
+
         self.op_state = OpState::Idle;
     }
 
-    /// Stop helper for Withdrawing: refund escrowed shares to owner and go Idle.
     pub fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
@@ -585,24 +810,27 @@ impl Contract {
             index: s.index,
             remaining: U128(s.remaining),
             collected: U128(s.collected),
-            reason: msg.map(std::string::ToString::to_string),
+            reason: msg.map(|m| Reason::Other(m.to_string())),
         }
         .emit();
+
+        self.market_execution_lock.unlock(s.index);
 
         let owner = s.owner.clone();
 
         if s.escrow_shares > 0 {
-            #[allow(clippy::expect_used, reason = "No side effects")]
-            self.transfer_unchecked(&env::current_account_id(), &owner, s.escrow_shares)
-                .unwrap_or_else(|e| env::log_str(&e.to_string()));
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
         }
 
-        self.remove_inflight_and_advance_head();
+        self.pop_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
 
-    /// refund escrowed shares to owner and go Idle.
     pub fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(
         &mut self,
         msg: Option<&T>,
@@ -612,16 +840,21 @@ impl Contract {
             op_id: (s.op_id).into(),
             receiver: s.receiver.clone(),
             amount: U128(s.amount),
-            reason: msg.map(std::string::ToString::to_string),
+            reason: msg.map(|m| Reason::Other(m.to_string())),
         }
         .emit();
 
         let owner = s.owner.clone();
         if s.escrow_shares > 0 {
-            self.transfer_unchecked(&env::current_account_id(), &owner, s.escrow_shares)
-                .unwrap_or_else(|e| env::log_str(&e.to_string()));
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
         }
-        self.remove_inflight_and_advance_head();
+
+        self.market_execution_lock.clear();
+        self.pop_head();
         self.withdraw_route.clear();
         self.op_state = OpState::Idle;
     }
@@ -633,10 +866,22 @@ impl Contract {
         match &self.op_state {
             OpState::Allocating(_) => self.stop_and_exit_allocating(msg),
             OpState::Withdrawing(_) => self.stop_and_exit_withdrawing(msg),
-            OpState::Payout(_) => self.stop_and_exit_payout(msg),
+            OpState::Payout(_) => {
+                let reason = msg.map(|m| Reason::Other(m.to_string()));
+                return PromiseOrValue::Promise(
+                    ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                        .with_static_gas(FT_BALANCE_OF_GAS)
+                        .ft_balance_of(env::current_account_id())
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_SEND_TO_USER_GAS)
+                                .stop_and_exit_payout_01_reconcile(reason),
+                        ),
+                );
+            }
             OpState::Idle => {
                 Event::OperationStoppedWhileIdle {
-                    reason: msg.map(std::string::ToString::to_string),
+                    reason: msg.map(|m| Reason::Other(m.to_string())),
                 }
                 .emit();
             }
@@ -644,24 +889,17 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Validate current op is Allocating and return (index, remaining)
-    pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<(u32, u128), Error> {
-        match &self.op_state {
-            OpState::Allocating(AllocatingState {
-                op_id: cur,
-                index,
-                remaining,
-            }) if *cur == op_id => Ok((*index, *remaining)),
-            _ => Err(Error::NotAllocating),
-        }
+    /// Validate current op is Allocating and return the state reference.
+    pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<&AllocatingState, Error> {
+        guard_op_state!(self, Allocating, op_id, Error::NotAllocating)
     }
 
     /// Validate current op is Withdrawing and return context tuple
-    pub(crate) fn ctx_withdrawing(&self, op_id: u64) -> Result<&WithdrawingState, Error> {
-        match &self.op_state {
-            OpState::Withdrawing(s) if s.op_id == op_id => Ok(s),
-            _ => Err(Error::NotWithdrawing),
-        }
+    ///
+    /// # Errors
+    /// Returns an error if the operation is not currently withdrawing.
+    pub fn ctx_withdrawing(&self, op_id: u64) -> Result<&WithdrawingState, Error> {
+        guard_op_state!(self, Withdrawing, op_id, Error::NotWithdrawing)
     }
 
     /// Combined helper for withdrawing callbacks: validate ctx and resolve market.
@@ -695,39 +933,17 @@ impl Contract {
             .ok_or(Error::MissingMarket(market_index))
     }
 
-    // Settle pending market exec entry only if fully credited
-    pub fn try_settle_pending_market_exec(
-        &mut self,
-        market_index: u32,
-        creditable: u128,
-        principal_drop: u128,
-    ) {
-        if let Some(pos) = self
-            .pending_market_exec
-            .iter()
-            .position(|&idx| idx == market_index)
-        {
-            if creditable == principal_drop {
-                self.pending_market_exec.remove(pos);
-            }
-        }
-    }
-
     #[must_use]
     pub fn compute_withdraw_deltas(
         before_principal: U128,
         new_principal_reported: U128,
-        after_balance: Result<U128, PromiseError>,
+        after_balance: U128,
         before_balance: U128,
     ) -> (u128, u128, u128) {
         // Principal drop as reported by the market
         let principal_delta = before_principal.0.saturating_sub(new_principal_reported.0);
 
-        let after_balance = match after_balance {
-            Ok(U128(v)) => v,
-            Err(_) => 0,
-        };
-        let inflow = after_balance.saturating_sub(before_balance.0);
+        let inflow = after_balance.0.saturating_sub(before_balance.0);
 
         // Compute effective principal drop we can book (conservative on shortfall)
         let creditable = principal_delta.min(inflow);
@@ -737,6 +953,64 @@ impl Contract {
     pub fn update_idle_balance(&mut self, delta: IdleBalanceDelta) {
         let idle_balance = self.idle_balance;
         self.idle_balance = delta.apply(idle_balance);
+    }
+
+    fn resync_idle_balance(&mut self, actual: u128) {
+        match actual.cmp(&self.idle_balance) {
+            Ordering::Greater => self.update_idle_balance(IdleBalanceDelta::Increase(U128(
+                actual.saturating_sub(self.idle_balance),
+            ))),
+            Ordering::Less => self.update_idle_balance(IdleBalanceDelta::Decrease(U128(
+                self.idle_balance.saturating_sub(actual),
+            ))),
+            Ordering::Equal => {}
+        }
+    }
+
+    fn market_execute_withdraw_and_fetch_position(
+        market: AccountId,
+        batch_limit: Option<u32>,
+    ) -> Promise {
+        ext_market::ext(market.clone())
+            // NOTE: gas might be incorrect here
+            .with_static_gas(Gas::from_tgas(
+                EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS.as_tgas()
+                    * u64::from(batch_limit.unwrap_or(1)),
+            ))
+            .with_unused_gas_weight(0)
+            .execute_next_supply_withdrawal_request(batch_limit)
+            .then(
+                ext_market::ext(market)
+                    .with_static_gas(GET_SUPPLY_POSITION_GAS)
+                    .with_unused_gas_weight(0)
+                    .get_supply_position(env::current_account_id()),
+            )
+    }
+
+    fn settle_market_principal_and_idle(
+        &mut self,
+        market: &AccountId,
+        before_principal: U128,
+        reported_principal: U128,
+        after_balance: U128,
+        before_balance: U128,
+    ) -> (u128, u128, u128) {
+        let (principal_delta, inflow, creditable) = Self::compute_withdraw_deltas(
+            before_principal,
+            reported_principal,
+            after_balance,
+            before_balance,
+        );
+
+        let effective_principal = before_principal.0.saturating_sub(creditable);
+
+        if let Some(rec) = self.markets.get_mut(market) {
+            rec.principal = effective_principal;
+        }
+
+        self.resync_idle_balance(after_balance.0);
+
+        (principal_delta, inflow, creditable)
     }
 }
 
@@ -777,13 +1051,57 @@ pub fn reconcile_withdraw_outcome(
 ) -> WithdrawReconciliation {
     let withdrawn = before_principal.saturating_sub(new_principal);
     let idle_delta = withdrawn;
-    let payout_delta = withdrawn.min(remaining_total);
-    let remaining_next = remaining_total.saturating_sub(payout_delta);
-    let collected_next = collected_total.saturating_add(payout_delta);
+
+    let (payout_delta, remaining_next, collected_next) =
+        determine_payout_delta(remaining_total, collected_total, withdrawn);
+
     WithdrawReconciliation {
         payout_delta,
         remaining_next,
         collected_next,
         idle_delta,
     }
+}
+
+pub fn determine_payout_delta(
+    remaining_total: u128,
+    collected_total: u128,
+    withdrawn: u128,
+) -> (u128, u128, u128) {
+    let payout_delta = withdrawn.min(remaining_total);
+    let remaining_next = remaining_total.saturating_sub(payout_delta);
+    let collected_next = collected_total.saturating_add(payout_delta);
+    (payout_delta, remaining_next, collected_next)
+}
+
+pub fn state_on_delta_inflow(
+    principal_delta: u128,
+    inflow: u128,
+    op_id: u64,
+    market_index: u32,
+    remaining_next: u128,
+    collected_next: u128,
+    ctx: WithdrawingState,
+) -> OpState {
+    let state = match principal_delta.cmp(&inflow) {
+        Ordering::Less | Ordering::Equal if principal_delta > 0 => WithdrawingState {
+            op_id,
+            index: market_index.saturating_add(1),
+            remaining: remaining_next,
+            receiver: ctx.receiver,
+            collected: collected_next,
+            owner: ctx.owner,
+            escrow_shares: ctx.escrow_shares,
+        },
+        _ => WithdrawingState {
+            op_id,
+            index: market_index,
+            remaining: remaining_next,
+            receiver: ctx.receiver,
+            collected: collected_next,
+            owner: ctx.owner,
+            escrow_shares: ctx.escrow_shares,
+        },
+    };
+    OpState::Withdrawing(state)
 }

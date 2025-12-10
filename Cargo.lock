@@ -335,6 +335,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "355bf68a433e0fd7f7d33d5a9fc2583fde70bf5c530f63b80845f8da5505cf28"
 dependencies = [
  "alloy-rlp",
+ "borsh 1.5.7",
  "bytes",
  "cfg-if 1.0.0",
  "const-hex",
@@ -7754,6 +7755,7 @@ dependencies = [
  "ark-ff 0.3.0",
  "ark-ff 0.4.2",
  "ark-ff 0.5.0",
+ "borsh 1.5.7",
  "bytes",
  "fastrlp 0.3.1",
  "fastrlp 0.4.0",
@@ -12131,6 +12133,7 @@ name = "templar-universal-account"
 version = "1.2.1"
 dependencies = [
  "alloy",
+ "alloy-primitives",
  "borsh 1.5.7",
  "hex",
  "near-account-id",

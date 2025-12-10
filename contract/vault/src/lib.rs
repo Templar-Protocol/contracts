@@ -32,13 +32,15 @@ use std::{
 };
 use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset},
+    market::ext_market,
+    panic_with_message,
     vault::{
-        require_at_least, AllocatingState, AllocationMode, AllocationPlan, AllocationWeights,
-        Error, Event, IdleBalanceDelta, MarketConfiguration, OpState, PayoutState,
-        PendingWithdrawal, TimestampNs, VaultConfiguration, WithdrawingState,
-        AFTER_CREATE_WITHDRAW_REQ_GAS, AFTER_SEND_TO_USER_GAS, AFTER_SUPPLY_1_CHECK_GAS,
-        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS,
-        EXECUTE_WITHDRAW_GAS, MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, WITHDRAW_GAS,
+        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
+        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
+        QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
+        WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
+        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
     },
 };
 pub use wad::*;
@@ -98,10 +100,14 @@ impl From<MarketConfiguration> for MarketRecord {
 ///
 /// What this contract does
 /// - Issues a share token (NEP-141) that represents a vault over an underlying NEP-141 “BorrowAsset”.
-/// - Allocates deposits across “markets” via a supply queue; withdrawals are keeper-routed via a queueless mechanism.
+/// - Allocates deposits across “markets” via a supply queue.
+/// - User withdrawals are enqueued in a FIFO pending-withdrawals queue, while the
+///   actual market route for each withdrawal is keeper-routed and provided per
+///   execution (no persistent global withdraw route).
 /// - Governance uses Owner + RBAC (Curator/Guardian/Allocator) with a timelock for certain changes.
 /// - Withdraw flow escrows shares, builds market-side withdrawal requests, then pays out and burns proportional escrow.
 /// - Performance fees accrue by minting fee shares based on increases in total assets.
+///
 /// Critical invariants
 /// - Assets accounting is correct: total_assets = idle_balance + sum(all principals in markets).
 /// - Only one op in flight (op_state); mutating ops require Idle.
@@ -111,26 +117,29 @@ impl From<MarketConfiguration> for MarketRecord {
 pub struct Contract {
     /// The underlying asset that the vault manages
     underlying_asset: FungibleAsset<BorrowAsset>,
-
     /// The process in which the vault calculates its assets under management
     aum: AUM,
-
-    /// The mode in which the allocator will operate
-    mode: AllocationMode,
-    plan: Option<AllocationPlan>,
-
     /// Performance fee
-    performance_fee: wad::Wad,
+    performance_fee: Wad,
+    /// The recipient of performance fees
     fee_recipient: AccountId,
+    /// The recipient of any skimmed tokens that are erroneously held by the vault
     skim_recipient: AccountId,
     /// Last recorded total assets (for fee accrual)
     last_total_assets: u128,
+    /// Vaults liquidity buffer
+    idle_balance: u128,
 
-    // Virtual offsets used only in conversions/previews to harden edge cases
+    /// The vault's operation state
+    op_state: OpState,
+    /// The next operation id
+    next_op_id: u64,
+
+    /// Virtual offsets used only in conversions/previews to harden edge cases
     virtual_shares: u128,
     virtual_assets: u128,
 
-    // Merged market record: cfg + pending_cap + principal (single persisted map; no per-entry storage keys)
+    /// Markets controlled by the vault
     markets: BTreeMap<AccountId, MarketRecord>,
 
     /// Per‑action governance timelock configuration.
@@ -139,21 +148,12 @@ pub struct Contract {
     /// Ordered list of market IDs for deposit allocation
     supply_queue: BTreeSet<AccountId>,
 
-    // id of the pending withdrawal being executed, if any
-    current_withdraw_inflight: Option<u64>,
-
-    /// underlying held by vault
-    idle_balance: u128,
-    op_state: OpState,
-    next_op_id: u64,
-
-    /// Pending withdrawals queue (vault-level, FIFO by id)
+    /// Pending withdrawals queue
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
-    next_withdraw_id: u64,
     next_withdraw_to_execute: u64,
 
     // indices of markets with created requests (per withdrawing op)
-    pending_market_exec: Vec<u32>,
+    market_execution_lock: Locker,
 
     // Keeper-provided withdraw route for the current Withdrawing op
     withdraw_route: Vec<AccountId>,
@@ -166,15 +166,6 @@ pub struct Contract {
 impl Contract {
     #[allow(clippy::unwrap_used, reason = "Infallible")]
     #[init]
-    /// Initializes a new vault.
-    /// - `owner_id`: account that controls Owner-only actions.
-    /// - `curator_id`: manages markets and is also granted the Allocator role.
-    /// - `guardian_id`: can revoke pending governance actions.
-    /// - `underlying_token_id`: NEP-141 underlying asset managed by the vault.
-    /// - `initial_timelock_sec`: governance timelock in seconds.
-    /// - `fee_recipient`: account to receive performance fees.
-    /// - `skim_recipient`: account to receive skimmed tokens.
-    /// - `name`/`symbol`/`decimals`: metadata for the share token.
     #[must_use]
     pub fn new(configuration: VaultConfiguration) -> Self {
         let VaultConfiguration {
@@ -188,7 +179,6 @@ impl Contract {
             name,
             symbol,
             decimals,
-            mode,
             restrictions,
         } = configuration;
 
@@ -217,9 +207,6 @@ impl Contract {
             idle_balance: 0,
             op_state: OpState::Idle,
             next_op_id: 1,
-            mode,
-            plan: None,
-            current_withdraw_inflight: None,
             pending_withdrawals: IterableMap::new(
                 [
                     b'v'.into_storage_key().as_slice(),
@@ -227,9 +214,8 @@ impl Contract {
                 ]
                 .concat(),
             ),
-            next_withdraw_id: 0,
             next_withdraw_to_execute: 0,
-            pending_market_exec: Vec::new(),
+            market_execution_lock: Locker::default(),
             withdraw_route: Vec::new(),
             abdicator: Abdicator::new(),
             gate: Gate::new(restrictions),
@@ -252,8 +238,14 @@ impl Contract {
     /// Internally calls `redeem` after computing the share amount.
     #[payable]
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
-        require_at_least(WITHDRAW_GAS);
+        require_at_least(templar_common::vault::WITHDRAW_GAS);
+        self.internal_accrue_fee();
         let shares_needed = self.preview_withdraw(amount).0;
+        Event::WithdrawPreview {
+            shares: U128(shares_needed),
+            receiver: receiver.clone(),
+        }
+        .emit();
         self.redeem(U128(shares_needed), receiver)
     }
 
@@ -291,33 +283,53 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes the next pending withdrawal request
-    /// This defers creating market-side withdrawal requests until explicitly invoked.
-    pub fn execute_next_withdrawal_request(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
+    /// Executes the withdraw route provided by the allocator
+    /// If `route` is empty, try to settle with the idle balance
+    pub fn execute_withdrawal(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
-
-        if self.current_withdraw_inflight.is_some() {
-            templar_common::panic_with_message("A pending withdrawal is already in-flight");
-        }
+        self.internal_accrue_fee();
 
         if let Some(id) = self.peek_next_pending_withdrawal_id() {
-            let pending = self.pending_withdrawals.get(&id).unwrap_or_else(|| {
-                templar_common::panic_with_message("pending vanished unexpectedly")
-            });
+            let pending = self
+                .pending_withdrawals
+                .get(&id)
+                .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
+            Event::WithdrawProgress {
+                phase: WithdrawProgressPhase::ExecutionStarted,
+                op_id: None,
+                id: Some(id.into()),
+                market_index: None,
+                owner: Some(pending.owner.clone()),
+                receiver: Some(pending.receiver.clone()),
+                escrow_shares: Some(U128(pending.escrow_shares)),
+                expected_assets: Some(U128(pending.expected_assets)),
+                requested_at: Some(pending.requested_at.into()),
+            }
+            .emit();
+
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
 
             if pending.expected_assets == 0 {
+                Event::WithdrawProgress {
+                    phase: WithdrawProgressPhase::SkippedDust,
+                    op_id: None,
+                    id: Some(id.into()),
+                    market_index: None,
+                    owner: None,
+                    receiver: None,
+                    escrow_shares: None,
+                    expected_assets: None,
+                    requested_at: None,
+                }
+                .emit();
                 // Skip dust request to avoid wedging the queue
-                self.current_withdraw_inflight = Some(id);
-                self.remove_inflight_and_advance_head();
-                return self.execute_next_withdrawal_request(route);
+                self.pop_head();
+                return self.execute_withdrawal(route);
             }
 
-            self.current_withdraw_inflight = Some(id);
-            env::log_str(&format!("WithdrawalExecutionStarted id={id}"));
             return self.start_withdraw(
                 pending.expected_assets,
                 &receiver,
@@ -326,47 +338,183 @@ impl Contract {
                 route,
             );
         }
+        Event::WithdrawQueueStatus {
+            status: QueueStatus::Empty,
+            id: None,
+        }
+        .emit();
 
         PromiseOrValue::Value(())
     }
 
-    /// Executes one created market withdrawal request in the current Withdrawing op.
-    /// Allocator only.
-    pub fn execute_next_market_withdrawal(
+    /// Allocator-only. Progress the current Withdrawing op by executing the market at `market_index`
+    /// from the `withdraw_route`. Use when offchain signals the vault is next in the market queue.
+    pub fn execute_market_withdrawal(
         &mut self,
         op_id: U64,
+        market_index: u32,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         Self::assert_allocator();
+        self.internal_accrue_fee();
 
-        let _ctx = match self.ctx_withdrawing(op_id.into()) {
-            Ok(v) => v,
-            Err(e) => return self.stop_and_exit(Some(&e)),
-        };
-
-        let Some(market_index) = self.pending_market_exec.first().copied() else {
-            templar_common::panic_with_message("No pending market withdrawal request to execute");
+        let ctx = match self.ctx_withdrawing(op_id.0) {
+            Ok(s) => s.clone(),
+            Err(_) => panic_with_message("Not withdrawing"),
         };
 
         if let Err(e) = self.resolve_withdraw_market(market_index) {
             return self.stop_and_exit(Some(&e));
         }
 
+        self.market_execution_lock.lock(market_index);
+
+        if ctx.index != market_index {
+            self.op_state = OpState::Withdrawing(WithdrawingState {
+                index: market_index,
+                ..ctx
+            });
+        }
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(FT_BALANCE_OF_GAS)
+                .with_unused_gas_weight(0)
                 .ft_balance_of(env::current_account_id())
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(EXECUTE_WITHDRAW_01_FETCH_POSITION_GAS)
-                        .execute_withdraw_01_call_market_fetch_position(
+                        .with_unused_gas_weight(100)
+                        .execute_withdraw_01_execute_withdraw_fetch_position(
                             op_id.into(),
                             market_index,
                             batch_limit,
                         ),
                 ),
         )
+    }
+
+    /// Allocator-only. Executes an existing market-side supply withdrawal request
+    /// for `market` and credits any returned underlying to the vault's
+    /// `idle_balance`, without touching the user withdrawal queue
+    /// (`pending_withdrawals`) or the payout state machine.
+    ///
+    /// This is a pure rebalance operation:
+    /// - `total_assets` and `total_supply` are preserved.
+    /// - Only per-market principal and `idle_balance` are updated.
+    /// - No pending user withdrawal is dequeued or paid out.
+    ///
+    /// Implementation details:
+    /// - Uses `OpState::Allocating` as a generic in-flight guard for this
+    ///   rebalance op.
+    /// - Locks the target market index in `market_execution_lock` to serialize
+    ///   the underlying market call.
+    ///
+    /// Expects that a supply withdrawal request for this vault already exists
+    /// in the given `market` and is ready to be executed.
+    pub fn execute_rebalance_withdrawal(
+        &mut self,
+        market: AccountId,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<()> {
+        require_at_least(EXECUTE_WITHDRAW_GAS);
+        Self::assert_allocator();
+
+        self.ensure_idle();
+        self.internal_accrue_fee();
+
+        let principal = self.principal_of(&market);
+        require!(principal > 0, "No principal to withdraw");
+
+        let op_id = self.next_op_id;
+
+        let Some(market_index) = self.rebalance_lock_index(&market) else {
+            Event::RebalanceWithdrawStopped {
+                op_id: op_id.into(),
+                market,
+                reason: Some(Reason::Other("Missing market record".to_string())),
+            }
+            .emit();
+            return PromiseOrValue::Value(());
+        };
+
+        self.market_execution_lock.lock(market_index);
+
+        // Use Allocating as a generic in-flight guard for this rebalancing op.
+        self.next_op_id = op_id.saturating_add(1);
+        self.op_state = OpState::Allocating(AllocatingState {
+            op_id,
+            index: market_index,
+            remaining: 0,
+            plan: Vec::new(),
+        });
+
+        PromiseOrValue::Promise(
+            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                .with_static_gas(FT_BALANCE_OF_GAS)
+                .with_unused_gas_weight(0)
+                .ft_balance_of(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_unused_gas_weight(100)
+                        .rebalance_withdraw_01_execute_withdraw_fetch_position(
+                            op_id,
+                            market,
+                            batch_limit,
+                            U128(principal),
+                        ),
+                ),
+        )
+    }
+
+    /// Allocator/Curator/Owner only. Unbricks the current in-flight withdrawal or payout:
+    /// - If Withdrawing: refunds escrowed shares to the owner and dequeues the pending request.
+    /// - If in Payout: re-syncs idle_balance with the underlying FT balance,
+    ///   refunds escrowed shares to the owner, and dequeues the pending request.
+    /// - Clears withdraw state and market execution locks and returns the vault to Idle.
+    pub fn unbrick(&mut self) -> PromiseOrValue<()> {
+        Self::assert_allocator();
+
+        match self.op_state.clone() {
+            OpState::Withdrawing(s) => {
+                let id = self.next_withdraw_to_execute;
+                Event::UnbrickInvoked {
+                    phase: UnbrickPhase::Withdrawing,
+                    op_id: Some(s.op_id.into()),
+                    id: Some(id.into()),
+                }
+                .emit();
+
+                // stop_and_exit_withdrawing refunds escrow, unlocks current index, clears route,
+                // dequeues the inflight request and sets the vault back to Idle.
+                self.stop_and_exit_withdrawing::<&str>(None);
+                PromiseOrValue::Value(())
+            }
+            OpState::Payout(s) => {
+                let id = self.next_withdraw_to_execute;
+                Event::UnbrickInvoked {
+                    phase: UnbrickPhase::Payout,
+                    op_id: Some(s.op_id.into()),
+                    id: Some(id.into()),
+                }
+                .emit();
+
+                // Treat stuck payout as failure, but re-sync idle_balance using
+                // the actual underlying FT balance held by the vault account.
+                PromiseOrValue::Promise(
+                    ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                        .with_static_gas(FT_BALANCE_OF_GAS)
+                        .ft_balance_of(env::current_account_id())
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .with_static_gas(AFTER_SEND_TO_USER_GAS)
+                                .stop_and_exit_payout_01_reconcile(Some(Reason::Other(
+                                    "unbrick_payout".to_string(),
+                                ))),
+                        ),
+                )
+            }
+            _ => PromiseOrValue::Value(()),
+        }
     }
 
     /// Sends the entire balance of `token` held by the vault to the `skim_recipient`.
@@ -405,91 +553,101 @@ impl Contract {
     ///
     ///
     /// NOTE: When we rewrite this we should use a delta based approach
-    #[payable]
-    pub fn allocate(
-        &mut self,
-        weights: AllocationWeights,
-        amount: Option<U128>,
-    ) -> PromiseOrValue<()> {
-        require_at_least(ALLOCATE_GAS);
+    pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
         Self::assert_allocator();
         self.ensure_idle();
+        self.internal_accrue_fee();
+        delta.as_ref().validate();
 
-        let total = self.clamp_allocation_total(amount.map(|x| x.0));
+        match delta {
+            AllocationDelta::Supply(delta) => {
+                require_at_least(ALLOCATE_GAS);
+                let total = self.clamp_allocation_total(Some(delta.amount.0));
+                let plan = vec![(delta.market, total)];
 
-        if weights.is_empty() {
-            if total == 0 {
-                return self.stop_and_exit(Some(&Error::ZeroAmount));
+                Event::AllocationPlanSet {
+                    op_id: self.next_op_id.into(),
+                    total: U128(total),
+                    plan: plan
+                        .iter()
+                        .cloned()
+                        .map(|(market, amount)| (market, amount.into()))
+                        .collect(),
+                }
+                .emit();
+
+                self.start_allocation(total, plan)
             }
-            let op_id = self.next_op_id;
-            Event::AllocationRequestedQueue {
-                op_id: op_id.into(),
-                total: U128(total),
+            AllocationDelta::Withdraw(delta) => {
+                require_at_least(WITHDRAW_CREATE_REQUEST_CALLBACK_GAS);
+
+                let to_request = self.principal_of(&delta.market).min(delta.amount.0);
+                require!(to_request > 0, "Insufficient principal");
+
+                Event::SupplyWithdrawRequestCreated {
+                    market: delta.market.clone(),
+                    amount: U128(to_request),
+                }
+                .emit();
+
+                let market = delta.market.clone();
+                let amount = U128(to_request);
+
+                PromiseOrValue::Promise(
+                    ext_market::ext(market.clone())
+                        .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
+                        .create_supply_withdrawal_request(BorrowAssetAmount::from(amount))
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .with_static_gas(WITHDRAW_CREATE_REQUEST_CALLBACK_GAS)
+                                .rebalance_withdraw_01_after_create_request(market, amount),
+                        ),
+                )
+            }
+        }
+    }
+
+    fn queue_tail(&self) -> u64 {
+        self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
+    }
+
+    fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
+        let tail = self.queue_tail();
+        if self.next_withdraw_to_execute < tail {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::NextFound,
+                id: Some(self.next_withdraw_to_execute.into()),
             }
             .emit();
-            self.plan = None;
-            return self.start_allocation(total);
+            Some(self.next_withdraw_to_execute)
+        } else {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::Empty,
+                id: None,
+            }
+            .emit();
+            None
         }
+    }
 
-        let weights = weights
-            .into_iter()
-            .map(|(m, w)| (m, u128::from(w)))
-            .collect::<HashMap<_, _>>();
-
-        let sum_weights: u128 = weights.values().sum();
-        if sum_weights == 0 {
-            templar_common::panic_with_message("Sum of weights is zero");
-        }
-        if total == 0 {
-            templar_common::panic_with_message("No funds to allocate");
-        }
-
-        let op_id = self.next_op_id;
-        let weights_for_event: Vec<(AccountId, U128)> =
-            weights.iter().map(|(m, w)| (m.clone(), U128(*w))).collect();
-        Event::AllocationPlanSet {
-            op_id: op_id.into(),
-            total: U128(total),
-            plan: weights_for_event,
+    fn pop_head(&mut self) {
+        let id = self.next_withdraw_to_execute;
+        let removed = self.pending_withdrawals.remove(&id);
+        require!(removed.is_some(), "queue corrupt: head missing");
+        self.next_withdraw_to_execute = id.saturating_add(1);
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Dequeued,
+            id: id.into(),
         }
         .emit();
-        self.plan = Some(weights.into_iter().collect());
-
-        self.start_allocation(total)
     }
 
-    // Advance next_withdraw_to_execute to the next present id and return it, or None if none
-    fn peek_next_pending_withdrawal_id(&mut self) -> Option<u64> {
-        let mut id = self.next_withdraw_to_execute;
-        while id < self.next_withdraw_id {
-            if self.pending_withdrawals.get(&id).is_some() {
-                self.next_withdraw_to_execute = id;
-                return Some(id);
-            }
-            id = id.saturating_add(1);
+    fn park_head_for_retry(&mut self) {
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Parked,
+            id: self.next_withdraw_to_execute.into(),
         }
-        self.next_withdraw_to_execute = id;
-        None
-    }
-
-    // Remove the in-flight pending (success or explicit abort) and advance head past it
-    fn remove_inflight_and_advance_head(&mut self) {
-        if let Some(id) = self.current_withdraw_inflight.take() {
-            let _ = self.pending_withdrawals.remove(&id);
-            self.next_withdraw_to_execute = id.saturating_add(1);
-            Event::WithdrawDequeued { index: id.into() }.emit();
-        }
-    }
-
-    // Keep the head pending but clear in-flight so it can be retried later
-    fn park_inflight_head_for_retry(&mut self) {
-        if let Some(current_withdraw_inflight) = self.current_withdraw_inflight {
-            Event::WithdrawalParked {
-                id: current_withdraw_inflight.into(),
-            }
-            .emit();
-        }
-        self.current_withdraw_inflight = None;
+        .emit();
     }
 }
 
@@ -536,7 +694,6 @@ impl Contract {
             name: meta.name,
             symbol: meta.symbol,
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
-            mode: self.mode.clone(),
             restrictions: self.gate.restrictions.clone(),
         }
     }
@@ -651,30 +808,32 @@ impl Contract {
         }
     }
 
+    /// Returns `true` if any market execution lock is currently held.
+    ///
+    /// This is a coarse signal that a withdrawal or allocator-only
+    /// rebalance is in-flight against at least one market.
     pub fn has_pending_market_withdrawal(&self) -> bool {
-        !self.pending_market_exec.is_empty()
+        self.market_execution_lock.is_locked_all()
     }
 
     pub fn get_current_withdraw_request_id(&self) -> Option<U64> {
-        self.current_withdraw_inflight.map(Into::into)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct EscrowSettlement {
-    pub to_burn: u128,
-    pub refund: u128,
-}
-
-impl From<EscrowSettlement> for (u128, u128) {
-    fn from(tuple: EscrowSettlement) -> Self {
-        (tuple.to_burn, tuple.refund)
+        match &self.op_state {
+            OpState::Withdrawing(_) | OpState::Payout(_) => {
+                Some(self.next_withdraw_to_execute.into())
+            }
+            _ => None,
+        }
     }
 }
 
 /* ----- Private Helpers ----- */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleCoverage {
+    pub remaining_unmet: u128,
+    pub collected_from_idle: u128,
+}
+
 impl Contract {
-    // Principal (vault-supplied) units currently recorded for a market
     fn principal_of(&self, market: &AccountId) -> u128 {
         self.markets.get(market).map_or(0, |r| r.principal)
     }
@@ -683,13 +842,11 @@ impl Contract {
         self.markets.get(market).map_or(0, |r| r.cfg.cap.0)
     }
 
-    // Remaining room until cap for a market
     fn room_of(&self, market: &AccountId) -> u128 {
         self.cap_of(market)
             .saturating_sub(self.principal_of(market))
     }
 
-    /// Enqueue a vault-level pending withdrawal request (escrow already taken).
     fn enqueue_pending_withdrawal(
         &mut self,
         owner: &AccountId,
@@ -697,8 +854,7 @@ impl Contract {
         escrow_shares: u128,
         expected_assets: u128,
     ) {
-        let id = self.next_withdraw_id;
-        self.next_withdraw_id = self.next_withdraw_id.saturating_add(1);
+        let id = self.queue_tail();
         let requested_at = env::block_timestamp();
 
         self.pending_withdrawals.insert(
@@ -750,16 +906,17 @@ impl Contract {
         .into()
     }
 
-    pub(crate) fn compute_effective_totals(
+    pub fn compute_effective_totals(
         cur_assets: Number,
         last_total_assets: Number,
-        performance_fee: wad::Wad,
+        performance_fee: Wad,
         total_supply: Number,
         virtual_shares: Number,
         virtual_assets: Number,
     ) -> (Number, Number) {
         let fee_shares =
             compute_fee_shares(cur_assets, last_total_assets, performance_fee, total_supply);
+        // Bump by fake virtual assets to bypass inflation attacks
         let new_total_supply = total_supply
             .saturating_add(fee_shares)
             .saturating_add(virtual_shares);
@@ -767,19 +924,10 @@ impl Contract {
         (new_total_supply, new_total_assets)
     }
 
-    pub(crate) fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
+    pub fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
         let requested = requested.unwrap_or(self.idle_balance);
         let max_room = self.get_max_deposit().0;
         requested.min(self.idle_balance).min(max_room)
-    }
-
-    pub(crate) fn compute_escrow_settlement(
-        escrow_shares: u128,
-        burn_shares: u128,
-    ) -> EscrowSettlement {
-        let to_burn = burn_shares.min(escrow_shares);
-        let refund = escrow_shares.saturating_sub(to_burn);
-        EscrowSettlement { to_burn, refund }
     }
 
     pub fn internal_accrue_fee(&mut self) {
@@ -796,7 +944,12 @@ impl Contract {
             let recipient = self.fee_recipient.clone();
             let _ = self
                 .mint(&Nep141Mint::new(minted, &recipient))
-                .inspect_err(|e| env::log_str(&format!("Failed to mint {e}")));
+                .inspect_err(|e| {
+                    Event::PerformanceFeeMintFailed {
+                        error: e.to_string(),
+                    }
+                    .emit();
+                });
             Event::PerformanceFeeAccrued {
                 recipient,
                 shares: U128(minted),
@@ -840,10 +993,8 @@ impl Contract {
         }
     }
 
-    fn start_allocation(&mut self, amount: u128) -> PromiseOrValue<()> {
+    fn start_allocation(&mut self, amount: u128, plan: AllocationPlan) -> PromiseOrValue<()> {
         if amount == 0 {
-            // Dust request: clear the head and stay Idle to avoid wedging the queue
-            self.remove_inflight_and_advance_head();
             return PromiseOrValue::Value(());
         }
         self.ensure_idle();
@@ -860,6 +1011,7 @@ impl Contract {
             op_id,
             index: 0,
             remaining: amount,
+            plan,
         });
         Event::AllocationStarted {
             op_id: op_id.into(),
@@ -878,7 +1030,9 @@ impl Contract {
         index: u32,
         remaining_before: u128,
     ) -> Promise {
-        self::require_at_least(AFTER_SUPPLY_1_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL));
+        self::require_at_least(
+            SUPPLY_AFTER_TRANSFER_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL),
+        );
         self.underlying_asset
             .transfer_call(
                 market,
@@ -892,7 +1046,7 @@ impl Contract {
             )
             .then(
                 Self::ext(env::current_account_id())
-                    .with_static_gas(AFTER_SUPPLY_1_CHECK_GAS)
+                    .with_static_gas(SUPPLY_AFTER_TRANSFER_CHECK_GAS)
                     .supply_01_handle_transfer(
                         market.clone(),
                         op_id,
@@ -903,137 +1057,14 @@ impl Contract {
             )
     }
 
-    // Step allocation when a weighted plan is present.
-    fn step_allocation_with_plan(
-        &mut self,
-        op_id: u64,
-        index: u32,
-        remaining: u128,
-    ) -> PromiseOrValue<()> {
-        if let Some(plan) = &self.plan {
-            let idx = index as usize;
-            if let Some((market, weight)) = plan.get(idx) {
-                let market_id = market.clone();
-
-                // Sum weights of remaining markets in the plan (including current)
-                let mut sum_w: u128 = 0;
-                for (_, w) in plan.iter().skip(idx) {
-                    sum_w = sum_w.saturating_add(*w);
-                }
-
-                // Compute weighted target for this step. For the last market (or zero sum), take all remaining.
-                let target = if sum_w == 0 || idx + 1 == plan.len() {
-                    remaining
-                } else {
-                    mul_div_floor(remaining.into(), (*weight).into(), sum_w.into()).into()
-                };
-
-                let room = self.room_of(&market_id);
-                let to_supply = room.min(target);
-
-                Event::AllocationStepPlanned {
-                    op_id: op_id.into(),
-                    index,
-                    market: market_id.clone(),
-                    target: U128(target),
-                    room: U128(room),
-                    to_supply: U128(to_supply),
-                    remaining_before: U128(remaining),
-                    planned: true,
-                }
-                .emit();
-
-                if to_supply == 0 {
-                    Event::AllocationStepSkipped {
-                        op_id: op_id.into(),
-                        index,
-                        market: market_id.clone(),
-                        reason: if room == 0 {
-                            "no-room".to_string()
-                        } else {
-                            "zero-target".to_string()
-                        },
-                        remaining: U128(remaining),
-                    }
-                    .emit();
-
-                    self.op_state = OpState::Allocating(AllocatingState {
-                        op_id,
-                        index: index + 1,
-                        remaining,
-                    });
-                    return self.step_allocation();
-                }
-
-                PromiseOrValue::Promise(
-                    self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
-                )
-            } else {
-                // Plan exhausted; stop and reconcile remaining in stop_and_exit
-                self.stop_and_exit::<Error>(None)
-            }
-        } else {
-            self.stop_and_exit(Some(&Error::NotAllocating))
-        }
-    }
-
-    // Step allocation using the supply_queue order.
-    fn step_allocation_from_queue(
-        &mut self,
-        op_id: u64,
-        index: u32,
-        remaining: u128,
-    ) -> PromiseOrValue<()> {
-        if let Some(market) = self.supply_queue.iter().nth(index as usize) {
-            let room = self.room_of(market);
-            let to_supply = room.min(remaining);
-
-            // Emit planned step event (queue-based)
-            Event::AllocationStepPlanned {
-                op_id: op_id.into(),
-                index,
-                market: market.clone(),
-                target: U128(remaining),
-                room: U128(room),
-                to_supply: U128(to_supply),
-                remaining_before: U128(remaining),
-                planned: false,
-            }
-            .emit();
-
-            if to_supply == 0 {
-                Event::AllocationStepSkipped {
-                    op_id: op_id.into(),
-                    index,
-                    market: market.clone(),
-                    reason: "no-room".to_string(),
-                    remaining: U128(remaining),
-                }
-                .emit();
-
-                self.op_state = OpState::Allocating(AllocatingState {
-                    op_id,
-                    index: index + 1,
-                    remaining,
-                });
-                return self.step_allocation();
-            }
-
-            PromiseOrValue::Promise(
-                self.supply_and_then(market, to_supply, op_id, index, remaining),
-            )
-        } else {
-            self.stop_and_exit::<Error>(None)
-        }
-    }
-
     fn step_allocation(&mut self) -> PromiseOrValue<()> {
-        let (op_id, index, remaining) = match &self.op_state {
+        let (op_id, index, remaining, plan) = match &self.op_state {
             OpState::Allocating(AllocatingState {
                 op_id,
                 index,
                 remaining,
-            }) => (*op_id, *index, *remaining),
+                plan,
+            }) => (*op_id, *index, *remaining, plan.clone()),
             _ => return self.stop_and_exit(Some(&Error::NotAllocating)),
         };
 
@@ -1041,10 +1072,59 @@ impl Contract {
             return self.stop_and_exit::<Error>(None);
         }
 
-        if self.plan.is_some() {
-            self.step_allocation_with_plan(op_id, index, remaining)
+        let idx = index as usize;
+        if let Some((market, amount)) = plan.get(idx) {
+            let market_id = market.clone();
+
+            let room = self.room_of(&market_id);
+            let to_supply = room.min(*amount);
+
+            Event::AllocationStepPlan {
+                op_id: op_id.into(),
+                index,
+                market: market_id.clone(),
+                target: U128(*amount),
+                room: U128(room),
+                to_supply: U128(to_supply),
+                remaining_before: U128(remaining),
+                planned: true,
+                reason: None,
+            }
+            .emit();
+
+            if to_supply == 0 {
+                Event::AllocationStepPlan {
+                    op_id: op_id.into(),
+                    index,
+                    market: market_id.clone(),
+                    target: U128(*amount),
+                    room: U128(room),
+                    to_supply: U128(0),
+                    remaining_before: U128(remaining),
+                    planned: false,
+                    reason: Some(if room == 0 {
+                        Reason::NoRoom
+                    } else {
+                        Reason::ZeroTarget
+                    }),
+                }
+                .emit();
+
+                self.op_state = OpState::Allocating(AllocatingState {
+                    op_id,
+                    index: index + 1,
+                    remaining,
+                    plan: plan.into_iter().filter(|m| m.0 != market_id).collect(),
+                });
+                return self.step_allocation();
+            }
+
+            PromiseOrValue::Promise(
+                self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
+            )
         } else {
-            self.step_allocation_from_queue(op_id, index, remaining)
+            // Plan exhausted; stop and reconcile remaining in stop_and_exit
+            self.stop_and_exit::<Error>(None)
         }
     }
 
@@ -1063,27 +1143,23 @@ impl Contract {
         let op_id = self.next_op_id;
         self.next_op_id += 1;
 
-        // Invariant: Idle-first reservation does not mutate idle_balance until payout succeeds.
-        let used_idle = self.idle_balance.min(amount);
-        let remaining = amount.saturating_sub(used_idle);
-        let collected = used_idle;
+        // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
+        let cov = self.compute_idle_coverage(amount);
 
-        self.pending_market_exec.clear();
         self.withdraw_route = route;
-
         self.op_state = OpState::Withdrawing(WithdrawingState {
             op_id,
             index: Default::default(),
-            remaining,
+            remaining: cov.remaining_unmet,
             receiver: receiver.clone(),
-            collected,
+            collected: cov.collected_from_idle,
             owner: owner.clone(),
             escrow_shares,
         });
-        self.step_withdraw()
+        self.pay_or_signal_next_withdraw()
     }
 
-    fn step_withdraw(&mut self) -> PromiseOrValue<()> {
+    fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
         let OpState::Withdrawing(WithdrawingState {
             op_id,
             index,
@@ -1098,60 +1174,46 @@ impl Contract {
         };
 
         if remaining == 0 {
-            self.op_state = OpState::Payout(PayoutState {
+            Event::WithdrawProgress {
+                phase: WithdrawProgressPhase::CoveredByIdle,
+                op_id: Some(op_id.into()),
+                id: Some(self.next_withdraw_to_execute.into()),
+                market_index: None,
+                owner: None,
+                receiver: None,
+                escrow_shares: None,
+                expected_assets: None,
+                requested_at: None,
+            }
+            .emit();
+            return self.pay(
                 op_id,
-                receiver: receiver.clone(),
-                amount: collected,
-                owner: owner.clone(),
+                &receiver,
+                collected,
+                &owner,
                 escrow_shares,
-                burn_shares: escrow_shares,
-            });
-            require!(self.idle_balance >= collected, "idle underflow in payout");
-            self.update_idle_balance(IdleBalanceDelta::Decrease(collected.into()));
-
-            return PromiseOrValue::Promise(
-                self.underlying_asset
-                    .transfer(receiver.clone(), U128(collected).into())
-                    .then(
-                        Self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                            .payment_01_reconcile_idle_or_refund(op_id, receiver, U128(collected)),
-                    ),
+                escrow_shares,
             );
         }
-        if let Some(market) = self.withdraw_route.get(index as usize) {
-            let have = self.principal_of(market);
-            let to_request = have.min(remaining);
-            if to_request == 0 {
-                self.op_state = OpState::Withdrawing(WithdrawingState {
-                    op_id,
-                    index: index + 1,
-                    remaining,
-                    receiver,
-                    collected,
-                    owner,
-                    escrow_shares,
-                });
-                env::log_str(&format!(
-                    "Skipping withdrawal for market {market} (have {have}, remaining {remaining})"
-                ));
-                return self.step_withdraw();
+        if self.withdraw_route.get(index as usize).is_some() {
+            Event::WithdrawProgress {
+                phase: WithdrawProgressPhase::ExecutionRequired,
+                op_id: Some(op_id.into()),
+                id: Some(self.next_withdraw_to_execute.into()),
+                market_index: Some(index),
+                owner: None,
+                receiver: None,
+                escrow_shares: None,
+                expected_assets: None,
+                requested_at: None,
             }
-            PromiseOrValue::Promise(
-                templar_common::market::ext_market::ext(market.clone())
-                    .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
-                    .create_supply_withdrawal_request(BorrowAssetAmount::from(U128(to_request)))
-                    .then(
-                        Self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_CREATE_WITHDRAW_REQ_GAS)
-                            .withdraw_01_handle_create_request(op_id, index, U128(to_request)),
-                    ),
-            )
+            .emit();
+            PromiseOrValue::Value(())
         } else {
             let requested = collected.saturating_add(remaining);
             let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);
 
-            self.pay_collected(
+            self.pay_or_else(
                 op_id,
                 &receiver,
                 collected,
@@ -1161,7 +1223,7 @@ impl Contract {
                 |self_| {
                     self_.withdraw_route.clear();
                     self_.op_state = OpState::Idle;
-                    self_.park_inflight_head_for_retry();
+                    self_.park_head_for_retry();
                     PromiseOrValue::Value(())
                 },
             )
@@ -1170,43 +1232,68 @@ impl Contract {
 
     #[allow(clippy::too_many_arguments)]
     /// If we collected something, pay it out now and burn proportional shares or do something else
-    fn pay_collected(
+    fn pay_or_else(
         &mut self,
         op_id: u64,
         receiver: &AccountId,
-        collected: u128,
+        amount: u128,
         owner: &AccountId,
         escrow_shares: u128,
         burn_shares: u128,
         or_else: impl FnOnce(&mut Self) -> PromiseOrValue<()>,
     ) -> PromiseOrValue<()> {
-        if collected > 0 {
-            self.op_state = OpState::Payout(PayoutState {
-                op_id,
-                receiver: receiver.clone(),
-                amount: collected,
-                owner: owner.clone(),
-                escrow_shares,
-                burn_shares,
-            });
-            require!(self.idle_balance >= collected, "idle underflow in payout");
-            self.update_idle_balance(IdleBalanceDelta::Decrease(collected.into()));
-
-            PromiseOrValue::Promise(
-                self.underlying_asset
-                    .transfer(receiver.clone(), U128(collected).into())
-                    .then(
-                        Self::ext(env::current_account_id())
-                            .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                            .payment_01_reconcile_idle_or_refund(
-                                op_id,
-                                receiver.clone(),
-                                U128(collected),
-                            ),
-                    ),
-            )
+        if amount > 0 {
+            self.pay(op_id, receiver, amount, owner, escrow_shares, burn_shares)
         } else {
             or_else(self)
+        }
+    }
+
+    fn pay(
+        &mut self,
+        op_id: u64,
+        receiver: &AccountId,
+        amount: u128,
+        owner: &AccountId,
+        escrow_shares: u128,
+        burn_shares: u128,
+    ) -> PromiseOrValue<()> {
+        self.op_state = OpState::Payout(PayoutState {
+            op_id,
+            receiver: receiver.clone(),
+            amount,
+            owner: owner.clone(),
+            escrow_shares,
+            burn_shares,
+        });
+        require!(self.idle_balance >= amount, "idle underflow in payout");
+        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
+
+        PromiseOrValue::Promise(
+            self.underlying_asset
+                .transfer(receiver.clone(), U128(amount).into())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(AFTER_SEND_TO_USER_GAS)
+                        .payment_01_reconcile_idle_or_refund(op_id, receiver.clone(), U128(amount)),
+                ),
+        )
+    }
+
+    fn rebalance_lock_index(&self, market: &AccountId) -> Option<u32> {
+        self.markets
+            .keys()
+            .position(|m| m == market)
+            .and_then(|idx| u32::try_from(idx).ok())
+    }
+
+    /// Computes how much of `amount` can be covered by idle balance without mutating state.
+    /// Returns `IdleCoverage`.
+    fn compute_idle_coverage(&self, amount: u128) -> IdleCoverage {
+        let used_idle = self.idle_balance.min(amount);
+        IdleCoverage {
+            remaining_unmet: amount.saturating_sub(used_idle),
+            collected_from_idle: used_idle,
         }
     }
 }

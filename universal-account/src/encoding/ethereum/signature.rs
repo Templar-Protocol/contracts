@@ -1,9 +1,8 @@
-use std::str::FromStr;
-
 use alloy::signers::Signature as AlloySignature;
-use near_sdk::serde::{self, Deserialize, Serialize};
+use near_sdk::serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Signature(pub AlloySignature);
 
 impl From<AlloySignature> for Signature {
@@ -18,36 +17,25 @@ impl From<Signature> for AlloySignature {
     }
 }
 
-impl Serialize for Signature {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        <String as serde::Serialize>::serialize(&self.0.to_string(), serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Signature {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-        let sig = AlloySignature::from_str(&s).map_err(serde::de::Error::custom)?;
-        Ok(Self(sig))
-    }
+#[allow(dead_code)]
+#[derive(schemars::JsonSchema)]
+#[serde(remote = "AlloySignature")]
+struct RemoteAlloySignature {
+    pub r: String,
+    pub s: String,
+    #[serde(rename = "yParity")]
+    pub y_parity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v: Option<String>,
 }
 
 impl schemars::JsonSchema for Signature {
     fn schema_name() -> String {
-        "Signature".to_string()
+        <RemoteAlloySignature as schemars::JsonSchema>::schema_name()
     }
 
     fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema = gen.subschema_for::<String>().into_object();
-        schema.metadata().description = Some("Ethereum signature".to_string());
-        schema.string().pattern = Some("^0x[0-9a-fA-F]{130}$".to_string());
-        schema.into()
+        <RemoteAlloySignature as schemars::JsonSchema>::json_schema(gen)
     }
 }
 
@@ -97,7 +85,7 @@ mod tests {
         let json1 = serde_json::to_string(&sig1).unwrap();
         assert_eq!(
             json1,
-            r#""0xb12461f100937e17f066aee467c767e7dd0db7968c26b36e46d7abc8f4a080872d42ea30aba81b2b82d53c1a959b4da932bb6bbf83383665ef84fc62bddf24741b""#,
+            r#"{"r":"0xb12461f100937e17f066aee467c767e7dd0db7968c26b36e46d7abc8f4a08087","s":"0x2d42ea30aba81b2b82d53c1a959b4da932bb6bbf83383665ef84fc62bddf2474","yParity":"0x0","v":"0x0"}"#,
         );
         let parsed1 = serde_json::from_str(&json1).unwrap();
         assert_eq!(sig1, parsed1);
@@ -106,7 +94,7 @@ mod tests {
         let json2 = serde_json::to_string(&sig2).unwrap();
         assert_eq!(
             json2,
-            r#""0x57628d39b64a8b63663d01ca84e5aa9d21ed55b6d263d3e138704b73a9c6452e72cc571e6c3b2677287a3b2bcc35e04f1af8a26bd050d9276bdb214fcd50f05a1b""#,
+            r#"{"r":"0x57628d39b64a8b63663d01ca84e5aa9d21ed55b6d263d3e138704b73a9c6452e","s":"0x72cc571e6c3b2677287a3b2bcc35e04f1af8a26bd050d9276bdb214fcd50f05a","yParity":"0x0","v":"0x0"}"#,
         );
         let parsed2 = serde_json::from_str(&json2).unwrap();
         assert_eq!(sig2, parsed2);

@@ -228,4 +228,182 @@ mod tests {
         assert_eq!(normalize_chain_id("eth:42161"), "eth:42161");
         assert_eq!(normalize_chain_id("sol:mainnet"), "sol:mainnet");
     }
+
+    #[test]
+    fn test_normalize_chain_id_stellar() {
+        assert_eq!(normalize_chain_id("stellar"), "stellar:mainnet");
+        assert_eq!(normalize_chain_id("Stellar"), "stellar:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_optimism() {
+        assert_eq!(normalize_chain_id("optimism"), "eth:10");
+        assert_eq!(normalize_chain_id("op"), "eth:10");
+        assert_eq!(normalize_chain_id("Optimism"), "eth:10");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_polygon() {
+        assert_eq!(normalize_chain_id("polygon"), "eth:137");
+        assert_eq!(normalize_chain_id("matic"), "eth:137");
+        assert_eq!(normalize_chain_id("Polygon"), "eth:137");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_unknown() {
+        // Unknown chains should pass through unchanged
+        assert_eq!(normalize_chain_id("bitcoin"), "bitcoin");
+        assert_eq!(normalize_chain_id("unknown:123"), "unknown:123");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_case_insensitive() {
+        assert_eq!(normalize_chain_id("ETHEREUM"), "eth:1");
+        assert_eq!(normalize_chain_id("SoLaNa"), "sol:mainnet");
+        assert_eq!(normalize_chain_id("BASE"), "eth:8453");
+    }
+
+    #[test]
+    fn test_deposit_request_serialization() {
+        let req = DepositRequest {
+            source_chain: "ethereum".to_string(),
+            asset: "USDC".to_string(),
+            amount: "1000000".to_string(),
+            dry_run: false,
+        };
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"source_chain\":\"ethereum\""));
+        assert!(json.contains("\"asset\":\"USDC\""));
+        assert!(json.contains("\"amount\":\"1000000\""));
+    }
+
+    #[test]
+    fn test_deposit_request_deserialization() {
+        let json = r#"{
+            "source_chain": "eth:1",
+            "asset": "USDT",
+            "amount": "5000000",
+            "dry_run": true
+        }"#;
+
+        let req: DepositRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.source_chain, "eth:1");
+        assert_eq!(req.asset, "USDT");
+        assert_eq!(req.amount, "5000000");
+        assert!(req.dry_run);
+    }
+
+    #[test]
+    fn test_deposit_response_success() {
+        let resp = DepositResponse {
+            source_tx_hash: "0xabc123".to_string(),
+            status: "PENDING".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: Some("0xdeposit123".to_string()),
+            bridge_deposit_memo: None,
+            error: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"source_tx_hash\":\"0xabc123\""));
+        assert!(json.contains("\"status\":\"PENDING\""));
+        assert!(json.contains("\"bridge_deposit_address\""));
+    }
+
+    #[test]
+    fn test_deposit_response_with_memo() {
+        let resp = DepositResponse {
+            source_tx_hash: "ABC123".to_string(),
+            status: "PENDING".to_string(),
+            source_chain: "stellar:mainnet".to_string(),
+            bridge_deposit_address: Some("GB4Y2K2...".to_string()),
+            bridge_deposit_memo: Some("12345678".to_string()),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"bridge_deposit_memo\":\"12345678\""));
+    }
+
+    #[test]
+    fn test_deposit_response_error() {
+        let resp = DepositResponse {
+            source_tx_hash: String::new(),
+            status: "FAILED".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: None,
+            bridge_deposit_memo: None,
+            error: Some("Insufficient balance".to_string()),
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"FAILED\""));
+        assert!(json.contains("\"error\":\"Insufficient balance\""));
+    }
+
+    #[test]
+    fn test_deposit_response_dry_run() {
+        let resp = DepositResponse {
+            source_tx_hash: "dry-run-tx-hash".to_string(),
+            status: "DRY_RUN".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: Some("0xdeposit".to_string()),
+            bridge_deposit_memo: None,
+            error: None,
+        };
+
+        assert_eq!(resp.status, "DRY_RUN");
+        assert_eq!(resp.source_tx_hash, "dry-run-tx-hash");
+    }
+
+    #[test]
+    fn test_deposit_request_default_dry_run() {
+        let json = r#"{
+            "source_chain": "eth:1",
+            "asset": "ETH",
+            "amount": "1000000000000000000"
+        }"#;
+
+        let req: DepositRequest = serde_json::from_str(json).unwrap();
+        assert!(!req.dry_run); // Should default to false
+    }
+
+    #[test]
+    fn test_deposit_response_serialization_omits_nulls() {
+        let resp = DepositResponse {
+            source_tx_hash: "0x123".to_string(),
+            status: "PENDING".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: Some("0xdeposit".to_string()),
+            bridge_deposit_memo: None,
+            error: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        // None fields should be omitted or null
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // error should be null or omitted
+        if let Some(error) = value.get("error") {
+            assert!(error.is_null());
+        }
+    }
+
+    #[test]
+    fn test_normalize_all_evm_chains() {
+        // All EVM chains
+        assert_eq!(normalize_chain_id("ethereum"), "eth:1");
+        assert_eq!(normalize_chain_id("arbitrum"), "eth:42161");
+        assert_eq!(normalize_chain_id("base"), "eth:8453");
+        assert_eq!(normalize_chain_id("optimism"), "eth:10");
+        assert_eq!(normalize_chain_id("polygon"), "eth:137");
+    }
+
+    #[test]
+    fn test_normalize_all_non_evm_chains() {
+        // Non-EVM chains
+        assert_eq!(normalize_chain_id("solana"), "sol:mainnet");
+        assert_eq!(normalize_chain_id("stellar"), "stellar:mainnet");
+    }
 }

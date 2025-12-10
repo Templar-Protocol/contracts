@@ -2,9 +2,7 @@ use crate::{Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
 use near_sdk_contract_tools::ft::{Nep141Controller as _, Nep141Mint};
-use templar_common::vault::{
-    require_at_least, AllocationMode, DepositMsg, Event, IdleBalanceDelta, SUPPLY_GAS,
-};
+use templar_common::vault::{require_at_least, DepositMsg, IdleBalanceDelta, SUPPLY_GAS};
 
 #[allow(clippy::wildcard_imports)]
 use near_sdk_contract_tools::mt::*;
@@ -131,30 +129,8 @@ impl Contract {
         self.mint(&Nep141Mint::new(shares, &sender_id))
             .unwrap_or_else(|_| templar_common::panic_with_message("Failed to mint shares"));
 
-        Event::MintedShares {
-            amount: shares.into(),
-            receiver: sender_id.clone(),
-        }
-        .emit();
-
         self.update_idle_balance(IdleBalanceDelta::Increase(accept.into()));
         self.last_total_assets = self.last_total_assets.saturating_add(accept);
-
-        if let AllocationMode::Eager { min_batch } = self.mode {
-            if matches!(self.op_state, OpState::Idle) && self.idle_balance >= min_batch.0 {
-                // Invariant: no overlapping operations
-                let op_id = self.next_op_id;
-                Event::AllocationEagerTriggered {
-                    op_id: op_id.into(),
-                    idle_balance: U128(self.idle_balance),
-                    min_batch,
-                    deposit_accepted: U128(accept),
-                }
-                .emit();
-                self.ensure_idle();
-                self.start_allocation(self.idle_balance);
-            }
-        }
 
         refund
     }
