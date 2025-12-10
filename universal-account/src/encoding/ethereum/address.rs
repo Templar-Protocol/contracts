@@ -7,7 +7,20 @@ use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{borsh, near};
 use schemars::JsonSchema;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
+#[serde(crate = "near_sdk::serde")]
 #[near(serializers = [])]
 pub struct Address(pub AlloyAddress);
 
@@ -55,24 +68,6 @@ impl AsRef<[u8; 20]> for Address {
     }
 }
 
-impl Serialize for Address {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: near_sdk::serde::Serializer,
-    {
-        AlloyAddress::serialize(&self.0, serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Address {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: near_sdk::serde::Deserializer<'de>,
-    {
-        Ok(Self(AlloyAddress::deserialize(deserializer)?))
-    }
-}
-
 impl JsonSchema for Address {
     fn schema_name() -> String {
         "Address".to_string()
@@ -83,20 +78,6 @@ impl JsonSchema for Address {
         schema.metadata().description = Some("Ethereum address".to_string());
         schema.string().pattern = Some("^0x[0-9a-fA-F]{40}$".to_string());
         schema.into()
-    }
-}
-
-impl BorshSerialize for Address {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        let bytes: [u8; 20] = self.0.into();
-        BorshSerialize::serialize(&bytes, writer)
-    }
-}
-
-impl BorshDeserialize for Address {
-    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        let bytes = <[u8; 20] as BorshDeserialize>::deserialize_reader(reader)?;
-        Ok(Self(AlloyAddress::from(bytes)))
     }
 }
 

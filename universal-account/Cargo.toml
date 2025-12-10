@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 alloy = { workspace = true, default-features = false, features = ["eip712", "signers", "sol-types"] }
+alloy-primitives = { workspace = true, default-features = false, features = ["borsh"] }
 borsh.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
