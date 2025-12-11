@@ -41,7 +41,7 @@ use templar_common::vault::{AllocatingState, MarketConfiguration, Restrictions, 
 
 #[fixture]
 fn vault_id() -> AccountId {
-    accounts(0)
+    mk(0)
 }
 
 #[fixture]
@@ -146,7 +146,7 @@ fn receiver() -> AccountId {
 
 #[fixture]
 fn owner() -> AccountId {
-    accounts(1)
+    mk(1)
 }
 
 proptest! {
@@ -210,7 +210,7 @@ proptest! {
 #[should_panic = "Duplicate market"]
 fn prop_supply_queue_mustnt_have_duplicates(len: usize) {
     let mut c = new_test_contract(&mk(0));
-    setup_env(&accounts(0), &accounts(1), vec![]);
+    setup_env(&mk(0), &mk(1), vec![]);
 
     // Build a queue with a duplicate market id
     let base = 100u32;
@@ -234,7 +234,7 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     let mut c = c_vault_env;
 
     // Seed total supply so fees can mint
-    let user = accounts(1);
+    let user = mk(1);
     c.deposit_unchecked(&user, 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_000;
@@ -268,7 +268,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     let mut c = c_vault_env;
 
     let receiver = mk(7);
-    let owner = accounts(1);
+    let owner = mk(1);
 
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
@@ -289,7 +289,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
         0,
         PendingWithdrawal {
             receiver: mk(9),
-            owner: accounts(1),
+            owner: mk(1),
             escrow_shares: 100,
             expected_assets: amount,
             requested_at: 0,
@@ -309,7 +309,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
 #[should_panic = "unauthorized market"]
 fn set_supply_queue_rejects_zero_cap() {
     let mut c = new_test_contract(&mk(0));
-    setup_env(&mk(0), &accounts(1), vec![]);
+    setup_env(&mk(0), &mk(1), vec![]);
 
     c.set_supply_queue(vec![mk(100)]);
 }
@@ -324,7 +324,7 @@ fn execute_supply_wrong_token_refunds_full(c_vault_env: Contract) {
         vec![],
     );
 
-    let sender = accounts(1);
+    let sender = mk(1);
     let wrong_token: AccountId = "wrong.token".parse().unwrap();
     let deposit = 1_000u128;
 
@@ -496,10 +496,12 @@ fn reallocate_accrues_pending_fee_shares() {
     assert_eq!(
         c.last_total_assets, assets_before,
         "accrual should snapshot assets before allocation bookkeeping",
-        }
-        #[test]
+    );
+}
+
+#[test]
 fn sentinel_can_only_reallocate_withdrawals() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let sentinel = c.get_configuration().sentinel;
     setup_env(&vault_id, &sentinel, vec![]);
@@ -530,7 +532,7 @@ fn sentinel_can_only_reallocate_withdrawals() {
 
 #[test]
 fn sentinel_can_execute_rebalance_withdrawal() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let sentinel = c.get_configuration().sentinel;
     setup_env(&vault_id, &sentinel, vec![]);
@@ -559,7 +561,7 @@ fn sentinel_can_execute_rebalance_withdrawal() {
     case(50u128, 10u128, 0u128, 500u128)      // denom clamp to 1
 )]
 fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, expect: u128) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     assert_eq!(
@@ -570,7 +572,7 @@ fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, exp
 
 #[test]
 fn compute_effective_totals_fee_share_and_virtuals() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let cur = 1_500u128.into();
@@ -589,7 +591,7 @@ fn compute_effective_totals_fee_share_and_virtuals() {
 
 #[test]
 fn compute_escrow_settlement_burns_min_and_refunds_rest() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let s1: (u128, u128) = EscrowSettlement::new(100, 40).into();
@@ -751,7 +753,7 @@ fn withdraw_reconcile_uses_creditable_when_principal_exceeds_inflow() {
 
 #[test]
 fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -775,7 +777,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         remaining: need,
         receiver: mk(9),
         collected: collected_start,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 100,
     });
 
@@ -841,7 +843,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
 
 #[test]
 fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -864,7 +866,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         remaining: need,
         receiver: mk(10),
         collected: 0,
-        owner: accounts(2),
+        owner: mk(2),
         escrow_shares: 100,
     });
 
@@ -907,7 +909,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
 
 #[test]
 fn withdraw_idle_balance_resyncs_on_external_deposit() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -930,7 +932,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
         remaining: 300,
         receiver: mk(11),
         collected: 0,
-        owner: accounts(3),
+        owner: mk(3),
         escrow_shares: 200,
     });
 
@@ -969,7 +971,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
 
 #[test]
 fn withdraw_over_credit_triggers_payout_with_capped_amount() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -993,7 +995,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         remaining: need,
         receiver: mk(12),
         collected: 0,
-        owner: accounts(4),
+        owner: mk(4),
         escrow_shares: 150,
     });
 
@@ -1043,7 +1045,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
 
 #[test]
 fn withdraw_balance_read_failure_stops_operation() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -1058,7 +1060,7 @@ fn withdraw_balance_read_failure_stops_operation() {
     );
     c.withdraw_route = vec![market.clone()];
 
-    let owner = accounts(5);
+    let owner = mk(5);
     let receiver = mk(13);
     c.pending_withdrawals.insert(
         0,
@@ -1104,7 +1106,7 @@ fn withdraw_balance_read_failure_stops_operation() {
 
 #[test]
 fn rebalance_resyncs_idle_on_external_deposit() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -1153,7 +1155,7 @@ fn rebalance_resyncs_idle_on_external_deposit() {
 
 #[test]
 fn rebalance_balance_read_failure_stops_operation() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -1216,7 +1218,7 @@ fn rebalance_balance_read_failure_stops_operation() {
     case(1u128, 1_000_000_000_000_000_000u128)
 )]
 fn convert_roundtrip_bounds_cases(assets: u128, shares: u128) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let c = new_test_contract(&vault_id);
 
@@ -1251,7 +1253,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     idle: u128,
     req: Option<u128>,
 ) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -1288,7 +1290,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     case(789u128, 1_011u128)
 )]
 fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let mut c = new_test_contract(&vault_id);
@@ -1312,7 +1314,7 @@ fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&mk(1), 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=1000, current=1500
     contract.idle_balance = 1_500;
@@ -1332,7 +1334,7 @@ fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
     let old_balance = contract.balance_of(&old_recipient);
 
     // Switch fee recipient; should accrue to old recipient first
-    let new_recipient = accounts(3);
+    let new_recipient = mk(3);
     contract.set_fee_recipient(new_recipient.clone());
 
     assert_eq!(
@@ -1361,7 +1363,7 @@ fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(2), 2_000)
+        .deposit_unchecked(&mk(2), 2_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=2000, current=2400
@@ -1382,7 +1384,7 @@ fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
     let old_balance = contract.balance_of(&old_recipient);
 
     // Switch fee recipient; should accrue to old recipient first
-    let new_recipient = accounts(3);
+    let new_recipient = mk(3);
     contract.set_fee_recipient(new_recipient.clone());
 
     assert_eq!(
@@ -1411,7 +1413,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates(owner_env: OwnerEnv) {
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&mk(1), 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=1000, current=1500
@@ -1461,7 +1463,7 @@ fn set_performance_fee_accrues_with_old_rate_then_updates_variant(owner_env: Own
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(2), 2_000)
+        .deposit_unchecked(&mk(2), 2_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=2000, current=2400
@@ -1511,7 +1513,7 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) 
 
     // Seed supply so total_supply > 0
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&mk(1), 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Loss scenario: last=1000, current=800
@@ -1553,7 +1555,7 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
     c.markets.insert(m.clone(), cfg.into());
     c.supply_queue.insert(m);
 
-    let sender = accounts(1);
+    let sender = mk(1);
     let deposit = 50u128;
     let expect_shares = c.preview_deposit(U128(deposit)).0;
 
@@ -1598,7 +1600,7 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
     c.markets.insert(m.clone(), cfg.into());
     c.supply_queue.insert(m);
 
-    let sender = accounts(2);
+    let sender = mk(2);
     let deposit = 80u128;
     let accept = 50u128;
     let expect_shares = c.preview_deposit(U128(accept)).0;
@@ -1631,7 +1633,7 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
 #[test]
 #[should_panic = "Invalid token ID"]
 fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&mk(42));
     setup_env(&vault_id, &vault_id, vec![]);
 
@@ -1644,7 +1646,7 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
     c.markets.insert(m.clone(), cfg.into());
     c.supply_queue.insert(m);
 
-    let sender = accounts(3);
+    let sender = mk(3);
     let deposit = 70u128;
 
     let res = c.ft_on_transfer(
@@ -1663,11 +1665,11 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
 #[test]
 #[should_panic = "Invalid deposit msg"]
 fn ft_on_transfer_invalid_msg_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
-    let _ = c.ft_on_transfer(accounts(4), U128(10), "not-json".into());
+    let _ = c.ft_on_transfer(mk(4), U128(10), "not-json".into());
 }
 
 #[rstest]
@@ -1699,13 +1701,13 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
 #[test]
 #[should_panic = "Invalid deposit msg"]
 fn mt_on_transfer_invalid_msg_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let _ = c.mt_on_transfer(
-        accounts(1),
-        vec![accounts(1)],
+        mk(1),
+        vec![mk(1)],
         vec!["t".to_string()],
         vec![U128(1)],
         "bad".into(),
@@ -1715,13 +1717,13 @@ fn mt_on_transfer_invalid_msg_panics() {
 #[test]
 #[should_panic = "This contract only accepts one token at a time."]
 fn mt_on_transfer_rejects_multiple_tokens() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let _ = c.mt_on_transfer(
-        accounts(2),
-        vec![accounts(2)],
+        mk(2),
+        vec![mk(2)],
         vec!["a".to_string(), "b".to_string()],
         vec![U128(1)],
         serde_json::to_string(&DepositMsg::Supply).unwrap(),
@@ -1731,13 +1733,13 @@ fn mt_on_transfer_rejects_multiple_tokens() {
 #[test]
 #[should_panic = "Invalid input length"]
 fn mt_on_transfer_rejects_invalid_input_lengths() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let _ = c.mt_on_transfer(
-        accounts(3),
-        vec![accounts(3), accounts(4)],
+        mk(3),
+        vec![mk(3), mk(4)],
         vec!["t".to_string()],
         vec![U128(1)],
         serde_json::to_string(&DepositMsg::Supply).unwrap(),
@@ -1746,7 +1748,7 @@ fn mt_on_transfer_rejects_invalid_input_lengths() {
 
 #[test]
 fn mt_on_transfer_wrong_asset_refunds_full() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let old_ft_id = c.underlying_asset.contract_id().into();
     setup_env(&vault_id, &old_ft_id, vec![]);
@@ -1755,11 +1757,11 @@ fn mt_on_transfer_wrong_asset_refunds_full() {
 
     c.underlying_asset = FungibleAsset::nep245(old_ft_id.clone(), token_id.clone());
 
-    let sender = accounts(5);
+    let sender = mk(5);
     let amount = 25u128;
 
     let res = c.mt_on_transfer(
-        accounts(3),
+        mk(3),
         vec![sender.clone()],
         vec![token_id],
         vec![U128(amount)],
@@ -1779,18 +1781,18 @@ fn mt_on_transfer_wrong_asset_refunds_full() {
 #[test]
 #[should_panic = "Deposit amount must be greater than zero"]
 fn execute_supply_zero_amount_rejected() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let asset_id = c.underlying_asset.contract_id().into();
-    let sender_id = accounts(4);
+    let sender_id = mk(4);
     c.execute_supply(sender_id.clone(), asset_id, 0);
 }
 
 #[test]
 fn governance_set_curator_grants_allocator() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -1803,7 +1805,7 @@ fn governance_set_curator_grants_allocator() {
     };
     c.markets.insert(m1.clone(), cfg.into());
 
-    let new_cur = accounts(3);
+    let new_cur = mk(3);
     c.set_curator(new_cur.clone());
 
     set_ctx(
@@ -1819,12 +1821,12 @@ fn governance_set_curator_grants_allocator() {
 
 #[test]
 fn governance_set_is_allocator_grant_allows_queue_ops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let grantee = accounts(4);
+    let grantee = mk(4);
 
     let m1 = mk(9102);
     let cfg = MarketConfiguration {
@@ -1850,12 +1852,12 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
 #[test]
 #[should_panic]
 fn governance_set_is_allocator_revoke_disallows_queue_ops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let grantee = accounts(12);
+    let grantee = mk(12);
     c.set_is_allocator(grantee.clone(), true);
 
     let m1 = mk(9103);
@@ -1893,7 +1895,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
 )]
 fn governance_abdicate_blocks_further_changes(method_name: &str) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let vault_id = accounts(0);
+        let vault_id = mk(0);
         let mut c = new_test_contract(&vault_id);
         let owner = c.own_get_owner().unwrap();
 
@@ -1902,21 +1904,21 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
         c.abdicate(method_name.to_string());
         match method_name {
             "set_curator" => {
-                c.set_curator(accounts(2));
+                c.set_curator(mk(2));
             }
             "set_is_allocator" => {
-                c.set_is_allocator(accounts(4), false);
+                c.set_is_allocator(mk(4), false);
             }
             "submit_guardian" => {
-                c.submit_guardian(accounts(5));
+                c.submit_guardian(mk(5));
                 c.accept_guardian();
                 c.revoke_pending_guardian();
             }
             "set_skim_recipient" => {
-                c.set_skim_recipient(accounts(1));
+                c.set_skim_recipient(mk(1));
             }
             "set_fee_recipient" => {
-                c.set_fee_recipient(accounts(1));
+                c.set_fee_recipient(mk(1));
             }
             "set_performance_fee" => {
                 c.set_performance_fee(Wad::one() / 10);
@@ -1970,13 +1972,13 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
 #[test]
 #[should_panic = "Timelock not elapsed yet"]
 fn governance_accept_guardian_not_yet_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
     // First, ensure a guardian is set by submitting and accepting once.
-    let initial_guardian = accounts(1);
+    let initial_guardian = mk(1);
     c.submit_guardian(initial_guardian.clone());
     set_ctx(
         &vault_id,
@@ -1995,7 +1997,7 @@ fn governance_accept_guardian_not_yet_panics() {
         max_timelock,
     );
     // Now submit another guardian change but do not advance time.
-    let new_g = accounts(5);
+    let new_g = mk(5);
     set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(new_g);
     c.accept_guardian();
@@ -2004,12 +2006,12 @@ fn governance_accept_guardian_not_yet_panics() {
 #[test]
 #[should_panic]
 fn governance_submit_accept_and_revoke_guardian() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let new_g = accounts(4);
+    let new_g = mk(4);
     c.submit_guardian(new_g.clone());
 
     set_ctx(
@@ -2021,7 +2023,7 @@ fn governance_submit_accept_and_revoke_guardian() {
     c.accept_guardian();
 
     // Stage another pending and then revoke it
-    let another = accounts(3);
+    let another = mk(3);
     set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(another);
     c.revoke_pending_guardian();
@@ -2031,12 +2033,12 @@ fn governance_submit_accept_and_revoke_guardian() {
 
 #[test]
 fn governance_submit_accept_and_revoke_sentinel() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let new_sentinel = accounts(4);
+    let new_sentinel = mk(4);
     c.submit_sentinel(new_sentinel.clone());
 
     let future = env::block_timestamp().saturating_add(1_000_000_000);
@@ -2050,7 +2052,7 @@ fn governance_submit_accept_and_revoke_sentinel() {
     );
 
     // Stage another change and revoke it as the sentinel
-    let another = accounts(3);
+    let another = mk(3);
     set_ctx(&vault_id, &owner, None, None);
     c.submit_sentinel(another);
 
@@ -2068,7 +2070,7 @@ fn governance_submit_accept_and_revoke_sentinel() {
 
 #[test]
 fn sentinel_can_revoke_pending_cap_change() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2091,7 +2093,7 @@ fn sentinel_can_revoke_pending_cap_change() {
 
 #[test]
 fn governance_submit_accept_timelock_increase_then_decrease() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2125,7 +2127,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
 #[test]
 #[should_panic = "No pending change"]
 fn governance_accept_timelock_without_pending_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2136,7 +2138,7 @@ fn governance_accept_timelock_without_pending_panics() {
 #[test]
 #[should_panic = "No pending change"]
 fn governance_revoke_pending_timelock_then_accept_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2153,7 +2155,7 @@ fn governance_revoke_pending_timelock_then_accept_panics() {
 
 #[test]
 fn governance_submit_cap_immediate_decrease() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2173,7 +2175,7 @@ fn governance_submit_cap_immediate_decrease() {
 
 #[test]
 fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2202,7 +2204,7 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
 #[test]
 #[should_panic = "No pending cap change for this market"]
 fn governance_revoke_pending_cap_then_accept_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2219,7 +2221,7 @@ fn governance_revoke_pending_cap_then_accept_panics() {
 
 #[test]
 fn governance_submit_and_revoke_market_removal() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2248,21 +2250,21 @@ fn governance_submit_and_revoke_market_removal() {
 
 #[test]
 fn governance_set_skim_recipient_updates_field() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
-    let owner = accounts(1);
+    let owner = mk(1);
     setup_env(&vault_id, &owner, vec![]);
 
-    let new_recipient = accounts(4);
+    let new_recipient = mk(4);
     c.set_skim_recipient(new_recipient.clone());
     assert_eq!(c.skim_recipient, new_recipient);
 }
 
 #[test]
 fn governance_set_fee_recipient_no_fee_does_not_accrue() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
-    let owner = accounts(1);
+    let owner = mk(1);
 
     owner_call_env(vault_id, &owner);
 
@@ -2275,7 +2277,7 @@ fn governance_set_fee_recipient_no_fee_does_not_accrue() {
     let ts_before = c.total_supply();
     let last_before = c.last_total_assets;
 
-    let new_recipient = accounts(5);
+    let new_recipient = mk(5);
 
     c.set_fee_recipient(new_recipient.clone());
 
@@ -2309,12 +2311,12 @@ fn owner_call_env(vault_id: AccountId, owner: &AccountId) {
 #[test]
 #[should_panic = "Refusing to skim the underlying token"]
 fn skim_rejects_underlying_token() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let recipient = accounts(4);
+    let recipient = mk(4);
     c.set_skim_recipient(recipient.clone());
 
     let underlying: AccountId = c.underlying_asset.contract_id().into();
@@ -2324,12 +2326,12 @@ fn skim_rejects_underlying_token() {
 #[test]
 #[should_panic = "Refusing to skim the share token"]
 fn skim_rejects_share_token() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let recipient = accounts(4);
+    let recipient = mk(4);
     c.set_skim_recipient(recipient.clone());
 
     let share_token: AccountId = vault_id.clone();
@@ -2344,7 +2346,7 @@ fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
 
     c.supply_01_handle_transfer(
         Ok(U128(1)),
-        accounts(1),
+        mk(1),
         0,
         2,
         Default::default(),
@@ -2356,7 +2358,7 @@ fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
 
 #[test]
 fn after_supply_1_check_allocating_not_allocating_index() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(
         &vault_id,
         &vault_id,
@@ -2379,7 +2381,7 @@ fn after_supply_1_check_allocating_not_allocating_index() {
 
     c.supply_01_handle_transfer(
         Ok(U128(1)),
-        accounts(1),
+        mk(1),
         op_id + 1,
         0,
         Default::default(),
@@ -2391,7 +2393,7 @@ fn after_supply_1_check_allocating_not_allocating_index() {
 
 #[test]
 fn after_supply_1_check_allocating() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(
         &vault_id,
         &vault_id,
@@ -2414,7 +2416,7 @@ fn after_supply_1_check_allocating() {
 
     c.supply_01_handle_transfer(
         Ok(U128(1)),
-        accounts(3),
+        mk(3),
         op_id,
         0,
         Default::default(),
@@ -2448,7 +2450,7 @@ fn after_exec_withdraw_read_none_to_payout(
         remaining: 60,
         receiver: mk(9),
         collected: 10,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 50,
     });
 
@@ -2496,7 +2498,7 @@ fn after_exec_withdraw_read_none_to_payout(
 #[test]
 #[should_panic(expected = "No balance to skim")]
 fn after_skim_balance_zero_noop() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let mut c = new_test_contract(&vault_id);
@@ -2510,7 +2512,7 @@ fn after_skim_balance_zero_noop() {
 
 #[test]
 fn after_skim_balance_positive_returns_promise() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let mut c = new_test_contract(&vault_id);
@@ -2531,7 +2533,7 @@ fn after_skim_balance_positive_returns_promise() {
 fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collected: u128) {
     use templar_common::vault::PendingWithdrawal;
 
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2553,7 +2555,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         remaining: need,
         receiver: mk(9),
         collected,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 0,
     });
 
@@ -2561,7 +2563,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         0,
         PendingWithdrawal {
             receiver: mk(9),
-            owner: accounts(1),
+            owner: mk(1),
             escrow_shares: 0,
             expected_assets: collected,
             requested_at: 0,
@@ -2602,7 +2604,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     pass_index => [false, true]
 )]
 fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_index: bool) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2625,7 +2627,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         remaining: 1,
         receiver: mk(9),
         collected: 1,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 0,
     });
 
@@ -2633,7 +2635,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         real_idx as u64,
         PendingWithdrawal {
             receiver: mk(9),
-            owner: accounts(1),
+            owner: mk(1),
             escrow_shares: 0,
             expected_assets: 1,
             requested_at: 0,
@@ -2666,7 +2668,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
 
     let market = mk(8);
     c.withdraw_route = vec![market.clone()];
-    let owner = accounts(1);
+    let owner = mk(1);
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
@@ -2742,7 +2744,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
 
 #[test]
 fn ctx_allocating_ok_and_err() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2770,12 +2772,12 @@ fn ctx_allocating_ok_and_err() {
 
 #[test]
 fn ctx_withdrawing_ok_and_err() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     let recv = mk(1);
-    let owner = accounts(1);
+    let owner = mk(1);
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
@@ -2803,7 +2805,7 @@ fn ctx_withdrawing_ok_and_err() {
 
 #[test]
 fn resolve_market_helpers_supply_and_withdraw() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2821,7 +2823,7 @@ fn resolve_market_helpers_supply_and_withdraw() {
 
 #[test]
 fn after_supply_2_read_missing_position_stops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2849,7 +2851,7 @@ fn after_supply_2_read_missing_position_stops() {
 
 #[test]
 fn after_supply_2_read_read_failed_stops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2868,7 +2870,7 @@ fn after_supply_2_read_read_failed_stops() {
     // Read failure -> stop_and_exit
     let res = c.supply_02_position_read(
         Err(near_sdk::PromiseError::Failed),
-        accounts(3),
+        mk(3),
         7,
         0,
         U128(0),
@@ -2914,7 +2916,7 @@ fn after_create_withdraw_req_success_returns_promise(
 #[test]
 #[should_panic(expected = "Couldnt create withdraw request in market")]
 fn rebalance_create_failure_keeps_idle_and_unlocks() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2957,7 +2959,7 @@ fn after_exec_withdraw_req_returns_promise(
         remaining: 5,
         receiver: mk(9),
         collected: 0,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 0,
     });
 
@@ -3216,7 +3218,7 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
 
 #[test]
 fn unbrick_withdrawing_refunds_and_dequeues() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -3344,7 +3346,7 @@ fn simple_accrual_10_percent_fee() {
 
 #[test]
 fn unbrick_noop_when_not_withdrawing() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -3378,7 +3380,7 @@ fn unbrick_noop_when_not_withdrawing() {
 
 #[test]
 fn sentinel_can_unbrick_withdrawing_state() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -3583,7 +3585,7 @@ fn fee_shares_upper_bound_by_total_supply(fee: Wad, ts: Number, last: Number, pr
 
 #[test]
 fn peek_next_pending_withdrawal_id_empty_returns_none() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let c = new_test_contract(&vault_id);
 
@@ -3615,7 +3617,7 @@ fn peek_next_pending_withdrawal_id_empty_returns_none() {
 
 #[test]
 fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -3626,7 +3628,7 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     c.pending_withdrawals.insert(
         id1,
         PendingWithdrawal {
-            owner: accounts(1),
+            owner: mk(1),
             receiver: mk(9),
             escrow_shares: 1,
             expected_assets: 1,
@@ -3638,7 +3640,7 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     c.pending_withdrawals.insert(
         id2,
         PendingWithdrawal {
-            owner: accounts(2),
+            owner: mk(2),
             receiver: mk(10),
             escrow_shares: 2,
             expected_assets: 2,
@@ -3677,7 +3679,7 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
 
 #[test]
 fn execute_withdrawal_empty_queue_noop() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -3818,7 +3820,7 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
 
 #[test]
 fn execute_withdrawal_only_dust_drains_queue() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);

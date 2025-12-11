@@ -95,6 +95,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     # Skip coverage when called from other workflows with skip_coverage=true
     if: ${{ !inputs.skip_coverage }}
     steps:
