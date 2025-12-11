@@ -129,6 +129,7 @@ jobs:
           SQLX_OFFLINE: true
           CARGO_INCREMENTAL: 0
           RUSTFLAGS: "-Cinstrument-coverage"
+          CARGO_BUILD_JOBS: 2
           # Use nextest CI profile with optimized parallelism
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
