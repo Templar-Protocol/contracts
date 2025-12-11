@@ -121,6 +121,8 @@ pub struct VaultConfiguration {
     pub decimals: NonZeroU8,
     /// Restrictions for this market.
     pub restrictions: Option<Restrictions>,
+    /// Optional cooldown (ns) between refresh_markets calls; defaults to contract constant if None.
+    pub refresh_cooldown_ns: Option<U64>,
 }
 
 /// Restrictions that can be applied to the vault.
@@ -349,8 +351,18 @@ pub struct WithdrawingState {
     pub escrow_shares: u128,
 }
 
+/// Read-only refresh of market principals to update stored AUM.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [borsh])]
+#[near(serializers = [borsh, json])]
+pub struct RefreshingState {
+    /// Unique operation id used to correlate async callbacks and detect drift.
+    pub op_id: u64,
+    /// Zero-based position within the refresh plan currently being processed.
+    pub index: u32,
+    /// Markets to refresh.
+    pub plan: Vec<AccountId>,
+}
+
 /// Final step that transfers assets to the receiver and settles the share escrow.
 ///
 /// Transitions:
@@ -360,6 +372,8 @@ pub struct WithdrawingState {
 /// - idle_balance decreases only on payout success by `amount`.
 /// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
 /// - On failure, all `escrow_shares` are refunded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh])]
 pub struct PayoutState {
     /// Unique operation id used to correlate async callbacks and detect drift.
     pub op_id: u64,
@@ -406,6 +420,9 @@ pub enum OpState {
     /// - If the op is stopped or cannot proceed and needs to refund: Idle (escrow_shares refunded).
     Withdrawing(WithdrawingState),
 
+    /// Read-only refresh of market principals to update stored AUM.
+    Refreshing(RefreshingState),
+
     /// Final step that transfers assets to the receiver and settles the share escrow.
     ///
     /// Transitions:
@@ -433,6 +450,12 @@ impl From<AllocatingState> for OpState {
 impl From<WithdrawingState> for OpState {
     fn from(s: WithdrawingState) -> Self {
         OpState::Withdrawing(s)
+    }
+}
+
+impl From<RefreshingState> for OpState {
+    fn from(s: RefreshingState) -> Self {
+        OpState::Refreshing(s)
     }
 }
 
@@ -465,6 +488,15 @@ impl AsRef<WithdrawingState> for OpState {
         match self {
             OpState::Withdrawing(s) => s,
             _ => panic!("OpState::Withdrawing expected"),
+        }
+    }
+}
+
+impl AsRef<RefreshingState> for OpState {
+    fn as_ref(&self) -> &RefreshingState {
+        match self {
+            OpState::Refreshing(s) => s,
+            _ => panic!("OpState::Refreshing expected"),
         }
     }
 }
@@ -736,6 +768,21 @@ pub enum Event {
         index: u32,
         remaining: U128,
         reason: Option<Reason>,
+    },
+
+    // Refresh (AUM) events
+    #[event_version("1.0.0")]
+    RefreshStarted {
+        op_id: U64,
+        markets: Vec<AccountId>,
+        caller: AccountId,
+    },
+    #[event_version("1.0.0")]
+    RefreshCompleted {
+        op_id: U64,
+        markets: Vec<AccountId>,
+        total_assets: U128,
+        refreshed_at: U64,
     },
 
     // Admin and configuration events

@@ -42,13 +42,16 @@ use templar_common::{
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
         Fee, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState,
-        PendingWithdrawal, QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase,
-        VaultConfiguration, WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS,
-        ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
+        PendingWithdrawal, QueueAction, QueueStatus, Reason, RefreshingState, TimestampNs,
+        UnbrickPhase, VaultConfiguration, WithdrawProgressPhase, WithdrawingState,
+        AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
+        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
+
+const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 
 pub mod aum;
 pub mod governance;
@@ -146,6 +149,10 @@ pub struct Contract {
     op_state: OpState,
     /// The next operation id
     next_op_id: u64,
+    /// Last timestamp a refresh_markets call succeeded
+    last_refresh_ns: u64,
+    /// Cooldown between refresh_markets calls (ns)
+    refresh_cooldown_ns: u64,
 
     /// Virtual offsets used only in conversions/previews to harden edge cases
     virtual_shares: u128,
@@ -195,6 +202,7 @@ impl Contract {
             decimals,
             restrictions,
             fees,
+            refresh_cooldown_ns,
         } = configuration;
 
         require!(
@@ -226,6 +234,11 @@ impl Contract {
             idle_balance: 0,
             op_state: OpState::Idle,
             next_op_id: 1,
+            last_refresh_ns: 0,
+            refresh_cooldown_ns: configuration
+                .refresh_cooldown_ns
+                .map(|v| v.0)
+                .unwrap_or(DEFAULT_REFRESH_COOLDOWN_NS),
             pending_withdrawals: IterableMap::new(
                 [
                     b'v'.into_storage_key().as_slice(),
@@ -486,7 +499,107 @@ impl Contract {
         )
     }
 
+    /// Permissionless (throttled). Refresh principals from markets and return
+    /// a live assets report; updates stored `market_supply`.
+    /// Pass an empty `markets` vector to refresh all configured markets.
+    pub fn refresh_markets(&mut self, markets: Vec<AccountId>) -> PromiseOrValue<RealAssetsReport> {
+        self.ensure_idle();
+
+        let mut targets = self.refresh_targets(markets);
+        require!(!targets.is_empty(), "No markets to refresh");
+
+        let now = env::block_timestamp();
+        require!(
+            now.saturating_sub(self.last_refresh_ns) >= self.refresh_cooldown_ns,
+            "Refresh throttled"
+        );
+        self.last_refresh_ns = now;
+
+        targets.sort();
+        targets.dedup();
+
+        let op_id = self.next_op_id;
+        self.next_op_id += 1;
+
+        let plan = targets;
+        Event::RefreshStarted {
+            op_id: op_id.into(),
+            markets: plan.clone(),
+            caller: env::predecessor_account_id(),
+        }
+        .emit();
+
+        self.op_state = OpState::Refreshing(RefreshingState {
+            op_id,
+            index: 0,
+            plan,
+        });
+
+        self.refresh_step(op_id)
+    }
+
+    fn refresh_targets(&self, mut markets: Vec<AccountId>) -> Vec<AccountId> {
+        if markets.is_empty() {
+            return self.markets.keys().cloned().collect();
+        }
+        markets.retain(|m| self.markets.contains_key(m));
+        markets
+    }
+
+    fn refresh_step(&mut self, op_id: u64) -> PromiseOrValue<RealAssetsReport> {
+        let (index, plan) = match &self.op_state {
+            OpState::Refreshing(RefreshingState {
+                op_id: cur,
+                index,
+                plan,
+            }) if *cur == op_id => (*index, plan.clone()),
+            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
+        };
+
+        if index as usize >= plan.len() {
+            let report = self.build_real_assets_report();
+            Event::RefreshCompleted {
+                op_id: op_id.into(),
+                markets: plan,
+                total_assets: report.total_assets,
+                refreshed_at: report.refreshed_at,
+            }
+            .emit();
+            self.op_state = OpState::Idle;
+            return PromiseOrValue::Value(report);
+        }
+
+        let market = plan[index as usize].clone();
+        let before = self.principal_of(&market);
+
+        PromiseOrValue::Promise(
+            ext_market::ext(market.clone())
+                .with_static_gas(GET_SUPPLY_POSITION_GAS)
+                .with_unused_gas_weight(0)
+                .get_supply_position(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
+                        .refresh_01_settle(market, op_id, index, U128(before)),
+                ),
+        )
+    }
+
+    fn build_real_assets_report(&self) -> RealAssetsReport {
+        let per_market = self
+            .markets
+            .iter()
+            .map(|(m, rec)| (m.clone(), U128(rec.principal)))
+            .collect();
+        RealAssetsReport {
+            total_assets: self.get_total_assets(),
+            per_market,
+            refreshed_at: env::block_timestamp().into(),
+        }
+    }
+
     /// Allocator/Curator/Owner only. Unbricks the current in-flight withdrawal or payout:
+
     /// - If Withdrawing: refunds escrowed shares to the owner and dequeues the pending request.
     /// - If in Payout: re-syncs idle_balance with the underlying FT balance,
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
@@ -729,6 +842,7 @@ impl Contract {
             symbol: meta.symbol,
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
             restrictions: self.gate.restrictions.clone(),
+            refresh_cooldown_ns: Some(self.refresh_cooldown_ns.into()),
         }
     }
 
@@ -903,6 +1017,14 @@ impl Contract {
 }
 
 /* ----- Private Helpers ----- */
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub struct RealAssetsReport {
+    pub total_assets: U128,
+    pub per_market: Vec<(AccountId, U128)>,
+    pub refreshed_at: U64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleCoverage {
     pub remaining_unmet: u128,

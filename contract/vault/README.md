@@ -16,6 +16,14 @@ This document explains how the vault works end-to-end: roles and permissions, da
 - Performance fees accrue by minting fee shares on growth only.
 - Strict invariants ensure safety and correct accounting.
 
+## Deviations from Morpho Vault V2
+
+- No force exits today: NEAR lacks flash loan rails and the audited market interface cannot hand off positions. A true `forceDeallocate` would need either (a) an externally funded backstop market that the vault can route withdrawals to, or (b) a future market primitive to transfer supply positions to the user (planned in our markets v2). Until then, exits depend on idle plus normal market withdrawal liquidity.
+- No separate “idle liquidity market”: `idle_balance` already serves as atomic liquidity that the allocator can grow/shrink via delta allocations. Introducing a pseudo-market for idle in an async pipeline would add complexity and state-surface without improving withdrawal liveness.
+- No dedicated liquidity adapter: NEAR has few maintained borrowing venues; Templar is already the primary venue we integrate. Keeping idle as the liquidity buffer plus allocator-driven routes avoids extra adapter indirection with little marginal benefit.
+- Liquidity adapters are an Ethereum-competition artifact: Morpho needs a generic adapter layer to juggle many venues on mainnet; on NEAR the venue set is small and curated, so we avoid that indirection.
+- Auto-AUM / realAssets: Morpho adapters push `realAssets`; here we expose `refresh_markets` (permissionless with a configurable throttle, defaults to ~30s, empty list = all markets) to pull live principals and update stored AUM. A pure `realAssets` view across markets isn’t feasible in NEAR’s async model without paid calls.
+
 ## AUM model
 
 - The vault uses a BalanceSheet model by default.

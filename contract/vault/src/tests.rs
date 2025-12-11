@@ -26,6 +26,7 @@ use near_sdk_contract_tools::owner::OwnerExternal;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
+use templar_common::supply::SupplyPosition;
 use templar_common::vault::wad::{
     compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad,
 };
@@ -1263,6 +1264,89 @@ fn convert_roundtrip_bounds_cases(assets: u128, shares: u128) {
         back_s.0 >= shares,
         "shares->assets->shares must not decrease"
     );
+}
+
+#[test]
+fn refresh_markets_updates_principals_and_emits_events() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let m1 = mk(7001);
+    let m2 = mk(7002);
+    c.markets.insert(
+        m1.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: 10,
+        },
+    );
+    c.markets.insert(
+        m2.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: 20,
+        },
+    );
+
+    set_block_ts(
+        &vault_id,
+        &vault_id,
+        crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.refresh_markets(vec![]);
+    assert!(matches!(c.op_state, OpState::Refreshing(_)));
+
+    let pos1 = SupplyPosition::new(0);
+    let _ = c.refresh_01_settle(Ok(Some(pos1)), m1.clone(), op_id, 0, U128(10));
+
+    let pos2 = SupplyPosition::new(0);
+    let res = c.refresh_01_settle(Ok(Some(pos2)), m2.clone(), op_id, 1, U128(20));
+    if let PromiseOrValue::Value(report) = res {
+        assert_eq!(report.total_assets, c.get_total_assets());
+    }
+    assert!(matches!(c.op_state, OpState::Idle));
+
+    let logs = near_sdk::test_utils::get_logs().join("\n");
+    assert!(logs.contains("refresh_started"), "missing refresh start event logs");
+    assert!(
+        logs.contains("refresh_completed"),
+        "missing refresh completed event logs"
+    );
+}
+
+#[test]
+#[should_panic(expected = "Refresh throttled")]
+fn refresh_markets_throttles_without_time_advance() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(7003);
+    c.markets.insert(
+        market.clone(),
+        MarketRecord {
+            cfg: MarketConfiguration::default(),
+            principal: 0,
+        },
+    );
+
+    set_block_ts(
+        &vault_id,
+        &vault_id,
+        crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.refresh_markets(vec![market.clone()]);
+
+    let pos = SupplyPosition::new(0);
+    let _ = c.refresh_01_settle(Ok(Some(pos)), market.clone(), op_id, 0, U128(0));
+    assert!(matches!(c.op_state, OpState::Idle));
+
+    c.refresh_markets(vec![market.clone()]);
 }
 
 #[rstest(
@@ -2575,6 +2659,7 @@ fn governance_set_fees_zero_fee_recipient_change_no_accrue() {
     c.fee_anchor.total_assets = 1_000;
     c.fee_anchor.timestamp_ns = env::block_timestamp();
     c.fees.performance.fee = Wad::zero();
+    c.fees.management.fee = Wad::zero();
 
     let ts_before = c.total_supply();
     let last_before = c.fee_anchor.total_assets;

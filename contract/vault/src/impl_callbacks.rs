@@ -3,7 +3,10 @@
 use core::cmp::Ordering;
 use std::fmt::Display;
 
-use crate::{governance::Gate, near, Contract, ContractExt, Error, Nep141Controller, OpState};
+use crate::{
+    governance::Gate, near, Contract, ContractExt, Error, Nep141Controller, OpState,
+    RealAssetsReport,
+};
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env, json_types::U128, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
@@ -771,6 +774,50 @@ impl Contract {
                 .ft_transfer(recipient, U128(amount), None),
         )
     }
+
+    #[private]
+    pub fn refresh_01_settle(
+        &mut self,
+        #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
+        market: AccountId,
+        op_id: u64,
+        index: u32,
+        _before: U128,
+    ) -> PromiseOrValue<RealAssetsReport> {
+        let state = match &self.op_state {
+            OpState::Refreshing(s) if s.op_id == op_id => s.clone(),
+            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
+        };
+
+        if state.index != index {
+            self.op_state = OpState::Idle;
+            return PromiseOrValue::Value(self.build_real_assets_report());
+        }
+
+        if let Ok(Some(position)) = position {
+            let total: u128 = position.get_deposit().total().into();
+            self.set_market_principal(&market, total);
+        }
+
+        let mut next_state = state;
+        next_state.index = next_state.index.saturating_add(1);
+
+        if next_state.index as usize >= next_state.plan.len() {
+            let report = self.build_real_assets_report();
+            Event::RefreshCompleted {
+                op_id: op_id.into(),
+                markets: next_state.plan,
+                total_assets: report.total_assets,
+                refreshed_at: report.refreshed_at,
+            }
+            .emit();
+            self.op_state = OpState::Idle;
+            return PromiseOrValue::Value(report);
+        }
+
+        self.op_state = OpState::Refreshing(next_state);
+        self.refresh_step(op_id)
+    }
 }
 
 impl Contract {
@@ -864,6 +911,13 @@ impl Contract {
         match &self.op_state {
             OpState::Allocating(_) => self.stop_and_exit_allocating(msg),
             OpState::Withdrawing(_) => self.stop_and_exit_withdrawing(msg),
+            OpState::Refreshing(_) => {
+                self.op_state = OpState::Idle;
+                Event::OperationStoppedWhileIdle {
+                    reason: msg.map(|m| Reason::Other(m.to_string())),
+                }
+                .emit();
+            }
             OpState::Payout(_) => {
                 let reason = msg.map(|m| Reason::Other(m.to_string()));
                 return PromiseOrValue::Promise(
