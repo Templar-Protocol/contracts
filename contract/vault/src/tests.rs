@@ -28,8 +28,8 @@ use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
 use templar_common::supply::SupplyPosition;
 use templar_common::vault::wad::{
-    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad,
-    MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
+    MAX_PERFORMANCE_FEE_WAD,
 };
 use templar_common::vault::AllocationDelta;
 use templar_common::vault::Delta;
@@ -235,6 +235,156 @@ proptest! {
     }
 }
 
+#[test]
+fn prop_get_max_deposit_matches_bruteforce() {
+    let vault_id = mk(0);
+    let contract = std::cell::RefCell::new(new_test_contract(&vault_id));
+
+    let strategy = (
+        0u128..=100,
+        0u128..=100,
+        any::<bool>(),
+        0u128..=100,
+        0u8..=20,
+        0u128..=100,
+        0u8..=20,
+        0u128..=100,
+        0u8..=20,
+        prop::collection::vec(
+            (
+                0u128..=100,
+                0u128..=150,
+                prop::option::of(0u8..3),
+                any::<bool>(),
+            ),
+            0..=6,
+        ),
+    );
+
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    });
+
+    runner
+        .run(
+            &strategy,
+            |(
+                idle_total,
+                alloc_remaining,
+                is_allocating,
+                group0_cap,
+                group0_rel_tenths,
+                group1_cap,
+                group1_rel_tenths,
+                group2_cap,
+                group2_rel_tenths,
+                markets,
+            )| {
+                let mut c = contract.borrow_mut();
+
+                c.markets.clear();
+                c.cap_groups.clear();
+                c.supply_queue.clear();
+                c.op_state = OpState::Idle;
+                c.idle_balance = 0;
+
+                let remaining = if is_allocating {
+                    alloc_remaining.min(idle_total)
+                } else {
+                    0
+                };
+                c.idle_balance = idle_total.saturating_sub(remaining);
+
+                if remaining > 0 {
+                    c.op_state = OpState::Allocating(AllocatingState {
+                        op_id: 1,
+                        index: 0,
+                        remaining,
+                        plan: vec![],
+                    });
+                }
+
+                let group_ids = [
+                    CapGroupId("prop-group-0".to_string()),
+                    CapGroupId("prop-group-1".to_string()),
+                    CapGroupId("prop-group-2".to_string()),
+                ];
+
+                let mut group_principal = [0u128; 3];
+                let mut total_principal = 0u128;
+                for (_cap, principal, group_idx, _in_queue) in markets.iter() {
+                    total_principal = total_principal.saturating_add(*principal);
+                    if let Some(idx) = group_idx {
+                        group_principal[*idx as usize] =
+                            group_principal[*idx as usize].saturating_add(*principal);
+                    }
+                }
+
+                let group_caps = [group0_cap, group1_cap, group2_cap];
+                let group_rel_tenths = [group0_rel_tenths, group1_rel_tenths, group2_rel_tenths];
+                for i in 0..3usize {
+                    let relative_cap =
+                        Wad::from(Wad::SCALE / 10 * u128::from(group_rel_tenths[i]));
+                    c.cap_groups.insert(
+                        group_ids[i].clone(),
+                        CapGroupRecord {
+                            cap: U128(group_caps[i]),
+                            relative_cap,
+                            principal: group_principal[i],
+                        },
+                    );
+                }
+
+                for (idx, (cap, principal, group_idx, in_queue)) in markets.iter().enumerate() {
+                    let market = mk(10_000 + idx as u32);
+                    let cap_group_id = group_idx.map(|i| group_ids[i as usize].clone());
+                    let cfg = MarketConfiguration {
+                        cap: U128(*cap),
+                        enabled: true,
+                        removable_at: 0,
+                        cap_group_id,
+                    };
+
+                    c.markets.insert(
+                        market.clone(),
+                        MarketRecord {
+                            cfg,
+                            principal: *principal,
+                        },
+                    );
+
+                    if *in_queue && *cap > 0 {
+                        c.supply_queue.insert(market);
+                    }
+                }
+
+                let base_total_assets = c
+                    .idle_balance
+                    .saturating_add(total_principal)
+                    .saturating_add(remaining);
+                prop_assert_eq!(c.total_assets_for_caps(), base_total_assets);
+
+                let rounding_slack = c.relative_cap_rounding_slack();
+                let upper = c.market_room_upper_bound();
+
+                let mut expected = 0u128;
+                for x in 0..=upper {
+                    let total_assets = base_total_assets.saturating_add(x);
+                    let room = c.max_allocatable_room_at(total_assets);
+                    if x <= room.saturating_add(rounding_slack) {
+                        expected = x;
+                    }
+                }
+
+                prop_assert_eq!(c.get_max_deposit().0, expected);
+                Ok(())
+            },
+        )
+        .unwrap();
+}
+
 #[rstest(len => [2usize, 3, 5])]
 #[should_panic = "Duplicate market"]
 fn prop_supply_queue_mustnt_have_duplicates(len: usize) {
@@ -271,8 +421,8 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     c.fees.performance.fee = Wad::one() / 10;
 
     // Baseline: anchor = current, so no profit => no fee
-    c.fee_anchor.total_assets = c.get_total_assets().0;
-    c.fee_anchor.timestamp_ns = env::block_timestamp();
+    c.fee_anchor.total_assets = c.get_total_assets();
+    c.fee_anchor.timestamp_ns = env::block_timestamp().into();
     let ts_before = c.total_supply();
     c.internal_accrue_fee();
     assert_eq!(c.total_supply(), ts_before, "no profit => no fee minted");
@@ -281,7 +431,7 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     c.idle_balance = 1_500;
     let expect = compute_fee_shares(
         c.get_total_assets().0.into(),
-        c.fee_anchor.total_assets.into(),
+        c.fee_anchor.total_assets.0.into(),
         c.fees.performance.fee,
         c.total_supply().into(),
     );
@@ -1438,8 +1588,8 @@ fn set_fees_accrues_before_switching_recipient(owner_env: OwnerEnv) {
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=1000, current=1500
     contract.idle_balance = 1_500;
-    contract.fee_anchor.total_assets = 1_000;
-    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
     contract.fees.performance.fee = Wad::one() / 10;
 
     let cur = contract.get_total_assets().0;
@@ -1492,7 +1642,7 @@ fn set_fees_accrues_before_switching_recipient(owner_env: OwnerEnv) {
         "recipient should be updated"
     );
     assert_eq!(
-        contract.fee_anchor.total_assets, cur,
+        contract.fee_anchor.total_assets.0, cur,
         "fee anchor must update to current after accrual"
     );
 }
@@ -1508,8 +1658,8 @@ fn set_fees_accrues_before_switching_recipient_variant(owner_env: OwnerEnv) {
 
     // Simulate profit: last=2000, current=2400
     contract.idle_balance = 2_400;
-    contract.fee_anchor.total_assets = 2_000;
-    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fee_anchor.total_assets = 2_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
     contract.fees.performance.fee = Wad::one() / 20;
 
     let cur = contract.get_total_assets().0;
@@ -1562,7 +1712,7 @@ fn set_fees_accrues_before_switching_recipient_variant(owner_env: OwnerEnv) {
     );
 
     assert_eq!(
-        contract.fee_anchor.total_assets, cur,
+        contract.fee_anchor.total_assets.0, cur,
         "fee anchor must update to current after accrual"
     );
 }
@@ -1610,8 +1760,8 @@ fn set_fees_accrues_with_old_rate_then_updates_performance(owner_env: OwnerEnv) 
 
     // Simulate profit: last=1000, current=1500
     contract.idle_balance = 1_500;
-    contract.fee_anchor.total_assets = 1_000;
-    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
 
     // Old rate = 10%, new rate = 1%
     contract.fees.performance.fee = Wad::one() / 10;
@@ -1657,7 +1807,7 @@ fn set_fees_accrues_with_old_rate_then_updates_performance(owner_env: OwnerEnv) 
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        contract.fee_anchor.total_assets, cur,
+        contract.fee_anchor.total_assets.0, cur,
         "fee anchor must update to current after accrual"
     );
 }
@@ -1673,8 +1823,8 @@ fn set_fees_accrues_with_old_rate_then_updates_performance_variant(owner_env: Ow
 
     // Simulate profit: last=2000, current=2400
     contract.idle_balance = 2_400;
-    contract.fee_anchor.total_assets = 2_000;
-    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fee_anchor.total_assets = 2_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
 
     // Old rate = 5%, new rate = 0.5%
     contract.fees.performance.fee = Wad::one() / 20;
@@ -1720,7 +1870,7 @@ fn set_fees_accrues_with_old_rate_then_updates_performance_variant(owner_env: Ow
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        contract.fee_anchor.total_assets, cur,
+        contract.fee_anchor.total_assets.0, cur,
         "fee anchor must update to current after accrual"
     );
 }
@@ -1913,11 +2063,11 @@ fn management_fee_accrues_proportionally(owner_env: OwnerEnv) {
         "management fee recipient must receive minted shares",
     );
     assert_eq!(
-        contract.fee_anchor.total_assets, cur_assets,
+        contract.fee_anchor.total_assets.0, cur_assets,
         "fee anchor assets must remain unchanged after management accrual",
     );
     assert_eq!(
-        contract.fee_anchor.timestamp_ns, elapsed,
+        contract.fee_anchor.timestamp_ns.0, elapsed,
         "fee anchor timestamp must update to now after accrual",
     );
 }
@@ -1976,8 +2126,8 @@ fn management_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: Own
 
     // last=1_000, cur=2_000
     contract.idle_balance = 2_000;
-    contract.fee_anchor.total_assets = 1_000;
-    contract.fee_anchor.timestamp_ns = 0;
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = 0.into();
 
     let ts_before = contract.total_supply();
     let recipient = contract.fees.management.recipient.clone();
@@ -2030,7 +2180,8 @@ fn management_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: Own
         "management fee shares should be rate-limited",
     );
     assert_eq!(
-        contract.fee_anchor.total_assets, 2_000,
+        contract.fee_anchor.total_assets,
+        2_000.into(),
         "fee anchor must sync to current after accrual",
     );
 }
@@ -2054,8 +2205,8 @@ fn performance_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: Ow
 
     // last=1_000, cur=2_000
     contract.idle_balance = 2_000;
-    contract.fee_anchor.total_assets = 1_000;
-    contract.fee_anchor.timestamp_ns = 0;
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = 0.into();
 
     let ts_before = contract.total_supply();
     let recipient = contract.fees.performance.recipient.clone();
@@ -2104,7 +2255,8 @@ fn performance_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: Ow
         "performance fee shares should be rate-limited",
     );
     assert_eq!(
-        contract.fee_anchor.total_assets, 2_000,
+        contract.fee_anchor.total_assets,
+        2_000.into(),
         "fee anchor must sync to current after accrual",
     );
 }
@@ -2120,8 +2272,8 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) 
 
     // Loss scenario: last=1000, current=800
     contract.idle_balance = 800;
-    contract.fee_anchor.total_assets = 1_000;
-    contract.fee_anchor.timestamp_ns = env::block_timestamp();
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
     contract.fees.performance.fee = Wad::one() / 10;
 
     let ts_before = contract.total_supply();
@@ -2142,7 +2294,8 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) 
         "fee recipient balance must remain unchanged on loss"
     );
     assert_eq!(
-        contract.fee_anchor.total_assets, cur,
+        contract.fee_anchor.total_assets,
+        cur.into(),
         "fee anchor must update to current after accrual"
     );
 }
@@ -2182,7 +2335,8 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
         "idle must increase by accepted deposit"
     );
     assert_eq!(
-        c.fee_anchor.total_assets, deposit,
+        c.fee_anchor.total_assets,
+        deposit.into(),
         "fee anchor must increase by accepted deposit"
     );
 
@@ -2229,7 +2383,8 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
         "idle increases by accepted amount only"
     );
     assert_eq!(
-        c.fee_anchor.total_assets, accept,
+        c.fee_anchor.total_assets,
+        accept.into(),
         "fee anchor increases by accepted amount only"
     );
 }
@@ -3020,10 +3175,15 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         cap_group: group.clone(),
         new_cap: U128(1_000),
     });
-    c.accept_cap_group_update(CapGroupUpdateKey::SetCap { cap_group: group.clone() });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
+        cap_group: group.clone(),
+    });
 
     assert_eq!(
-        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
         Wad::one()
     );
 
@@ -3034,7 +3194,10 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     });
 
     assert_eq!(
-        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
         half
     );
     assert!(
@@ -3052,15 +3215,23 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         "increasing relative cap should be timelocked"
     );
     assert_eq!(
-        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
         half,
         "relative cap should not update until accepted"
     );
 
-    c.accept_cap_group_update(CapGroupUpdateKey::SetRelativeCap { cap_group: group.clone() });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetRelativeCap {
+        cap_group: group.clone(),
+    });
 
     assert_eq!(
-        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
         Wad::one(),
     );
 }
@@ -3165,8 +3336,8 @@ fn governance_set_fees_zero_fee_recipient_change_no_accrue() {
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_500;
-    c.fee_anchor.total_assets = 1_000;
-    c.fee_anchor.timestamp_ns = env::block_timestamp();
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = env::block_timestamp().into();
     c.fees.performance.fee = Wad::zero();
     c.fees.management.fee = Wad::zero();
 
