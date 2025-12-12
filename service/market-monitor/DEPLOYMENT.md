@@ -59,7 +59,7 @@ REGISTRY_ACCOUNT_IDS=v1.tmplr.near
 
 # Telegram
 TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHANNEL_ID=-1001234567890
+TELEGRAM_CHANNEL_ID=your_channel_id
 # Optional for group threads:
 # TELEGRAM_THREAD_ID=1234
 
