@@ -33,7 +33,6 @@ use super::models::{DepositRequest, DepositResponse};
 pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) -> Response {
     let chain_id = normalize_chain_id(&req.source_chain);
 
-    // Get chain handler from registry
     let chain_handler = match app.external_chains.get(&chain_id) {
         Some(handler) => handler,
         None => {
@@ -57,7 +56,6 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
         }
     };
 
-    // Check if token is supported
     if !chain_handler.supports_token(&req.asset) {
         error!(asset = %req.asset, chain = %chain_id, "Token not supported");
         return (
@@ -78,32 +76,36 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
             .into_response();
     }
 
-    // Get bridge deposit address for NEAR treasury
-    let deposit_info = match app
-        .bridge_client
-        .get_deposit_address(app.near_handler.treasury_account().as_str(), &chain_id)
-        .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            error!(error = %e, "Failed to get deposit address from bridge");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(DepositResponse {
-                    source_tx_hash: String::new(),
-                    status: "FAILED".to_string(),
-                    source_chain: chain_id,
-                    bridge_deposit_address: None,
-                    bridge_deposit_memo: None,
-                    error: Some(format!("Failed to get bridge deposit address: {}", e)),
-                }),
-            )
-                .into_response();
-        }
-    };
+    // For NEAR → NEAR: Transfer directly to treasury (no bridge)
+    // For External → NEAR: Use bridge deposit address
+    let (deposit_address, deposit_memo) = if chain_id == "near:mainnet" {
+        (app.near_handler.treasury_account().to_string(), None)
+    } else {
+        let deposit_info = match app
+            .bridge_client
+            .get_deposit_address(app.near_handler.treasury_account().as_str(), &chain_id)
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                error!(error = %e, "Failed to get deposit address from bridge");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(DepositResponse {
+                        source_tx_hash: String::new(),
+                        status: "FAILED".to_string(),
+                        source_chain: chain_id,
+                        bridge_deposit_address: None,
+                        bridge_deposit_memo: None,
+                        error: Some(format!("Failed to get bridge deposit address: {}", e)),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
-    let deposit_address = deposit_info.address.clone();
-    let deposit_memo = deposit_info.memo.clone();
+        (deposit_info.address.clone(), deposit_info.memo.clone())
+    };
 
     // If dry run, return success without executing
     if app.dry_run || req.dry_run {
@@ -122,7 +124,6 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
             .into_response();
     }
 
-    // Execute transfer via chain handler
     match chain_handler
         .transfer_tokens(
             &deposit_address,
@@ -180,6 +181,7 @@ pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) ->
 /// - "arbitrum" -> "eth:42161"
 /// - "solana" -> "sol:mainnet"
 /// - "stellar" -> "stellar:mainnet"
+/// - "near" -> "near:mainnet"
 /// - "eth:1" -> "eth:1" (unchanged)
 pub fn normalize_chain_id(chain: &str) -> String {
     match chain.to_lowercase().as_str() {
@@ -190,6 +192,7 @@ pub fn normalize_chain_id(chain: &str) -> String {
         "polygon" | "matic" => "eth:137".to_string(),
         "solana" | "sol" => "sol:mainnet".to_string(),
         "stellar" => "stellar:mainnet".to_string(),
+        "near" => "near:mainnet".to_string(),
         _ => chain.to_string(),
     }
 }
@@ -405,5 +408,19 @@ mod tests {
         // Non-EVM chains
         assert_eq!(normalize_chain_id("solana"), "sol:mainnet");
         assert_eq!(normalize_chain_id("stellar"), "stellar:mainnet");
+        assert_eq!(normalize_chain_id("near"), "near:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_near() {
+        assert_eq!(normalize_chain_id("near"), "near:mainnet");
+        assert_eq!(normalize_chain_id("NEAR"), "near:mainnet");
+        assert_eq!(normalize_chain_id("Near"), "near:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_near_passthrough() {
+        assert_eq!(normalize_chain_id("near:mainnet"), "near:mainnet");
+        assert_eq!(normalize_chain_id("near:testnet"), "near:testnet");
     }
 }

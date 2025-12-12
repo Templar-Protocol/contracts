@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod evm;
+pub mod near;
 pub mod solana;
 pub mod stellar;
 
@@ -50,6 +51,9 @@ pub enum ExternalChainError {
 pub trait ExternalChainHandler: Send + Sync {
     /// Get the chain identifier (e.g., "eth:1", "eth:42161")
     fn chain_id(&self) -> &str;
+
+    /// Get a reference to self as Any for downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
 
     /// Check if this handler supports the given token
     fn supports_token(&self, asset: &str) -> bool;
