@@ -1,0 +1,35 @@
+services:
+  market-monitor:
+    image: templar-market-monitor:latest
+    container_name: templar-market-monitor-prod
+    restart: always
+
+    env_file:
+      - .env
+
+    environment:
+      - RUST_LOG=info,templar_market_monitor=info
+      - RUST_BACKTRACE=0
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "market-monitor"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
