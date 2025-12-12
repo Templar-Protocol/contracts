@@ -221,13 +221,7 @@ impl Contract {
             },
             markets: BTreeMap::new(),
             cap_groups: BTreeMap::new(),
-            governance_timelocks: governance::Timelocks::new(
-                initial_timelock_ns.0,
-                initial_timelock_ns.0,
-                initial_timelock_ns.0,
-                initial_timelock_ns.0,
-                initial_timelock_ns.0,
-            ),
+            governance_timelocks: initial_timelock_ns.0.into(),
             supply_queue: BTreeSet::default(),
             virtual_shares: 1,
             virtual_assets: 1,
@@ -289,7 +283,6 @@ impl Contract {
         let assets = self.convert_to_assets(U128(shares)).0;
         let sender = env::predecessor_account_id();
 
-        // Gate withdraw entrypoint: who is sending and who will receive assets.
         self.gate.enforce_policy(&sender);
         self.gate.enforce_policy(&receiver);
 
@@ -790,6 +783,10 @@ impl Contract {
                 fee: U128(u128::from(self.fees.management.fee)),
                 recipient: self.fees.management.recipient.clone(),
             },
+            max_total_assets_growth_rate: self
+                .fees
+                .max_total_assets_growth_rate
+                .map(|r| U128(u128::from(r))),
         }
     }
 
@@ -1173,20 +1170,33 @@ impl Contract {
     /// - Include fee shares that would be minted if fees accrued now.
     /// - Apply virtual offsets: +`virtual_shares` to supply and +`virtual_assets` to assets.
     fn effective_totals_fee_aware(&self) -> (u128, u128) {
-        let cur = self.get_total_assets().0;
+        let cur_total_assets = self.get_total_assets().0;
         let now = env::block_timestamp();
         let ts = self.total_supply();
-        let mgmt_shares =
-            self.compute_management_fee_shares(cur, ts, self.fee_anchor.timestamp_ns, now);
-        let ts_after_mgmt = Number::from(ts).saturating_add(mgmt_shares);
-        let (new_total_supply, new_total_assets) = Self::compute_effective_totals(
-            cur.into(),
-            self.fee_anchor.total_assets.into(),
-            self.fees.performance.fee,
-            ts_after_mgmt,
-            self.virtual_shares.into(),
-            self.virtual_assets.into(),
+        let anchor = &self.fee_anchor;
+
+        let fee_total_assets = self.total_assets_for_fee_accrual(cur_total_assets, anchor, now);
+
+        let mgmt_shares = self.compute_management_fee_shares(
+            fee_total_assets,
+            cur_total_assets,
+            ts,
+            anchor.timestamp_ns,
+            now,
         );
+        let ts_after_mgmt = Number::from(ts).saturating_add(mgmt_shares);
+
+        let profit = fee_total_assets.saturating_sub(anchor.total_assets);
+        let fee_assets = self.fees.performance.fee.apply_floored(profit.into());
+        let performance_shares =
+            compute_fee_shares_from_assets(fee_assets, cur_total_assets.into(), ts_after_mgmt);
+
+        let new_total_supply = ts_after_mgmt
+            .saturating_add(performance_shares)
+            .saturating_add(self.virtual_shares.into());
+        let new_total_assets =
+            Number::from(cur_total_assets).saturating_add(self.virtual_assets.into());
+
         (new_total_supply.into(), new_total_assets.into())
     }
 
@@ -1218,9 +1228,53 @@ impl Contract {
         (new_total_supply, new_total_assets)
     }
 
+    fn total_assets_for_fee_accrual(
+        &self,
+        cur_total_assets: u128,
+        anchor: &FeeAccrualAnchor,
+        now: u64,
+    ) -> u128 {
+        let Some(max_rate) = self.fees.max_total_assets_growth_rate else {
+            return cur_total_assets;
+        };
+
+        // No growth (or a loss) => no need to clamp.
+        if cur_total_assets <= anchor.total_assets {
+            return cur_total_assets;
+        }
+
+        // If last_total_assets is zero, treat as unclamped to avoid freezing at 0.
+        if anchor.total_assets == 0 {
+            return cur_total_assets;
+        }
+
+        // If time goes backwards, ignore the limiter.
+        if now < anchor.timestamp_ns {
+            return cur_total_assets;
+        }
+
+        let elapsed_ns = now.saturating_sub(anchor.timestamp_ns);
+        if elapsed_ns == 0 {
+            return anchor.total_assets;
+        }
+
+        // Cap growth with an annualized max rate.
+        let annual_max_increase = max_rate.apply_floored(anchor.total_assets.into());
+        let max_increase = mul_div_floor(
+            annual_max_increase,
+            Number::from(u128::from(elapsed_ns)),
+            Number::from(u128::from(YEAR_NS)),
+        );
+        let max_increase_u128 = max_increase.as_u128_saturating();
+        let max_total_assets = anchor.total_assets.saturating_add(max_increase_u128);
+
+        cur_total_assets.min(max_total_assets)
+    }
+
     fn compute_management_fee_shares(
         &self,
-        cur_assets: u128,
+        fee_assets_base: u128,
+        cur_total_assets: u128,
         total_supply: u128,
         last_timestamp_ns: u64,
         now: u64,
@@ -1229,13 +1283,17 @@ impl Contract {
             return Number::zero();
         }
         let elapsed_ns = now - last_timestamp_ns;
-        let annual_fee_assets = self.fees.management.fee.apply_floored(cur_assets.into());
+        let annual_fee_assets = self
+            .fees
+            .management
+            .fee
+            .apply_floored(fee_assets_base.into());
         let fee_assets = mul_div_floor(
             annual_fee_assets,
             Number::from(u128::from(elapsed_ns)),
             Number::from(u128::from(YEAR_NS)),
         );
-        compute_fee_shares_from_assets(fee_assets, cur_assets.into(), total_supply.into())
+        compute_fee_shares_from_assets(fee_assets, cur_total_assets.into(), total_supply.into())
     }
 
     pub fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
@@ -1246,12 +1304,21 @@ impl Contract {
 
     pub fn internal_accrue_fee(&mut self) {
         let now = env::block_timestamp();
-        let cur = self.get_total_assets().0;
+        let cur_total_assets = self.get_total_assets().0;
         let mut total_supply = self.total_supply();
         let anchor = self.fee_anchor.clone();
 
-        let mgmt_shares =
-            self.compute_management_fee_shares(cur, total_supply, anchor.timestamp_ns, now);
+        // Cap the effective total_assets used for fee accrual to mitigate
+        // donation-style AUM spikes within a short time window.
+        let fee_total_assets = self.total_assets_for_fee_accrual(cur_total_assets, &anchor, now);
+
+        let mgmt_shares = self.compute_management_fee_shares(
+            fee_total_assets,
+            cur_total_assets,
+            total_supply,
+            anchor.timestamp_ns,
+            now,
+        );
         if mgmt_shares > Number::zero() {
             let minted: u128 = mgmt_shares.into();
             let recipient = self.fees.management.recipient.clone();
@@ -1273,12 +1340,14 @@ impl Contract {
             total_supply = self.total_supply();
         }
 
-        let performance_shares = compute_fee_shares(
-            cur.into(),
-            anchor.total_assets.into(),
-            self.fees.performance.fee,
+        let profit = fee_total_assets.saturating_sub(anchor.total_assets);
+        let fee_assets = self.fees.performance.fee.apply_floored(profit.into());
+        let performance_shares = compute_fee_shares_from_assets(
+            fee_assets,
+            cur_total_assets.into(),
             total_supply.into(),
         );
+
         if performance_shares > Number::zero() {
             let minted: u128 = performance_shares.into();
             let recipient = self.fees.performance.recipient.clone();
@@ -1297,8 +1366,10 @@ impl Contract {
             .emit();
         }
 
+        // Anchor updates to the *actual* AUM snapshot, so the max-rate limiter
+        // only affects what can be charged as fees for the elapsed interval.
         self.fee_anchor = FeeAccrualAnchor {
-            total_assets: cur,
+            total_assets: cur_total_assets,
             timestamp_ns: now,
         };
     }

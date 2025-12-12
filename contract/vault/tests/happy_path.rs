@@ -8,7 +8,7 @@ use templar_common::{
     number::Decimal,
     vault::{AllocationDelta, Delta},
 };
-use templar_common::vault::wad::{MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
+use templar_common::vault::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use test_utils::{
     controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
     UnifiedMarketController,
@@ -59,6 +59,29 @@ async fn set_fees_rejects_performance_fee_above_cap(#[future(awt)] worker: Worke
     fees.performance.fee = U128(MAX_PERFORMANCE_FEE_WAD + 1);
 
     vault.set_fees(&vault_owner, fees).await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn set_fees_accepts_max_total_assets_growth_rate(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(vault, vault_owner)
+        accounts(supply_user, borrow_user)
+    );
+
+    let mut fees = vault.get_fees().await;
+    assert_eq!(fees.max_total_assets_growth_rate, None);
+
+    fees.max_total_assets_growth_rate = Some(U128(u128::from(Wad::one() / 5)));
+    vault.set_fees(&vault_owner, fees.clone()).await;
+
+    let updated = vault.get_fees().await;
+    assert_eq!(
+        updated.max_total_assets_growth_rate,
+        fees.max_total_assets_growth_rate,
+        "max_total_assets_growth_rate should persist",
+    );
 }
 
 #[rstest]

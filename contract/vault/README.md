@@ -132,12 +132,14 @@ Note
   - preview_deposit/mint/withdraw/redeem
 - Fees:
   - internal_accrue_fee() mints management fees pro-rata over time (annualized over YEAR_NS) and performance fees only on growth.
+  - Optional max_total_assets_growth_rate (WAD, annualized) caps the effective total_assets used for fee accrual to `min(cur, last * (1 + max_rate * dt / YEAR_NS))`, mitigating donation-style AUM spikes.
   - Conversions simulate fee accrual (management first, then performance) and include virtual offsets via compute_effective_totals.
 
 - Effective totals
   - All previews and conversions simulate fee accrual first and apply virtual_shares and virtual_assets to stabilize edge cases at low supply/assets.
 - Accrual policy
   - internal_accrue_fee() mints fee shares only when get_total_assets() > last_total_assets (no fees on losses or flat performance).
+  - If max_total_assets_growth_rate is set, fee accrual is rate-limited; growth above the cap within the elapsed interval is not charged as fees.
   - Fee rate is a WAD fraction and bounded (management <= 5%, performance <= 50%); fee_recipient changes first accrue under the old recipient.
 
 ## Execution model at a glance

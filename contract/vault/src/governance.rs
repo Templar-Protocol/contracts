@@ -38,9 +38,7 @@ pub enum TimelockedAction {
     /// Update fee rates and recipients.
     FeesChange { fees: Fees<U128> },
     /// Update account restrictions / gating policy.
-    RestrictionsChange {
-        restrictions: Option<Restrictions>,
-    },
+    RestrictionsChange { restrictions: Option<Restrictions> },
     /// Increase the cap for a given `market` to `new_cap`.
     CapChange { market: AccountId, new_cap: U128 },
     /// Increase the cap for a correlated-risk cap group.
@@ -70,6 +68,19 @@ pub struct Timelocks {
     cap_ns: TimestampNs,
     market_removal_ns: TimestampNs,
     pending_actions: VecDeque<PendingValue<TimelockedAction>>,
+}
+
+impl From<TimestampNs> for Timelocks {
+    fn from(ns: TimestampNs) -> Self {
+        Self {
+            guardian_ns: ns,
+            sentinel_ns: ns,
+            timelock_config_ns: ns,
+            cap_ns: ns,
+            market_removal_ns: ns,
+            pending_actions: VecDeque::new(),
+        }
+    }
 }
 
 impl Timelocks {
@@ -307,7 +318,8 @@ impl Contract {
     pub fn accept_fees(&mut self) {
         Self::require_owner();
 
-        if let Some(action) = self.take_timelock(|a| matches!(a, TimelockedAction::FeesChange { .. }))
+        if let Some(action) =
+            self.take_timelock(|a| matches!(a, TimelockedAction::FeesChange { .. }))
         {
             self.apply_immediately(&action);
         } else {
@@ -673,9 +685,9 @@ impl Contract {
     pub fn accept_restrictions(&mut self) {
         Self::assert_guardian_or_owner();
 
-        if let Some(action) = self.take_timelock(|a| {
-            matches!(a, TimelockedAction::RestrictionsChange { .. })
-        }) {
+        if let Some(action) =
+            self.take_timelock(|a| matches!(a, TimelockedAction::RestrictionsChange { .. }))
+        {
             self.apply_immediately(&action);
         } else {
             panic_with_message("No pending restrictions change");
@@ -782,20 +794,37 @@ impl Contract {
                     fees.performance.recipient != self.fees.performance.recipient;
                 let management_recipient_changed =
                     fees.management.recipient != self.fees.management.recipient;
+                let max_total_assets_growth_rate =
+                    fees.max_total_assets_growth_rate.map(|r| Wad::from(r.0));
+                let max_rate_changed =
+                    max_total_assets_growth_rate != self.fees.max_total_assets_growth_rate;
 
                 require!(
                     performance_fee_changed
                         || management_fee_changed
                         || performance_recipient_changed
-                        || management_recipient_changed,
+                        || management_recipient_changed
+                        || max_rate_changed,
                     "No fee changes"
                 );
 
                 let fee_increase = performance_fee > self.fees.performance.fee
                     || management_fee > self.fees.management.fee;
-                let recipient_changed = performance_recipient_changed || management_recipient_changed;
+                let recipient_changed =
+                    performance_recipient_changed || management_recipient_changed;
 
-                fee_increase || recipient_changed
+                // Relaxing (increasing) the max-rate limiter behaves like a fee increase.
+                let max_rate_relaxed = match (
+                    self.fees.max_total_assets_growth_rate,
+                    max_total_assets_growth_rate,
+                ) {
+                    (None, None) => false,
+                    (None, Some(_)) => false,
+                    (Some(_), None) => true,
+                    (Some(old), Some(new)) => new > old,
+                };
+
+                fee_increase || recipient_changed || max_rate_relaxed
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 Abdicator::require_not_abdicated(&self.abdicator, "set_restrictions");
@@ -1065,24 +1094,34 @@ impl Contract {
                     "management fee too high"
                 );
 
+                let max_total_assets_growth_rate =
+                    fees.max_total_assets_growth_rate.map(|r| Wad::from(r.0));
+
                 let performance_fee_changed = performance_fee != self.fees.performance.fee;
                 let management_fee_changed = management_fee != self.fees.management.fee;
                 let performance_recipient_changed =
                     fees.performance.recipient != self.fees.performance.recipient;
                 let management_recipient_changed =
                     fees.management.recipient != self.fees.management.recipient;
+                let max_rate_changed =
+                    max_total_assets_growth_rate != self.fees.max_total_assets_growth_rate;
 
                 require!(
                     performance_fee_changed
                         || management_fee_changed
                         || performance_recipient_changed
-                        || management_recipient_changed,
+                        || management_recipient_changed
+                        || max_rate_changed,
                     "No fee changes"
                 );
 
+                let has_active_fee =
+                    !self.fees.performance.fee.is_zero() || !self.fees.management.fee.is_zero();
+
                 if performance_fee_changed
                     || management_fee_changed
-                    || ((!self.fees.performance.fee.is_zero() || !self.fees.management.fee.is_zero())
+                    || max_rate_changed
+                    || (has_active_fee
                         && (performance_recipient_changed || management_recipient_changed))
                 {
                     self.internal_accrue_fee();
@@ -1113,6 +1152,14 @@ impl Contract {
                     .emit();
                 }
 
+                if max_rate_changed {
+                    self.fees.max_total_assets_growth_rate = max_total_assets_growth_rate;
+                    Event::MaxTotalAssetsGrowthRateSet {
+                        max_rate: fees.max_total_assets_growth_rate,
+                    }
+                    .emit();
+                }
+
                 if performance_recipient_changed {
                     self.fees.performance.recipient = fees.performance.recipient.clone();
                     Event::FeeRecipientSet {
@@ -1139,9 +1186,9 @@ impl Contract {
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 // Tightening restrictions should invalidate any pending relax/unpause.
-                if self.revoke_timelocks(|a| {
-                    matches!(a, TimelockedAction::RestrictionsChange { .. })
-                }) {
+                if self
+                    .revoke_timelocks(|a| matches!(a, TimelockedAction::RestrictionsChange { .. }))
+                {
                     Event::RestrictionsChangeRevoked.emit();
                 }
 

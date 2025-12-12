@@ -105,6 +105,7 @@ fn build_fees(
             fee: U128(u128::from(management_fee)),
             recipient: management_recipient,
         },
+        max_total_assets_growth_rate: None,
     }
 }
 
@@ -1953,6 +1954,158 @@ fn management_fee_zero_elapsed_is_noop(owner_env: OwnerEnv) {
         contract.balance_of(&recipient),
         bal_before,
         "recipient balance unchanged when elapsed is zero"
+    );
+}
+
+#[rstest]
+fn management_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    // Seed supply so total_supply > 0
+    contract
+        .deposit_unchecked(&mk(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    contract.fees.performance.fee = Wad::zero();
+    contract.fees.management.fee = Wad::one() / 20; // 5% annual
+    contract.fees.max_total_assets_growth_rate = Some(Wad::one() / 5); // 20% annual
+
+    // last=1_000, cur=2_000
+    contract.idle_balance = 2_000;
+    contract.fee_anchor.total_assets = 1_000;
+    contract.fee_anchor.timestamp_ns = 0;
+
+    let ts_before = contract.total_supply();
+    let recipient = contract.fees.management.recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
+
+    // Half a year elapsed: max allowed growth = 1_000 * 20% * 0.5 = 100
+    let elapsed = YEAR_NS / 2;
+    set_block_ts(&vault_id, &vault_id, elapsed);
+
+    contract.internal_accrue_fee();
+
+    let annual_max_increase = contract
+        .fees
+        .max_total_assets_growth_rate
+        .expect("max rate")
+        .apply_floored(Number::from(1_000u128));
+    let max_increase = mul_div_floor(
+        annual_max_increase,
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let fee_total_assets = 1_000u128.saturating_add(max_increase.as_u128_trunc());
+
+    let annual_fee_assets = contract
+        .fees
+        .management
+        .fee
+        .apply_floored(Number::from(fee_total_assets));
+    let fee_assets = mul_div_floor(
+        annual_fee_assets,
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let expected_shares = compute_fee_shares_from_assets(
+        fee_assets,
+        Number::from(2_000u128),
+        Number::from(ts_before),
+    );
+
+    let minted = expected_shares.as_u128_trunc();
+
+    assert_eq!(
+        contract.total_supply(),
+        ts_before + minted,
+        "total supply must reflect minted management fee shares",
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        bal_before + minted,
+        "management fee shares should be rate-limited",
+    );
+    assert_eq!(
+        contract.fee_anchor.total_assets, 2_000,
+        "fee anchor must sync to current after accrual",
+    );
+}
+
+#[rstest]
+fn performance_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    // Seed supply so total_supply > 0
+    contract
+        .deposit_unchecked(&mk(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    contract.fees.management.fee = Wad::zero();
+    contract.fees.performance.fee = Wad::one() / 2; // 50% performance fee
+    contract.fees.max_total_assets_growth_rate = Some(Wad::one() / 5); // 20% annual
+
+    // last=1_000, cur=2_000
+    contract.idle_balance = 2_000;
+    contract.fee_anchor.total_assets = 1_000;
+    contract.fee_anchor.timestamp_ns = 0;
+
+    let ts_before = contract.total_supply();
+    let recipient = contract.fees.performance.recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
+
+    // 0.1 year elapsed: max allowed growth = 1_000 * 20% * 0.1 = 20
+    let elapsed = YEAR_NS / 10;
+    set_block_ts(&vault_id, &vault_id, elapsed);
+
+    contract.internal_accrue_fee();
+
+    let annual_max_increase = contract
+        .fees
+        .max_total_assets_growth_rate
+        .expect("max rate")
+        .apply_floored(Number::from(1_000u128));
+    let max_increase = mul_div_floor(
+        annual_max_increase,
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let fee_total_assets = 1_000u128.saturating_add(max_increase.as_u128_trunc());
+
+    let profit = fee_total_assets.saturating_sub(1_000);
+    let fee_assets = contract
+        .fees
+        .performance
+        .fee
+        .apply_floored(Number::from(profit));
+    let expected_shares = compute_fee_shares_from_assets(
+        fee_assets,
+        Number::from(2_000u128),
+        Number::from(ts_before),
+    );
+
+    let minted = expected_shares.as_u128_trunc();
+
+    assert_eq!(
+        contract.total_supply(),
+        ts_before + minted,
+        "total supply must reflect minted performance fee shares",
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        bal_before + minted,
+        "performance fee shares should be rate-limited",
+    );
+    assert_eq!(
+        contract.fee_anchor.total_assets, 2_000,
+        "fee anchor must sync to current after accrual",
     );
 }
 

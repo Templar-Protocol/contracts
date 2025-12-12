@@ -113,6 +113,12 @@ pub struct Fee<T> {
 pub struct Fees<T> {
     pub performance: Fee<T>,
     pub management: Fee<T>,
+    /// Optional cap on how fast `total_assets` is allowed to grow for fee accrual.
+    ///
+    /// Interpreted as an annualized WAD rate (1e24 = 100% per year). When set,
+    /// fee accrual uses `min(cur_total_assets, last_total_assets * (1 + max_rate * dt / YEAR))`
+    /// as the effective `cur_total_assets`.
+    pub max_total_assets_growth_rate: Option<T>,
 }
 
 /// Configuration for the setup of a metavault.
@@ -316,7 +322,7 @@ pub fn require_at_least(needed: Gas) {
 }
 
 #[derive(Clone, Debug)]
-#[near]
+#[near(serializers = [borsh, json])]
 pub struct PendingValue<T: core::fmt::Debug> {
     pub value: T,
     // Timestamp when this pending value can be finalized
@@ -831,6 +837,8 @@ pub enum Event {
     FeeRecipientSet { account: AccountId },
     #[event_version("1.0.0")]
     PerformanceFeeSet { fee: U128 },
+    #[event_version("1.0.0")]
+    MaxTotalAssetsGrowthRateSet { max_rate: Option<U128> },
     #[event_version("1.0.0")]
     RestrictionsSet { restrictions: Option<Restrictions> },
     #[event_version("1.0.0")]

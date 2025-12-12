@@ -168,6 +168,7 @@ pub fn vault_configuration(
                 fee: Wad::from(MAX_MANAGEMENT_FEE_WAD),
                 recipient: fee_recipient_id,
             },
+            max_total_assets_growth_rate: None,
         },
         skim_recipient: skim_recipient_id,
         name: "Vault".to_string(),

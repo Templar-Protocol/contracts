@@ -23,21 +23,25 @@ impl Number {
     pub fn zero() -> Self {
         Number(U256::zero())
     }
+
     #[inline]
     #[must_use]
     pub fn one() -> Self {
         Number(U256::one())
     }
+
     #[inline]
     #[must_use]
     pub fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
+
     #[inline]
     #[must_use]
     pub fn is_one(&self) -> bool {
         self.0 == U256::one()
     }
+
     #[inline]
     #[must_use]
     pub fn as_u128_trunc(self) -> u128 {
@@ -47,22 +51,40 @@ impl Number {
         b16.copy_from_slice(&b32[..16]);
         u128::from_le_bytes(b16)
     }
+
+    #[inline]
+    #[must_use]
+    pub fn as_u128_saturating(self) -> u128 {
+        let mut b32 = [0u8; 32];
+        self.0.write_as_little_endian(&mut b32);
+        if b32[16..].iter().any(|&b| b != 0) {
+            u128::MAX
+        } else {
+            let mut b16 = [0u8; 16];
+            b16.copy_from_slice(&b32[..16]);
+            u128::from_le_bytes(b16)
+        }
+    }
+
     #[inline]
     fn as_u256_trunc(q: U512) -> U256 {
         let mut b64 = [0u8; 64];
         q.write_as_little_endian(&mut b64);
         U256::from_little_endian(&b64[..32])
     }
+
     #[inline]
     #[must_use]
     pub fn saturating_add(self, other: Number) -> Number {
         Number(self.0.saturating_add(other.0))
     }
+
     #[inline]
     #[must_use]
     pub fn saturating_sub(self, other: Number) -> Number {
         Number(self.0.saturating_sub(other.0))
     }
+
     #[inline]
     #[must_use]
     pub fn mul_div_floor(x: Number, y: Number, denom: Number) -> Number {
