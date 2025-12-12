@@ -24,7 +24,12 @@ Vault deployments will eventually be immutable (no contract upgrades). Until the
 - No separate “idle liquidity market”: `idle_balance` already serves as atomic liquidity that the allocator can grow/shrink via delta allocations. Introducing a pseudo-market for idle in an async pipeline would add complexity and state-surface without improving withdrawal liveness.
 - No dedicated liquidity adapter: NEAR has few maintained borrowing venues; Templar is already the primary venue we integrate. Keeping idle as the liquidity buffer plus allocator-driven routes avoids extra adapter indirection with little marginal benefit.
 - Liquidity adapters are an Ethereum-competition artifact: Morpho needs a generic adapter layer to juggle many venues on mainnet; on NEAR the venue set is small and curated, so we avoid that indirection.
-- Auto-AUM / realAssets: Morpho adapters push `realAssets`; here we expose `refresh_markets` (permissionless with a configurable throttle, defaults to ~30s, empty list = all markets) to pull live principals and update stored AUM. A pure `realAssets` view across markets isn’t feasible in NEAR’s async model without paid calls.
+- Auto-AUM / realAssets: Morpho adapters push `realAssets`; here we expose `refresh_markets` (permissionless with a configurable throttle, defaults to ~30s, empty list = all markets) to pull live principals and update stored AUM. A pure `realAssets` view across markets isn’t feasible in NEAR’s async model without paid calls and increasing gas/promise complexity.
+- Policy gates (`Gate::enforce_policy`): the guardian/owner can set optional `Restrictions` (`Paused` / `BlackList` / `WhiteList`) via `set_restrictions`, and they are enforced on user-facing flows.
+  - `Gate::enforce_policy(account)` reads the current `restrictions` and panics if `restrictions.is_restricted(account)` returns a reason.
+  - It is called on deposits (the `sender_id` of `ft_transfer_call` / `mt_transfer_call`), on withdraw/redeem (both the caller and the withdrawal `receiver`), and on share-token transfers (`ft_transfer` / `ft_transfer_call`) for both sender and receiver.
+  - Share transfers are additionally blocked to any vault-managed market account, and internal settlement transfers can temporarily bypass the share-transfer gate so escrow/refunds can still be processed.
+  - In contrast, Morpho/MetaMorpho vaults are permissionless at the account level: there is no built-in allow/deny list for depositors, and vault shares are standard ERC20s (freely transferable).
 
 ## AUM model
 
@@ -302,14 +307,13 @@ Important
   - Allocator/Curator/Owner: `execute_withdrawal(route)`, `execute_market_withdrawal(op_id, index, batch_limit)`, `unbrick()`
 - Governance:
   - Owner/Curator/Guardian as listed above.
- 
+
 ## API notes (for integrators/keepers)
 
 - `execute_withdrawal` requires a per-op `route: Vec<AccountId>` (ordered preference for this withdrawal).
 - `execute_market_withdrawal(op_id, index, batch_limit)` executes created market-side supply withdrawal requests for the given withdrawing op.
 - `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault, locks the target market index in `market_execution_lock`, re-syncs `idle_balance` to the vault’s actual FT balance, and credits returned funds without touching the user queue. If the balance read fails, the rebalance operation halts and emits `RebalanceWithdrawStopped`.
 - Curator is granted Allocator by default at initialization; keepers must use an account that has the Allocator role (or be the Curator/Owner).
-
 
 ## Error handling and stop semantics
 
