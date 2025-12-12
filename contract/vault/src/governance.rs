@@ -35,6 +35,12 @@ pub enum TimelockedAction {
         kind: Option<TimelockKind>,
         new_timelock_ns: U64,
     },
+    /// Update fee rates and recipients.
+    FeesChange { fees: Fees<U128> },
+    /// Update account restrictions / gating policy.
+    RestrictionsChange {
+        restrictions: Option<Restrictions>,
+    },
     /// Increase the cap for a given `market` to `new_cap`.
     CapChange { market: AccountId, new_cap: U128 },
     /// Increase the cap for a correlated-risk cap group.
@@ -90,6 +96,10 @@ impl Timelocks {
 
     pub fn has_pending(&self) -> bool {
         !self.pending_actions.is_empty()
+    }
+
+    pub fn pending_actions(&self) -> Vec<PendingValue<TimelockedAction>> {
+        self.pending_actions.iter().cloned().collect()
     }
 
     fn seek_pending_timelock(
@@ -285,93 +295,32 @@ impl Contract {
     }
 
     /// Sets both performance and management fee rates and recipients atomically.
-    /// Accrues pending fees under the previous configuration before applying updates.
+    ///
+    /// Timelock semantics (Morpho-like):
+    /// - Fee decreases apply immediately.
+    /// - Fee increases and any recipient change are subject to the governance timelock.
     pub fn set_fees(&mut self, fees: Fees<U128>) {
+        self.submit_change(TimelockedAction::FeesChange { fees });
+    }
+
+    /// Accepts a pending fee change after the timelock has elapsed.
+    pub fn accept_fees(&mut self) {
         Self::require_owner();
-        Abdicator::require_not_abdicated(&self.abdicator, "set_fees");
 
-        let performance_fee = Wad::from(fees.performance.fee.0);
-        let management_fee = Wad::from(fees.management.fee.0);
-
-        require!(
-            performance_fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
-            "performance fee too high"
-        );
-        require!(
-            management_fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
-            "management fee too high"
-        );
-
-        let performance_fee_changed = performance_fee != self.fees.performance.fee;
-        let management_fee_changed = management_fee != self.fees.management.fee;
-        let performance_recipient_changed =
-            fees.performance.recipient != self.fees.performance.recipient;
-        let management_recipient_changed =
-            fees.management.recipient != self.fees.management.recipient;
-
-        require!(
-            performance_fee_changed
-                || management_fee_changed
-                || performance_recipient_changed
-                || management_recipient_changed,
-            "No fee changes"
-        );
-
-        if performance_fee_changed
-            || management_fee_changed
-            || ((!self.fees.performance.fee.is_zero() || !self.fees.management.fee.is_zero())
-                && (performance_recipient_changed || management_recipient_changed))
+        if let Some(action) = self.take_timelock(|a| matches!(a, TimelockedAction::FeesChange { .. }))
         {
-            self.internal_accrue_fee();
+            self.apply_immediately(&action);
+        } else {
+            panic_with_message("No pending fee change");
         }
+    }
 
-        for account in [
-            fees.performance.recipient.clone(),
-            fees.management.recipient.clone(),
-        ] {
-            if self.storage_balance_of(account.clone()).is_none() {
-                self.storage_deposit(Some(account), Some(true));
-            }
-        }
+    /// Revokes any pending fee change.
+    pub fn revoke_pending_fees(&mut self) {
+        Self::assert_guardian_or_sentinel_or_owner();
 
-        if performance_fee_changed {
-            self.fees.performance.fee = performance_fee;
-            Event::PerformanceFeeSet {
-                fee: fees.performance.fee,
-            }
-            .emit();
-        }
-
-        if management_fee_changed {
-            self.fees.management.fee = management_fee;
-            Event::ManagementFeeSet {
-                fee: fees.management.fee,
-            }
-            .emit();
-        }
-
-        if performance_recipient_changed {
-            self.fees.performance.recipient = fees.performance.recipient.clone();
-            Event::FeeRecipientSet {
-                account: self.fees.performance.recipient.clone(),
-            }
-            .emit();
-        }
-
-        if management_recipient_changed {
-            self.fees.management.recipient = fees.management.recipient.clone();
-            Event::ManagementFeeRecipientSet {
-                account: self.fees.management.recipient.clone(),
-            }
-            .emit();
-        }
-
-        if !performance_recipient_changed {
-            self.fees.performance.recipient = fees.performance.recipient.clone();
-        }
-
-        if !management_recipient_changed {
-            self.fees.management.recipient = fees.management.recipient.clone();
+        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::FeesChange { .. })) {
+            Event::FeesChangeRevoked.emit();
         }
     }
 
@@ -712,10 +661,34 @@ impl Contract {
     }
 
     /// Sets the restrictions for the vault.
+    ///
+    /// Timelock semantics:
+    /// - Tightening restrictions (including `Paused`) applies immediately.
+    /// - Unpause/relax actions are subject to the governance timelock.
     pub fn set_restrictions(&mut self, restrictions: Option<Restrictions>) {
+        self.submit_change(TimelockedAction::RestrictionsChange { restrictions });
+    }
+
+    /// Accepts a pending restrictions change after the timelock has elapsed.
+    pub fn accept_restrictions(&mut self) {
         Self::assert_guardian_or_owner();
-        env::log_str(&format!("Restrictions set to {restrictions:?}"));
-        self.gate.restrictions = restrictions;
+
+        if let Some(action) = self.take_timelock(|a| {
+            matches!(a, TimelockedAction::RestrictionsChange { .. })
+        }) {
+            self.apply_immediately(&action);
+        } else {
+            panic_with_message("No pending restrictions change");
+        }
+    }
+
+    /// Revokes any pending restrictions change.
+    pub fn revoke_pending_restrictions(&mut self) {
+        Self::assert_guardian_or_sentinel_or_owner();
+
+        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::RestrictionsChange { .. })) {
+            Event::RestrictionsChangeRevoked.emit();
+        }
     }
 
     pub fn get_restrictions(&self) -> Option<Restrictions> {
@@ -779,6 +752,96 @@ impl Contract {
                     "Timelock out of bounds"
                 );
                 new < current
+            }
+            TimelockedAction::FeesChange { fees } => {
+                Self::require_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "set_fees");
+
+                require!(
+                    self.governance_timelocks
+                        .seek_pending_timelock(|p| matches!(p, TimelockedAction::FeesChange { .. }))
+                        .is_none(),
+                    "Fee change already pending"
+                );
+
+                let performance_fee = Wad::from(fees.performance.fee.0);
+                let management_fee = Wad::from(fees.management.fee.0);
+
+                require!(
+                    performance_fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
+                    "performance fee too high"
+                );
+                require!(
+                    management_fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
+                    "management fee too high"
+                );
+
+                let performance_fee_changed = performance_fee != self.fees.performance.fee;
+                let management_fee_changed = management_fee != self.fees.management.fee;
+                let performance_recipient_changed =
+                    fees.performance.recipient != self.fees.performance.recipient;
+                let management_recipient_changed =
+                    fees.management.recipient != self.fees.management.recipient;
+
+                require!(
+                    performance_fee_changed
+                        || management_fee_changed
+                        || performance_recipient_changed
+                        || management_recipient_changed,
+                    "No fee changes"
+                );
+
+                let fee_increase = performance_fee > self.fees.performance.fee
+                    || management_fee > self.fees.management.fee;
+                let recipient_changed = performance_recipient_changed || management_recipient_changed;
+
+                fee_increase || recipient_changed
+            }
+            TimelockedAction::RestrictionsChange { restrictions } => {
+                Abdicator::require_not_abdicated(&self.abdicator, "set_restrictions");
+                require!(
+                    restrictions != &self.gate.restrictions,
+                    "No restriction changes"
+                );
+
+                let is_relaxing = match (&self.gate.restrictions, restrictions) {
+                    (None, None) => false,
+                    (None, Some(_)) => false,
+                    (Some(_), None) => true,
+                    (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
+                    (Some(Restrictions::Paused), Some(_)) => true,
+                    (Some(Restrictions::BlackList(old)), Some(Restrictions::BlackList(new))) => {
+                        old.difference(new).next().is_some()
+                    }
+                    (Some(Restrictions::WhiteList(old)), Some(Restrictions::WhiteList(new))) => {
+                        new.difference(old).next().is_some()
+                    }
+                    (Some(Restrictions::BlackList(old)), Some(Restrictions::WhiteList(new))) => {
+                        old.intersection(new).next().is_some()
+                    }
+                    (Some(Restrictions::WhiteList(_)), Some(Restrictions::Paused))
+                    | (Some(Restrictions::BlackList(_)), Some(Restrictions::Paused)) => false,
+                    (Some(Restrictions::WhiteList(_)), Some(Restrictions::BlackList(_))) => true,
+                };
+
+                if is_relaxing {
+                    Self::assert_guardian_or_owner();
+                    require!(
+                        self.governance_timelocks
+                            .seek_pending_timelock(|p| matches!(
+                                p,
+                                TimelockedAction::RestrictionsChange { .. }
+                            ))
+                            .is_none(),
+                        "Restrictions change already pending"
+                    );
+                    true
+                } else {
+                    // Tightening (including emergency pause) is immediate and may be done by the
+                    // guardian, sentinel, or owner.
+                    Self::assert_guardian_or_sentinel_or_owner();
+                    false
+                }
             }
             // Submit a timelocked governance change if the cap is greater than the current cap or there is a new market to be made
             TimelockedAction::CapChange { market, new_cap } => {
@@ -989,6 +1052,110 @@ impl Contract {
                 }
                 .emit();
             }
+            TimelockedAction::FeesChange { fees } => {
+                let performance_fee = Wad::from(fees.performance.fee.0);
+                let management_fee = Wad::from(fees.management.fee.0);
+
+                require!(
+                    performance_fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
+                    "performance fee too high"
+                );
+                require!(
+                    management_fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
+                    "management fee too high"
+                );
+
+                let performance_fee_changed = performance_fee != self.fees.performance.fee;
+                let management_fee_changed = management_fee != self.fees.management.fee;
+                let performance_recipient_changed =
+                    fees.performance.recipient != self.fees.performance.recipient;
+                let management_recipient_changed =
+                    fees.management.recipient != self.fees.management.recipient;
+
+                require!(
+                    performance_fee_changed
+                        || management_fee_changed
+                        || performance_recipient_changed
+                        || management_recipient_changed,
+                    "No fee changes"
+                );
+
+                if performance_fee_changed
+                    || management_fee_changed
+                    || ((!self.fees.performance.fee.is_zero() || !self.fees.management.fee.is_zero())
+                        && (performance_recipient_changed || management_recipient_changed))
+                {
+                    self.internal_accrue_fee();
+                }
+
+                for account in [
+                    fees.performance.recipient.clone(),
+                    fees.management.recipient.clone(),
+                ] {
+                    if self.storage_balance_of(account.clone()).is_none() {
+                        self.storage_deposit(Some(account), Some(true));
+                    }
+                }
+
+                if performance_fee_changed {
+                    self.fees.performance.fee = performance_fee;
+                    Event::PerformanceFeeSet {
+                        fee: fees.performance.fee,
+                    }
+                    .emit();
+                }
+
+                if management_fee_changed {
+                    self.fees.management.fee = management_fee;
+                    Event::ManagementFeeSet {
+                        fee: fees.management.fee,
+                    }
+                    .emit();
+                }
+
+                if performance_recipient_changed {
+                    self.fees.performance.recipient = fees.performance.recipient.clone();
+                    Event::FeeRecipientSet {
+                        account: self.fees.performance.recipient.clone(),
+                    }
+                    .emit();
+                }
+
+                if management_recipient_changed {
+                    self.fees.management.recipient = fees.management.recipient.clone();
+                    Event::ManagementFeeRecipientSet {
+                        account: self.fees.management.recipient.clone(),
+                    }
+                    .emit();
+                }
+
+                if !performance_recipient_changed {
+                    self.fees.performance.recipient = fees.performance.recipient.clone();
+                }
+
+                if !management_recipient_changed {
+                    self.fees.management.recipient = fees.management.recipient.clone();
+                }
+            }
+            TimelockedAction::RestrictionsChange { restrictions } => {
+                // Tightening restrictions should invalidate any pending relax/unpause.
+                if self.revoke_timelocks(|a| {
+                    matches!(a, TimelockedAction::RestrictionsChange { .. })
+                }) {
+                    Event::RestrictionsChangeRevoked.emit();
+                }
+
+                require!(
+                    restrictions != &self.gate.restrictions,
+                    "No restriction changes"
+                );
+
+                self.gate.restrictions = restrictions.clone();
+                Event::RestrictionsSet {
+                    restrictions: restrictions.clone(),
+                }
+                .emit();
+            }
             TimelockedAction::CapChange { market, new_cap } => {
                 let mkt = match self.markets.get_mut(market) {
                     None => {
@@ -1117,6 +1284,9 @@ impl Contract {
                 Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,
                 Some(TimelockKind::MarketRemoval) => self.governance_timelocks.market_removal_ns,
             },
+            TimelockedAction::FeesChange { .. } | TimelockedAction::RestrictionsChange { .. } => {
+                self.governance_timelocks.timelock_config_ns
+            }
             TimelockedAction::CapChange { .. }
             | TimelockedAction::CapGroupChange { .. }
             | TimelockedAction::CapGroupRelativeCapChange { .. }
@@ -1162,6 +1332,22 @@ impl Contract {
             Event::CapGroupRelativeCapRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_relative_cap: *new_relative_cap,
+                valid_at_ns,
+            }
+            .emit();
+        }
+
+        if let TimelockedAction::FeesChange { fees } = action {
+            Event::FeesChangeSubmitted {
+                fees: fees.clone(),
+                valid_at_ns,
+            }
+            .emit();
+        }
+
+        if let TimelockedAction::RestrictionsChange { restrictions } = action {
+            Event::RestrictionsChangeSubmitted {
+                restrictions: restrictions.clone(),
                 valid_at_ns,
             }
             .emit();

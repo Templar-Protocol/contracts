@@ -12,7 +12,7 @@ use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use std::{env, ops::Deref};
-use templar_common::vault::{AllocationDelta, DepositMsg, Fees, VaultConfiguration};
+use templar_common::vault::{AllocationDelta, DepositMsg, Fees, Restrictions, VaultConfiguration};
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
@@ -66,6 +66,7 @@ impl VaultController {
         #[view] pub fn has_pending_market_withdrawal() -> bool;
         #[view] pub fn get_fee_anchor_timestamp() -> U64;
         #[view] pub fn get_fees() -> Fees<U128>;
+        #[view] pub fn get_restrictions() -> Option<Restrictions>;
 
 
         #[view] pub fn get_market_supply(market: &AccountId) -> U128;
@@ -153,6 +154,21 @@ impl VaultController {
 
         #[call(exec, tgas(50))]
         pub fn set_fees(fees: Fees<U128>);
+
+        #[call(exec, tgas(50))]
+        pub fn accept_fees();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_fees();
+
+        #[call(exec, tgas(50))]
+        pub fn set_restrictions(restrictions: Option<Restrictions>);
+
+        #[call(exec, tgas(50))]
+        pub fn accept_restrictions();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_restrictions();
 
         #[call(exec, tgas(50))]
         pub fn submit_timelock(new_timelock_ns: U64);

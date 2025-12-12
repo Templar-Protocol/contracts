@@ -1453,7 +1453,7 @@ fn set_fees_accrues_before_switching_recipient(owner_env: OwnerEnv) {
     let old_recipient = contract.fees.performance.recipient.clone();
     let old_balance = contract.balance_of(&old_recipient);
 
-    // Switch fee recipient; should accrue to old recipient first
+    // Switch fee recipient; should accrue to old recipient first.
     let new_recipient = mk(3);
     contract.set_fees(build_fees(
         contract.fees.performance.fee,
@@ -1461,6 +1461,19 @@ fn set_fees_accrues_before_switching_recipient(owner_env: OwnerEnv) {
         new_recipient.clone(),
         new_recipient.clone(),
     ));
+
+    assert_eq!(
+        contract.governance_timelocks.pending_len(),
+        1,
+        "recipient change should be timelocked"
+    );
+    assert_eq!(
+        contract.fees.performance.recipient.clone(),
+        old_recipient,
+        "recipient should not change until accept"
+    );
+
+    contract.accept_fees();
 
     assert_eq!(
         contract.balance_of(&old_recipient),
@@ -1510,7 +1523,7 @@ fn set_fees_accrues_before_switching_recipient_variant(owner_env: OwnerEnv) {
     let old_recipient = contract.fees.performance.recipient.clone();
     let old_balance = contract.balance_of(&old_recipient);
 
-    // Switch fee recipient; should accrue to old recipient first
+    // Switch fee recipient; should accrue to old recipient first.
     let new_recipient = mk(3);
     contract.set_fees(build_fees(
         contract.fees.performance.fee,
@@ -1518,6 +1531,19 @@ fn set_fees_accrues_before_switching_recipient_variant(owner_env: OwnerEnv) {
         new_recipient.clone(),
         new_recipient.clone(),
     ));
+
+    assert_eq!(
+        contract.governance_timelocks.pending_len(),
+        1,
+        "recipient change should be timelocked"
+    );
+    assert_eq!(
+        contract.fees.performance.recipient.clone(),
+        old_recipient,
+        "recipient should not change until accept"
+    );
+
+    contract.accept_fees();
 
     assert_eq!(
         contract.balance_of(&old_recipient),
@@ -1538,6 +1564,38 @@ fn set_fees_accrues_before_switching_recipient_variant(owner_env: OwnerEnv) {
         contract.fee_anchor.total_assets, cur,
         "fee anchor must update to current after accrual"
     );
+}
+
+#[rstest]
+fn set_fees_increase_is_timelocked(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    contract.fees.performance.fee = Wad::one() / 100;
+    let before = contract.fees.performance.fee;
+
+    let increased = Wad::one() / 10;
+
+    contract.set_fees(build_fees(
+        increased,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
+
+    assert_eq!(
+        contract.governance_timelocks.pending_len(),
+        1,
+        "fee increase should be timelocked"
+    );
+    assert_eq!(
+        contract.fees.performance.fee, before,
+        "fee should not change until accept"
+    );
+
+    contract.accept_fees();
+
+    assert_eq!(contract.governance_timelocks.pending_len(), 0);
+    assert_eq!(contract.fees.performance.fee, increased);
 }
 
 #[rstest]
@@ -1690,6 +1748,60 @@ fn set_fees_rejects_performance_fee_above_cap(owner_env: OwnerEnv) {
         contract.fees.performance.recipient.clone(),
         contract.fees.management.recipient.clone(),
     ));
+}
+
+#[rstest]
+fn restrictions_pause_is_immediate_for_sentinel(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    let sentinel = contract.get_configuration().sentinel;
+
+    set_ctx(&vault_id, &sentinel, None, None);
+    contract.set_restrictions(Some(Restrictions::Paused));
+
+    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert_eq!(contract.governance_timelocks.pending_len(), 0);
+}
+
+#[rstest]
+fn restrictions_unpause_is_timelocked(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    // Emergency pause applies immediately.
+    contract.set_restrictions(Some(Restrictions::Paused));
+    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+
+    // Unpause is a relax, so it must be timelocked.
+    contract.set_restrictions(None);
+    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert_eq!(contract.governance_timelocks.pending_len(), 1);
+
+    contract.accept_restrictions();
+
+    assert_eq!(contract.get_restrictions(), None);
+    assert_eq!(contract.governance_timelocks.pending_len(), 0);
+}
+
+#[rstest]
+#[should_panic]
+fn restrictions_unpause_by_sentinel_panics(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    contract.set_restrictions(Some(Restrictions::Paused));
+
+    let sentinel = contract.get_configuration().sentinel;
+    set_ctx(&vault_id, &sentinel, None, None);
+
+    // Sentinel can pause immediately, but cannot relax/unpause.
+    contract.set_restrictions(None);
 }
 
 #[rstest]
@@ -2377,6 +2489,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     case("set_is_allocator"),
     case("set_skim_recipient"),
     case("set_fees"),
+    case("set_restrictions"),
     case("submit_guardian"),
     case("submit_timelock"),
     case("submit_cap"),
@@ -2414,6 +2527,11 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
                     accounts(1),
                     c.fees.management.recipient.clone(),
                 ));
+            }
+            "set_restrictions" => {
+                c.set_restrictions(Some(Restrictions::Paused));
+                c.accept_restrictions();
+                c.revoke_pending_restrictions();
             }
             "submit_timelock" => {
                 let cur = c.get_configuration().initial_timelock_ns;
@@ -2879,6 +2997,7 @@ fn governance_set_fees_zero_fee_recipient_change_no_accrue() {
     let last_before = c.fee_anchor.total_assets;
 
     let new_recipient = mk(5);
+    let old_recipient = c.fees.performance.recipient.clone();
 
     c.set_fees(build_fees(
         c.fees.performance.fee,
@@ -2886,6 +3005,11 @@ fn governance_set_fees_zero_fee_recipient_change_no_accrue() {
         new_recipient.clone(),
         new_recipient.clone(),
     ));
+
+    assert_eq!(c.governance_timelocks.pending_len(), 1);
+    assert_eq!(c.fees.performance.recipient, old_recipient);
+
+    c.accept_fees();
 
     assert_eq!(
         c.total_supply(),
@@ -2897,6 +3021,7 @@ fn governance_set_fees_zero_fee_recipient_change_no_accrue() {
         "fee anchor should not change when fee=0"
     );
     assert_eq!(c.fees.performance.recipient, new_recipient);
+    assert_eq!(c.governance_timelocks.pending_len(), 0);
 }
 
 fn owner_call_env(vault_id: AccountId, owner: &AccountId) {

@@ -2,9 +2,7 @@
 
 use crate::{
     aum::AUM,
-    governance::Abdicator,
-    governance::Gate,
-    governance::Timelocks,
+    governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -42,8 +40,8 @@ use templar_common::{
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
         Fee, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState,
-        PendingWithdrawal, QueueAction, QueueStatus, Reason, RefreshingState, TimestampNs,
-        UnbrickPhase, VaultConfiguration, WithdrawProgressPhase, WithdrawingState,
+        PendingValue, PendingWithdrawal, QueueAction, QueueStatus, Reason, RefreshingState,
+        TimestampNs, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase, WithdrawingState,
         AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
         FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
         SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
@@ -854,6 +852,14 @@ impl Contract {
         }
     }
 
+    /// Returns all pending timelocked governance actions.
+    pub fn get_pending_governance_actions(&self) -> Vec<PendingValue<TimelockedAction>> {
+        self.governance_timelocks
+            .pending_actions()
+            .into_iter()
+            .collect()
+    }
+
     /// Returns total assets under management = idle balance + sum of market principals.
     pub fn get_total_assets(&self) -> U128 {
         self.aum.get_total_assets(self)
@@ -1107,7 +1113,12 @@ impl Contract {
         let mut group_remaining: BTreeMap<CapGroupId, u128> = self
             .cap_groups
             .keys()
-            .map(|id| (id.clone(), self.cap_group_room_remaining_at(id, total_assets)))
+            .map(|id| {
+                (
+                    id.clone(),
+                    self.cap_group_room_remaining_at(id, total_assets),
+                )
+            })
             .collect();
 
         for market in self.supply_queue.iter() {

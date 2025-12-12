@@ -187,6 +187,11 @@ pub trait VaultExt {
     fn revoke_pending_sentinel();
     fn set_skim_recipient(account: AccountId);
     fn set_fees(fees: Fees<U128>);
+    fn accept_fees();
+    fn revoke_pending_fees();
+    fn set_restrictions(restrictions: Option<Restrictions>);
+    fn accept_restrictions();
+    fn revoke_pending_restrictions();
     fn submit_timelock(new_timelock_ns: U64);
     fn accept_timelock();
     fn revoke_pending_timelock();
@@ -231,6 +236,7 @@ pub trait VaultExt {
     fn get_cap_groups() -> Vec<(CapGroupId, CapGroupRecord)>;
     fn get_fee_anchor_timestamp() -> U64;
     fn get_fees() -> Fees<U128>;
+    fn get_restrictions() -> Option<Restrictions>;
 }
 
 // Add a 20% buffer to a gas estimate
@@ -818,9 +824,27 @@ pub enum Event {
     #[event_version("1.0.0")]
     PerformanceFeeSet { fee: U128 },
     #[event_version("1.0.0")]
+    RestrictionsSet {
+        restrictions: Option<Restrictions>,
+    },
+    #[event_version("1.0.0")]
     TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
     TimelockChangeSubmitted { valid_at_ns: U64 },
+    #[event_version("1.0.0")]
+    FeesChangeSubmitted {
+        fees: Fees<U128>,
+        valid_at_ns: u64,
+    },
+    #[event_version("1.0.0")]
+    FeesChangeRevoked,
+    #[event_version("1.0.0")]
+    RestrictionsChangeSubmitted {
+        restrictions: Option<Restrictions>,
+        valid_at_ns: u64,
+    },
+    #[event_version("1.0.0")]
+    RestrictionsChangeRevoked,
     #[event_version("1.0.0")]
     PendingTimelockRevoked,
 

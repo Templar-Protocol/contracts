@@ -25,7 +25,9 @@ Vault deployments will eventually be immutable (no contract upgrades). Until the
 - No dedicated liquidity adapter: NEAR has few maintained borrowing venues; Templar is already the primary venue we integrate. Keeping idle as the liquidity buffer plus allocator-driven routes avoids extra adapter indirection with little marginal benefit.
 - Liquidity adapters are an Ethereum-competition artifact: Morpho needs a generic adapter layer to juggle many venues on mainnet; on NEAR the venue set is small and curated, so we avoid that indirection.
 - Auto-AUM / realAssets: Morpho adapters push `realAssets`; here we expose `refresh_markets` (permissionless with a configurable throttle, defaults to ~30s, empty list = all markets) to pull live principals and update stored AUM. A pure `realAssets` view across markets isn’t feasible in NEAR’s async model without paid calls and increasing gas/promise complexity.
-- Policy gates (`Gate::enforce_policy`): the guardian/owner can set optional `Restrictions` (`Paused` / `BlackList` / `WhiteList`) via `set_restrictions`, and they are enforced on user-facing flows.
+- Policy gates (`Gate::enforce_policy`): privileged roles can set optional `Restrictions` (`Paused` / `BlackList` / `WhiteList`) via `set_restrictions`, and they are enforced on user-facing flows.
+  - Tightening restrictions (including emergency `Paused`) applies immediately (guardian/sentinel/owner).
+  - Unpause/relax actions are timelocked and must be finalized with `accept_restrictions` (cancel via `revoke_pending_restrictions`).
   - `Gate::enforce_policy(account)` reads the current `restrictions` and panics if `restrictions.is_restricted(account)` returns a reason.
   - It is called on deposits (the `sender_id` of `ft_transfer_call` / `mt_transfer_call`), on withdraw/redeem (both the caller and the withdrawal `receiver`), and on share-token transfers (`ft_transfer` / `ft_transfer_call`) for both sender and receiver.
   - Share transfers are additionally blocked to any vault-managed market account, and internal settlement transfers can temporarily bypass the share-transfer gate so escrow/refunds can still be processed.
@@ -292,7 +294,7 @@ Important
 
 ## Fee policy
 
-- set_fees(fees) updates performance/management rates and recipients atomically (capped; accrues under the prior configuration first).
+- set_fees(fees) updates performance/management rates and recipients atomically (capped; accrues under the prior configuration first). Fee decreases apply immediately; fee increases and any recipient change are timelocked and must be finalized via accept_fees (cancel via revoke_pending_fees).
 - internal_accrue_fee() mints fee shares to fee_recipient and updates last_total_assets.
 - Conversions use compute_effective_totals to simulate fee shares and apply virtual offsets.
 
@@ -307,7 +309,8 @@ Important
   - User: `redeem(shares, receiver)` or `withdraw(amount, receiver)`
   - Allocator/Curator/Owner: `execute_withdrawal(route)`, `execute_market_withdrawal(op_id, index, batch_limit)`, `unbrick()`
 - Governance:
-  - Owner/Curator/Guardian as listed above.
+  - Owner: `set_fees`, `accept_fees`, `revoke_pending_fees`, plus market/timelock admin.
+  - Guardian/Sentinel/Owner: `set_restrictions` (tightening immediate) and `revoke_pending_restrictions`; Guardian/Owner: `accept_restrictions`.
 
 ## API notes (for integrators/keepers)
 
