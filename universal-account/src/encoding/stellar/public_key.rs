@@ -1,19 +1,21 @@
 use std::{ops::Deref, str::FromStr};
 
-use near_sdk::{near, serde};
+use near_sdk::{
+    near,
+    serde::{Deserialize, Serialize},
+};
 use stellar_strkey::ed25519::PublicKey as StellarPublicKey;
 
 type ByteEncoding = [u8; 32];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(
+    crate = "near_sdk::serde",
+    from = "StellarPublicKey",
+    into = "StellarPublicKey"
+)]
 #[near(serializers = [borsh])]
 pub struct PublicKey(pub ByteEncoding);
-
-impl PublicKey {
-    pub fn verify(&self, message: &[u8], signature: &crate::encoding::ed25519::Signature) -> bool {
-        near_sdk::env::ed25519_verify(signature.as_ref(), message, &self.0)
-    }
-}
 
 impl std::fmt::Display for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -73,24 +75,6 @@ impl FromStr for PublicKey {
     }
 }
 
-impl serde::Serialize for PublicKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        StellarPublicKey(self.0).serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PublicKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(Self(StellarPublicKey::deserialize(deserializer)?.0))
-    }
-}
-
 impl schemars::JsonSchema for PublicKey {
     fn schema_name() -> String {
         "PublicKey".to_string()
@@ -101,5 +85,122 @@ impl schemars::JsonSchema for PublicKey {
         schema.metadata().description = Some("Stellar public key".to_string());
         schema.string().pattern = Some("^G[A-Z2-7]{55}$".to_string());
         schema.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::serde_json;
+    use soroban_client::keypair::{Keypair, KeypairBehavior};
+
+    use super::*;
+
+    fn public_key(keypair: &Keypair) -> super::PublicKey {
+        super::PublicKey(keypair.raw_public_key().clone().try_into().unwrap())
+    }
+
+    #[test]
+    fn borsh_serialization() {
+        let keypair = Keypair::random().unwrap();
+        let keypair_2 = Keypair::random().unwrap();
+        let pubkey = public_key(&keypair);
+        let pubkey_2 = public_key(&keypair_2);
+
+        eprintln!("{pubkey}");
+
+        assert_ne!(pubkey, pubkey_2);
+
+        let borsh_ser = borsh::to_vec(&pubkey).unwrap();
+        let borsh_ser_2 = borsh::to_vec(&pubkey_2).unwrap();
+
+        assert_ne!(borsh_ser, borsh_ser_2);
+
+        let parsed: super::PublicKey = borsh::from_slice(&borsh_ser).unwrap();
+        let parsed_2: super::PublicKey = borsh::from_slice(&borsh_ser_2).unwrap();
+
+        assert_ne!(parsed, parsed_2);
+
+        assert_eq!(pubkey, parsed);
+        assert_eq!(pubkey_2, parsed_2);
+    }
+
+    #[test]
+    fn json_serialization() {
+        let keypair = Keypair::random().unwrap();
+        let keypair_2 = Keypair::random().unwrap();
+        let pubkey = public_key(&keypair);
+        let pubkey_2 = public_key(&keypair_2);
+
+        assert_ne!(pubkey, pubkey_2);
+
+        let json_ser = serde_json::to_string(&pubkey).unwrap();
+        let json_ser_2 = serde_json::to_string(&pubkey_2).unwrap();
+
+        assert_ne!(json_ser, json_ser_2);
+
+        let parsed: super::PublicKey = serde_json::from_str(&json_ser).unwrap();
+        let parsed_2: super::PublicKey = serde_json::from_str(&json_ser_2).unwrap();
+
+        assert_ne!(parsed, parsed_2);
+
+        assert_eq!(pubkey, parsed);
+        assert_eq!(pubkey_2, parsed_2);
+    }
+
+    #[test]
+    fn to_from_string() {
+        let keypair = Keypair::random().unwrap();
+        let pubkey = public_key(&keypair);
+        let pk_str = pubkey.to_string();
+
+        let parsed = super::PublicKey::from_str(&pk_str).unwrap();
+
+        assert_eq!(parsed, pubkey);
+
+        let keypair_2 = Keypair::random().unwrap();
+        let pk_str_2 = public_key(&keypair_2).to_string();
+
+        assert_ne!(pk_str, pk_str_2);
+    }
+
+    #[test]
+    fn from_str() {
+        let s = "GDCXO2FCO2KMI2NH23WSBAY5WZDE3LJUIZLKMBD4YIQEA4EA7LCJXPJP";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "Invalid"]
+    fn from_str_fail_lowercase() {
+        let s = "gdcxo2fco2kmi2nh23wsbay5wzde3ljuizlkmbd4yiqea4ea7lcjxpjp";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "Invalid"]
+    fn from_str_fail_long() {
+        let s = "GDCXO2FCO2KMI2NH23WSBAY5WZDE3LJUIZLKMBD4YIQEA4EA7LCJXPJPA";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "Invalid"]
+    fn from_str_fail_short() {
+        let s = "GDCXO2FCO2KMI2NH23WSBAY5WZDE3LJUIZLKMBD4YIQEA4EA7LCJXPJ";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "Invalid"]
+    fn from_str_fail_character() {
+        let s = "GDCXO2FCO2KMI2NH23WSBAY5WZDE3LJUIZLKMBD4YIQEA4EA7LCJXPJ1";
+        super::PublicKey::from_str(s).unwrap();
+    }
+
+    #[test]
+    #[should_panic = "Invalid"]
+    fn from_str_fail_prefix() {
+        let s = "DGCXO2FCO2KMI2NH23WSBAY5WZDE3LJUIZLKMBD4YIQEA4EA7LCJXPJP";
+        super::PublicKey::from_str(s).unwrap();
     }
 }

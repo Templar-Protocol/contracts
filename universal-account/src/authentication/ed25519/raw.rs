@@ -1,4 +1,4 @@
-use near_sdk::near;
+use near_sdk::{env, near};
 
 use crate::{
     authentication::{HashForSigning, Key},
@@ -23,10 +23,10 @@ impl std::fmt::Display for VerifyKey {
 impl<T> Key<Message<T>> for VerifyKey {
     fn check_signature(
         &self,
-        message: &super::MessageWithSignature<Message<T>>,
+        mws: &super::MessageWithSignature<Message<T>>,
     ) -> Result<(), super::CheckSignatureError> {
-        (self.0)
-            .verify(&message.message.preimage_for_signing(), &message.signature)
+        let preimage = mws.message.preimage_for_signing();
+        env::ed25519_verify(&mws.signature, &preimage, &self.0)
             .then_some(())
             .ok_or(super::CheckSignatureError::InvalidSignature)
     }
