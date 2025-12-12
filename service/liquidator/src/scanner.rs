@@ -108,7 +108,7 @@ impl MarketScanner {
         tracing::info!(
             market = %self.market,
             total_positions = all_positions.len(),
-            "Fetched all borrow positions"
+            "Fetched borrow positions"
         );
 
         Ok(all_positions)
