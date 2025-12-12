@@ -149,7 +149,6 @@ impl BorrowPosition {
     ) -> CollateralAssetAmount {
         let liability = self.get_total_borrow_asset_liability();
         if liability.is_zero() {
-            // No liability
             return CollateralAssetAmount::zero();
         }
 
