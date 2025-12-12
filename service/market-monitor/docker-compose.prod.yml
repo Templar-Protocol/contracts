@@ -1,6 +1,10 @@
 services:
   market-monitor:
     image: templar-market-monitor:latest
+    pull_policy: never
+    build:
+      context: ../..
+      dockerfile: service/market-monitor/Dockerfile
     container_name: templar-market-monitor-prod
     restart: always
 
