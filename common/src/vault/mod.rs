@@ -28,6 +28,14 @@ pub type ActualIdx = u32;
 pub type AllocationWeights = Vec<(AccountId, U128)>;
 pub type AllocationPlan = Vec<(AccountId, u128)>;
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub struct RealAssetsReport {
+    pub total_assets: U128,
+    pub per_market: Vec<(AccountId, U128)>,
+    pub refreshed_at: U64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct CapGroupId(pub String);
@@ -824,18 +832,13 @@ pub enum Event {
     #[event_version("1.0.0")]
     PerformanceFeeSet { fee: U128 },
     #[event_version("1.0.0")]
-    RestrictionsSet {
-        restrictions: Option<Restrictions>,
-    },
+    RestrictionsSet { restrictions: Option<Restrictions> },
     #[event_version("1.0.0")]
     TimelockSet { seconds: U64 },
     #[event_version("1.0.0")]
     TimelockChangeSubmitted { valid_at_ns: U64 },
     #[event_version("1.0.0")]
-    FeesChangeSubmitted {
-        fees: Fees<U128>,
-        valid_at_ns: u64,
-    },
+    FeesChangeSubmitted { fees: Fees<U128>, valid_at_ns: u64 },
     #[event_version("1.0.0")]
     FeesChangeRevoked,
     #[event_version("1.0.0")]
@@ -1038,6 +1041,13 @@ pub enum Event {
 
     #[event_version("1.0.0")]
     VaultBalance { amount: U128 },
+}
+
+#[near(serializers = [borsh])]
+#[derive(Debug, Clone, Default)]
+pub struct FeeAccrualAnchor {
+    pub total_assets: u128,
+    pub timestamp_ns: u64,
 }
 
 #[derive(Default)]

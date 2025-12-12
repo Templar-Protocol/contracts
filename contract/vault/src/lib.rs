@@ -39,13 +39,13 @@ use templar_common::{
             Number, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
-        Fee, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState,
-        PendingValue, PendingWithdrawal, QueueAction, QueueStatus, Reason, RefreshingState,
-        TimestampNs, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase, WithdrawingState,
-        AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
-        SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
-        WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
+        Fee, FeeAccrualAnchor, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState,
+        PayoutState, PendingValue, PendingWithdrawal, QueueAction, QueueStatus, RealAssetsReport,
+        Reason, RefreshingState, TimestampNs, UnbrickPhase, VaultConfiguration,
+        WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
+        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
+        SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
 
@@ -66,13 +66,6 @@ mod test_utils;
 /// Internal storage keys used by persistent collections.
 pub enum StorageKey {
     PendingWithdrawals,
-}
-
-#[near(serializers = [borsh])]
-#[derive(Debug, Clone, Default)]
-pub struct FeeAccrualAnchor {
-    pub total_assets: u128,
-    pub timestamp_ns: u64,
 }
 
 #[derive(BorshStorageKey)]
@@ -334,7 +327,8 @@ impl Contract {
             let pending = self
                 .pending_withdrawals
                 .get(&id)
-                .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
+                .unwrap_or_else(|| panic_with_message("pending vanished unexpectedly"));
+
             Event::WithdrawProgress {
                 phase: WithdrawProgressPhase::ExecutionStarted,
                 op_id: None,
@@ -351,6 +345,7 @@ impl Contract {
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
 
+            // Skip dust request to avoid wedging the queue
             if pending.expected_assets == 0 {
                 Event::WithdrawProgress {
                     phase: WithdrawProgressPhase::SkippedDust,
@@ -364,7 +359,6 @@ impl Contract {
                     requested_at: None,
                 }
                 .emit();
-                // Skip dust request to avoid wedging the queue
                 self.pop_head();
                 return self.execute_withdrawal(route);
             }
@@ -387,7 +381,8 @@ impl Contract {
     }
 
     /// Allocator-only. Progress the current Withdrawing op by executing the market at `market_index`
-    /// from the `withdraw_route`. Use when offchain signals the vault is next in the market queue.
+    /// from the `withdraw_route`.
+    /// Use when offchain signals the vault is next in the market queue.
     pub fn execute_market_withdrawal(
         &mut self,
         op_id: U64,
@@ -505,8 +500,8 @@ impl Contract {
         )
     }
 
-    /// Permissionless (throttled). Refresh principals from markets and return
-    /// a live assets report; updates stored `market_supply`.
+    /// Permissionless and throttled.
+    /// Refresh principals from markets and return a live assets report; updates stored `market_supply`.
     /// Pass an empty `markets` vector to refresh all configured markets.
     pub fn refresh_markets(&mut self, markets: Vec<AccountId>) -> PromiseOrValue<RealAssetsReport> {
         self.ensure_idle();
@@ -542,66 +537,6 @@ impl Contract {
         });
 
         self.refresh_step(op_id)
-    }
-
-    fn refresh_targets(&self, mut markets: Vec<AccountId>) -> Vec<AccountId> {
-        if markets.is_empty() {
-            return self.markets.keys().cloned().collect();
-        }
-        markets.retain(|m| self.markets.contains_key(m));
-        markets
-    }
-
-    fn refresh_step(&mut self, op_id: u64) -> PromiseOrValue<RealAssetsReport> {
-        let (index, plan) = match &self.op_state {
-            OpState::Refreshing(RefreshingState {
-                op_id: cur,
-                index,
-                plan,
-            }) if *cur == op_id => (*index, plan.clone()),
-            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
-        };
-
-        if index as usize >= plan.len() {
-            let report = self.build_real_assets_report();
-            Event::RefreshCompleted {
-                op_id: op_id.into(),
-                markets: plan,
-                total_assets: report.total_assets,
-                refreshed_at: report.refreshed_at,
-            }
-            .emit();
-            self.op_state = OpState::Idle;
-            return PromiseOrValue::Value(report);
-        }
-
-        let market = plan[index as usize].clone();
-        let before = self.principal_of(&market);
-
-        PromiseOrValue::Promise(
-            ext_market::ext(market.clone())
-                .with_static_gas(GET_SUPPLY_POSITION_GAS)
-                .with_unused_gas_weight(0)
-                .get_supply_position(env::current_account_id())
-                .then(
-                    Self::ext(env::current_account_id())
-                        .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
-                        .refresh_01_settle(market, op_id, index, U128(before)),
-                ),
-        )
-    }
-
-    fn build_real_assets_report(&self) -> RealAssetsReport {
-        let per_market = self
-            .markets
-            .iter()
-            .map(|(m, rec)| (m.clone(), U128(rec.principal)))
-            .collect();
-        RealAssetsReport {
-            total_assets: self.get_total_assets(),
-            per_market,
-            refreshed_at: env::block_timestamp().into(),
-        }
     }
 
     /// Allocator/Curator/Owner only. Unbricks the current in-flight withdrawal or payout:
@@ -747,49 +682,6 @@ impl Contract {
                 )
             }
         }
-    }
-
-    fn queue_tail(&self) -> u64 {
-        self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
-    }
-
-    fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
-        let tail = self.queue_tail();
-        if self.next_withdraw_to_execute < tail {
-            Event::WithdrawQueueStatus {
-                status: QueueStatus::NextFound,
-                id: Some(self.next_withdraw_to_execute.into()),
-            }
-            .emit();
-            Some(self.next_withdraw_to_execute)
-        } else {
-            Event::WithdrawQueueStatus {
-                status: QueueStatus::Empty,
-                id: None,
-            }
-            .emit();
-            None
-        }
-    }
-
-    fn pop_head(&mut self) {
-        let id = self.next_withdraw_to_execute;
-        let removed = self.pending_withdrawals.remove(&id);
-        require!(removed.is_some(), "queue corrupt: head missing");
-        self.next_withdraw_to_execute = id.saturating_add(1);
-        Event::WithdrawQueueUpdate {
-            action: QueueAction::Dequeued,
-            id: id.into(),
-        }
-        .emit();
-    }
-
-    fn park_head_for_retry(&mut self) {
-        Event::WithdrawQueueUpdate {
-            action: QueueAction::Parked,
-            id: self.next_withdraw_to_execute.into(),
-        }
-        .emit();
     }
 }
 
@@ -1026,16 +918,45 @@ impl Contract {
             _ => None,
         }
     }
+
+    pub fn queue_tail(&self) -> u64 {
+        self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
+    }
+
+    pub fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
+        let tail = self.queue_tail();
+        if self.next_withdraw_to_execute < tail {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::NextFound,
+                id: Some(self.next_withdraw_to_execute.into()),
+            }
+            .emit();
+            Some(self.next_withdraw_to_execute)
+        } else {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::Empty,
+                id: None,
+            }
+            .emit();
+            None
+        }
+    }
+
+    pub fn build_real_assets_report(&self) -> RealAssetsReport {
+        let per_market = self
+            .markets
+            .iter()
+            .map(|(m, rec)| (m.clone(), U128(rec.principal)))
+            .collect();
+        RealAssetsReport {
+            total_assets: self.get_total_assets(),
+            per_market,
+            refreshed_at: env::block_timestamp().into(),
+        }
+    }
 }
 
 /* ----- Private Helpers ----- */
-#[derive(Debug, Clone)]
-#[near(serializers = [borsh, json])]
-pub struct RealAssetsReport {
-    pub total_assets: U128,
-    pub per_market: Vec<(AccountId, U128)>,
-    pub refreshed_at: U64,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleCoverage {
@@ -1742,6 +1663,73 @@ impl Contract {
             remaining_unmet: amount.saturating_sub(used_idle),
             collected_from_idle: used_idle,
         }
+    }
+
+    fn pop_head(&mut self) {
+        let id = self.next_withdraw_to_execute;
+        let removed = self.pending_withdrawals.remove(&id);
+        require!(removed.is_some(), "queue corrupt: head missing");
+        self.next_withdraw_to_execute = id.saturating_add(1);
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Dequeued,
+            id: id.into(),
+        }
+        .emit();
+    }
+
+    fn park_head_for_retry(&mut self) {
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Parked,
+            id: self.next_withdraw_to_execute.into(),
+        }
+        .emit();
+    }
+
+    fn refresh_targets(&self, mut markets: Vec<AccountId>) -> Vec<AccountId> {
+        if markets.is_empty() {
+            return self.markets.keys().cloned().collect();
+        }
+        markets.retain(|m| self.markets.contains_key(m));
+        markets
+    }
+
+    fn refresh_step(&mut self, op_id: u64) -> PromiseOrValue<RealAssetsReport> {
+        let (index, plan) = match &self.op_state {
+            OpState::Refreshing(RefreshingState {
+                op_id: cur,
+                index,
+                plan,
+            }) if *cur == op_id => (*index, plan.clone()),
+            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
+        };
+
+        if index as usize >= plan.len() {
+            let report = self.build_real_assets_report();
+            Event::RefreshCompleted {
+                op_id: op_id.into(),
+                markets: plan,
+                total_assets: report.total_assets,
+                refreshed_at: report.refreshed_at,
+            }
+            .emit();
+            self.op_state = OpState::Idle;
+            return PromiseOrValue::Value(report);
+        }
+
+        let market = plan[index as usize].clone();
+        let before = self.principal_of(&market);
+
+        PromiseOrValue::Promise(
+            ext_market::ext(market.clone())
+                .with_static_gas(GET_SUPPLY_POSITION_GAS)
+                .with_unused_gas_weight(0)
+                .get_supply_position(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
+                        .refresh_01_settle(market, op_id, index, U128(before)),
+                ),
+        )
     }
 }
 
