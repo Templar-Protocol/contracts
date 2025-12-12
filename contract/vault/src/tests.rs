@@ -493,7 +493,7 @@ fn reallocate_accrues_pending_fee_shares() {
 
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    c.performance_fee = Wad::one() / 10;
+    c.fees.performance.fee = Wad::one() / 10;
     c.idle_balance += 500;
 
     let market = mk(9204);
@@ -501,11 +501,12 @@ fn reallocate_accrues_pending_fee_shares() {
         cap: U128(10_000),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
     c.markets.insert(market.clone(), cfg.into());
     c.supply_queue.insert(market.clone());
 
-    let fee_recipient = c.fee_recipient.clone();
+    let fee_recipient = c.fees.performance.recipient.clone();
     let balance_before = c.balance_of(&fee_recipient);
     let assets_before = c.get_total_assets().0;
 
@@ -522,7 +523,8 @@ fn reallocate_accrues_pending_fee_shares() {
         "reallocate should mint fee shares when profit exists before planning allocation",
     );
     assert_eq!(
-        c.last_total_assets, assets_before,
+        c.get_last_total_assets().0,
+        assets_before,
         "accrual should snapshot assets before allocation bookkeeping",
     );
 }
@@ -1310,7 +1312,10 @@ fn refresh_markets_updates_principals_and_emits_events() {
     assert!(matches!(c.op_state, OpState::Idle));
 
     let logs = near_sdk::test_utils::get_logs().join("\n");
-    assert!(logs.contains("refresh_started"), "missing refresh start event logs");
+    assert!(
+        logs.contains("refresh_started"),
+        "missing refresh start event logs"
+    );
     assert!(
         logs.contains("refresh_completed"),
         "missing refresh completed event logs"
@@ -2514,7 +2519,7 @@ fn cap_group_membership_moves_principal() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    c.governance_timelocks = Timelocks::new(0, 0, 0, 0);
+    c.governance_timelocks = Timelocks::new(0, 0, 0, 0, 0);
 
     let group_a = CapGroupId("ga".to_string());
     let group_b = CapGroupId("gb".to_string());
@@ -4106,10 +4111,10 @@ fn execute_withdrawal_accrues_fee_shares() {
 
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    c.performance_fee = Wad::one() / 10;
+    c.fees.performance.fee = Wad::one() / 10;
     c.idle_balance += 250;
 
-    let fee_recipient = c.fee_recipient.clone();
+    let fee_recipient = c.fees.performance.recipient.clone();
     let balance_before = c.balance_of(&fee_recipient);
 
     let res = c.execute_withdrawal(vec![]);
@@ -4124,8 +4129,8 @@ fn execute_withdrawal_accrues_fee_shares() {
         "execute_withdrawal should mint pending performance fees",
     );
     assert_eq!(
-        c.last_total_assets,
-        c.get_total_assets().0,
+        c.get_last_total_assets(),
+        c.get_total_assets(),
         "last_total_assets should sync with current assets after accrual",
     );
 }
