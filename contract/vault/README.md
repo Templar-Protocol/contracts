@@ -26,8 +26,10 @@ Vault deployments will eventually be immutable (no contract upgrades). Until the
 - Liquidity adapters are an Ethereum-competition artifact: Morpho needs a generic adapter layer to juggle many venues on mainnet; on NEAR the venue set is small and curated, so we avoid that indirection.
 - Auto-AUM / realAssets: Morpho adapters push `realAssets`; here we expose `refresh_markets` (permissionless with a configurable throttle, defaults to ~30s, empty list = all markets) to pull live principals and update stored AUM. A pure `realAssets` view across markets isn’t feasible in NEAR’s async model without paid calls and increasing gas/promise complexity.
 - Policy gates (`Gate::enforce_policy`): privileged roles can set optional `Restrictions` (`Paused` / `BlackList` / `WhiteList`) via `set_restrictions`, and they are enforced on user-facing flows.
-  - Tightening restrictions (including emergency `Paused`) applies immediately (guardian/sentinel/owner).
-  - Unpause/relax actions are timelocked and must be finalized with `accept_restrictions` (cancel via `revoke_pending_restrictions`).
+  - Operational guidance: incident response should use `Restrictions::Paused` (fast, global, and unambiguous) rather than per-account blacklisting.
+  - `BlackList` / `WhiteList` are governance/policy controls and are censorship-sensitive (they can block deposits, withdrawals, and share transfers); treat them as deliberative configuration, not a rapid-response tool.
+  - Tightening restrictions (including emergency `Paused` and adding to `BlackList`) applies immediately (guardian/sentinel/owner).
+  - Unpause/relax actions (including removing from `BlackList`) are timelocked and must be finalized with `accept_restrictions` (cancel via `revoke_pending_restrictions`).
   - `Gate::enforce_policy(account)` reads the current `restrictions` and panics if `restrictions.is_restricted(account)` returns a reason.
   - It is called on deposits (the `sender_id` of `ft_transfer_call` / `mt_transfer_call`), on withdraw/redeem (both the caller and the withdrawal `receiver`), and on share-token transfers (`ft_transfer` / `ft_transfer_call`) for both sender and receiver.
   - Share transfers are additionally blocked to any vault-managed market account, and internal settlement transfers can temporarily bypass the share-transfer gate so escrow/refunds can still be processed.
