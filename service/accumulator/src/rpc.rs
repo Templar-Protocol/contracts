@@ -23,7 +23,7 @@ use near_jsonrpc_client::{
         send_tx::RpcSendTransactionRequest,
         tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
     },
-    JsonRpcClient, NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL,
+    JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
@@ -122,8 +122,8 @@ impl Network {
     #[must_use]
     pub fn rpc_url(&self) -> &str {
         match self {
-            Network::Mainnet => NEAR_MAINNET_RPC_URL,
-            Network::Testnet => NEAR_TESTNET_RPC_URL,
+            Network::Mainnet => "https://rpc.mainnet.fastnear.com",
+            Network::Testnet => "https://rpc.testnet.fastnear.com",
         }
     }
 }
@@ -166,6 +166,39 @@ pub async fn get_access_key_data(
     let block_hash = access_key_query_response.block_hash;
 
     Ok((nonce, block_hash))
+}
+
+/// Check if an account ID exists on NEAR.
+///
+/// # Arguments
+///
+/// * `client` - JSON-RPC client instance
+/// * `account_id` - Account ID to check
+///
+/// # Returns
+///
+/// True if the account exists, false otherwise
+#[instrument(skip(client), level = "debug")]
+pub async fn account_exists(client: &JsonRpcClient, account_id: &AccountId) -> RpcResult<bool> {
+    let result = client
+        .call(RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: QueryRequest::ViewAccount {
+                account_id: account_id.clone(),
+            },
+        })
+        .await;
+
+    match result {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if e.handler_error().is_some() {
+                Ok(false)
+            } else {
+                Err(RpcError::ViewMethodError(e))
+            }
+        }
+    }
 }
 
 /// Serialize and encode data for NEAR contract calls.
@@ -385,7 +418,16 @@ pub async fn list_all_deployments(
         .try_concat()
         .await?;
 
-    Ok(all_markets)
+    let existing = futures::stream::iter(all_markets.into_iter())
+        .filter(|market_id| {
+            let client = client.clone();
+            let market_id = market_id.clone();
+            async move { account_exists(&client, &market_id).await.unwrap_or(false) }
+        })
+        .collect::<Vec<AccountId>>()
+        .await;
+
+    Ok(existing)
 }
 
 #[cfg(test)]
@@ -399,6 +441,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use wiremock::matchers::body_string_contains;
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, Request, ResponseTemplate,
@@ -505,6 +548,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/"))
+            .and(body_string_contains("list_deployments"))
             .respond_with(move |req: &Request| {
                 let (params, id) = parse_query_request(req);
                 assert_eq!(
@@ -527,6 +571,25 @@ mod tests {
                 };
                 let payload = call_result_response(near_sdk::serde_json::to_vec(&markets).unwrap());
                 ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("view_account"))
+            .respond_with(move |req: &Request| {
+                let (_params, id) = parse_query_request(req);
+                let response = json!({
+                    "amount": "4686230356236922693424338633",
+                    "block_hash": "5dFRkorSHHyeMc77auarw2jJ67CAnBiExh3bbhNStfC9",
+                    "block_height": 175_548_555,
+                    "code_hash": "11111111111111111111111111111111",
+                    "locked": "0",
+                    "storage_paid_at": 0,
+                    "storage_usage": 28677,
+                });
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&response, &id))
             })
             .mount(&server)
             .await;

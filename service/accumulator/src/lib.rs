@@ -33,6 +33,9 @@ pub struct Args {
     /// Network to run accumulator on
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
+    /// Custom RPC URL (overrides default network RPC)
+    #[arg(long, env = "RPC_URL")]
+    pub rpc_url: Option<String>,
     /// Timeout for transactions
     #[arg(short, long, env = "TIMEOUT", default_value_t = 60)]
     pub timeout: u64,
