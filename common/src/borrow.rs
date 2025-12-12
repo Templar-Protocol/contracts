@@ -97,13 +97,13 @@ impl BorrowPosition {
 
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         self.borrow_asset_principal
-            + (self.borrow_asset_in_flight)
-            + (self.interest.get_total())
-            + (self.fees)
+            + self.borrow_asset_in_flight
+            + self.interest.get_total()
+            + self.fees
     }
 
     pub fn get_total_collateral_amount(&self) -> CollateralAssetAmount {
-        self.collateral_asset_deposit + (self.liquidation_lock)
+        self.collateral_asset_deposit + self.liquidation_lock
     }
 
     pub fn exists(&self) -> bool {

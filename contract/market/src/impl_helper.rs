@@ -320,7 +320,7 @@ impl Contract {
 
         let snapshot = self.snapshot();
         let mut borrow_position = self
-            .borrow_position_guard(snapshot, account_id)
+            .borrow_position_guard(snapshot, account_id.clone())
             .unwrap_or_else(|| {
                 templar_common::panic_with_message(
                     "Invariant violation: Liquidation of nonexistent position.",
@@ -329,6 +329,12 @@ impl Contract {
 
         let proof = borrow_position.accumulate_interest();
         borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
+
+        drop(borrow_position);
+        if self.cleanup_borrow_position(&account_id) {
+            self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
+        }
+
         return_style.serialize(initial_liquidation.refund)
     }
 
