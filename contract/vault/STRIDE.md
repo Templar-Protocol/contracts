@@ -19,8 +19,8 @@ flowchart LR
 
   %% On-chain components
   subgraph NEAR[NEAR Blockchain]
-    token[Underlying Token Contract\n(NEP-141 or NEP-245)]
-    vault[Vault Contract\n+ Share Token (NEP-141)]
+    token[Underlying Token Contract NEP-141 or NEP-245]
+    vault[Vault Contract Share Token NEP-141]
     marketA[Market Contract A]
     marketB[Market Contract B]
   end
@@ -28,13 +28,13 @@ flowchart LR
   receiver[Withdrawal Receiver]
 
   %% Deposit flow
-  user -->|1. call ft_transfer_call/mt_transfer_call (msg=Supply)| token
+  user -->|1. call ft_transfer_call/mt_transfer_call msg=Supply| token
   token -->|2. tokens + callback ft_on_transfer/mt_on_transfer| vault
   vault -->|3. mint shares to sender_id| user
 
   %% Allocation flow (keeper-driven)
   keeper -->|4. call allocate/reallocate| vault
-  vault -->|5. ft_transfer_call (Supply) to market| token
+  vault -->|5. ft_transfer_call Supply to market| token
   token -->|6. tokens delivered + market receiver hook| marketA
   marketA -->|7. get_supply_position readback| vault
 
@@ -43,9 +43,9 @@ flowchart LR
   vault -->|9. escrow shares + enqueue PendingWithdrawal| vault
 
   %% Withdrawal execution (keeper-driven)
-  keeper -->|10. call execute_withdrawal(route)| vault
+  keeper -->|10. call execute_withdrawal route| vault
   vault -->|11. create_supply_withdrawal_request| marketA
-  keeper -->|12. call execute_market_withdrawal(op_id, idx)| vault
+  keeper -->|12. call execute_market_withdrawal op_id, idx| vault
   vault -->|13. execute_next_supply_withdrawal_request| marketA
   marketA -->|14. returns underlying via token transfer| token
   token -->|15. underlying arrives at vault| vault
@@ -53,7 +53,7 @@ flowchart LR
   token -->|17. transfer underlying to receiver| receiver
 
   %% Observability
-  gov -->|18. governance calls (caps/fees/restrictions)| vault
+  gov -->|18. governance calls caps/fees/restrictions| vault
   vault -->|19. structured Event logs| indexer
 ```
 
