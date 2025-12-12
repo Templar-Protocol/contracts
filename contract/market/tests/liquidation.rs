@@ -173,6 +173,7 @@ async fn successful_liquidation_good_debt_under_mcr(
     )
     .await;
     let (liquidate, price) = c.liquidatable_collateral_fmv(borrow_user.id()).await;
+    eprintln!("Liquidating {liquidate} of {collateral_amount}");
     let price = (u128::from(price) * fmv_frac)
         .to_u128_ceil()
         .unwrap()
@@ -223,8 +224,13 @@ async fn successful_liquidation_good_debt_under_mcr(
         },
         async {
             let prices = c.get_prices().await;
-            let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
-            assert!(status.is_healthy());
+            let status = c.get_borrow_status(borrow_user.id(), prices).await;
+            if u128::from(liquidate) == collateral_amount {
+                // 100% liquidated -> position deleted
+                assert_eq!(status, None);
+            } else {
+                assert!(status.unwrap().is_healthy());
+            }
         },
     );
 }
