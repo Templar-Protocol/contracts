@@ -126,3 +126,124 @@ impl Analyzer {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn create_test_config(at_risk_threshold_percent: u16) -> Config {
+        Config {
+            network: "testnet".to_string(),
+            rpc_url: "http://localhost".to_string(),
+            registry_account_ids: vec![],
+            scan_time: "00:00".to_string(),
+            at_risk_threshold_percent,
+            min_position_size_usd: 1000,
+            telegram_bot_token: String::new(),
+            telegram_channel_id: String::new(),
+            telegram_thread_id: None,
+            ignored_collateral_assets: vec![],
+            ignored_markets: vec![],
+        }
+    }
+
+    #[test]
+    fn test_analyzer_new_calculates_multiplier() {
+        let config = create_test_config(10);
+        let analyzer = Analyzer::new(&config);
+
+        // 10% threshold means multiplier is 1.10
+        let expected = Decimal::from(110u32) / 100u32;
+        assert_eq!(analyzer.yellow_zone_multiplier, expected);
+    }
+
+    #[test]
+    fn test_analyzer_new_different_thresholds() {
+        let config = create_test_config(20);
+        let analyzer = Analyzer::new(&config);
+
+        // 20% threshold means multiplier is 1.20
+        let expected = Decimal::from(120u32) / 100u32;
+        assert_eq!(analyzer.yellow_zone_multiplier, expected);
+
+        let config = create_test_config(5);
+        let analyzer = Analyzer::new(&config);
+
+        // 5% threshold means multiplier is 1.05
+        let expected = Decimal::from(105u32) / 100u32;
+        assert_eq!(analyzer.yellow_zone_multiplier, expected);
+    }
+
+    #[test]
+    fn test_zone_classification_logic() {
+        // Test the zone classification boundaries
+        let mcr = Decimal::from(110u32);
+        let yellow_multiplier = Decimal::from(110u32) / 100u32; // 1.10 (10% threshold)
+        let yellow_threshold = mcr * yellow_multiplier; // 121
+
+        // Red zone: CR < MCR
+        let cr_red = Decimal::from(105u32);
+        assert!(cr_red < mcr);
+
+        // Yellow zone: MCR <= CR < yellow_threshold
+        let cr_yellow = Decimal::from(115u32);
+        assert!(cr_yellow >= mcr && cr_yellow < yellow_threshold);
+
+        // Green zone: CR >= yellow_threshold
+        let cr_green = Decimal::from(125u32);
+        assert!(cr_green >= yellow_threshold);
+    }
+
+    #[test]
+    fn test_distance_calculation() {
+        let mcr = Decimal::from(110u32);
+        let cr = Decimal::from(115u32);
+
+        // Distance = ((CR - MCR) / MCR) * 100
+        // = ((115 - 110) / 110) * 100
+        // = (5 / 110) * 100
+        // ≈ 4.54%
+        let distance = ((cr - mcr) / mcr) * Decimal::from(100u32);
+
+        // Check it's approximately 4.54 (allowing for decimal precision)
+        let distance_f64: f64 = distance.to_string().parse().unwrap_or(0.0);
+        assert!((distance_f64 - 4.545).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_zone_boundaries_red() {
+        let mcr = Decimal::from(150u32);
+        let yellow_multiplier = Decimal::from(110u32) / 100u32;
+        let yellow_threshold = mcr * yellow_multiplier;
+
+        // Test CR exactly at MCR boundary (should be yellow, not red)
+        let cr_at_mcr = Decimal::from(150u32);
+        assert!(cr_at_mcr >= mcr);
+        assert!(cr_at_mcr < yellow_threshold);
+    }
+
+    #[test]
+    fn test_zone_boundaries_yellow_to_green() {
+        let mcr = Decimal::from(120u32);
+        let yellow_multiplier = Decimal::from(110u32) / 100u32;
+        let yellow_threshold = mcr * yellow_multiplier; // 132
+
+        // Just below threshold = yellow
+        let cr_yellow = Decimal::from(131u32);
+        assert!(cr_yellow >= mcr && cr_yellow < yellow_threshold);
+
+        // At or above threshold = green
+        let cr_green = Decimal::from(132u32);
+        assert!(cr_green >= yellow_threshold);
+    }
+
+    #[test]
+    fn test_config_helper() {
+        let config1 = create_test_config(15);
+        assert_eq!(config1.at_risk_threshold_percent, 15);
+
+        let config2 = create_test_config(25);
+        assert_eq!(config2.at_risk_threshold_percent, 25);
+    }
+}

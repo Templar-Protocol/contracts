@@ -172,3 +172,156 @@ fn validate_scan_time(scan_time: &str) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_scan_time_interval_valid() {
+        assert!(validate_scan_time("*/5").is_ok());
+        assert!(validate_scan_time("*/10").is_ok());
+        assert!(validate_scan_time("*/60").is_ok());
+        assert!(validate_scan_time("*/1").is_ok());
+    }
+
+    #[test]
+    fn test_validate_scan_time_interval_zero() {
+        let result = validate_scan_time("*/0");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be greater than 0"));
+    }
+
+    #[test]
+    fn test_validate_scan_time_interval_invalid() {
+        assert!(validate_scan_time("*/abc").is_err());
+        assert!(validate_scan_time("*/-5").is_err());
+    }
+
+    #[test]
+    fn test_validate_scan_time_hhmm_valid() {
+        assert!(validate_scan_time("00:00").is_ok());
+        assert!(validate_scan_time("12:30").is_ok());
+        assert!(validate_scan_time("23:59").is_ok());
+        assert!(validate_scan_time("09:15").is_ok());
+    }
+
+    #[test]
+    fn test_validate_scan_time_hhmm_invalid_hour() {
+        let result = validate_scan_time("24:00");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("00-23"));
+
+        assert!(validate_scan_time("25:30").is_err());
+    }
+
+    #[test]
+    fn test_validate_scan_time_hhmm_invalid_minute() {
+        let result = validate_scan_time("12:60");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("00-59"));
+
+        assert!(validate_scan_time("12:99").is_err());
+    }
+
+    #[test]
+    fn test_validate_scan_time_invalid_format() {
+        assert!(validate_scan_time("invalid").is_err());
+        assert!(validate_scan_time("12").is_err());
+        assert!(validate_scan_time("12:30:45").is_err());
+        assert!(validate_scan_time("").is_err());
+    }
+
+    #[test]
+    fn test_parse_asset_list_empty() {
+        let result = parse_asset_list("");
+        assert!(result.is_ok());
+        let assets = result.unwrap();
+        assert_eq!(assets.len(), 0);
+        assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn test_parse_asset_list_single() {
+        let result = parse_asset_list("nep141:token.near");
+        assert!(result.is_ok());
+        let assets = result.unwrap();
+        assert_eq!(assets.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_asset_list_multiple() {
+        let result = parse_asset_list("nep141:token1.near,nep141:token2.near");
+        assert!(result.is_ok());
+        let assets = result.unwrap();
+        assert_eq!(assets.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_asset_list_with_whitespace() {
+        let result = parse_asset_list(" nep141:token1.near , nep141:token2.near ");
+        assert!(result.is_ok());
+        let assets = result.unwrap();
+        assert_eq!(assets.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_asset_list_invalid() {
+        let result = parse_asset_list("invalid-format");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid asset"));
+    }
+
+    #[test]
+    fn test_parse_asset_list_mixed_valid_invalid() {
+        // When one asset is invalid, the whole parse should fail
+        let result = parse_asset_list("nep141:valid.near,invalid,nep141:also-valid.near");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_scan_time_edge_cases() {
+        // Test maximum valid values
+        assert!(validate_scan_time("23:59").is_ok());
+        assert!(validate_scan_time("00:00").is_ok());
+
+        // Test with leading zeros
+        assert!(validate_scan_time("01:05").is_ok());
+        assert!(validate_scan_time("09:09").is_ok());
+    }
+
+    #[test]
+    fn test_validate_scan_time_boundary_values() {
+        // Just at the boundary
+        assert!(validate_scan_time("23:59").is_ok());
+        assert!(validate_scan_time("24:00").is_err());
+
+        assert!(validate_scan_time("12:59").is_ok());
+        assert!(validate_scan_time("12:60").is_err());
+    }
+
+    #[test]
+    fn test_validate_scan_time_malformed() {
+        assert!(validate_scan_time("1:2:3:4").is_err());
+        assert!(validate_scan_time(":").is_err());
+        assert!(validate_scan_time("::").is_err());
+        assert!(validate_scan_time("12:").is_err());
+        assert!(validate_scan_time(":30").is_err());
+    }
+
+    #[test]
+    fn test_validate_scan_time_interval_large() {
+        assert!(validate_scan_time("*/1440").is_ok()); // 24 hours
+        assert!(validate_scan_time("*/999999").is_ok());
+    }
+
+    #[test]
+    fn test_validate_scan_time_non_numeric() {
+        assert!(validate_scan_time("twelve:thirty").is_err());
+        assert!(validate_scan_time("12:thirty").is_err());
+        assert!(validate_scan_time("twelve:30").is_err());
+    }
+}

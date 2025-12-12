@@ -27,3 +27,55 @@ pub enum MonitorError {
 }
 
 pub type Result<T> = std::result::Result<T, MonitorError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_display_rpc() {
+        let err = MonitorError::Rpc("connection failed".to_string());
+        assert_eq!(err.to_string(), "RPC error: connection failed");
+    }
+
+    #[test]
+    fn test_error_display_config() {
+        let err = MonitorError::Config("missing env var".to_string());
+        assert_eq!(err.to_string(), "Configuration error: missing env var");
+    }
+
+    #[test]
+    fn test_error_display_market() {
+        let err = MonitorError::Market("invalid position".to_string());
+        assert_eq!(err.to_string(), "Market error: invalid position");
+    }
+
+    #[test]
+    fn test_error_display_telegram() {
+        let err = MonitorError::Telegram("send failed".to_string());
+        assert_eq!(err.to_string(), "Telegram error: send failed");
+    }
+
+    #[test]
+    fn test_error_from_json() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json")
+            .unwrap_err();
+        let monitor_err: MonitorError = json_err.into();
+        assert!(monitor_err.to_string().contains("JSON error"));
+    }
+
+    #[test]
+    fn test_result_type_ok() {
+        let result: Result<i32> = Ok(42);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_result_type_err() {
+        let result: Result<i32> = Err(MonitorError::Rpc("test".to_string()));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.to_string(), "RPC error: test");
+    }
+}

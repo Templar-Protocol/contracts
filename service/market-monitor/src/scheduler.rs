@@ -91,3 +91,82 @@ impl Scheduler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Timelike;
+
+    #[test]
+    fn test_scheduler_interval_parsing() {
+        let scheduler = Scheduler::new("*/5".to_string());
+        let next_run = scheduler.calculate_next_run();
+        let now = chrono::Utc::now();
+
+        // Next run should be within the next 5 minutes
+        let duration = next_run.signed_duration_since(now);
+        assert!(duration.num_seconds() > 0);
+        assert!(duration.num_seconds() <= 5 * 60);
+    }
+
+    #[test]
+    fn test_scheduler_daily_parsing() {
+        let scheduler = Scheduler::new("14:30".to_string());
+        let next_run = scheduler.calculate_next_run();
+        let now = chrono::Utc::now();
+
+        // Next run should be in the future
+        let duration = next_run.signed_duration_since(now);
+        assert!(duration.num_seconds() > 0);
+
+        // Next run should be within 24 hours
+        assert!(duration.num_hours() <= 24);
+
+        // Hour and minute should match
+        assert_eq!(next_run.hour(), 14);
+        assert_eq!(next_run.minute(), 30);
+    }
+
+    #[test]
+    fn test_scheduler_interval_various() {
+        let scheduler = Scheduler::new("*/1".to_string());
+        let next_run = scheduler.calculate_next_run();
+        let now = chrono::Utc::now();
+        assert!(next_run.signed_duration_since(now).num_seconds() <= 60);
+
+        let scheduler = Scheduler::new("*/30".to_string());
+        let next_run = scheduler.calculate_next_run();
+        assert!(next_run.signed_duration_since(now).num_seconds() <= 30 * 60);
+    }
+
+    #[test]
+    fn test_scheduler_midnight() {
+        let scheduler = Scheduler::new("00:00".to_string());
+        let next_run = scheduler.calculate_next_run();
+
+        assert_eq!(next_run.hour(), 0);
+        assert_eq!(next_run.minute(), 0);
+    }
+
+    #[test]
+    fn test_scheduler_end_of_day() {
+        let scheduler = Scheduler::new("23:59".to_string());
+        let next_run = scheduler.calculate_next_run();
+
+        assert_eq!(next_run.hour(), 23);
+        assert_eq!(next_run.minute(), 59);
+    }
+
+    #[test]
+    fn test_scheduler_invalid_format_fallback() {
+        // Invalid formats should default to 5 minutes
+        let scheduler = Scheduler::new("*/abc".to_string());
+        let next_run = scheduler.calculate_next_run();
+        let now = chrono::Utc::now();
+
+        // Should fallback to 5 minutes
+        let duration = next_run.signed_duration_since(now);
+        assert!(duration.num_seconds() > 0);
+        assert!(duration.num_seconds() <= 5 * 60);
+    }
+}

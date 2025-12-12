@@ -255,3 +255,228 @@ impl Reporter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::AlertZone;
+
+    #[test]
+    fn test_report_format_with_alerts() {
+        let timestamp = chrono::Utc::now();
+        let market_id = "test-market.near".parse().unwrap();
+
+        let red_alert = PositionAlert {
+            borrower: "alice.near".parse().unwrap(),
+            collateralization_ratio: Decimal::from(105u32),
+            position_value_usd: Decimal::from(50000u32),
+            zone: AlertZone::Red,
+            distance_from_mcr_pct: Decimal::ZERO, // Simplified for testing
+        };
+
+        let yellow_alert = PositionAlert {
+            borrower: "bob.near".parse().unwrap(),
+            collateralization_ratio: Decimal::from(115u32),
+            position_value_usd: Decimal::from(30000u32),
+            zone: AlertZone::Yellow,
+            distance_from_mcr_pct: Decimal::from(5u32),
+        };
+
+        let market_report = MarketReport {
+            market: market_id,
+            mcr_liquidation: Decimal::from(110u32),
+            red_positions: vec![red_alert],
+            yellow_positions: vec![yellow_alert],
+        };
+
+        let report = DailyReport {
+            timestamp,
+            markets: vec![market_report],
+            total_positions: 10,
+            red_count: 1,
+            yellow_count: 1,
+            green_count: 8,
+            red_value_usd: Decimal::from(50000u32),
+            yellow_value_usd: Decimal::from(30000u32),
+            min_position_size_usd: 1000,
+            displayed_red_count: 1,
+            displayed_yellow_count: 1,
+            at_risk_threshold_percent: 10,
+            ignored_markets_count: 2,
+        };
+
+        let formatted = Reporter::format_report(&report);
+
+        // Verify key sections are present
+        assert!(formatted.contains("📊 TEMPLAR MARKETS REPORT"));
+        assert!(formatted.contains("📈 SUMMARY"));
+        assert!(formatted.contains("🔴 LIQUIDATABLE"));
+        assert!(formatted.contains("🟡 AT RISK"));
+        assert!(formatted.contains("alice.near"));
+        assert!(formatted.contains("bob.near"));
+        assert!(formatted.contains("test-market.near"));
+    }
+
+    #[test]
+    fn test_report_format_all_healthy() {
+        let timestamp = chrono::Utc::now();
+
+        let report = DailyReport {
+            timestamp,
+            markets: vec![],
+            total_positions: 25,
+            red_count: 0,
+            yellow_count: 0,
+            green_count: 25,
+            red_value_usd: Decimal::ZERO,
+            yellow_value_usd: Decimal::ZERO,
+            min_position_size_usd: 1000,
+            displayed_red_count: 0,
+            displayed_yellow_count: 0,
+            at_risk_threshold_percent: 10,
+            ignored_markets_count: 0,
+        };
+
+        let formatted = Reporter::format_report(&report);
+
+        // Verify healthy message is present
+        assert!(formatted.contains("ALL POSITIONS HEALTHY"));
+        assert!(!formatted.contains("🔴 LIQUIDATABLE"));
+        assert!(!formatted.contains("🟡 AT RISK"));
+    }
+
+    #[test]
+    fn test_format_amount_small() {
+        let amount = Decimal::from(100u32);
+        let formatted = Reporter::format_amount(amount);
+        assert_eq!(formatted, "100.00");
+    }
+
+    #[test]
+    fn test_format_amount_thousands() {
+        let amount = Decimal::from(5000u32);
+        let formatted = Reporter::format_amount(amount);
+        assert_eq!(formatted, "5.00K");
+    }
+
+    #[test]
+    fn test_format_amount_millions() {
+        let amount = Decimal::from(2_500_000u32);
+        let formatted = Reporter::format_amount(amount);
+        assert_eq!(formatted, "2.50M");
+    }
+
+    #[test]
+    fn test_format_usd_small() {
+        let amount = Decimal::from(50u32);
+        let formatted = Reporter::format_usd(amount);
+        assert_eq!(formatted, "50.00");
+    }
+
+    #[test]
+    fn test_format_usd_thousands() {
+        let amount = Decimal::from(12_500u32);
+        let formatted = Reporter::format_usd(amount);
+        assert_eq!(formatted, "12.50K");
+    }
+
+    #[test]
+    fn test_format_usd_millions() {
+        let amount = Decimal::from(1_000_000u32);
+        let formatted = Reporter::format_usd(amount);
+        assert_eq!(formatted, "1.00M");
+    }
+
+    #[test]
+    fn test_report_with_only_red_positions() {
+        let timestamp = chrono::Utc::now();
+        let market_id = "test-market.near".parse().unwrap();
+
+        let red_alert1 = PositionAlert {
+            borrower: "user1.near".parse().unwrap(),
+            collateralization_ratio: Decimal::from(105u32),
+            position_value_usd: Decimal::from(10000u32),
+            zone: AlertZone::Red,
+            distance_from_mcr_pct: Decimal::ZERO,
+        };
+
+        let red_alert2 = PositionAlert {
+            borrower: "user2.near".parse().unwrap(),
+            collateralization_ratio: Decimal::from(108u32),
+            position_value_usd: Decimal::from(5000u32),
+            zone: AlertZone::Red,
+            distance_from_mcr_pct: Decimal::ZERO,
+        };
+
+        let market_report = MarketReport {
+            market: market_id,
+            mcr_liquidation: Decimal::from(110u32),
+            red_positions: vec![red_alert1, red_alert2],
+            yellow_positions: vec![],
+        };
+
+        let report = DailyReport {
+            timestamp,
+            markets: vec![market_report],
+            total_positions: 5,
+            red_count: 2,
+            yellow_count: 0,
+            green_count: 3,
+            red_value_usd: Decimal::from(15000u32),
+            yellow_value_usd: Decimal::ZERO,
+            min_position_size_usd: 1000,
+            displayed_red_count: 2,
+            displayed_yellow_count: 0,
+            at_risk_threshold_percent: 10,
+            ignored_markets_count: 0,
+        };
+
+        let formatted = Reporter::format_report(&report);
+        assert!(formatted.contains("🔴 LIQUIDATABLE"));
+        assert!(formatted.contains("user1.near"));
+        assert!(formatted.contains("user2.near"));
+        assert!(!formatted.contains("🟡 AT RISK"));
+    }
+
+    #[test]
+    fn test_report_with_only_yellow_positions() {
+        let timestamp = chrono::Utc::now();
+        let market_id = "test-market.near".parse().unwrap();
+
+        let yellow_alert = PositionAlert {
+            borrower: "user.near".parse().unwrap(),
+            collateralization_ratio: Decimal::from(115u32),
+            position_value_usd: Decimal::from(8000u32),
+            zone: AlertZone::Yellow,
+            distance_from_mcr_pct: Decimal::from(5u32),
+        };
+
+        let market_report = MarketReport {
+            market: market_id,
+            mcr_liquidation: Decimal::from(110u32),
+            red_positions: vec![],
+            yellow_positions: vec![yellow_alert],
+        };
+
+        let report = DailyReport {
+            timestamp,
+            markets: vec![market_report],
+            total_positions: 3,
+            red_count: 0,
+            yellow_count: 1,
+            green_count: 2,
+            red_value_usd: Decimal::ZERO,
+            yellow_value_usd: Decimal::from(8000u32),
+            min_position_size_usd: 1000,
+            displayed_red_count: 0,
+            displayed_yellow_count: 1,
+            at_risk_threshold_percent: 10,
+            ignored_markets_count: 0,
+        };
+
+        let formatted = Reporter::format_report(&report);
+        assert!(!formatted.contains("🔴 LIQUIDATABLE"));
+        assert!(formatted.contains("🟡 AT RISK"));
+        assert!(formatted.contains("user.near"));
+    }
+}

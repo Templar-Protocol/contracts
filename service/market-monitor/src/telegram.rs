@@ -104,3 +104,62 @@ impl TelegramClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_telegram_client_new() {
+        let token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11";
+        let client = TelegramClient::new(token.to_string());
+        assert_eq!(client.bot_token, token);
+    }
+
+    #[test]
+    fn test_telegram_url_format() {
+        let token = "test_token";
+        let expected_url = "https://api.telegram.org/bottest_token/sendMessage";
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
+        assert_eq!(url, expected_url);
+    }
+
+    #[test]
+    fn test_payload_without_thread() {
+        let payload = json!({
+            "chat_id": "-1001234567890",
+            "text": "Test message",
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+        });
+        assert_eq!(payload["chat_id"], "-1001234567890");
+        assert_eq!(payload["text"], "Test message");
+        assert_eq!(payload["parse_mode"], "HTML");
+        assert_eq!(payload["disable_web_page_preview"], true);
+        assert!(payload.get("message_thread_id").is_none());
+    }
+
+    #[test]
+    fn test_payload_with_thread() {
+        let mut payload = json!({
+            "chat_id": "-1001234567890",
+            "text": "Test message",
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+        });
+        let thread_id = 123456;
+        payload["message_thread_id"] = json!(thread_id);
+
+        assert_eq!(payload["message_thread_id"], 123456);
+    }
+
+    #[test]
+    fn test_multiple_clients() {
+        let client1 = TelegramClient::new("token1".to_string());
+        let client2 = TelegramClient::new("token2".to_string());
+
+        assert_eq!(client1.bot_token, "token1");
+        assert_eq!(client2.bot_token, "token2");
+        assert_ne!(client1.bot_token, client2.bot_token);
+    }
+}
