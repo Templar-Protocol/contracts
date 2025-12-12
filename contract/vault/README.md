@@ -135,7 +135,7 @@ Note
   - All previews and conversions simulate fee accrual first and apply virtual_shares and virtual_assets to stabilize edge cases at low supply/assets.
 - Accrual policy
   - internal_accrue_fee() mints fee shares only when get_total_assets() > last_total_assets (no fees on losses or flat performance).
-  - Fee rate is a WAD fraction and bounded; fee_recipient changes first accrue under the old recipient.
+  - Fee rate is a WAD fraction and bounded (management <= 5%, performance <= 50%); fee_recipient changes first accrue under the old recipient.
 
 ## Execution model at a glance
 

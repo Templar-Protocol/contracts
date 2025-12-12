@@ -1,5 +1,5 @@
 use templar_common::vault::{
-    wad::{Wad, MAX_FEE_WAD},
+    wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
     MAX_QUEUE_LEN,
 };
 
@@ -288,8 +288,14 @@ impl Contract {
         let performance_fee = Wad::from(fees.performance.fee.0);
         let management_fee = Wad::from(fees.management.fee.0);
 
-        require!(performance_fee <= Wad::from(MAX_FEE_WAD), "fee too high");
-        require!(management_fee <= Wad::from(MAX_FEE_WAD), "fee too high");
+        require!(
+            performance_fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
+            "performance fee too high"
+        );
+        require!(
+            management_fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
+            "management fee too high"
+        );
 
         let performance_fee_changed = performance_fee != self.fees.performance.fee;
         let management_fee_changed = management_fee != self.fees.management.fee;

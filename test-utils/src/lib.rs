@@ -30,7 +30,7 @@ use templar_common::{
     oracle::pyth::{self, PriceIdentifier},
     registry::DeployMode,
     vault::{
-        wad::{Wad, MAX_FEE_WAD},
+        wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
         Fee as VaultFee, Fees as VaultFees, VaultConfiguration,
     },
 };
@@ -161,11 +161,11 @@ pub fn vault_configuration(
         initial_timelock_ns: templar_common::vault::MIN_TIMELOCK_NS.into(),
         fees: VaultFees {
             performance: VaultFee {
-                fee: Wad::from(MAX_FEE_WAD),
+                fee: Wad::from(MAX_PERFORMANCE_FEE_WAD),
                 recipient: fee_recipient_id.clone(),
             },
             management: VaultFee {
-                fee: Wad::from(MAX_FEE_WAD),
+                fee: Wad::from(MAX_MANAGEMENT_FEE_WAD),
                 recipient: fee_recipient_id,
             },
         },

@@ -29,6 +29,7 @@ use templar_common::asset::FungibleAsset;
 use templar_common::supply::SupplyPosition;
 use templar_common::vault::wad::{
     compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad,
+    MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
 };
 use templar_common::vault::AllocationDelta;
 use templar_common::vault::Delta;
@@ -1666,6 +1667,90 @@ fn set_fees_accrues_with_old_rate_then_updates_performance_variant(owner_env: Ow
 }
 
 #[rstest]
+#[should_panic(expected = "management fee too high")]
+fn set_fees_rejects_management_fee_above_cap(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    contract.set_fees(build_fees(
+        contract.fees.performance.fee,
+        Wad::from(MAX_MANAGEMENT_FEE_WAD + 1),
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
+}
+
+#[rstest]
+#[should_panic(expected = "performance fee too high")]
+fn set_fees_rejects_performance_fee_above_cap(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    contract.set_fees(build_fees(
+        Wad::from(MAX_PERFORMANCE_FEE_WAD + 1),
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
+}
+
+#[rstest]
+#[should_panic(expected = "management fee too high")]
+fn init_rejects_management_fee_above_cap(vault_id: AccountId) {
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    // Basic accounts
+    let owner = mk(1);
+    let curator = mk(2);
+    let guardian = mk(3);
+    let sentinel = mk(7);
+    let fee_recipient = mk(4);
+    let skim_recipient = mk(5);
+    let underlying_token_id = mk(6);
+
+    let mut cfg = ::test_utils::vault_configuration(
+        owner,
+        curator,
+        guardian,
+        sentinel,
+        underlying_token_id,
+        skim_recipient,
+        fee_recipient,
+    );
+
+    cfg.fees.management.fee = Wad::from(MAX_MANAGEMENT_FEE_WAD + 1);
+
+    let _ = Contract::new(cfg);
+}
+
+#[rstest]
+#[should_panic(expected = "performance fee too high")]
+fn init_rejects_performance_fee_above_cap(vault_id: AccountId) {
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    // Basic accounts
+    let owner = mk(1);
+    let curator = mk(2);
+    let guardian = mk(3);
+    let sentinel = mk(7);
+    let fee_recipient = mk(4);
+    let skim_recipient = mk(5);
+    let underlying_token_id = mk(6);
+
+    let mut cfg = ::test_utils::vault_configuration(
+        owner,
+        curator,
+        guardian,
+        sentinel,
+        underlying_token_id,
+        skim_recipient,
+        fee_recipient,
+    );
+
+    cfg.fees.performance.fee = Wad::from(MAX_PERFORMANCE_FEE_WAD + 1);
+
+    let _ = Contract::new(cfg);
+}
+
+#[rstest]
 fn management_fee_accrues_proportionally(owner_env: OwnerEnv) {
     let OwnerEnv {
         vault_id,
@@ -1673,7 +1758,7 @@ fn management_fee_accrues_proportionally(owner_env: OwnerEnv) {
         ..
     } = owner_env;
 
-    contract.fees.management.fee = Wad::one() / 10;
+    contract.fees.management.fee = Wad::one() / 20;
     contract.fees.performance.fee = Wad::zero();
 
     contract
@@ -1732,7 +1817,7 @@ fn management_fee_zero_elapsed_is_noop(owner_env: OwnerEnv) {
         ..
     } = owner_env;
 
-    contract.fees.management.fee = Wad::one() / 10;
+    contract.fees.management.fee = Wad::one() / 20;
     contract.fees.performance.fee = Wad::zero();
 
     contract

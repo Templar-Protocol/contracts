@@ -8,6 +8,7 @@ use templar_common::{
     number::Decimal,
     vault::{AllocationDelta, Delta},
 };
+use templar_common::vault::wad::{MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use test_utils::{
     controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
     UnifiedMarketController,
@@ -26,6 +27,38 @@ async fn supply_queue_mustnt_have_duplicates(#[future(awt)] worker: Worker<Sandb
 
     let queue = vec![m.clone(), m.clone()];
     vault.set_supply_queue(&vault_curator, &queue).await;
+}
+
+#[rstest]
+#[tokio::test]
+#[should_panic = "management fee too high"]
+async fn set_fees_rejects_management_fee_above_cap(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(vault, vault_owner)
+        accounts(supply_user, borrow_user)
+    );
+
+    let mut fees = vault.get_fees().await;
+    fees.management.fee = U128(MAX_MANAGEMENT_FEE_WAD + 1);
+
+    vault.set_fees(&vault_owner, fees).await;
+}
+
+#[rstest]
+#[tokio::test]
+#[should_panic = "performance fee too high"]
+async fn set_fees_rejects_performance_fee_above_cap(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(vault, vault_owner)
+        accounts(supply_user, borrow_user)
+    );
+
+    let mut fees = vault.get_fees().await;
+    fees.performance.fee = U128(MAX_PERFORMANCE_FEE_WAD + 1);
+
+    vault.set_fees(&vault_owner, fees).await;
 }
 
 #[rstest]

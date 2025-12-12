@@ -38,7 +38,7 @@ use templar_common::{
         require_at_least,
         wad::{
             compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
-            Number, Wad,
+            Number, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
         Fee, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState,
@@ -208,6 +208,15 @@ impl Contract {
         require!(
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&initial_timelock_ns.0),
             "timelock bounds"
+        );
+
+        require!(
+            fees.management.fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
+            "management fee too high"
+        );
+        require!(
+            fees.performance.fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
+            "performance fee too high"
         );
 
         let mut contract = Self {

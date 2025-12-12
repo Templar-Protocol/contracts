@@ -196,8 +196,14 @@ impl JsonSchema for Number {
     }
 }
 
-/// Represents the maximum performance fee that can be charged. 20% (very high)
-pub const MAX_FEE_WAD: u128 = Wad::SCALE / 10 * 2;
+/// Maximum annualized management fee rate: 5%.
+pub const MAX_MANAGEMENT_FEE_WAD: u128 = Wad::SCALE / 100 * 5;
+
+/// Maximum performance fee rate on profits: 50%.
+pub const MAX_PERFORMANCE_FEE_WAD: u128 = Wad::SCALE / 100 * 50;
+
+/// Backwards-compatible alias for `MAX_PERFORMANCE_FEE_WAD`.
+pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 
 /// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
