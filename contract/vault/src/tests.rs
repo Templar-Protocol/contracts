@@ -43,8 +43,8 @@ use templar_common::vault::PayoutState;
 use templar_common::vault::PendingWithdrawal;
 use templar_common::vault::MAX_TIMELOCK_NS;
 use templar_common::vault::{
-    AllocatingState, CapGroupId, CapGroupRecord, MarketConfiguration, Restrictions,
-    WithdrawingState, YEAR_NS,
+    AllocatingState, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
+    MarketConfiguration, Restrictions, WithdrawingState, YEAR_NS,
 };
 
 #[fixture]
@@ -2953,10 +2953,20 @@ fn cap_group_membership_moves_principal() {
     let group_a = CapGroupId("ga".to_string());
     let group_b = CapGroupId("gb".to_string());
 
-    c.submit_cap_group(group_a.clone(), U128(200));
-    c.accept_cap_group(group_a.clone());
-    c.submit_cap_group(group_b.clone(), U128(300));
-    c.accept_cap_group(group_b.clone());
+    c.submit_cap_group_update(CapGroupUpdate::SetCap {
+        cap_group: group_a.clone(),
+        new_cap: U128(200),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
+        cap_group: group_a.clone(),
+    });
+    c.submit_cap_group_update(CapGroupUpdate::SetCap {
+        cap_group: group_b.clone(),
+        new_cap: U128(300),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
+        cap_group: group_b.clone(),
+    });
 
     let market = mk(9400);
     let cfg = MarketConfiguration {
@@ -2968,8 +2978,13 @@ fn cap_group_membership_moves_principal() {
     c.markets.insert(market.clone(), cfg.into());
     c.set_market_principal(&market, 80);
 
-    c.submit_market_cap_group(market.clone(), Some(group_b.clone()));
-    c.accept_market_cap_group(market.clone());
+    c.submit_cap_group_update(CapGroupUpdate::SetMarketCapGroup {
+        market: market.clone(),
+        cap_group: Some(group_b.clone()),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetMarketCapGroup {
+        market: market.clone(),
+    });
 
     let rec = c.markets.get(&market).expect("market must exist");
     assert_eq!(rec.cfg.cap_group_id, Some(group_b.clone()));
@@ -3001,8 +3016,11 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
 
     let group = CapGroupId("gr".to_string());
 
-    c.submit_cap_group(group.clone(), U128(1_000));
-    c.accept_cap_group(group.clone());
+    c.submit_cap_group_update(CapGroupUpdate::SetCap {
+        cap_group: group.clone(),
+        new_cap: U128(1_000),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetCap { cap_group: group.clone() });
 
     assert_eq!(
         c.cap_groups.get(&group).expect("group must exist").relative_cap,
@@ -3010,7 +3028,10 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     );
 
     let half = Wad::one() / 2;
-    c.submit_cap_group_relative_cap(group.clone(), U128(u128::from(half)));
+    c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
+        cap_group: group.clone(),
+        new_relative_cap: U128(u128::from(half)),
+    });
 
     assert_eq!(
         c.cap_groups.get(&group).expect("group must exist").relative_cap,
@@ -3021,7 +3042,10 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         "decreasing relative cap should apply immediately"
     );
 
-    c.submit_cap_group_relative_cap(group.clone(), U128(u128::from(Wad::one())));
+    c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
+        cap_group: group.clone(),
+        new_relative_cap: U128(u128::from(Wad::one())),
+    });
 
     assert!(
         c.governance_timelocks.has_pending(),
@@ -3033,7 +3057,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         "relative cap should not update until accepted"
     );
 
-    c.accept_cap_group_relative_cap(group.clone());
+    c.accept_cap_group_update(CapGroupUpdateKey::SetRelativeCap { cap_group: group.clone() });
 
     assert_eq!(
         c.cap_groups.get(&group).expect("group must exist").relative_cap,

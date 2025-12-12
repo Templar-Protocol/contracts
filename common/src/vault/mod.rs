@@ -79,6 +79,35 @@ impl Default for CapGroupRecord {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub enum CapGroupUpdate {
+    /// Update the absolute cap (in underlying units).
+    SetCap {
+        cap_group: CapGroupId,
+        new_cap: U128,
+    },
+    /// Update the relative cap (WAD, 1e24 = 100% of total assets).
+    SetRelativeCap {
+        cap_group: CapGroupId,
+        new_relative_cap: U128,
+    },
+    /// Assign (or remove) a market to/from a cap group.
+    SetMarketCapGroup {
+        market: AccountId,
+        cap_group: Option<CapGroupId>,
+    },
+}
+
+/// Identifies a pending cap-group timelock action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub enum CapGroupUpdateKey {
+    SetCap { cap_group: CapGroupId },
+    SetRelativeCap { cap_group: CapGroupId },
+    SetMarketCapGroup { market: AccountId },
+}
+
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
 #[near(serializers = [json])]
@@ -214,15 +243,9 @@ pub trait VaultExt {
     fn submit_cap(market: AccountId, new_cap: U128);
     fn accept_cap(market: AccountId);
     fn revoke_pending_cap(market: AccountId);
-    fn submit_cap_group(cap_group: CapGroupId, new_cap: U128);
-    fn accept_cap_group(cap_group: CapGroupId);
-    fn revoke_pending_cap_group(cap_group: CapGroupId);
-    fn submit_cap_group_relative_cap(cap_group: CapGroupId, new_relative_cap: U128);
-    fn accept_cap_group_relative_cap(cap_group: CapGroupId);
-    fn revoke_pending_cap_group_relative_cap(cap_group: CapGroupId);
-    fn submit_market_cap_group(market: AccountId, cap_group: Option<CapGroupId>);
-    fn accept_market_cap_group(market: AccountId);
-    fn revoke_pending_market_cap_group(market: AccountId);
+    fn submit_cap_group_update(update: CapGroupUpdate);
+    fn accept_cap_group_update(update: CapGroupUpdateKey);
+    fn revoke_pending_cap_group_update(update: CapGroupUpdateKey);
     fn submit_market_removal(market: AccountId);
     fn revoke_pending_market_removal(market: AccountId);
     fn set_supply_queue(markets: Vec<AccountId>);

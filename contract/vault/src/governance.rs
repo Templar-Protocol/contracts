@@ -1,6 +1,6 @@
 use templar_common::vault::{
     wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
-    MAX_QUEUE_LEN,
+    CapGroupUpdate, CapGroupUpdateKey, MAX_QUEUE_LEN,
 };
 
 use super::*;
@@ -168,7 +168,7 @@ pub struct Gate {
     /// Internal flag to bypass transfer gates for trusted internal flows
     /// (e.g. escrow/redemption settlement).
     bypass_share_transfer_gates: bool,
-    // restrictions currntly in the vault
+    // restrictions currently in the vault
     pub(crate) restrictions: Option<Restrictions>,
 }
 
@@ -228,7 +228,6 @@ impl Gate {
     /// # Panics
     /// Panics if the transfer fails.
     pub fn bypass_transfer(c: &mut Contract, t: &Nep141Transfer) {
-        // Escrow shares into the vault; bypass transfer gates for this internal flow.
         c.gate.bypass_share_transfer_gates = true;
 
         Gate::bypass_transfer_with(c, t, |e| panic_with_message(&e.to_string()));
@@ -242,7 +241,6 @@ impl near_sdk_contract_tools::hook::Hook<Self, Nep141Transfer<'_>> for Contract 
         transfer: &Nep141Transfer<'_>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        // Gate all NEP-141 share transfers.
         contract
             .gate
             .enforce_share_transfer_gates(&contract.markets, transfer);
@@ -478,119 +476,123 @@ impl Contract {
         }
     }
 
-    pub fn submit_cap_group(&mut self, cap_group: CapGroupId, new_cap: U128) {
-        self.submit_change(TimelockedAction::CapGroupChange { cap_group, new_cap });
+    /// Submits a cap-group governance update.
+    ///
+    /// Consolidates the cap-group surface area across:
+    /// - absolute cap
+    /// - relative cap
+    /// - market ↔ group membership
+    pub fn submit_cap_group_update(&mut self, update: CapGroupUpdate) {
+        let action = match update {
+            CapGroupUpdate::SetCap { cap_group, new_cap } => {
+                TimelockedAction::CapGroupChange { cap_group, new_cap }
+            }
+            CapGroupUpdate::SetRelativeCap {
+                cap_group,
+                new_relative_cap,
+            } => TimelockedAction::CapGroupRelativeCapChange {
+                cap_group,
+                new_relative_cap,
+            },
+            CapGroupUpdate::SetMarketCapGroup { market, cap_group } => {
+                TimelockedAction::CapGroupMembership { market, cap_group }
+            }
+        };
+
+        self.submit_change(action);
     }
 
-    pub fn accept_cap_group(&mut self, cap_group: CapGroupId) {
+    /// Accepts a pending cap-group update once the timelock has elapsed.
+    ///
+    /// # Panics
+    /// If there is no matching pending cap-group update.
+    pub fn accept_cap_group_update(&mut self, update: CapGroupUpdateKey) {
         Self::assert_curator_or_owner();
         self.ensure_idle();
 
-        if let Some(action) = self.take_timelock(|a| {
-            matches!(
-                a,
-                TimelockedAction::CapGroupChange {
-                    cap_group: pending,
-                    ..
-                } if pending == &cap_group
-            )
-        }) {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending cap group change for this id");
-        }
+        let action = match update {
+            CapGroupUpdateKey::SetCap { cap_group } => self
+                .take_timelock(|a| {
+                    matches!(
+                        a,
+                        TimelockedAction::CapGroupChange {
+                            cap_group: pending,
+                            ..
+                        } if pending == &cap_group
+                    )
+                })
+                .unwrap_or_else(|| panic_with_message("No pending cap group change for this id")),
+            CapGroupUpdateKey::SetRelativeCap { cap_group } => self
+                .take_timelock(|a| {
+                    matches!(
+                        a,
+                        TimelockedAction::CapGroupRelativeCapChange {
+                            cap_group: pending,
+                            ..
+                        } if pending == &cap_group
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic_with_message("No pending cap group relative cap change for this id")
+                }),
+            CapGroupUpdateKey::SetMarketCapGroup { market } => self
+                .take_timelock(|a| {
+                    matches!(
+                        a,
+                        TimelockedAction::CapGroupMembership { market: pending, .. }
+                            if pending == &market
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic_with_message("No pending cap group membership change for this market")
+                }),
+        };
+
+        self.apply_immediately(&action);
     }
 
-    pub fn revoke_pending_cap_group(&mut self, cap_group: CapGroupId) {
+    /// Revokes a pending cap-group update.
+    pub fn revoke_pending_cap_group_update(&mut self, update: CapGroupUpdateKey) {
         Self::assert_curator_or_owner();
 
-        if self.revoke_timelocks(|a| {
-            matches!(
-                a,
-                TimelockedAction::CapGroupChange {
-                    cap_group: pending,
-                    ..
-                } if pending == &cap_group
-            )
-        }) {
-            Event::CapGroupRaiseRevoked { cap_group }.emit();
-        }
-    }
-
-    pub fn submit_cap_group_relative_cap(&mut self, cap_group: CapGroupId, new_relative_cap: U128) {
-        self.submit_change(TimelockedAction::CapGroupRelativeCapChange {
-            cap_group,
-            new_relative_cap,
-        });
-    }
-
-    pub fn accept_cap_group_relative_cap(&mut self, cap_group: CapGroupId) {
-        Self::assert_curator_or_owner();
-        self.ensure_idle();
-
-        if let Some(action) = self.take_timelock(|a| {
-            matches!(
-                a,
-                TimelockedAction::CapGroupRelativeCapChange {
-                    cap_group: pending,
-                    ..
-                } if pending == &cap_group
-            )
-        }) {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending cap group relative cap change for this id");
-        }
-    }
-
-    pub fn revoke_pending_cap_group_relative_cap(&mut self, cap_group: CapGroupId) {
-        Self::assert_curator_or_owner();
-
-        if self.revoke_timelocks(|a| {
-            matches!(
-                a,
-                TimelockedAction::CapGroupRelativeCapChange {
-                    cap_group: pending,
-                    ..
-                } if pending == &cap_group
-            )
-        }) {
-            Event::CapGroupRelativeCapRaiseRevoked { cap_group }.emit();
-        }
-    }
-
-    pub fn submit_market_cap_group(&mut self, market: AccountId, cap_group: Option<CapGroupId>) {
-        self.submit_change(TimelockedAction::CapGroupMembership { market, cap_group });
-    }
-
-    pub fn accept_market_cap_group(&mut self, market: AccountId) {
-        Self::assert_curator_or_owner();
-        self.ensure_idle();
-
-        if let Some(action) = self.take_timelock(|a| {
-            matches!(
-                a,
-                TimelockedAction::CapGroupMembership { market: pending, .. }
-                    if pending == &market
-            )
-        }) {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending cap group membership change for this market");
-        }
-    }
-
-    pub fn revoke_pending_market_cap_group(&mut self, market: AccountId) {
-        Self::assert_curator_or_owner();
-
-        if self.revoke_timelocks(|a| {
-            matches!(
-                a,
-                TimelockedAction::CapGroupMembership { market: pending, .. }
-                    if pending == &market
-            )
-        }) {
-            Event::CapGroupMembershipRevoked { market }.emit();
+        match update {
+            CapGroupUpdateKey::SetCap { cap_group } => {
+                if self.revoke_timelocks(|a| {
+                    matches!(
+                        a,
+                        TimelockedAction::CapGroupChange {
+                            cap_group: pending,
+                            ..
+                        } if pending == &cap_group
+                    )
+                }) {
+                    Event::CapGroupRaiseRevoked { cap_group }.emit();
+                }
+            }
+            CapGroupUpdateKey::SetRelativeCap { cap_group } => {
+                if self.revoke_timelocks(|a| {
+                    matches!(
+                        a,
+                        TimelockedAction::CapGroupRelativeCapChange {
+                            cap_group: pending,
+                            ..
+                        } if pending == &cap_group
+                    )
+                }) {
+                    Event::CapGroupRelativeCapRaiseRevoked { cap_group }.emit();
+                }
+            }
+            CapGroupUpdateKey::SetMarketCapGroup { market } => {
+                if self.revoke_timelocks(|a| {
+                    matches!(
+                        a,
+                        TimelockedAction::CapGroupMembership { market: pending, .. }
+                            if pending == &market
+                    )
+                }) {
+                    Event::CapGroupMembershipRevoked { market }.emit();
+                }
+            }
         }
     }
 
@@ -674,6 +676,10 @@ impl Contract {
 
     /// Sets the restrictions for the vault.
     ///
+    /// Operational guidance:
+    /// - Incident response should use `Restrictions::Paused` rather than per-account blacklisting.
+    /// - `BlackList`/`WhiteList` are governance/policy controls and are censorship-sensitive.
+    ///
     /// Timelock semantics:
     /// - Tightening restrictions (including `Paused`) applies immediately.
     /// - Unpause/relax actions are subject to the governance timelock.
@@ -725,6 +731,7 @@ impl Contract {
                     !members.is_empty()
                 })
             }
+            // Submit a timelocked governance change if there is already a sentinel
             TimelockedAction::SentinelChange { .. } => {
                 Self::require_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_sentinel");
@@ -833,25 +840,7 @@ impl Contract {
                     "No restriction changes"
                 );
 
-                let is_relaxing = match (&self.gate.restrictions, restrictions) {
-                    (None, None) => false,
-                    (None, Some(_)) => false,
-                    (Some(_), None) => true,
-                    (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
-                    (Some(Restrictions::Paused), Some(_)) => true,
-                    (Some(Restrictions::BlackList(old)), Some(Restrictions::BlackList(new))) => {
-                        old.difference(new).next().is_some()
-                    }
-                    (Some(Restrictions::WhiteList(old)), Some(Restrictions::WhiteList(new))) => {
-                        new.difference(old).next().is_some()
-                    }
-                    (Some(Restrictions::BlackList(old)), Some(Restrictions::WhiteList(new))) => {
-                        old.intersection(new).next().is_some()
-                    }
-                    (Some(Restrictions::WhiteList(_)), Some(Restrictions::Paused))
-                    | (Some(Restrictions::BlackList(_)), Some(Restrictions::Paused)) => false,
-                    (Some(Restrictions::WhiteList(_)), Some(Restrictions::BlackList(_))) => true,
-                };
+                let is_relaxing = self.determine_relaxed(restrictions);
 
                 if is_relaxing {
                     Self::assert_guardian_or_owner();
@@ -902,7 +891,7 @@ impl Contract {
             }
             TimelockedAction::CapGroupChange { cap_group, new_cap } => {
                 Self::assert_curator_or_owner();
-                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group");
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
                 require!(
@@ -928,7 +917,7 @@ impl Contract {
                 new_relative_cap,
             } => {
                 Self::assert_curator_or_owner();
-                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_relative_cap");
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
                 let new_wad = Wad::from(new_relative_cap.0);
@@ -957,7 +946,7 @@ impl Contract {
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 Self::assert_curator_or_owner();
-                Abdicator::require_not_abdicated(&self.abdicator, "submit_market_cap_group");
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
                 let rec = self
@@ -1023,6 +1012,29 @@ impl Contract {
                 r.principal > 0
             }
         }
+    }
+
+    fn determine_relaxed(&self, restrictions: &Option<Restrictions>) -> bool {
+        let is_relaxing = match (&self.gate.restrictions, restrictions) {
+            (None, None) => false,
+            (None, Some(_)) => false,
+            (Some(_), None) => true,
+            (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
+            (Some(Restrictions::Paused), Some(_)) => true,
+            (Some(Restrictions::BlackList(old)), Some(Restrictions::BlackList(new))) => {
+                old.difference(new).next().is_some()
+            }
+            (Some(Restrictions::WhiteList(old)), Some(Restrictions::WhiteList(new))) => {
+                new.difference(old).next().is_some()
+            }
+            (Some(Restrictions::BlackList(old)), Some(Restrictions::WhiteList(new))) => {
+                old.intersection(new).next().is_some()
+            }
+            (Some(Restrictions::WhiteList(_)), Some(Restrictions::Paused))
+            | (Some(Restrictions::BlackList(_)), Some(Restrictions::Paused)) => false,
+            (Some(Restrictions::WhiteList(_)), Some(Restrictions::BlackList(_))) => true,
+        };
+        is_relaxing
     }
 
     fn apply_immediately(&mut self, action: &TimelockedAction) {
