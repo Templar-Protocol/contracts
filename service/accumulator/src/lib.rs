@@ -22,7 +22,7 @@ use crate::rpc::{
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
     /// Registries to run accumulator for
-    #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS")]
+    #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS", value_delimiter = ' ')]
     pub registries: Vec<AccountId>,
     /// Signer key to use for signing transactions
     #[arg(short = 'k', long, env = "SIGNER_KEY")]
@@ -46,7 +46,12 @@ pub struct Args {
     #[arg(long, default_value_t = 86_400, env = "STATIC_INTERVAL")]
     pub static_interval: u64,
     /// Registry refresh interval in seconds
-    #[arg(short, long, default_value_t = 3600, env = "REGISTRY_REFRESH_INTERVAL")]
+    #[arg(
+        short = 'R',
+        long,
+        default_value_t = 3600,
+        env = "REGISTRY_REFRESH_INTERVAL"
+    )]
     pub registry_refresh_interval: u64,
     /// Concurrency for accumulation tasks
     #[arg(short, long, default_value_t = 4, env = "CONCURRENCY")]
