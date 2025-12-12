@@ -17,13 +17,6 @@ type ByteEncoding = [u8; KEY_LENGTH];
 #[near(serializers = [borsh])]
 pub struct PublicKey(pub ByteEncoding);
 
-impl PublicKey {
-    pub fn verify(&self, message: &[u8], signature: &super::Signature) -> bool {
-        // #[cfg(target_arch = "wasm32")]
-        near_sdk::env::ed25519_verify(signature.as_ref(), message, &self.0)
-    }
-}
-
 impl From<PublicKey> for ByteEncoding {
     fn from(value: PublicKey) -> Self {
         value.0

@@ -373,10 +373,7 @@ mod tests {
     use p256::elliptic_curve::rand_core::OsRng;
     use solana_sdk::{signature::Keypair, signer::Signer};
     use templar_universal_account::{
-        authentication::{
-            ed25519_raw::{self, VerifyKey},
-            HashForSigning, Payload,
-        },
+        authentication::{ed25519::raw, HashForSigning, Payload},
         NEAR_TESTNET_CHAIN_ID,
     };
 
@@ -385,10 +382,10 @@ mod tests {
     #[test]
     fn encoding_ed25519_raw() {
         let keypair = Keypair::new();
-        let pubkey = VerifyKey(keypair.pubkey().to_bytes().into());
+        let pubkey = raw::VerifyKey(keypair.pubkey().to_bytes().into());
 
         let message = {
-            let m = ed25519_raw::Message::from_parsed(Payload::new(
+            let m = raw::Message::from_parsed(Payload::new(
                 PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
                     .zero()
                     .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
@@ -404,7 +401,7 @@ mod tests {
                 .unwrap(),
             ));
             let h = m.preimage_for_signing();
-            let signature = keypair.sign_message(&h);
+            let signature = *keypair.sign_message(&h).as_array();
             Box::new(m.with_signature(signature.into()))
         };
 

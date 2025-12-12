@@ -3,6 +3,7 @@ use std::error::Error;
 pub mod ed25519;
 pub mod ethereum;
 pub mod p256;
+pub mod stellar;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ParseError {
