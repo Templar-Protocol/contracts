@@ -51,9 +51,7 @@ impl ConfigValidator {
 
         // Additional custom validations
         self.validate_accounts(config).await?;
-        validate_ranges(config)?;
         validate_decimals(config)?;
-
         // If network is provided, validate with oracle
         if let Some(network) = self.network {
             self.validate_with_oracle(config, network).await?;
@@ -71,7 +69,6 @@ impl ConfigValidator {
         config
             .validate()
             .map_err(|e| CliError::Validation(e.to_string()))?;
-        validate_ranges(config)?;
         validate_decimals(config)?;
         Ok(())
     }
@@ -95,13 +92,10 @@ impl ConfigValidator {
         let validator = PriceValidator::new(network);
         let oracle_account_id = config.price_oracle_configuration.account_id.clone();
 
-        let (feeds_result, decimals_result) = tokio::join!(
-            self.validate_oracle_feeds(&validator, config, &oracle_account_id),
-            self.validate_token_decimals(config),
-        );
-
-        feeds_result?;
-        decimals_result?;
+        // Run sequentially to keep progress indicators readable.
+        self.validate_token_decimals(config).await?;
+        self.validate_oracle_feeds(&validator, config, &oracle_account_id)
+            .await?;
 
         Ok(())
     }
@@ -194,14 +188,7 @@ impl ConfigValidator {
     }
 
     async fn validate_token_decimals(&self, config: &MarketConfiguration) -> CliResult {
-        let rpc_url = self.rpc_url();
-        let client = JsonRpcClient::connect(&rpc_url);
-
-        let borrow_decimals = fetch_decimals(&client, &config.borrow_asset)
-            .await
-            .map_err(|e| {
-                CliError::Validation(format!("Failed to fetch borrow asset decimals: {e}"))
-            })?;
+        let (borrow_decimals, collateral_decimals) = self.check_token_metadata(config).await?;
 
         if i32::from(borrow_decimals) != config.price_oracle_configuration.borrow_asset_decimals {
             return Err(CliError::Validation(format!(
@@ -209,12 +196,6 @@ impl ConfigValidator {
                 config.price_oracle_configuration.borrow_asset_decimals, borrow_decimals
             )));
         }
-
-        let collateral_decimals = fetch_decimals(&client, &config.collateral_asset)
-            .await
-            .map_err(|e| {
-                CliError::Validation(format!("Failed to fetch collateral asset decimals: {e}"))
-            })?;
 
         if i32::from(collateral_decimals)
             != config.price_oracle_configuration.collateral_asset_decimals
@@ -227,6 +208,42 @@ impl ConfigValidator {
 
         Ok(())
     }
+
+    /// Validate that token metadata view calls succeed and return decimals.
+    /// Returns the decimals fetched for borrow and collateral assets (in that order).
+    async fn check_token_metadata(&self, config: &MarketConfiguration) -> CliResult<(u8, u8)> {
+        let rpc_url = self.rpc_url();
+        let client = JsonRpcClient::connect(&rpc_url);
+
+        let progress = ProgressBar::new(2);
+        set_progress_style(&progress, "token metadata");
+        progress.tick();
+
+        progress.set_message("borrow asset");
+        let borrow_decimals = fetch_decimals(&client, &config.borrow_asset)
+            .await
+            .map_err(|e| {
+                CliError::Validation(format!("Failed to fetch borrow asset metadata: {e}"))
+            })?;
+        progress.inc(1);
+
+        progress.set_message("collateral asset");
+        let collateral_decimals = fetch_decimals(&client, &config.collateral_asset)
+            .await
+            .map_err(|e| {
+                CliError::Validation(format!("Failed to fetch collateral asset metadata: {e}"))
+            })?;
+        progress.inc(1);
+
+        progress.finish_with_message(
+            Style::new()
+                .green()
+                .apply_to("✓ Token metadata validated")
+                .to_string(),
+        );
+
+        Ok((borrow_decimals, collateral_decimals))
+    }
 }
 
 async fn fetch_decimals<T: templar_common::asset::AssetClass>(
@@ -235,8 +252,8 @@ async fn fetch_decimals<T: templar_common::asset::AssetClass>(
 ) -> CliResult<u8> {
     if let Some((contract_id, token_id)) = asset.clone().into_nep245() {
         let (resolved_contract, resolved_token_id) =
-            resolve_nep245_parts(contract_id, token_id.clone())?;
-        return token_metadata(client, resolved_contract, Some(resolved_token_id)).await;
+            resolve_nep141_or_nep245_parts(contract_id, &token_id)?;
+        return token_metadata(client, resolved_contract, resolved_token_id).await;
     }
 
     #[allow(clippy::unwrap_used, reason = "Parsing should not fail here")]
@@ -244,11 +261,27 @@ async fn fetch_decimals<T: templar_common::asset::AssetClass>(
     token_metadata(client, id, None).await
 }
 
-/// Handle NEP-245 identifiers that may already be provided in `nep245:<contract>:<token_id>` form.
-fn resolve_nep245_parts(
+fn resolve_nep141_or_nep245_parts(
     contract_id: AccountId,
-    token_id: String,
-) -> CliResult<(AccountId, String)> {
+    token_id: &str,
+) -> CliResult<(AccountId, Option<String>)> {
+    if let Some(stripped) = token_id.strip_prefix("nep141:") {
+        let mut parts = stripped.splitn(2, ':');
+        let Some(ft_contract) = parts.next() else {
+            return Err(CliError::Validation(format!(
+                "Invalid NEP-245 token id '{token_id}'"
+            )));
+        };
+
+        let ft_contract = ft_contract.parse::<AccountId>().map_err(|e| {
+            CliError::Validation(format!(
+                "Invalid NEP-245 contract id in token '{token_id}': {e}"
+            ))
+        })?;
+
+        return Ok((ft_contract, None));
+    }
+
     if let Some(stripped) = token_id.strip_prefix("nep245:") {
         let mut parts = stripped.splitn(2, ':');
         let Some(mt_contract) = parts.next() else {
@@ -267,10 +300,10 @@ fn resolve_nep245_parts(
                 "Invalid NEP-245 contract id in token '{token_id}': {e}"
             ))
         })?;
-        return Ok((mt_contract, mt_token_id.to_string()));
+        return Ok((mt_contract, Some(mt_token_id.to_string())));
     }
 
-    Ok((contract_id, token_id))
+    Ok((contract_id, Some(token_id.to_string())))
 }
 
 /// Validate that decimals are within reasonable bounds (typically 0-24 for NEAR)
@@ -298,48 +331,6 @@ fn validate_decimals(config: &MarketConfiguration) -> CliResult {
         Style::new()
             .green()
             .apply_to("✓ Decimals validated")
-            .to_string(),
-    );
-
-    Ok(())
-}
-
-/// # Errors
-fn validate_ranges(config: &MarketConfiguration) -> CliResult {
-    let progress = ProgressBar::new(3);
-    set_progress_style(&progress, "ranges");
-
-    // Check that supply withdrawal range minimum is not greater than supply range minimum
-    progress.set_message("withdrawal vs supply");
-    if config.supply_withdrawal_range.minimum > config.supply_range.minimum {
-        return Err(CliError::Validation(
-            "Supply withdrawal range minimum cannot be greater than supply range minimum".into(),
-        ));
-    }
-    progress.inc(1);
-
-    // Check that borrow range is reasonable
-    progress.set_message("borrow minimum");
-    if config.borrow_range.minimum.is_zero() {
-        return Err(CliError::Validation(
-            "Borrow range minimum must be greater than zero".into(),
-        ));
-    }
-    progress.inc(1);
-
-    // Check that supply range is reasonable
-    progress.set_message("supply minimum");
-    if config.supply_range.minimum.is_zero() {
-        return Err(CliError::Validation(
-            "Supply range minimum must be greater than zero".into(),
-        ));
-    }
-    progress.inc(1);
-
-    progress.finish_with_message(
-        Style::new()
-            .green()
-            .apply_to("✓ Ranges validated")
             .to_string(),
     );
 
@@ -426,5 +417,72 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("decimals must be <= 24"));
+    }
+
+    #[tokio::test]
+    async fn withdrawal_minimum_above_supply_rejected() {
+        let validator = ConfigValidator::new(None);
+        let mut config = create_valid_config();
+        config.supply_range = (1_000_000_000_000_000_000_000_000_000u128, None)
+            .try_into()
+            .unwrap();
+        config.supply_withdrawal_range = (1_000_000_000_000_000_000_000_000_001u128, None)
+            .try_into()
+            .unwrap();
+
+        let result = validator.validate_offline(&config);
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("supply_withdrawal_range.minimum"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn resolve_nep141_or_nep245_parts_supports_nep141_prefix() {
+        let contract_id = AccountId::from_str("intents.near").unwrap();
+        let token_id = "nep141:usdc.near:anything".to_string();
+
+        let (resolved_contract, resolved_token_id) =
+            resolve_nep141_or_nep245_parts(contract_id, &token_id).unwrap();
+
+        assert_eq!(resolved_contract, AccountId::from_str("usdc.near").unwrap());
+        assert!(resolved_token_id.is_none());
+    }
+
+    #[test]
+    fn resolve_nep141_or_nep245_parts_delegates_nep245() {
+        let contract_id = AccountId::from_str("intents.near").unwrap();
+        let token_id = "nep245:intents.near:foo".to_string();
+
+        let (resolved_contract, resolved_token_id) =
+            resolve_nep141_or_nep245_parts(contract_id.clone(), &token_id).unwrap();
+
+        assert_eq!(resolved_contract, contract_id);
+        assert_eq!(resolved_token_id, Some("foo".to_string()));
+    }
+
+    #[test]
+    fn resolve_nep141_or_nep245_parts_parses_nep245_prefix() {
+        let contract_id = AccountId::from_str("intents.near").unwrap();
+        let token_id = "nep245:intents.near:bar".to_string();
+
+        let (resolved_contract, resolved_token_id) =
+            resolve_nep141_or_nep245_parts(contract_id.clone(), &token_id).unwrap();
+
+        assert_eq!(resolved_contract, contract_id);
+        assert_eq!(resolved_token_id, Some("bar".to_string()));
+    }
+
+    #[test]
+    fn resolve_nep141_or_nep245_parts_passthrough_when_no_prefix() {
+        let contract_id = AccountId::from_str("intents.near").unwrap();
+        let token_id = "plain-token".to_string();
+
+        let (resolved_contract, resolved_token_id) =
+            resolve_nep141_or_nep245_parts(contract_id.clone(), &token_id).unwrap();
+
+        assert_eq!(resolved_contract, contract_id);
+        assert_eq!(resolved_token_id, Some(token_id));
     }
 }

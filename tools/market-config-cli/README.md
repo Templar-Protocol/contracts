@@ -250,6 +250,6 @@ cargo test --test integration_tests -- --ignored
 
 ### CLI walkthroughs
 
-![From template](market-config-cli/from-template.gif)
-![From contract](market-config-cli/from-contract.gif)
-![Calculate curve](market-config-cli/calculate-curve.gif)
+![From template]
+![From contract]
+![Calculate curve]

@@ -43,6 +43,29 @@ pub fn prompt_decimal(
         .map_err(|_| CliError::InvalidInput(format!("Invalid decimal for {field}: {value}")))
 }
 
+/// Prompt for an integer decimal count with inline bounds checking (0-24).
+/// # Errors
+pub fn prompt_decimals(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    default: i32,
+    field: &str,
+) -> CliResult<i32> {
+    let value: i32 = Input::with_theme(theme)
+        .with_prompt(prompt)
+        .default(default)
+        .interact_text()
+        .map_err(std::io::Error::other)?;
+
+    if (0..=24).contains(&value) {
+        Ok(value)
+    } else {
+        Err(CliError::InvalidInput(format!(
+            "{field} must be between 0 and 24"
+        )))
+    }
+}
+
 pub fn fee_defaults<T: AssetClass>(fee: &Fee<T>) -> (usize, String) {
     match fee {
         Fee::Flat(amount) => (0, U128::from(*amount).0.to_string()),
@@ -50,6 +73,7 @@ pub fn fee_defaults<T: AssetClass>(fee: &Fee<T>) -> (usize, String) {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct StrategyDefaults {
     pub kind: StrategyKind,
     values: HashMap<String, String>,
@@ -94,7 +118,7 @@ impl StrategyDefaults {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum StrategyKind {
     Linear,
     Piecewise,

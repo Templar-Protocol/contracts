@@ -172,3 +172,27 @@ pub async fn view<T: DeserializeOwned>(
 
     Ok(near_sdk::serde_json::from_slice(&result.result)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+    use serde_json::json;
+
+    #[test]
+    fn serialize_and_encode_matches_json() {
+        let payload = json!({ "example": 1, "string": "ok" });
+        let encoded = serialize_and_encode(&payload);
+        assert_eq!(encoded, serde_json::to_vec(&payload).unwrap());
+    }
+
+    #[rstest]
+    #[case::single(json!({"icon":"x","id":"a","name":"A","symbol":"A","decimals":6}))]
+    #[case::wrapped_list(json!([{"icon":"x","id":"a","name":"A","symbol":"A","decimals":6}]))]
+    fn parse_multi_token_metadata_handles_single_and_list(#[case] payload: serde_json::Value) {
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let meta = parse_multi_token_metadata(&bytes).expect("metadata should parse");
+        assert_eq!(meta.decimals, 6);
+        assert_eq!(meta.symbol, "A");
+    }
+}

@@ -43,6 +43,7 @@ chrono = "0.4"
 url = "2.5"
 near-contract-standards.workspace = true
 once_cell = "1.21.3"
+ctrlc = "3.5.1"
 
 [dev-dependencies]
 rstest = { workspace = true }

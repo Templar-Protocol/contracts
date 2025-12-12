@@ -138,6 +138,14 @@ async fn main() -> CliResult {
     let cli = Cli::parse();
     let theme = ColorfulTheme::default();
 
+    ctrlc::set_handler(move || {
+        let term = console::Term::stdout();
+        let _ = term.show_cursor();
+    })
+    .map_err(|e| {
+        market_config_cli::CliError::Other(format!("Error setting Ctrl-C handler: {e}"))
+    })?;
+
     match cli.command {
         Commands::Interactive(InteractiveArgs { output, network }) => {
             handle_interactive(output, network, &theme).await?;
@@ -195,6 +203,5 @@ async fn main() -> CliResult {
             )?;
         }
     }
-
     Ok(())
 }
