@@ -50,11 +50,25 @@ impl core::fmt::Display for CapGroupId {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
 pub struct CapGroupRecord {
+    /// Absolute cap in underlying units.
     pub cap: U128,
+    /// Relative cap as a fraction of total vault assets (WAD, 1e24 = 100%).
+    pub relative_cap: Wad,
+    /// Sum of principals for all markets assigned to this cap group.
     pub principal: u128,
+}
+
+impl Default for CapGroupRecord {
+    fn default() -> Self {
+        Self {
+            cap: U128(0),
+            relative_cap: Wad::one(),
+            principal: 0,
+        }
+    }
 }
 
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
@@ -184,6 +198,9 @@ pub trait VaultExt {
     fn submit_cap_group(cap_group: CapGroupId, new_cap: U128);
     fn accept_cap_group(cap_group: CapGroupId);
     fn revoke_pending_cap_group(cap_group: CapGroupId);
+    fn submit_cap_group_relative_cap(cap_group: CapGroupId, new_relative_cap: U128);
+    fn accept_cap_group_relative_cap(cap_group: CapGroupId);
+    fn revoke_pending_cap_group_relative_cap(cap_group: CapGroupId);
     fn submit_market_cap_group(market: AccountId, cap_group: Option<CapGroupId>);
     fn accept_market_cap_group(market: AccountId);
     fn revoke_pending_market_cap_group(market: AccountId);
@@ -844,6 +861,19 @@ pub enum Event {
     CapGroupSet {
         cap_group: CapGroupId,
         new_cap: U128,
+    },
+    #[event_version("1.0.0")]
+    CapGroupRelativeCapRaiseSubmitted {
+        cap_group: CapGroupId,
+        new_relative_cap: U128,
+        valid_at_ns: u64,
+    },
+    #[event_version("1.0.0")]
+    CapGroupRelativeCapRaiseRevoked { cap_group: CapGroupId },
+    #[event_version("1.0.0")]
+    CapGroupRelativeCapSet {
+        cap_group: CapGroupId,
+        new_relative_cap: U128,
     },
     #[event_version("1.0.0")]
     CapGroupPrincipalUpdated {

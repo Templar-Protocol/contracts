@@ -647,7 +647,7 @@ fn cap_zero_keeps_enabled_and_submit_removal_works(owner_env: OwnerEnv) {
 
     // Seed a known, enabled market with cap > 0
     let cfg = MarketConfiguration {
-        cap: U128(10),
+        cap: U128(10_000),
         enabled: true,
         removable_at: 0,
         cap_group_id: None,
@@ -1980,6 +1980,7 @@ fn cap_group_limits_total_room() {
         group.clone(),
         CapGroupRecord {
             cap: U128(150),
+            relative_cap: Wad::one(),
             principal: 0,
         },
     );
@@ -2001,6 +2002,77 @@ fn cap_group_limits_total_room() {
 }
 
 #[test]
+fn cap_group_relative_caps_scale_with_aum() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let asset: AccountId = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id, &asset, vec![]);
+
+    let half = Wad::one() / 2;
+
+    let group_a = CapGroupId("group-ra".to_string());
+    let group_b = CapGroupId("group-rb".to_string());
+
+    c.cap_groups.insert(
+        group_a.clone(),
+        CapGroupRecord {
+            cap: U128(10_000),
+            relative_cap: half,
+            principal: 0,
+        },
+    );
+    c.cap_groups.insert(
+        group_b.clone(),
+        CapGroupRecord {
+            cap: U128(10_000),
+            relative_cap: half,
+            principal: 0,
+        },
+    );
+
+    let m1 = mk(9310);
+    c.markets.insert(
+        m1.clone(),
+        MarketConfiguration {
+            cap: U128(1_000),
+            enabled: true,
+            removable_at: 0,
+            cap_group_id: Some(group_a.clone()),
+        }
+        .into(),
+    );
+    c.supply_queue.insert(m1);
+
+    let m2 = mk(9311);
+    c.markets.insert(
+        m2.clone(),
+        MarketConfiguration {
+            cap: U128(1_000),
+            enabled: true,
+            removable_at: 0,
+            cap_group_id: Some(group_b.clone()),
+        }
+        .into(),
+    );
+    c.supply_queue.insert(m2);
+
+    assert_eq!(c.get_max_deposit().0, 2_000);
+
+    let sender = mk(1);
+    let res = c.ft_on_transfer(
+        sender,
+        U128(3_000),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 1_000),
+        _ => panic!("expected refund"),
+    }
+
+    assert_eq!(c.idle_balance, 2_000);
+}
+
+#[test]
 fn cap_group_refunds_when_saturated() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
@@ -2012,6 +2084,7 @@ fn cap_group_refunds_when_saturated() {
         group.clone(),
         CapGroupRecord {
             cap: U128(50),
+            relative_cap: Wad::one(),
             principal: 0,
         },
     );
@@ -2647,6 +2720,57 @@ fn cap_group_membership_moves_principal() {
 }
 
 #[test]
+fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.governance_timelocks = Timelocks::new(0, 0, 0, 0, 0);
+
+    let group = CapGroupId("gr".to_string());
+
+    c.submit_cap_group(group.clone(), U128(1_000));
+    c.accept_cap_group(group.clone());
+
+    assert_eq!(
+        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        Wad::one()
+    );
+
+    let half = Wad::one() / 2;
+    c.submit_cap_group_relative_cap(group.clone(), U128(u128::from(half)));
+
+    assert_eq!(
+        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        half
+    );
+    assert!(
+        !c.governance_timelocks.has_pending(),
+        "decreasing relative cap should apply immediately"
+    );
+
+    c.submit_cap_group_relative_cap(group.clone(), U128(u128::from(Wad::one())));
+
+    assert!(
+        c.governance_timelocks.has_pending(),
+        "increasing relative cap should be timelocked"
+    );
+    assert_eq!(
+        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        half,
+        "relative cap should not update until accepted"
+    );
+
+    c.accept_cap_group_relative_cap(group.clone());
+
+    assert_eq!(
+        c.cap_groups.get(&group).expect("group must exist").relative_cap,
+        Wad::one(),
+    );
+}
+
+#[test]
 fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
@@ -2703,7 +2827,7 @@ fn governance_submit_and_revoke_market_removal() {
 
     let m = mk(9107);
     let cfg = MarketConfiguration {
-        cap: U128(100),
+        cap: U128(0),
         enabled: true,
         removable_at: 0,
         cap_group_id: None,

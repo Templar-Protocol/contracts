@@ -108,10 +108,11 @@ Note
 
 ## Key storage and concepts
 
-- MarketConfiguration per market: { cap, enabled, removable_at }
+- MarketConfiguration per market: { cap, enabled, removable_at, cap_group_id }
 - market_supply[market] = current principal supplied to that market
 - idle_balance = underlying tokens held by the vault
 - supply_queue (ordered list of market AccountIds) for allocation only
+- cap_groups[cap_group_id] = { cap (absolute), relative_cap (WAD fraction of total assets), principal (sum across member markets) }
 - pending_cap, pending_timelock, pending_guardian with timelock semantics
 - pending_withdrawals FIFO queue (id -> {owner, receiver, escrow_shares, expected_assets, requested_at})
 - Fee/virtual offsets for conversions:
@@ -124,7 +125,7 @@ Note
 - Views:
   - get_total_assets() = idle + sum(principal across all markets)
   - get_total_supply()
-  - get_max_deposit() aggregates per-market remaining caps in supply_queue order
+  - get_max_deposit() aggregates per-market remaining caps in supply_queue order (including cap-group relative-to-AUM caps)
   - convert_to_shares(assets), convert_to_assets(shares)
   - preview_deposit/mint/withdraw/redeem
 - Fees:

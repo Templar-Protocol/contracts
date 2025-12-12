@@ -123,9 +123,17 @@ impl Contract {
 
         let max = self.get_max_deposit().0;
         let accept = deposit.min(max);
-        let refund = deposit - accept;
+        if accept == 0 {
+            return deposit;
+        }
 
         let shares = self.preview_deposit(U128(accept)).0;
+        if shares == 0 {
+            return deposit;
+        }
+
+        let refund = deposit - accept;
+
         self.mint(&Nep141Mint::new(shares, &sender_id))
             .unwrap_or_else(|_| templar_common::panic_with_message("Failed to mint shares"));
 

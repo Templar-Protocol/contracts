@@ -244,8 +244,7 @@ impl Contract {
             op_state: OpState::Idle,
             next_op_id: 1,
             last_refresh_ns: 0,
-            refresh_cooldown_ns: configuration
-                .refresh_cooldown_ns
+            refresh_cooldown_ns: refresh_cooldown_ns
                 .map(|v| v.0)
                 .unwrap_or(DEFAULT_REFRESH_COOLDOWN_NS),
             pending_withdrawals: IterableMap::new(
@@ -897,37 +896,35 @@ impl Contract {
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
-    /// across all markets given current caps and the current `supply_queue`.
+    /// across all markets given current caps (including cap-group relative-to-AUM caps)
+    /// and the current `supply_queue`.
+    ///
+    /// For relative caps, the bound depends on total assets, so this is computed as a
+    /// fixed point: `x <= max_allocatable_room(total_assets + x)`.
     ///
     /// This does not reserve capacity and may become stale immediately after it is read.
     pub fn get_max_deposit(&self) -> U128 {
-        let mut total = 0u128;
-        let mut group_remaining: BTreeMap<CapGroupId, u128> = self
-            .cap_groups
-            .iter()
-            .map(|(id, rec)| (id.clone(), rec.cap.0.saturating_sub(rec.principal)))
-            .collect();
+        let base_total_assets = self.total_assets_for_caps();
+        let rounding_slack = self.relative_cap_rounding_slack();
 
-        for market in self.supply_queue.iter() {
-            let market_room = self.market_cap_room(market);
-            if market_room == 0 {
-                continue;
-            }
-            if let Some(group_id) = self.market_cap_group_id(market) {
-                let entry = group_remaining
-                    .entry(group_id.clone())
-                    .or_insert_with(|| self.cap_group_room_remaining(&group_id));
-                if *entry == 0 {
-                    continue;
-                }
-                let room = market_room.min(*entry);
-                total = total.saturating_add(room);
-                *entry = entry.saturating_sub(room);
+        let mut low = 0u128;
+        let mut high = self.market_room_upper_bound();
+
+        while low < high {
+            let diff = high.saturating_sub(low);
+            let mid = low.saturating_add(diff.saturating_add(1) / 2);
+
+            let total_assets = base_total_assets.saturating_add(mid);
+            let room = self.max_allocatable_room_at(total_assets);
+
+            if mid <= room.saturating_add(rounding_slack) {
+                low = mid;
             } else {
-                total = total.saturating_add(market_room);
+                high = mid.saturating_sub(1);
             }
         }
-        U128(total)
+
+        U128(low)
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
@@ -1060,10 +1057,103 @@ impl Contract {
             .and_then(|r| r.cfg.cap_group_id.clone())
     }
 
+    fn total_assets_for_caps(&self) -> u128 {
+        // For relative caps we want “true” AUM. During allocation we temporarily
+        // decrement `idle_balance` to reserve funds, so include `Allocating.remaining`.
+        let mut total = self.get_total_assets().0;
+        if let OpState::Allocating(s) = &self.op_state {
+            total = total.saturating_add(s.remaining);
+        }
+        total
+    }
+
+    fn market_room_upper_bound(&self) -> u128 {
+        self.supply_queue.iter().fold(0u128, |acc, market| {
+            acc.saturating_add(self.market_cap_room(market))
+        })
+    }
+
+    fn cap_group_effective_cap(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
+        let Some(rec) = self.cap_groups.get(cap_group) else {
+            return 0;
+        };
+
+        let rel_cap = rec.relative_cap.min(Wad::one());
+        if rel_cap >= Wad::one() {
+            return rec.cap.0;
+        }
+
+        let rel_cap_assets: u128 = rel_cap.apply_floored(total_assets.into()).into();
+
+        rec.cap.0.min(rel_cap_assets)
+    }
+
+    fn cap_group_room_remaining_at(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
+        let Some(rec) = self.cap_groups.get(cap_group) else {
+            return 0;
+        };
+
+        self.cap_group_effective_cap(cap_group, total_assets)
+            .saturating_sub(rec.principal)
+    }
+
     fn cap_group_room_remaining(&self, cap_group: &CapGroupId) -> u128 {
-        self.cap_groups
-            .get(cap_group)
-            .map_or(0, |rec| rec.cap.0.saturating_sub(rec.principal))
+        self.cap_group_room_remaining_at(cap_group, self.total_assets_for_caps())
+    }
+
+    fn max_allocatable_room_at(&self, total_assets: u128) -> u128 {
+        let mut total = 0u128;
+
+        let mut group_remaining: BTreeMap<CapGroupId, u128> = self
+            .cap_groups
+            .keys()
+            .map(|id| (id.clone(), self.cap_group_room_remaining_at(id, total_assets)))
+            .collect();
+
+        for market in self.supply_queue.iter() {
+            let market_room = self.market_cap_room(market);
+            if market_room == 0 {
+                continue;
+            }
+
+            if let Some(group_id) = self.market_cap_group_id(market) {
+                let default_room = self.cap_group_room_remaining_at(&group_id, total_assets);
+                let entry = group_remaining.entry(group_id).or_insert(default_room);
+                if *entry == 0 {
+                    continue;
+                }
+                let room = market_room.min(*entry);
+                total = total.saturating_add(room);
+                *entry = entry.saturating_sub(room);
+            } else {
+                total = total.saturating_add(market_room);
+            }
+        }
+
+        total
+    }
+
+    fn relative_cap_rounding_slack(&self) -> u128 {
+        let mut groups = HashSet::<CapGroupId>::new();
+
+        for market in self.supply_queue.iter() {
+            let Some(group_id) = self.market_cap_group_id(market) else {
+                continue;
+            };
+            let Some(rec) = self.cap_groups.get(&group_id) else {
+                continue;
+            };
+
+            if rec.cap.0 == 0 {
+                continue;
+            }
+
+            if rec.relative_cap < Wad::one() {
+                groups.insert(group_id);
+            }
+        }
+
+        u128::from(groups.len() as u64)
     }
 
     fn room_of(&self, market: &AccountId) -> u128 {

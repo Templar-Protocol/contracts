@@ -42,6 +42,11 @@ pub enum TimelockedAction {
         cap_group: CapGroupId,
         new_cap: U128,
     },
+    /// Change the relative cap (fraction of total vault assets) for a cap group.
+    CapGroupRelativeCapChange {
+        cap_group: CapGroupId,
+        new_relative_cap: U128,
+    },
     /// Assign (or remove) a market to/from a cap group.
     CapGroupMembership {
         market: AccountId,
@@ -551,6 +556,48 @@ impl Contract {
         }
     }
 
+    pub fn submit_cap_group_relative_cap(&mut self, cap_group: CapGroupId, new_relative_cap: U128) {
+        self.submit_change(TimelockedAction::CapGroupRelativeCapChange {
+            cap_group,
+            new_relative_cap,
+        });
+    }
+
+    pub fn accept_cap_group_relative_cap(&mut self, cap_group: CapGroupId) {
+        Self::assert_curator_or_owner();
+        self.ensure_idle();
+
+        if let Some(action) = self.take_timelock(|a| {
+            matches!(
+                a,
+                TimelockedAction::CapGroupRelativeCapChange {
+                    cap_group: pending,
+                    ..
+                } if pending == &cap_group
+            )
+        }) {
+            self.apply_immediately(&action);
+        } else {
+            panic_with_message("No pending cap group relative cap change for this id");
+        }
+    }
+
+    pub fn revoke_pending_cap_group_relative_cap(&mut self, cap_group: CapGroupId) {
+        Self::assert_curator_or_owner();
+
+        if self.revoke_timelocks(|a| {
+            matches!(
+                a,
+                TimelockedAction::CapGroupRelativeCapChange {
+                    cap_group: pending,
+                    ..
+                } if pending == &cap_group
+            )
+        }) {
+            Event::CapGroupRelativeCapRaiseRevoked { cap_group }.emit();
+        }
+    }
+
     pub fn submit_market_cap_group(&mut self, market: AccountId, cap_group: Option<CapGroupId>) {
         self.submit_change(TimelockedAction::CapGroupMembership { market, cap_group });
     }
@@ -784,6 +831,38 @@ impl Contract {
                     true
                 }
             }
+            TimelockedAction::CapGroupRelativeCapChange {
+                cap_group,
+                new_relative_cap,
+            } => {
+                Self::assert_curator_or_owner();
+                Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_relative_cap");
+                self.ensure_idle();
+
+                let new_wad = Wad::from(new_relative_cap.0);
+                require!(new_wad <= Wad::one(), "relative cap too high");
+
+                require!(
+                    self.governance_timelocks
+                        .seek_pending_timelock(|p| matches!(
+                            p,
+                            TimelockedAction::CapGroupRelativeCapChange { cap_group: pending, .. }
+                                if pending == cap_group
+                        ))
+                        .is_none(),
+                    "Cap group relative cap change already pending"
+                );
+
+                if let Some(record) = self.cap_groups.get(cap_group) {
+                    require!(
+                        new_wad != record.relative_cap,
+                        "New relative cap is same as current"
+                    );
+                    new_wad > record.relative_cap
+                } else {
+                    true
+                }
+            }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 Self::assert_curator_or_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_market_cap_group");
@@ -957,6 +1036,25 @@ impl Contract {
                 }
                 .emit();
             }
+            TimelockedAction::CapGroupRelativeCapChange {
+                cap_group,
+                new_relative_cap,
+            } => {
+                let new_wad = Wad::from(new_relative_cap.0);
+                require!(new_wad <= Wad::one(), "relative cap too high");
+
+                let record = self
+                    .cap_groups
+                    .entry(cap_group.clone())
+                    .or_insert_with(CapGroupRecord::default);
+                record.relative_cap = new_wad;
+
+                Event::CapGroupRelativeCapSet {
+                    cap_group: cap_group.clone(),
+                    new_relative_cap: *new_relative_cap,
+                }
+                .emit();
+            }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 let (old_group, principal) = {
                     let rec = self.markets.get(market).unwrap_or_else(|| {
@@ -1021,6 +1119,7 @@ impl Contract {
             },
             TimelockedAction::CapChange { .. }
             | TimelockedAction::CapGroupChange { .. }
+            | TimelockedAction::CapGroupRelativeCapChange { .. }
             | TimelockedAction::CapGroupMembership { .. } => self.governance_timelocks.cap_ns,
             TimelockedAction::MarketRemoval { .. } => self.governance_timelocks.market_removal_ns,
         };
@@ -1050,6 +1149,19 @@ impl Contract {
             Event::CapGroupRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_cap: *new_cap,
+                valid_at_ns,
+            }
+            .emit();
+        }
+
+        if let TimelockedAction::CapGroupRelativeCapChange {
+            cap_group,
+            new_relative_cap,
+        } = action
+        {
+            Event::CapGroupRelativeCapRaiseSubmitted {
+                cap_group: cap_group.clone(),
+                new_relative_cap: *new_relative_cap,
                 valid_at_ns,
             }
             .emit();
