@@ -120,7 +120,7 @@ mod tests {
     fn test_telegram_url_format() {
         let token = "test_token";
         let expected_url = "https://api.telegram.org/bottest_token/sendMessage";
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
+        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
         assert_eq!(url, expected_url);
     }
 
@@ -147,10 +147,10 @@ mod tests {
             "parse_mode": "HTML",
             "disable_web_page_preview": true,
         });
-        let thread_id = 123456;
+        let thread_id = 123_456;
         payload["message_thread_id"] = json!(thread_id);
 
-        assert_eq!(payload["message_thread_id"], 123456);
+        assert_eq!(payload["message_thread_id"], 123_456);
     }
 
     #[test]

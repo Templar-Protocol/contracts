@@ -58,8 +58,7 @@ mod tests {
 
     #[test]
     fn test_error_from_json() {
-        let json_err = serde_json::from_str::<serde_json::Value>("invalid json")
-            .unwrap_err();
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
         let monitor_err: MonitorError = json_err.into();
         assert!(monitor_err.to_string().contains("JSON error"));
     }
@@ -68,14 +67,17 @@ mod tests {
     fn test_result_type_ok() {
         let result: Result<i32> = Ok(42);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42);
+        if let Ok(value) = result {
+            assert_eq!(value, 42);
+        }
     }
 
     #[test]
     fn test_result_type_err() {
         let result: Result<i32> = Err(MonitorError::Rpc("test".to_string()));
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.to_string(), "RPC error: test");
+        if let Err(err) = result {
+            assert_eq!(err.to_string(), "RPC error: test");
+        }
     }
 }
