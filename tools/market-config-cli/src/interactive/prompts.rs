@@ -1,6 +1,7 @@
 use crate::{
+    common::shared::{handle_interrupted, map_dialoguer_err},
     config::{validator::set_progress_style, ConfigTemplate},
-    editor::utils::prompt_decimal,
+    editor::utils::{parse_asset_input, prompt_decimal, prompt_decimals},
     logger,
     oracle::PriceValidator,
     CliError, CliResult, ConfigBuilder, ConfigValidator, InterestRateCalculator,
@@ -11,6 +12,7 @@ use indicatif::ProgressBar;
 use near_sdk::AccountId;
 use std::str::FromStr;
 use templar_common::{
+    asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, YieldWeights},
@@ -24,6 +26,12 @@ const INTERACTIVE_STEPS: u64 = 7;
 pub struct InteractivePrompt {
     network: Network,
     theme: ColorfulTheme,
+}
+
+#[derive(Clone, Copy)]
+enum AssetStandard {
+    Nep141,
+    Nep245,
 }
 
 fn prompt_until_valid<T, R, P, V>(mut prompt_fn: P, mut validate_fn: V) -> CliResult<R>
@@ -41,6 +49,7 @@ where
                 }
             },
             Err(err) => {
+                handle_interrupted(&err);
                 logger::warn(format!("Failed to read input: {err}"));
                 println!("Please try again.\n");
             }
@@ -97,7 +106,7 @@ impl InteractivePrompt {
                         .with_prompt(format!("Re-enter {label}?"))
                         .default(true)
                         .interact()
-                        .map_err(|err| CliError::Io(std::io::Error::other(err)))?;
+                        .map_err(map_dialoguer_err)?;
                     if retry {
                         account_id = prompt_until_valid(
                             || {
@@ -121,12 +130,75 @@ impl InteractivePrompt {
                         ))
                         .default(false)
                         .interact()
-                        .map_err(|err| CliError::Io(std::io::Error::other(err)))?;
+                        .map_err(map_dialoguer_err)?;
                     if continue_anyway {
                         let builder = apply(builder, &account_id)?;
                         break Ok((builder, account_id));
                     }
                 }
+            }
+        }
+    }
+
+    async fn prompt_fungible_asset<T: AssetClass>(
+        &self,
+        builder: ConfigBuilder,
+        label: &str,
+        nep141_example: &str,
+        apply: impl Fn(ConfigBuilder, FungibleAsset<T>) -> CliResult<ConfigBuilder>,
+    ) -> CliResult<ConfigBuilder> {
+        let asset_standard = Select::with_theme(&self.theme)
+            .with_prompt(format!("{label} type"))
+            .items(["NEP-141 (fungible token)", "NEP-245 (multi-token)"])
+            .default(0)
+            .interact()
+            .map_err(map_dialoguer_err)?;
+
+        let asset_standard = match asset_standard {
+            0 => AssetStandard::Nep141,
+            1 => AssetStandard::Nep245,
+            _ => unreachable!(),
+        };
+
+        match asset_standard {
+            AssetStandard::Nep141 => {
+                let (builder, _) = self
+                    .prompt_account_with_validation(
+                        builder,
+                        &format!("{label} contract ID (e.g., {nep141_example})"),
+                        None,
+                        label,
+                        |b, account| apply(b, FungibleAsset::nep141(account.clone())),
+                    )
+                    .await?;
+
+                Ok(builder)
+            }
+            AssetStandard::Nep245 => {
+                let (builder, contract_id) = self
+                    .prompt_account_with_validation(
+                        builder,
+                        &format!("{label} contract ID (NEP-245 multi-token)"),
+                        None,
+                        label,
+                        |b, _| Ok(b),
+                    )
+                    .await?;
+
+                let contract_id_str = contract_id.to_string();
+                let asset = prompt_until_valid(
+                    || {
+                        Input::with_theme(&self.theme)
+                            .with_prompt(format!("{label} token ID (string)"))
+                            .interact_text()
+                    },
+                    |token_id: String| {
+                        let composed = format!("nep245:{contract_id_str}:{token_id}");
+                        parse_asset_input(&composed, label)
+                    },
+                )?;
+
+                apply(builder, asset)
             }
         }
     }
@@ -145,7 +217,7 @@ impl InteractivePrompt {
             .with_prompt("Would you like to start with a template?")
             .default(true)
             .interact()
-            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+            .map_err(map_dialoguer_err)?;
 
         let mut builder = ConfigBuilder::new();
 
@@ -217,7 +289,7 @@ impl InteractivePrompt {
             .items(&template_names)
             .default(0)
             .interact()
-            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+            .map_err(map_dialoguer_err)?;
 
         Ok(templates[selection].clone())
     }
@@ -236,41 +308,33 @@ impl InteractivePrompt {
         )?;
         builder = builder.time_chunk_duration_ms(time_chunk_ms);
 
-        let (builder_with_borrow, _) = self
-            .prompt_account_with_validation(
+        builder = self
+            .prompt_fungible_asset::<BorrowAsset>(
                 builder,
-                &format!(
-                    "Borrow asset contract ID (e.g., {})",
-                    match self.network {
-                        Network::Mainnet => "usdc.near",
-                        Network::Testnet => "usdc.testnet",
-                    }
-                ),
-                None,
-                "borrow asset",
-                |b, account| ConfigBuilder::borrow_asset(b, account.as_str()),
+                "Borrow asset",
+                match self.network {
+                    Network::Mainnet => "usdc.near",
+                    Network::Testnet => "usdc.testnet",
+                },
+                ConfigBuilder::borrow_fungible_asset,
             )
             .await?;
 
-        let (builder_with_collateral, _) = self
-            .prompt_account_with_validation(
-                builder_with_borrow,
-                &format!(
-                    "Collateral asset contract ID (e.g., {})",
-                    match self.network {
-                        Network::Mainnet => "wrap.near",
-                        Network::Testnet => "wrap.testnet",
-                    }
-                ),
-                None,
-                "collateral asset",
-                |b, account| ConfigBuilder::collateral_asset(b, account.as_str()),
+        builder = self
+            .prompt_fungible_asset::<CollateralAsset>(
+                builder,
+                "Collateral asset",
+                match self.network {
+                    Network::Mainnet => "wrap.near",
+                    Network::Testnet => "wrap.testnet",
+                },
+                ConfigBuilder::collateral_fungible_asset,
             )
             .await?;
 
         let (builder, _) = self
             .prompt_account_with_validation(
-                builder_with_collateral,
+                builder,
                 "Protocol account ID (for fees)",
                 None,
                 "protocol account",
@@ -326,7 +390,7 @@ impl InteractivePrompt {
                         .with_prompt("Re-enter this price ID?")
                         .default(true)
                         .interact()
-                        .map_err(|err| CliError::Io(std::io::Error::other(err)))?;
+                        .map_err(map_dialoguer_err)?;
                     if retry {
                         continue;
                     }
@@ -334,7 +398,7 @@ impl InteractivePrompt {
                         .with_prompt("Continue anyway with this ID?")
                         .default(false)
                         .interact()
-                        .map_err(|err| CliError::Io(std::io::Error::other(err)))?;
+                        .map_err(map_dialoguer_err)?;
                     if continue_anyway {
                         break borrow_price_id;
                     }
@@ -343,14 +407,11 @@ impl InteractivePrompt {
         };
         builder = builder.borrow_price_id(borrow_price_id.0);
 
-        let borrow_decimals: i32 = prompt_until_valid(
-            || {
-                Input::with_theme(&self.theme)
-                    .with_prompt("Borrow asset decimals")
-                    .default(6)
-                    .interact_text()
-            },
-            Ok::<_, CliError>,
+        let borrow_decimals = prompt_decimals(
+            &self.theme,
+            "Borrow asset decimals",
+            6,
+            "Borrow asset decimals",
         )?;
         builder = builder.borrow_decimals(borrow_decimals);
 
@@ -379,7 +440,7 @@ impl InteractivePrompt {
                         .with_prompt("Re-enter this price ID?")
                         .default(true)
                         .interact()
-                        .map_err(|err| CliError::Io(std::io::Error::other(err)))?;
+                        .map_err(map_dialoguer_err)?;
                     if retry {
                         continue;
                     }
@@ -387,7 +448,7 @@ impl InteractivePrompt {
                         .with_prompt("Continue anyway with this ID?")
                         .default(false)
                         .interact()
-                        .map_err(|err| CliError::Io(std::io::Error::other(err)))?;
+                        .map_err(map_dialoguer_err)?;
                     if continue_anyway {
                         break collateral_price_id;
                     }
@@ -396,14 +457,11 @@ impl InteractivePrompt {
         };
         builder = builder.collateral_price_id(collateral_price_id.0);
 
-        let collateral_decimals: i32 = prompt_until_valid(
-            || {
-                Input::with_theme(&self.theme)
-                    .with_prompt("Collateral asset decimals")
-                    .default(24)
-                    .interact_text()
-            },
-            Ok::<_, CliError>,
+        let collateral_decimals = prompt_decimals(
+            &self.theme,
+            "Collateral asset decimals",
+            24,
+            "Collateral asset decimals",
         )?;
         builder = builder.collateral_decimals(collateral_decimals);
 
@@ -485,7 +543,7 @@ impl InteractivePrompt {
             .with_prompt("Set maximum borrow duration?")
             .default(true)
             .interact()
-            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+            .map_err(map_dialoguer_err)?;
 
         if has_max_duration {
             let max_duration_ms: u64 = prompt_until_valid(
@@ -521,7 +579,7 @@ impl InteractivePrompt {
             .items(&strategy_labels)
             .default(default_strategy_index(&strategy_types))
             .interact()
-            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+            .map_err(map_dialoguer_err)?;
 
         let calculator = InterestRateCalculator::new();
 
@@ -552,18 +610,18 @@ impl InteractivePrompt {
                 "0.05",
                 "linear base rate",
             )?;
-            let slope = prompt_decimal(
+            let top_rate = prompt_decimal(
                 &self.theme,
-                "Slope (rate increase per utilization, e.g., 0.10)",
+                "Rate at 100% utilization (e.g., 0.15 for 15% APY)",
                 "0.10",
-                "linear slope",
+                "linear top rate",
             )?;
 
-            match calculator.calculate_linear(base_rate, slope) {
+            match calculator.calculate_linear(base_rate, top_rate) {
                 Ok(strategy) => break Ok(strategy),
                 Err(e) => {
                     logger::warn(e);
-                    println!("Please re-enter the base rate and slope.\n");
+                    println!("Please re-enter the base rate and top rate.\n");
                 }
             }
         }
@@ -666,7 +724,7 @@ impl InteractivePrompt {
                 .with_prompt("Set maximum borrow amount?")
                 .default(true)
                 .interact()
-                .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+                .map_err(map_dialoguer_err)?;
             let borrow_max = if has_borrow_max {
                 Some(prompt_until_valid(
                     || {
@@ -679,6 +737,13 @@ impl InteractivePrompt {
             } else {
                 None
             };
+
+            if borrow_min == 0 {
+                logger::warn("Borrow range minimum must be greater than zero");
+                println!("Please re-enter the borrow range values.\n");
+                continue;
+            }
+
             match builder.clone().borrow_range(borrow_min, borrow_max) {
                 Ok(updated) => {
                     builder = updated;
@@ -705,7 +770,7 @@ impl InteractivePrompt {
                     .with_prompt("Set maximum supply amount?")
                     .default(true)
                     .interact()
-                    .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+                    .map_err(map_dialoguer_err)?;
                 let supply_max = if has_supply_max {
                     Some(prompt_until_valid(
                         || {
@@ -718,6 +783,13 @@ impl InteractivePrompt {
                 } else {
                     None
                 };
+
+                if supply_min == 0 {
+                    logger::warn("Supply range minimum must be greater than zero");
+                    println!("Please re-enter the supply range values.\n");
+                    continue;
+                }
+
                 match builder.clone().supply_range(supply_min, supply_max) {
                     Ok(updated_builder) => {
                         builder = updated_builder;
@@ -742,6 +814,12 @@ impl InteractivePrompt {
                 },
                 Ok::<_, CliError>,
             )?;
+
+            if withdrawal_min > supply_min {
+                logger::warn("Withdrawal minimum cannot be greater than the supply range minimum");
+                println!("Please re-enter the withdrawal range.\n");
+                continue;
+            }
             match builder
                 .clone()
                 .supply_withdrawal_range(withdrawal_min, supply_max)
@@ -767,7 +845,7 @@ impl InteractivePrompt {
             .with_prompt("Set borrow origination fee?")
             .default(true)
             .interact()
-            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+            .map_err(map_dialoguer_err)?;
 
         if has_origination_fee {
             let fee_types = vec!["Flat amount", "Percentage"];
@@ -776,7 +854,7 @@ impl InteractivePrompt {
                 .items(&fee_types)
                 .default(1)
                 .interact()
-                .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+                .map_err(map_dialoguer_err)?;
 
             if fee_type == 0 {
                 let amount: u128 = prompt_until_valid(
@@ -812,56 +890,122 @@ impl InteractivePrompt {
         Ok(builder)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn prompt_yield_weights(&self, mut builder: ConfigBuilder) -> CliResult<ConfigBuilder> {
         println!("\n🎯 Yield Distribution\n");
+
+        let share_percent =
+            |weight: u16, total: u16| -> f64 { (f64::from(weight) / f64::from(total)) * 100.0 };
 
         let supply_weight: u16 = prompt_until_valid(
             || {
                 Input::with_theme(&self.theme)
-                    .with_prompt("Supplier yield weight (e.g., 9 for 90% to suppliers)")
+                    .with_prompt("Supplier yield weight (relative weight)")
                     .default(9)
                     .interact_text()
             },
-            Ok::<_, CliError>,
+            |weight: u16| {
+                if weight == 0 {
+                    return Err(CliError::InvalidInput(
+                        "Supplier weight must be greater than zero".into(),
+                    ));
+                }
+                Ok(weight)
+            },
         )?;
 
         let mut weights = YieldWeights::new_with_supply_weight(supply_weight);
+        let mut total_weight = u16::from(weights.total_weight());
+        let mut supply_share = share_percent(supply_weight, total_weight);
+        println!("➡️  Current weights: total = {total_weight}, suppliers ≈ {supply_share:.2}%",);
 
         let add_static = Confirm::with_theme(&self.theme)
             .with_prompt("Add static yield recipients (e.g., protocol revenue)?")
             .default(true)
             .interact()
-            .map_err(|e| CliError::Io(std::io::Error::other(e)))?;
+            .map_err(map_dialoguer_err)?;
 
         if add_static {
-            let account_id = prompt_until_valid(
-                || {
-                    Input::with_theme(&self.theme)
-                        .with_prompt("Static recipient account ID")
-                        .interact_text()
-                },
-                |value: String| {
-                    value
-                        .parse()
-                        .map_err(|e| CliError::InvalidInput(format!("Invalid account ID: {e}")))
-                },
-            )?;
+            loop {
+                let account_id: AccountId = prompt_until_valid(
+                    || {
+                        Input::with_theme(&self.theme)
+                            .with_prompt("Static recipient account ID")
+                            .interact_text()
+                    },
+                    |value: String| {
+                        value
+                            .parse()
+                            .map_err(|e| CliError::InvalidInput(format!("Invalid account ID: {e}")))
+                    },
+                )?;
 
-            let weight: u16 = prompt_until_valid(
-                || {
-                    Input::with_theme(&self.theme)
-                        .with_prompt("Static recipient weight (e.g., 1 for 10%)")
-                        .default(1)
-                        .interact_text()
-                },
-                Ok::<_, CliError>,
-            )?;
+                total_weight = u16::from(weights.total_weight());
+                let previous_weight = weights.r#static.get(&account_id).copied().unwrap_or(0);
+                let current_total = total_weight;
+                let supply_share_before = share_percent(supply_weight, current_total);
 
-            weights = weights.with_static(account_id, weight);
+                let weight: u16 = prompt_until_valid(
+                    || {
+                        let prompt =
+                            format!("Static recipient weight (current total) {current_total}");
+                        Input::with_theme(&self.theme)
+                            .with_prompt(prompt)
+                            .default(previous_weight.max(1))
+                            .interact_text()
+                    },
+                    |weight: u16| {
+                        if weight == 0 {
+                            return Err(CliError::InvalidInput(
+                                "Static recipient weight must be greater than zero".into(),
+                            ));
+                        }
+                        let prospective_total = u32::from(current_total)
+                            .checked_sub(u32::from(previous_weight))
+                            .and_then(|t| t.checked_add(u32::from(weight)))
+                            .ok_or_else(|| {
+                                CliError::InvalidInput(
+                                    "Total yield weight would overflow u16".into(),
+                                )
+                            })?;
+                        if prospective_total == 0 {
+                            return Err(CliError::InvalidInput(
+                                "Total yield weight must stay greater than zero".into(),
+                            ));
+                        }
+                        Ok(weight)
+                    },
+                )?;
+
+                let prospective_total = u32::from(current_total)
+                    .checked_sub(u32::from(previous_weight))
+                    .and_then(|t| t.checked_add(u32::from(weight)))
+                    .ok_or_else(|| {
+                        CliError::InvalidInput("Total yield weight would overflow u16".into())
+                    })?;
+
+                total_weight = u16::try_from(prospective_total).map_err(|_| {
+                    CliError::InvalidInput("Total yield weight must fit within u16".into())
+                })?;
+                weights = weights.with_static(account_id.clone(), weight);
+                supply_share = share_percent(supply_weight, total_weight);
+                let static_share = share_percent(weight, total_weight);
+
+                println!(
+                    "➡️  Updated total weight = {total_weight}. Suppliers ≈ {supply_share:.2}%, {account_id} ≈ {static_share:.2}% (from {supply_share_before:.2}% for suppliers).",
+                );
+
+                let add_more = Confirm::with_theme(&self.theme)
+                    .with_prompt("Add another static recipient?")
+                    .default(false)
+                    .interact()
+                    .map_err(map_dialoguer_err)?;
+                if !add_more {
+                    break;
+                }
+            }
         }
-
         builder = builder.yield_weights(weights);
-
         Ok(builder)
     }
 }

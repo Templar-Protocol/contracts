@@ -1,4 +1,5 @@
 pub mod calculator;
+pub mod common;
 pub mod config;
 pub mod contract;
 pub mod curve;
@@ -52,6 +53,10 @@ pub enum CliError {
     /// Failed to query view method
     #[error("Failed to query view method: {0}")]
     ViewMethodError(#[from] JsonRpcError<RpcQueryError>),
+
+    /// Other errors
+    #[error("Other error: {0}")]
+    Other(String),
 }
 
 pub type CliResult<T = ()> = Result<T, CliError>;

@@ -85,23 +85,32 @@ impl ConfigBuilder {
     }
 
     /// # Errors
-    pub fn borrow_asset(mut self, account_id: &str) -> CliResult<Self> {
-        let asset = FungibleAsset::nep141(
-            AccountId::from_str(account_id)
-                .map_err(|e| CliError::InvalidInput(format!("Invalid borrow asset: {e}")))?,
-        );
+    pub fn borrow_fungible_asset(mut self, asset: FungibleAsset<BorrowAsset>) -> CliResult<Self> {
         self.borrow_asset = Some(asset);
         Ok(self)
     }
 
     /// # Errors
-    pub fn collateral_asset(mut self, account_id: &str) -> CliResult<Self> {
-        let asset = FungibleAsset::nep141(
-            AccountId::from_str(account_id)
-                .map_err(|e| CliError::InvalidInput(format!("Invalid collateral asset: {e}")))?,
-        );
+    pub fn borrow_asset(self, account_id: &str) -> CliResult<Self> {
+        let account_id = AccountId::from_str(account_id)
+            .map_err(|e| CliError::InvalidInput(format!("Invalid borrow asset: {e}")))?;
+        self.borrow_fungible_asset(FungibleAsset::nep141(account_id))
+    }
+
+    /// # Errors
+    pub fn collateral_fungible_asset(
+        mut self,
+        asset: FungibleAsset<CollateralAsset>,
+    ) -> CliResult<Self> {
         self.collateral_asset = Some(asset);
         Ok(self)
+    }
+
+    /// # Errors
+    pub fn collateral_asset(self, account_id: &str) -> CliResult<Self> {
+        let account_id = AccountId::from_str(account_id)
+            .map_err(|e| CliError::InvalidInput(format!("Invalid collateral asset: {e}")))?;
+        self.collateral_fungible_asset(FungibleAsset::nep141(account_id))
     }
 
     /// # Errors
@@ -322,14 +331,11 @@ impl ConfigBuilder {
         }
 
         if let Some(asset) = &self.borrow_asset {
-            lines.push(format!("Borrow asset: {}", asset.contract_id().as_ref()));
+            lines.push(format!("Borrow asset: {asset}"));
         }
 
         if let Some(asset) = &self.collateral_asset {
-            lines.push(format!(
-                "Collateral asset: {}",
-                asset.contract_id().as_ref()
-            ));
+            lines.push(format!("Collateral asset: {asset}"));
         }
 
         if let Some(id) = &self.oracle_account_id {

@@ -32,12 +32,31 @@ pub async fn handle_interactive(
     )?;
 
     let validator = ConfigValidator::new(Some(network));
-    validator.validate(&config).await?;
+    let mut validation_ok = true;
+    if let Err(err) = validator.validate(&config).await {
+        validation_ok = false;
+        logger::warn(format!("Validation failed: {err}"));
+        let continue_anyway = Confirm::with_theme(theme)
+            .with_prompt("Validation failed. Save configuration anyway?")
+            .default(false)
+            .interact()
+            .map_err(std::io::Error::other)?;
+        if !continue_anyway {
+            return Err(err);
+        }
+    }
     std::fs::write(&market_output_path, to_string_pretty(&config)?)?;
-    logger::success(format!(
-        "Configuration written to: {}",
-        market_output_path.display()
-    ));
+    if validation_ok {
+        logger::success(format!(
+            "Configuration written to: {}",
+            market_output_path.display()
+        ));
+    } else {
+        logger::alert(format!(
+            "Configuration written without passing validation: {}",
+            market_output_path.display()
+        ));
+    }
     Ok(())
 }
 
@@ -74,13 +93,32 @@ pub async fn handle_from_contract(
     }
 
     let validator = ConfigValidator::new(Some(network));
-    validator.validate(&config).await?;
+    let mut validation_ok = true;
+    if let Err(err) = validator.validate(&config).await {
+        validation_ok = false;
+        logger::warn(format!("Validation failed: {err}"));
+        let continue_anyway = Confirm::with_theme(theme)
+            .with_prompt("Validation failed. Save configuration anyway?")
+            .default(false)
+            .interact()
+            .map_err(std::io::Error::other)?;
+        if !continue_anyway {
+            return Err(err);
+        }
+    }
 
     std::fs::write(&market_path, serde_json::to_string_pretty(&config)?)?;
-    logger::success(format!(
-        "Configuration written to: {}",
-        market_path.display()
-    ));
+    if validation_ok {
+        logger::success(format!(
+            "Configuration written to: {}",
+            market_path.display()
+        ));
+    } else {
+        logger::warn(format!(
+            "Configuration written without passing validation: {}",
+            market_path.display()
+        ));
+    }
 
     Ok(())
 }
@@ -112,7 +150,19 @@ pub async fn handle_from_template(
     }
 
     let validator = ConfigValidator::new(Some(network));
-    validator.validate(&config).await?;
+    let mut validation_ok = true;
+    if let Err(err) = validator.validate(&config).await {
+        validation_ok = false;
+        logger::warn(format!("Validation failed: {err}"));
+        let continue_anyway = Confirm::with_theme(theme)
+            .with_prompt("Validation failed. Save configuration anyway?")
+            .default(false)
+            .interact()
+            .map_err(std::io::Error::other)?;
+        if !continue_anyway {
+            return Err(err);
+        }
+    }
 
     let output_path = prompt_path(
         output,
@@ -121,10 +171,17 @@ pub async fn handle_from_template(
     )?;
 
     std::fs::write(&output_path, serde_json::to_string_pretty(&config)?)?;
-    logger::success(format!(
-        "Configuration written to: {}",
-        output_path.display()
-    ));
+    if validation_ok {
+        logger::success(format!(
+            "Configuration written to: {}",
+            output_path.display()
+        ));
+    } else {
+        logger::warn(format!(
+            "Configuration written without passing validation: {}",
+            output_path.display()
+        ));
+    }
 
     Ok(())
 }
@@ -171,8 +228,8 @@ pub fn handle_calculate_curve(
     let calculator = InterestRateCalculator::new();
     let strategy = match model {
         Some(InterestRateStrategy::Linear(_)) => {
-            let (start, slope) = prompt_or_default_linear(starting_rate, optimal_rate, theme)?;
-            calculator.calculate_linear(start, slope)?
+            let (start, top_rate) = prompt_or_default_linear(starting_rate, optimal_rate, theme)?;
+            calculator.calculate_linear(start, top_rate)?
         }
         Some(InterestRateStrategy::Exponential2(_)) => {
             let (start, top, ecc) =
@@ -199,7 +256,7 @@ pub fn handle_calculate_curve(
 
 fn prompt_or_default_linear(
     starting_rate: Option<Decimal>,
-    slope: Option<Decimal>,
+    top_rate: Option<Decimal>,
     theme: &ColorfulTheme,
 ) -> CliResult<(Decimal, Decimal)> {
     let start = match starting_rate {
@@ -211,16 +268,16 @@ fn prompt_or_default_linear(
             "linear starting rate",
         )?,
     };
-    let slope = match slope {
+    let top_rate = match top_rate {
         Some(v) => v,
         None => prompt_decimal(
             theme,
-            "Slope (rate increase per utilization, e.g., 0.10)",
+            "Rate at 100% utilization (e.g., 0.15)",
             "0.10",
-            "linear slope",
+            "linear top rate",
         )?,
     };
-    Ok((start, slope))
+    Ok((start, top_rate))
 }
 
 fn prompt_or_default_exponential(

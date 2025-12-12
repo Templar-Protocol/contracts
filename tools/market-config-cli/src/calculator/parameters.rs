@@ -40,8 +40,27 @@ impl InterestRateCalculator {
         // Validate inputs
         validate_inputs(starting_rate, optimal_rate, optimal_usage, max_rate)?;
 
-        // Create the piecewise strategy
-        InterestRateStrategy::piecewise(starting_rate, optimal_usage, optimal_rate, max_rate)
+        // Convert target rates at the breakpoints into slopes for the piecewise segments.
+        let denom_one = optimal_usage;
+        let denom_two = Decimal::ONE - optimal_usage;
+
+        if denom_one.is_zero() || denom_two.is_zero() {
+            return Err(CliError::InvalidInput(
+                "Optimal usage must be between 0 and 1 (exclusive)".into(),
+            ));
+        }
+
+        let slope_one = (optimal_rate - starting_rate) / denom_one;
+        let slope_two = (max_rate - optimal_rate) / denom_two;
+
+        if slope_one > slope_two {
+            return Err(CliError::InvalidInput(
+                "Cannot build piecewise curve: slope before optimal exceeds slope after optimal"
+                    .into(),
+            ));
+        }
+
+        InterestRateStrategy::piecewise(starting_rate, optimal_usage, slope_one, slope_two)
             .ok_or_else(|| CliError::InvalidInput("Failed to create interest rate strategy".into()))
     }
 
@@ -49,14 +68,20 @@ impl InterestRateCalculator {
     ///
     /// # Parameters
     /// - `base_rate`: Base interest rate at 0% usage
-    /// - `slope`: Rate of increase per unit utilization
+    /// - `top_rate`: Interest rate at 100% usage
     /// # Errors
     pub fn calculate_linear(
         &self,
         base_rate: Decimal,
-        slope: Decimal,
+        top_rate: Decimal,
     ) -> CliResult<InterestRateStrategy> {
-        InterestRateStrategy::linear(base_rate, slope)
+        if top_rate < base_rate {
+            return Err(CliError::InvalidInput(
+                "Top rate must be greater than or equal to base rate".into(),
+            ));
+        }
+
+        InterestRateStrategy::linear(base_rate, top_rate)
             .ok_or_else(|| CliError::InvalidInput("Failed to create linear strategy".into()))
     }
 
@@ -68,6 +93,12 @@ impl InterestRateCalculator {
         top_rate: Decimal,
         eccentricity: Decimal,
     ) -> CliResult<InterestRateStrategy> {
+        if eccentricity.is_zero() {
+            return Err(CliError::InvalidInput(
+                "Eccentricity must be greater than zero".into(),
+            ));
+        }
+
         InterestRateStrategy::exponential2(base_rate, top_rate, eccentricity).ok_or_else(|| {
             CliError::InvalidInput("Failed to create exponential interest rate strategy".into())
         })
@@ -75,14 +106,8 @@ impl InterestRateCalculator {
 
     #[allow(
         clippy::cast_precision_loss,
-        reason = "Affects only display, not calculations"
-    )]
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "Affects only display, not calculations"
-    )]
-    #[allow(
         clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
         reason = "Affects only display, not calculations"
     )]
     /// Helper to display interest rate curves for visualization
@@ -154,9 +179,9 @@ fn validate_inputs(
     }
 
     // Check that optimal usage is between 0 and 1
-    if optimal_util > Decimal::ONE {
+    if optimal_util >= Decimal::ONE || optimal_util.is_zero() {
         return Err(CliError::InvalidInput(
-            "Optimal usage must be between 0 and 1".into(),
+            "Optimal usage must be between 0 and 1 (exclusive)".into(),
         ));
     }
 
@@ -193,6 +218,14 @@ impl Default for InterestRateCalculator {
 mod tests {
     use super::*;
 
+    fn close_enough(a: Decimal, b: Decimal, epsilon: Decimal) -> bool {
+        if a >= b {
+            (a - b) <= epsilon
+        } else {
+            (b - a) <= epsilon
+        }
+    }
+
     #[test]
     fn test_calculate_piecewise() {
         let calculator = InterestRateCalculator::new();
@@ -219,6 +252,32 @@ mod tests {
     }
 
     #[test]
+    fn test_piecewise_rates_match_points() {
+        let calculator = InterestRateCalculator::new();
+        let strategy = calculator
+            .calculate_piecewise(
+                Decimal::from_str("0.02").unwrap(),
+                Decimal::from_str("0.23").unwrap(),
+                Decimal::from_str("0.90").unwrap(),
+                Decimal::from_str("0.34").unwrap(),
+            )
+            .unwrap();
+
+        let epsilon = Decimal::from_str("0.000000000000000001").unwrap();
+        let expected_zero = Decimal::from_str("0.02").unwrap();
+        let expected_opt = Decimal::from_str("0.23").unwrap();
+        let expected_max = Decimal::from_str("0.34").unwrap();
+
+        let at_zero = strategy.at(Decimal::ZERO);
+        let at_opt = strategy.at(Decimal::from_str("0.90").unwrap());
+        let at_max = strategy.at(Decimal::ONE);
+
+        assert!(close_enough(at_zero, expected_zero, epsilon));
+        assert!(close_enough(at_opt, expected_opt, epsilon));
+        assert!(close_enough(at_max, expected_max, epsilon));
+    }
+
+    #[test]
     fn test_calculate_linear() {
         let calculator = InterestRateCalculator::new();
         let strategy = calculator
@@ -234,6 +293,21 @@ mod tests {
 
         // Test at 100% utilization
         let rate_max = strategy.at(Decimal::ONE);
-        assert!(rate_max >= Decimal::from_str("0.09").unwrap());
+        assert_eq!(rate_max, Decimal::from_str("0.10").unwrap());
+    }
+
+    #[test]
+    fn exponential_rejects_zero_eccentricity() {
+        let calculator = InterestRateCalculator::new();
+        let err = calculator
+            .calculate_exponential2(
+                Decimal::from_str("0.02").unwrap(),
+                Decimal::from_str("0.10").unwrap(),
+                Decimal::ZERO,
+            )
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Eccentricity must be greater than zero"));
     }
 }

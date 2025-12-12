@@ -4,7 +4,7 @@ members = [
   "common",
   "contract/*",
   "fuzz",
-  "market-config-cli",
+  "tools/*",
   "mock/*",
   "service/*",
   "test-utils",

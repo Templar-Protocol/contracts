@@ -14,8 +14,8 @@ use templar_common::{
 
 pub mod utils;
 use utils::{
-    fee_defaults, parse_asset_input, price_id_from_input, prompt_decimal, EditSection,
-    StrategyDefaults, StrategyKind,
+    fee_defaults, parse_asset_input, price_id_from_input, prompt_decimal, prompt_decimals,
+    EditSection, StrategyDefaults, StrategyKind,
 };
 
 pub struct ConfigEditor<'a> {
@@ -124,11 +124,12 @@ impl<'a> ConfigEditor<'a> {
         config.price_oracle_configuration.borrow_asset_price_id =
             price_id_from_input(&borrow_price_id_hex)?;
 
-        let borrow_decimals: i32 = Input::with_theme(self.theme)
-            .with_prompt("Borrow asset decimals")
-            .default(config.price_oracle_configuration.borrow_asset_decimals)
-            .interact_text()
-            .map_err(std::io::Error::other)?;
+        let borrow_decimals: i32 = prompt_decimals(
+            self.theme,
+            "Borrow asset decimals",
+            config.price_oracle_configuration.borrow_asset_decimals,
+            "Borrow asset decimals",
+        )?;
         config.price_oracle_configuration.borrow_asset_decimals = borrow_decimals;
 
         let collateral_price_id_hex: String = Input::with_theme(self.theme)
@@ -144,11 +145,12 @@ impl<'a> ConfigEditor<'a> {
         config.price_oracle_configuration.collateral_asset_price_id =
             price_id_from_input(&collateral_price_id_hex)?;
 
-        let collateral_decimals: i32 = Input::with_theme(self.theme)
-            .with_prompt("Collateral asset decimals")
-            .default(config.price_oracle_configuration.collateral_asset_decimals)
-            .interact_text()
-            .map_err(std::io::Error::other)?;
+        let collateral_decimals: i32 = prompt_decimals(
+            self.theme,
+            "Collateral asset decimals",
+            config.price_oracle_configuration.collateral_asset_decimals,
+            "Collateral asset decimals",
+        )?;
         config.price_oracle_configuration.collateral_asset_decimals = collateral_decimals;
 
         let price_max_age: u32 = Input::with_theme(self.theme)

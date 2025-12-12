@@ -2,6 +2,7 @@ use crate::CliResult;
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use market_config_cli::{
     calculator::parameters::CurveParameters,
+    common::shared::map_dialoguer_err,
     curve::{strategy_from_name, CurveInput, ModelArg},
     editor::utils::prompt_decimal,
     CliError,
@@ -25,7 +26,7 @@ pub fn prompt_network(network: Option<Network>, theme: &ColorfulTheme) -> CliRes
         .items(&labels)
         .default(0)
         .interact()
-        .map_err(std::io::Error::other)?;
+        .map_err(map_dialoguer_err)?;
     Ok(networks.get(index).copied().unwrap_or(Network::Testnet))
 }
 
@@ -40,7 +41,7 @@ pub fn prompt_contract_id(
         let value: String = Input::with_theme(theme)
             .with_prompt("Enter contract account ID")
             .interact_text()
-            .map_err(std::io::Error::other)?;
+            .map_err(map_dialoguer_err)?;
         value
             .parse::<AccountId>()
             .map_err(|e| CliError::InvalidInput(e.to_string()))
@@ -59,7 +60,7 @@ pub fn prompt_path(
         let path: String = Input::with_theme(theme)
             .with_prompt(prompt)
             .interact_text()
-            .map_err(std::io::Error::other)?;
+            .map_err(map_dialoguer_err)?;
         Ok(PathBuf::from(path))
     }
 }
@@ -70,7 +71,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Starting rate at 0% utilization (e.g., 0.02)")
         .default("0.02".to_string())
         .interact_text()
-        .map_err(std::io::Error::other)?;
+        .map_err(map_dialoguer_err)?;
     let starting_rate: Decimal = Decimal::from_str(&starting_rate_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid starting rate: {e}")))?;
 
@@ -78,7 +79,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Rate at optimal utilization (e.g., 0.10)")
         .default("0.10".to_string())
         .interact_text()
-        .map_err(std::io::Error::other)?;
+        .map_err(map_dialoguer_err)?;
     let optimal_rate: Decimal = Decimal::from_str(&optimal_rate_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid optimal rate: {e}")))?;
 
@@ -86,7 +87,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Optimal utilization ratio (e.g., 0.80 for 80%)")
         .default("0.80".to_string())
         .interact_text()
-        .map_err(std::io::Error::other)?;
+        .map_err(map_dialoguer_err)?;
     let optimal_usage: Decimal = Decimal::from_str(&optimal_usage_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid optimal utilization: {e}")))?;
 
@@ -94,7 +95,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Maximum rate at 100% utilization (e.g., 0.50)")
         .default("0.50".to_string())
         .interact_text()
-        .map_err(std::io::Error::other)?;
+        .map_err(map_dialoguer_err)?;
     let max_rate: Decimal = Decimal::from_str(&max_rate_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid max rate: {e}")))?;
 
@@ -113,7 +114,7 @@ pub fn resolve_curve_params(
     theme: &ColorfulTheme,
 ) -> CliResult<(CurveParameters, InterestRateStrategy, Option<Decimal>)> {
     if !input.any_flag_provided() {
-        let model = prompt_model_arg(theme);
+        let model = prompt_model_arg(theme)?;
         return prompt_model_params(theme, model, input.display_points);
     }
 
@@ -151,7 +152,7 @@ fn build_linear_params(
             "When providing curve flags for linear model, --starting-rate is required".into(),
         )
     })?;
-    let slope = input.optimal_rate.ok_or_else(|| {
+    let top_rate = input.optimal_rate.ok_or_else(|| {
         CliError::InvalidInput(
             "When providing curve flags for linear model, --optimal-rate is required".into(),
         )
@@ -159,7 +160,7 @@ fn build_linear_params(
 
     let params = CurveParameters {
         starting_rate,
-        optimal_rate: slope,
+        optimal_rate: top_rate,
         optimal_usage: input.optimal_usage.unwrap_or(Decimal::ZERO),
         max_rate: input.max_rate.unwrap_or(Decimal::ZERO),
         display_points: input.display_points,
@@ -232,19 +233,19 @@ fn build_piecewise_params(
     Ok((params, model, input.eccentricity))
 }
 
-fn prompt_model_arg(theme: &ColorfulTheme) -> ModelArg {
+fn prompt_model_arg(theme: &ColorfulTheme) -> CliResult<ModelArg> {
     let options = ["piecewise", "linear", "exponential"];
     let idx = Select::with_theme(theme)
         .with_prompt("Select interest rate model")
         .items(options)
         .default(0)
         .interact()
-        .unwrap_or(0);
-    match options[idx] {
+        .map_err(map_dialoguer_err)?;
+    Ok(match options[idx] {
         "linear" => ModelArg::Linear,
         "exponential" => ModelArg::Exponential,
         _ => ModelArg::Piecewise,
-    }
+    })
 }
 
 fn prompt_model_params(
@@ -260,16 +261,16 @@ fn prompt_model_params(
                 "0.02",
                 "linear starting rate",
             )?;
-            let slope = prompt_decimal(
+            let top_rate = prompt_decimal(
                 theme,
-                "Slope (rate increase per utilization, e.g., 0.10)",
+                "Rate at 100% utilization (e.g., 0.15)",
                 "0.10",
-                "linear slope",
+                "linear top rate",
             )?;
             let display_points = prompt_display_points(theme, display_points_default)?;
             let params = CurveParameters {
                 starting_rate: start,
-                optimal_rate: slope,
+                optimal_rate: top_rate,
                 optimal_usage: Decimal::ZERO,
                 max_rate: Decimal::ZERO,
                 display_points,
@@ -321,7 +322,7 @@ fn prompt_display_points(theme: &ColorfulTheme, default: usize) -> CliResult<usi
         .with_prompt("Number of display points for the curve")
         .default(default.to_string())
         .interact_text()
-        .map_err(std::io::Error::other)?;
+        .map_err(map_dialoguer_err)?;
 
     input
         .parse::<usize>()
