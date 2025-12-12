@@ -2,6 +2,8 @@
 
 This document explains how the vault works end-to-end: roles and permissions, data flow, deposits and withdrawals, and the async allocation/withdraw pipelines.
 
+Vault deployments will eventually be immutable (no contract upgrades). Until then, treat any deployment as potentially upgradeable and verify its controlling keys/roles.
+
 ## High-level overview
 
 - The vault issues shares over an underlying asset and allocates liquidity into configured markets.
