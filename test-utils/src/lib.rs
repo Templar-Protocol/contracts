@@ -177,8 +177,7 @@ pub fn vault_configuration(
         restrictions: None,
         refresh_cooldown_ns: None,
     }
- }
-
+}
 
 async fn compile_contract(p: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_WORKSPACE_DIR")).join(p);

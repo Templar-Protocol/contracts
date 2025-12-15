@@ -10,6 +10,7 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, AccountId, AccountIdRef, Gas, Promise, PromiseOrValue,
 };
+use schemars::{schema::Schema, JsonSchema, SchemaGenerator};
 
 pub mod wad;
 
@@ -1074,11 +1075,21 @@ pub enum Event {
     VaultBalance { amount: U128 },
 }
 
-#[near(serializers = [borsh])]
+#[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, Default)]
 pub struct FeeAccrualAnchor {
-    pub total_assets: u128,
-    pub timestamp_ns: u64,
+    pub total_assets: U128,
+    pub timestamp_ns: U64,
+}
+
+impl JsonSchema for FeeAccrualAnchor {
+    fn schema_name() -> String {
+        "FeeAccrualAnchor".to_string()
+    }
+
+    fn json_schema(gen: &mut SchemaGenerator) -> Schema {
+        gen.subschema_for::<FeeAccrualAnchor>()
+    }
 }
 
 #[derive(Default)]

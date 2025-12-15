@@ -3,12 +3,12 @@
 use near_sdk::json_types::U128;
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
+use templar_common::vault::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
     vault::{AllocationDelta, Delta},
 };
-use templar_common::vault::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use test_utils::{
     controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
     UnifiedMarketController,
@@ -78,8 +78,7 @@ async fn set_fees_accepts_max_total_assets_growth_rate(#[future(awt)] worker: Wo
 
     let updated = vault.get_fees().await;
     assert_eq!(
-        updated.max_total_assets_growth_rate,
-        fees.max_total_assets_growth_rate,
+        updated.max_total_assets_growth_rate, fees.max_total_assets_growth_rate,
         "max_total_assets_growth_rate should persist",
     );
 }

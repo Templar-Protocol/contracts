@@ -1,6 +1,6 @@
 use templar_common::vault::{
     wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
-    CapGroupUpdate, CapGroupUpdateKey, MAX_QUEUE_LEN,
+    CapGroupUpdate, CapGroupUpdateKey, TimestampNs, MAX_QUEUE_LEN,
 };
 
 use super::*;

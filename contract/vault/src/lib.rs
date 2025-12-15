@@ -39,13 +39,13 @@ use templar_common::{
             Number, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
-        Fee, FeeAccrualAnchor, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState,
+        FeeAccrualAnchor, Fees, IdleBalanceDelta, Locker, MarketConfiguration, OpState,
         PayoutState, PendingValue, PendingWithdrawal, QueueAction, QueueStatus, RealAssetsReport,
-        Reason, RefreshingState, TimestampNs, UnbrickPhase, VaultConfiguration,
-        WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS,
-        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
-        SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
+        Reason, RefreshingState, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase,
+        WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
+        WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
 
@@ -216,8 +216,8 @@ impl Contract {
             fees,
             skim_recipient,
             fee_anchor: FeeAccrualAnchor {
-                total_assets: 0,
-                timestamp_ns: env::block_timestamp(),
+                total_assets: U128::default(),
+                timestamp_ns: env::block_timestamp().into(),
             },
             markets: BTreeMap::new(),
             cap_groups: BTreeMap::new(),
@@ -308,15 +308,16 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes the withdraw route provided by the allocator
-    /// If `route` is empty, try to settle with the idle balance
+    /// Executes the withdraw route provided by the allocator.
+    /// If `route` is empty, try to settle with the idle balance.
     pub fn execute_withdrawal(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
+
         self.internal_accrue_fee();
 
-        if let Some(id) = self.peek_next_pending_withdrawal_id() {
+        while let Some(id) = self.peek_next_pending_withdrawal_id() {
             let pending = self
                 .pending_withdrawals
                 .get(&id)
@@ -335,11 +336,13 @@ impl Contract {
             }
             .emit();
 
+            let expected_assets = pending.expected_assets;
+            let escrow_shares = pending.escrow_shares;
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
 
-            // Skip dust request to avoid wedging the queue
-            if pending.expected_assets == 0 {
+            // Skip dust request to avoid wedging the queue.
+            if expected_assets == 0 {
                 Event::WithdrawProgress {
                     phase: WithdrawProgressPhase::SkippedDust,
                     op_id: None,
@@ -353,22 +356,11 @@ impl Contract {
                 }
                 .emit();
                 self.pop_head();
-                return self.execute_withdrawal(route);
+                continue;
             }
 
-            return self.start_withdraw(
-                pending.expected_assets,
-                &receiver,
-                &owner,
-                pending.escrow_shares,
-                route,
-            );
+            return self.start_withdraw(expected_assets, &receiver, &owner, escrow_shares, route);
         }
-        Event::WithdrawQueueStatus {
-            status: QueueStatus::Empty,
-            id: None,
-        }
-        .emit();
 
         PromiseOrValue::Value(())
     }
@@ -420,24 +412,23 @@ impl Contract {
         )
     }
 
-    /// Allocator-only. Executes an existing market-side supply withdrawal request
-    /// for `market` and credits any returned underlying to the vault's
-    /// `idle_balance`, without touching the user withdrawal queue
-    /// (`pending_withdrawals`) or the payout state machine.
+    /// Allocator/Curator/Sentinel/Owner only. Executes an existing market-side supply withdrawal
+    /// request for `market` and credits any returned underlying to the vault's `idle_balance`,
+    /// without touching the user withdrawal queue (`pending_withdrawals`) or the payout state
+    /// machine.
     ///
-    /// This is a pure rebalance operation:
-    /// - `total_assets` and `total_supply` are preserved.
-    /// - Only per-market principal and `idle_balance` are updated.
+    /// This is intended as a pure rebalance operation:
+    /// - (Aside from fee accrual) `total_assets` and `total_supply` are preserved.
+    /// - Only per-market principal and `idle_balance` are updated by the async callbacks.
     /// - No pending user withdrawal is dequeued or paid out.
     ///
     /// Implementation details:
-    /// - Uses `OpState::Allocating` as a generic in-flight guard for this
-    ///   rebalance op.
-    /// - Locks the target market index in `market_execution_lock` to serialize
-    ///   the underlying market call.
+    /// - Uses `OpState::Allocating` as a generic in-flight guard for this rebalance op.
+    /// - Locks the target market index in `market_execution_lock` to serialize the underlying
+    ///   market call.
     ///
-    /// Expects that a supply withdrawal request for this vault already exists
-    /// in the given `market` and is ready to be executed.
+    /// Expects that a supply withdrawal request for this vault already exists in the given
+    /// `market` and is ready to be executed.
     pub fn execute_rebalance_withdrawal(
         &mut self,
         market: AccountId,
@@ -447,13 +438,10 @@ impl Contract {
         Self::assert_allocator_or_sentinel();
 
         self.ensure_idle();
-        self.internal_accrue_fee();
 
-        let principal = self.principal_of(&market);
-        require!(principal > 0, "No principal to withdraw");
+        let batch_limit = batch_limit.filter(|n| *n > 0);
 
         let op_id = self.next_op_id;
-
         let Some(market_index) = self.rebalance_lock_index(&market) else {
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -463,6 +451,11 @@ impl Contract {
             .emit();
             return PromiseOrValue::Value(());
         };
+
+        self.internal_accrue_fee();
+
+        let principal = self.principal_of(&market);
+        require!(principal > 0, "No principal to withdraw");
 
         self.market_execution_lock.lock(market_index);
 
@@ -494,13 +487,16 @@ impl Contract {
     }
 
     /// Permissionless and throttled.
-    /// Refresh principals from markets and return a live assets report; updates stored `market_supply`.
+    /// Refresh principals from markets and return a live assets report; updates stored principals.
     /// Pass an empty `markets` vector to refresh all configured markets.
     pub fn refresh_markets(&mut self, markets: Vec<AccountId>) -> PromiseOrValue<RealAssetsReport> {
         self.ensure_idle();
 
-        let mut targets = self.refresh_targets(markets);
-        require!(!targets.is_empty(), "No markets to refresh");
+        let mut plan = self.refresh_targets(markets);
+        plan.sort_unstable();
+        plan.dedup();
+
+        require!(!plan.is_empty(), "No markets to refresh");
 
         let now = env::block_timestamp();
         require!(
@@ -509,13 +505,9 @@ impl Contract {
         );
         self.last_refresh_ns = now;
 
-        targets.sort();
-        targets.dedup();
-
         let op_id = self.next_op_id;
-        self.next_op_id += 1;
+        self.next_op_id = self.next_op_id.saturating_add(1);
 
-        let plan = targets;
         Event::RefreshStarted {
             op_id: op_id.into(),
             markets: plan.clone(),
@@ -533,7 +525,6 @@ impl Contract {
     }
 
     /// Allocator/Curator/Owner only. Unbricks the current in-flight withdrawal or payout:
-
     /// - If Withdrawing: refunds escrowed shares to the owner and dequeues the pending request.
     /// - If in Payout: re-syncs idle_balance with the underlying FT balance,
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
@@ -551,8 +542,6 @@ impl Contract {
                 }
                 .emit();
 
-                // stop_and_exit_withdrawing refunds escrow, unlocks current index, clears route,
-                // dequeues the inflight request and sets the vault back to Idle.
                 self.stop_and_exit_withdrawing::<&str>(None);
                 PromiseOrValue::Value(())
             }
@@ -751,7 +740,7 @@ impl Contract {
     }
 
     pub fn get_last_total_assets(&self) -> U128 {
-        U128(self.fee_anchor.total_assets)
+        self.fee_anchor.total_assets
     }
 
     pub fn get_idle_balance(&self) -> U128 {
@@ -769,25 +758,12 @@ impl Contract {
             .collect()
     }
 
-    pub fn get_fee_anchor_timestamp(&self) -> U64 {
-        U64(self.fee_anchor.timestamp_ns)
+    pub fn get_fee_anchor(&self) -> FeeAccrualAnchor {
+        self.fee_anchor.clone()
     }
 
-    pub fn get_fees(&self) -> Fees<U128> {
-        Fees {
-            performance: Fee {
-                fee: U128(u128::from(self.fees.performance.fee)),
-                recipient: self.fees.performance.recipient.clone(),
-            },
-            management: Fee {
-                fee: U128(u128::from(self.fees.management.fee)),
-                recipient: self.fees.management.recipient.clone(),
-            },
-            max_total_assets_growth_rate: self
-                .fees
-                .max_total_assets_growth_rate
-                .map(|r| U128(u128::from(r))),
-        }
+    pub fn get_fees(&self) -> Fees<Wad> {
+        self.fees.clone()
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
@@ -1181,12 +1157,12 @@ impl Contract {
             fee_total_assets,
             cur_total_assets,
             ts,
-            anchor.timestamp_ns,
+            anchor.timestamp_ns.0,
             now,
         );
         let ts_after_mgmt = Number::from(ts).saturating_add(mgmt_shares);
 
-        let profit = fee_total_assets.saturating_sub(anchor.total_assets);
+        let profit = fee_total_assets.saturating_sub(anchor.total_assets.0);
         let fee_assets = self.fees.performance.fee.apply_floored(profit.into());
         let performance_shares =
             compute_fee_shares_from_assets(fee_assets, cur_total_assets.into(), ts_after_mgmt);
@@ -1238,36 +1214,30 @@ impl Contract {
             return cur_total_assets;
         };
 
-        // No growth (or a loss) => no need to clamp.
-        if cur_total_assets <= anchor.total_assets {
+        let anchor_assets = anchor.total_assets.0;
+
+        // Only clamp *positive* growth; otherwise (loss/no-change), leave as-is.
+        // Also ignore the limiter if the anchor is zero (avoid freezing at 0),
+        // or if time goes backwards.
+        if cur_total_assets <= anchor_assets || anchor_assets == 0 || now < anchor.timestamp_ns.0 {
             return cur_total_assets;
         }
 
-        // If last_total_assets is zero, treat as unclamped to avoid freezing at 0.
-        if anchor.total_assets == 0 {
-            return cur_total_assets;
-        }
-
-        // If time goes backwards, ignore the limiter.
-        if now < anchor.timestamp_ns {
-            return cur_total_assets;
-        }
-
-        let elapsed_ns = now.saturating_sub(anchor.timestamp_ns);
+        let elapsed_ns = now - anchor.timestamp_ns.0;
         if elapsed_ns == 0 {
-            return anchor.total_assets;
+            return anchor_assets;
         }
 
         // Cap growth with an annualized max rate.
-        let annual_max_increase = max_rate.apply_floored(anchor.total_assets.into());
+        let annual_max_increase = max_rate.apply_floored(anchor_assets.into());
         let max_increase = mul_div_floor(
             annual_max_increase,
             Number::from(u128::from(elapsed_ns)),
             Number::from(u128::from(YEAR_NS)),
-        );
-        let max_increase_u128 = max_increase.as_u128_saturating();
-        let max_total_assets = anchor.total_assets.saturating_add(max_increase_u128);
+        )
+        .as_u128_saturating();
 
+        let max_total_assets = anchor_assets.saturating_add(max_increase);
         cur_total_assets.min(max_total_assets)
     }
 
@@ -1316,7 +1286,7 @@ impl Contract {
             fee_total_assets,
             cur_total_assets,
             total_supply,
-            anchor.timestamp_ns,
+            anchor.timestamp_ns.into(),
             now,
         );
         if mgmt_shares > Number::zero() {
@@ -1340,7 +1310,7 @@ impl Contract {
             total_supply = self.total_supply();
         }
 
-        let profit = fee_total_assets.saturating_sub(anchor.total_assets);
+        let profit = fee_total_assets.saturating_sub(anchor.total_assets.into());
         let fee_assets = self.fees.performance.fee.apply_floored(profit.into());
         let performance_shares = compute_fee_shares_from_assets(
             fee_assets,
@@ -1369,8 +1339,8 @@ impl Contract {
         // Anchor updates to the *actual* AUM snapshot, so the max-rate limiter
         // only affects what can be charged as fees for the elapsed interval.
         self.fee_anchor = FeeAccrualAnchor {
-            total_assets: cur_total_assets,
-            timestamp_ns: now,
+            total_assets: cur_total_assets.into(),
+            timestamp_ns: now.into(),
         };
     }
 
