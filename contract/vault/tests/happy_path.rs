@@ -97,13 +97,12 @@ async fn state_machine_is_locked_when_another_op_is_running(
     let amount = 1000;
     vault.supply(&supply_user, amount).await;
 
+    let market_id = vault.market_id_of(vault.market.market.contract().id()).await;
+
     futures::future::select_all((0..100).map(|_| {
         Box::pin(vault.allocate(
             &vault_owner,
-            AllocationDelta::Supply(Delta::new(
-                vault.market.market.contract().id().clone(),
-                U128(1),
-            )),
+            AllocationDelta::Supply(Delta::new(market_id, U128(1))),
         ))
     }))
     .await;
@@ -140,10 +139,12 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     println!("After supply of {}: {}", amount.0, after_supply_balance);
     c.collateralize(&borrow_user, 2000).await;
 
+    let market_id = vault.market_id_of(c.market.contract().id()).await;
+
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Supply(Delta::new(c.market.contract().id().clone(), amount)),
+            AllocationDelta::Supply(Delta::new(market_id, amount)),
         )
         .await;
 
@@ -192,11 +193,12 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     harvest(&c, &vault).await;
 
     let mkt = c.market.contract().id();
+    let mkt_id = vault.market_id_of(mkt).await;
 
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(mkt.clone(), amount)),
+            AllocationDelta::Withdraw(Delta::new(mkt_id, amount)),
         )
         .await;
 
@@ -212,7 +214,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .expect("Failed to get withdrawing op id");
     vault
-        .execute_market_withdrawal(&vault_curator, op_id, 0, Some(10))
+        .execute_market_withdrawal(&vault_curator, op_id, mkt_id, Some(10))
         .await;
 
     assert_eq!(
@@ -232,10 +234,11 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     // Resupply and wait
     vault.supply(&supply_user, amount.0).await;
     let mkt = c.market.contract().id();
+    let mkt_id = vault.market_id_of(mkt).await;
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Supply(Delta::new(mkt.clone(), amount)),
+            AllocationDelta::Supply(Delta::new(mkt_id, amount)),
         )
         .await;
     harvest(&c, &vault).await;
@@ -256,7 +259,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(mkt.clone(), amount)),
+            AllocationDelta::Withdraw(Delta::new(mkt_id, amount)),
         )
         .await;
 
@@ -291,7 +294,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Supply(Delta::new(mkt.clone(), amount)),
+            AllocationDelta::Supply(Delta::new(mkt_id, amount)),
         )
         .await;
     harvest(&c, &vault).await;
@@ -322,7 +325,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .expect("Failed to get withdrawing operation ID");
     vault
-        .execute_market_withdrawal(&vault_curator, op_id, 0, None)
+        .execute_market_withdrawal(&vault_curator, op_id, mkt_id, None)
         .await;
 }
 

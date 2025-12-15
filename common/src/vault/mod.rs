@@ -21,14 +21,14 @@ pub type TimestampNs = u64;
 
 pub type ExpectedIdx = u32;
 pub type ActualIdx = u32;
-pub type AllocationWeights = Vec<(AccountId, U128)>;
-pub type AllocationPlan = Vec<(AccountId, u128)>;
+pub type AllocationWeights = Vec<(MarketId, U128)>;
+pub type AllocationPlan = Vec<(MarketId, u128)>;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
 pub struct RealAssetsReport {
     pub total_assets: U128,
-    pub per_market: Vec<(AccountId, U128)>,
+    pub per_market: Vec<(MarketId, U128)>,
     pub refreshed_at: U64,
 }
 
@@ -90,7 +90,7 @@ pub enum CapGroupUpdate {
     },
     /// Assign (or remove) a market to/from a cap group.
     SetMarketCapGroup {
-        market: AccountId,
+        market: MarketId,
         cap_group: Option<CapGroupId>,
     },
 }
@@ -101,7 +101,41 @@ pub enum CapGroupUpdate {
 pub enum CapGroupUpdateKey {
     SetCap { cap_group: CapGroupId },
     SetRelativeCap { cap_group: CapGroupId },
-    SetMarketCapGroup { market: AccountId },
+    SetMarketCapGroup { market: MarketId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[near(serializers = [borsh, json])]
+pub struct MarketId(pub u32);
+
+impl From<u32> for MarketId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<MarketId> for u32 {
+    fn from(value: MarketId) -> Self {
+        value.0
+    }
+}
+
+impl From<MarketId> for U64 {
+    fn from(value: MarketId) -> Self {
+        U64(value.0.into())
+    }
+}
+
+impl From<U64> for MarketId {
+    fn from(value: U64) -> Self {
+        Self(value.0 as u32)
+    }
+}
+
+impl core::fmt::Display for MarketId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
@@ -264,7 +298,7 @@ pub struct AllocatingState {
     /// Amount of underlying (in asset units) still to allocate during this operation.
     pub remaining: u128,
     /// Plan for allocation.
-    pub plan: Vec<(AccountId, u128)>,
+    pub plan: Vec<(MarketId, u128)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,7 +337,7 @@ pub struct RefreshingState {
     /// Zero-based position within the refresh plan currently being processed.
     pub index: u32,
     /// Markets to refresh.
-    pub plan: Vec<AccountId>,
+    pub plan: Vec<MarketId>,
 }
 
 /// Final step that transfers assets to the receiver and settles the share escrow.
@@ -456,12 +490,12 @@ impl AsRef<PayoutState> for OpState {
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
 pub struct Delta {
-    pub market: AccountId,
+    pub market: MarketId,
     pub amount: U128,
 }
 
 impl Delta {
-    pub fn new<T: Into<U128>>(market: AccountId, amount: T) -> Self {
+    pub fn new<T: Into<U128>>(market: MarketId, amount: T) -> Self {
         Delta {
             market,
             amount: amount.into(),
@@ -515,8 +549,10 @@ impl From<EscrowSettlement> for (u128, u128) {
 pub enum Error {
     // Invariant: Index drift or stale op_id results in a graceful stop
     IndexDrifted(ExpectedIdx, ActualIdx),
-    // Invariant: Attempting to work on a market that is missing from the withdraw queue
-    MissingMarket(u32),
+    // Invariant: Callback resolved a different market than expected.
+    MarketDrifted { expected: MarketId, actual: MarketId },
+    // Invariant: Attempting to work on an unknown market.
+    MissingMarket(MarketId),
     NotWithdrawing,
     NotAllocating,
     MarketTransferFailed,
@@ -661,14 +697,14 @@ pub enum Event {
     #[event_version("1.0.0")]
     ManagementFeeRecipientSet { account: AccountId },
     #[event_version("1.0.0")]
-    LockChange { is_locked: bool, market_index: u32 },
+    LockChange { is_locked: bool, market: MarketId },
 
     // Allocation
     #[event_version("1.0.0")]
     AllocationPlanSet {
         op_id: U64,
         total: U128,
-        plan: Vec<(AccountId, U128)>,
+        plan: Vec<(MarketId, U128)>,
     },
     #[event_version("1.0.0")]
     AllocationStarted { op_id: U64, remaining: U128 },
@@ -676,7 +712,7 @@ pub enum Event {
     AllocationStepPlan {
         op_id: U64,
         index: u32,
-        market: AccountId,
+        market: MarketId,
         target: U128,
         room: U128,
         to_supply: U128,
@@ -688,14 +724,14 @@ pub enum Event {
     AllocationTransferFailed {
         op_id: U64,
         index: u32,
-        market: AccountId,
+        market: MarketId,
         attempted: U128,
     },
     #[event_version("1.0.0")]
     AllocationStepSettled {
         op_id: U64,
         index: u32,
-        market: AccountId,
+        market: MarketId,
         before: U128,
         new_principal: U128,
         accepted: U128,
@@ -717,13 +753,13 @@ pub enum Event {
     #[event_version("1.0.0")]
     RefreshStarted {
         op_id: U64,
-        markets: Vec<AccountId>,
+        markets: Vec<MarketId>,
         caller: AccountId,
     },
     #[event_version("1.0.0")]
     RefreshCompleted {
         op_id: U64,
-        markets: Vec<AccountId>,
+        markets: Vec<MarketId>,
         total_assets: U128,
         refreshed_at: U64,
     },
@@ -770,26 +806,23 @@ pub enum Event {
 
     // Market and queue management
     #[event_version("1.0.0")]
-    MarketCreated { market: AccountId },
+    MarketCreated { market: MarketId },
     #[event_version("1.0.0")]
-    MarketEnabled { market: AccountId },
+    MarketEnabled { market: MarketId },
     #[event_version("1.0.0")]
-    MarketRemovalSubmitted {
-        market: AccountId,
-        removable_at: U64,
-    },
+    MarketRemovalSubmitted { market: MarketId, removable_at: U64 },
     #[event_version("1.0.0")]
-    MarketRemovalRevoked { market: AccountId },
+    MarketRemovalRevoked { market: MarketId },
     #[event_version("1.0.0")]
     SupplyCapRaiseSubmitted {
-        market: AccountId,
+        market: MarketId,
         new_cap: U128,
         valid_at_ns: u64,
     },
     #[event_version("1.0.0")]
-    SupplyCapRaiseRevoked { market: AccountId },
+    SupplyCapRaiseRevoked { market: MarketId },
     #[event_version("1.0.0")]
-    SupplyCapSet { market: AccountId, new_cap: U128 },
+    SupplyCapSet { market: MarketId, new_cap: U128 },
     #[event_version("1.0.0")]
     CapGroupRaiseSubmitted {
         cap_group: CapGroupId,
@@ -823,11 +856,11 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     CapGroupMembershipSet {
-        market: AccountId,
+        market: MarketId,
         cap_group: Option<CapGroupId>,
     },
     #[event_version("1.0.0")]
-    CapGroupMembershipRevoked { market: AccountId },
+    CapGroupMembershipRevoked { market: MarketId },
 
     #[event_version("1.0.0")]
     WithdrawQueueUpdate { action: QueueAction, id: U64 },
@@ -839,11 +872,11 @@ pub enum Event {
 
     // Rebalance-only withdraw flows
     #[event_version("1.0.0")]
-    RebalanceWithdrawCompleted { op_id: U64, market: AccountId },
+    RebalanceWithdrawCompleted { op_id: U64, market: MarketId },
     #[event_version("1.0.0")]
     RebalanceWithdrawStopped {
         op_id: U64,
-        market: AccountId,
+        market: MarketId,
         reason: Option<Reason>,
     },
 
@@ -869,7 +902,7 @@ pub enum Event {
         phase: WithdrawProgressPhase,
         op_id: Option<U64>,
         id: Option<U64>,
-        market_index: Option<u32>,
+        market: Option<MarketId>,
         owner: Option<AccountId>,
         receiver: Option<AccountId>,
         escrow_shares: Option<U128>,
@@ -877,16 +910,16 @@ pub enum Event {
         requested_at: Option<U64>,
     },
     #[event_version("1.0.0")]
-    SupplyWithdrawRequestCreated { market: AccountId, amount: U128 },
+    SupplyWithdrawRequestCreated { market: MarketId, amount: U128 },
     #[event_version("1.0.0")]
-    WithdrawRequestCreated { market: AccountId, amount: U128 },
+    WithdrawRequestCreated { market: MarketId, amount: U128 },
     #[event_version("1.0.0")]
     // Allocation read/settlement diagnostics
     #[event_version("1.0.0")]
     AllocationPositionIssue {
         op_id: U64,
         index: u32,
-        market: AccountId,
+        market: MarketId,
         attempted: U128,
         accepted: U128,
         kind: AllocationPositionIssueKind,
@@ -896,8 +929,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     CreateWithdrawalFailed {
         op_id: U64,
-        market: AccountId,
-        index: u32,
+        market: MarketId,
         need: U128,
     },
 
@@ -905,8 +937,7 @@ pub enum Event {
     WithdrawalAccounting {
         kind: WithdrawalAccountingKind,
         op_id: U64,
-        market: AccountId,
-        index: u32,
+        market: MarketId,
         delta: Option<U128>,
         inflow: Option<U128>,
         extra: Option<U128>,
@@ -947,8 +978,7 @@ pub enum Event {
     WithdrawPositionReport {
         outcome: PositionReportOutcome,
         op_id: U64,
-        market: AccountId,
-        index: u32,
+        market: MarketId,
         position: Option<SupplyPosition>,
         before: Option<U128>,
     },
@@ -967,29 +997,29 @@ pub struct FeeAccrualAnchor {
 #[derive(Default)]
 #[near(serializers = [borsh, serde])]
 pub struct Locker {
-    to_lock: Vec<u32>,
+    to_lock: Vec<MarketId>,
 }
 
 impl Locker {
-    pub fn lock(&mut self, i: u32) {
-        if self.is_locked(i) {
-            env::panic_str("Market is locked for index");
+    pub fn lock(&mut self, market: MarketId) {
+        if self.is_locked(market) {
+            env::panic_str("Market is locked");
         }
         Event::LockChange {
             is_locked: true,
-            market_index: i,
+            market,
         }
         .emit();
-        self.to_lock.push(i);
+        self.to_lock.push(market);
     }
 
-    pub fn unlock(&mut self, i: u32) {
+    pub fn unlock(&mut self, market: MarketId) {
         Event::LockChange {
             is_locked: false,
-            market_index: i,
+            market,
         }
         .emit();
-        self.to_lock.retain(|&x| x != i);
+        self.to_lock.retain(|&x| x != market);
     }
 
     /// Clears the lock status for all markets.
@@ -998,8 +1028,8 @@ impl Locker {
         self.to_lock.clear();
     }
 
-    pub fn is_locked(&self, i: u32) -> bool {
-        self.to_lock.contains(&i)
+    pub fn is_locked(&self, market: MarketId) -> bool {
+        self.to_lock.contains(&market)
     }
 
     pub fn is_locked_all(&self) -> bool {

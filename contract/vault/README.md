@@ -233,7 +233,7 @@ Two phases: user requests (escrow) and keeper-routed execution (pull liquidity, 
 
 2. Execution by Allocator/keeper (Idle -> Withdrawing -> Payout -> Idle)
 
-- `execute_withdrawal(route: Vec<AccountId>)`:
+- `execute_withdrawal(route: Vec<MarketId>)`:
   - Peeks the next pending withdrawal by id and starts a `Withdrawing` op with the provided per-op route.
   - Idle-first: `collected = min(idle_balance, amount)`, `remaining = amount - collected`.
   - Sets `OpState::Withdrawing { index = 0, remaining, receiver, collected, owner, escrow_shares }` and records the route for this op.
@@ -242,7 +242,7 @@ Two phases: user requests (escrow) and keeper-routed execution (pull liquidity, 
   - If `remaining == 0`, the vault transitions to payout.
   - If market principal is zero, it skips to the next market.
   - The vault creates a market withdrawal request up to `min(remaining, principal)` via `create_supply_withdrawal_request(...)`.
-  - Requests are created with deferment by default; the keeper then calls `execute_market_withdrawal(op_id, index, batch_limit)` to execute created requests (possibly multiple times per market).
+  - Requests are created with deferment by default; the keeper then calls `execute_market_withdrawal(op_id, market, batch_limit)` to execute created requests (possibly multiple times per market).
   - After execution, the vault queries `get_supply_position(...)` and reconciles:
     - `credited = min(before - after, remaining)`
     - `remaining -= credited; collected += credited`
@@ -311,16 +311,16 @@ Important
   - Allocator/Curator/Owner: `execute_rebalance_withdrawal(market, batch_limit)` for allocator-only rebalance flows
 - Withdrawals:
   - User: `redeem(shares, receiver)` or `withdraw(amount, receiver)`
-  - Allocator/Curator/Owner: `execute_withdrawal(route)`, `execute_market_withdrawal(op_id, index, batch_limit)`, `unbrick()`
+  - Allocator/Curator/Owner: `execute_withdrawal(route)`, `execute_market_withdrawal(op_id, market, batch_limit)`, `unbrick()`
 - Governance:
   - Owner: `set_fees`, `accept_fees`, `revoke_pending_fees`, plus market/timelock admin.
   - Guardian/Sentinel/Owner: `set_restrictions` (tightening immediate) and `revoke_pending_restrictions`; Guardian/Owner: `accept_restrictions`.
 
 ## API notes (for integrators/keepers)
 
-- `execute_withdrawal` requires a per-op `route: Vec<AccountId>` (ordered preference for this withdrawal).
-- `execute_market_withdrawal(op_id, index, batch_limit)` executes created market-side supply withdrawal requests for the given withdrawing op.
-- `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault, locks the target market index in `market_execution_lock`, re-syncs `idle_balance` to the vault’s actual FT balance, and credits returned funds without touching the user queue. If the balance read fails, the rebalance operation halts and emits `RebalanceWithdrawStopped`.
+- `execute_withdrawal` requires a per-op `route: Vec<MarketId>` (ordered preference for this withdrawal).
+- `execute_market_withdrawal(op_id, market, batch_limit)` executes created market-side supply withdrawal requests for the given withdrawing op.
+- `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault, locks the target market in `market_execution_lock`, re-syncs `idle_balance` to the vault’s actual FT balance, and credits returned funds without touching the user queue. If the balance read fails, the rebalance operation halts and emits `RebalanceWithdrawStopped`.
 - Curator is granted Allocator by default at initialization; keepers must use an account that has the Allocator role (or be the Curator/Owner).
 
 ## Error handling and stop semantics

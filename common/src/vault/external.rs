@@ -31,15 +31,18 @@ pub trait VaultExt {
     fn revoke_pending_cap_group_update(update: CapGroupUpdateKey);
     fn submit_market_removal(market: AccountId);
     fn revoke_pending_market_removal(market: AccountId);
-    fn set_supply_queue(markets: Vec<AccountId>);
-    fn set_withdraw_queue(queue: Vec<AccountId>);
+    fn set_supply_queue(markets: Vec<MarketId>);
 
     // User flows
     fn withdraw(amount: U128, receiver: AccountId) -> PromiseOrValue<()>;
     fn redeem(shares: U128, receiver: AccountId) -> PromiseOrValue<()>;
-    fn execute_next_withdrawal_request() -> PromiseOrValue<()>;
+    fn reallocate(delta: AllocationDelta) -> PromiseOrValue<()>;
+    fn execute_rebalance_withdrawal(market_id: MarketId, batch_limit: Option<u32>) -> PromiseOrValue<()>;
+    fn execute_withdrawal(route: Vec<MarketId>) -> PromiseOrValue<()>;
+    fn execute_market_withdrawal(op_id: U64, market: MarketId, batch_limit: Option<u32>) -> PromiseOrValue<()>;
+    fn unbrick() -> PromiseOrValue<()>;
     fn skim(token: AccountId) -> Promise;
-    fn allocate(weights: AllocationWeights, amount: Option<U128>) -> PromiseOrValue<()>;
+    fn refresh_markets(markets: Vec<MarketId>) -> PromiseOrValue<()>;
 
     // Views
     fn get_configuration() -> VaultConfiguration;

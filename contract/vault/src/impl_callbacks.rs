@@ -18,6 +18,7 @@ use templar_common::{
     supply::SupplyPosition,
     vault::{
         AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
+        MarketId,
         IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
         WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
         FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
@@ -61,7 +62,7 @@ impl Contract {
     pub fn supply_01_handle_transfer(
         &mut self,
         #[callback_result] accepted: Result<U128, PromiseError>,
-        market: AccountId,
+        market_id: MarketId,
         op_id: u64,
         market_index: u32,
         attempted: U128,
@@ -76,17 +77,22 @@ impl Contract {
                 Event::AllocationTransferFailed {
                     op_id: op_id.into(),
                     index: market_index,
-                    market: market.clone(),
+                    market: market_id,
                     attempted,
                 }
                 .emit();
                 self.stop_and_exit(Some(&Error::MarketTransferFailed))
             }
             Ok(accepted) => {
-                let before = self.principal_of(&market);
+                let before = self.principal_of(market_id);
+
+                let market_account = self
+                    .market_account_by_id(market_id)
+                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
+                    .clone();
 
                 PromiseOrValue::Promise(
-                    ext_market::ext(market.clone())
+                    ext_market::ext(market_account)
                         .with_static_gas(GET_SUPPLY_POSITION_GAS)
                         .with_unused_gas_weight(0)
                         .get_supply_position(env::current_account_id())
@@ -94,7 +100,7 @@ impl Contract {
                             Self::ext(env::current_account_id())
                                 .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
                                 .supply_02_position_read(
-                                    market.clone(),
+                                    market_id,
                                     op_id,
                                     market_index,
                                     U128(before),
@@ -113,7 +119,7 @@ impl Contract {
     pub fn supply_02_position_read(
         &mut self,
         #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
-        market: AccountId,
+        market_id: MarketId,
         op_id: u64,
         market_index: u32,
         before: U128,
@@ -144,7 +150,7 @@ impl Contract {
                 Event::AllocationPositionIssue {
                     op_id: op_id.into(),
                     index: market_index,
-                    market: market.clone(),
+                    market: market_id,
                     attempted,
                     accepted,
                     kind: AllocationPositionIssueKind::Missing,
@@ -157,7 +163,7 @@ impl Contract {
                 Event::AllocationPositionIssue {
                     op_id: op_id.into(),
                     index: market_index,
-                    market: market.clone(),
+                    market: market_id,
                     attempted,
                     accepted,
                     kind: AllocationPositionIssueKind::ReadFailed,
@@ -172,7 +178,7 @@ impl Contract {
         Event::AllocationStepSettled {
             op_id: op_id.into(),
             index: market_index,
-            market: market.clone(),
+            market: market_id,
             before,
             new_principal: U128(new_principal),
             accepted: U128(accepted_event),
@@ -182,9 +188,14 @@ impl Contract {
         }
         .emit();
 
-        let plan: AllocationPlan = ctx.plan.iter().filter(|m| m.0 != market).cloned().collect();
+        let plan: AllocationPlan = ctx
+            .plan
+            .iter()
+            .filter(|m| m.0 != market_id)
+            .cloned()
+            .collect();
 
-        self.set_market_principal(&market, new_principal);
+        self.set_market_principal(market_id, new_principal);
 
         self.op_state = OpState::Allocating(AllocatingState {
             op_id,
@@ -203,21 +214,20 @@ impl Contract {
         &mut self,
         #[callback_result] did_create: Result<(), PromiseError>,
         op_id: u64,
-        market_index: u32,
+        market: MarketId,
         need: U128,
     ) -> PromiseOrValue<()> {
-        let (ctx, market) = match self.withdraw_ctx_and_market_or_exit(op_id, market_index) {
+        let _ctx = match self.withdraw_ctx_and_market_or_exit(op_id, market) {
             Ok(v) => v,
             Err(p) => return p,
         };
 
         if did_create.is_ok() {
-            self.market_execution_lock.lock(market_index);
+            self.market_execution_lock.lock(market);
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
-                market: market.clone(),
-                index: ctx.index,
+                market,
                 need,
             }
             .emit();
@@ -233,11 +243,15 @@ impl Contract {
     pub fn rebalance_withdraw_01_after_create_request(
         &mut self,
         #[callback_result] did_create: Result<(), PromiseError>,
-        market: AccountId,
+        market_id: MarketId,
         amount: U128,
     ) {
         match did_create {
-            Ok(()) => Event::WithdrawRequestCreated { market, amount }.emit(),
+            Ok(()) => Event::WithdrawRequestCreated {
+                market: market_id,
+                amount,
+            }
+            .emit(),
             Err(_) => {
                 panic_with_message("Couldnt create withdraw request in market");
             }
@@ -249,15 +263,15 @@ impl Contract {
         &mut self,
         #[callback_result] before_balance: Result<U128, PromiseError>,
         op_id: u64,
-        market_index: u32,
+        market: MarketId,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
-        let (_ctx, market) = match self.withdraw_ctx_and_market_or_exit(op_id, market_index) {
+        let _ctx = match self.withdraw_ctx_and_market_or_exit(op_id, market) {
             Ok(v) => v,
             Err(p) => return p,
         };
 
-        let principal = self.principal_of(&market);
+        let principal = self.principal_of(market);
         let before_balance = before_balance.unwrap_or(U128(self.idle_balance));
 
         Event::VaultBalance {
@@ -265,16 +279,16 @@ impl Contract {
         }
         .emit();
 
+        let market_account = self
+            .market_account_by_id(market)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")))
+            .clone();
+
         PromiseOrValue::Promise(
-            Self::market_execute_withdraw_and_fetch_position(market.clone(), batch_limit).then(
+            Self::market_execute_withdraw_and_fetch_position(market_account, batch_limit).then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
-                    .execute_withdraw_02_reconcile_position(
-                        op_id,
-                        market_index,
-                        U128(principal),
-                        before_balance,
-                    ),
+                    .execute_withdraw_02_reconcile_position(op_id, market, U128(principal), before_balance),
             ),
         )
     }
@@ -293,11 +307,11 @@ impl Contract {
         &mut self,
         #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
         op_id: u64,
-        market_index: u32,
+        market: MarketId,
         principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        let (_ctx, market) = match self.withdraw_ctx_and_market_or_exit(op_id, market_index) {
+        let _ctx = match self.withdraw_ctx_and_market_or_exit(op_id, market) {
             Ok(v) => v,
             Err(p) => return p,
         };
@@ -307,8 +321,7 @@ impl Contract {
                 Event::WithdrawPositionReport {
                     outcome: PositionReportOutcome::Ok,
                     op_id: op_id.into(),
-                    market: market.clone(),
-                    index: market_index,
+                    market,
                     position: Some(position.clone()),
                     before: None,
                 }
@@ -319,8 +332,7 @@ impl Contract {
                 Event::WithdrawPositionReport {
                     outcome: PositionReportOutcome::Missing,
                     op_id: op_id.into(),
-                    market: market.clone(),
-                    index: market_index,
+                    market,
                     position: None,
                     before: Some(principal),
                 }
@@ -332,8 +344,7 @@ impl Contract {
                 Event::WithdrawPositionReport {
                     outcome: PositionReportOutcome::ReadFailed,
                     op_id: op_id.into(),
-                    market: market.clone(),
-                    index: market_index,
+                    market,
                     position: None,
                     before: Some(principal),
                 }
@@ -352,7 +363,7 @@ impl Contract {
                         .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                         .execute_withdraw_03_settle(
                             op_id,
-                            market_index,
+                            market,
                             principal,
                             U128(reported_principal),
                             before_balance,
@@ -367,12 +378,12 @@ impl Contract {
         &mut self,
         #[callback_result] after_balance: Result<U128, PromiseError>,
         op_id: u64,
-        market_index: u32,
+        market: MarketId,
         before_principal: U128,
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        let (ctx, market) = match self.withdraw_ctx_and_market_or_exit(op_id, market_index) {
+        let ctx = match self.withdraw_ctx_and_market_or_exit(op_id, market) {
             Ok(v) => v,
             Err(p) => return p,
         };
@@ -382,7 +393,7 @@ impl Contract {
         };
 
         let (principal_delta, inflow, creditable) = self.settle_market_principal_and_idle(
-            &market,
+            market,
             before_principal,
             reported_principal,
             after_balance,
@@ -396,8 +407,7 @@ impl Contract {
                 Event::WithdrawalAccounting {
                     kind: WithdrawalAccountingKind::InflowMismatch,
                     op_id: op_id.into(),
-                    market: market.clone(),
-                    index: market_index,
+                    market,
                     delta: Some(U128(principal_delta)),
                     inflow: Some(U128(inflow)),
                     extra: None,
@@ -408,8 +418,7 @@ impl Contract {
                 Event::WithdrawalAccounting {
                     kind: WithdrawalAccountingKind::OverpayCredited,
                     op_id: op_id.into(),
-                    market: market.clone(),
-                    index: market_index,
+                    market,
                     delta: None,
                     inflow: None,
                     extra: Some(U128(extra)),
@@ -419,7 +428,7 @@ impl Contract {
             Ordering::Equal => {}
         }
 
-        self.market_execution_lock.unlock(market_index);
+        self.market_execution_lock.unlock(market);
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -471,7 +480,7 @@ impl Contract {
             principal_delta,
             inflow,
             op_id,
-            market_index,
+            ctx.index,
             remaining_next,
             collected_next,
             ctx,
@@ -485,21 +494,21 @@ impl Contract {
         &mut self,
         #[callback_result] before_balance: Result<U128, PromiseError>,
         op_id: u64,
-        market: AccountId,
+        market_id: MarketId,
         batch_limit: Option<u32>,
         before_principal: U128,
     ) -> PromiseOrValue<()> {
-        let state = match self.ctx_allocating(op_id) {
+        let _state = match self.ctx_allocating(op_id) { 
             Ok(state) => state,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         let Ok(before_balance) = before_balance else {
-            self.market_execution_lock.unlock(state.index);
+            self.market_execution_lock.unlock(market_id);
             self.op_state = OpState::Idle;
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
-                market,
+                market: market_id,
                 reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
             }
             .emit();
@@ -511,13 +520,18 @@ impl Contract {
         }
         .emit();
 
+        let market_account = self
+            .market_account_by_id(market_id)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
+            .clone();
+
         PromiseOrValue::Promise(
-            Self::market_execute_withdraw_and_fetch_position(market.clone(), batch_limit).then(
+            Self::market_execute_withdraw_and_fetch_position(market_account, batch_limit).then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                     .rebalance_withdraw_02_reconcile_position(
                         op_id,
-                        market,
+                        market_id,
                         before_principal,
                         before_balance,
                     ),
@@ -530,11 +544,11 @@ impl Contract {
         &mut self,
         #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
         op_id: u64,
-        market: AccountId,
+        market_id: MarketId,
         before_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        let state = match self.ctx_allocating(op_id) {
+        let _state = match self.ctx_allocating(op_id) {
             Ok(state) => state,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
@@ -543,11 +557,11 @@ impl Contract {
             Ok(Some(position)) => position.get_deposit().total().into(),
             Ok(None) => 0,
             Err(_) => {
-                self.market_execution_lock.unlock(state.index);
+            self.market_execution_lock.unlock(market_id);
                 self.op_state = OpState::Idle;
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
-                    market,
+                    market: market_id,
                     reason: Some(Reason::Other(Error::PositionReadFailed.to_string())),
                 }
                 .emit();
@@ -564,7 +578,7 @@ impl Contract {
                         .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
                         .rebalance_withdraw_03_settle(
                             op_id,
-                            market,
+                            market_id,
                             before_principal,
                             U128(reported_principal),
                             before_balance,
@@ -578,22 +592,22 @@ impl Contract {
         &mut self,
         #[callback_result] after_balance: Result<U128, PromiseError>,
         op_id: u64,
-        market: AccountId,
+        market_id: MarketId,
         before_principal: U128,
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        let index = match self.ctx_allocating(op_id) {
-            Ok(state) => state.index,
+        let _state = match self.ctx_allocating(op_id) {
+            Ok(state) => state,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         let Ok(after_balance) = after_balance else {
-            self.market_execution_lock.unlock(index);
+            self.market_execution_lock.unlock(market_id);
             self.op_state = OpState::Idle;
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
-                market,
+                market: market_id,
                 reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
             }
             .emit();
@@ -601,19 +615,19 @@ impl Contract {
         };
 
         let _ = self.settle_market_principal_and_idle(
-            &market,
+            market_id,
             before_principal,
             reported_principal,
             after_balance,
             before_balance,
         );
 
-        self.market_execution_lock.unlock(index);
+        self.market_execution_lock.unlock(market_id);
 
         self.op_state = OpState::Idle;
         Event::RebalanceWithdrawCompleted {
             op_id: op_id.into(),
-            market,
+            market: market_id,
         }
         .emit();
 
@@ -779,7 +793,7 @@ impl Contract {
     pub fn refresh_01_settle(
         &mut self,
         #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
-        market: AccountId,
+        market_id: MarketId,
         op_id: u64,
         index: u32,
         _before: U128,
@@ -796,7 +810,7 @@ impl Contract {
 
         if let Ok(Some(position)) = position {
             let total: u128 = position.get_deposit().total().into();
-            self.set_market_principal(&market, total);
+            self.set_market_principal(market_id, total);
         }
 
         let mut next_state = state;
@@ -955,34 +969,33 @@ impl Contract {
     }
 
     /// Combined helper for withdrawing callbacks: validate ctx and resolve market.
-    /// Returns (cloned context, owned market `AccountId`) on success, or calls `stop_and_exit` and returns Err on failure.
+    /// Returns (cloned context, market id) on success, or calls `stop_and_exit` and returns Err on failure.
     pub(crate) fn withdraw_ctx_and_market_or_exit(
         &mut self,
         op_id: u64,
-        market_index: u32,
-    ) -> Result<(WithdrawingState, AccountId), PromiseOrValue<()>> {
+        market: MarketId,
+    ) -> Result<WithdrawingState, PromiseOrValue<()>> {
         let ctx = match self.ctx_withdrawing(op_id) {
             Ok(s) => s.clone(),
             Err(e) => return Err(self.stop_and_exit(Some(&e))),
         };
 
-        if ctx.index != market_index {
-            return Err(self.stop_and_exit(Some(&Error::IndexDrifted(ctx.index, market_index))));
-        }
-
-        let market = match self.resolve_withdraw_market(market_index) {
-            Ok(m) => m.clone(),
-            Err(e) => return Err(self.stop_and_exit(Some(&e))),
+        let Some(expected_market) = self.withdraw_route.get(ctx.index as usize).copied() else {
+            return Err(self.stop_and_exit(Some(&Error::MissingMarket(market))));
         };
 
-        Ok((ctx, market))
-    }
+        if expected_market != market {
+            return Err(self.stop_and_exit(Some(&Error::MarketDrifted {
+                expected: expected_market,
+                actual: market,
+            })));
+        }
 
-    /// Resolve a market for withdraw by `withdraw_route`
-    pub(crate) fn resolve_withdraw_market(&self, market_index: u32) -> Result<&AccountId, Error> {
-        self.withdraw_route
-            .get(market_index as usize)
-            .ok_or(Error::MissingMarket(market_index))
+        if self.market_account_by_id(market).is_none() {
+            return Err(self.stop_and_exit(Some(&Error::MissingMarket(market))));
+        }
+
+        Ok(ctx)
     }
 
     #[must_use]
@@ -1041,7 +1054,7 @@ impl Contract {
 
     fn settle_market_principal_and_idle(
         &mut self,
-        market: &AccountId,
+        market_id: MarketId,
         before_principal: U128,
         reported_principal: U128,
         after_balance: U128,
@@ -1056,7 +1069,7 @@ impl Contract {
 
         let effective_principal = before_principal.0.saturating_sub(creditable);
 
-        self.set_market_principal(market, effective_principal);
+        self.set_market_principal(market_id, effective_principal);
 
         self.resync_idle_balance(after_balance.0);
 
@@ -1128,7 +1141,7 @@ pub fn state_on_delta_inflow(
     principal_delta: u128,
     inflow: u128,
     op_id: u64,
-    market_index: u32,
+    route_index: u32,
     remaining_next: u128,
     collected_next: u128,
     ctx: WithdrawingState,
@@ -1136,7 +1149,7 @@ pub fn state_on_delta_inflow(
     let state = match principal_delta.cmp(&inflow) {
         Ordering::Less | Ordering::Equal if principal_delta > 0 => WithdrawingState {
             op_id,
-            index: market_index.saturating_add(1),
+            index: route_index.saturating_add(1),
             remaining: remaining_next,
             receiver: ctx.receiver,
             collected: collected_next,
@@ -1145,7 +1158,7 @@ pub fn state_on_delta_inflow(
         },
         _ => WithdrawingState {
             op_id,
-            index: market_index,
+            index: route_index,
             remaining: remaining_next,
             receiver: ctx.receiver,
             collected: collected_next,
