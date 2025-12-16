@@ -10,6 +10,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use near_crypto::{InMemorySigner, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
+use templar_common::utils::Network;
 use tokio::{
     select,
     sync::RwLock,
@@ -20,7 +21,7 @@ use tracing::Instrument;
 use crate::{
     inventory::InventoryManager,
     liquidation_strategy::LiquidationStrategy,
-    rpc::{list_all_deployments, view, Network},
+    rpc::{list_all_deployments, view},
     CollateralStrategy, Liquidator, LiquidatorError,
 };
 
