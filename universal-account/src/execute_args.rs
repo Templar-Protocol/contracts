@@ -67,9 +67,17 @@ enum ExecuteArgsMaybeFlattenedMessage<K, M: SignableMessage> {
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
-struct ExecuteArgsUnflattenedMessage<K, M: SignableMessage> {
+pub struct ExecuteArgsUnflattenedMessage<K, M: SignableMessage> {
     pub key: K,
     pub message: Box<MessageWithSignature<M>>,
+}
+
+#[test]
+fn f() {
+    let s = r#"{"Passkey":{"key":"p256:SPV1KDVTxttenskcu3QKhCvsBebxbn6TWqJ2sGcFZdEG2iXYD2xBBpWNzLEBQDhMPEHz6jf3LC16vHCeL3FJ5Fyb","message":{"authenticator_data":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","client_data_json":"{\"type\":\"webauthn.get\",\"challenge\":\"BddwNHHfooK3NlHVzJoUftmBuzjyFOM_1oJHAi8MDOk\",\"origin\":\"https://app.templarfi.org\",\"crossOrigin\":false,\"topOrigin\":null}","message":"{\"account_id\":\"dev-20251216054508-16320123382441.test.near\",\"parameters\":{\"block_height\":\"487\",\"index\":\"0\",\"nonce\":\"1\"},\"payload\":[{\"actions\":[{\"FunctionCall\":{\"amount\":\"0\",\"arguments\":\"e30=\",\"function_name\":\"apply_interest\",\"gas\":\"155000000000000\"}}],\"receiver_id\":\"market251216054410-71771409564658.test.near\"}]}","signature":"MEQCICHFK1_88ADWlzkA9bxKb1WmAgJF2nzNZyultbClPsPfAiAK-g0zVt86slA4nRXKoIh-GY3TFXAbH5AGweS9CdYv7A"}}}"#;
+    let j: ExecuteArgs<Box<[crate::transaction::Transaction]>> =
+        near_sdk::serde_json::from_str(s).unwrap();
+    eprintln!("{j:?}");
 }
 
 #[derive(Debug, Clone)]

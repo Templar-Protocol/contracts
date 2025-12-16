@@ -13,11 +13,16 @@ use near_primitives::{
     views::TxExecutionStatus,
 };
 use near_sdk::{
+    env::sha256_array,
+    json_types::Base64VecU8,
     serde_json::{self, json},
     AccountId, NearToken,
 };
 use near_workspaces::{network::Sandbox, Account, Worker};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::{
+    ecdsa::{signature::Signer, SigningKey},
+    elliptic_curve::rand_core::OsRng,
+};
 use rstest::{fixture, rstest};
 use tokio::sync::watch;
 
@@ -115,7 +120,7 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
         .add_version(
             ua_deployer.contract().as_account(),
             NearToken::from_near(80),
-            "v1",
+            "latest",
             DeployMode::GlobalHash,
             UniversalAccountController::wasm().await,
         )
@@ -144,7 +149,7 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
             "--ua-registry-id",
             ua_deployer.contract().id().as_ref(),
             "--ua-version-key",
-            "v1",
+            "latest",
             "--ua-chain-id",
             &NEAR_TESTNET_CHAIN_ID.to_string(),
             "--intents-id",
@@ -232,6 +237,134 @@ pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
             TransactionInfo::TransactionId {
                 tx_hash: response.transaction_hash,
                 sender_account_id: relay_user.id().clone(),
+            },
+            TxExecutionStatus::Final,
+        )
+        .await
+        .unwrap();
+
+    status
+        .final_execution_outcome
+        .unwrap()
+        .into_outcome()
+        .assert_success();
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn universal_account_regression_0_2_0(#[future(awt)] init_test: InitTest) {
+    let InitTest { worker, app, c, .. } = init_test;
+
+    let secret_key = p256::SecretKey::from_bytes(&[0xa8; 32].into()).unwrap();
+    let passkey = Passkey(PublicKey(secret_key.public_key()));
+
+    let ua = worker
+        .dev_deploy(UniversalAccountController::wasm_0_2_0())
+        .await
+        .unwrap();
+
+    ua.call("new")
+        .args_json(json!({ "key": KeyId::Passkey(passkey.clone()) }))
+        .transact()
+        .await
+        .unwrap()
+        .unwrap();
+
+    let parameters = app
+        .ua_near
+        .load_ua_key(ua.id().clone(), KeyId::Passkey(passkey.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    app.database
+        .create_account(ua.id(), NearToken::from_near(1).saturating_div(4))
+        .await
+        .unwrap();
+
+    let message = serde_json::to_string(&json!({
+        "parameters": {
+            "block_height": parameters.block_height,
+            "index": "0",
+            "nonce": "1",
+        },
+        "account_id": ua.id(),
+        "payload": [{
+            "receiver_id": c.market.contract().id(),
+            "actions": [{ "FunctionCall": {
+                "function_name": "apply_interest",
+                "arguments": Base64VecU8(b"{}".to_vec()),
+                "amount": "0",
+                "gas": "155000000000000",
+            }}],
+        }],
+    }))
+    .unwrap();
+
+    let challenge = sha256_array(
+        &[
+            b"\x19UAccount Signed Message:\n".to_vec(),
+            message.as_bytes().to_vec(),
+        ]
+        .concat(),
+    );
+
+    let client_data_json = serde_json::to_string(&ClientDataJson {
+        r#type: "webauthn.get".to_string(),
+        challenge: passkey::data::Challenge(challenge),
+        origin: "https://app.templarfi.org".to_string(),
+        cross_origin: Some(false),
+        top_origin: None,
+    })
+    .unwrap();
+
+    let authenticator_data = AuthenticatorData(Box::new([0xff_u8; 32]));
+
+    let sig_base = [
+        &*authenticator_data,
+        &near_sdk::env::sha256(client_data_json.as_bytes()),
+    ]
+    .concat();
+
+    let signature = passkey::signature::Signature(SigningKey::from(secret_key).sign(&sig_base));
+
+    let args_json = json!({
+        "Passkey": {
+            "key": passkey,
+            "message": {
+                "authenticator_data": authenticator_data,
+                "client_data_json": client_data_json,
+                "message": message,
+                "signature": signature,
+            }
+        }
+    });
+
+    let args = serde_json::to_string(&args_json).unwrap();
+
+    let response = templar_relayer::route::universal_account::relay::relay(
+        State(app.clone()),
+        Json(UaRelayRequest {
+            account_id: ua.id().clone(),
+            args: serde_json::from_str(&args).unwrap(),
+            storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
+        }),
+    )
+    .await;
+
+    let response = match response {
+        SimpleResponse::Success(response) => response,
+        e => {
+            panic!("Should succeed: {e:?}");
+        }
+    };
+
+    let status = worker
+        .tx_status(
+            TransactionInfo::TransactionId {
+                tx_hash: response.transaction_hash,
+                sender_account_id: ua.id().clone(),
             },
             TxExecutionStatus::Final,
         )
@@ -356,16 +489,16 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::relay::relay(
         State(app.clone()),
-        Json(UaRelayRequest {
-            account_id: ua_account_id.clone(),
-            args: ExecuteArgsMessage {
-                key: passkey.clone(),
-                mws: Box::new(message),
-            }
-            .into(),
-            storage_deposit: HashSet::default(),
-            update_price_feeds: HashSet::default(),
-        }),
+        Json(
+            UaRelayRequest::new(
+                ua_account_id.clone(),
+                ExecuteArgsMessage {
+                    key: passkey.clone(),
+                    mws: Box::new(message),
+                },
+            )
+            .unwrap(),
+        ),
     )
     .await;
 
@@ -419,16 +552,16 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::relay::relay(
         State(app.clone()),
-        Json(UaRelayRequest {
-            account_id: ua_account_id.clone(),
-            args: ExecuteArgsMessage {
-                key: passkey.clone(),
-                mws: Box::new(message),
-            }
-            .into(),
-            storage_deposit: HashSet::default(),
-            update_price_feeds: HashSet::default(),
-        }),
+        Json(
+            UaRelayRequest::new(
+                ua_account_id.clone(),
+                ExecuteArgsMessage {
+                    key: passkey.clone(),
+                    mws: Box::new(message),
+                },
+            )
+            .unwrap(),
+        ),
     )
     .await;
 
@@ -617,16 +750,16 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::relay::relay(
         State(app.clone()),
-        Json(UaRelayRequest {
-            account_id: ua_account_id.clone(),
-            args: ExecuteArgsMessage {
-                key: passkey.clone(),
-                mws: Box::new(message),
-            }
-            .into(),
-            storage_deposit: HashSet::default(),
-            update_price_feeds: HashSet::default(),
-        }),
+        Json(
+            UaRelayRequest::new(
+                ua_account_id.clone(),
+                ExecuteArgsMessage {
+                    key: passkey.clone(),
+                    mws: Box::new(message),
+                },
+            )
+            .unwrap(),
+        ),
     )
     .await;
 
@@ -681,16 +814,16 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let response = templar_relayer::route::universal_account::relay::relay(
         State(app.clone()),
-        Json(UaRelayRequest {
-            account_id: ua_account_id.clone(),
-            args: ExecuteArgsMessage {
-                key: passkey_2.clone(),
-                mws: Box::new(message),
-            }
-            .into(),
-            storage_deposit: HashSet::default(),
-            update_price_feeds: HashSet::default(),
-        }),
+        Json(
+            UaRelayRequest::new(
+                ua_account_id.clone(),
+                ExecuteArgsMessage {
+                    key: passkey_2.clone(),
+                    mws: Box::new(message),
+                },
+            )
+            .unwrap(),
+        ),
     )
     .await;
 

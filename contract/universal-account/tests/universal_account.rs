@@ -31,8 +31,6 @@ use test_utils::{
     FtController, StorageManagementController,
 };
 
-static WASM_0_2_0: &[u8] = include_bytes!("./migration/0_2_0.wasm");
-
 fn mint(amount: u128) -> FunctionCallAction {
     FunctionCallAction {
         function_name: "mint".to_string(),
@@ -166,7 +164,11 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Set
 
     let make_uac = || async move {
         if migrated {
-            let c = uni_account.deploy(WASM_0_2_0).await.unwrap().unwrap();
+            let c = uni_account
+                .deploy(UniversalAccountController::wasm_0_2_0())
+                .await
+                .unwrap()
+                .unwrap();
             c.call("new")
                 .args_json(json!({
                     "key": sk.id(),
