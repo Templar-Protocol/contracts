@@ -61,8 +61,6 @@ pub async fn relay(
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
 
-    eprintln!("Received args: {args_raw}");
-
     // This is a stopgap measure to support the old args passed by the FE.
     // Once the FE is fully-upgraded to support the new args format, this
     // should be removed, and we should deserialize `args` to `ExecuteArgs`
@@ -77,11 +75,6 @@ pub async fn relay(
             return SimpleResponse::Rejected { reason: msg };
         }
     };
-
-    // eprintln!(
-    //     "received args: {}",
-    //     near_sdk::serde_json::to_string(&args).unwrap()
-    // );
 
     let parameters = match app
         .ua_near
