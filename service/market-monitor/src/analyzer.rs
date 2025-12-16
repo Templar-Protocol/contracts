@@ -114,8 +114,15 @@ impl Analyzer {
         }
 
         // Calculate distance from MCR as percentage
-        let distance_from_mcr_pct =
-            ((cr - mcr_liquidation) / mcr_liquidation) * Decimal::from(100u32);
+        // For red zone (below MCR), calculate how far below
+        // For yellow zone (above MCR), calculate how far above
+        let distance_from_mcr_pct = if zone == AlertZone::Red {
+            // CR is below MCR, so calculate (MCR - CR) to avoid underflow
+            ((mcr_liquidation - cr) / mcr_liquidation) * Decimal::from(100u32)
+        } else {
+            // CR is at or above MCR
+            ((cr - mcr_liquidation) / mcr_liquidation) * Decimal::from(100u32)
+        };
 
         Ok(Some(PositionAlert {
             borrower: borrower.clone(),
