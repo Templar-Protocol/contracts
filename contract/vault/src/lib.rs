@@ -55,6 +55,7 @@ pub mod aum;
 pub mod governance;
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
+pub(crate) mod op_guard;
 pub mod storage_management;
 
 #[cfg(test)]
@@ -523,9 +524,9 @@ impl Contract {
     /// Refresh principals from markets and return a live assets report; updates stored principals.
     /// Pass an empty `markets` vector to refresh all configured markets.
     pub fn refresh_markets(&mut self, markets: Vec<MarketId>) -> PromiseOrValue<RealAssetsReport> {
-        self.ensure_idle();
+        let mut idle = crate::op_guard::IdleGuard::new(self);
 
-        let mut plan = self.refresh_targets(markets);
+        let mut plan = idle.refresh_targets(markets);
         plan.sort_unstable();
         plan.dedup();
 
@@ -533,13 +534,13 @@ impl Contract {
 
         let now = env::block_timestamp();
         require!(
-            now.saturating_sub(self.last_refresh_ns) >= self.refresh_cooldown_ns,
+            now.saturating_sub(idle.last_refresh_ns) >= idle.refresh_cooldown_ns,
             "Refresh throttled"
         );
-        self.last_refresh_ns = now;
+        idle.last_refresh_ns = now;
 
-        let op_id = self.next_op_id;
-        self.next_op_id = self.next_op_id.saturating_add(1);
+        let op_id = idle.next_op_id;
+        idle.next_op_id = idle.next_op_id.saturating_add(1);
 
         Event::RefreshStarted {
             op_id: op_id.into(),
@@ -548,13 +549,13 @@ impl Contract {
         }
         .emit();
 
-        self.op_state = OpState::Refreshing(RefreshingState {
+        let mut refreshing = idle.start_refreshing(RefreshingState {
             op_id,
             index: 0,
             plan,
         });
 
-        self.refresh_step(op_id)
+        refreshing.refresh_step(op_id)
     }
 
     /// Allocator/Curator/Owner only. Unbricks the current in-flight withdrawal or payout:
@@ -1540,28 +1541,32 @@ impl Contract {
         if amount == 0 {
             return PromiseOrValue::Value(());
         }
-        self.ensure_idle();
+
+        let mut idle = crate::op_guard::IdleGuard::new(self);
 
         require!(
-            amount <= self.idle_balance,
+            amount <= idle.idle_balance,
             "Policy violation: reserve amount must be <= idle_balance"
         );
-        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
+        idle.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
 
-        let op_id = self.next_op_id;
-        self.next_op_id += 1;
-        self.op_state = OpState::Allocating(AllocatingState {
+        let op_id = idle.next_op_id;
+        idle.next_op_id += 1;
+
+        let mut allocating = idle.start_allocation(AllocatingState {
             op_id,
             index: 0,
             remaining: amount,
             plan,
         });
+
         Event::AllocationStarted {
             op_id: op_id.into(),
             remaining: U128(amount),
         }
         .emit();
-        self.step_allocation()
+
+        allocating.step_allocation()
     }
 
     /// build a supply `transfer_call` and chain `after_supply_1_check`
@@ -1687,15 +1692,17 @@ impl Contract {
         if amount == 0 {
             return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
-        self.ensure_idle();
-        let op_id = self.next_op_id;
-        self.next_op_id += 1;
+
+        let mut idle = crate::op_guard::IdleGuard::new(self);
+
+        let op_id = idle.next_op_id;
+        idle.next_op_id += 1;
 
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
-        let cov = self.compute_idle_coverage(amount);
+        let cov = idle.compute_idle_coverage(amount);
 
-        self.withdraw_route = route;
-        self.op_state = OpState::Withdrawing(WithdrawingState {
+        idle.withdraw_route = route;
+        let mut withdrawing = idle.start_withdrawal(WithdrawingState {
             op_id,
             index: Default::default(),
             remaining: cov.remaining_unmet,
@@ -1704,7 +1711,8 @@ impl Contract {
             owner: owner.clone(),
             escrow_shares,
         });
-        self.pay_or_signal_next_withdraw()
+
+        withdrawing.pay_or_signal_next_withdraw()
     }
 
     fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
@@ -1806,7 +1814,12 @@ impl Contract {
         escrow_shares: u128,
         burn_shares: u128,
     ) -> PromiseOrValue<()> {
-        self.op_state = OpState::Payout(PayoutState {
+        let withdrawing = match crate::op_guard::WithdrawingGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        let mut payout = withdrawing.into_payout(PayoutState {
             op_id,
             receiver: receiver.clone(),
             amount,
@@ -1814,11 +1827,13 @@ impl Contract {
             escrow_shares,
             burn_shares,
         });
-        require!(self.idle_balance >= amount, "idle underflow in payout");
-        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
+
+        require!(payout.idle_balance >= amount, "idle underflow in payout");
+        payout.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
 
         PromiseOrValue::Promise(
-            self.underlying_asset
+            payout
+                .underlying_asset
                 .transfer(receiver.clone(), U128(amount).into())
                 .then(
                     Self::ext(env::current_account_id())

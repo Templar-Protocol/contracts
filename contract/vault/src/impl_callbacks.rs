@@ -13,6 +13,7 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};
 use templar_common::{
+    guard::GuardSpec,
     market::ext_market,
     panic_with_message,
     supply::SupplyPosition,
@@ -26,26 +27,6 @@ use templar_common::{
     },
 };
 
-macro_rules! guard_op_state {
-    ($self:expr, Idle, $err:expr) => {{
-        match &$self.op_state {
-            OpState::Idle => Ok(()),
-            _ => Err($err),
-        }
-    }};
-    ($self:expr, $variant:ident, $err:expr) => {{
-        match &$self.op_state {
-            OpState::$variant(state) => Ok(state),
-            _ => Err($err),
-        }
-    }};
-    ($self:expr, $variant:ident, $op_id:expr, $err:expr) => {{
-        match &$self.op_state {
-            OpState::$variant(state) if state.op_id == $op_id => Ok(state),
-            _ => Err($err),
-        }
-    }};
-}
 
 /// State machine:
 ///
@@ -197,16 +178,22 @@ impl Contract {
 
         self.set_market_principal(market_id, new_principal);
 
-        self.op_state = OpState::Allocating(AllocatingState {
+        let allocating = match crate::op_guard::AllocatingGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        let mut allocating = allocating.replace_state(AllocatingState {
             op_id,
             index: market_index.saturating_add(1),
             remaining: remaining_next,
             plan,
         });
+
         if remaining_next == 0 {
-            return self.stop_and_exit(None::<&String>);
+            return allocating.stop_and_exit(None::<&String>);
         }
-        self.step_allocation()
+        allocating.step_allocation()
     }
 
     #[private]
@@ -455,9 +442,15 @@ impl Contract {
                 ctx.escrow_shares,
                 ctx.escrow_shares,
                 |self_| {
+                    let mut withdrawing =
+                        match crate::op_guard::WithdrawingGuard::expect(self_, Some(op_id)) {
+                            Ok(guard) => guard,
+                            Err(e) => return self_.stop_and_exit(Some(&e)),
+                        };
+
                     // On early completion we still finalise
                     let self_id = env::current_account_id();
-                    self_
+                    withdrawing
                         .transfer(&Nep141Transfer::new(
                             ctx.escrow_shares,
                             &self_id,
@@ -468,9 +461,9 @@ impl Contract {
                                 "Failed to refund escrowed shares {e}"
                             ))
                         });
-                    self_.pop_head();
-                    self_.withdraw_route.clear();
-                    self_.op_state = OpState::Idle;
+                    withdrawing.pop_head();
+                    withdrawing.withdraw_route.clear();
+                    let _idle = withdrawing.into_idle();
                     PromiseOrValue::Value(())
                 },
             );
@@ -485,8 +478,19 @@ impl Contract {
             collected_next,
             ctx,
         );
-        self.op_state = next_state;
-        self.pay_or_signal_next_withdraw()
+
+        let OpState::Withdrawing(next_state) = next_state else {
+            return self.stop_and_exit(Some(&Error::NotWithdrawing));
+        };
+
+        let withdrawing = match crate::op_guard::WithdrawingGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
+            Err(e) => return self.stop_and_exit(Some(&e)),
+        };
+
+        let mut withdrawing = withdrawing.replace_state(next_state);
+
+        withdrawing.pay_or_signal_next_withdraw()
     }
 
     #[private]
@@ -498,14 +502,14 @@ impl Contract {
         batch_limit: Option<u32>,
         before_principal: U128,
     ) -> PromiseOrValue<()> {
-        let _state = match self.ctx_allocating(op_id) { 
-            Ok(state) => state,
+        let mut allocating = match crate::op_guard::AllocatingGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         let Ok(before_balance) = before_balance else {
-            self.market_execution_lock.unlock(market_id);
-            self.op_state = OpState::Idle;
+            allocating.market_execution_lock.unlock(market_id);
+            let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
                 market: market_id,
@@ -520,7 +524,7 @@ impl Contract {
         }
         .emit();
 
-        let market_account = self
+        let market_account = allocating
             .market_account_by_id(market_id)
             .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
             .clone();
@@ -548,8 +552,8 @@ impl Contract {
         before_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        let _state = match self.ctx_allocating(op_id) {
-            Ok(state) => state,
+        let mut allocating = match crate::op_guard::AllocatingGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
@@ -557,8 +561,8 @@ impl Contract {
             Ok(Some(position)) => position.get_deposit().total().into(),
             Ok(None) => 0,
             Err(_) => {
-            self.market_execution_lock.unlock(market_id);
-                self.op_state = OpState::Idle;
+                allocating.market_execution_lock.unlock(market_id);
+                let _idle = allocating.into_idle();
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
                     market: market_id,
@@ -570,7 +574,7 @@ impl Contract {
         };
 
         PromiseOrValue::Promise(
-            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+            ext_ft_core::ext(allocating.underlying_asset.contract_id().into())
                 .with_static_gas(FT_BALANCE_OF_GAS)
                 .ft_balance_of(env::current_account_id())
                 .then(
@@ -597,14 +601,14 @@ impl Contract {
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        let _state = match self.ctx_allocating(op_id) {
-            Ok(state) => state,
+        let mut allocating = match crate::op_guard::AllocatingGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
             Err(e) => return self.stop_and_exit(Some(&e)),
         };
 
         let Ok(after_balance) = after_balance else {
-            self.market_execution_lock.unlock(market_id);
-            self.op_state = OpState::Idle;
+            allocating.market_execution_lock.unlock(market_id);
+            let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
                 market: market_id,
@@ -614,7 +618,7 @@ impl Contract {
             return PromiseOrValue::Value(());
         };
 
-        let _ = self.settle_market_principal_and_idle(
+        let _ = allocating.settle_market_principal_and_idle(
             market_id,
             before_principal,
             reported_principal,
@@ -622,9 +626,9 @@ impl Contract {
             before_balance,
         );
 
-        self.market_execution_lock.unlock(market_id);
+        allocating.market_execution_lock.unlock(market_id);
 
-        self.op_state = OpState::Idle;
+        let _idle = allocating.into_idle();
         Event::RebalanceWithdrawCompleted {
             op_id: op_id.into(),
             market: market_id,
@@ -639,6 +643,11 @@ impl Contract {
         balance: Result<U128, PromiseError>,
         reason: Option<Reason>,
     ) -> PromiseOrValue<()> {
+        let mut payout = match crate::op_guard::PayoutGuard::expect(self, None) {
+            Ok(guard) => guard,
+            Err(_) => return PromiseOrValue::Value(()),
+        };
+
         let PayoutState {
             op_id,
             receiver,
@@ -646,12 +655,7 @@ impl Contract {
             owner,
             escrow_shares,
             burn_shares: _,
-        } = match &self.op_state {
-            OpState::Payout(s) => s.clone(),
-            _ => {
-                return PromiseOrValue::Value(());
-            }
-        };
+        } = payout.state().clone();
 
         let (actual_idle, stop_reason) = match balance {
             Ok(U128(v)) => (Some(v), reason),
@@ -673,21 +677,21 @@ impl Contract {
         .emit();
 
         if let Some(actual_idle) = actual_idle {
-            self.resync_idle_balance(actual_idle);
+            payout.resync_idle_balance(actual_idle);
         }
 
         if escrow_shares > 0 {
             Gate::bypass_transfer_with(
-                self,
+                &mut payout,
                 &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
                 |e| env::log_str(&e.to_string()),
             );
         }
 
-        self.pop_head();
-        self.withdraw_route.clear();
-        self.market_execution_lock.clear();
-        self.op_state = OpState::Idle;
+        payout.pop_head();
+        payout.withdraw_route.clear();
+        payout.market_execution_lock.clear();
+        let _idle = payout.into_idle();
 
         PromiseOrValue::Value(())
     }
@@ -713,18 +717,9 @@ impl Contract {
         receiver: AccountId,
         amount: U128,
     ) {
-        let (owner, escrow_shares, expected_amount, burn_shares) = match &self.op_state {
-            OpState::Payout(PayoutState {
-                op_id: current_op,
-                receiver: recv,
-                amount,
-                owner,
-                escrow_shares,
-                burn_shares,
-            }) if *current_op == op_id && *recv == receiver => {
-                (owner.clone(), *escrow_shares, *amount, *burn_shares)
-            }
-            _ => {
+        let mut payout = match crate::op_guard::PayoutGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
+            Err(_) => {
                 Event::PayoutUnexpectedState {
                     op_id: op_id.into(),
                     receiver: receiver.clone(),
@@ -735,6 +730,26 @@ impl Contract {
             }
         };
 
+        let (owner, escrow_shares, expected_amount, burn_shares) = {
+            let state = payout.state();
+            if state.receiver != receiver {
+                Event::PayoutUnexpectedState {
+                    op_id: op_id.into(),
+                    receiver: receiver.clone(),
+                    amount,
+                }
+                .emit();
+                return;
+            }
+
+            (
+                state.owner.clone(),
+                state.escrow_shares,
+                state.amount,
+                state.burn_shares,
+            )
+        };
+
         if result.is_ok() {
             let EscrowSettlement {
                 to_burn: burn_shares,
@@ -743,7 +758,7 @@ impl Contract {
 
             if burn_shares > 0 {
                 // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
-                let _ = self
+                let _ = payout
                     .burn(&Nep141Burn::new(burn_shares, env::current_account_id()))
                     .inspect_err(|e| env::log_str(&format!("Failed to burn {e}")));
             }
@@ -751,23 +766,24 @@ impl Contract {
             if refund > 0 {
                 // Note: this should be infallible since we are transferring to an existing owner, and they are unable to unregister from storage
                 Gate::bypass_transfer_with(
-                    self,
+                    &mut payout,
                     &Nep141Transfer::new(refund, env::current_account_id(), &owner),
                     // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
                     |e| env::log_str(&e.to_string()),
                 );
             }
         } else {
-            self.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
+            payout.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
             Gate::bypass_transfer_with(
-                self,
+                &mut payout,
                 &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
                 |e| env::log_str(&e.to_string()),
             );
         }
-        self.pop_head();
-        self.withdraw_route.clear();
-        self.op_state = OpState::Idle;
+
+        payout.pop_head();
+        payout.withdraw_route.clear();
+        let _idle = payout.into_idle();
     }
 
     #[private]
@@ -798,26 +814,26 @@ impl Contract {
         index: u32,
         _before: U128,
     ) -> PromiseOrValue<RealAssetsReport> {
-        let state = match &self.op_state {
-            OpState::Refreshing(s) if s.op_id == op_id => s.clone(),
-            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
+        let mut refreshing = match crate::op_guard::RefreshingGuard::expect(self, Some(op_id)) {
+            Ok(guard) => guard,
+            Err(_) => return PromiseOrValue::Value(self.build_real_assets_report()),
         };
 
-        if state.index != index {
-            self.op_state = OpState::Idle;
-            return PromiseOrValue::Value(self.build_real_assets_report());
+        if refreshing.state().index != index {
+            let idle = refreshing.into_idle();
+            return PromiseOrValue::Value(idle.build_real_assets_report());
         }
 
         if let Ok(Some(position)) = position {
             let total: u128 = position.get_deposit().total().into();
-            self.set_market_principal(market_id, total);
+            refreshing.set_market_principal(market_id, total);
         }
 
-        let mut next_state = state;
+        let mut next_state = refreshing.state().clone();
         next_state.index = next_state.index.saturating_add(1);
 
         if next_state.index as usize >= next_state.plan.len() {
-            let report = self.build_real_assets_report();
+            let report = refreshing.build_real_assets_report();
             Event::RefreshCompleted {
                 op_id: op_id.into(),
                 markets: next_state.plan,
@@ -825,12 +841,13 @@ impl Contract {
                 refreshed_at: report.refreshed_at,
             }
             .emit();
-            self.op_state = OpState::Idle;
+            let _idle = refreshing.into_idle();
             return PromiseOrValue::Value(report);
         }
 
-        self.op_state = OpState::Refreshing(next_state);
-        self.refresh_step(op_id)
+        let mut refreshing = refreshing.replace_state(next_state);
+
+        refreshing.refresh_step(op_id)
     }
 }
 
@@ -840,6 +857,7 @@ impl Contract {
         msg: Option<&T>,
     ) {
         let s: &AllocatingState = self.op_state.as_ref();
+        let op_id = s.op_id;
 
         msg.map_or(Event::AllocationCompleted { op_id: s.op_id }, |m| {
             Event::AllocationStopped {
@@ -855,7 +873,9 @@ impl Contract {
 
         self.market_execution_lock.clear();
 
-        self.op_state = OpState::Idle;
+        let allocating = crate::op_guard::AllocatingGuard::expect(self, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
+        let _idle = allocating.into_idle();
     }
 
     pub fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
@@ -863,6 +883,7 @@ impl Contract {
         msg: Option<&T>,
     ) {
         let s: &WithdrawingState = self.op_state.as_ref();
+        let op_id = s.op_id;
 
         Event::WithdrawalStopped {
             op_id: s.op_id.into(),
@@ -873,7 +894,7 @@ impl Contract {
         }
         .emit();
 
-        self.market_execution_lock.unlock(s.index);
+        self.market_execution_lock.clear();
 
         let owner = s.owner.clone();
 
@@ -887,7 +908,10 @@ impl Contract {
 
         self.pop_head();
         self.withdraw_route.clear();
-        self.op_state = OpState::Idle;
+
+        let withdrawing = crate::op_guard::WithdrawingGuard::expect(self, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
+        let _idle = withdrawing.into_idle();
     }
 
     pub fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(
@@ -895,6 +919,7 @@ impl Contract {
         msg: Option<&T>,
     ) {
         let s: &PayoutState = self.op_state.as_ref();
+        let op_id = s.op_id;
         Event::PayoutStopped {
             op_id: (s.op_id).into(),
             receiver: s.receiver.clone(),
@@ -915,7 +940,10 @@ impl Contract {
         self.market_execution_lock.clear();
         self.pop_head();
         self.withdraw_route.clear();
-        self.op_state = OpState::Idle;
+
+        let payout = crate::op_guard::PayoutGuard::expect(self, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
+        let _idle = payout.into_idle();
     }
 
     pub(crate) fn stop_and_exit<T: Display + core::fmt::Debug + ?Sized>(
@@ -926,7 +954,9 @@ impl Contract {
             OpState::Allocating(_) => self.stop_and_exit_allocating(msg),
             OpState::Withdrawing(_) => self.stop_and_exit_withdrawing(msg),
             OpState::Refreshing(_) => {
-                self.op_state = OpState::Idle;
+                let refreshing = crate::op_guard::RefreshingGuard::expect(self, None)
+                    .unwrap_or_else(|e| panic_with_message(&e.to_string()));
+                let _idle = refreshing.into_idle();
                 Event::OperationStoppedWhileIdle {
                     reason: msg.map(|m| Reason::Other(m.to_string())),
                 }
@@ -957,7 +987,7 @@ impl Contract {
 
     /// Validate current op is Allocating and return the state reference.
     pub(crate) fn ctx_allocating(&self, op_id: u64) -> Result<&AllocatingState, Error> {
-        guard_op_state!(self, Allocating, op_id, Error::NotAllocating)
+        crate::op_guard::AllocatingSpec::validate(self, Some(op_id))
     }
 
     /// Validate current op is Withdrawing and return context tuple
@@ -965,7 +995,7 @@ impl Contract {
     /// # Errors
     /// Returns an error if the operation is not currently withdrawing.
     pub fn ctx_withdrawing(&self, op_id: u64) -> Result<&WithdrawingState, Error> {
-        guard_op_state!(self, Withdrawing, op_id, Error::NotWithdrawing)
+        crate::op_guard::WithdrawingSpec::validate(self, Some(op_id))
     }
 
     /// Combined helper for withdrawing callbacks: validate ctx and resolve market.

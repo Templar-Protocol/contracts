@@ -555,6 +555,8 @@ pub enum Error {
     MissingMarket(MarketId),
     NotWithdrawing,
     NotAllocating,
+    NotRefreshing,
+    NotPayout,
     MarketTransferFailed,
     MissingSupplyPosition,
     PositionReadFailed,
