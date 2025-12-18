@@ -63,6 +63,10 @@ REF_CONTRACT="${REF_CONTRACT:-v2.ref-dev.testnet}"  # Testnet default
 ALLOWED_COLLATERAL_ASSETS="${ALLOWED_COLLATERAL_ASSETS}"
 IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
 
+# Oracle price update configuration
+PYTH_HERMES_URL="${PYTH_HERMES_URL:-https://hermes-beta.pyth.network}"
+AUTO_UPDATE_PRICES="${AUTO_UPDATE_PRICES:-false}"
+
 # Build binary if needed
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
 BINARY_PATH="$PROJECT_ROOT/target/debug/liquidator"
@@ -161,6 +165,10 @@ if [ -n "$IGNORED_COLLATERAL_ASSETS" ]; then
         CMD_ARGS+=("--ignored-collateral-assets" "$asset")
     done
 fi
+
+# Add oracle price update arguments
+CMD_ARGS+=("--hermes-url" "$PYTH_HERMES_URL")
+[ "$AUTO_UPDATE_PRICES" = "true" ] && CMD_ARGS+=("--auto-update-prices")
 
 info "Starting liquidator..."
 echo ""

@@ -42,7 +42,7 @@ set -e
 # ==============================================================================
 
 # Configuration
-NEAR_ACCOUNT="tmplr-liq.near"
+NEAR_ACCOUNT="your-near-account.near"
 FROM_TOKEN="nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
 TO_TOKEN="nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 AMOUNT="5000000"

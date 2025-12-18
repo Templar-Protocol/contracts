@@ -113,6 +113,8 @@ pub enum LiquidatorError {
     StrategyError(String),
     #[error("Insufficient balance for liquidation")]
     InsufficientBalance,
+    #[error("Failed to update Pyth prices: {0}")]
+    PriceUpdateError(String),
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
@@ -153,6 +155,8 @@ pub struct Liquidator {
     max_loop_iterations: u32,
     /// Market version (major, minor, patch) - used for version-specific liquidation logic
     market_version: Option<(u32, u32, u32)>,
+    /// Enable automatic Pyth price updates before liquidations
+    auto_update_prices: bool,
 }
 
 impl Liquidator {
@@ -186,9 +190,17 @@ impl Liquidator {
         swap_provider: Option<crate::swap::SwapProviderImpl>,
         loop_liquidation: bool,
         max_loop_iterations: u32,
+        hermes_url: Option<String>,
+        auto_update_prices: bool,
+        signer_for_oracle: &Option<(AccountId, near_crypto::SecretKey)>,
     ) -> Self {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
-        let oracle_fetcher = oracle::OracleFetcher::new(client.clone());
+        let oracle_fetcher = oracle::OracleFetcher::new(
+            client.clone(),
+            hermes_url,
+            signer_for_oracle.as_ref().map(|(id, _)| id.clone()),
+            signer_for_oracle.as_ref().map(|(_, key)| key.clone()),
+        );
         let executor = executor::LiquidationExecutor::new(
             client.clone(),
             signer,
@@ -210,6 +222,7 @@ impl Liquidator {
             loop_liquidation,
             max_loop_iterations,
             market_version: None,
+            auto_update_prices,
         }
     }
 
@@ -659,30 +672,89 @@ impl Liquidator {
         tracing::info!(
             strategy = %self.strategy.strategy_name(),
             percentage = max_percentage,
+            auto_update_prices = self.auto_update_prices,
             "Starting liquidation run"
         );
 
+        let oracle_account = self
+            .market_config
+            .price_oracle_configuration
+            .account_id
+            .clone();
+        let price_ids = [
+            self.market_config
+                .price_oracle_configuration
+                .borrow_asset_price_id,
+            self.market_config
+                .price_oracle_configuration
+                .collateral_asset_price_id,
+        ];
+        let price_max_age = self
+            .market_config
+            .price_oracle_configuration
+            .price_maximum_age_s;
+
         // Fetch oracle prices
-        let oracle_response = self
+        let mut oracle_response = self
             .oracle_fetcher
-            .get_oracle_prices(
-                self.market_config
-                    .price_oracle_configuration
-                    .account_id
-                    .clone(),
-                &[
-                    self.market_config
-                        .price_oracle_configuration
-                        .borrow_asset_price_id,
-                    self.market_config
-                        .price_oracle_configuration
-                        .collateral_asset_price_id,
-                ],
-                self.market_config
-                    .price_oracle_configuration
-                    .price_maximum_age_s,
-            )
+            .get_oracle_prices(oracle_account.clone(), &price_ids, price_max_age)
             .await?;
+
+        // Check if any prices are missing or stale
+        let now = if let Ok(duration) =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        {
+            duration.as_secs().try_into().unwrap_or(i64::MAX)
+        } else {
+            tracing::error!("System time is before UNIX epoch");
+            return Err(LiquidatorError::PriceUpdateError(
+                "System time error".to_string(),
+            ));
+        };
+
+        let has_stale_prices = oracle_response.is_empty()
+            || price_ids.iter().any(|price_id| {
+                oracle_response
+                    .get(price_id)
+                    .and_then(|opt| opt.as_ref())
+                    .is_none_or(|price| (now - price.publish_time) > i64::from(price_max_age))
+            });
+
+        // If prices are missing/stale and auto-update is enabled, try to update them
+        if has_stale_prices && self.auto_update_prices {
+            tracing::warn!(
+                price_ids = ?price_ids,
+                max_age_s = price_max_age,
+                "Oracle prices are missing or stale, attempting to update from Pyth Hermes (AUTO_UPDATE_PRICES=true)"
+            );
+
+            match self
+                .oracle_fetcher
+                .update_pyth_prices(&oracle_account, &price_ids)
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!("Successfully updated Pyth prices, re-fetching");
+                    oracle_response = self
+                        .oracle_fetcher
+                        .get_oracle_prices(oracle_account.clone(), &price_ids, price_max_age)
+                        .await?;
+                }
+                Ok(false) => {
+                    tracing::warn!("Price update was skipped (no signer or already fresh)");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to update Pyth prices");
+                }
+            }
+        } else if has_stale_prices {
+            tracing::warn!(
+                auto_update_prices = self.auto_update_prices,
+                price_ids = ?price_ids,
+                max_age_s = price_max_age,
+                "Oracle prices are missing or stale. Enable AUTO_UPDATE_PRICES=true to automatically update prices before liquidations."
+            );
+        }
 
         if oracle_response.is_empty() {
             return Ok(());

@@ -159,6 +159,18 @@ pub struct Args {
     /// Maximum iterations for loop liquidation (safety limit)
     #[arg(long, env = "MAX_LOOP_ITERATIONS", default_value_t = 10)]
     pub max_loop_iterations: u32,
+
+    /// Pyth Hermes API URL for price updates
+    #[arg(
+        long,
+        env = "PYTH_HERMES_URL",
+        default_value = "https://hermes.pyth.network"
+    )]
+    pub hermes_url: String,
+
+    /// Enable automatic Pyth price updates before liquidations
+    #[arg(long, env = "AUTO_UPDATE_PRICES", default_value_t = false)]
+    pub auto_update_prices: bool,
 }
 
 impl Args {
@@ -301,6 +313,8 @@ impl Args {
             ignored_collateral_assets,
             loop_liquidation: self.loop_liquidation,
             max_loop_iterations: self.max_loop_iterations,
+            hermes_url: self.hermes_url.clone(),
+            auto_update_prices: self.auto_update_prices,
         }
     }
 
@@ -349,6 +363,8 @@ mod tests {
             ignored_collateral_assets: vec![],
             loop_liquidation: false,
             max_loop_iterations: 10,
+            hermes_url: "https://hermes.pyth.network".to_string(),
+            auto_update_prices: false,
         }
     }
 
