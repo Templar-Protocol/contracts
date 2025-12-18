@@ -3,8 +3,16 @@
 //! Handles fetching prices from various oracle types including:
 //! - Standard Pyth oracles
 //! - LST oracles with price transformers
+//! - Updating stale Pyth prices via Hermes API
 
-use near_jsonrpc_client::JsonRpcClient;
+use near_jsonrpc_client::{
+    methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest, JsonRpcClient,
+};
+use near_primitives::{
+    action::FunctionCallAction,
+    transaction::{Transaction, TransactionV0},
+    types::BlockReference,
+};
 use near_sdk::{serde_json::json, AccountId};
 use std::collections::HashMap;
 use templar_common::{
@@ -20,24 +28,52 @@ use crate::{
     LiquidatorError, LiquidatorResult,
 };
 
+#[derive(serde::Deserialize)]
+struct HermesResponse {
+    binary: HermesBinary,
+}
+
+#[derive(serde::Deserialize)]
+struct HermesBinary {
+    data: Vec<String>,
+}
+
 /// Oracle price fetcher.
 ///
 /// Responsible for:
 /// - Fetching prices from Pyth oracles
 /// - Handling LST oracles with transformers
 /// - Applying price transformations
+/// - Updating stale Pyth prices via Hermes API
 pub struct OracleFetcher {
     client: JsonRpcClient,
     /// Cache of which oracles are LST oracles (`oracle_account` -> `underlying_oracle`)
     lst_oracle_cache: std::sync::Arc<tokio::sync::RwLock<HashMap<AccountId, Option<AccountId>>>>,
+    /// HTTP client for Hermes API
+    http_client: reqwest::Client,
+    /// Hermes API URL (e.g., <https://hermes.pyth.network>)
+    hermes_url: String,
+    /// Signer for updating oracle prices
+    signer_id: Option<AccountId>,
+    /// Private key for signing transactions
+    signer_key: Option<near_crypto::SecretKey>,
 }
 
 impl OracleFetcher {
     /// Creates a new oracle fetcher.
-    pub fn new(client: JsonRpcClient) -> Self {
+    pub fn new(
+        client: JsonRpcClient,
+        hermes_url: Option<String>,
+        signer_id: Option<AccountId>,
+        signer_key: Option<near_crypto::SecretKey>,
+    ) -> Self {
         Self {
             client,
             lst_oracle_cache: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            http_client: reqwest::Client::new(),
+            hermes_url: hermes_url.unwrap_or_else(|| "https://hermes.pyth.network".to_string()),
+            signer_id,
+            signer_key,
         }
     }
 
@@ -75,6 +111,161 @@ impl OracleFetcher {
         }
 
         Ok(result)
+    }
+
+    /// Updates Pyth oracle prices by fetching latest data from Hermes and pushing to oracle contract.
+    ///
+    /// This method:
+    /// 1. Fetches latest price updates (VAA) from Pyth Hermes API
+    /// 2. Submits update transaction to the oracle contract
+    ///
+    /// Returns Ok(true) if update was sent, Ok(false) if no signer configured, Err on failure.
+    #[tracing::instrument(skip(self), level = "info")]
+    pub async fn update_pyth_prices(
+        &self,
+        oracle: &AccountId,
+        price_ids: &[PriceIdentifier],
+    ) -> LiquidatorResult<bool> {
+        // Check if we have credentials to update
+        let (Some(_signer_id), Some(_signer_key)) = (&self.signer_id, &self.signer_key) else {
+            tracing::warn!("No signer configured, cannot update Pyth prices");
+            return Ok(false);
+        };
+
+        tracing::info!(
+            oracle = %oracle,
+            price_ids = ?price_ids,
+            hermes_url = %self.hermes_url,
+            "Fetching latest price updates from Hermes"
+        );
+
+        // Build Hermes API request
+        let url = format!("{}/v2/updates/price/latest", self.hermes_url);
+        let query_params: Vec<_> = price_ids
+            .iter()
+            .map(|id| ("ids[]", id.to_string()))
+            .collect();
+
+        // Fetch VAA from Hermes
+        let response = self
+            .http_client
+            .get(&url)
+            .query(&query_params)
+            .send()
+            .await
+            .map_err(|e| LiquidatorError::PriceUpdateError(format!("Hermes API error: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(LiquidatorError::PriceUpdateError(format!(
+                "Hermes API returned status: {}",
+                response.status()
+            )));
+        }
+
+        let body: HermesResponse = response.json().await.map_err(|e| {
+            LiquidatorError::PriceUpdateError(format!("Failed to parse Hermes response: {e}"))
+        })?;
+
+        let vaa_hex = body.binary.data.first().ok_or_else(|| {
+            LiquidatorError::PriceUpdateError("No VAA data in Hermes response".to_string())
+        })?;
+
+        tracing::info!(
+            vaa_size = vaa_hex.len(),
+            "Successfully fetched VAA from Hermes, submitting to oracle"
+        );
+
+        // Submit update to oracle using NEAR transaction
+        let signer_id = self.signer_id.as_ref().ok_or_else(|| {
+            LiquidatorError::PriceUpdateError("No signer_id configured".to_string())
+        })?;
+        let signer_key = self.signer_key.as_ref().ok_or_else(|| {
+            LiquidatorError::PriceUpdateError("No signer_key configured".to_string())
+        })?;
+
+        // Get current nonce
+        let access_key_query_response = self
+            .client
+            .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
+                block_reference: BlockReference::latest(),
+                request: near_primitives::views::QueryRequest::ViewAccessKey {
+                    account_id: signer_id.clone(),
+                    public_key: signer_key.public_key(),
+                },
+            })
+            .await
+            .map_err(|e| {
+                LiquidatorError::PriceUpdateError(format!("Failed to query access key: {e}"))
+            })?;
+
+        let current_nonce = match access_key_query_response.kind {
+            near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
+                access_key.nonce
+            }
+            _ => {
+                return Err(LiquidatorError::PriceUpdateError(
+                    "Unexpected query response kind".to_string(),
+                ))
+            }
+        };
+
+        // Get latest block hash
+        let block = self
+            .client
+            .call(near_jsonrpc_client::methods::block::RpcBlockRequest {
+                block_reference: BlockReference::latest(),
+            })
+            .await
+            .map_err(|e| {
+                LiquidatorError::PriceUpdateError(format!("Failed to get latest block: {e}"))
+            })?;
+
+        // Construct transaction
+        let transaction = Transaction::V0(TransactionV0 {
+            signer_id: signer_id.clone(),
+            public_key: signer_key.public_key(),
+            nonce: current_nonce + 1,
+            receiver_id: oracle.clone(),
+            block_hash: block.header.hash,
+            actions: vec![FunctionCallAction {
+                method_name: "update_price_feeds".to_string(),
+                args: near_sdk::serde_json::json!({
+                    "data": vaa_hex
+                })
+                .to_string()
+                .into_bytes(),
+                gas: 100_000_000_000_000,               // 100 TGas
+                deposit: 1_000_000_000_000_000_000_000, // 0.001 NEAR
+            }
+            .into()],
+        });
+
+        // Sign and send transaction
+        let signer =
+            near_crypto::InMemorySigner::from_secret_key(signer_id.clone(), signer_key.clone());
+        let signed_transaction = transaction.sign(&signer);
+        let request = RpcBroadcastTxCommitRequest { signed_transaction };
+
+        match self.client.call(request).await {
+            Ok(response) => {
+                tracing::info!(
+                    tx_hash = %response.transaction.hash,
+                    oracle = %oracle,
+                    "Successfully updated Pyth prices"
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    oracle = %oracle,
+                    "Failed to submit price update transaction"
+                );
+                Err(LiquidatorError::PriceUpdateError(format!(
+                    "Transaction failed: {e}"
+                )))
+            }
+        }
     }
 
     /// Fetches current oracle prices.

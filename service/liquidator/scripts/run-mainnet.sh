@@ -45,7 +45,7 @@ LIQUIDATION_SCAN_INTERVAL="${LIQUIDATION_SCAN_INTERVAL:-600}"
 REGISTRY_REFRESH_INTERVAL="${REGISTRY_REFRESH_INTERVAL:-3600}"
 CONCURRENCY="${CONCURRENCY:-10}"
 PARTIAL_LIQUIDATION_PERCENTAGE="${PARTIAL_LIQUIDATION_PERCENTAGE:-50}"
-FIXED_LIQUIDATION_AMOUNT="${FIXED_LIQUIDATION_AMOUNT}"
+FIXED_LIQUIDATION_AMOUNT_USD="${FIXED_LIQUIDATION_AMOUNT_USD}"
 LOOP_LIQUIDATION="${LOOP_LIQUIDATION:-false}"
 MAX_LOOP_ITERATIONS="${MAX_LOOP_ITERATIONS:-10}"
 TRANSACTION_TIMEOUT="${TRANSACTION_TIMEOUT:-60}"
@@ -62,6 +62,10 @@ REF_CONTRACT="${REF_CONTRACT:-v2.ref-finance.near}"  # Mainnet default
 # Market filtering configuration
 ALLOWED_COLLATERAL_ASSETS="${ALLOWED_COLLATERAL_ASSETS}"
 IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
+
+# Oracle price update configuration
+PYTH_HERMES_URL="${PYTH_HERMES_URL:-https://hermes.pyth.network}"
+AUTO_UPDATE_PRICES="${AUTO_UPDATE_PRICES:-false}"
 
 # Build binary if needed
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
@@ -139,7 +143,7 @@ done
 # Add loop liquidation arguments
 [ "$LOOP_LIQUIDATION" = "true" ] && CMD_ARGS+=("--loop-liquidation")
 [ -n "$MAX_LOOP_ITERATIONS" ] && CMD_ARGS+=("--max-loop-iterations" "$MAX_LOOP_ITERATIONS")
-[ -n "$FIXED_LIQUIDATION_AMOUNT" ] && CMD_ARGS+=("--fixed-liquidation-amount" "$FIXED_LIQUIDATION_AMOUNT")
+[ -n "$FIXED_LIQUIDATION_AMOUNT_USD" ] && CMD_ARGS+=("--fixed-liquidation-amount-usd" "$FIXED_LIQUIDATION_AMOUNT_USD")
 
 # Add collateral strategy arguments
 CMD_ARGS+=("--collateral-strategy" "$COLLATERAL_STRATEGY")
@@ -160,6 +164,10 @@ if [ -n "$IGNORED_COLLATERAL_ASSETS" ]; then
         CMD_ARGS+=("--ignored-collateral-assets" "$asset")
     done
 fi
+
+# Add oracle price update arguments
+CMD_ARGS+=("--hermes-url" "$PYTH_HERMES_URL")
+[ "$AUTO_UPDATE_PRICES" = "true" ] && CMD_ARGS+=("--auto-update-prices")
 
 info "Starting liquidator..."
 echo ""

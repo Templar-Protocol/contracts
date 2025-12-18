@@ -66,6 +66,10 @@ pub struct ServiceConfig {
     pub loop_liquidation: bool,
     /// Maximum iterations for loop liquidation (safety limit)
     pub max_loop_iterations: u32,
+    /// Pyth Hermes API URL for price updates
+    pub hermes_url: String,
+    /// Enable automatic Pyth price updates before liquidations
+    pub auto_update_prices: bool,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -438,6 +442,16 @@ impl LiquidatorService {
                 // Clone Signer enum
                 let signer = Arc::new(self.signer.clone());
 
+                let signer_for_oracle = if self.config.auto_update_prices {
+                    // Use config which has account and key
+                    Some((
+                        self.config.signer_account.clone(),
+                        self.config.signer_key.clone(),
+                    ))
+                } else {
+                    None
+                };
+
                 let mut liquidator = Liquidator::new(
                     &self.client,
                     signer,
@@ -451,6 +465,9 @@ impl LiquidatorService {
                     self.oneclick_provider.clone(),
                     self.config.loop_liquidation,
                     self.config.max_loop_iterations,
+                    Some(self.config.hermes_url.clone()),
+                    self.config.auto_update_prices,
+                    &signer_for_oracle,
                 );
 
                 // Fetch market version for version-specific liquidation logic
