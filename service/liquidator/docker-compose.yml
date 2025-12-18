@@ -30,6 +30,7 @@ services:
       "--transaction-timeout", "${TRANSACTION_TIMEOUT:-60}",
       "--collateral-strategy", "${COLLATERAL_STRATEGY:-hold}",
       "--max-loop-iterations", "${MAX_LOOP_ITERATIONS:-10}",
+      "--hermes-url", "${PYTH_HERMES_URL:-https://hermes.pyth.network}",
       # Uncomment to enable loop liquidation (repeatedly liquidate until healthy):
       # "--loop-liquidation",
       # "--fixed-liquidation-amount-usd", "${FIXED_LIQUIDATION_AMOUNT_USD}",
