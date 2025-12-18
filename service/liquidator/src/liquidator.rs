@@ -228,13 +228,13 @@ impl Liquidator {
     pub async fn fetch_market_version(&mut self) {
         self.market_version = self.scanner.get_market_version().await;
         if let Some((major, minor, patch)) = self.market_version {
-            tracing::info!(
+            tracing::debug!(
                 market = %self.market,
                 version = %format!("{major}.{minor}.{patch}"),
                 "Fetched market version"
             );
         } else {
-            tracing::info!(
+            tracing::debug!(
                 market = %self.market,
                 "Market version unavailable (no NEP-330 metadata), assuming v1.0"
             );

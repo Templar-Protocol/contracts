@@ -27,7 +27,7 @@ services:
       "--max-loop-iterations", "${MAX_LOOP_ITERATIONS:-10}"
       # Uncomment to enable loop liquidation (repeatedly liquidate until healthy):
       # "--loop-liquidation",
-      # "--fixed-liquidation-amount", "${FIXED_LIQUIDATION_AMOUNT}",
+      # "--fixed-liquidation-amount-usd", "${FIXED_LIQUIDATION_AMOUNT_USD}",
       # "--oneclick-api-token", "${ONECLICK_API_TOKEN}",
       # "--ref-contract", "${REF_CONTRACT:-v2.ref-finance.near}"
     ]

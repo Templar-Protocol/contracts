@@ -118,10 +118,11 @@ pub struct Args {
     #[arg(long, env = "PARTIAL_LIQUIDATION_PERCENTAGE", value_parser = validate_percentage, default_value = "50")]
     pub partial_percentage: u8,
 
-    /// Fixed liquidation amount in token base units (only used with fixed-amount strategy)
-    /// Example: 1000000000 for 1000 USDC (6 decimals)
-    #[arg(long, env = "FIXED_LIQUIDATION_AMOUNT")]
-    pub fixed_liquidation_amount: Option<u128>,
+    /// Fixed liquidation amount in USD (only used with fixed-amount strategy)
+    /// Example: 100.0 for $100 USD (works across all USD-based markets with any decimals)
+    /// Only supports USD-based borrow assets (USDC, USDT, DAI, etc.)
+    #[arg(long, env = "FIXED_LIQUIDATION_AMOUNT_USD")]
+    pub fixed_liquidation_amount_usd: Option<f64>,
 
     /// Minimum profit margin in basis points
     #[arg(long, env = "MIN_PROFIT_BPS", default_value_t = 50)]
@@ -184,16 +185,18 @@ impl Args {
                 ))
             }
             LiquidationStrategyArg::FixedAmount => {
-                let Some(fixed_amount) = self.fixed_liquidation_amount else {
-                    panic!("FIXED_LIQUIDATION_AMOUNT must be set when using fixed-amount strategy");
+                let Some(fixed_amount_usd) = self.fixed_liquidation_amount_usd else {
+                    panic!(
+                        "FIXED_LIQUIDATION_AMOUNT_USD must be set when using fixed-amount strategy"
+                    );
                 };
                 tracing::info!(
-                    fixed_amount = fixed_amount,
-                    "Using FixedAmountLiquidationStrategy"
+                    fixed_amount_usd = fixed_amount_usd,
+                    "Using FixedAmountLiquidationStrategy (USD-based, works across all USD markets)"
                 );
                 Arc::new(
                     crate::liquidation_strategy::FixedAmountLiquidationStrategy::new(
-                        fixed_amount,
+                        fixed_amount_usd,
                         self.min_profit_bps,
                     ),
                 )
@@ -336,7 +339,7 @@ mod tests {
             concurrency: 10,
             liquidation_strategy: LiquidationStrategyArg::Partial,
             partial_percentage: 50,
-            fixed_liquidation_amount: None,
+            fixed_liquidation_amount_usd: None,
             min_profit_bps: 100,
             dry_run: false,
             collateral_strategy: "hold".to_string(),

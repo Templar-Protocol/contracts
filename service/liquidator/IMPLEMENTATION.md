@@ -155,8 +155,8 @@ NETWORK=mainnet
 **Liquidation:**
 ```bash
 LIQUIDATION_STRATEGY=partial  # partial | full | fixed-amount
-PARTIAL_LIQUIDATION_PERCENTAGE=50         # % of available funds to use
-FIXED_LIQUIDATION_AMOUNT=1000000000  # Token base units (for fixed-amount)
+PARTIAL_LIQUIDATION_PERCENTAGE=50         # % of YOUR available funds to use
+FIXED_LIQUIDATION_AMOUNT_USD=100  # USD amount (for fixed-amount, works across all USD markets)
 LOOP_LIQUIDATION=false        # Repeatedly liquidate until healthy
 MAX_LOOP_ITERATIONS=10        # Safety limit for loop liquidation
 MIN_PROFIT_BPS=50

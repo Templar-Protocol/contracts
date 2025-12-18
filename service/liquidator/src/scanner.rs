@@ -232,7 +232,7 @@ impl MarketScanner {
             }
         }
 
-        tracing::info!(
+        tracing::debug!(
             market = %self.market,
             version = %version_string,
             "Market is compatible"
