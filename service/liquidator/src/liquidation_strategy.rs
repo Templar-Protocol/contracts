@@ -413,11 +413,12 @@ impl LiquidationStrategy for FullLiquidationStrategy {
             &price_pair,
             configuration.liquidation_maximum_spread,
         ) else {
-            let coll_symbol =
-                crate::format::asset_symbol(&configuration.collateral_asset.to_string());
-            let coll_decimals = crate::format::asset_decimals(coll_symbol);
+            let coll_asset_id = configuration.collateral_asset.to_string();
+            let coll_decimals = configuration
+                .price_oracle_configuration
+                .collateral_asset_decimals;
             tracing::warn!(
-                collateral_amount = %crate::format::format_amount(liquidatable_collateral, coll_decimals, coll_symbol),
+                collateral_amount = %crate::format::format_amount(liquidatable_collateral, coll_decimals, &coll_asset_id),
                 "Could not calculate borrow amount from collateral"
             );
             return Ok(None);
@@ -429,41 +430,51 @@ impl LiquidationStrategy for FullLiquidationStrategy {
 
         // Check if we have enough balance (all-or-nothing)
         if amount_with_buffer > available_u128 {
-            let borrow_sym = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
-            let borrow_dec = crate::format::asset_decimals(borrow_sym);
-            let coll_sym = crate::format::asset_symbol(&configuration.collateral_asset.to_string());
-            let coll_dec = crate::format::asset_decimals(coll_sym);
+            let borrow_asset_id = configuration.borrow_asset.to_string();
+            let borrow_dec = configuration
+                .price_oracle_configuration
+                .borrow_asset_decimals;
+            let coll_asset_id = configuration.collateral_asset.to_string();
+            let coll_dec = configuration
+                .price_oracle_configuration
+                .collateral_asset_decimals;
             tracing::info!(
-                required = %crate::format::format_amount(amount_with_buffer, borrow_dec, borrow_sym),
-                available = %crate::format::format_amount(available_u128, borrow_dec, borrow_sym),
-                liquidatable_collateral = %crate::format::format_amount(liquidatable_collateral, coll_dec, coll_sym),
-                total_debt = %crate::format::format_amount(total_debt, borrow_dec, borrow_sym),
+                required = %crate::format::format_amount(amount_with_buffer, borrow_dec, &borrow_asset_id),
+                available = %crate::format::format_amount(available_u128, borrow_dec, &borrow_asset_id),
+                liquidatable_collateral = %crate::format::format_amount(liquidatable_collateral, coll_dec, &coll_asset_id),
+                total_debt = %crate::format::format_amount(total_debt, borrow_dec, &borrow_asset_id),
                 "Insufficient balance for full liquidation, skipping position"
             );
             return Ok(None);
         }
 
-        let borrow_sym = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
-        let borrow_dec = crate::format::asset_decimals(borrow_sym);
-        let coll_sym = crate::format::asset_symbol(&configuration.collateral_asset.to_string());
-        let coll_dec = crate::format::asset_decimals(coll_sym);
+        let borrow_asset_id = configuration.borrow_asset.to_string();
+        let borrow_dec = configuration
+            .price_oracle_configuration
+            .borrow_asset_decimals;
+        let coll_asset_id = configuration.collateral_asset.to_string();
+        let coll_dec = configuration
+            .price_oracle_configuration
+            .collateral_asset_decimals;
         tracing::info!(
-            available_balance = %crate::format::format_amount(available_u128, borrow_dec, borrow_sym),
-            liquidatable_collateral = %crate::format::format_amount(liquidatable_collateral, coll_dec, coll_sym),
-            total_debt = %crate::format::format_amount(total_debt, borrow_dec, borrow_sym),
-            minimum_required = %crate::format::format_amount(minimum_required, borrow_dec, borrow_sym),
-            send_amount = %crate::format::format_amount(amount_with_buffer, borrow_dec, borrow_sym),
+            available_balance = %crate::format::format_amount(available_u128, borrow_dec, &borrow_asset_id),
+            liquidatable_collateral = %crate::format::format_amount(liquidatable_collateral, coll_dec, &coll_asset_id),
+            total_debt = %crate::format::format_amount(total_debt, borrow_dec, &borrow_asset_id),
+            minimum_required = %crate::format::format_amount(minimum_required, borrow_dec, &borrow_asset_id),
+            send_amount = %crate::format::format_amount(amount_with_buffer, borrow_dec, &borrow_asset_id),
             "FullLiquidationStrategy: liquidating all liquidatable collateral"
         );
 
         // Check against contract's minimum borrow amount
         let contract_minimum: u128 = configuration.borrow_range.minimum.into();
         if amount_with_buffer < contract_minimum {
-            let symbol = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
-            let decimals = crate::format::asset_decimals(symbol);
+            let asset_id = configuration.borrow_asset.to_string();
+            let decimals = configuration
+                .price_oracle_configuration
+                .borrow_asset_decimals;
             tracing::warn!(
-                amount = %crate::format::format_amount(amount_with_buffer, decimals, symbol),
-                contract_minimum = %crate::format::format_amount(contract_minimum, decimals, symbol),
+                amount = %crate::format::format_amount(amount_with_buffer, decimals, &asset_id),
+                contract_minimum = %crate::format::format_amount(contract_minimum, decimals, &asset_id),
                 "Liquidation amount below contract minimum, skipping"
             );
             return Ok(None);
@@ -566,11 +577,13 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
 
         // Check if we have enough balance for the fixed amount
         if self.fixed_amount > available_u128 {
-            let symbol = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
-            let decimals = crate::format::asset_decimals(symbol);
+            let asset_id = configuration.borrow_asset.to_string();
+            let decimals = configuration
+                .price_oracle_configuration
+                .borrow_asset_decimals;
             tracing::warn!(
-                fixed_amount = %crate::format::format_amount(self.fixed_amount, decimals, symbol),
-                available_balance = %crate::format::format_amount(available_u128, decimals, symbol),
+                fixed_amount = %crate::format::format_amount(self.fixed_amount, decimals, &asset_id),
+                available_balance = %crate::format::format_amount(available_u128, decimals, &asset_id),
                 "Insufficient balance for fixed amount liquidation"
             );
             return Ok(None);
@@ -591,10 +604,12 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
             &price_pair,
             configuration.liquidation_maximum_spread,
         ) else {
-            let symbol = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
-            let decimals = crate::format::asset_decimals(symbol);
+            let asset_id = configuration.borrow_asset.to_string();
+            let decimals = configuration
+                .price_oracle_configuration
+                .borrow_asset_decimals;
             tracing::warn!(
-                fixed_amount = %crate::format::format_amount(self.fixed_amount, decimals, symbol),
+                fixed_amount = %crate::format::format_amount(self.fixed_amount, decimals, &asset_id),
                 "Could not calculate collateral amount from fixed amount"
             );
             return Ok(None);
@@ -625,14 +640,18 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
         // Check against contract's minimum borrow amount
         let contract_minimum: u128 = configuration.borrow_range.minimum.into();
         if final_amount < contract_minimum {
-            let borrow_sym = crate::format::asset_symbol(&configuration.borrow_asset.to_string());
-            let borrow_dec = crate::format::asset_decimals(borrow_sym);
-            let coll_sym = crate::format::asset_symbol(&configuration.collateral_asset.to_string());
-            let coll_dec = crate::format::asset_decimals(coll_sym);
+            let borrow_asset_id = configuration.borrow_asset.to_string();
+            let borrow_dec = configuration
+                .price_oracle_configuration
+                .borrow_asset_decimals;
+            let coll_asset_id = configuration.collateral_asset.to_string();
+            let coll_dec = configuration
+                .price_oracle_configuration
+                .collateral_asset_decimals;
             tracing::warn!(
-                amount = %crate::format::format_amount(final_amount, borrow_dec, borrow_sym),
-                contract_minimum = %crate::format::format_amount(contract_minimum, borrow_dec, borrow_sym),
-                final_collateral = %crate::format::format_amount(final_collateral, coll_dec, coll_sym),
+                amount = %crate::format::format_amount(final_amount, borrow_dec, &borrow_asset_id),
+                contract_minimum = %crate::format::format_amount(contract_minimum, borrow_dec, &borrow_asset_id),
+                final_collateral = %crate::format::format_amount(final_collateral, coll_dec, &coll_asset_id),
                 "Fixed amount below contract minimum, skipping"
             );
             return Ok(None);
