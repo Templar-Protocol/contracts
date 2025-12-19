@@ -581,9 +581,10 @@ impl Contract {
             }
             OpState::Payout(s) => {
                 let id = self.next_withdraw_to_execute;
+                let op_id = s.op_id;
                 Event::UnbrickInvoked {
                     phase: UnbrickPhase::Payout,
-                    op_id: Some(s.op_id.into()),
+                    op_id: Some(op_id.into()),
                     id: Some(id.into()),
                 }
                 .emit();
@@ -597,9 +598,10 @@ impl Contract {
                         .then(
                             Self::ext(env::current_account_id())
                                 .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .stop_and_exit_payout_01_reconcile(Some(Reason::Other(
-                                    "unbrick_payout".to_string(),
-                                ))),
+                                .stop_and_exit_payout_01_reconcile(
+                                    op_id,
+                                    Some(Reason::Other("unbrick_payout".to_string())),
+                                ),
                         ),
                 )
             }

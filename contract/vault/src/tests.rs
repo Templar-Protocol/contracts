@@ -4144,6 +4144,94 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
 }
 
 #[rstest]
+fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
+    mut c: Contract,
+    owner: AccountId,
+    receiver: AccountId,
+) {
+    use near_sdk_contract_tools::ft::Nep141Controller as _;
+
+    let escrow: u128 = 10;
+    let amount = 77;
+
+    // Seed escrowed shares into the vault's own account so a wrong reconcile would refund them.
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+
+    // Simulate that op_id=2 is the *current* payout.
+    let head: u64 = 1;
+    c.next_withdraw_to_execute = head;
+    c.pending_withdrawals.insert(
+        head,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: amount,
+            requested_at: 0,
+        },
+    );
+    c.pending_withdrawals.insert(
+        head.saturating_add(1),
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: 0,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    let market = MarketId(999);
+    c.withdraw_route = vec![market];
+    c.market_execution_lock.lock(market);
+
+    c.idle_balance = 123;
+    c.op_state = OpState::Payout(PayoutState {
+        op_id: 2,
+        receiver: receiver.clone(),
+        amount,
+        owner: owner.clone(),
+        escrow_shares: escrow,
+        burn_shares: 0,
+    });
+
+    let supply_before = c.total_supply();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+    let idle_before = c.idle_balance;
+    let head_before = c.next_withdraw_to_execute;
+    let len_before = c.pending_withdrawals.len();
+    let route_before = c.withdraw_route.clone();
+    let locked_before = c.market_execution_lock.is_locked(market);
+
+    // Simulate a late callback from a previous payout op_id=1.
+    let res = c.stop_and_exit_payout_01_reconcile(Ok(U128(999)), 1, None);
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from reconcile"),
+    }
+
+    assert!(matches!(c.op_state, OpState::Payout(PayoutState { op_id: 2, .. })));
+    assert_eq!(c.total_supply(), supply_before, "supply must not change");
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before,
+        "vault balance must not change"
+    );
+    assert_eq!(c.balance_of(&owner), owner_before, "owner must not be refunded");
+    assert_eq!(c.idle_balance, idle_before, "idle_balance must not resync");
+    assert_eq!(c.next_withdraw_to_execute, head_before, "queue head must not advance");
+    assert_eq!(c.pending_withdrawals.len(), len_before, "queue must not dequeue");
+    assert_eq!(c.withdraw_route, route_before, "withdraw route must not clear");
+    assert_eq!(
+        c.market_execution_lock.is_locked(market),
+        locked_before,
+        "market lock must not clear"
+    );
+}
+
+#[rstest]
 fn stop_and_exit_payout_zero_escrow_just_idle(
     mut c: Contract,
     owner: AccountId,

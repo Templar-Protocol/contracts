@@ -640,10 +640,11 @@ impl Contract {
 
     fn payout_resync_and_refund(
         &mut self,
+        op_id: u64,
         balance: Result<U128, PromiseError>,
         reason: Option<Reason>,
     ) -> PromiseOrValue<()> {
-        let mut payout = match crate::op_guard::PayoutGuard::expect(self, None) {
+        let mut payout = match crate::op_guard::PayoutGuard::expect(self, Some(op_id)) {
             Ok(guard) => guard,
             Err(_) => return PromiseOrValue::Value(()),
         };
@@ -700,9 +701,10 @@ impl Contract {
     pub fn stop_and_exit_payout_01_reconcile(
         &mut self,
         #[callback_result] balance: Result<U128, PromiseError>,
+        op_id: u64,
         reason: Option<Reason>,
     ) -> PromiseOrValue<()> {
-        self.payout_resync_and_refund(balance, reason)
+        self.payout_resync_and_refund(op_id, balance, reason)
     }
 
     /// Cash flow:
@@ -962,7 +964,8 @@ impl Contract {
                 }
                 .emit();
             }
-            OpState::Payout(_) => {
+            OpState::Payout(s) => {
+                let op_id = s.op_id;
                 let reason = msg.map(|m| Reason::Other(m.to_string()));
                 return PromiseOrValue::Promise(
                     ext_ft_core::ext(self.underlying_asset.contract_id().into())
@@ -971,7 +974,7 @@ impl Contract {
                         .then(
                             Self::ext(env::current_account_id())
                                 .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .stop_and_exit_payout_01_reconcile(reason),
+                                .stop_and_exit_payout_01_reconcile(op_id, reason),
                         ),
                 );
             }
