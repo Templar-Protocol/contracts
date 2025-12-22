@@ -37,9 +37,16 @@ pub trait VaultExt {
     fn withdraw(amount: U128, receiver: AccountId) -> PromiseOrValue<()>;
     fn redeem(shares: U128, receiver: AccountId) -> PromiseOrValue<()>;
     fn reallocate(delta: AllocationDelta) -> PromiseOrValue<()>;
-    fn execute_rebalance_withdrawal(market_id: MarketId, batch_limit: Option<u32>) -> PromiseOrValue<()>;
+    fn execute_rebalance_withdrawal(
+        market_id: MarketId,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<()>;
     fn execute_withdrawal(route: Vec<MarketId>) -> PromiseOrValue<()>;
-    fn execute_market_withdrawal(op_id: U64, market: MarketId, batch_limit: Option<u32>) -> PromiseOrValue<()>;
+    fn execute_market_withdrawal(
+        op_id: U64,
+        market: MarketId,
+        batch_limit: Option<u32>,
+    ) -> PromiseOrValue<()>;
     fn unbrick() -> PromiseOrValue<()>;
     fn skim(token: AccountId) -> Promise;
     fn refresh_markets(markets: Vec<MarketId>) -> PromiseOrValue<()>;

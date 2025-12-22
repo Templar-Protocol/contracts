@@ -19,14 +19,12 @@ use templar_common::{
     supply::SupplyPosition,
     vault::{
         AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
-        MarketId,
-        IdleBalanceDelta, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
-        WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
-        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
-        WITHDRAW_SETTLE_CALLBACK_GAS,
+        IdleBalanceDelta, MarketId, PayoutState, PositionReportOutcome, Reason,
+        WithdrawalAccountingKind, WithdrawingState, AFTER_SEND_TO_USER_GAS,
+        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS,
+        SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
-
 
 /// State machine:
 ///
@@ -67,10 +65,7 @@ impl Contract {
             Ok(accepted) => {
                 let before = self.principal_of(market_id);
 
-                let market_account = self
-                    .market_account_by_id(market_id)
-                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
-                    .clone();
+                let market_account = self.market_account_by_id_or_panic(market_id).clone();
 
                 PromiseOrValue::Promise(
                     ext_market::ext(market_account)
@@ -266,16 +261,18 @@ impl Contract {
         }
         .emit();
 
-        let market_account = self
-            .market_account_by_id(market)
-            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")))
-            .clone();
+        let market_account = self.market_account_by_id_or_panic(market).clone();
 
         PromiseOrValue::Promise(
             Self::market_execute_withdraw_and_fetch_position(market_account, batch_limit).then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(WITHDRAW_SETTLE_CALLBACK_GAS)
-                    .execute_withdraw_02_reconcile_position(op_id, market, U128(principal), before_balance),
+                    .execute_withdraw_02_reconcile_position(
+                        op_id,
+                        market,
+                        U128(principal),
+                        before_balance,
+                    ),
             ),
         )
     }
@@ -524,10 +521,7 @@ impl Contract {
         }
         .emit();
 
-        let market_account = allocating
-            .market_account_by_id(market_id)
-            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
-            .clone();
+        let market_account = allocating.market_account_by_id_or_panic(market_id).clone();
 
         PromiseOrValue::Promise(
             Self::market_execute_withdraw_and_fetch_position(market_account, batch_limit).then(

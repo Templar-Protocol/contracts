@@ -689,10 +689,7 @@ impl Contract {
 
                 let amount = U128(to_request);
 
-                let market_account = self
-                    .market_account_by_id(market_id)
-                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
-                    .clone();
+                let market_account = self.market_account_by_id_or_panic(market_id).clone();
 
                 PromiseOrValue::Promise(
                     ext_market::ext(market_account)
@@ -719,43 +716,25 @@ impl Contract {
     #[allow(clippy::expect_used, reason = "No side effects")]
     pub fn get_configuration(&self) -> VaultConfiguration {
         let meta = self.get_metadata();
+        let role_member = |role: &Role, name: &'static str| {
+            Self::with_members_of(role, |members| {
+                require!(
+                    members.len() == 1,
+                    format!("Invariant violation: Cannot have more than one {name}")
+                );
+                members.iter().next().unwrap_or_else(|| {
+                    panic_with_message(&format!("{name} not set in get_configuration"))
+                })
+            })
+        };
+
         VaultConfiguration {
             owner: self.own_get_owner().unwrap_or_else(|| {
                 templar_common::panic_with_message("Owner not set in get_configuration")
             }),
-            curator: Self::with_members_of(&Role::Curator, |members| {
-                require!(
-                    members.len() == 1,
-                    "Invariant violation: Cannot have more than one Curator"
-                );
-                members
-                    .iter()
-                    .next()
-                    .expect("Curator not set in get_configuration")
-                    .clone()
-            }),
-            guardian: Self::with_members_of(&Role::Guardian, |members| {
-                require!(
-                    members.len() == 1,
-                    "Invariant violation: Cannot have more than one Guardian"
-                );
-                members
-                    .iter()
-                    .next()
-                    .expect("Guardian not set in get_configuration")
-                    .clone()
-            }),
-            sentinel: Self::with_members_of(&Role::Sentinel, |members| {
-                require!(
-                    members.len() == 1,
-                    "Invariant violation: Cannot have more than one Sentinel"
-                );
-                members
-                    .iter()
-                    .next()
-                    .expect("Sentinel not set in get_configuration")
-                    .clone()
-            }),
+            curator: role_member(&Role::Curator, "Curator"),
+            guardian: role_member(&Role::Guardian, "Guardian"),
+            sentinel: role_member(&Role::Sentinel, "Sentinel"),
             underlying_token: self.underlying_asset.clone(),
             initial_timelock_ns: self.governance_timelocks.timelock_config_ns.into(),
             fees: self.fees.clone(),
@@ -1020,9 +999,9 @@ struct SupplyQueueMarketInfo {
 
 impl Contract {
     fn principal_of(&self, market_id: MarketId) -> u128 {
-        self.market_record_by_id(market_id).map_or(0, |r| r.principal)
+        self.market_record_by_id(market_id)
+            .map_or(0, |r| r.principal)
     }
-
 
     fn market_cap_group_id(&self, market_id: MarketId) -> Option<CapGroupId> {
         self.market_record_by_id(market_id)
@@ -1208,16 +1187,36 @@ impl Contract {
         self.market_ids.get(market).copied()
     }
 
+    fn market_id_of_or_panic(&self, market: &AccountId) -> MarketId {
+        self.market_id_of(market)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")))
+    }
+
     fn market_account_by_id(&self, market_id: MarketId) -> Option<&AccountId> {
         self.markets.get(&market_id).map(|rec| &rec.account)
+    }
+
+    fn market_account_by_id_or_panic(&self, market_id: MarketId) -> &AccountId {
+        self.market_account_by_id(market_id)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
     }
 
     fn market_record_by_id(&self, market_id: MarketId) -> Option<&MarketRecord> {
         self.markets.get(&market_id)
     }
 
+    fn market_record_by_id_or_panic(&self, market_id: MarketId) -> &MarketRecord {
+        self.market_record_by_id(market_id)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
+    }
+
     fn market_record_by_id_mut(&mut self, market_id: MarketId) -> Option<&mut MarketRecord> {
         self.markets.get_mut(&market_id)
+    }
+
+    fn market_record_by_id_mut_or_panic(&mut self, market_id: MarketId) -> &mut MarketRecord {
+        self.market_record_by_id_mut(market_id)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
     }
 
     fn insert_market_record(&mut self, market_id: MarketId, record: MarketRecord) {
@@ -1230,7 +1229,7 @@ impl Contract {
         self.next_market_id = self
             .next_market_id
             .checked_add(1)
-            .expect("market id overflow");
+            .unwrap_or_else(|| panic_with_message("market id overflow"));
         id
     }
 
@@ -1584,9 +1583,7 @@ impl Contract {
             SUPPLY_AFTER_TRANSFER_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL),
         );
 
-        let market = self
-            .market_account_by_id(market_id)
-            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")));
+        let market = self.market_account_by_id_or_panic(market_id);
 
         self.underlying_asset
             .transfer_call(
@@ -1651,7 +1648,7 @@ impl Contract {
                 Event::AllocationStepPlan {
                     op_id: op_id.into(),
                     index,
-                market: market_id,
+                    market: market_id,
                     target: U128(*amount),
                     room: U128(room),
                     to_supply: U128(0),
@@ -1767,7 +1764,7 @@ impl Contract {
             }
             .emit();
             PromiseOrValue::Value(())
-        } else { 
+        } else {
             let requested = collected.saturating_add(remaining);
             let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);
 
@@ -1845,7 +1842,6 @@ impl Contract {
         )
     }
 
-
     /// Computes how much of `amount` can be covered by idle balance without mutating state.
     /// Returns `IdleCoverage`.
     fn compute_idle_coverage(&self, amount: u128) -> IdleCoverage {
@@ -1910,10 +1906,7 @@ impl Contract {
         let market_id = plan[index as usize];
         let before = self.principal_of(market_id);
 
-        let market_account = self
-            .market_account_by_id(market_id)
-            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
-            .clone();
+        let market_account = self.market_account_by_id_or_panic(market_id).clone();
 
         PromiseOrValue::Promise(
             ext_market::ext(market_account)

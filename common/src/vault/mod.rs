@@ -550,7 +550,10 @@ pub enum Error {
     // Invariant: Index drift or stale op_id results in a graceful stop
     IndexDrifted(ExpectedIdx, ActualIdx),
     // Invariant: Callback resolved a different market than expected.
-    MarketDrifted { expected: MarketId, actual: MarketId },
+    MarketDrifted {
+        expected: MarketId,
+        actual: MarketId,
+    },
     // Invariant: Attempting to work on an unknown market.
     MissingMarket(MarketId),
     NotWithdrawing,

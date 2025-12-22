@@ -170,28 +170,32 @@ impl GuardSpec<Contract> for PayoutSpec {
 
 impl<'a> OpGuard<'a, IdleSpec> {
     pub fn new(contract: &'a mut Contract) -> Self {
-        Self::expect(contract, None).expect("idle guard")
+        Self::expect(contract, None)
+            .unwrap_or_else(|e| panic_with_message(&format!("idle guard: {e}")))
     }
 
     pub fn start_allocation(self, state: AllocatingState) -> AllocatingGuard<'a> {
         let op_id = state.op_id;
         let contract = self.into_inner();
         AllocatingSpec::set_state(contract, state);
-        AllocatingGuard::expect(contract, Some(op_id)).expect("allocating guard")
+        AllocatingGuard::expect(contract, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&format!("allocating guard: {e}")))
     }
 
     pub fn start_withdrawal(self, state: WithdrawingState) -> WithdrawingGuard<'a> {
         let op_id = state.op_id;
         let contract = self.into_inner();
         WithdrawingSpec::set_state(contract, state);
-        WithdrawingGuard::expect(contract, Some(op_id)).expect("withdrawing guard")
+        WithdrawingGuard::expect(contract, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&format!("withdrawing guard: {e}")))
     }
 
     pub fn start_refreshing(self, state: RefreshingState) -> RefreshingGuard<'a> {
         let op_id = state.op_id;
         let contract = self.into_inner();
         RefreshingSpec::set_state(contract, state);
-        RefreshingGuard::expect(contract, Some(op_id)).expect("refreshing guard")
+        RefreshingGuard::expect(contract, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&format!("refreshing guard: {e}")))
     }
 }
 
@@ -200,6 +204,7 @@ impl<'a> OpGuard<'a, WithdrawingSpec> {
         let op_id = state.op_id;
         let contract = self.into_inner();
         PayoutSpec::set_state(contract, state);
-        PayoutGuard::expect(contract, Some(op_id)).expect("payout guard")
+        PayoutGuard::expect(contract, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&format!("payout guard: {e}")))
     }
 }

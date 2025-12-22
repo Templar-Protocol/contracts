@@ -12,7 +12,9 @@ use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use std::{env, ops::Deref};
-use templar_common::vault::{AllocationDelta, DepositMsg, Fees, MarketId, Restrictions, VaultConfiguration};
+use templar_common::vault::{
+    AllocationDelta, DepositMsg, Fees, MarketId, Restrictions, VaultConfiguration,
+};
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]

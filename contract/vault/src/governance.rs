@@ -218,9 +218,14 @@ impl Gate {
         t: &Nep141Transfer,
         on_err: impl FnOnce(TransferError),
     ) {
+        let previous = c.gate.bypass_share_transfer_gates;
         c.gate.bypass_share_transfer_gates = true;
-        c.transfer(t).unwrap_or_else(on_err);
-        c.gate.bypass_share_transfer_gates = false;
+
+        let result = c.transfer(t);
+
+        c.gate.bypass_share_transfer_gates = previous;
+
+        result.unwrap_or_else(on_err);
     }
 
     /// Bypass share transfer gates for a given transfer. Panics on error.
@@ -228,10 +233,7 @@ impl Gate {
     /// # Panics
     /// Panics if the transfer fails.
     pub fn bypass_transfer(c: &mut Contract, t: &Nep141Transfer) {
-        c.gate.bypass_share_transfer_gates = true;
-
         Gate::bypass_transfer_with(c, t, |e| panic_with_message(&e.to_string()));
-        c.gate.bypass_share_transfer_gates = false;
     }
 }
 
@@ -359,7 +361,7 @@ impl Contract {
         {
             self.apply_immediately(&action);
         } else {
-            panic!("No pending change");
+            panic_with_message("No pending change");
         }
     }
 
@@ -387,7 +389,7 @@ impl Contract {
         {
             self.apply_immediately(&action);
         } else {
-            panic!("No pending change");
+            panic_with_message("No pending change");
         }
     }
 
@@ -467,9 +469,7 @@ impl Contract {
     pub fn revoke_pending_cap(&mut self, market: AccountId) {
         Self::assert_curator_or_sentinel_or_owner();
 
-        let market_id = self
-            .market_id_of(&market)
-            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+        let market_id = self.market_id_of_or_panic(&market);
 
         if self.revoke_timelocks(
             |a| matches!(a, TimelockedAction::CapChange { market: mkt, .. } if mkt == &market),
@@ -626,9 +626,7 @@ impl Contract {
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
         Self::assert_curator_or_sentinel_or_owner();
 
-        let market_id = self
-            .market_id_of(&market)
-            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+        let market_id = self.market_id_of_or_panic(&market);
 
         self.revoke_timelocks(
             |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
@@ -970,9 +968,7 @@ impl Contract {
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
-                let rec = self
-                    .market_record_by_id(*market)
-                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+                let rec = self.market_record_by_id_or_panic(*market);
 
                 require!(
                     rec.cfg.cap_group_id != *cap_group,
@@ -997,10 +993,8 @@ impl Contract {
                 Self::assert_curator_or_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_market_removal");
 
-                let r = self
-                    .market_id_of(market)
-                    .and_then(|id| self.market_record_by_id(id))
-                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+                let market_id = self.market_id_of_or_panic(market);
+                let r = self.market_record_by_id_or_panic(market_id);
 
                 require!(
                     self.governance_timelocks
@@ -1294,9 +1288,7 @@ impl Contract {
                 let market_id = *market;
 
                 let (old_group, principal) = {
-                    let rec = self.market_record_by_id(market_id).unwrap_or_else(|| {
-                        panic_with_message(&format!("Unknown market: {market_id}"))
-                    });
+                    let rec = self.market_record_by_id_or_panic(market_id);
 
                     if rec.cfg.cap_group_id == *cap_group {
                         return;
@@ -1313,9 +1305,7 @@ impl Contract {
                     self.update_cap_group_principal(&new_group, 0, principal);
                 }
 
-                let rec = self
-                    .market_record_by_id_mut(market_id)
-                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")));
+                let rec = self.market_record_by_id_mut_or_panic(market_id);
                 rec.cfg.cap_group_id = cap_group.clone();
                 Event::CapGroupMembershipSet {
                     market: market_id,
@@ -1324,13 +1314,9 @@ impl Contract {
                 .emit();
             }
             TimelockedAction::MarketRemoval { market } => {
-                let market_id = self
-                    .market_id_of(market)
-                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")));
+                let market_id = self.market_id_of_or_panic(market);
 
-                let rec = self
-                    .market_record_by_id_mut(market_id)
-                    .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")));
+                let rec = self.market_record_by_id_mut_or_panic(market_id);
 
                 rec.cfg.removable_at = env::block_timestamp();
                 Event::MarketRemovalSubmitted {

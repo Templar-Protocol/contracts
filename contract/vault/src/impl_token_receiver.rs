@@ -4,8 +4,7 @@ use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
 use near_sdk_contract_tools::ft::{Nep141Controller as _, Nep141Mint};
 use templar_common::vault::{require_at_least, DepositMsg, IdleBalanceDelta, SUPPLY_GAS};
 
-#[allow(clippy::wildcard_imports)]
-use near_sdk_contract_tools::mt::*;
+use near_sdk_contract_tools::mt::{Nep245Receiver, TokenId};
 
 // Parses JSON-encoded DepositMsg or panics with a consistent message.
 fn parse_deposit_msg(msg: &str) -> DepositMsg {

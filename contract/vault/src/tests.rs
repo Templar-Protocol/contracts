@@ -3422,7 +3422,13 @@ fn after_exec_withdraw_read_none_to_payout(
         escrow_shares: 50,
     });
 
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), op_id, market_id, U128(principal), U128(0));
+    let res = c.execute_withdraw_02_reconcile_position(
+        Ok(None),
+        op_id,
+        market_id,
+        U128(principal),
+        U128(0),
+    );
     match res {
         PromiseOrValue::Promise(_p) => {}
         _ => panic!("Expected a Promise to proceed to balance settlement"),
@@ -3549,9 +3555,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     }
 
     assert_eq!(
-        c.markets
-            .get(&market_id)
-            .map_or(u128::MAX, |r| r.principal),
+        c.markets.get(&market_id).map_or(u128::MAX, |r| r.principal),
         before,
         "principal must remain unchanged on read failure"
     );
@@ -3611,13 +3615,8 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         MarketId(market_id.0.saturating_add(1))
     };
 
-    let r = c.execute_withdraw_02_reconcile_position(
-        Ok(None),
-        call_op,
-        call_market,
-        U128(10),
-        U128(0),
-    );
+    let r =
+        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_market, U128(10), U128(0));
     if let (true, true) = (pass_op, pass_index) {
         assert!(
             !matches!(c.op_state, OpState::Idle),
@@ -4212,18 +4211,35 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
         _ => panic!("Expected Value(()) from reconcile"),
     }
 
-    assert!(matches!(c.op_state, OpState::Payout(PayoutState { op_id: 2, .. })));
+    assert!(matches!(
+        c.op_state,
+        OpState::Payout(PayoutState { op_id: 2, .. })
+    ));
     assert_eq!(c.total_supply(), supply_before, "supply must not change");
     assert_eq!(
         c.balance_of(&near_sdk::env::current_account_id()),
         vault_before,
         "vault balance must not change"
     );
-    assert_eq!(c.balance_of(&owner), owner_before, "owner must not be refunded");
+    assert_eq!(
+        c.balance_of(&owner),
+        owner_before,
+        "owner must not be refunded"
+    );
     assert_eq!(c.idle_balance, idle_before, "idle_balance must not resync");
-    assert_eq!(c.next_withdraw_to_execute, head_before, "queue head must not advance");
-    assert_eq!(c.pending_withdrawals.len(), len_before, "queue must not dequeue");
-    assert_eq!(c.withdraw_route, route_before, "withdraw route must not clear");
+    assert_eq!(
+        c.next_withdraw_to_execute, head_before,
+        "queue head must not advance"
+    );
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        len_before,
+        "queue must not dequeue"
+    );
+    assert_eq!(
+        c.withdraw_route, route_before,
+        "withdraw route must not clear"
+    );
     assert_eq!(
         c.market_execution_lock.is_locked(market),
         locked_before,
