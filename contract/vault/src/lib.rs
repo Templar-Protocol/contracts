@@ -3,6 +3,7 @@
 use crate::{
     aum::AUM,
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
+    impl_callbacks::unwrap_or_return,
     storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
@@ -1813,10 +1814,7 @@ impl Contract {
         escrow_shares: u128,
         burn_shares: u128,
     ) -> PromiseOrValue<()> {
-        let withdrawing = match crate::op_guard::WithdrawingGuard::expect(self, Some(op_id)) {
-            Ok(guard) => guard,
-            Err(e) => return self.stop_and_exit(Some(&e)),
-        };
+        let withdrawing = unwrap_or_return!(crate::impl_callbacks::or_stop(self, op_id));
 
         let mut payout = withdrawing.into_payout(PayoutState {
             op_id,
