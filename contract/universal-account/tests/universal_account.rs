@@ -132,7 +132,7 @@ impl TestSigner {
             }
             TestSigner::Sep53(key) => {
                 let message = sep53::Message::new(payload);
-                let signature = key.sign(&message.preimage_for_signing()).to_bytes().into();
+                let signature = key.sign(&message.hash_for_signing()).to_bytes().into();
                 let message = message.with_signature(signature);
 
                 ExecuteArgsMessage {
