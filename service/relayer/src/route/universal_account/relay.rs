@@ -4,7 +4,7 @@ use axum::{extract::State, Json};
 use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
 use near_sdk::{
     serde::{Deserialize, Serialize},
-    AccountId, NearToken,
+    serde_json, AccountId, NearToken,
 };
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_universal_account::{
@@ -18,11 +18,28 @@ use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayRequest {
     pub account_id: AccountId,
-    pub args: ExecuteArgs<Box<[Transaction]>>,
+    pub args: serde_json::Value,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
     #[serde(default)]
     pub update_price_feeds: HashSet<PriceIdentifier>,
+}
+
+impl RelayRequest {
+    /// # Errors
+    ///
+    /// - Serialization of arguments
+    pub fn new(
+        account_id: AccountId,
+        args: impl Into<ExecuteArgs<Box<[Transaction]>>>,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            account_id,
+            args: serde_json::to_value(args.into())?,
+            storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -37,12 +54,27 @@ pub async fn relay(
     State(app): State<App>,
     Json(RelayRequest {
         account_id,
-        args,
+        args: args_raw,
         storage_deposit,
         update_price_feeds,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
+
+    // This is a stopgap measure to support the old args passed by the FE.
+    // Once the FE is fully-upgraded to support the new args format, this
+    // should be removed, and we should deserialize `args` to `ExecuteArgs`
+    // directly in `RelayRequest`.
+    let args = match serde_json::to_string(&args_raw)
+        .and_then(|s| serde_json::from_str::<ExecuteArgs<Box<[Transaction]>>>(&s))
+    {
+        Ok(a) => a,
+        Err(e) => {
+            let msg = format!("Invalid args: {e}");
+            tracing::info!("{msg}");
+            return SimpleResponse::Rejected { reason: msg };
+        }
+    };
 
     let parameters = match app
         .ua_near
@@ -272,7 +304,7 @@ pub async fn relay(
     // Send the user's transaction
     let signed_transaction = app
         .relay_near
-        .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas)
+        .construct_ua_execute_transaction(&app.cache, account_id.clone(), &args_raw, gas)
         .await;
     let Some(cost_of_gas) = app.estimate_cost_of_gas(near_sdk::Gas::from_gas(gas)).await else {
         tracing::error!("Failed to estimate cost of gas");
