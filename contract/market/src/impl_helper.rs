@@ -63,9 +63,6 @@ impl Contract {
 
         let snapshot = self.snapshot();
         let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
-        if !borrow_position.inner().liquidation_lock.is_zero() {
-            templar_common::panic_with_message("Cannot add collateral while liquidation locked");
-        }
         let proof = borrow_position.accumulate_interest();
         borrow_position.record_collateral_asset_deposit(proof, amount);
         require!(
@@ -96,9 +93,7 @@ impl Contract {
             "Cannot repay when eligible for liquidation",
         );
         // Returns the amount that should be returned to the borrower.
-        borrow_position
-            .record_repay(proof, amount)
-            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+        borrow_position.record_repay(proof, amount)
     }
 }
 
