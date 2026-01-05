@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fmt::Display,
     str::FromStr,
-    sync::{Mutex, RwLock},
+    sync::{Mutex, OnceLock, RwLock},
     time::{Duration, Instant},
 };
 
@@ -878,6 +878,24 @@ pub struct VaultSnapshot {
 pub const DEFAULT_GAS: Gas = 300_000_000_000_000;
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 
+static TOKIO_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn tokio_runtime() -> &'static tokio::runtime::Runtime {
+    TOKIO_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create Tokio runtime")
+    })
+}
+
+fn run_on_tokio<F, T>(future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio_runtime().block_on(future)
+}
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct ViewCacheKey {
     account_id: String,
@@ -897,7 +915,7 @@ pub struct Client {
     view_cache: RwLock<Option<ViewCache>>,
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 impl Client {
     #[uniffi::constructor]
     #[instrument(skip(signer_key, signer_account, vault), fields(rpc_url = %rpc_url, timeout))]
@@ -1702,62 +1720,70 @@ impl Client {
         }
 
         let retry = self.retry.map(RetryConfig::normalized);
-        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
-        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+        let inner = self.inner.clone();
+        let account_id = account_id.clone();
+        let function_name = function_name.to_owned();
 
-        loop {
-            attempts_left = attempts_left.saturating_sub(1);
+        let result_bytes = run_on_tokio(async move {
+            let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
+            let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
 
-            let response = tokio::time::timeout(
-                Duration::from_secs(timeout),
-                self.inner.call(RpcQueryRequest {
-                    block_reference: BlockReference::latest(),
-                    request: QueryRequest::CallFunction {
-                        account_id: account_id.clone(),
-                        method_name: function_name.to_owned(),
-                        args: args_bytes.clone().into(),
-                    },
-                }),
-            )
-            .await;
+            loop {
+                attempts_left = attempts_left.saturating_sub(1);
 
-            let response = match response {
-                Ok(Ok(r)) => r,
-                Ok(Err(e)) => {
-                    let err: anyhow::Error = e.into();
-                    if attempts_left == 0 || !should_retry(&err) {
-                        return Err(err);
+                let response = tokio::time::timeout(
+                    Duration::from_secs(timeout),
+                    inner.call(RpcQueryRequest {
+                        block_reference: BlockReference::latest(),
+                        request: QueryRequest::CallFunction {
+                            account_id: account_id.clone(),
+                            method_name: function_name.clone(),
+                            args: args_bytes.clone().into(),
+                        },
+                    }),
+                )
+                .await;
+
+                let response = match response {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        let err: anyhow::Error = e.into();
+                        if attempts_left == 0 || !should_retry(&err) {
+                            return Err(err);
+                        }
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        if let Some(r) = retry {
+                            backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
+                        }
+                        continue;
                     }
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
+                    Err(e) => {
+                        let err: anyhow::Error = e.into();
+                        if attempts_left == 0 || !should_retry(&err) {
+                            return Err(err);
+                        }
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        if let Some(r) = retry {
+                            backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                Err(e) => {
-                    let err: anyhow::Error = e.into();
-                    if attempts_left == 0 || !should_retry(&err) {
-                        return Err(err);
-                    }
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
-                    }
-                    continue;
-                }
-            };
+                };
 
-            let QueryResponseKind::CallResult(result) = response.kind else {
-                bail!("Expected CallResult got {:?}", response.kind);
-            };
+                let QueryResponseKind::CallResult(result) = response.kind else {
+                    bail!("Expected CallResult got {:?}", response.kind);
+                };
 
-            if let Some(cache) = &cache {
-                cache.insert(key.clone(), result.result.clone());
+                return Ok(result.result);
             }
+        })?;
 
-            let value = serde_json::from_slice(&result.result)?;
-            return Ok(value);
+        if let Some(cache) = &cache {
+            cache.insert(key.clone(), result_bytes.clone());
         }
+
+        let value = serde_json::from_slice(&result_bytes)?;
+        Ok(value)
     }
 
     #[instrument(skip(self, args), fields(account_id = %account_id, method = function_name, gas = ?gas, deposit = ?deposit, timeout))]
@@ -1788,124 +1814,130 @@ impl Client {
 
         let (tx_hash, _size) = tx.get_hash_and_size();
 
-        let called_at = Instant::now();
         let signature = self.signer.sign(tx_hash.as_ref());
-        let deadline = called_at + Duration::from_secs(timeout);
         let signed_transaction = SignedTransaction::new(signature, tx);
 
         let retry = self.retry.map(RetryConfig::normalized);
-        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
-        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+        let inner = self.inner.clone();
+        let signer_account_id = self.signer.get_account_id();
 
-        let result = loop {
-            attempts_left = attempts_left.saturating_sub(1);
+        let result = run_on_tokio(async move {
+            let called_at = Instant::now();
+            let deadline = called_at + Duration::from_secs(timeout);
 
-            let send_res = self
-                .inner
-                .call(RpcSendTransactionRequest {
-                    signed_transaction: signed_transaction.clone(),
-                    wait_until: TxExecutionStatus::Final,
-                })
-                .await;
+            let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
+            let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
 
-            match send_res {
-                Ok(res) => break Ok(res),
+            let result = loop {
+                attempts_left = attempts_left.saturating_sub(1);
+
+                let send_res = inner
+                    .call(RpcSendTransactionRequest {
+                        signed_transaction: signed_transaction.clone(),
+                        wait_until: TxExecutionStatus::Final,
+                    })
+                    .await;
+
+                match send_res {
+                    Ok(res) => break Ok(res),
+                    Err(e) => {
+                        if matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                            break Err(e);
+                        }
+
+                        if retry.is_none() || attempts_left == 0 || e.handler_error().is_some() {
+                            break Err(e);
+                        }
+
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        if let Some(r) = retry {
+                            backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
+                        }
+                    }
+                }
+            };
+
+            let result = match result {
+                Ok(res) => res,
                 Err(e) => {
-                    if matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                        break Err(e);
-                    }
-
-                    if retry.is_none() || attempts_left == 0 || e.handler_error().is_some() {
-                        break Err(e);
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
-                    }
-                }
-            }
-        };
-
-        let result = match result {
-            Ok(res) => res,
-            Err(e) => {
-                warn!(
-                    "Send transaction error: {:?}. Starting status polling until deadline.",
-                    e
-                );
-
-                if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                    return Err(e.into());
-                }
-
-                let mut poll_interval = Duration::from_millis(500);
-
-                loop {
-                    if Instant::now() >= deadline {
-                        warn!("Transaction polling deadline exceeded, aborting");
-                        bail!("Transaction timed out");
-                    }
-
-                    tokio::time::sleep(poll_interval).await;
-                    debug!("Polling transaction status...");
-
-                    poll_interval = std::cmp::min(
-                        poll_interval * 2,
-                        Duration::from_millis(MAX_POLL_INTERVAL_MILLIS),
+                    warn!(
+                        "Send transaction error: {:?}. Starting status polling until deadline.",
+                        e
                     );
 
-                    let status = self
-                        .inner
+                    if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                        return Err(e.into());
+                    }
+
+                    let mut poll_interval = Duration::from_millis(500);
+
+                    loop {
+                        if Instant::now() >= deadline {
+                            warn!("Transaction polling deadline exceeded, aborting");
+                            bail!("Transaction timed out");
+                        }
+
+                        tokio::time::sleep(poll_interval).await;
+                        debug!("Polling transaction status...");
+
+                        poll_interval = std::cmp::min(
+                            poll_interval * 2,
+                            Duration::from_millis(MAX_POLL_INTERVAL_MILLIS),
+                        );
+
+                        let status = inner
+                            .call(RpcTransactionStatusRequest {
+                                transaction_info: TransactionInfo::TransactionId {
+                                    sender_account_id: signer_account_id.clone(),
+                                    tx_hash,
+                                },
+                                wait_until: TxExecutionStatus::Final,
+                            })
+                            .await;
+
+                        let Err(status_err) = status else {
+                            break;
+                        };
+
+                        if matches!(
+                            status_err.handler_error(),
+                            Some(RpcTransactionError::TimeoutError)
+                        ) {
+                            continue;
+                        }
+
+                        if retry.is_some() && status_err.handler_error().is_none() {
+                            continue;
+                        }
+
+                        warn!("Transaction status error: {:?}", status_err);
+                        return Err(status_err.into());
+                    }
+
+                    inner
                         .call(RpcTransactionStatusRequest {
                             transaction_info: TransactionInfo::TransactionId {
-                                sender_account_id: self.signer.get_account_id(),
+                                sender_account_id: signer_account_id.clone(),
                                 tx_hash,
                             },
                             wait_until: TxExecutionStatus::Final,
                         })
-                        .await;
-
-                    let Err(status_err) = status else {
-                        break;
-                    };
-
-                    if matches!(
-                        status_err.handler_error(),
-                        Some(RpcTransactionError::TimeoutError)
-                    ) {
-                        continue;
-                    }
-
-                    if retry.is_some() && status_err.handler_error().is_none() {
-                        continue;
-                    }
-
-                    warn!("Transaction status error: {:?}", status_err);
-                    return Err(status_err.into());
+                        .await?
                 }
+            };
 
-                self.inner
-                    .call(RpcTransactionStatusRequest {
-                        transaction_info: TransactionInfo::TransactionId {
-                            sender_account_id: self.signer.get_account_id(),
-                            tx_hash,
-                        },
-                        wait_until: TxExecutionStatus::Final,
-                    })
-                    .await?
+            let Some(outcome) = result.final_execution_outcome else {
+                bail!("No outcome {}", tx_hash);
+            };
+
+            let status = outcome.into_outcome().status;
+            if let FinalExecutionStatus::Failure(tx_err) = &status {
+                bail!("Transaction failed: {:?}", tx_err);
             }
-        };
+            Ok(status)
+        })?;
 
-        let Some(outcome) = result.final_execution_outcome else {
-            bail!("No outcome {}", tx_hash);
-        };
-
-        let status = outcome.into_outcome().status;
-        if let FinalExecutionStatus::Failure(tx_err) = &status {
-            bail!("Transaction failed: {:?}", tx_err);
-        }
-        Ok(status)
+        Ok(result)
     }
 
     #[inline]
