@@ -66,8 +66,9 @@ impl FungibleTokenReceiver for Contract {
                         ),
                 )
             }
-            DepositMsg::Repay => {
+            DepositMsg::Repay(msg) => {
                 let amount = use_borrow_asset();
+                let account_id = msg.account_id.unwrap_or(sender_id);
 
                 PromiseOrValue::Promise(
                     self.configuration
@@ -76,7 +77,7 @@ impl FungibleTokenReceiver for Contract {
                         .then(
                             self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
                                 .repay_transfer_call_01_consume_price(
-                                    sender_id,
+                                    account_id,
                                     amount,
                                     RETURN_STYLE,
                                 ),
@@ -188,8 +189,9 @@ impl Nep245Receiver for Contract {
                         ),
                 )
             }
-            DepositMsg::Repay => {
+            DepositMsg::Repay(msg) => {
                 let amount = use_borrow_asset();
+                let account_id = msg.account_id.unwrap_or(sender_id);
 
                 PromiseOrValue::Promise(
                     self.configuration
@@ -198,7 +200,7 @@ impl Nep245Receiver for Contract {
                         .then(
                             self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
                                 .repay_transfer_call_01_consume_price(
-                                    sender_id,
+                                    account_id,
                                     amount,
                                     RETURN_STYLE,
                                 ),

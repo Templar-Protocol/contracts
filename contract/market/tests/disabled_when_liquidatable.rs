@@ -84,7 +84,7 @@ async fn repayment(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .unwrap()
         .get_total_borrow_asset_liability();
-    c.repay(&borrow_user, 1_050_000).await;
+    c.repay(&borrow_user, None, 1_050_000).await;
     let liability_after = c
         .get_borrow_position(borrow_user.id())
         .await

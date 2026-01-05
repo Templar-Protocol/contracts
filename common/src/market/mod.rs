@@ -81,10 +81,17 @@ pub enum DepositMsg {
     Collateralize,
     /// Use the attached tokens to pay down the sender's borrow position's
     /// liability (sans fees).
-    Repay,
+    Repay(RepayMsg),
     /// Liquidate an account that is below the configured liquidation
     /// collateralization ratio threshold.
     Liquidate(LiquidateMsg),
+}
+
+/// Indicate an account to repay.
+#[near(serializers = [json])]
+pub struct RepayMsg {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<AccountId>,
 }
 
 /// Indicate an account to liquidate.

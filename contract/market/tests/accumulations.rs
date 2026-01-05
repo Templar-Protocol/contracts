@@ -26,7 +26,11 @@ async fn third_party_accumulation_executor(#[future(awt)] worker: Worker<Sandbox
         .failures()
         .is_empty());
 
-    assert!(c.repay(&borrow_user, 1100).await.failures().is_empty());
+    assert!(c
+        .repay(&borrow_user, None, 1100)
+        .await
+        .failures()
+        .is_empty());
 
     c.harvest_yield(
         &supply_user,
@@ -72,7 +76,7 @@ async fn third_party_cannot_compound_yield(#[future(awt)] worker: Worker<Sandbox
     );
 
     c.borrow(&borrow_user, 1000).await;
-    c.repay(&borrow_user, 1100).await;
+    c.repay(&borrow_user, None, 1100).await;
 
     c.harvest_yield(
         &third_party,

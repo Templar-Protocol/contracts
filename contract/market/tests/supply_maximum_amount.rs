@@ -83,7 +83,7 @@ async fn harvest_yield_beyond_maximum(#[future(awt)] worker: Worker<Sandbox>) {
     );
 
     c.borrow(&borrow_user, LIMIT * 4 / 5).await;
-    c.repay(&borrow_user, LIMIT).await;
+    c.repay(&borrow_user, None, LIMIT).await;
 
     c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Compounding))
         .await;
