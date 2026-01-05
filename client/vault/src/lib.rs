@@ -1357,6 +1357,68 @@ mod tests {
         let _ = client.get_max_deposit().await.unwrap();
     }
 
+    #[test]
+    fn no_json_string_api_regressions() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src"), &mut files);
+
+        for file in files {
+            let content = std::fs::read_to_string(&file).unwrap_or_default();
+
+            let is_self = file.file_name().and_then(|n| n.to_str()) == Some("lib.rs")
+                && file.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("src");
+
+            let mut in_guard = false;
+            let mut brace_depth: i32 = 0;
+
+            for line in content.lines() {
+                let l = line.trim();
+
+                if is_self && !in_guard && l.contains("fn no_json_string_api_regressions") {
+                    in_guard = true;
+                    brace_depth = l.chars().filter(|&c| c == '{').count() as i32
+                        - l.chars().filter(|&c| c == '}').count() as i32;
+                    if brace_depth <= 0 {
+                        brace_depth = 1;
+                    }
+                    continue;
+                }
+
+                if in_guard {
+                    brace_depth += l.chars().filter(|&c| c == '{').count() as i32;
+                    brace_depth -= l.chars().filter(|&c| c == '}').count() as i32;
+                    if brace_depth == 0 {
+                        in_guard = false;
+                    }
+                    continue;
+                }
+
+                if l.contains("ForeignJson") {
+                    panic!("ForeignJson not allowed: {}: {}", file.display(), l);
+                }
+
+                if l.starts_with("pub ") && l.contains("fn ") && l.contains("_json") {
+                    panic!("*_json API not allowed: {}: {}", file.display(), l);
+                }
+            }
+        }
+    }
+
     #[rstest]
     #[tokio::test(flavor = "current_thread")]
     #[ignore]
