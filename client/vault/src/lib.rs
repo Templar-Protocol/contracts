@@ -1,12 +1,5 @@
-// TODO: near client setup with signer
-// TODO: expose client methods for things usually requiring actions
-// TODO: expose stream callbacks for handling events
-// TODO: pyo3
-// TODO: wasm
-// TODO: ensure we zeroize secrets
-//
-
 use std::{
+    collections::BTreeSet,
     fmt::Display,
     str::FromStr,
     time::{Duration, Instant},
@@ -23,7 +16,7 @@ use near_jsonrpc_client::{
     },
     JsonRpcClient,
 };
-use near_jsonrpc_primitives::{errors::RpcError, types::query::QueryResponseKind};
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
     action::{Action, FunctionCallAction},
     hash::CryptoHash,
@@ -32,43 +25,134 @@ use near_primitives::{
     views::{FinalExecutionStatus, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::json_types::{U128, U64};
-use serde::{de::DeserializeOwned, Serialize};
-use templar_common::vault::VaultConfiguration;
-use tracing::{debug, info, instrument, warn};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use tracing::{debug, instrument, warn};
 
 uniffi::setup_scaffolding!();
 
+type ForeignU128 = String;
+type ForeignJson = String;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AccountId(String);
+
+uniffi::custom_type!(AccountId, String);
+
+impl From<AccountId> for near_account_id::AccountId {
+    fn from(value: AccountId) -> Self {
+        near_account_id::AccountId::from_str(&value.0).expect("Invalid AccountId")
+    }
+}
+
+impl From<String> for AccountId {
+    fn from(value: String) -> Self {
+        AccountId(value)
+    }
+}
+
+impl From<AccountId> for String {
+    fn from(value: AccountId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MarketId(pub u32);
+
+uniffi::custom_type!(MarketId, u32);
+
+impl From<u32> for MarketId {
+    fn from(value: u32) -> Self {
+        MarketId(value)
+    }
+}
+
+impl From<MarketId> for u32 {
+    fn from(value: MarketId) -> Self {
+        value.0
+    }
+}
+
+impl From<templar_common::vault::MarketId> for MarketId {
+    fn from(value: templar_common::vault::MarketId) -> Self {
+        MarketId(value.0)
+    }
+}
+
+impl From<MarketId> for templar_common::vault::MarketId {
+    fn from(value: MarketId) -> Self {
+        templar_common::vault::MarketId(value.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CapGroupId(pub String);
+
+uniffi::custom_type!(CapGroupId, String);
+
+impl From<String> for CapGroupId {
+    fn from(value: String) -> Self {
+        CapGroupId(value)
+    }
+}
+
+impl From<CapGroupId> for String {
+    fn from(value: CapGroupId) -> Self {
+        value.0
+    }
+}
+
+impl From<templar_common::vault::CapGroupId> for CapGroupId {
+    fn from(value: templar_common::vault::CapGroupId) -> Self {
+        CapGroupId(value.0)
+    }
+}
+
+impl From<CapGroupId> for templar_common::vault::CapGroupId {
+    fn from(value: CapGroupId) -> Self {
+        templar_common::vault::CapGroupId(value.0)
+    }
+}
+
 #[derive(uniffi::Enum)]
-pub enum Event {}
+pub enum Event {
+    Unsupported,
+}
 
 impl From<templar_common::vault::Event> for Event {
-    fn from(value: templar_common::vault::Event) -> Self {
-        todo!()
+    fn from(_value: templar_common::vault::Event) -> Self {
+        Event::Unsupported
     }
+}
+
+#[uniffi::export(callback_interface)]
+pub trait EventHandler {
+    fn handle(&self, event: Event);
 }
 
 #[derive(uniffi::Record, Debug, Clone)]
 pub struct Delta {
-    pub market: AccountId,
+    pub market: MarketId,
     pub amount: ForeignU128,
 }
 
 impl From<templar_common::vault::Delta> for Delta {
     fn from(value: templar_common::vault::Delta) -> Self {
         Delta {
-            market: AccountId(value.market.to_string()),
-            amount: serde_json::to_string(&value.amount).unwrap(),
+            market: value.market.into(),
+            amount: value.amount.0.to_string(),
         }
     }
 }
 
-impl From<Delta> for templar_common::vault::Delta {
-    fn from(value: Delta) -> Self {
-        println!("Delta {:?}", value);
-        templar_common::vault::Delta {
+impl TryFrom<Delta> for templar_common::vault::Delta {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: Delta) -> Result<Self, Self::Error> {
+        Ok(templar_common::vault::Delta {
             market: value.market.into(),
-            amount: U128(u128::from_str(value.amount.as_str()).unwrap()),
-        }
+            amount: U128(parse_u128(&value.amount)?),
+        })
     }
 }
 
@@ -91,25 +175,253 @@ impl From<templar_common::vault::AllocationDelta> for AllocationDelta {
     }
 }
 
-impl From<AllocationDelta> for templar_common::vault::AllocationDelta {
-    fn from(value: AllocationDelta) -> Self {
-        match value {
+impl TryFrom<AllocationDelta> for templar_common::vault::AllocationDelta {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: AllocationDelta) -> Result<Self, Self::Error> {
+        Ok(match value {
             AllocationDelta::Supply(delta) => {
-                templar_common::vault::AllocationDelta::Supply(delta.into())
+                templar_common::vault::AllocationDelta::Supply(delta.try_into()?)
             }
             AllocationDelta::Withdraw(delta) => {
-                templar_common::vault::AllocationDelta::Withdraw(delta.into())
+                templar_common::vault::AllocationDelta::Withdraw(delta.try_into()?)
+            }
+        })
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct Fee {
+    pub fee: ForeignU128,
+    pub recipient: AccountId,
+}
+
+impl From<templar_common::vault::Fee<U128>> for Fee {
+    fn from(value: templar_common::vault::Fee<U128>) -> Self {
+        Fee {
+            fee: value.fee.0.to_string(),
+            recipient: value.recipient.to_string().into(),
+        }
+    }
+}
+
+impl TryFrom<Fee> for templar_common::vault::Fee<U128> {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: Fee) -> Result<Self, Self::Error> {
+        Ok(templar_common::vault::Fee {
+            fee: U128(parse_u128(&value.fee)?),
+            recipient: NearAccountId::from(value.recipient),
+        })
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct Fees {
+    pub performance: Fee,
+    pub management: Fee,
+    pub max_total_assets_growth_rate: Option<ForeignU128>,
+}
+
+impl From<templar_common::vault::Fees<U128>> for Fees {
+    fn from(value: templar_common::vault::Fees<U128>) -> Self {
+        Fees {
+            performance: value.performance.into(),
+            management: value.management.into(),
+            max_total_assets_growth_rate: value
+                .max_total_assets_growth_rate
+                .map(|r| r.0.to_string()),
+        }
+    }
+}
+
+impl TryFrom<Fees> for templar_common::vault::Fees<U128> {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: Fees) -> Result<Self, Self::Error> {
+        Ok(templar_common::vault::Fees {
+            performance: value.performance.try_into()?,
+            management: value.management.try_into()?,
+            max_total_assets_growth_rate: match value.max_total_assets_growth_rate {
+                None => None,
+                Some(r) => Some(U128(parse_u128(&r)?)),
+            },
+        })
+    }
+}
+
+#[derive(uniffi::Enum, Debug, Clone)]
+pub enum Restrictions {
+    Paused,
+    BlackList(Vec<AccountId>),
+    WhiteList(Vec<AccountId>),
+}
+
+impl From<templar_common::vault::Restrictions> for Restrictions {
+    fn from(value: templar_common::vault::Restrictions) -> Self {
+        match value {
+            templar_common::vault::Restrictions::Paused => Restrictions::Paused,
+            templar_common::vault::Restrictions::BlackList(set) => {
+                Restrictions::BlackList(set.iter().map(|a| a.to_string().into()).collect())
+            }
+            templar_common::vault::Restrictions::WhiteList(set) => {
+                Restrictions::WhiteList(set.iter().map(|a| a.to_string().into()).collect())
             }
         }
     }
 }
 
-#[uniffi::export(callback_interface)]
-pub trait EventHandler {
-    fn handle(&self, event: Event);
+impl From<Restrictions> for templar_common::vault::Restrictions {
+    fn from(value: Restrictions) -> Self {
+        match value {
+            Restrictions::Paused => templar_common::vault::Restrictions::Paused,
+            Restrictions::BlackList(accounts) => {
+                let set: BTreeSet<NearAccountId> =
+                    accounts.into_iter().map(NearAccountId::from).collect();
+                templar_common::vault::Restrictions::BlackList(set)
+            }
+            Restrictions::WhiteList(accounts) => {
+                let set: BTreeSet<NearAccountId> =
+                    accounts.into_iter().map(NearAccountId::from).collect();
+                templar_common::vault::Restrictions::WhiteList(set)
+            }
+        }
+    }
 }
 
-pub const DEFAULT_GAS: Gas = 300 * 1e12 as u64;
+#[derive(uniffi::Enum, Debug, Clone)]
+pub enum CapGroupUpdate {
+    SetCap {
+        cap_group: CapGroupId,
+        new_cap: ForeignU128,
+    },
+    SetRelativeCap {
+        cap_group: CapGroupId,
+        new_relative_cap: ForeignU128,
+    },
+    SetMarketCapGroup {
+        market: MarketId,
+        cap_group: Option<CapGroupId>,
+    },
+}
+
+impl TryFrom<CapGroupUpdate> for templar_common::vault::CapGroupUpdate {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: CapGroupUpdate) -> Result<Self, Self::Error> {
+        Ok(match value {
+            CapGroupUpdate::SetCap { cap_group, new_cap } => {
+                templar_common::vault::CapGroupUpdate::SetCap {
+                    cap_group: cap_group.into(),
+                    new_cap: U128(parse_u128(&new_cap)?),
+                }
+            }
+            CapGroupUpdate::SetRelativeCap {
+                cap_group,
+                new_relative_cap,
+            } => templar_common::vault::CapGroupUpdate::SetRelativeCap {
+                cap_group: cap_group.into(),
+                new_relative_cap: U128(parse_u128(&new_relative_cap)?),
+            },
+            CapGroupUpdate::SetMarketCapGroup { market, cap_group } => {
+                templar_common::vault::CapGroupUpdate::SetMarketCapGroup {
+                    market: market.into(),
+                    cap_group: cap_group.map(Into::into),
+                }
+            }
+        })
+    }
+}
+
+#[derive(uniffi::Enum, Debug, Clone)]
+pub enum CapGroupUpdateKey {
+    SetCap { cap_group: CapGroupId },
+    SetRelativeCap { cap_group: CapGroupId },
+    SetMarketCapGroup { market: MarketId },
+}
+
+impl From<CapGroupUpdateKey> for templar_common::vault::CapGroupUpdateKey {
+    fn from(value: CapGroupUpdateKey) -> Self {
+        match value {
+            CapGroupUpdateKey::SetCap { cap_group } => templar_common::vault::CapGroupUpdateKey::SetCap {
+                cap_group: cap_group.into(),
+            },
+            CapGroupUpdateKey::SetRelativeCap { cap_group } => {
+                templar_common::vault::CapGroupUpdateKey::SetRelativeCap {
+                    cap_group: cap_group.into(),
+                }
+            }
+            CapGroupUpdateKey::SetMarketCapGroup { market } => {
+                templar_common::vault::CapGroupUpdateKey::SetMarketCapGroup {
+                    market: market.into(),
+                }
+            }
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "serde")]
+pub enum TimelockKind {
+    Guardian,
+    Sentinel,
+    Config,
+    Cap,
+    MarketRemoval,
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct FeeAccrualAnchor {
+    pub total_assets: ForeignU128,
+    pub timestamp_ns: u64,
+}
+
+impl From<templar_common::vault::FeeAccrualAnchor> for FeeAccrualAnchor {
+    fn from(value: templar_common::vault::FeeAccrualAnchor) -> Self {
+        FeeAccrualAnchor {
+            total_assets: value.total_assets.0.to_string(),
+            timestamp_ns: value.timestamp_ns.0,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct MarketWithId {
+    pub market_id: MarketId,
+    pub account: AccountId,
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct MarketAssets {
+    pub market_id: MarketId,
+    pub assets: ForeignU128,
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct RealAssetsReport {
+    pub total_assets: ForeignU128,
+    pub per_market: Vec<MarketAssets>,
+    pub refreshed_at_ns: u64,
+}
+
+impl From<templar_common::vault::RealAssetsReport> for RealAssetsReport {
+    fn from(value: templar_common::vault::RealAssetsReport) -> Self {
+        RealAssetsReport {
+            total_assets: value.total_assets.0.to_string(),
+            per_market: value
+                .per_market
+                .into_iter()
+                .map(|(id, amt)| MarketAssets {
+                    market_id: id.into(),
+                    assets: amt.0.to_string(),
+                })
+                .collect(),
+            refreshed_at_ns: value.refreshed_at.0,
+        }
+    }
+}
+
+pub const DEFAULT_GAS: Gas = 300_000_000_000_000;
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 
 #[derive(uniffi::Object)]
@@ -119,10 +431,611 @@ pub struct Client {
     pub vault: NearAccountId,
     timeout: u64,
 }
+
+#[uniffi::export]
+impl Client {
+    #[uniffi::constructor]
+    #[instrument(skip(signer_key, signer_account, vault), fields(rpc_url = %rpc_url, timeout))]
+    pub fn new_client(
+        rpc_url: String,
+        signer_account: &AccountId,
+        signer_key: &str,
+        vault: &AccountId,
+        timeout: u64,
+    ) -> Result<Self, ErrorWrapper> {
+        let inner = JsonRpcClient::connect(rpc_url);
+
+        let signer = InMemorySigner::from_secret_key(
+            NearAccountId::from(signer_account.clone()),
+            SecretKey::from_str(signer_key).map_err(ErrorWrapper::from)?,
+        );
+
+        let vault: NearAccountId = NearAccountId::from(vault.clone());
+
+        Ok(Self {
+            inner,
+            signer,
+            vault,
+            timeout,
+        })
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_configuration(&self) -> Result<ForeignJson, ErrorWrapper> {
+        let cfg = self
+            .view::<templar_common::vault::VaultConfiguration>(
+                &self.vault,
+                "get_configuration",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        serde_json::to_string(&cfg).map_err(ErrorWrapper::from)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_total_assets(&self) -> Result<ForeignU128, ErrorWrapper> {
+        self.vault_view_u128("get_total_assets", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_last_total_assets(&self) -> Result<ForeignU128, ErrorWrapper> {
+        self.vault_view_u128("get_last_total_assets", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_idle_balance(&self) -> Result<ForeignU128, ErrorWrapper> {
+        self.vault_view_u128("get_idle_balance", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_total_supply(&self) -> Result<ForeignU128, ErrorWrapper> {
+        self.vault_view_u128("get_total_supply", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_max_deposit(&self) -> Result<ForeignU128, ErrorWrapper> {
+        self.vault_view_u128("get_max_deposit", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_max_single_market_deposit(&self) -> Result<ForeignU128, ErrorWrapper> {
+        self.vault_view_u128("get_max_single_market_deposit", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_fee_anchor(&self) -> Result<FeeAccrualAnchor, ErrorWrapper> {
+        let anchor = self
+            .view::<templar_common::vault::FeeAccrualAnchor>(
+                &self.vault,
+                "get_fee_anchor",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(anchor.into())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_fees(&self) -> Result<Fees, ErrorWrapper> {
+        let fees = self
+            .view::<templar_common::vault::Fees<U128>>(&self.vault, "get_fees", (), self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(fees.into())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_restrictions(&self) -> Result<Option<Restrictions>, ErrorWrapper> {
+        let r = self
+            .view::<Option<templar_common::vault::Restrictions>>(
+                &self.vault,
+                "get_restrictions",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(r.map(Into::into))
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_cap_groups_json(&self) -> Result<ForeignJson, ErrorWrapper> {
+        let v = self
+            .view::<serde_json::Value>(&self.vault, "get_cap_groups", (), self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(v.to_string())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_pending_governance_actions_json(&self) -> Result<ForeignJson, ErrorWrapper> {
+        let v = self
+            .view::<serde_json::Value>(
+                &self.vault,
+                "get_pending_governance_actions",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(v.to_string())
+    }
+
+    #[instrument(skip(self, assets))]
+    pub async fn convert_to_shares(&self, assets: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+        let assets = U128(parse_u128(assets)?);
+        self.vault_view_u128("convert_to_shares", (assets,)).await
+    }
+
+    #[instrument(skip(self, shares))]
+    pub async fn convert_to_assets(&self, shares: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+        let shares = U128(parse_u128(shares)?);
+        self.vault_view_u128("convert_to_assets", (shares,)).await
+    }
+
+    #[instrument(skip(self, assets))]
+    pub async fn preview_deposit(&self, assets: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+        let assets = U128(parse_u128(assets)?);
+        self.vault_view_u128("preview_deposit", (assets,)).await
+    }
+
+    #[instrument(skip(self, shares))]
+    pub async fn preview_mint(&self, shares: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+        let shares = U128(parse_u128(shares)?);
+        self.vault_view_u128("preview_mint", (shares,)).await
+    }
+
+    #[instrument(skip(self, assets))]
+    pub async fn preview_withdraw(&self, assets: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+        let assets = U128(parse_u128(assets)?);
+        self.vault_view_u128("preview_withdraw", (assets,)).await
+    }
+
+    #[instrument(skip(self, shares))]
+    pub async fn preview_redeem(&self, shares: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+        let shares = U128(parse_u128(shares)?);
+        self.vault_view_u128("preview_redeem", (shares,)).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_withdrawing_op_id(&self) -> Result<Option<u64>, ErrorWrapper> {
+        let res = self
+            .view::<Option<U64>>(
+                &self.vault,
+                "get_withdrawing_op_id",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(res.map(|u| u.0))
+    }
+
+    #[instrument(skip(self))]
+    pub async fn has_pending_market_withdrawal(&self) -> Result<bool, ErrorWrapper> {
+        self.view(&self.vault, "has_pending_market_withdrawal", (), self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_current_withdraw_request_id(&self) -> Result<Option<u64>, ErrorWrapper> {
+        let res = self
+            .view::<Option<U64>>(
+                &self.vault,
+                "get_current_withdraw_request_id",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(res.map(|u| u.0))
+    }
+
+    #[instrument(skip(self))]
+    pub async fn queue_tail(&self) -> Result<u64, ErrorWrapper> {
+        self.view(&self.vault, "queue_tail", (), self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn peek_next_pending_withdrawal_id(&self) -> Result<Option<u64>, ErrorWrapper> {
+        self.view(&self.vault, "peek_next_pending_withdrawal_id", (), self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn get_market_id_of_account(
+        &self,
+        market: &AccountId,
+    ) -> Result<Option<MarketId>, ErrorWrapper> {
+        let res = self
+            .view::<Option<U64>>(
+                &self.vault,
+                "get_market_id_of_account",
+                (self.near_id(market),),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+
+        let Some(u) = res else {
+            return Ok(None);
+        };
+
+        let id_u32: u32 = u
+            .0
+            .try_into()
+            .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))?;
+
+        Ok(Some(MarketId(id_u32)))
+    }
+
+    #[instrument(skip(self, market_id))]
+    pub async fn get_market_account_by_id(
+        &self,
+        market_id: MarketId,
+    ) -> Result<Option<AccountId>, ErrorWrapper> {
+        let res = self
+            .view::<Option<NearAccountId>>(
+                &self.vault,
+                "get_market_account_by_id",
+                (U64::from(market_id.0 as u64),),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+
+        Ok(res.map(|a| a.to_string().into()))
+    }
+
+    #[instrument(skip(self))]
+    pub async fn list_markets_with_ids(&self) -> Result<Vec<MarketWithId>, ErrorWrapper> {
+        let res = self
+            .view::<Vec<(U64, NearAccountId)>>(
+                &self.vault,
+                "list_markets_with_ids",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+
+        let mapped = res
+            .into_iter()
+            .map(|(id, account)| {
+                let id_u32: u32 = id
+                    .0
+                    .try_into()
+                    .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))?;
+                Ok(MarketWithId {
+                    market_id: MarketId(id_u32),
+                    account: account.to_string().into(),
+                })
+            })
+            .collect::<Result<Vec<_>, ErrorWrapper>>()?;
+
+        Ok(mapped)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn build_real_assets_report(&self) -> Result<RealAssetsReport, ErrorWrapper> {
+        let res = self
+            .view::<templar_common::vault::RealAssetsReport>(
+                &self.vault,
+                "build_real_assets_report",
+                (),
+                self.timeout,
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(res.into())
+    }
+
+    #[instrument(skip(self, shares, receiver, deposit_yocto))]
+    pub async fn redeem(
+        &self,
+        shares: &ForeignU128,
+        receiver: &AccountId,
+        deposit_yocto: &ForeignU128,
+    ) -> Result<(), ErrorWrapper> {
+        let shares = U128(parse_u128(shares)?);
+        let deposit = parse_u128(deposit_yocto)?;
+        self.vault_call_with(
+            "redeem",
+            (shares, self.near_id(receiver)),
+            None,
+            Some(deposit),
+        )
+        .await
+    }
+
+    #[instrument(skip(self, assets, receiver, deposit_yocto))]
+    pub async fn withdraw(
+        &self,
+        assets: &ForeignU128,
+        receiver: &AccountId,
+        deposit_yocto: &ForeignU128,
+    ) -> Result<(), ErrorWrapper> {
+        let assets = U128(parse_u128(assets)?);
+        let deposit = parse_u128(deposit_yocto)?;
+        self.vault_call_with(
+            "withdraw",
+            (assets, self.near_id(receiver)),
+            None,
+            Some(deposit),
+        )
+        .await
+    }
+
+    #[instrument(skip(self, delta))]
+    pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
+        let delta = templar_common::vault::AllocationDelta::try_from(delta.clone())?;
+        self.vault_call("reallocate", (delta,)).await
+    }
+
+    #[instrument(skip(self, route))]
+    pub async fn execute_withdrawal(&self, route: &[MarketId]) -> Result<(), ErrorWrapper> {
+        let route: Vec<templar_common::vault::MarketId> = route.iter().copied().map(Into::into).collect();
+        self.vault_call("execute_withdrawal", (route,)).await
+    }
+
+    #[instrument(skip(self, op_id, market, batch_limit))]
+    pub async fn execute_market_withdrawal(
+        &self,
+        op_id: u64,
+        market: MarketId,
+        batch_limit: Option<u32>,
+    ) -> Result<(), ErrorWrapper> {
+        self.vault_call(
+            "execute_market_withdrawal",
+            (U64::from(op_id), templar_common::vault::MarketId::from(market), batch_limit),
+        )
+        .await
+    }
+
+    #[instrument(skip(self, market_id, batch_limit))]
+    pub async fn execute_rebalance_withdrawal(
+        &self,
+        market_id: MarketId,
+        batch_limit: Option<u32>,
+    ) -> Result<(), ErrorWrapper> {
+        self.vault_call(
+            "execute_rebalance_withdrawal",
+            (templar_common::vault::MarketId::from(market_id), batch_limit),
+        )
+        .await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn unbrick(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("unbrick", ()).await
+    }
+
+    #[instrument(skip(self, token))]
+    pub async fn skim(&self, token: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("skim", (self.near_id(token),)).await
+    }
+
+    #[instrument(skip(self, markets))]
+    pub async fn refresh_markets(
+        &self,
+        markets: &[MarketId],
+    ) -> Result<RealAssetsReport, ErrorWrapper> {
+        let markets: Vec<templar_common::vault::MarketId> =
+            markets.iter().copied().map(Into::into).collect();
+        self.vault_call("refresh_markets", (markets,)).await?;
+        self.build_real_assets_report().await
+    }
+
+    #[instrument(skip(self, account))]
+    pub async fn set_curator(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("set_curator", (self.near_id(account),)).await
+    }
+
+    #[instrument(skip(self, account))]
+    pub async fn set_is_allocator(
+        &self,
+        account: &AccountId,
+        allowed: bool,
+    ) -> Result<(), ErrorWrapper> {
+        self.vault_call("set_is_allocator", (self.near_id(account), allowed))
+            .await
+    }
+
+    #[instrument(skip(self, new_g))]
+    pub async fn submit_guardian(&self, new_g: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("submit_guardian", (self.near_id(new_g),))
+            .await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn accept_guardian(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("accept_guardian", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn revoke_pending_guardian(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("revoke_pending_guardian", ()).await
+    }
+
+    #[instrument(skip(self, new_s))]
+    pub async fn submit_sentinel(&self, new_s: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("submit_sentinel", (self.near_id(new_s),))
+            .await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn accept_sentinel(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("accept_sentinel", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn revoke_pending_sentinel(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("revoke_pending_sentinel", ()).await
+    }
+
+    #[instrument(skip(self, account))]
+    pub async fn set_skim_recipient(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("set_skim_recipient", (self.near_id(account),))
+            .await
+    }
+
+    #[instrument(skip(self, fees))]
+    pub async fn set_fees(&self, fees: Fees) -> Result<(), ErrorWrapper> {
+        let fees: templar_common::vault::Fees<U128> = fees.try_into()?;
+        self.vault_call("set_fees", (fees,)).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn accept_fees(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("accept_fees", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn revoke_pending_fees(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("revoke_pending_fees", ()).await
+    }
+
+    #[instrument(skip(self, new_timelock_ns, kind))]
+    pub async fn submit_timelock(
+        &self,
+        new_timelock_ns: u64,
+        kind: Option<TimelockKind>,
+    ) -> Result<(), ErrorWrapper> {
+        self.vault_call(
+            "submit_timelock",
+            (U64::from(new_timelock_ns), kind),
+        )
+        .await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn accept_timelock(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("accept_timelock", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn revoke_pending_timelock(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("revoke_pending_timelock", ()).await
+    }
+
+    #[instrument(skip(self, market, new_cap))]
+    pub async fn submit_cap(
+        &self,
+        market: &AccountId,
+        new_cap: &ForeignU128,
+    ) -> Result<(), ErrorWrapper> {
+        let new_cap = U128(parse_u128(new_cap)?);
+        self.vault_call("submit_cap", (self.near_id(market), new_cap))
+            .await
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn accept_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("accept_cap", (self.near_id(market),)).await
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn revoke_pending_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("revoke_pending_cap", (self.near_id(market),))
+            .await
+    }
+
+    #[instrument(skip(self, update))]
+    pub async fn submit_cap_group_update(&self, update: CapGroupUpdate) -> Result<(), ErrorWrapper> {
+        let update: templar_common::vault::CapGroupUpdate = update.try_into()?;
+        self.vault_call("submit_cap_group_update", (update,)).await
+    }
+
+    #[instrument(skip(self, update))]
+    pub async fn accept_cap_group_update(
+        &self,
+        update: CapGroupUpdateKey,
+    ) -> Result<(), ErrorWrapper> {
+        let key: templar_common::vault::CapGroupUpdateKey = update.into();
+        self.vault_call("accept_cap_group_update", (key,)).await
+    }
+
+    #[instrument(skip(self, update))]
+    pub async fn revoke_pending_cap_group_update(
+        &self,
+        update: CapGroupUpdateKey,
+    ) -> Result<(), ErrorWrapper> {
+        let key: templar_common::vault::CapGroupUpdateKey = update.into();
+        self.vault_call("revoke_pending_cap_group_update", (key,)).await
+    }
+
+    #[instrument(skip(self, restrictions))]
+    pub async fn set_restrictions(
+        &self,
+        restrictions: Option<Restrictions>,
+    ) -> Result<(), ErrorWrapper> {
+        let r: Option<templar_common::vault::Restrictions> = restrictions.map(Into::into);
+        self.vault_call("set_restrictions", (r,)).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn accept_restrictions(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("accept_restrictions", ()).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn revoke_pending_restrictions(&self) -> Result<(), ErrorWrapper> {
+        self.vault_call("revoke_pending_restrictions", ()).await
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn submit_market_removal(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("submit_market_removal", (self.near_id(market),))
+            .await
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn accept_market_removal(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
+        self.vault_call("accept_market_removal", (self.near_id(market),))
+            .await
+    }
+
+    #[instrument(skip(self, market))]
+    pub async fn revoke_pending_market_removal(
+        &self,
+        market: &AccountId,
+    ) -> Result<(), ErrorWrapper> {
+        self.vault_call(
+            "revoke_pending_market_removal",
+            (self.near_id(market),),
+        )
+        .await
+    }
+
+    #[instrument(skip(self, markets, deposit_yocto))]
+    pub async fn set_supply_queue(
+        &self,
+        markets: &[MarketId],
+        deposit_yocto: &ForeignU128,
+    ) -> Result<(), ErrorWrapper> {
+        let deposit = parse_u128(deposit_yocto)?;
+        let markets: Vec<templar_common::vault::MarketId> =
+            markets.iter().copied().map(Into::into).collect();
+        self.vault_call_with("set_supply_queue", (markets,), None, Some(deposit))
+            .await
+    }
+
+    #[instrument(skip(self, method_name))]
+    pub async fn abdicate(&self, method_name: String) -> Result<(), ErrorWrapper> {
+        self.vault_call("abdicate", (method_name,)).await
+    }
+}
+
 impl Client {
     #[instrument(skip(signer), fields(vault = %vault, timeout))]
     pub fn new(inner: JsonRpcClient, signer: Signer, vault: NearAccountId, timeout: u64) -> Self {
-        info!("Constructing Client");
         Self {
             inner,
             signer,
@@ -131,19 +1044,8 @@ impl Client {
         }
     }
 
-    /// Get access key data (nonce and block hash) for transaction signing.
-    ///
-    /// # Arguments
-    ///
-    /// * `client` - JSON-RPC client instance
-    /// * `signer` - Signer with the account and key to query
-    ///
-    /// # Returns
-    ///
-    /// Tuple of (nonce, block_hash) to use when constructing a transaction
     #[instrument(skip(self))]
     pub async fn get_access_key_data(&self) -> Result<(u64, CryptoHash)> {
-        info!("Querying access key data");
         let access_key_query_response = self
             .inner
             .call(RpcQueryRequest {
@@ -166,7 +1068,6 @@ impl Client {
         };
         let block_hash = access_key_query_response.block_hash;
 
-        debug!("Got access key data (nonce={})", nonce);
         Ok((nonce, block_hash))
     }
 
@@ -178,7 +1079,6 @@ impl Client {
         args: impl Serialize,
         timeout: u64,
     ) -> Result<T> {
-        info!("Starting view call");
         let response = tokio::time::timeout(
             Duration::from_secs(timeout),
             self.inner.call(RpcQueryRequest {
@@ -197,7 +1097,6 @@ impl Client {
         };
 
         let value = serde_json::from_slice(&result.result)?;
-        info!("View call succeeded");
         Ok(value)
     }
 
@@ -211,7 +1110,6 @@ impl Client {
         deposit: Option<u128>,
         timeout: u64,
     ) -> Result<FinalExecutionStatus> {
-        info!("Submitting call transaction");
         let (nonce, block_hash) = self.get_access_key_data().await?;
 
         let tx = Transaction::V0(TransactionV0 {
@@ -252,7 +1150,6 @@ impl Client {
                         return Err(e.into());
                     }
 
-                    // Poll with exponential backoff
                     let mut poll_interval = Duration::from_millis(500);
 
                     loop {
@@ -264,7 +1161,6 @@ impl Client {
                         tokio::time::sleep(poll_interval).await;
                         debug!("Polling transaction status...");
 
-                        // Exponential backoff up to MAX_POLL_INTERVAL
                         poll_interval = std::cmp::min(
                             poll_interval * 2,
                             Duration::from_millis(MAX_POLL_INTERVAL_MILLIS),
@@ -299,13 +1195,54 @@ impl Client {
         };
 
         let status = outcome.into_outcome().status;
-        info!("Transaction executed");
-        debug!("Final execution status: {:?}", status);
         if let FinalExecutionStatus::Failure(tx_err) = &status {
             bail!("Transaction failed: {:?}", tx_err);
         }
         Ok(status)
     }
+
+    #[inline]
+    fn near_id(&self, id: &AccountId) -> NearAccountId {
+        NearAccountId::from(id.clone())
+    }
+
+    async fn vault_view_u128(
+        &self,
+        method: &str,
+        args: impl Serialize,
+    ) -> Result<ForeignU128, ErrorWrapper> {
+        let u = self
+            .view::<U128>(&self.vault, method, args, self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)?;
+        Ok(u.0.to_string())
+    }
+
+    async fn vault_call_with(
+        &self,
+        method: &str,
+        args: impl Serialize,
+        gas: Option<Gas>,
+        deposit: Option<u128>,
+    ) -> Result<(), ErrorWrapper> {
+        self.call(&self.vault, method, args, gas, deposit, self.timeout)
+            .await
+            .map(|_| ())
+            .map_err(ErrorWrapper::from)
+    }
+
+    async fn vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper> {
+        self.vault_call_with(method, args, None, None).await
+    }
+}
+
+fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
+    if let Ok(v) = s.parse::<u128>() {
+        return Ok(v);
+    }
+
+    let inner: String = serde_json::from_str(s).map_err(ErrorWrapper::from)?;
+    inner.parse::<u128>().map_err(ErrorWrapper::from)
 }
 
 #[derive(uniffi::Error, Debug)]
@@ -327,703 +1264,21 @@ impl<T: Into<anyhow::Error>> From<T> for ErrorWrapper {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct AccountId(String);
-
-uniffi::custom_type!(AccountId, String);
-
-impl From<AccountId> for near_account_id::AccountId {
-    fn from(value: AccountId) -> Self {
-        near_account_id::AccountId::from_str(&value.0).expect("Invalid AccountId")
-    }
-}
-
-impl From<String> for AccountId {
-    fn from(value: String) -> Self {
-        AccountId(value)
-    }
-}
-
-impl From<AccountId> for String {
-    fn from(value: AccountId) -> Self {
-        value.0
-    }
-}
-
-type ForeignU128 = String;
-
-// TODO: records with From<libtype>
-
-#[uniffi::export]
-impl Client {
-    #[uniffi::constructor]
-    #[instrument(skip(signer_key, signer_account, vault), fields(rpc_url = %rpc_url, timeout))]
-    pub fn new_client(
-        rpc_url: String,
-        signer_account: &AccountId,
-        signer_key: &str,
-        vault: &AccountId,
-        timeout: u64,
-    ) -> Result<Self, ErrorWrapper> {
-        info!("Connecting JSON-RPC client");
-        let inner = JsonRpcClient::connect(rpc_url);
-
-        let signer = InMemorySigner::from_secret_key(
-            NearAccountId::from(signer_account.clone()),
-            SecretKey::from_str(signer_key).map_err(ErrorWrapper::from)?,
-        );
-
-        let vault: NearAccountId = NearAccountId::from(vault.clone());
-
-        info!("Client created for vault");
-        Ok(Self {
-            inner,
-            signer,
-            vault,
-            timeout,
-        })
-    }
-
-    // pub async fn get_configuration(&self) -> Result<VaultConfiguration> {
-    //     todo!()
-    // }
-
-    #[instrument(skip(self))]
-    pub async fn get_total_assets(&self) -> Result<ForeignU128, ErrorWrapper> {
-        info!("Fetching total assets");
-        let res = self
-            .view::<U128>(&self.vault, "get_total_assets", (), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Fetched total assets");
-        Ok(res)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn get_idle_balance(&self) -> Result<ForeignU128, ErrorWrapper> {
-        info!("Fetching idle balance");
-        let res = self
-            .view::<U128>(&self.vault, "get_idle_balance", (), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Fetched idle balance");
-        Ok(res)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn get_total_supply(&self) -> Result<ForeignU128, ErrorWrapper> {
-        info!("Fetching total supply");
-        let res = self
-            .view::<U128>(&self.vault, "get_total_supply", (), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Fetched total supply");
-        Ok(res)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn get_max_deposit(&self) -> Result<ForeignU128, ErrorWrapper> {
-        info!("Fetching max deposit");
-        let res = self
-            .view::<U128>(&self.vault, "get_max_deposit", (), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Fetched max deposit");
-        Ok(res)
-    }
-
-    #[instrument(skip(self, assets))]
-    pub async fn convert_to_shares(
-        &self,
-        assets: &ForeignU128,
-    ) -> Result<ForeignU128, ErrorWrapper> {
-        let assets: U128 = serde_json::from_str(assets).map_err(ErrorWrapper::from)?;
-        info!("Converting assets to shares");
-        let res = self
-            .view::<U128>(&self.vault, "convert_to_shares", (assets,), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Converted assets to shares");
-        Ok(res)
-    }
-
-    #[instrument(skip(self, shares))]
-    pub async fn convert_to_assets(
-        &self,
-        shares: &ForeignU128,
-    ) -> Result<ForeignU128, ErrorWrapper> {
-        let shares: U128 = serde_json::from_str(shares).map_err(ErrorWrapper::from)?;
-        info!("Converting shares to assets");
-        let res = self
-            .view::<U128>(&self.vault, "convert_to_assets", (shares,), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Converted shares to assets");
-        Ok(res)
-    }
-
-    #[instrument(skip(self, assets))]
-    pub async fn preview_deposit(&self, assets: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
-        let assets: U128 = serde_json::from_str(assets).map_err(ErrorWrapper::from)?;
-        info!("Previewing deposit");
-        let res = self
-            .view::<U128>(&self.vault, "preview_deposit", (assets,), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Preview deposit completed");
-        Ok(res)
-    }
-
-    #[instrument(skip(self, shares))]
-    pub async fn preview_mint(&self, shares: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
-        let shares: U128 = serde_json::from_str(shares).map_err(ErrorWrapper::from)?;
-        info!("Previewing mint");
-        let res = self
-            .view::<U128>(&self.vault, "preview_mint", (shares,), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Preview mint completed");
-        Ok(res)
-    }
-
-    #[instrument(skip(self, shares))]
-    pub async fn preview_withdraw(
-        &self,
-        shares: &ForeignU128,
-    ) -> Result<ForeignU128, ErrorWrapper> {
-        let shares: U128 = serde_json::from_str(shares).map_err(ErrorWrapper::from)?;
-        info!("Previewing withdraw");
-        let res = self
-            .view::<U128>(&self.vault, "preview_withdraw", (shares,), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Preview withdraw completed");
-        Ok(res)
-    }
-
-    #[instrument(skip(self, shares))]
-    pub async fn preview_redeem(&self, shares: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
-        let shares: U128 = serde_json::from_str(shares).map_err(ErrorWrapper::from)?;
-        info!("Previewing redeem");
-        let res = self
-            .view::<U128>(&self.vault, "preview_redeem", (shares,), self.timeout)
-            .await
-            .and_then(|u| serde_json::to_string(&u).map_err(Into::into))
-            .map_err(ErrorWrapper::from)?;
-        info!("Preview redeem completed");
-        Ok(res)
-    }
-
-    #[instrument(skip(self, shares, receiver))]
-    pub async fn redeem(
-        &self,
-        shares: &ForeignU128,
-        receiver: &AccountId,
-    ) -> Result<(), ErrorWrapper> {
-        let shares: U128 = serde_json::from_str(shares).map_err(ErrorWrapper::from)?;
-        info!("Redeeming shares");
-        self.call(
-            &self.vault,
-            "redeem",
-            (shares, NearAccountId::from(receiver.clone())),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Redeem call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
-        info!("Reallocating shares");
-        let delta = templar_common::vault::AllocationDelta::from(delta.to_owned());
-        self.call(
-            &self.vault,
-            "reallocate",
-            (delta,),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Reallocate call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, route))]
-    pub async fn execute_withdrawal(&self, route: &[AccountId]) -> Result<(), ErrorWrapper> {
-        let route: Vec<NearAccountId> = route
-            .iter()
-            .cloned()
-            .map(|id| NearAccountId::from(id))
-            .collect();
-        info!("Executing withdrawal with route length {}", route.len());
-
-        self.call(
-            &self.vault,
-            "execute_withdrawal",
-            (route,),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Execute withdrawal call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, batch_limit))]
-    pub async fn execute_market_withdrawal(
-        &self,
-        op_id: &u64,
-        market_index: &u32,
-        batch_limit: Option<u32>,
-    ) -> Result<(), ErrorWrapper> {
-        info!(
-            "Executing market withdrawal op_id={} market_index={} batch_limit={:?}",
-            op_id, market_index, batch_limit
-        );
-        self.call(
-            &self.vault,
-            "execute_market_withdrawal",
-            (op_id.to_string(), market_index, batch_limit),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Execute market withdrawal call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn get_withdrawing_op_id(&self) -> Result<u64, ErrorWrapper> {
-        info!("Fetching withdrawing op id");
-        let res = self
-            .view(&self.vault, "get_withdrawing_op_id", (), self.timeout)
-            .await
-            .map_err(ErrorWrapper::from)?;
-        info!("Withdrawing op id fetched: {}", res);
-        Ok(res)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn has_pending_market_withdrawal(&self) -> Result<bool, ErrorWrapper> {
-        info!("Checking pending market withdrawal");
-        let res = self
-            .view(
-                &self.vault,
-                "has_pending_market_withdrawal",
-                (),
-                self.timeout,
-            )
-            .await
-            .map_err(ErrorWrapper::from)?;
-        info!("Pending market withdrawal: {}", res);
-        Ok(res)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn get_current_withdraw_request_id(&self) -> Result<u64, ErrorWrapper> {
-        info!("Fetching current withdraw request id");
-        let res = self
-            .view(
-                &self.vault,
-                "get_current_withdraw_request_id",
-                (),
-                self.timeout,
-            )
-            .await
-            .map_err(ErrorWrapper::from)?;
-        info!("Current withdraw request id: {}", res);
-        Ok(res)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn cancel_in_flight_withdrawal(&self) -> Result<(), ErrorWrapper> {
-        info!("Cancelling inflight withdrawal");
-        self.call(
-            &self.vault,
-            "cancel_inflight_withdrawal",
-            (),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Cancel inflight withdrawal call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, token))]
-    pub async fn skim(&self, token: &AccountId) -> Result<(), ErrorWrapper> {
-        info!("Skimming token");
-        self.call(
-            &self.vault,
-            "skim",
-            &NearAccountId::from(token.clone()),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Skim call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, account))]
-    pub async fn set_curator(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
-        info!("Setting curator");
-        self.call(
-            &self.vault,
-            "set_curator",
-            &NearAccountId::from(account.clone()),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Set curator call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, account))]
-    pub async fn set_is_allocator(
-        &self,
-        account: &AccountId,
-        allowed: bool,
-    ) -> Result<(), ErrorWrapper> {
-        info!("Setting allocator role");
-        self.call(
-            &self.vault,
-            "set_is_allocator",
-            (NearAccountId::from(account.clone()), allowed),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Allocator role call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, new_g))]
-    pub async fn submit_guardian(&self, new_g: &AccountId) -> Result<(), ErrorWrapper> {
-        info!("Submitting guardian");
-        self.call(
-            &self.vault,
-            "submit_guardian",
-            &NearAccountId::from(new_g.clone()),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Submit guardian call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn accept_guardian(&self) -> Result<(), ErrorWrapper> {
-        info!("Accepting guardian");
-        self.call(&self.vault, "accept_guardian", (), None, None, self.timeout)
-            .await
-            .map_err(ErrorWrapper::from)?;
-        info!("Accept guardian call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn revoke_pending_guardian(&self) -> Result<(), ErrorWrapper> {
-        info!("Revoking pending guardian");
-        self.call(
-            &self.vault,
-            "revoke_pending_guardian",
-            (),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Revoke pending guardian call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, account))]
-    pub async fn set_skim_recipient(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
-        info!("Setting skim recipient");
-        self.call(
-            &self.vault,
-            "set_skim_recipient",
-            &NearAccountId::from(account.clone()),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Set skim recipient call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, account, deposit_yocto))]
-    pub async fn set_fee_recipient(
-        &self,
-        account: &AccountId,
-        deposit_yocto: &ForeignU128,
-    ) -> Result<(), ErrorWrapper> {
-        let deposit: u128 = deposit_yocto.parse().map_err(ErrorWrapper::from)?;
-        info!("Setting fee recipient");
-        self.call(
-            &self.vault,
-            "set_fee_recipient",
-            &NearAccountId::from(account.clone()),
-            None,
-            Some(deposit),
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Set fee recipient call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, fee))]
-    pub async fn set_performance_fee(&self, fee: &ForeignU128) -> Result<(), ErrorWrapper> {
-        let fee: U128 = serde_json::from_str(fee).map_err(ErrorWrapper::from)?;
-        info!("Setting performance fee");
-        self.call(
-            &self.vault,
-            "set_performance_fee",
-            (fee,),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Set performance fee call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn submit_timelock(&self, new_timelock_ns: u64) -> Result<(), ErrorWrapper> {
-        info!("Submitting timelock");
-        self.call(
-            &self.vault,
-            "submit_timelock",
-            (U64::from(new_timelock_ns),),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Submit timelock call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn accept_timelock(&self) -> Result<(), ErrorWrapper> {
-        info!("Accepting timelock");
-        self.call(&self.vault, "accept_timelock", (), None, None, self.timeout)
-            .await
-            .map_err(ErrorWrapper::from)?;
-        info!("Accept timelock call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn revoke_pending_timelock(&self) -> Result<(), ErrorWrapper> {
-        info!("Revoking pending timelock");
-        self.call(
-            &self.vault,
-            "revoke_pending_timelock",
-            (),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Revoke pending timelock call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn submit_cap(
-        &self,
-        market: &AccountId,
-        new_cap: &ForeignU128,
-    ) -> Result<(), ErrorWrapper> {
-        let new_cap: U128 = serde_json::from_str(new_cap).map_err(ErrorWrapper::from)?;
-        info!("Submitting cap change");
-        self.call(
-            &self.vault,
-            "submit_cap",
-            (NearAccountId::from(market.clone()), new_cap),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Submit cap call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn accept_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        info!("Accepting cap change");
-        self.call(
-            &self.vault,
-            "accept_cap",
-            (NearAccountId::from(market.clone()),),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Accept cap call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, market))]
-    pub async fn revoke_pending_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        info!("Revoking pending cap");
-        self.call(
-            &self.vault,
-            "revoke_pending_cap",
-            (NearAccountId::from(market.clone()),),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Revoke pending cap call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, market))]
-    pub async fn submit_market_removal(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        info!("Submitting market removal");
-        self.call(
-            &self.vault,
-            "submit_market_removal",
-            (NearAccountId::from(market.clone()),),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Submit market removal call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, market))]
-    pub async fn revoke_pending_market_removal(
-        &self,
-        market: &AccountId,
-    ) -> Result<(), ErrorWrapper> {
-        info!("Revoking pending market removal");
-        self.call(
-            &self.vault,
-            "revoke_pending_market_removal",
-            (NearAccountId::from(market.clone()),),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Revoke pending market removal call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, markets, deposit_yocto))]
-    pub async fn set_supply_queue(
-        &self,
-        markets: &[AccountId],
-        deposit_yocto: &ForeignU128,
-    ) -> Result<(), ErrorWrapper> {
-        let deposit: u128 = deposit_yocto.parse().map_err(ErrorWrapper::from)?;
-        let markets: Vec<NearAccountId> =
-            markets.iter().cloned().map(NearAccountId::from).collect();
-        info!("Setting supply queue, len={}", markets.len());
-        self.call(
-            &self.vault,
-            "set_supply_queue",
-            (markets,),
-            None,
-            Some(deposit),
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Set supply queue call submitted");
-        Ok(())
-    }
-
-    #[instrument(skip(self, queue))]
-    pub async fn set_withdraw_queue(&self, queue: &[AccountId]) -> Result<(), ErrorWrapper> {
-        let queue: Vec<NearAccountId> = queue.iter().cloned().map(NearAccountId::from).collect();
-        info!("Setting withdraw queue, len={}", queue.len());
-        self.call(
-            &self.vault,
-            "set_withdraw_queue",
-            (queue,),
-            None,
-            None,
-            self.timeout,
-        )
-        .await
-        .map_err(ErrorWrapper::from)?;
-        info!("Set withdraw queue call submitted");
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::u128;
-
     use super::*;
-    use near_crypto::{KeyType, SecretKey};
-    use near_sdk::NearToken;
+    use near_crypto::KeyType;
     use rstest::{fixture, rstest};
 
     #[fixture]
     fn vault() -> AccountId {
-        tracing_subscriber::fmt::init();
+        let _ = tracing_subscriber::fmt::try_init();
         AccountId("metavault.topgunbakugo.testnet".to_string())
     }
 
     #[fixture]
     fn everything() -> AccountId {
+        AccountId("topgunbakugo.testnet".to_string())
     }
 
     #[fixture]
@@ -1033,6 +1288,7 @@ mod tests {
 
     #[fixture]
     fn sk() -> SecretKey {
+        SecretKey::from_random(KeyType::ED25519)
     }
 
     #[rstest]
@@ -1064,23 +1320,46 @@ mod tests {
             .expect("Client should be created");
     }
 
-    // The following async tests exercise the happy-path surfaces but are ignored by default
-    // because they require a running NEAR RPC endpoint and appropriate accounts/contracts.
+    #[test]
+    fn parse_u128_accepts_plain_and_json_string() {
+        assert_eq!(super::parse_u128("123").unwrap(), 123);
+        assert_eq!(super::parse_u128("\"456\"").unwrap(), 456);
+    }
+
+    #[test]
+    fn delta_roundtrip() {
+        let d = Delta {
+            market: MarketId(7),
+            amount: "100".to_string(),
+        };
+
+        let common: templar_common::vault::Delta = d.clone().try_into().unwrap();
+        assert_eq!(common.market.0, 7);
+        assert_eq!(common.amount.0, 100);
+
+        let back: Delta = common.into();
+        assert_eq!(back.market.0, 7);
+        assert_eq!(back.amount, "100");
+    }
+
     #[rstest]
     #[tokio::test(flavor = "current_thread")]
+    #[ignore]
     async fn view_methods_happy_path_smoke(vault: AccountId, testnet_rpc: String) {
         let sk = SecretKey::from_random(KeyType::ED25519);
         let signer_account = AccountId("alice.testnet".to_string());
         let client = Client::new_client(testnet_rpc, &signer_account, &sk.to_string(), &vault, 5)
             .expect("Client should be created");
-        println!("Total Assets: {}", client.get_total_assets().await.unwrap());
-        println!("Total Supply: {}", client.get_total_supply().await.unwrap());
-        println!("Idle Balance: {}", client.get_idle_balance().await.unwrap());
-        println!("Max Deposit: {}", client.get_max_deposit().await.unwrap());
+
+        let _ = client.get_total_assets().await.unwrap();
+        let _ = client.get_total_supply().await.unwrap();
+        let _ = client.get_idle_balance().await.unwrap();
+        let _ = client.get_max_deposit().await.unwrap();
     }
 
     #[rstest]
     #[tokio::test(flavor = "current_thread")]
+    #[ignore]
     async fn redeem_happy_path_smoke(
         vault: AccountId,
         everything: AccountId,
@@ -1090,180 +1369,9 @@ mod tests {
         let client =
             Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
         let receiver = AccountId("topgunbakugo.testnet".to_string());
-        client.redeem(&"1".to_string(), &receiver).await.unwrap();
-    }
-
-    #[rstest]
-    #[tokio::test(flavor = "current_thread")]
-    async fn execute_withdrawal_happy_path_smoke(
-        vault: AccountId,
-        everything: AccountId,
-        testnet_rpc: String,
-        sk: SecretKey,
-    ) {
-        let client =
-            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
-        let route = vec![
-            AccountId("market1.testnet".to_string()),
-            AccountId("vault.testnet".to_string()),
-        ];
-        client.cancel_in_flight_withdrawal().await.unwrap();
-        println!(
-            "{:?}",
-            client
-                .execute_withdrawal(&route, Some(100.to_string()))
-                .await
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn governance_u128_serialization_happy_path() {
-        let input = "\"12345\"".to_string();
-        let u: U128 = serde_json::from_str(&input).unwrap();
-        assert_eq!(u.0, 12345);
-    }
-
-    #[test]
-    fn governance_u64_wrapper_happy_path() {
-        let u = near_sdk::json_types::U64::from(42u64);
-        assert_eq!(u.0, 42u64);
-    }
-
-    #[test]
-    fn deposit_string_parse_happy_path() {
-        let s = "1000000".to_string();
-        let v: u128 = s.parse().unwrap();
-        assert_eq!(v, 1_000_000u128);
-    }
-
-    // The following async tests are ignored by default as they require network and permissions.
-    #[rstest]
-    #[tokio::test(flavor = "current_thread")]
-    async fn governance_smoke_calls_ignored(
-        vault: AccountId,
-        everything: AccountId,
-        testnet_rpc: String,
-        sk: SecretKey,
-    ) {
-        let client =
-            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
-
-        println!("{:?}", client.accept_guardian().await.unwrap());
-        println!("{:?}", client.revoke_pending_guardian().await.unwrap());
-
-        println!("{:?}", client.submit_timelock(0).await.unwrap());
-        println!("{:?}", client.accept_timelock().await.unwrap());
-        println!("{:?}", client.revoke_pending_timelock().await.unwrap());
-    }
-
-    #[rstest]
-    #[tokio::test(flavor = "current_thread")]
-    async fn governance_set_supply_queue_ignored(
-        vault: AccountId,
-        everything: AccountId,
-        testnet_rpc: String,
-        sk: SecretKey,
-    ) {
-        let client =
-            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
-        let markets: Vec<AccountId> = vec!["gh-65.templar-in-training.testnet".to_string().into()];
-
-        let x = serde_json::to_string_pretty(&U128(u128::MAX)).unwrap();
-        println!("{:?}", x);
-        println!(
-            "{:?}",
-            client
-                .set_supply_queue(&markets, &"0".to_string())
-                .await
-                .unwrap()
-        );
-    }
-
-    #[rstest]
-    #[tokio::test(flavor = "current_thread")]
-    async fn full_happy(
-        vault: AccountId,
-        everything: AccountId,
-        testnet_rpc: String,
-        sk: SecretKey,
-    ) {
-        let client =
-            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
-        let markets: Vec<AccountId> = vec!["usdt.registry.topgunbakugo.testnet".to_string().into()];
-
-        let mkt = &markets[0];
-        println!("market: {:?}", mkt);
-
         client
-            .submit_cap(
-                mkt,
-                &serde_json::to_string_pretty(&U128(u128::MAX)).unwrap(),
-            )
+            .redeem(&"1".to_string(), &receiver, &"1".to_string())
             .await
             .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        client.accept_cap(mkt).await.unwrap();
-
-        let deposit = NearToken::from_near(1).as_yoctonear();
-
-        println!("deposit: {:?}", deposit);
-
-        println!(
-            "{:?}",
-            client
-                .set_supply_queue(&markets, &deposit.to_string())
-                .await
-                .unwrap()
-        );
-
-        let delta = AllocationDelta::Supply(Delta {
-            market: mkt.clone(),
-            amount: 100.to_string(),
-        });
-        println!("{:?}", delta);
-        println!("{:?}", client.reallocate(&delta).await.unwrap());
-    }
-
-    #[rstest]
-    #[tokio::test(flavor = "current_thread")]
-    async fn reallocate(
-        vault: AccountId,
-        everything: AccountId,
-        testnet_rpc: String,
-        sk: SecretKey,
-    ) {
-        let client =
-            Client::new_client(testnet_rpc, &everything, &sk.to_string(), &vault, 5).unwrap();
-        let markets: Vec<AccountId> = vec!["usdt.registry.topgunbakugo.testnet".to_string().into()];
-
-        let mkt = &markets[0];
-        println!("market: {:?}", mkt);
-
-        let delta = AllocationDelta::Supply(Delta {
-            market: mkt.clone(),
-            amount: 100.to_string(),
-        });
-        println!("{:?}", delta);
-        println!("{:?}", client.reallocate(&delta).await.unwrap());
-
-        let delta = AllocationDelta::Withdraw(Delta {
-            market: mkt.clone(),
-            amount: 100.to_string(),
-        });
-        println!("{:?}", delta);
-        println!("{:?}", client.reallocate(&delta).await.unwrap());
-
-        // let (op_id, market_index) = client
-        //     .execute_withdrawal(&vec![mkt.clone()], Some(100.to_string()))
-        //     .await
-        //     .unwrap();
-
-        // client
-        //     .execute_market_withdrawal(&op_id, &market_index, None)
-        //     .await
-        //     .unwrap();
     }
 }
