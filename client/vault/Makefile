@@ -34,6 +34,7 @@ gen:
 python: $(PY_OUT)
 	cargo build -p $(CRATE) $(CARGO_BUILD_FLAGS)
 	$(UNIFFI_BINDGEN) generate --language python --library "$(DYLIB)" --out-dir "$(PY_OUT)" --no-format
+	cp "$(DYLIB)" "$(PY_OUT)/"
 
 $(PY_OUT):
 	mkdir -p "$(PY_OUT)"
