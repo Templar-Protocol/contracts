@@ -14,7 +14,7 @@ name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
 [dependencies]
-uniffi = { version = "*", features = ["cli"] }
+uniffi = { version = "*", features = ["cli", "tokio"] }
 templar-common.workspace = true
 near-jsonrpc-client.workspace = true
 near-crypto.workspace = true
@@ -36,6 +36,7 @@ near-sdk = { version = "5.17.2", features = ["unstable", "non-contract-usage"] }
 [build-dependencies]
 uniffi = { version = "*", features = [
     "build",
+    "tokio",
     "wasm-unstable-single-threaded",
 ] }
 
