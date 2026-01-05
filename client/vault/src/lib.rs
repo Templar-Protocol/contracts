@@ -2,10 +2,12 @@ use std::{
     collections::BTreeSet,
     fmt::Display,
     str::FromStr,
+    sync::{Mutex, RwLock},
     time::{Duration, Instant},
 };
 
 use anyhow::{bail, Result};
+use mini_moka::sync::Cache as MokaCache;
 use near_account_id::AccountId as NearAccountId;
 use near_crypto::{InMemorySigner, SecretKey, Signer};
 use near_jsonrpc_client::{
@@ -31,7 +33,26 @@ use tracing::{debug, instrument, warn};
 uniffi::setup_scaffolding!();
 
 type ForeignU128 = String;
-type ForeignJson = String;
+
+#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+impl RetryConfig {
+    fn normalized(self) -> Self {
+        let max_attempts = self.max_attempts.max(1);
+        let initial_backoff_ms = self.initial_backoff_ms.max(1);
+        let max_backoff_ms = self.max_backoff_ms.max(initial_backoff_ms);
+        Self {
+            max_attempts,
+            initial_backoff_ms,
+            max_backoff_ms,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AccountId(String);
@@ -196,6 +217,60 @@ pub struct Fee {
     pub recipient: AccountId,
 }
 
+#[derive(Default)]
+struct FeeBuilderState {
+    fee: Option<ForeignU128>,
+    recipient: Option<AccountId>,
+}
+
+#[derive(uniffi::Object, Default)]
+pub struct FeeBuilder {
+    state: Mutex<FeeBuilderState>,
+}
+
+#[uniffi::export]
+impl FeeBuilder {
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_fee(&self, fee: ForeignU128) -> Result<(), ErrorWrapper> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        state.fee = Some(fee);
+        Ok(())
+    }
+
+    pub fn set_recipient(&self, recipient: AccountId) -> Result<(), ErrorWrapper> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        state.recipient = Some(recipient);
+        Ok(())
+    }
+
+    pub fn build(&self) -> Result<Fee, ErrorWrapper> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+
+        let Some(fee) = state.fee.clone() else {
+            return Err(ErrorWrapper::Wrapped("missing fee".to_string()));
+        };
+
+        let Some(recipient) = state.recipient.clone() else {
+            return Err(ErrorWrapper::Wrapped("missing recipient".to_string()));
+        };
+
+        Ok(Fee { fee, recipient })
+    }
+}
+
 impl From<templar_common::vault::Fee<U128>> for Fee {
     fn from(value: templar_common::vault::Fee<U128>) -> Self {
         Fee {
@@ -354,6 +429,8 @@ impl FeesBuilder {
         })
     }
 }
+
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum Restrictions {
     Paused,
     BlackList(Vec<AccountId>),
@@ -524,8 +601,291 @@ impl From<templar_common::vault::RealAssetsReport> for RealAssetsReport {
     }
 }
 
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct CapGroup {
+    pub id: CapGroupId,
+    pub cap: ForeignU128,
+    pub relative_cap: ForeignU128,
+    pub principal: ForeignU128,
+}
+
+#[derive(uniffi::Enum, Debug, Clone)]
+pub enum TimelockedAction {
+    GuardianChange { account: AccountId },
+    SentinelChange { account: AccountId },
+    TimelockConfigChange { kind: Option<TimelockKind>, new_timelock_ns: u64 },
+    FeesChange { fees: Fees },
+    RestrictionsChange { restrictions: Option<Restrictions> },
+    CapChange { market: AccountId, new_cap: ForeignU128 },
+    CapGroupChange { cap_group: CapGroupId, new_cap: ForeignU128 },
+    CapGroupRelativeCapChange { cap_group: CapGroupId, new_relative_cap: ForeignU128 },
+    CapGroupMembership { market: MarketId, cap_group: Option<CapGroupId> },
+    MarketRemoval { market: AccountId },
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct PendingGovernanceAction {
+    pub action: TimelockedAction,
+    pub valid_at_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+enum TimelockKindSerde {
+    Guardian,
+    Sentinel,
+    Config,
+    Cap,
+    MarketRemoval,
+}
+
+impl From<TimelockKindSerde> for TimelockKind {
+    fn from(value: TimelockKindSerde) -> Self {
+        match value {
+            TimelockKindSerde::Guardian => TimelockKind::Guardian,
+            TimelockKindSerde::Sentinel => TimelockKind::Sentinel,
+            TimelockKindSerde::Config => TimelockKind::Config,
+            TimelockKindSerde::Cap => TimelockKind::Cap,
+            TimelockKindSerde::MarketRemoval => TimelockKind::MarketRemoval,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+enum TimelockedActionSerde {
+    GuardianChange { account: String },
+    SentinelChange { account: String },
+    TimelockConfigChange {
+        kind: Option<TimelockKindSerde>,
+        new_timelock_ns: U64,
+    },
+    FeesChange {
+        fees: templar_common::vault::Fees<U128>,
+    },
+    RestrictionsChange {
+        restrictions: Option<templar_common::vault::Restrictions>,
+    },
+    CapChange {
+        market: String,
+        new_cap: U128,
+    },
+    CapGroupChange {
+        cap_group: templar_common::vault::CapGroupId,
+        new_cap: U128,
+    },
+    CapGroupRelativeCapChange {
+        cap_group: templar_common::vault::CapGroupId,
+        new_relative_cap: U128,
+    },
+    CapGroupMembership {
+        market: templar_common::vault::MarketId,
+        cap_group: Option<templar_common::vault::CapGroupId>,
+    },
+    MarketRemoval { market: String },
+}
+
+impl From<TimelockedActionSerde> for TimelockedAction {
+    fn from(value: TimelockedActionSerde) -> Self {
+        match value {
+            TimelockedActionSerde::GuardianChange { account } => TimelockedAction::GuardianChange {
+                account: account.into(),
+            },
+            TimelockedActionSerde::SentinelChange { account } => TimelockedAction::SentinelChange {
+                account: account.into(),
+            },
+            TimelockedActionSerde::TimelockConfigChange {
+                kind,
+                new_timelock_ns,
+            } => TimelockedAction::TimelockConfigChange {
+                kind: kind.map(Into::into),
+                new_timelock_ns: new_timelock_ns.0,
+            },
+            TimelockedActionSerde::FeesChange { fees } => {
+                TimelockedAction::FeesChange { fees: fees.into() }
+            }
+            TimelockedActionSerde::RestrictionsChange { restrictions } => {
+                TimelockedAction::RestrictionsChange {
+                    restrictions: restrictions.map(Into::into),
+                }
+            }
+            TimelockedActionSerde::CapChange { market, new_cap } => TimelockedAction::CapChange {
+                market: market.into(),
+                new_cap: new_cap.0.to_string(),
+            },
+            TimelockedActionSerde::CapGroupChange { cap_group, new_cap } => {
+                TimelockedAction::CapGroupChange {
+                    cap_group: cap_group.into(),
+                    new_cap: new_cap.0.to_string(),
+                }
+            }
+            TimelockedActionSerde::CapGroupRelativeCapChange {
+                cap_group,
+                new_relative_cap,
+            } => TimelockedAction::CapGroupRelativeCapChange {
+                cap_group: cap_group.into(),
+                new_relative_cap: new_relative_cap.0.to_string(),
+            },
+            TimelockedActionSerde::CapGroupMembership { market, cap_group } => {
+                TimelockedAction::CapGroupMembership {
+                    market: market.into(),
+                    cap_group: cap_group.map(Into::into),
+                }
+            }
+            TimelockedActionSerde::MarketRemoval { market } => {
+                TimelockedAction::MarketRemoval {
+                    market: market.into(),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+struct PendingValueSerde {
+    value: TimelockedActionSerde,
+    valid_at_ns: u64,
+}
+
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum UnderlyingToken {
+    Nep141 { contract_id: AccountId },
+    Nep245 { contract_id: AccountId, token_id: String },
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct FeeWad {
+    pub fee_wad: ForeignU128,
+    pub recipient: AccountId,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct FeesWad {
+    pub performance: FeeWad,
+    pub management: FeeWad,
+    pub max_total_assets_growth_rate_wad: Option<ForeignU128>,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct VaultConfiguration {
+    pub owner: AccountId,
+    pub curator: AccountId,
+    pub guardian: AccountId,
+    pub sentinel: AccountId,
+    pub underlying_token: UnderlyingToken,
+    pub initial_timelock_ns: u64,
+    pub fees: FeesWad,
+    pub skim_recipient: AccountId,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub restrictions: Option<Restrictions>,
+    pub refresh_cooldown_ns: Option<u64>,
+}
+
+impl From<templar_common::vault::Fee<templar_common::vault::wad::Wad>> for FeeWad {
+    fn from(value: templar_common::vault::Fee<templar_common::vault::wad::Wad>) -> Self {
+        FeeWad {
+            fee_wad: u128::from(value.fee).to_string(),
+            recipient: value.recipient.to_string().into(),
+        }
+    }
+}
+
+impl From<templar_common::vault::Fees<templar_common::vault::wad::Wad>> for FeesWad {
+    fn from(value: templar_common::vault::Fees<templar_common::vault::wad::Wad>) -> Self {
+        FeesWad {
+            performance: value.performance.into(),
+            management: value.management.into(),
+            max_total_assets_growth_rate_wad: value
+                .max_total_assets_growth_rate
+                .map(|r| u128::from(r).to_string()),
+        }
+    }
+}
+
+impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
+    fn from(value: templar_common::vault::VaultConfiguration) -> Self {
+        let underlying = value.underlying_token.clone();
+        let underlying_token = if let Some(contract_id) = underlying.clone().into_nep141() {
+            UnderlyingToken::Nep141 {
+                contract_id: contract_id.to_string().into(),
+            }
+        } else if let Some((contract_id, token_id)) = underlying.into_nep245() {
+            UnderlyingToken::Nep245 {
+                contract_id: contract_id.to_string().into(),
+                token_id,
+            }
+        } else {
+            UnderlyingToken::Nep141 {
+                contract_id: value.underlying_token.contract_id().to_string().into(),
+            }
+        };
+
+        VaultConfiguration {
+            owner: value.owner.to_string().into(),
+            curator: value.curator.to_string().into(),
+            guardian: value.guardian.to_string().into(),
+            sentinel: value.sentinel.to_string().into(),
+            underlying_token,
+            initial_timelock_ns: value.initial_timelock_ns.0,
+            fees: value.fees.into(),
+            skim_recipient: value.skim_recipient.to_string().into(),
+            name: value.name,
+            symbol: value.symbol,
+            decimals: value.decimals.get(),
+            restrictions: value.restrictions.map(Into::into),
+            refresh_cooldown_ns: value.refresh_cooldown_ns.map(|u| u.0),
+        }
+    }
+}
+
+impl From<(templar_common::vault::CapGroupId, templar_common::vault::CapGroupRecord)> for CapGroup {
+    fn from(value: (templar_common::vault::CapGroupId, templar_common::vault::CapGroupRecord)) -> Self {
+        let (id, rec) = value;
+        CapGroup {
+            id: id.into(),
+            cap: rec.cap.0.to_string(),
+            relative_cap: u128::from(rec.relative_cap).to_string(),
+            principal: rec.principal.to_string(),
+        }
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct VaultSnapshot {
+    pub configuration: VaultConfiguration,
+    pub total_assets: ForeignU128,
+    pub last_total_assets: ForeignU128,
+    pub idle_balance: ForeignU128,
+    pub total_supply: ForeignU128,
+    pub max_deposit: ForeignU128,
+    pub max_single_market_deposit: ForeignU128,
+    pub fee_anchor: FeeAccrualAnchor,
+    pub fees: Fees,
+    pub restrictions: Option<Restrictions>,
+    pub cap_groups: Vec<CapGroup>,
+    pub pending_governance_actions: Vec<PendingGovernanceAction>,
+    pub withdrawing_op_id: Option<u64>,
+    pub has_pending_market_withdrawal: bool,
+    pub current_withdraw_request_id: Option<u64>,
+    pub queue_tail: u64,
+    pub next_pending_withdrawal_id: Option<u64>,
+    pub markets_with_ids: Vec<MarketWithId>,
+}
+
 pub const DEFAULT_GAS: Gas = 300_000_000_000_000;
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct ViewCacheKey {
+    account_id: String,
+    method: String,
+    args: Vec<u8>,
+}
+
+type ViewCache = MokaCache<ViewCacheKey, Vec<u8>>;
 
 #[derive(uniffi::Object)]
 pub struct Client {
@@ -533,6 +893,8 @@ pub struct Client {
     signer: Signer,
     pub vault: NearAccountId,
     timeout: u64,
+    retry: Option<RetryConfig>,
+    view_cache: RwLock<Option<ViewCache>>,
 }
 
 #[uniffi::export]
@@ -560,11 +922,71 @@ impl Client {
             signer,
             vault,
             timeout,
+            retry: None,
+            view_cache: RwLock::new(None),
         })
     }
 
+    #[uniffi::constructor]
+    #[instrument(skip(signer_key, signer_account, vault), fields(rpc_url = %rpc_url, timeout))]
+    pub fn new_client_with_retry(
+        rpc_url: String,
+        signer_account: &AccountId,
+        signer_key: &str,
+        vault: &AccountId,
+        timeout: u64,
+        retry: RetryConfig,
+    ) -> Result<Self, ErrorWrapper> {
+        let inner = JsonRpcClient::connect(rpc_url);
+
+        let signer = InMemorySigner::from_secret_key(
+            NearAccountId::from(signer_account.clone()),
+            SecretKey::from_str(signer_key).map_err(ErrorWrapper::from)?,
+        );
+
+        let vault: NearAccountId = NearAccountId::from(vault.clone());
+
+        Ok(Self {
+            inner,
+            signer,
+            vault,
+            timeout,
+            retry: Some(retry.normalized()),
+            view_cache: RwLock::new(None),
+        })
+    }
+
+    pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) {
+        if capacity == 0 {
+            let mut w = self.view_cache.write().unwrap();
+            *w = None;
+            return;
+        }
+
+        let cache = ViewCache::builder()
+            .max_capacity(capacity as u64)
+            .time_to_live(Duration::from_secs(ttl_seconds))
+            .build();
+
+        let mut w = self.view_cache.write().unwrap();
+        *w = Some(cache);
+    }
+
+    pub fn disable_view_cache(&self) {
+        let mut w = self.view_cache.write().unwrap();
+        *w = None;
+    }
+
+    pub async fn clear_view_cache(&self) -> Result<(), ErrorWrapper> {
+        let cache = { self.view_cache.read().unwrap().clone() };
+        if let Some(cache) = cache {
+            cache.invalidate_all();
+        }
+        Ok(())
+    }
+
     #[instrument(skip(self))]
-    pub async fn get_configuration(&self) -> Result<ForeignJson, ErrorWrapper> {
+    pub async fn get_configuration(&self) -> Result<VaultConfiguration, ErrorWrapper> {
         let cfg = self
             .view::<templar_common::vault::VaultConfiguration>(
                 &self.vault,
@@ -574,7 +996,7 @@ impl Client {
             )
             .await
             .map_err(ErrorWrapper::from)?;
-        serde_json::to_string(&cfg).map_err(ErrorWrapper::from)
+        Ok(cfg.into())
     }
 
     #[instrument(skip(self))]
@@ -645,18 +1067,34 @@ impl Client {
     }
 
     #[instrument(skip(self))]
-    pub async fn get_cap_groups_json(&self) -> Result<ForeignJson, ErrorWrapper> {
-        let v = self
-            .view::<serde_json::Value>(&self.vault, "get_cap_groups", (), self.timeout)
+    pub async fn get_cap_groups(&self) -> Result<Vec<CapGroup>, ErrorWrapper> {
+        let groups = self
+            .view::<Vec<(templar_common::vault::CapGroupId, templar_common::vault::CapGroupRecord)>>(
+                &self.vault,
+                "get_cap_groups",
+                (),
+                self.timeout,
+            )
             .await
             .map_err(ErrorWrapper::from)?;
-        Ok(v.to_string())
+
+        Ok(groups
+            .into_iter()
+            .map(|(id, rec)| CapGroup {
+                id: id.into(),
+                cap: rec.cap.0.to_string(),
+                relative_cap: u128::from(rec.relative_cap).to_string(),
+                principal: rec.principal.to_string(),
+            })
+            .collect())
     }
 
     #[instrument(skip(self))]
-    pub async fn get_pending_governance_actions_json(&self) -> Result<ForeignJson, ErrorWrapper> {
-        let v = self
-            .view::<serde_json::Value>(
+    pub async fn get_pending_governance_actions(
+        &self,
+    ) -> Result<Vec<PendingGovernanceAction>, ErrorWrapper> {
+        let pending = self
+            .view::<Vec<PendingValueSerde>>(
                 &self.vault,
                 "get_pending_governance_actions",
                 (),
@@ -664,7 +1102,14 @@ impl Client {
             )
             .await
             .map_err(ErrorWrapper::from)?;
-        Ok(v.to_string())
+
+        Ok(pending
+            .into_iter()
+            .map(|p| PendingGovernanceAction {
+                action: p.value.into(),
+                valid_at_ns: p.valid_at_ns,
+            })
+            .collect())
     }
 
     #[instrument(skip(self, assets))]
@@ -840,6 +1285,61 @@ impl Client {
         Ok(res.into())
     }
 
+    #[instrument(skip(self))]
+    pub async fn get_vault_snapshot(&self) -> Result<VaultSnapshot, ErrorWrapper> {
+        Ok(VaultSnapshot {
+            configuration: self.get_configuration().await?,
+            total_assets: self.get_total_assets().await?,
+            last_total_assets: self.get_last_total_assets().await?,
+            idle_balance: self.get_idle_balance().await?,
+            total_supply: self.get_total_supply().await?,
+            max_deposit: self.get_max_deposit().await?,
+            max_single_market_deposit: self.get_max_single_market_deposit().await?,
+            fee_anchor: self.get_fee_anchor().await?,
+            fees: self.get_fees().await?,
+            restrictions: self.get_restrictions().await?,
+            cap_groups: self.get_cap_groups().await?,
+            pending_governance_actions: self.get_pending_governance_actions().await?,
+            withdrawing_op_id: self.get_withdrawing_op_id().await?,
+            has_pending_market_withdrawal: self.has_pending_market_withdrawal().await?,
+            current_withdraw_request_id: self.get_current_withdraw_request_id().await?,
+            queue_tail: self.queue_tail().await?,
+            next_pending_withdrawal_id: self.peek_next_pending_withdrawal_id().await?,
+            markets_with_ids: self.list_markets_with_ids().await?,
+        })
+    }
+
+    #[instrument(skip(self, markets))]
+    pub async fn resolve_market_ids(
+        &self,
+        markets: &[AccountId],
+    ) -> Result<Vec<Option<MarketId>>, ErrorWrapper> {
+        let mut out = Vec::with_capacity(markets.len());
+        for market in markets {
+            out.push(self.get_market_id_of_account(market).await?);
+        }
+        Ok(out)
+    }
+
+    #[instrument(skip(self, market_ids))]
+    pub async fn resolve_market_accounts(
+        &self,
+        market_ids: &[MarketId],
+    ) -> Result<Vec<Option<AccountId>>, ErrorWrapper> {
+        let mut out = Vec::with_capacity(market_ids.len());
+        for id in market_ids {
+            out.push(self.get_market_account_by_id(*id).await?);
+        }
+        Ok(out)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn refresh_all_markets(&self) -> Result<RealAssetsReport, ErrorWrapper> {
+        let markets = self.list_markets_with_ids().await?;
+        let market_ids: Vec<MarketId> = markets.into_iter().map(|m| m.market_id).collect();
+        self.refresh_markets(&market_ids).await
+    }
+
     #[instrument(skip(self, shares, receiver, deposit_yocto))]
     pub async fn redeem(
         &self,
@@ -932,8 +1432,10 @@ impl Client {
     ) -> Result<RealAssetsReport, ErrorWrapper> {
         let markets: Vec<templar_common::vault::MarketId> =
             markets.iter().copied().map(Into::into).collect();
-        self.vault_call("refresh_markets", (markets,)).await?;
-        self.build_real_assets_report().await
+        let report: templar_common::vault::RealAssetsReport = self
+            .vault_call_returning("refresh_markets", (markets,), None, None)
+            .await?;
+        Ok(report.into())
     }
 
     #[instrument(skip(self, account))]
@@ -1144,6 +1646,8 @@ impl Client {
             signer,
             vault,
             timeout,
+            retry: None,
+            view_cache: RwLock::new(None),
         }
     }
 
@@ -1182,25 +1686,78 @@ impl Client {
         args: impl Serialize,
         timeout: u64,
     ) -> Result<T> {
-        let response = tokio::time::timeout(
-            Duration::from_secs(timeout),
-            self.inner.call(RpcQueryRequest {
-                block_reference: BlockReference::latest(),
-                request: QueryRequest::CallFunction {
-                    account_id: account_id.clone(),
-                    method_name: function_name.to_owned(),
-                    args: serde_json::to_vec(&args)?.into(),
-                },
-            }),
-        )
-        .await??;
-
-        let QueryResponseKind::CallResult(result) = response.kind else {
-            bail!("Expected CallResult got {:?}", response.kind);
+        let args_bytes = serde_json::to_vec(&args)?;
+        let key = ViewCacheKey {
+            account_id: account_id.to_string(),
+            method: function_name.to_string(),
+            args: args_bytes.clone(),
         };
 
-        let value = serde_json::from_slice(&result.result)?;
-        Ok(value)
+        let cache = { self.view_cache.read().unwrap().clone() };
+        if let Some(cache) = &cache {
+            if let Some(bytes) = cache.get(&key) {
+                let value = serde_json::from_slice(&bytes)?;
+                return Ok(value);
+            }
+        }
+
+        let retry = self.retry.map(RetryConfig::normalized);
+        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
+        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+
+        loop {
+            attempts_left = attempts_left.saturating_sub(1);
+
+            let response = tokio::time::timeout(
+                Duration::from_secs(timeout),
+                self.inner.call(RpcQueryRequest {
+                    block_reference: BlockReference::latest(),
+                    request: QueryRequest::CallFunction {
+                        account_id: account_id.clone(),
+                        method_name: function_name.to_owned(),
+                        args: args_bytes.clone().into(),
+                    },
+                }),
+            )
+            .await;
+
+            let response = match response {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    let err: anyhow::Error = e.into();
+                    if attempts_left == 0 || !should_retry(&err) {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    if let Some(r) = retry {
+                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    let err: anyhow::Error = e.into();
+                    if attempts_left == 0 || !should_retry(&err) {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    if let Some(r) = retry {
+                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
+                    }
+                    continue;
+                }
+            };
+
+            let QueryResponseKind::CallResult(result) = response.kind else {
+                bail!("Expected CallResult got {:?}", response.kind);
+            };
+
+            if let Some(cache) = &cache {
+                cache.insert(key.clone(), result.result.clone());
+            }
+
+            let value = serde_json::from_slice(&result.result)?;
+            return Ok(value);
+        }
     }
 
     #[instrument(skip(self, args), fields(account_id = %account_id, method = function_name, gas = ?gas, deposit = ?deposit, timeout))]
@@ -1234,62 +1791,109 @@ impl Client {
         let called_at = Instant::now();
         let signature = self.signer.sign(tx_hash.as_ref());
         let deadline = called_at + Duration::from_secs(timeout);
-        let result = match self
-            .inner
-            .call(RpcSendTransactionRequest {
-                signed_transaction: SignedTransaction::new(signature, tx),
-                wait_until: TxExecutionStatus::Final,
-            })
-            .await
-        {
+        let signed_transaction = SignedTransaction::new(signature, tx);
+
+        let retry = self.retry.map(RetryConfig::normalized);
+        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
+        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+
+        let result = loop {
+            attempts_left = attempts_left.saturating_sub(1);
+
+            let send_res = self
+                .inner
+                .call(RpcSendTransactionRequest {
+                    signed_transaction: signed_transaction.clone(),
+                    wait_until: TxExecutionStatus::Final,
+                })
+                .await;
+
+            match send_res {
+                Ok(res) => break Ok(res),
+                Err(e) => {
+                    if matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                        break Err(e);
+                    }
+
+                    if retry.is_none() || attempts_left == 0 || e.handler_error().is_some() {
+                        break Err(e);
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    if let Some(r) = retry {
+                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
+                    }
+                }
+            }
+        };
+
+        let result = match result {
             Ok(res) => res,
             Err(e) => {
                 warn!(
                     "Send transaction error: {:?}. Starting status polling until deadline.",
                     e
                 );
-                loop {
-                    if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                        return Err(e.into());
-                    }
 
-                    let mut poll_interval = Duration::from_millis(500);
-
-                    loop {
-                        if Instant::now() >= deadline {
-                            warn!("Transaction polling deadline exceeded, aborting");
-                            bail!("Transaction timed out");
-                        }
-
-                        tokio::time::sleep(poll_interval).await;
-                        debug!("Polling transaction status...");
-
-                        poll_interval = std::cmp::min(
-                            poll_interval * 2,
-                            Duration::from_millis(MAX_POLL_INTERVAL_MILLIS),
-                        );
-
-                        let status = self
-                            .inner
-                            .call(RpcTransactionStatusRequest {
-                                transaction_info: TransactionInfo::TransactionId {
-                                    sender_account_id: self.signer.get_account_id(),
-                                    tx_hash,
-                                },
-                                wait_until: TxExecutionStatus::Final,
-                            })
-                            .await;
-
-                        let Err(e) = status else {
-                            break;
-                        };
-
-                        if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                            warn!("Transaction status error: {:?}", e);
-                            return Err(e.into());
-                        }
-                    }
+                if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                    return Err(e.into());
                 }
+
+                let mut poll_interval = Duration::from_millis(500);
+
+                loop {
+                    if Instant::now() >= deadline {
+                        warn!("Transaction polling deadline exceeded, aborting");
+                        bail!("Transaction timed out");
+                    }
+
+                    tokio::time::sleep(poll_interval).await;
+                    debug!("Polling transaction status...");
+
+                    poll_interval = std::cmp::min(
+                        poll_interval * 2,
+                        Duration::from_millis(MAX_POLL_INTERVAL_MILLIS),
+                    );
+
+                    let status = self
+                        .inner
+                        .call(RpcTransactionStatusRequest {
+                            transaction_info: TransactionInfo::TransactionId {
+                                sender_account_id: self.signer.get_account_id(),
+                                tx_hash,
+                            },
+                            wait_until: TxExecutionStatus::Final,
+                        })
+                        .await;
+
+                    let Err(status_err) = status else {
+                        break;
+                    };
+
+                    if matches!(
+                        status_err.handler_error(),
+                        Some(RpcTransactionError::TimeoutError)
+                    ) {
+                        continue;
+                    }
+
+                    if retry.is_some() && status_err.handler_error().is_none() {
+                        continue;
+                    }
+
+                    warn!("Transaction status error: {:?}", status_err);
+                    return Err(status_err.into());
+                }
+
+                self.inner
+                    .call(RpcTransactionStatusRequest {
+                        transaction_info: TransactionInfo::TransactionId {
+                            sender_account_id: self.signer.get_account_id(),
+                            tx_hash,
+                        },
+                        wait_until: TxExecutionStatus::Final,
+                    })
+                    .await?
             }
         };
 
@@ -1337,6 +1941,39 @@ impl Client {
     async fn vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper> {
         self.vault_call_with(method, args, None, None).await
     }
+
+    async fn vault_call_returning<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        args: impl Serialize,
+        gas: Option<Gas>,
+        deposit: Option<u128>,
+    ) -> Result<T, ErrorWrapper> {
+        let status = self
+            .call(&self.vault, method, args, gas, deposit, self.timeout)
+            .await
+            .map_err(ErrorWrapper::from)?;
+
+        let FinalExecutionStatus::SuccessValue(bytes) = status else {
+            return Err(ErrorWrapper::Wrapped(
+                "Transaction returned no value".to_string(),
+            ));
+        };
+
+        serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)
+    }
+}
+
+fn should_retry(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if cause.is::<tokio::time::error::Elapsed>() {
+            return true;
+        }
+        if cause.is::<std::io::Error>() {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
@@ -1443,6 +2080,135 @@ mod tests {
         let back: Delta = common.into();
         assert_eq!(back.market.0, 7);
         assert_eq!(back.amount, "100");
+    }
+
+    #[test]
+    fn fee_builder_validates_required_fields() {
+        let builder = FeeBuilder::new();
+        assert!(builder.build().is_err());
+
+        builder.set_fee("1".to_string()).unwrap();
+        assert!(builder.build().is_err());
+
+        builder
+            .set_recipient(AccountId("topgunbakugo.testnet".to_string()))
+            .unwrap();
+
+        let built = builder.build().unwrap();
+        assert_eq!(built.fee, "1");
+        assert_eq!(built.recipient.0, "topgunbakugo.testnet");
+    }
+
+    #[test]
+    fn fees_builder_builds_expected_structure() {
+        let builder = FeesBuilder::new();
+
+        builder.set_performance_fee("10".to_string()).unwrap();
+        builder
+            .set_performance_recipient(AccountId("perf.testnet".to_string()))
+            .unwrap();
+        builder.set_management_fee("20".to_string()).unwrap();
+        builder
+            .set_management_recipient(AccountId("mgmt.testnet".to_string()))
+            .unwrap();
+        builder
+            .set_max_total_assets_growth_rate(Some("30".to_string()))
+            .unwrap();
+
+        let built = builder.build().unwrap();
+        assert_eq!(built.performance.fee, "10");
+        assert_eq!(built.performance.recipient.0, "perf.testnet");
+        assert_eq!(built.management.fee, "20");
+        assert_eq!(built.management.recipient.0, "mgmt.testnet");
+        assert_eq!(built.max_total_assets_growth_rate, Some("30".to_string()));
+
+        let common: templar_common::vault::Fees<U128> = built.try_into().unwrap();
+        assert_eq!(common.performance.fee.0, 10);
+        assert_eq!(common.performance.recipient.as_str(), "perf.testnet");
+        assert_eq!(common.management.fee.0, 20);
+        assert_eq!(common.management.recipient.as_str(), "mgmt.testnet");
+        assert_eq!(common.max_total_assets_growth_rate.unwrap().0, 30);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_cache_hit_and_miss() {
+        let cache = ViewCache::builder()
+            .max_capacity(16)
+            .time_to_live(Duration::from_secs(60))
+            .build();
+
+        let key = ViewCacheKey {
+            account_id: "a".to_string(),
+            method: "m".to_string(),
+            args: vec![1, 2, 3],
+        };
+
+        assert!(cache.get(&key).is_none());
+
+        cache.insert(key.clone(), br"123".to_vec());
+
+        let got = cache.get(&key);
+        assert_eq!(got, Some(br"123".to_vec()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_cache_ttl_expires() {
+        let cache = ViewCache::builder()
+            .max_capacity(16)
+            .time_to_live(Duration::from_millis(1))
+            .build();
+
+        let key = ViewCacheKey {
+            account_id: "a".to_string(),
+            method: "m".to_string(),
+            args: vec![9],
+        };
+
+        cache.insert(key.clone(), br"xyz".to_vec());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        assert!(cache.get(&key).is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_cache_capacity_is_respected() {
+        let cache = ViewCache::builder()
+            .max_capacity(2)
+            .time_to_live(Duration::from_secs(60))
+            .build();
+
+        let k1 = ViewCacheKey {
+            account_id: "a".to_string(),
+            method: "m1".to_string(),
+            args: vec![1],
+        };
+        let k2 = ViewCacheKey {
+            account_id: "a".to_string(),
+            method: "m2".to_string(),
+            args: vec![2],
+        };
+        let k3 = ViewCacheKey {
+            account_id: "a".to_string(),
+            method: "m3".to_string(),
+            args: vec![3],
+        };
+
+        cache.insert(k1.clone(), br"1".to_vec());
+        cache.insert(k2.clone(), br"2".to_vec());
+        cache.insert(k3.clone(), br"3".to_vec());
+
+        let keys = [k1.clone(), k2.clone(), k3.clone()];
+
+        let mut present = keys.iter().filter(|k| cache.get(*k).is_some()).count();
+        for _ in 0..5 {
+            if present <= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            present = keys.iter().filter(|k| cache.get(*k).is_some()).count();
+        }
+
+        assert!(present <= 2);
     }
 
     #[rstest]
