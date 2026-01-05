@@ -29,6 +29,7 @@ tokio.workspace = true
 zeroize = { version = "*" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+mini-moka = "0.10.3"
 
 near-sdk = { version = "5.17.2", features = ["unstable", "non-contract-usage"] }
 
