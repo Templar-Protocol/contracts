@@ -23,4 +23,8 @@ _site/
 **/corpus
 **/fuzz*.log
 **/coverage
+
+# generated bindings
+client/vault/dist/
+
 .aider*
