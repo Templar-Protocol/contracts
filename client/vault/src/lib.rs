@@ -250,7 +250,110 @@ impl TryFrom<Fees> for templar_common::vault::Fees<U128> {
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone)]
+#[derive(Default)]
+struct FeesBuilderState {
+    performance_fee: Option<ForeignU128>,
+    performance_recipient: Option<AccountId>,
+    management_fee: Option<ForeignU128>,
+    management_recipient: Option<AccountId>,
+    max_total_assets_growth_rate: Option<ForeignU128>,
+}
+
+#[derive(uniffi::Object, Default)]
+pub struct FeesBuilder {
+    state: Mutex<FeesBuilderState>,
+}
+
+#[uniffi::export]
+impl FeesBuilder {
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_performance_fee(&self, fee: ForeignU128) -> Result<(), ErrorWrapper> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        state.performance_fee = Some(fee);
+        Ok(())
+    }
+
+    pub fn set_performance_recipient(&self, recipient: AccountId) -> Result<(), ErrorWrapper> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        state.performance_recipient = Some(recipient);
+        Ok(())
+    }
+
+    pub fn set_management_fee(&self, fee: ForeignU128) -> Result<(), ErrorWrapper> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        state.management_fee = Some(fee);
+        Ok(())
+    }
+
+    pub fn set_management_recipient(&self, recipient: AccountId) -> Result<(), ErrorWrapper> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        state.management_recipient = Some(recipient);
+        Ok(())
+    }
+
+    pub fn set_max_total_assets_growth_rate(
+        &self,
+        rate: Option<ForeignU128>,
+    ) -> Result<(), ErrorWrapper> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        state.max_total_assets_growth_rate = rate;
+        Ok(())
+    }
+
+    pub fn build(&self) -> Result<Fees, ErrorWrapper> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+
+        let Some(performance_fee) = state.performance_fee.clone() else {
+            return Err(ErrorWrapper::Wrapped("missing performance_fee".to_string()));
+        };
+
+        let Some(performance_recipient) = state.performance_recipient.clone() else {
+            return Err(ErrorWrapper::Wrapped("missing performance_recipient".to_string()));
+        };
+
+        let Some(management_fee) = state.management_fee.clone() else {
+            return Err(ErrorWrapper::Wrapped("missing management_fee".to_string()));
+        };
+
+        let Some(management_recipient) = state.management_recipient.clone() else {
+            return Err(ErrorWrapper::Wrapped("missing management_recipient".to_string()));
+        };
+
+        Ok(Fees {
+            performance: Fee {
+                fee: performance_fee,
+                recipient: performance_recipient,
+            },
+            management: Fee {
+                fee: management_fee,
+                recipient: management_recipient,
+            },
+            max_total_assets_growth_rate: state.max_total_assets_growth_rate.clone(),
+        })
+    }
+}
 pub enum Restrictions {
     Paused,
     BlackList(Vec<AccountId>),
