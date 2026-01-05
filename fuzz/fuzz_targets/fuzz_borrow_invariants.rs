@@ -7,25 +7,13 @@ use templar_common::{
     borrow::BorrowPosition,
 };
 
-fuzz_target!(|data: (u32, u128, u128, u128, u128, u128, bool, bool)| {
-    let (
-        snapshot_index,
-        collateral_1,
-        collateral_2,
-        borrow_1,
-        _borrow_2,
-        in_flight,
-        has_timestamp,
-        has_lock,
-    ) = data;
+fuzz_target!(|data: (u32, u128, u128, u128, u128, u128, bool)| {
+    let (snapshot_index, collateral_1, collateral_2, borrow_1, _borrow_2, in_flight, has_timestamp) =
+        data;
 
     // Test collateral calculations
     let mut position = BorrowPosition::new(snapshot_index);
     position.collateral_asset_deposit = CollateralAssetAmount::new(collateral_1);
-
-    if has_lock {
-        position.liquidation_lock = CollateralAssetAmount::new(collateral_2);
-    }
 
     let total_collateral = position.get_total_collateral_amount();
 
@@ -65,7 +53,6 @@ fuzz_target!(|data: (u32, u128, u128, u128, u128, u128, bool, bool)| {
     if position.collateral_asset_deposit.is_zero()
         && total_liability.is_zero()
         && position.borrow_asset_in_flight.is_zero()
-        && position.liquidation_lock.is_zero()
     {
         assert!(
             !position.exists(),
@@ -102,19 +89,11 @@ fuzz_target!(|data: (u32, u128, u128, u128, u128, u128, bool, bool)| {
     let step3_liability = seq_position.get_total_borrow_asset_liability();
     assert!(step3_liability >= step2_liability);
 
-    // Step 4: Add liquidation lock
-    if collateral_2 <= collateral_1 {
-        seq_position.liquidation_lock = CollateralAssetAmount::new(collateral_2);
-        let step4_collateral = seq_position.get_total_collateral_amount();
-        assert!(step4_collateral >= step1_collateral);
-    }
-
     // Test edge cases
 
     // Edge case 1: Maximum values that don't overflow
     let mut max_pos = BorrowPosition::new(snapshot_index);
     max_pos.collateral_asset_deposit = CollateralAssetAmount::new(u128::MAX / 2);
-    max_pos.liquidation_lock = CollateralAssetAmount::new(u128::MAX / 2);
     let _ = max_pos.get_total_collateral_amount(); // Should not panic
 
     // Edge case 2: Zero position

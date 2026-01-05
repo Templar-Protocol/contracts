@@ -69,8 +69,6 @@ pub struct BorrowPosition {
     pub borrow_asset_in_flight: BorrowAssetAmount,
     #[serde(default)]
     pub collateral_asset_in_flight: CollateralAssetAmount,
-    #[serde(default)]
-    pub liquidation_lock: CollateralAssetAmount,
 }
 
 impl BorrowPosition {
@@ -87,7 +85,6 @@ impl BorrowPosition {
             fees: 0.into(),
             borrow_asset_in_flight: 0.into(),
             collateral_asset_in_flight: 0.into(),
-            liquidation_lock: 0.into(),
         }
     }
 
@@ -103,7 +100,7 @@ impl BorrowPosition {
     }
 
     pub fn get_total_collateral_amount(&self) -> CollateralAssetAmount {
-        self.collateral_asset_deposit + self.liquidation_lock
+        self.collateral_asset_deposit
     }
 
     pub fn exists(&self) -> bool {
@@ -163,7 +160,7 @@ impl BorrowPosition {
 
         if cr <= Decimal::ONE {
             // Totally underwater
-            return collateral.saturating_sub(self.liquidation_lock);
+            return collateral;
         }
 
         if cr >= mcr {
@@ -181,7 +178,6 @@ impl BorrowPosition {
             .to_u128_ceil()
             .map_or(collateral, CollateralAssetAmount::new)
             .min(collateral)
-            .saturating_sub(self.liquidation_lock)
     }
 }
 
@@ -642,19 +638,11 @@ impl<'a> BorrowPositionGuard<'a> {
     /// Returns the amount that is left over after repaying the whole
     /// position. That is, the return value is the number of tokens that may
     /// be returned to the owner of the borrow position.
-    ///
-    /// # Errors
-    ///
-    /// - If any collateral is locked for liquidation.
     pub fn record_repay(
         &mut self,
         proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
-    ) -> Result<BorrowAssetAmount, error::LiquidationLockError> {
-        if !self.position.liquidation_lock.is_zero() {
-            return Err(error::LiquidationLockError);
-        }
-
+    ) -> BorrowAssetAmount {
         let liability_reduction = self.reduce_borrow_asset_liability(proof, amount);
 
         MarketEvent::BorrowRepaid {
@@ -665,7 +653,7 @@ impl<'a> BorrowPositionGuard<'a> {
         }
         .emit();
 
-        Ok(liability_reduction.remaining)
+        liability_reduction.remaining
     }
 
     pub fn accumulate_interest_partial(&mut self, snapshot_limit: u32) {
@@ -687,22 +675,6 @@ impl<'a> BorrowPositionGuard<'a> {
         InterestAccumulationProof(())
     }
 
-    pub(crate) fn liquidation_lock(&mut self, amount: CollateralAssetAmount) {
-        self.position.collateral_asset_deposit = self.position.collateral_asset_deposit.unwrap_sub(
-            amount,
-            "Attempt to liquidate more collateral than position has deposited",
-        );
-        self.position.liquidation_lock += amount;
-    }
-
-    pub(crate) fn liquidation_unlock(&mut self, amount: CollateralAssetAmount) {
-        self.position.liquidation_lock = self.position.liquidation_lock.unwrap_sub(
-            amount,
-            "Invariant violation: Liquidation unlock of more collateral that was locked",
-        );
-        self.position.collateral_asset_deposit += amount;
-    }
-
     /// # Errors
     ///
     /// - If this record is not eligible for liquidation.
@@ -712,7 +684,7 @@ impl<'a> BorrowPositionGuard<'a> {
     /// - If the liquidator offers too little to purchase the collateral.
     pub fn record_liquidation_initial(
         &mut self,
-        _proof: InterestAccumulationProof,
+        proof: InterestAccumulationProof,
         liquidator_sent: BorrowAssetAmount,
         liquidator_request: Option<CollateralAssetAmount>,
         price_pair: &PricePair,
@@ -764,13 +736,13 @@ impl<'a> BorrowPositionGuard<'a> {
             });
         }
 
-        self.liquidation_lock(liquidator_request);
-
         let (refund, recovered) = if liquidator_sent > maximum_acceptable {
             (liquidator_sent - maximum_acceptable, maximum_acceptable)
         } else {
             (BorrowAssetAmount::zero(), liquidator_sent)
         };
+
+        self.record_collateral_asset_withdrawal(proof, liquidator_request);
 
         Ok(InitialLiquidation {
             liquidated: liquidator_request,
@@ -789,8 +761,6 @@ impl<'a> BorrowPositionGuard<'a> {
             self.reduce_borrow_asset_liability(proof, initial_liquidation.recovered);
         self.market
             .record_borrow_asset_yield_distribution(liability_reduction.remaining);
-        self.liquidation_unlock(initial_liquidation.liquidated);
-        self.record_collateral_asset_withdrawal(proof, initial_liquidation.liquidated);
 
         MarketEvent::Liquidation {
             liquidator_id,
