@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, NearToken,
+    AccountId, AccountIdRef, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
@@ -12,7 +12,7 @@ use templar_common::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration},
+    market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration, RepayMsg},
     number::Decimal,
     oracle::pyth::{self, OracleResponse},
     price::Convert,
@@ -358,14 +358,22 @@ impl UnifiedMarketController {
             .await
     }
 
-    pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn repay(
+        &self,
+        borrow_user: &Account,
+        account_id: Option<&AccountIdRef>,
+        amount: u128,
+    ) -> ExecutionSuccess {
         eprintln!("{} repaying {amount} tokens...", borrow_user.id());
         self.borrow_asset
             .transfer_call(
                 borrow_user,
                 self.market.contract().id(),
                 amount,
-                serde_json::to_string(&DepositMsg::Repay).unwrap(),
+                serde_json::to_string(&DepositMsg::Repay(RepayMsg {
+                    account_id: account_id.map(ToOwned::to_owned),
+                }))
+                .unwrap(),
             )
             .await
     }

@@ -29,7 +29,7 @@ async fn fast_borrow_is_not_free(#[future(awt)] worker: Worker<Sandbox>) {
     c.borrow(&borrow_user, 1_000_000).await;
 
     // Repay exact amount that was borrowed
-    c.repay(&borrow_user, 1_000_000).await;
+    c.repay(&borrow_user, None, 1_000_000).await;
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 

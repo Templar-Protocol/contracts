@@ -68,7 +68,7 @@ async fn main() {
     for _ in 0..ITERATIONS {
         let e = c.borrow(&borrow_user, 1000).await;
         borrow_gas_average += e.total_gas_burnt.as_gas() as f64 / ITERATIONS as f64;
-        let e = c.repay(&borrow_user, 1100).await;
+        let e = c.repay(&borrow_user, None, 1100).await;
         repay_gas_average += e.total_gas_burnt.as_gas() as f64 / ITERATIONS as f64;
     }
 
@@ -77,7 +77,7 @@ async fn main() {
         .harvest_yield_exec(&supply_user, None, Some(HarvestYieldMode::Compounding))
         .await;
 
-    c.repay(&borrow_user_2, 1100).await;
+    c.repay(&borrow_user_2, None, 1100).await;
 
     let snapshot_count_after = c.list_finalized_snapshots(None, None).await.len();
     let snapshot_count = snapshot_count_after - snapshot_count_before;

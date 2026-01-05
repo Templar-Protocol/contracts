@@ -110,7 +110,7 @@ async fn many_accounts(#[future(awt)] worker: Worker<Sandbox>) {
                     assert_eq!(position.get_borrow_asset_principal(), 40_000.into());
                     assert!(position.get_total_borrow_asset_liability() >= 40_000.into());
                     assert_eq!(position.collateral_asset_deposit, 100_000.into());
-                    c.repay(&account, 45_000).await;
+                    c.repay(&account, None, 45_000).await;
                     let position = c.get_borrow_position(account.id()).await.unwrap();
                     assert!(position.get_borrow_asset_principal().is_zero());
                     assert!(position.get_total_borrow_asset_liability().is_zero());

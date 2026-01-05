@@ -297,7 +297,7 @@ impl App {
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
-                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
+                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay(..)) {
                         errors.push(FunctionCallRejectionReason::InvalidMsgForAsset {
                             index,
                             expected: "\"Supply\" or \"Repay\"".to_string(),
