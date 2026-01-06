@@ -277,8 +277,11 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         let _ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
 
+        let Ok(before_balance) = before_balance else {
+            return self.stop_and_exit(Some(&Error::BalanceReadFailed));
+        };
+
         let principal = self.principal_of(market);
-        let before_balance = before_balance.unwrap_or(U128(self.idle_balance));
 
         Event::VaultBalance {
             amount: before_balance,
@@ -342,7 +345,9 @@ impl Contract {
                     before: Some(principal),
                 }
                 .emit();
-                // Treat missing position as zero principal and continue to balance settlement
+                // Treat missing position as zero principal and continue to balance settlement.
+                // This is intentionally different from allocation (which stops on missing).
+                // In withdrawal, a missing position means the market has no funds for us.
                 0
             }
             Err(_) => {
@@ -559,6 +564,7 @@ impl Contract {
 
         let reported_principal: u128 = match position {
             Ok(Some(position)) => position.get_deposit().total().into(),
+            // Treat missing position as zero - market has no funds for us
             Ok(None) => 0,
             Err(_) => {
                 allocating.market_execution_lock.unlock(market_id);
