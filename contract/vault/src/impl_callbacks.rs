@@ -1063,10 +1063,10 @@ impl Contract {
         batch_limit: Option<u32>,
     ) -> Promise {
         ext_market::ext(market.clone())
-            // NOTE: gas might be incorrect here
             .with_static_gas(Gas::from_tgas(
-                EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS.as_tgas()
-                    * u64::from(batch_limit.unwrap_or(1)),
+                EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS
+                    .as_tgas()
+                    .saturating_mul(u64::from(batch_limit.unwrap_or(1))),
             ))
             .with_unused_gas_weight(0)
             .execute_next_supply_withdrawal_request(batch_limit)

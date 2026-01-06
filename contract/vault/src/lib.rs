@@ -302,23 +302,25 @@ impl Contract {
     #[payable]
     pub fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()> {
         let shares = shares.0;
-        let assets = self.convert_to_assets(U128(shares)).0;
         let sender = env::predecessor_account_id();
 
         self.gate.enforce_policy(&sender);
         self.gate.enforce_policy(&receiver);
 
         require!(shares > 0, "Invalid shares");
-        require!(assets > 0, "Dust redeem would yield 0 assets");
 
         let _ = require_attached_for_pending_withdrawal();
+
+        self.internal_accrue_fee();
+
+        // Compute assets after fee accrual for accurate conversion
+        let assets = self.convert_to_assets(U128(shares)).0;
+        require!(assets > 0, "Dust redeem would yield 0 assets");
 
         Gate::bypass_transfer(
             self,
             &Nep141Transfer::new(shares, &sender, env::current_account_id()),
         );
-
-        self.internal_accrue_fee();
 
         Event::RedeemRequested {
             shares: U128(shares),
