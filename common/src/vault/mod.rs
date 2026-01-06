@@ -630,6 +630,7 @@ impl IdleBalanceDelta {
 pub enum Reason {
     NoRoom,
     ZeroTarget,
+    RouteExhaustedNoFunds,
     Other(String),
 }
 
@@ -869,6 +870,12 @@ pub enum Event {
 
     #[event_version("1.0.0")]
     WithdrawQueueUpdate { action: QueueAction, id: U64 },
+    #[event_version("1.0.0")]
+    WithdrawParkedDetail {
+        id: U64,
+        failed_route: Vec<MarketId>,
+        reason: Reason,
+    },
     #[event_version("1.0.0")]
     WithdrawQueueStatus {
         status: QueueStatus,

@@ -1779,9 +1779,9 @@ impl Contract {
                 escrow_shares,
                 burn_shares,
                 |self_| {
-                    self_.withdraw_route.clear();
+                    let failed_route = std::mem::take(&mut self_.withdraw_route);
                     self_.op_state = OpState::Idle;
-                    self_.park_head_for_retry();
+                    self_.park_head_for_retry(failed_route);
                     PromiseOrValue::Value(())
                 },
             )
@@ -1864,10 +1864,17 @@ impl Contract {
         .emit();
     }
 
-    fn park_head_for_retry(&mut self) {
+    fn park_head_for_retry(&mut self, failed_route: Vec<MarketId>) {
         Event::WithdrawQueueUpdate {
             action: QueueAction::Parked,
             id: self.next_withdraw_to_execute.into(),
+        }
+        .emit();
+
+        Event::WithdrawParkedDetail {
+            id: self.next_withdraw_to_execute.into(),
+            failed_route,
+            reason: Reason::RouteExhaustedNoFunds,
         }
         .emit();
     }
