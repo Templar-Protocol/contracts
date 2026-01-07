@@ -1,19 +1,39 @@
 use std::{
+    ops::Deref,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
 use anyhow::Result;
 use near_account_id::AccountId as NearAccountId;
-use near_crypto::{InMemorySigner, PublicKey};
+use near_crypto::{InMemorySigner, PublicKey, SecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::hash::CryptoHash;
 use templar_common::guard::defer;
 use tokio::sync::{Mutex, MutexGuard};
+use zeroize::Zeroize;
 
 use super::nonce::fetch_access_key_data;
 
 const DEFAULT_BLOCK_HASH_TTL: Duration = Duration::from_secs(30);
+
+struct ZeroizingSigner(InMemorySigner);
+
+impl Drop for ZeroizingSigner {
+    fn drop(&mut self) {
+        match &mut self.0.secret_key {
+            SecretKey::ED25519(k) => k.0.zeroize(),
+            SecretKey::SECP256K1(k) => k.non_secure_erase(),
+        }
+    }
+}
+
+impl Deref for ZeroizingSigner {
+    type Target = InMemorySigner;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 struct NonceState {
     local_nonce: Option<u64>,
@@ -45,7 +65,7 @@ impl NonceState {
 }
 
 pub struct KeySlot {
-    signer: InMemorySigner,
+    signer: ZeroizingSigner,
     tx_lock: Mutex<()>,
     nonce_state: Mutex<NonceState>,
     block_hash_ttl: Duration,
@@ -62,7 +82,7 @@ impl KeySlot {
 
     pub fn with_config(signer: InMemorySigner, block_hash_ttl: Duration) -> Self {
         Self {
-            signer,
+            signer: ZeroizingSigner(signer),
             tx_lock: Mutex::new(()),
             nonce_state: Mutex::new(NonceState::new()),
             block_hash_ttl,
