@@ -26,7 +26,7 @@ else
 	endif
 endif
 
-.PHONY: gen python
+.PHONY: gen python smoke-test
 
 gen:
 	cargo run --features=uniffi/cli --bin uniffi-bindgen $@
@@ -35,6 +35,9 @@ python: $(PY_OUT)
 	cargo build -p $(CRATE) $(CARGO_BUILD_FLAGS)
 	$(UNIFFI_BINDGEN) generate --language python --library "$(DYLIB)" --out-dir "$(PY_OUT)" --no-format
 	cp "$(DYLIB)" "$(PY_OUT)/"
+
+smoke-test: python
+	PYTHONPATH="$(PY_OUT)" python3 smoke_test.py
 
 $(PY_OUT):
 	mkdir -p "$(PY_OUT)"

@@ -30,6 +30,17 @@ use near_sdk::json_types::{U128, U64};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::{debug, instrument, warn};
 
+pub use client::{VaultClient, VaultClientConfig};
+pub use key_pool::{KeyCredential, KeyInfo, KeyPoolClient, KeyPoolConfig, PoolError, PoolHealth};
+
+mod key_pool;
+mod lock_ext;
+#[macro_use]
+mod methods;
+mod client;
+
+use lock_ext::{MutexExt, RwLockExt};
+
 uniffi::setup_scaffolding!();
 
 type ForeignU128 = String;
@@ -42,7 +53,7 @@ pub struct RetryConfig {
 }
 
 impl RetryConfig {
-    fn normalized(self) -> Self {
+    pub(crate) fn normalized(self) -> Self {
         let max_attempts = self.max_attempts.max(1);
         let initial_backoff_ms = self.initial_backoff_ms.max(1);
         let max_backoff_ms = self.max_backoff_ms.max(initial_backoff_ms);
@@ -63,8 +74,9 @@ impl TryFrom<AccountId> for near_account_id::AccountId {
     type Error = ErrorWrapper;
 
     fn try_from(value: AccountId) -> Result<Self, Self::Error> {
-        near_account_id::AccountId::from_str(&value.0)
-            .map_err(|e| ErrorWrapper::Wrapped(format!("Invalid AccountId '{}': {}", value.0, e)))
+        near_account_id::AccountId::from_str(&value.0).map_err(|e| {
+            ErrorWrapper::InvalidAccountId(format!("Invalid AccountId '{}': {}", value.0, e))
+        })
     }
 }
 
@@ -220,6 +232,26 @@ pub struct Fee {
     pub recipient: AccountId,
 }
 
+impl From<templar_common::vault::Fee<U128>> for Fee {
+    fn from(value: templar_common::vault::Fee<U128>) -> Self {
+        Fee {
+            fee: value.fee.0.to_string(),
+            recipient: value.recipient.to_string().into(),
+        }
+    }
+}
+
+impl TryFrom<Fee> for templar_common::vault::Fee<U128> {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: Fee) -> Result<Self, Self::Error> {
+        Ok(templar_common::vault::Fee {
+            fee: U128(parse_u128(&value.fee)?),
+            recipient: parse_account_id(&value.recipient)?,
+        })
+    }
+}
+
 #[derive(Default)]
 struct FeeBuilderState {
     fee: Option<ForeignU128>,
@@ -239,28 +271,19 @@ impl FeeBuilder {
     }
 
     pub fn set_fee(&self, fee: ForeignU128) -> Result<(), ErrorWrapper> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let mut state = self.state.lock_or_poison()?;
         state.fee = Some(fee);
         Ok(())
     }
 
     pub fn set_recipient(&self, recipient: AccountId) -> Result<(), ErrorWrapper> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let mut state = self.state.lock_or_poison()?;
         state.recipient = Some(recipient);
         Ok(())
     }
 
     pub fn build(&self) -> Result<Fee, ErrorWrapper> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let state = self.state.lock_or_poison()?;
 
         let Some(fee) = state.fee.clone() else {
             return Err(ErrorWrapper::Wrapped("missing fee".to_string()));
@@ -271,26 +294,6 @@ impl FeeBuilder {
         };
 
         Ok(Fee { fee, recipient })
-    }
-}
-
-impl From<templar_common::vault::Fee<U128>> for Fee {
-    fn from(value: templar_common::vault::Fee<U128>) -> Self {
-        Fee {
-            fee: value.fee.0.to_string(),
-            recipient: value.recipient.to_string().into(),
-        }
-    }
-}
-
-impl TryFrom<Fee> for templar_common::vault::Fee<U128> {
-    type Error = ErrorWrapper;
-
-    fn try_from(value: Fee) -> Result<Self, Self::Error> {
-        Ok(templar_common::vault::Fee {
-            fee: U128(parse_u128(&value.fee)?),
-            recipient: parse_account_id(&value.recipient)?,
-        })
     }
 }
 
@@ -350,37 +353,25 @@ impl FeesBuilder {
     }
 
     pub fn set_performance_fee(&self, fee: ForeignU128) -> Result<(), ErrorWrapper> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let mut state = self.state.lock_or_poison()?;
         state.performance_fee = Some(fee);
         Ok(())
     }
 
     pub fn set_performance_recipient(&self, recipient: AccountId) -> Result<(), ErrorWrapper> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let mut state = self.state.lock_or_poison()?;
         state.performance_recipient = Some(recipient);
         Ok(())
     }
 
     pub fn set_management_fee(&self, fee: ForeignU128) -> Result<(), ErrorWrapper> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let mut state = self.state.lock_or_poison()?;
         state.management_fee = Some(fee);
         Ok(())
     }
 
     pub fn set_management_recipient(&self, recipient: AccountId) -> Result<(), ErrorWrapper> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let mut state = self.state.lock_or_poison()?;
         state.management_recipient = Some(recipient);
         Ok(())
     }
@@ -389,26 +380,22 @@ impl FeesBuilder {
         &self,
         rate: Option<ForeignU128>,
     ) -> Result<(), ErrorWrapper> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let mut state = self.state.lock_or_poison()?;
         state.max_total_assets_growth_rate = rate;
         Ok(())
     }
 
     pub fn build(&self) -> Result<Fees, ErrorWrapper> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| ErrorWrapper::Wrapped("poisoned lock".to_string()))?;
+        let state = self.state.lock_or_poison()?;
 
         let Some(performance_fee) = state.performance_fee.clone() else {
             return Err(ErrorWrapper::Wrapped("missing performance_fee".to_string()));
         };
 
         let Some(performance_recipient) = state.performance_recipient.clone() else {
-            return Err(ErrorWrapper::Wrapped("missing performance_recipient".to_string()));
+            return Err(ErrorWrapper::Wrapped(
+                "missing performance_recipient".to_string(),
+            ));
         };
 
         let Some(management_fee) = state.management_fee.clone() else {
@@ -416,7 +403,9 @@ impl FeesBuilder {
         };
 
         let Some(management_recipient) = state.management_recipient.clone() else {
-            return Err(ErrorWrapper::Wrapped("missing management_recipient".to_string()));
+            return Err(ErrorWrapper::Wrapped(
+                "missing management_recipient".to_string(),
+            ));
         };
 
         Ok(Fees {
@@ -532,9 +521,11 @@ pub enum CapGroupUpdateKey {
 impl From<CapGroupUpdateKey> for templar_common::vault::CapGroupUpdateKey {
     fn from(value: CapGroupUpdateKey) -> Self {
         match value {
-            CapGroupUpdateKey::SetCap { cap_group } => templar_common::vault::CapGroupUpdateKey::SetCap {
-                cap_group: cap_group.into(),
-            },
+            CapGroupUpdateKey::SetCap { cap_group } => {
+                templar_common::vault::CapGroupUpdateKey::SetCap {
+                    cap_group: cap_group.into(),
+                }
+            }
             CapGroupUpdateKey::SetRelativeCap { cap_group } => {
                 templar_common::vault::CapGroupUpdateKey::SetRelativeCap {
                     cap_group: cap_group.into(),
@@ -618,18 +609,65 @@ pub struct CapGroup {
     pub principal: ForeignU128,
 }
 
+impl
+    From<(
+        templar_common::vault::CapGroupId,
+        templar_common::vault::CapGroupRecord,
+    )> for CapGroup
+{
+    fn from(
+        value: (
+            templar_common::vault::CapGroupId,
+            templar_common::vault::CapGroupRecord,
+        ),
+    ) -> Self {
+        let (id, rec) = value;
+        CapGroup {
+            id: id.into(),
+            cap: rec.cap.0.to_string(),
+            relative_cap: u128::from(rec.relative_cap).to_string(),
+            principal: rec.principal.to_string(),
+        }
+    }
+}
+
 #[derive(uniffi::Enum, Debug, Clone)]
 pub enum TimelockedAction {
-    GuardianChange { account: AccountId },
-    SentinelChange { account: AccountId },
-    TimelockConfigChange { kind: Option<TimelockKind>, new_timelock_ns: u64 },
-    FeesChange { fees: Fees },
-    RestrictionsChange { restrictions: Option<Restrictions> },
-    CapChange { market: AccountId, new_cap: ForeignU128 },
-    CapGroupChange { cap_group: CapGroupId, new_cap: ForeignU128 },
-    CapGroupRelativeCapChange { cap_group: CapGroupId, new_relative_cap: ForeignU128 },
-    CapGroupMembership { market: MarketId, cap_group: Option<CapGroupId> },
-    MarketRemoval { market: AccountId },
+    GuardianChange {
+        account: AccountId,
+    },
+    SentinelChange {
+        account: AccountId,
+    },
+    TimelockConfigChange {
+        kind: Option<TimelockKind>,
+        new_timelock_ns: u64,
+    },
+    FeesChange {
+        fees: Fees,
+    },
+    RestrictionsChange {
+        restrictions: Option<Restrictions>,
+    },
+    CapChange {
+        market: AccountId,
+        new_cap: ForeignU128,
+    },
+    CapGroupChange {
+        cap_group: CapGroupId,
+        new_cap: ForeignU128,
+    },
+    CapGroupRelativeCapChange {
+        cap_group: CapGroupId,
+        new_relative_cap: ForeignU128,
+    },
+    CapGroupMembership {
+        market: MarketId,
+        cap_group: Option<CapGroupId>,
+    },
+    MarketRemoval {
+        market: AccountId,
+    },
 }
 
 #[derive(uniffi::Record, Debug, Clone)]
@@ -640,7 +678,7 @@ pub struct PendingGovernanceAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
-enum TimelockKindSerde {
+pub(crate) enum TimelockKindSerde {
     Guardian,
     Sentinel,
     Config,
@@ -662,9 +700,13 @@ impl From<TimelockKindSerde> for TimelockKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
-enum TimelockedActionSerde {
-    GuardianChange { account: String },
-    SentinelChange { account: String },
+pub(crate) enum TimelockedActionSerde {
+    GuardianChange {
+        account: String,
+    },
+    SentinelChange {
+        account: String,
+    },
     TimelockConfigChange {
         kind: Option<TimelockKindSerde>,
         new_timelock_ns: U64,
@@ -691,7 +733,9 @@ enum TimelockedActionSerde {
         market: templar_common::vault::MarketId,
         cap_group: Option<templar_common::vault::CapGroupId>,
     },
-    MarketRemoval { market: String },
+    MarketRemoval {
+        market: String,
+    },
 }
 
 impl From<TimelockedActionSerde> for TimelockedAction {
@@ -741,26 +785,29 @@ impl From<TimelockedActionSerde> for TimelockedAction {
                     cap_group: cap_group.map(Into::into),
                 }
             }
-            TimelockedActionSerde::MarketRemoval { market } => {
-                TimelockedAction::MarketRemoval {
-                    market: market.into(),
-                }
-            }
+            TimelockedActionSerde::MarketRemoval { market } => TimelockedAction::MarketRemoval {
+                market: market.into(),
+            },
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
-struct PendingValueSerde {
-    value: TimelockedActionSerde,
-    valid_at_ns: u64,
+pub(crate) struct PendingValueSerde {
+    pub value: TimelockedActionSerde,
+    pub valid_at_ns: u64,
 }
 
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum UnderlyingToken {
-    Nep141 { contract_id: AccountId },
-    Nep245 { contract_id: AccountId, token_id: String },
+    Nep141 {
+        contract_id: AccountId,
+    },
+    Nep245 {
+        contract_id: AccountId,
+        token_id: String,
+    },
 }
 
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
@@ -769,11 +816,32 @@ pub struct FeeWad {
     pub recipient: AccountId,
 }
 
+impl From<templar_common::vault::Fee<templar_common::vault::wad::Wad>> for FeeWad {
+    fn from(value: templar_common::vault::Fee<templar_common::vault::wad::Wad>) -> Self {
+        FeeWad {
+            fee_wad: u128::from(value.fee).to_string(),
+            recipient: value.recipient.to_string().into(),
+        }
+    }
+}
+
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct FeesWad {
     pub performance: FeeWad,
     pub management: FeeWad,
     pub max_total_assets_growth_rate_wad: Option<ForeignU128>,
+}
+
+impl From<templar_common::vault::Fees<templar_common::vault::wad::Wad>> for FeesWad {
+    fn from(value: templar_common::vault::Fees<templar_common::vault::wad::Wad>) -> Self {
+        FeesWad {
+            performance: value.performance.into(),
+            management: value.management.into(),
+            max_total_assets_growth_rate_wad: value
+                .max_total_assets_growth_rate
+                .map(|r| u128::from(r).to_string()),
+        }
+    }
 }
 
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
@@ -791,27 +859,6 @@ pub struct VaultConfiguration {
     pub decimals: u8,
     pub restrictions: Option<Restrictions>,
     pub refresh_cooldown_ns: Option<u64>,
-}
-
-impl From<templar_common::vault::Fee<templar_common::vault::wad::Wad>> for FeeWad {
-    fn from(value: templar_common::vault::Fee<templar_common::vault::wad::Wad>) -> Self {
-        FeeWad {
-            fee_wad: u128::from(value.fee).to_string(),
-            recipient: value.recipient.to_string().into(),
-        }
-    }
-}
-
-impl From<templar_common::vault::Fees<templar_common::vault::wad::Wad>> for FeesWad {
-    fn from(value: templar_common::vault::Fees<templar_common::vault::wad::Wad>) -> Self {
-        FeesWad {
-            performance: value.performance.into(),
-            management: value.management.into(),
-            max_total_assets_growth_rate_wad: value
-                .max_total_assets_growth_rate
-                .map(|r| u128::from(r).to_string()),
-        }
-    }
 }
 
 impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
@@ -850,18 +897,6 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
     }
 }
 
-impl From<(templar_common::vault::CapGroupId, templar_common::vault::CapGroupRecord)> for CapGroup {
-    fn from(value: (templar_common::vault::CapGroupId, templar_common::vault::CapGroupRecord)) -> Self {
-        let (id, rec) = value;
-        CapGroup {
-            id: id.into(),
-            cap: rec.cap.0.to_string(),
-            relative_cap: u128::from(rec.relative_cap).to_string(),
-            principal: rec.principal.to_string(),
-        }
-    }
-}
-
 #[derive(uniffi::Record, Debug, Clone)]
 pub struct VaultSnapshot {
     pub configuration: VaultConfiguration,
@@ -888,13 +923,13 @@ pub const DEFAULT_GAS: Gas = 300_000_000_000_000;
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 
 #[derive(Clone, Hash, PartialEq, Eq)]
-struct ViewCacheKey {
-    account_id: String,
-    method: String,
-    args: Vec<u8>,
+pub(crate) struct ViewCacheKey {
+    pub account_id: String,
+    pub method: String,
+    pub args: Vec<u8>,
 }
 
-type ViewCache = MokaCache<ViewCacheKey, Vec<u8>>;
+pub(crate) type ViewCache = MokaCache<ViewCacheKey, Vec<u8>>;
 
 #[derive(uniffi::Object)]
 pub struct Client {
@@ -967,8 +1002,7 @@ impl Client {
 
     pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) {
         if capacity == 0 {
-            let mut w = self.view_cache.write().unwrap();
-            *w = None;
+            *self.view_cache.write_recover() = None;
             return;
         }
 
@@ -977,17 +1011,15 @@ impl Client {
             .time_to_live(Duration::from_secs(ttl_seconds))
             .build();
 
-        let mut w = self.view_cache.write().unwrap();
-        *w = Some(cache);
+        *self.view_cache.write_recover() = Some(cache);
     }
 
     pub fn disable_view_cache(&self) {
-        let mut w = self.view_cache.write().unwrap();
-        *w = None;
+        *self.view_cache.write_recover() = None;
     }
 
     pub async fn clear_view_cache(&self) -> Result<(), ErrorWrapper> {
-        let cache = { self.view_cache.read().unwrap().clone() };
+        let cache = { self.view_cache.read_recover().clone() };
         if let Some(cache) = cache {
             cache.invalidate_all();
         }
@@ -1035,7 +1067,8 @@ impl Client {
 
     #[instrument(skip(self))]
     pub async fn get_max_single_market_deposit(&self) -> Result<ForeignU128, ErrorWrapper> {
-        self.vault_view_u128("get_max_single_market_deposit", ()).await
+        self.vault_view_u128("get_max_single_market_deposit", ())
+            .await
     }
 
     #[instrument(skip(self))]
@@ -1078,12 +1111,10 @@ impl Client {
     #[instrument(skip(self))]
     pub async fn get_cap_groups(&self) -> Result<Vec<CapGroup>, ErrorWrapper> {
         let groups = self
-            .view::<Vec<(templar_common::vault::CapGroupId, templar_common::vault::CapGroupRecord)>>(
-                &self.vault,
-                "get_cap_groups",
-                (),
-                self.timeout,
-            )
+            .view::<Vec<(
+                templar_common::vault::CapGroupId,
+                templar_common::vault::CapGroupRecord,
+            )>>(&self.vault, "get_cap_groups", (), self.timeout)
             .await
             .map_err(ErrorWrapper::from)?;
 
@@ -1122,13 +1153,19 @@ impl Client {
     }
 
     #[instrument(skip(self, assets))]
-    pub async fn convert_to_shares(&self, assets: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+    pub async fn convert_to_shares(
+        &self,
+        assets: &ForeignU128,
+    ) -> Result<ForeignU128, ErrorWrapper> {
         let assets = U128(parse_u128(assets)?);
         self.vault_view_u128("convert_to_shares", (assets,)).await
     }
 
     #[instrument(skip(self, shares))]
-    pub async fn convert_to_assets(&self, shares: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+    pub async fn convert_to_assets(
+        &self,
+        shares: &ForeignU128,
+    ) -> Result<ForeignU128, ErrorWrapper> {
         let shares = U128(parse_u128(shares)?);
         self.vault_view_u128("convert_to_assets", (shares,)).await
     }
@@ -1146,7 +1183,10 @@ impl Client {
     }
 
     #[instrument(skip(self, assets))]
-    pub async fn preview_withdraw(&self, assets: &ForeignU128) -> Result<ForeignU128, ErrorWrapper> {
+    pub async fn preview_withdraw(
+        &self,
+        assets: &ForeignU128,
+    ) -> Result<ForeignU128, ErrorWrapper> {
         let assets = U128(parse_u128(assets)?);
         self.vault_view_u128("preview_withdraw", (assets,)).await
     }
@@ -1160,12 +1200,7 @@ impl Client {
     #[instrument(skip(self))]
     pub async fn get_withdrawing_op_id(&self) -> Result<Option<u64>, ErrorWrapper> {
         let res = self
-            .view::<Option<U64>>(
-                &self.vault,
-                "get_withdrawing_op_id",
-                (),
-                self.timeout,
-            )
+            .view::<Option<U64>>(&self.vault, "get_withdrawing_op_id", (), self.timeout)
             .await
             .map_err(ErrorWrapper::from)?;
         Ok(res.map(|u| u.0))
@@ -1173,9 +1208,14 @@ impl Client {
 
     #[instrument(skip(self))]
     pub async fn has_pending_market_withdrawal(&self) -> Result<bool, ErrorWrapper> {
-        self.view(&self.vault, "has_pending_market_withdrawal", (), self.timeout)
-            .await
-            .map_err(ErrorWrapper::from)
+        self.view(
+            &self.vault,
+            "has_pending_market_withdrawal",
+            (),
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)
     }
 
     #[instrument(skip(self))]
@@ -1201,9 +1241,14 @@ impl Client {
 
     #[instrument(skip(self))]
     pub async fn peek_next_pending_withdrawal_id(&self) -> Result<Option<u64>, ErrorWrapper> {
-        self.view(&self.vault, "peek_next_pending_withdrawal_id", (), self.timeout)
-            .await
-            .map_err(ErrorWrapper::from)
+        self.view(
+            &self.vault,
+            "peek_next_pending_withdrawal_id",
+            (),
+            self.timeout,
+        )
+        .await
+        .map_err(ErrorWrapper::from)
     }
 
     #[instrument(skip(self, market))]
@@ -1225,10 +1270,9 @@ impl Client {
             return Ok(None);
         };
 
-        let id_u32: u32 = u
-            .0
-            .try_into()
-            .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))?;
+        let id_u32: u32 =
+            u.0.try_into()
+                .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))?;
 
         Ok(Some(MarketId(id_u32)))
     }
@@ -1263,19 +1307,18 @@ impl Client {
             .await
             .map_err(ErrorWrapper::from)?;
 
-        let mapped = res
-            .into_iter()
-            .map(|(id, account)| {
-                let id_u32: u32 = id
-                    .0
-                    .try_into()
-                    .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))?;
-                Ok(MarketWithId {
-                    market_id: MarketId(id_u32),
-                    account: account.to_string().into(),
+        let mapped =
+            res.into_iter()
+                .map(|(id, account)| {
+                    let id_u32: u32 = id.0.try_into().map_err(|_| {
+                        ErrorWrapper::Wrapped("market id out of u32 range".to_string())
+                    })?;
+                    Ok(MarketWithId {
+                        market_id: MarketId(id_u32),
+                        account: account.to_string().into(),
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, ErrorWrapper>>()?;
+                .collect::<Result<Vec<_>, ErrorWrapper>>()?;
 
         Ok(mapped)
     }
@@ -1393,7 +1436,8 @@ impl Client {
 
     #[instrument(skip(self, route))]
     pub async fn execute_withdrawal(&self, route: &[MarketId]) -> Result<(), ErrorWrapper> {
-        let route: Vec<templar_common::vault::MarketId> = route.iter().copied().map(Into::into).collect();
+        let route: Vec<templar_common::vault::MarketId> =
+            route.iter().copied().map(Into::into).collect();
         self.vault_call("execute_withdrawal", (route,)).await
     }
 
@@ -1406,7 +1450,11 @@ impl Client {
     ) -> Result<(), ErrorWrapper> {
         self.vault_call(
             "execute_market_withdrawal",
-            (U64::from(op_id), templar_common::vault::MarketId::from(market), batch_limit),
+            (
+                U64::from(op_id),
+                templar_common::vault::MarketId::from(market),
+                batch_limit,
+            ),
         )
         .await
     }
@@ -1419,7 +1467,10 @@ impl Client {
     ) -> Result<(), ErrorWrapper> {
         self.vault_call(
             "execute_rebalance_withdrawal",
-            (templar_common::vault::MarketId::from(market_id), batch_limit),
+            (
+                templar_common::vault::MarketId::from(market_id),
+                batch_limit,
+            ),
         )
         .await
     }
@@ -1449,7 +1500,8 @@ impl Client {
 
     #[instrument(skip(self, account))]
     pub async fn set_curator(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("set_curator", (self.near_id(account)?,)).await
+        self.vault_call("set_curator", (self.near_id(account)?,))
+            .await
     }
 
     #[instrument(skip(self, account))]
@@ -1522,11 +1574,8 @@ impl Client {
         new_timelock_ns: u64,
         kind: Option<TimelockKind>,
     ) -> Result<(), ErrorWrapper> {
-        self.vault_call(
-            "submit_timelock",
-            (U64::from(new_timelock_ns), kind),
-        )
-        .await
+        self.vault_call("submit_timelock", (U64::from(new_timelock_ns), kind))
+            .await
     }
 
     #[instrument(skip(self))]
@@ -1552,7 +1601,8 @@ impl Client {
 
     #[instrument(skip(self, market))]
     pub async fn accept_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("accept_cap", (self.near_id(market)?,)).await
+        self.vault_call("accept_cap", (self.near_id(market)?,))
+            .await
     }
 
     #[instrument(skip(self, market))]
@@ -1562,7 +1612,10 @@ impl Client {
     }
 
     #[instrument(skip(self, update))]
-    pub async fn submit_cap_group_update(&self, update: CapGroupUpdate) -> Result<(), ErrorWrapper> {
+    pub async fn submit_cap_group_update(
+        &self,
+        update: CapGroupUpdate,
+    ) -> Result<(), ErrorWrapper> {
         let update: templar_common::vault::CapGroupUpdate = update.try_into()?;
         self.vault_call("submit_cap_group_update", (update,)).await
     }
@@ -1582,7 +1635,8 @@ impl Client {
         update: CapGroupUpdateKey,
     ) -> Result<(), ErrorWrapper> {
         let key: templar_common::vault::CapGroupUpdateKey = update.into();
-        self.vault_call("revoke_pending_cap_group_update", (key,)).await
+        self.vault_call("revoke_pending_cap_group_update", (key,))
+            .await
     }
 
     #[instrument(skip(self, restrictions))]
@@ -1590,9 +1644,8 @@ impl Client {
         &self,
         restrictions: Option<Restrictions>,
     ) -> Result<(), ErrorWrapper> {
-        let r: Option<templar_common::vault::Restrictions> = restrictions
-            .map(TryInto::try_into)
-            .transpose()?;
+        let r: Option<templar_common::vault::Restrictions> =
+            restrictions.map(TryInto::try_into).transpose()?;
         self.vault_call("set_restrictions", (r,)).await
     }
 
@@ -1623,11 +1676,8 @@ impl Client {
         &self,
         market: &AccountId,
     ) -> Result<(), ErrorWrapper> {
-        self.vault_call(
-            "revoke_pending_market_removal",
-            (self.near_id(market)?,),
-        )
-        .await
+        self.vault_call("revoke_pending_market_removal", (self.near_id(market)?,))
+            .await
     }
 
     #[instrument(skip(self, markets, deposit_yocto))]
@@ -1704,7 +1754,7 @@ impl Client {
             args: args_bytes.clone(),
         };
 
-        let cache = { self.view_cache.read().unwrap().clone() };
+        let cache = { self.view_cache.read_recover().clone() };
         if let Some(cache) = &cache {
             if let Some(bytes) = cache.get(&key) {
                 let value = serde_json::from_slice(&bytes)?;
@@ -1988,7 +2038,7 @@ fn should_retry(err: &anyhow::Error) -> bool {
     false
 }
 
-fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
+pub(crate) fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
     if let Ok(v) = s.parse::<u128>() {
         return Ok(v);
     }
@@ -1997,26 +2047,72 @@ fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
     inner.parse::<u128>().map_err(ErrorWrapper::from)
 }
 
-fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
+pub(crate) fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
     NearAccountId::try_from(account_id.clone())
 }
 
 #[derive(uniffi::Error, Debug)]
 pub enum ErrorWrapper {
+    /// The operation timed out.
+    Timeout(String),
+
+    /// Transaction submission failed due to a nonce mismatch.
+    InvalidNonce,
+
+    /// Input account ID was invalid.
+    InvalidAccountId(String),
+
+    /// Input numeric string was invalid.
+    InvalidU128(String),
+
+    /// JSON-RPC related error.
+    Rpc(String),
+
+    /// (De)serialization error.
+    Serde(String),
+
+    /// On-chain transaction failure.
+    TransactionFailed(String),
+
+    /// Fallback bucket.
     Wrapped(String),
+}
+
+impl<T: Into<anyhow::Error>> From<T> for ErrorWrapper {
+    fn from(err: T) -> Self {
+        let err: anyhow::Error = err.into();
+        let msg = err.to_string();
+
+        // Try to preserve error category for FFI consumers.
+        if msg.contains("InvalidNonce") || msg.contains("invalid nonce") {
+            return ErrorWrapper::InvalidNonce;
+        }
+
+        for cause in err.chain() {
+            if cause.is::<tokio::time::error::Elapsed>() {
+                return ErrorWrapper::Timeout(msg);
+            }
+            if cause.is::<serde_json::Error>() {
+                return ErrorWrapper::Serde(msg);
+            }
+        }
+
+        ErrorWrapper::Wrapped(msg)
+    }
 }
 
 impl Display for ErrorWrapper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorWrapper::Wrapped(err) => write!(f, "Error: {}", err),
+            ErrorWrapper::Timeout(msg) => write!(f, "Timeout: {msg}"),
+            ErrorWrapper::InvalidNonce => write!(f, "InvalidNonce"),
+            ErrorWrapper::InvalidAccountId(msg) => write!(f, "{msg}"),
+            ErrorWrapper::InvalidU128(msg) => write!(f, "{msg}"),
+            ErrorWrapper::Rpc(msg) => write!(f, "RPC error: {msg}"),
+            ErrorWrapper::Serde(msg) => write!(f, "Serde error: {msg}"),
+            ErrorWrapper::TransactionFailed(msg) => write!(f, "Transaction failed: {msg}"),
+            ErrorWrapper::Wrapped(msg) => write!(f, "{msg}"),
         }
-    }
-}
-
-impl<T: Into<anyhow::Error>> From<T> for ErrorWrapper {
-    fn from(err: T) -> Self {
-        ErrorWrapper::Wrapped(err.into().to_string())
     }
 }
 
@@ -2060,10 +2156,11 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            ErrorWrapper::Wrapped(msg) => {
+            ErrorWrapper::InvalidAccountId(msg) => {
                 assert!(msg.contains("Invalid AccountId"));
                 assert!(msg.contains("not a valid account id!!!"));
             }
+            other => panic!("unexpected error variant: {other:?}"),
         }
     }
 
@@ -2280,7 +2377,11 @@ mod tests {
             let content = std::fs::read_to_string(&file).unwrap_or_default();
 
             let is_self = file.file_name().and_then(|n| n.to_str()) == Some("lib.rs")
-                && file.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("src");
+                && file
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    == Some("src");
 
             let mut in_guard = false;
             let mut brace_depth: i32 = 0;
