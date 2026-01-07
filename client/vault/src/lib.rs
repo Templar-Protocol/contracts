@@ -59,9 +59,12 @@ pub struct AccountId(String);
 
 uniffi::custom_type!(AccountId, String);
 
-impl From<AccountId> for near_account_id::AccountId {
-    fn from(value: AccountId) -> Self {
-        near_account_id::AccountId::from_str(&value.0).expect("Invalid AccountId")
+impl TryFrom<AccountId> for near_account_id::AccountId {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: AccountId) -> Result<Self, Self::Error> {
+        near_account_id::AccountId::from_str(&value.0)
+            .map_err(|e| ErrorWrapper::Wrapped(format!("Invalid AccountId '{}': {}", value.0, e)))
     }
 }
 
@@ -286,7 +289,7 @@ impl TryFrom<Fee> for templar_common::vault::Fee<U128> {
     fn try_from(value: Fee) -> Result<Self, Self::Error> {
         Ok(templar_common::vault::Fee {
             fee: U128(parse_u128(&value.fee)?),
-            recipient: NearAccountId::from(value.recipient),
+            recipient: parse_account_id(&value.recipient)?,
         })
     }
 }
@@ -451,21 +454,27 @@ impl From<templar_common::vault::Restrictions> for Restrictions {
     }
 }
 
-impl From<Restrictions> for templar_common::vault::Restrictions {
-    fn from(value: Restrictions) -> Self {
-        match value {
+impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
+    type Error = ErrorWrapper;
+
+    fn try_from(value: Restrictions) -> Result<Self, Self::Error> {
+        Ok(match value {
             Restrictions::Paused => templar_common::vault::Restrictions::Paused,
             Restrictions::BlackList(accounts) => {
-                let set: BTreeSet<NearAccountId> =
-                    accounts.into_iter().map(NearAccountId::from).collect();
+                let set: BTreeSet<NearAccountId> = accounts
+                    .into_iter()
+                    .map(|a| parse_account_id(&a))
+                    .collect::<Result<_, _>>()?;
                 templar_common::vault::Restrictions::BlackList(set)
             }
             Restrictions::WhiteList(accounts) => {
-                let set: BTreeSet<NearAccountId> =
-                    accounts.into_iter().map(NearAccountId::from).collect();
+                let set: BTreeSet<NearAccountId> = accounts
+                    .into_iter()
+                    .map(|a| parse_account_id(&a))
+                    .collect::<Result<_, _>>()?;
                 templar_common::vault::Restrictions::WhiteList(set)
             }
-        }
+        })
     }
 }
 
@@ -911,11 +920,11 @@ impl Client {
         let inner = JsonRpcClient::connect(rpc_url);
 
         let signer = InMemorySigner::from_secret_key(
-            NearAccountId::from(signer_account.clone()),
+            parse_account_id(signer_account)?,
             SecretKey::from_str(signer_key).map_err(ErrorWrapper::from)?,
         );
 
-        let vault: NearAccountId = NearAccountId::from(vault.clone());
+        let vault: NearAccountId = parse_account_id(vault)?;
 
         Ok(Self {
             inner,
@@ -940,11 +949,11 @@ impl Client {
         let inner = JsonRpcClient::connect(rpc_url);
 
         let signer = InMemorySigner::from_secret_key(
-            NearAccountId::from(signer_account.clone()),
+            parse_account_id(signer_account)?,
             SecretKey::from_str(signer_key).map_err(ErrorWrapper::from)?,
         );
 
-        let vault: NearAccountId = NearAccountId::from(vault.clone());
+        let vault: NearAccountId = parse_account_id(vault)?;
 
         Ok(Self {
             inner,
@@ -1206,7 +1215,7 @@ impl Client {
             .view::<Option<U64>>(
                 &self.vault,
                 "get_market_id_of_account",
-                (self.near_id(market),),
+                (self.near_id(market)?,),
                 self.timeout,
             )
             .await
@@ -1351,7 +1360,7 @@ impl Client {
         let deposit = parse_u128(deposit_yocto)?;
         self.vault_call_with(
             "redeem",
-            (shares, self.near_id(receiver)),
+            (shares, self.near_id(receiver)?),
             None,
             Some(deposit),
         )
@@ -1369,7 +1378,7 @@ impl Client {
         let deposit = parse_u128(deposit_yocto)?;
         self.vault_call_with(
             "withdraw",
-            (assets, self.near_id(receiver)),
+            (assets, self.near_id(receiver)?),
             None,
             Some(deposit),
         )
@@ -1422,7 +1431,7 @@ impl Client {
 
     #[instrument(skip(self, token))]
     pub async fn skim(&self, token: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("skim", (self.near_id(token),)).await
+        self.vault_call("skim", (self.near_id(token)?,)).await
     }
 
     #[instrument(skip(self, markets))]
@@ -1440,7 +1449,7 @@ impl Client {
 
     #[instrument(skip(self, account))]
     pub async fn set_curator(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("set_curator", (self.near_id(account),)).await
+        self.vault_call("set_curator", (self.near_id(account)?,)).await
     }
 
     #[instrument(skip(self, account))]
@@ -1449,13 +1458,13 @@ impl Client {
         account: &AccountId,
         allowed: bool,
     ) -> Result<(), ErrorWrapper> {
-        self.vault_call("set_is_allocator", (self.near_id(account), allowed))
+        self.vault_call("set_is_allocator", (self.near_id(account)?, allowed))
             .await
     }
 
     #[instrument(skip(self, new_g))]
     pub async fn submit_guardian(&self, new_g: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("submit_guardian", (self.near_id(new_g),))
+        self.vault_call("submit_guardian", (self.near_id(new_g)?,))
             .await
     }
 
@@ -1471,7 +1480,7 @@ impl Client {
 
     #[instrument(skip(self, new_s))]
     pub async fn submit_sentinel(&self, new_s: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("submit_sentinel", (self.near_id(new_s),))
+        self.vault_call("submit_sentinel", (self.near_id(new_s)?,))
             .await
     }
 
@@ -1487,7 +1496,7 @@ impl Client {
 
     #[instrument(skip(self, account))]
     pub async fn set_skim_recipient(&self, account: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("set_skim_recipient", (self.near_id(account),))
+        self.vault_call("set_skim_recipient", (self.near_id(account)?,))
             .await
     }
 
@@ -1537,18 +1546,18 @@ impl Client {
         new_cap: &ForeignU128,
     ) -> Result<(), ErrorWrapper> {
         let new_cap = U128(parse_u128(new_cap)?);
-        self.vault_call("submit_cap", (self.near_id(market), new_cap))
+        self.vault_call("submit_cap", (self.near_id(market)?, new_cap))
             .await
     }
 
     #[instrument(skip(self, market))]
     pub async fn accept_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("accept_cap", (self.near_id(market),)).await
+        self.vault_call("accept_cap", (self.near_id(market)?,)).await
     }
 
     #[instrument(skip(self, market))]
     pub async fn revoke_pending_cap(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("revoke_pending_cap", (self.near_id(market),))
+        self.vault_call("revoke_pending_cap", (self.near_id(market)?,))
             .await
     }
 
@@ -1581,7 +1590,9 @@ impl Client {
         &self,
         restrictions: Option<Restrictions>,
     ) -> Result<(), ErrorWrapper> {
-        let r: Option<templar_common::vault::Restrictions> = restrictions.map(Into::into);
+        let r: Option<templar_common::vault::Restrictions> = restrictions
+            .map(TryInto::try_into)
+            .transpose()?;
         self.vault_call("set_restrictions", (r,)).await
     }
 
@@ -1597,13 +1608,13 @@ impl Client {
 
     #[instrument(skip(self, market))]
     pub async fn submit_market_removal(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("submit_market_removal", (self.near_id(market),))
+        self.vault_call("submit_market_removal", (self.near_id(market)?,))
             .await
     }
 
     #[instrument(skip(self, market))]
     pub async fn accept_market_removal(&self, market: &AccountId) -> Result<(), ErrorWrapper> {
-        self.vault_call("accept_market_removal", (self.near_id(market),))
+        self.vault_call("accept_market_removal", (self.near_id(market)?,))
             .await
     }
 
@@ -1614,7 +1625,7 @@ impl Client {
     ) -> Result<(), ErrorWrapper> {
         self.vault_call(
             "revoke_pending_market_removal",
-            (self.near_id(market),),
+            (self.near_id(market)?,),
         )
         .await
     }
@@ -1910,8 +1921,8 @@ impl Client {
     }
 
     #[inline]
-    fn near_id(&self, id: &AccountId) -> NearAccountId {
-        NearAccountId::from(id.clone())
+    fn near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
+        parse_account_id(id)
     }
 
     async fn vault_view_u128(
@@ -1986,6 +1997,10 @@ fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
     inner.parse::<u128>().map_err(ErrorWrapper::from)
 }
 
+fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
+    NearAccountId::try_from(account_id.clone())
+}
+
 #[derive(uniffi::Error, Debug)]
 pub enum ErrorWrapper {
     Wrapped(String),
@@ -2034,8 +2049,22 @@ mod tests {
 
     #[rstest]
     fn account_id_conversion_happy_path(everything: AccountId) {
-        let near_id: NearAccountId = everything.clone().into();
+        let near_id: NearAccountId = everything.clone().try_into().unwrap();
         assert_eq!(near_id.as_str(), "topgunbakugo.testnet");
+    }
+
+    #[test]
+    fn account_id_conversion_invalid_returns_error() {
+        let invalid = AccountId("not a valid account id!!!".to_string());
+        let result: Result<NearAccountId, ErrorWrapper> = invalid.try_into();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            ErrorWrapper::Wrapped(msg) => {
+                assert!(msg.contains("Invalid AccountId"));
+                assert!(msg.contains("not a valid account id!!!"));
+            }
+        }
     }
 
     #[test]
