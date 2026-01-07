@@ -68,3 +68,31 @@ impl<'a, T, S: GuardSpec<T>> DerefMut for Guard<'a, T, S> {
         self.target
     }
 }
+
+#[must_use = "drops immediately if not bound"]
+pub struct OnDrop<F: FnOnce()> {
+    f: Option<F>,
+}
+
+impl<F: FnOnce()> OnDrop<F> {
+    pub fn new(f: F) -> Self {
+        Self { f: Some(f) }
+    }
+
+    pub fn disarm(mut self) {
+        self.f = None;
+    }
+}
+
+impl<F: FnOnce()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.f.take() {
+            f();
+        }
+    }
+}
+
+#[inline]
+pub fn defer<F: FnOnce()>(f: F) -> OnDrop<F> {
+    OnDrop::new(f)
+}
