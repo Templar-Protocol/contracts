@@ -49,12 +49,30 @@ pub struct KeyCredential {
 
 impl KeyCredential {
     fn into_signer(mut self) -> Result<InMemorySigner, ErrorWrapper> {
-        let account_id = parse_account_id(&self.account_id)?;
-        let secret_key = SecretKey::from_str(&self.secret_key)
-            .map_err(|e| ErrorWrapper::Wrapped(e.to_string()))?;
+        // Helper to ensure secret is always zeroed, even on error paths
+        let zeroize_secret = |s: &mut String| {
+            // SAFETY: as_bytes_mut on String is safe; we're just zeroing the bytes
+            unsafe { s.as_bytes_mut().zeroize() };
+        };
 
-        // SAFETY: zeroize secret key string bytes before drop
-        unsafe { self.secret_key.as_bytes_mut().zeroize() };
+        let account_id = match parse_account_id(&self.account_id) {
+            Ok(id) => id,
+            Err(e) => {
+                zeroize_secret(&mut self.secret_key);
+                return Err(e);
+            }
+        };
+
+        let secret_key = match SecretKey::from_str(&self.secret_key) {
+            Ok(k) => k,
+            Err(e) => {
+                zeroize_secret(&mut self.secret_key);
+                return Err(ErrorWrapper::Wrapped(e.to_string()));
+            }
+        };
+
+        // Zero the source string now that we've parsed it
+        zeroize_secret(&mut self.secret_key);
 
         Ok(InMemorySigner {
             account_id,
