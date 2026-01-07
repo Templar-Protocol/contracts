@@ -541,7 +541,7 @@ impl From<CapGroupUpdateKey> for templar_common::vault::CapGroupUpdateKey {
 }
 
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(crate = "serde")]
+#[serde(crate = "near_sdk::serde")]
 pub enum TimelockKind {
     Guardian,
     Sentinel,
@@ -676,28 +676,12 @@ pub struct PendingGovernanceAction {
     pub valid_at_ns: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(crate = "near_sdk::serde")]
-pub(crate) enum TimelockKindSerde {
-    Guardian,
-    Sentinel,
-    Config,
-    Cap,
-    MarketRemoval,
-}
-
-impl From<TimelockKindSerde> for TimelockKind {
-    fn from(value: TimelockKindSerde) -> Self {
-        match value {
-            TimelockKindSerde::Guardian => TimelockKind::Guardian,
-            TimelockKindSerde::Sentinel => TimelockKind::Sentinel,
-            TimelockKindSerde::Config => TimelockKind::Config,
-            TimelockKindSerde::Cap => TimelockKind::Cap,
-            TimelockKindSerde::MarketRemoval => TimelockKind::MarketRemoval,
-        }
-    }
-}
-
+// Wire format types for deserializing NEAR RPC responses.
+//
+// These exist because NEAR JSON uses U64/U128 wrappers (numbers as strings like "123")
+// while UniFFI needs primitive types (u64) or String for large integers. The two
+// representations are incompatible, so we deserialize into these intermediate types
+// then convert to the UniFFI-exported types via From impls.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
 pub(crate) enum TimelockedActionSerde {
@@ -708,7 +692,7 @@ pub(crate) enum TimelockedActionSerde {
         account: String,
     },
     TimelockConfigChange {
-        kind: Option<TimelockKindSerde>,
+        kind: Option<TimelockKind>,
         new_timelock_ns: U64,
     },
     FeesChange {
@@ -751,7 +735,7 @@ impl From<TimelockedActionSerde> for TimelockedAction {
                 kind,
                 new_timelock_ns,
             } => TimelockedAction::TimelockConfigChange {
-                kind: kind.map(Into::into),
+                kind,
                 new_timelock_ns: new_timelock_ns.0,
             },
             TimelockedActionSerde::FeesChange { fees } => {
