@@ -4,7 +4,9 @@ use crate::{
     aum::AUM,
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
-    storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
+    storage_management::{
+        require_attached_at_least, require_attached_for_pending_withdrawal, yocto_for_ft_account,
+    },
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -276,7 +278,7 @@ impl Contract {
         Rbac::add_role(&mut contract, &sentinel, &Role::Sentinel);
 
         contract.set_storage_balance_bounds(&StorageBalanceBounds {
-            min: NearToken::from_millinear(2),
+            min: NearToken::from_yoctonear(yocto_for_ft_account()),
             max: None,
         });
         contract
