@@ -1,0 +1,154 @@
+use near_sdk::{
+    json_types::U128,
+    serde_json::{self, json},
+    Gas, NearToken,
+};
+use near_workspaces::{
+    network::Sandbox,
+    result::{ExecutionOutcome, ExecutionResult},
+    Worker,
+};
+use rstest::rstest;
+
+use templar_common::interest_rate_strategy::InterestRateStrategy;
+use test_utils::*;
+
+#[allow(clippy::needless_pass_by_value)]
+fn assert_no_failures<T>(result: ExecutionResult<T>) {
+    assert_eq!(result.failures(), Vec::<&ExecutionOutcome>::new());
+}
+
+#[rstest]
+#[tokio::test]
+async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(c)
+        accounts(borrow_user, supply_user, third_party)
+        config(|c| {
+            c.borrow_interest_rate_strategy = InterestRateStrategy::zero();
+        })
+    );
+
+    assert_no_failures(
+        c.borrow_asset
+            .transfer_call(
+                &supply_user,
+                c.market.contract().id(),
+                10_000_000,
+                r#""Supply""#,
+            )
+            .await,
+    );
+
+    assert_no_failures(
+        c.call_exec(
+            &supply_user,
+            "harvest_yield",
+            json!({
+                "account_id": supply_user.id(),
+                "mode": "Default",
+            }),
+            NearToken::from_near(0),
+            Gas::from_tgas(30),
+        )
+        .await,
+    );
+
+    assert_no_failures(
+        c.collateral_asset
+            .transfer_call(
+                &borrow_user,
+                c.market.contract().id(),
+                2_000_000,
+                r#""Collateralize""#,
+            )
+            .await,
+    );
+
+    assert_no_failures(
+        c.call_exec(
+            &borrow_user,
+            "borrow",
+            json!({
+                "amount": U128(1_000_000),
+            }),
+            NearToken::from_near(0),
+            Gas::from_tgas(100),
+        )
+        .await,
+    );
+
+    assert_no_failures(
+        c.borrow_asset
+            .transfer_call(
+                &borrow_user,
+                c.market.contract().id(),
+                250_000,
+                r#""Repay""#,
+            )
+            .await,
+    );
+
+    assert_no_failures(
+        c.borrow_asset
+            .transfer_call(
+                &third_party,
+                c.market.contract().id(),
+                250_000,
+                serde_json::to_string(&json!({
+                    "RepayAccount": {
+                        "account_id": borrow_user.id(),
+                    },
+                }))
+                .unwrap(),
+            )
+            .await,
+    );
+
+    assert_no_failures(
+        c.call_exec(
+            &borrow_user,
+            "withdraw_collateral",
+            json!({
+                "amount": U128(1_000_000),
+            }),
+            NearToken::from_near(0),
+            Gas::from_tgas(100),
+        )
+        .await,
+    );
+
+    assert_no_failures(
+        c.call_exec(
+            &third_party,
+            "apply_interest",
+            json!({
+                "account_id": borrow_user.id(),
+                "snapshot_limit": 100,
+            }),
+            NearToken::from_near(0),
+            Gas::from_tgas(100),
+        )
+        .await,
+    );
+
+    c.set_borrow_asset_price(2.0).await;
+
+    assert_no_failures(
+        c.borrow_asset
+            .transfer_call(
+                &third_party,
+                c.market.contract().id(),
+                500_000,
+                serde_json::to_string(&json!({
+                    "Liquidate": {
+                        "account_id": borrow_user.id(),
+                        "amount": U128(1_000_000),
+                    },
+                }))
+                .unwrap(),
+            )
+            .await,
+    );
+}
