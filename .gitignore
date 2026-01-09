@@ -1,6 +1,8 @@
 # Rust
 /target/
 
+**node_modules/
+
 # IDEs and Editors
 .helix/
 .idea/

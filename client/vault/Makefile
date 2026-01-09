@@ -26,7 +26,7 @@ else
 	endif
 endif
 
-.PHONY: gen python smoke-test
+.PHONY: gen python smoke-test abi
 
 gen:
 	cargo run --features=uniffi/cli --bin uniffi-bindgen $@
@@ -41,3 +41,9 @@ smoke-test: python
 
 $(PY_OUT):
 	mkdir -p "$(PY_OUT)"
+
+abi:
+	cd ../../contract/vault && cargo near abi
+	mkdir -p web/src/abi/generated
+	cp ../../target/near/templar_vault_contract/templar_vault_contract_abi.json web/src/abi/generated/vault.abi.json
+	cd web && npm run generate-types
