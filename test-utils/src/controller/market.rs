@@ -12,7 +12,7 @@ use templar_common::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration, RepayMsg},
+    market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
     number::Decimal,
     oracle::pyth::{self, OracleResponse},
     price::Convert,
@@ -365,15 +365,17 @@ impl UnifiedMarketController {
         amount: u128,
     ) -> ExecutionSuccess {
         eprintln!("{} repaying {amount} tokens...", borrow_user.id());
+        let msg = account_id.map_or(DepositMsg::Repay, |account_id| {
+            DepositMsg::RepayAccount(RepayAccountMsg {
+                account_id: account_id.to_owned(),
+            })
+        });
         self.borrow_asset
             .transfer_call(
                 borrow_user,
                 self.market.contract().id(),
                 amount,
-                serde_json::to_string(&DepositMsg::Repay(RepayMsg {
-                    account_id: account_id.map(ToOwned::to_owned),
-                }))
-                .unwrap(),
+                serde_json::to_string(&msg).unwrap(),
             )
             .await
     }

@@ -14,7 +14,10 @@ use near_primitives::{
     views::{FinalExecutionOutcomeView, TxExecutionStatus},
 };
 use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
-use templar_common::market::DepositMsg;
+use templar_common::{
+    asset::{BorrowAsset, CollateralAsset},
+    market::DepositMsg,
+};
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
@@ -297,19 +300,19 @@ impl App {
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
-                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay(..)) {
-                        errors.push(FunctionCallRejectionReason::InvalidMsgForAsset {
+                    if !msg.expects_borrow_asset() {
+                        errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: "\"Supply\" or \"Repay\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
+                            expected: market_account_ids.collateral_asset.to_string(),
+                            received: transfer.asset::<BorrowAsset>().to_string(),
                         });
                     }
                 } else if transfer.asset() == market_account_ids.collateral_asset {
-                    if !matches!(msg, DepositMsg::Collateralize) {
-                        errors.push(FunctionCallRejectionReason::InvalidMsgForAsset {
+                    if msg.expects_borrow_asset() {
+                        errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: "\"Collateralize\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
+                            expected: market_account_ids.borrow_asset.to_string(),
+                            received: transfer.asset::<CollateralAsset>().to_string(),
                         });
                     }
                 } else {

@@ -16,6 +16,12 @@ use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {
+    pub fn retrieve_price_pair(&self) -> Promise {
+        self.configuration
+            .price_oracle_configuration
+            .retrieve_price_pair()
+    }
+
     pub fn price_pair(&self, oracle_response: OracleResponse) -> PricePair {
         self.configuration
             .price_oracle_configuration
