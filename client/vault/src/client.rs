@@ -216,6 +216,39 @@ impl VaultClient {
     pub async fn refresh_all_markets(&self) -> Result<crate::RealAssetsReport, ErrorWrapper> {
         self.inner.refresh_all_markets().await
     }
+
+    // -------------------------------------------------------------------------
+    // FT transfer-call support (for deposit flows)
+    // -------------------------------------------------------------------------
+
+    /// Call `ft_transfer_call` on a token contract.
+    ///
+    /// This is the standard NEP-141 method for transferring tokens with a message
+    /// to a receiver contract.
+    pub async fn ft_transfer_call(
+        &self,
+        token: &AccountId,
+        receiver: &AccountId,
+        amount: &crate::ForeignU128,
+        msg: String,
+        gas: Option<Gas>,
+    ) -> Result<(), ErrorWrapper> {
+        self.inner
+            .ft_transfer_call(token, receiver, amount, msg, gas)
+            .await
+    }
+
+    /// Deposit assets into the vault via `ft_transfer_call`.
+    ///
+    /// This fetches the vault configuration to determine the underlying token,
+    /// then calls `ft_transfer_call` with `DepositMsg::Supply`.
+    pub async fn deposit_supply(
+        &self,
+        amount: &crate::ForeignU128,
+        gas: Option<Gas>,
+    ) -> Result<(), ErrorWrapper> {
+        self.inner.deposit_supply(amount, gas).await
+    }
 }
 
 // -------------------------------------------------------------------------
