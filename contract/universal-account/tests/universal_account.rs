@@ -39,7 +39,7 @@ fn mint(amount: u128) -> FunctionCallAction {
         }))
         .unwrap()
         .into(),
-        amount: NearToken::from_near(0),
+        amount: NearToken::ZERO,
         gas: near_sdk::Gas::from_tgas(30),
     }
 }
@@ -297,7 +297,7 @@ pub async fn universal_account(
         key_entry.salt,
         Some(
             env::keccak256_array(
-                &borsh::to_vec(&(key_entry.block_height, key_entry.index)).unwrap()
+                borsh::to_vec(&(key_entry.block_height, key_entry.index)).unwrap()
             )
             .into()
         )

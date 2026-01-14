@@ -182,7 +182,7 @@ macro_rules! define {
             $($arg : impl Into<$arg_t>),*
         ) -> define! { @modifiers is_exec($($m)*) then(::near_workspaces::result::ExecutionSuccess) else(($($ret_t)?)) } {
             #[allow(unused_assignments, unused_mut)]
-            let mut deposit = ::near_sdk::NearToken::from_near(0);
+            let mut deposit = ::near_sdk::NearToken::ZERO;
             #[allow(unused_assignments, unused_mut)]
             let mut gas = ::near_sdk::Gas::from_tgas(10);
 

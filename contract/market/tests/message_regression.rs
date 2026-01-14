@@ -49,7 +49,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
                 "account_id": supply_user.id(),
                 "mode": "Default",
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(30),
         )
         .await,
@@ -73,7 +73,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
             json!({
                 "amount": U128(1_000_000),
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(100),
         )
         .await,
@@ -113,7 +113,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
             json!({
                 "amount": U128(1_000_000),
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(100),
         )
         .await,
@@ -127,7 +127,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
                 "account_id": borrow_user.id(),
                 "snapshot_limit": 100,
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(100),
         )
         .await,

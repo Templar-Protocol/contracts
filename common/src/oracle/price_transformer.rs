@@ -70,7 +70,7 @@ impl Call {
         near_sdk::Promise::new(self.account_id.clone()).function_call(
             self.method_name.clone(),
             self.args.0.clone(),
-            near_sdk::NearToken::from_near(0),
+            near_sdk::NearToken::ZERO,
             Gas::from_gas(self.gas.0),
         )
     }

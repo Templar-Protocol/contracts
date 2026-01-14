@@ -15,7 +15,7 @@ use near_primitives::{
 use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
-    AccountId, Gas,
+    AccountId, NearToken,
 };
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 
@@ -557,8 +557,8 @@ impl SwapProvider for RefSwap {
                     "Failed to serialize storage_deposit args: {e}"
                 ))
             })?,
-            gas: Gas::from_tgas(10).as_gas(),
-            deposit: min_deposit,
+            gas: near_primitives::gas::Gas::from_teragas(10),
+            deposit: NearToken::from_yoctonear(min_deposit),
         };
 
         let tx = Transaction::V0(TransactionV0 {

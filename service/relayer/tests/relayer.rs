@@ -199,8 +199,8 @@ pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
         actions: vec![Action::from(FunctionCallAction {
             method_name: "apply_interest".to_string(),
             args: b"{}".to_vec(),
-            gas: 30 * 10_u64.pow(12),
-            deposit: 0,
+            gas: near_primitives::gas::Gas::from_teragas(30),
+            deposit: NearToken::ZERO,
         })
         .try_into()
         .unwrap()],
@@ -302,7 +302,7 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] init_test: InitTe
     .unwrap();
 
     let challenge = sha256_array(
-        &[
+        [
             b"\x19UAccount Signed Message:\n".to_vec(),
             message.as_bytes().to_vec(),
         ]
@@ -481,7 +481,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         vec![transaction::FunctionCallAction {
             function_name: "apply_interest".to_string(),
             arguments: b"{}".to_vec().into(),
-            amount: NearToken::from_near(0),
+            amount: NearToken::ZERO,
             gas: near_sdk::Gas::from_tgas(250),
         }
         .into()],
@@ -544,7 +544,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         vec![transaction::FunctionCallAction {
             function_name: "add_public_key".to_string(),
             arguments: b"{}".to_vec().into(),
-            amount: NearToken::from_near(0),
+            amount: NearToken::ZERO,
             gas: near_sdk::Gas::from_tgas(20),
         }
         .into()],
@@ -742,7 +742,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
             }))
             .unwrap()
             .into(),
-            amount: NearToken::from_near(0),
+            amount: NearToken::ZERO,
             gas: near_sdk::Gas::from_tgas(25),
         }
         .into()],
@@ -806,7 +806,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         vec![transaction::FunctionCallAction {
             function_name: "execute".to_string(),
             arguments: b"{}".to_vec().into(),
-            amount: NearToken::from_near(0),
+            amount: NearToken::ZERO,
             gas: near_sdk::Gas::from_tgas(200),
         }
         .into()],

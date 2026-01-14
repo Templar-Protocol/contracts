@@ -164,6 +164,6 @@ pub trait HashForSigning {
     }
 
     fn hash_for_signing(&self) -> [u8; 32] {
-        near_sdk::env::sha256_array(&self.preimage_for_signing())
+        near_sdk::env::sha256_array(self.preimage_for_signing())
     }
 }

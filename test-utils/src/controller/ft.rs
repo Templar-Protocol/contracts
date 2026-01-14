@@ -20,14 +20,15 @@ impl ContractController for FtController {
 impl StorageManagementController for FtController {}
 
 impl FtController {
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+
+        WASM.get_or_init(|| get_contract("mock_ft", "mock/ft"))
+            .await
+    }
+
     pub async fn deploy(account: Account, name: impl AsRef<str>, symbol: impl AsRef<str>) -> Self {
-        static WASM_MOCK_FT: OnceCell<Vec<u8>> = OnceCell::const_new();
-
-        let wasm = WASM_MOCK_FT
-            .get_or_init(|| get_contract("mock_ft", "mock/ft"))
-            .await;
-
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
+        let contract = account.deploy(Self::wasm().await).await.unwrap().unwrap();
         contract
             .call("new")
             .args_json(json!({

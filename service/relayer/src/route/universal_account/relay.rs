@@ -192,7 +192,7 @@ pub async fn relay(
             interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
             interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
         }
-        gas += calls.iter().map(|f| f.gas).sum::<u64>();
+        gas += calls.iter().map(|f| f.gas.as_gas()).sum::<u64>();
     }
 
     let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
@@ -319,7 +319,7 @@ pub async fn relay(
         .send_and_resolve_transaction(
             account_id,
             cost_of_gas,
-            NearToken::from_near(0),
+            NearToken::ZERO,
             signed_transaction,
             TxExecutionStatus::Final,
         )

@@ -26,7 +26,7 @@ impl<T> Key<Message<T>> for VerifyKey {
         mws: &super::MessageWithSignature<Message<T>>,
     ) -> Result<(), super::CheckSignatureError> {
         let hash = mws.message.hash_for_signing();
-        env::ed25519_verify(&mws.signature, &hash, &self.0)
+        env::ed25519_verify(&mws.signature, hash, &self.0)
             .then_some(())
             .ok_or(super::CheckSignatureError::InvalidSignature)
     }
