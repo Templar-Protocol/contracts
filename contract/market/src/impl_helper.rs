@@ -238,7 +238,7 @@ impl Contract {
         return_style.serialize(amount)
     }
 
-    // ~4.9 Tgas
+    // ~5.3 Tgas
     pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
         .saturating_add(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE);
@@ -293,8 +293,8 @@ impl Contract {
             )
     }
 
-    // ~4.6 Tgas
-    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(7);
+    // ~2.1 Tgas
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(4);
 
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
