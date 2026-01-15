@@ -1,8 +1,7 @@
 use axum::{extract::State, Json};
-use near_primitives::views::TxExecutionStatus;
 use near_sdk::NearToken;
 
-use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
+use crate::{app::App, route::SimpleResponse};
 
 mod message;
 pub use message::{RelayRequest, RelayResponse};
@@ -49,83 +48,14 @@ pub async fn relay(
         tracing::info!("Processing storage deposit request");
         let contract_id = signed_delegate_action.delegate_action.receiver_id.clone();
 
-        let Some(storage_balance_bounds) = contract_data
-            .storage_balance_bounds
-            .as_ref()
-            .filter(|b| !b.min.is_zero())
-        else {
-            tracing::info!("Contract has no storage requirements");
-            return SimpleResponse::Rejected {
-                reason: "Contract has no storage requirements".to_string(),
-            };
-        };
-
-        let storage_balance = match app
-            .relay_near
-            .load_storage_balance_of(contract_id.clone(), &account_id)
+        if let Err(e) = app
+            .storage_deposit_top_up(&contract_data, contract_id, account_id.clone())
             .await
         {
-            Ok(storage_balance) => storage_balance,
-            Err(e) => {
-                return SimpleResponse::Failure {
-                    error: e.to_string(),
-                };
-            }
-        };
-
-        if storage_balance.is_some() {
-            return SimpleResponse::Rejected {
-                reason: "Storage balance already exists".to_string(),
-            };
-        }
-
-        let storage_deposit = storage_balance_bounds
-            .min
-            .saturating_mul(app.args.relay.storage_deposit_multiplier_cents)
-            .saturating_div(100);
-
-        let Some(cost_of_gas) = app
-            .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
-            .await
-            .map(|amount| amount.saturating_add(storage_deposit))
-        else {
+            tracing::warn!(error = %e, "Storage deposit error");
             return SimpleResponse::Failure {
-                error: "Failed to estimate gas cost".to_string(),
+                error: format!("Storage deposit error: {e}"),
             };
-        };
-
-        let signed_transaction = app
-            .relay_near
-            .construct_storage_deposit_transaction(
-                &app.cache,
-                account_id.clone(),
-                contract_id,
-                storage_deposit,
-            )
-            .await;
-
-        let resolve_transaction = match app
-            .send_and_resolve_transaction(
-                account_id.clone(),
-                cost_of_gas,
-                storage_deposit,
-                signed_transaction,
-                TxExecutionStatus::Final,
-            )
-            .await
-        {
-            Ok(future) => future,
-            Err(e) => {
-                tracing::error!("Send transaction failure: {e}");
-                return SimpleResponse::Failure {
-                    error: e.to_string(),
-                };
-            }
-        };
-
-        // Resolve synchronously.
-        if let Err(e) = resolve_transaction.await {
-            tracing::error!("Resolve transaction failure: {e}");
         }
     } // end storage deposit
 
