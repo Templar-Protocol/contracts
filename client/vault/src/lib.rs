@@ -32,12 +32,14 @@ use tracing::{debug, instrument, warn};
 
 pub use client::{VaultClient, VaultClientConfig};
 pub use key_pool::{KeyCredential, KeyInfo, KeyPoolClient, KeyPoolConfig, PoolError, PoolHealth};
+pub use view_client::VaultViewClient;
 
 mod key_pool;
 mod lock_ext;
 #[macro_use]
 mod methods;
 mod client;
+mod view_client;
 
 use lock_ext::{MutexExt, RwLockExt};
 

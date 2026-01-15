@@ -224,9 +224,51 @@ pub const MAX_PERFORMANCE_FEE_WAD: u128 = Wad::SCALE / 100 * 50;
 pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 
 /// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(crate = "near_sdk::serde", transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Wad(pub Number);
+
+impl Serialize for Wad {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: near_sdk::serde::Serializer,
+    {
+        serializer.serialize_str(&self.0 .0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Wad {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: near_sdk::serde::Deserializer<'de>,
+    {
+        let s = <String as near_sdk::serde::Deserialize>::deserialize(deserializer)?;
+
+        if s.is_empty() {
+            return Err(near_sdk::serde::de::Error::custom(
+                "Wad must be a non-empty base-10 digit string",
+            ));
+        }
+        if !s.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+            return Err(near_sdk::serde::de::Error::custom(
+                "Wad must be a base-10 digit string",
+            ));
+        }
+
+        let mut acc = U256::zero();
+        let ten = U256::from(10u8);
+        for b in s.bytes() {
+            let d = (b - b'0') as u8;
+            acc = acc
+                .checked_mul(ten)
+                .ok_or_else(|| near_sdk::serde::de::Error::custom("Wad decimal overflow"))?;
+            acc = acc
+                .checked_add(U256::from(d))
+                .ok_or_else(|| near_sdk::serde::de::Error::custom("Wad decimal overflow"))?;
+        }
+
+        Ok(Wad(Number(acc)))
+    }
+}
 
 impl Wad {
     /// Scaling factor (1e24).
@@ -418,6 +460,20 @@ pub fn mul_div_ceil(x: Number, y: Number, denom: Number) -> Number {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wad_json_accepts_decimal_string() {
+        let w: Wad = near_sdk::serde_json::from_str("\"50000000000000000000000\"")
+            .expect("decimal string should parse");
+        assert_eq!(u128::from(w), 50_000_000_000_000_000_000_000u128);
+    }
+
+    #[test]
+    fn wad_json_rejects_hex_string() {
+        let err = near_sdk::serde_json::from_str::<Wad>("\"0xa\"").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("base-10 digit"), "unexpected error: {msg}");
+    }
 
     #[test]
     fn mul_wad_floor_rounds_down() {
