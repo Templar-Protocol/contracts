@@ -193,9 +193,8 @@ pub struct LiabilityReduction {
 #[must_use]
 #[derive(Debug, Clone)]
 #[near(serializers = [json, borsh])]
-pub struct InitialLiquidation {
+pub struct Liquidation {
     pub liquidated: CollateralAssetAmount,
-    pub recovered: BorrowAssetAmount,
     pub refund: BorrowAssetAmount,
 }
 
@@ -213,11 +212,7 @@ pub mod error {
     use crate::asset::{BorrowAssetAmount, CollateralAssetAmount};
 
     #[derive(Error, Debug)]
-    #[error("This position is currently being liquidated.")]
-    pub struct LiquidationLockError;
-
-    #[derive(Error, Debug)]
-    pub enum InitialLiquidationError {
+    pub enum LiquidationError {
         #[error("Borrow position is not eligible for liquidation")]
         Ineligible,
         #[error("Attempt to liquidate more collateral than is currently eligible: {requested} requested > {available} available")]
@@ -686,16 +681,17 @@ impl<'a> BorrowPositionGuard<'a> {
     ///   position.
     /// - If the calculation of the collateral value fails.
     /// - If the liquidator offers too little to purchase the collateral.
-    pub fn record_liquidation_initial(
+    pub fn record_liquidation(
         &mut self,
         proof: InterestAccumulationProof,
+        liquidator_id: AccountId,
         liquidator_sent: BorrowAssetAmount,
         liquidator_request: Option<CollateralAssetAmount>,
         price_pair: &PricePair,
         block_timestamp_ms: u64,
-    ) -> Result<InitialLiquidation, error::InitialLiquidationError> {
+    ) -> Result<Liquidation, error::LiquidationError> {
         let BorrowStatus::Liquidation(reason) = self.status(price_pair, block_timestamp_ms) else {
-            return Err(error::InitialLiquidationError::Ineligible);
+            return Err(error::LiquidationError::Ineligible);
         };
 
         let liquidatable_collateral = match reason {
@@ -709,7 +705,7 @@ impl<'a> BorrowPositionGuard<'a> {
         let liquidator_request = liquidator_request.unwrap_or(liquidatable_collateral);
 
         if liquidator_request > liquidatable_collateral {
-            return Err(error::InitialLiquidationError::ExcessiveLiquidation {
+            return Err(error::LiquidationError::ExcessiveLiquidation {
                 requested: liquidator_request,
                 available: liquidatable_collateral,
             });
@@ -719,7 +715,7 @@ impl<'a> BorrowPositionGuard<'a> {
 
         let maximum_acceptable: BorrowAssetAmount = collateral_value
             .to_u128_ceil()
-            .ok_or(error::InitialLiquidationError::ValueCalculationFailure)?
+            .ok_or(error::LiquidationError::ValueCalculationFailure)?
             .max(1)
             .into();
         #[allow(
@@ -734,7 +730,7 @@ impl<'a> BorrowPositionGuard<'a> {
             .into();
 
         if liquidator_sent < minimum_acceptable {
-            return Err(error::InitialLiquidationError::OfferTooLow {
+            return Err(error::LiquidationError::OfferTooLow {
                 offered: liquidator_sent,
                 minimum_acceptable,
             });
@@ -748,21 +744,7 @@ impl<'a> BorrowPositionGuard<'a> {
 
         self.record_collateral_asset_withdrawal(proof, liquidator_request);
 
-        Ok(InitialLiquidation {
-            liquidated: liquidator_request,
-            recovered,
-            refund,
-        })
-    }
-
-    pub fn record_liquidation_final(
-        &mut self,
-        proof: InterestAccumulationProof,
-        liquidator_id: AccountId,
-        initial_liquidation: &InitialLiquidation,
-    ) {
-        let liability_reduction =
-            self.reduce_borrow_asset_liability(proof, initial_liquidation.recovered);
+        let liability_reduction = self.reduce_borrow_asset_liability(proof, recovered);
         self.market
             .record_borrow_asset_yield_distribution(liability_reduction.remaining);
         self.market.borrow_asset_balance += initial_liquidation.recovered;
@@ -770,10 +752,15 @@ impl<'a> BorrowPositionGuard<'a> {
         MarketEvent::Liquidation {
             liquidator_id,
             account_id: self.account_id.clone(),
-            borrow_asset_recovered: initial_liquidation.recovered,
-            collateral_asset_liquidated: initial_liquidation.liquidated,
+            borrow_asset_recovered: recovered,
+            collateral_asset_liquidated: liquidator_request,
         }
         .emit();
+
+        Ok(Liquidation {
+            liquidated: liquidator_request,
+            refund,
+        })
     }
 }
 
@@ -928,20 +915,16 @@ mod tests {
             std::cmp::Ordering::Equal => {
                 // Partial liquidation
 
-                let initial_liquidation = position
-                    .record_liquidation_initial(
+                let _liquidation = position
+                    .record_liquidation(
                         interest_proof,
+                        "liquidator".parse().unwrap(),
                         minimum_acceptable,
                         Some(liquidatable_collateral),
                         &price_pair,
                         env::block_timestamp_ms(),
                     )
                     .unwrap();
-                position.record_liquidation_final(
-                    interest_proof,
-                    "liquidator".parse().unwrap(),
-                    &initial_liquidation,
-                );
 
                 let finishing_cr = position
                     .inner()

@@ -4,7 +4,7 @@ use templar_common::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
         ReturnStyle,
     },
-    borrow::{InitialBorrow, InitialLiquidation},
+    borrow::InitialBorrow,
     market::{LiquidateMsg, Withdrawal},
     oracle::pyth::OracleResponse,
     price::PricePair,
@@ -238,7 +238,7 @@ impl Contract {
         return_style.serialize(amount)
     }
 
-    // ~4.9 Tgas
+    // ~5.3 Tgas
     pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7)
         .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
         .saturating_add(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE);
@@ -269,8 +269,9 @@ impl Contract {
             let proof = borrow_position.accumulate_interest();
 
             borrow_position
-                .record_liquidation_initial(
+                .record_liquidation(
                     proof,
+                    liquidator_id.clone(),
                     amount,
                     msg.amount,
                     &price_pair,
@@ -279,31 +280,28 @@ impl Contract {
                 .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
         };
 
+        if self.cleanup_borrow_position(&msg.account_id) {
+            self.refund_for_storage(&msg.account_id, self.storage_usage_borrow_position);
+        }
+
         self.configuration
             .collateral_asset
             .transfer(liquidator_id.clone(), result.liquidated)
             .then(
                 self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE)
-                    .liquidate_transfer_call_02_finalize(
-                        liquidator_id,
-                        msg.account_id,
-                        result,
-                        return_style,
-                    ),
+                    .liquidate_transfer_call_02_finalize(result.refund, return_style),
             )
     }
 
-    // ~4.6 Tgas
-    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(7);
+    // ~2.1 Tgas
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(4);
 
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
     #[private]
     pub fn liquidate_transfer_call_02_finalize(
         &mut self,
-        liquidator_id: AccountId,
-        account_id: AccountId,
-        initial_liquidation: InitialLiquidation,
+        refund: BorrowAssetAmount,
         return_style: ReturnStyle,
     ) -> serde_json::Value {
         // let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
@@ -319,24 +317,7 @@ impl Contract {
         //  available. This would be indicative of a *fundamental flaw*
         //  in the contract (i.e. this should never happen).
 
-        let snapshot = self.snapshot();
-        let mut borrow_position = self
-            .borrow_position_guard(snapshot, account_id.clone())
-            .unwrap_or_else(|| {
-                templar_common::panic_with_message(
-                    "Invariant violation: Liquidation of nonexistent position.",
-                )
-            });
-
-        let proof = borrow_position.accumulate_interest();
-        borrow_position.record_liquidation_final(proof, liquidator_id, &initial_liquidation);
-
-        drop(borrow_position);
-        if self.cleanup_borrow_position(&account_id) {
-            self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
-        }
-
-        return_style.serialize(initial_liquidation.refund)
+        return_style.serialize(refund)
     }
 
     // ~5.0 Tgas
