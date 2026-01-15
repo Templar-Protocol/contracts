@@ -104,11 +104,7 @@ impl KeyPool {
         }
 
         // Find minimum in-flight count
-        let min_in_flight = healthy
-            .iter()
-            .map(|s| s.in_flight_count())
-            .min()
-            .unwrap(); // Safe: healthy is non-empty
+        let min_in_flight = healthy.iter().map(|s| s.in_flight_count()).min().unwrap(); // Safe: healthy is non-empty
 
         // Among keys with min in-flight, collect candidates
         let candidates: Vec<_> = healthy
@@ -153,7 +149,8 @@ mod tests {
     use near_crypto::{KeyType, SecretKey};
 
     fn test_signer(suffix: &str) -> InMemorySigner {
-        let account_id: near_account_id::AccountId = format!("test{}.near", suffix).parse().unwrap();
+        let account_id: near_account_id::AccountId =
+            format!("test{}.near", suffix).parse().unwrap();
         let secret_key = SecretKey::from_random(KeyType::ED25519);
         InMemorySigner {
             account_id,
@@ -180,7 +177,8 @@ mod tests {
 
     #[test]
     fn select_round_robins_when_all_idle() {
-        let pool = KeyPool::new(vec![test_signer("1"), test_signer("2"), test_signer("3")]).unwrap();
+        let pool =
+            KeyPool::new(vec![test_signer("1"), test_signer("2"), test_signer("3")]).unwrap();
 
         // All keys have 0 in-flight, so should round-robin
         let slot1 = pool.select().unwrap();

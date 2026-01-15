@@ -107,7 +107,10 @@ impl KeySlot {
         let _tx_guard = self.tx_lock.lock().await;
         reservation.disarm();
 
-        KeySlotGuard { slot: self, _tx_guard }
+        KeySlotGuard {
+            slot: self,
+            _tx_guard,
+        }
     }
 
     pub fn is_healthy(&self) -> bool {
