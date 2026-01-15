@@ -428,6 +428,7 @@ impl Contract {
             });
             yield_record.add_once(amount);
             self.static_yield.insert(&account_id, &yield_record);
+            self.borrow_asset_balance += amount;
         }
     }
 }

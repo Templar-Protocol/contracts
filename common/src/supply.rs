@@ -27,11 +27,10 @@ pub struct Deposit {
 
 impl Deposit {
     pub fn total(&self) -> BorrowAssetAmount {
-        let mut total = self.active;
+        let mut total = self.active + self.outgoing;
         for incoming in &self.incoming {
             total += incoming.amount;
         }
-        total += self.outgoing;
         total
     }
 }
@@ -348,20 +347,17 @@ impl<'a> SupplyPositionGuard<'a> {
         // Check liquidity & eligibility
         //
 
-        let incoming = self.position.total_incoming();
-        let active = self.position.get_deposit().active;
-        let entitled_to_withdraw = incoming + active;
+        let my_incoming = self.position.total_incoming();
+        let my_active = self.position.get_deposit().active;
+        let entitled_to_withdraw = my_incoming + my_active;
 
         if entitled_to_withdraw.is_zero() {
             return WithdrawalAttempt::EmptyPosition;
         }
 
         let requested_amount = requested_amount.min(entitled_to_withdraw);
-        let generally_available = self
-            .market
-            .borrow_asset_deposited_active
-            .saturating_sub(self.market.borrowed());
-        let available_to_me = generally_available + incoming;
+        let market_incoming = self.market.total_incoming();
+        let available_to_me = self.market.borrow_asset_balance - market_incoming + my_incoming;
         let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
 
         if can_withdraw_now.is_zero() {
@@ -408,6 +404,7 @@ impl<'a> SupplyPositionGuard<'a> {
 
         let amount_to_account = withdrawal_amount.saturating_sub(amount_to_fees);
 
+        self.market.borrow_asset_balance -= amount_to_account;
         self.market.borrow_asset_withdrawal_in_flight += amount_to_account;
 
         let withdrawal = Withdrawal {
@@ -443,6 +440,7 @@ impl<'a> SupplyPositionGuard<'a> {
             }
             .emit();
         } else {
+            self.market.borrow_asset_balance += withdrawal.amount_to_account;
             self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
         }
     }
@@ -459,6 +457,7 @@ impl<'a> SupplyPositionGuard<'a> {
             self.position.started_at_block_timestamp_ms = Some(block_timestamp_ms.into());
         }
 
+        self.market.borrow_asset_balance += amount;
         self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
 
         if !amount.is_zero() {
@@ -473,8 +472,27 @@ impl<'a> SupplyPositionGuard<'a> {
     pub fn record_yield_withdrawal(&mut self, amount: BorrowAssetAmount) {
         self.0.position.borrow_asset_yield.remove(amount);
     }
+
+    /// Converts an amount of borrow asset from the yield record to the
+    /// deposit record, allowing the account to earn compound interest on
+    /// their yield without withdrawing it.
+    ///
+    /// # Panics
+    ///
+    /// If `amount` is greater the amount in the yield record. The caller
+    /// should probably use the return value of
+    /// [`SupplyPositionRef::total_yield`] as an upper bound for this argument.
+    pub fn record_yield_compound(
+        &mut self,
+        _proof: YieldAccumulationProof,
+        amount: BorrowAssetAmount,
+    ) {
+        self.0.position.borrow_asset_yield.remove(amount);
+        self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
+    }
 }
 
+#[derive(Debug)]
 pub enum WithdrawalAttempt {
     Full(Withdrawal),
     Partial {

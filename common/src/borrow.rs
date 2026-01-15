@@ -575,6 +575,7 @@ impl<'a> BorrowPositionGuard<'a> {
         }
 
         self.market.record_borrow_asset_yield_distribution(fees);
+        self.market.borrow_asset_balance -= amount;
 
         Ok(InitialBorrow { amount, fees })
     }
@@ -632,6 +633,8 @@ impl<'a> BorrowPositionGuard<'a> {
             //
             // TODO: Implement case 2 mitigation.
             // NOTE: Not needed for chain-local (NEP-141-only) tokens.
+
+            self.market.borrow_asset_balance += borrow.amount;
         }
     }
 
@@ -643,6 +646,7 @@ impl<'a> BorrowPositionGuard<'a> {
         proof: InterestAccumulationProof,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
+        self.market.borrow_asset_balance += amount;
         let liability_reduction = self.reduce_borrow_asset_liability(proof, amount);
 
         MarketEvent::BorrowRepaid {
@@ -761,6 +765,7 @@ impl<'a> BorrowPositionGuard<'a> {
             self.reduce_borrow_asset_liability(proof, initial_liquidation.recovered);
         self.market
             .record_borrow_asset_yield_distribution(liability_reduction.remaining);
+        self.market.borrow_asset_balance += initial_liquidation.recovered;
 
         MarketEvent::Liquidation {
             liquidator_id,
@@ -832,6 +837,7 @@ mod tests {
 
         let mut market = Market::new(b"m", configuration.clone());
         market.borrow_asset_deposited_active += BorrowAssetAmount::new(100_000_000_000);
+        market.borrow_asset_balance += BorrowAssetAmount::new(100_000_000_000);
         let snapshot_proof = market.snapshot();
 
         let mut position = BorrowPositionGuard(BorrowPositionRef {
