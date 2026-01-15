@@ -7,8 +7,8 @@ use near_primitives::types::Gas;
 use templar_common::vault::SUPPLY_GAS;
 use templar_vault_client::{
     AccountId, AllocationDelta, CapGroupUpdate, CapGroupUpdateKey, ErrorWrapper, Fees,
-    KeyCredential, KeyPoolClient, KeyPoolConfig, MarketId, Restrictions, TimelockKind,
-    VaultClient,
+    KeyCredential, KeyPoolClient, KeyPoolConfig, MarketId, Restrictions, TimelockKind, VaultClient,
+    VaultViewClient,
 };
 
 const fn tgas(t: u64) -> Gas {
@@ -29,17 +29,21 @@ struct Cli {
 
 #[derive(Args)]
 struct GlobalOpts {
-    #[arg(long, env = "NEAR_RPC_URL", default_value = "https://rpc.mainnet.near.org")]
+    #[arg(
+        long,
+        env = "NEAR_RPC_URL",
+        default_value = "https://rpc.mainnet.near.org"
+    )]
     rpc_url: String,
 
     #[arg(long, env = "VAULT_ACCOUNT")]
     vault: String,
 
     #[arg(long, env = "SIGNER_ACCOUNT_ID")]
-    signer_account_id: String,
+    signer_account_id: Option<String>,
 
     #[arg(long, env = "SIGNER_SECRET_KEY")]
-    signer_secret_key: String,
+    signer_secret_key: Option<String>,
 
     #[arg(long, default_value = "vault")]
     client: ClientType,
@@ -68,7 +72,6 @@ enum Commands {
     #[command(subcommand)]
     Tx(TxCommands),
 }
-
 
 #[derive(Subcommand)]
 enum ViewCommands {
@@ -133,7 +136,6 @@ struct ResolveMarketAccountsArgs {
     #[arg(long, value_delimiter = ',')]
     market_ids: Vec<u32>,
 }
-
 
 #[derive(Subcommand)]
 enum TxCommands {
@@ -294,18 +296,32 @@ struct AbdicateArgs {
     method_name: String,
 }
 
-
 enum Client {
     Vault(VaultClient),
     KeyPool(KeyPoolClient),
+    View(VaultViewClient),
 }
 
 impl Client {
-    fn new(opts: &GlobalOpts) -> Result<Self, ErrorWrapper> {
+    fn new_view(opts: &GlobalOpts) -> Result<Self, ErrorWrapper> {
         let vault = AccountId::from(opts.vault.clone());
+        let client = VaultViewClient::new_default(opts.rpc_url.clone(), &vault)?;
+        Ok(Client::View(client))
+    }
+
+    fn new_tx(opts: &GlobalOpts) -> Result<Self, ErrorWrapper> {
+        let vault = AccountId::from(opts.vault.clone());
+
+        let signer_account_id = opts.signer_account_id.clone().ok_or_else(|| {
+            ErrorWrapper::Wrapped("Missing --signer-account-id (or SIGNER_ACCOUNT_ID)".to_string())
+        })?;
+        let signer_secret_key = opts.signer_secret_key.clone().ok_or_else(|| {
+            ErrorWrapper::Wrapped("Missing --signer-secret-key (or SIGNER_SECRET_KEY)".to_string())
+        })?;
+
         let credential = KeyCredential {
-            account_id: AccountId::from(opts.signer_account_id.clone()),
-            secret_key: opts.signer_secret_key.clone(),
+            account_id: AccountId::from(signer_account_id),
+            secret_key: signer_secret_key,
         };
 
         match opts.client {
@@ -326,7 +342,6 @@ impl Client {
         }
     }
 }
-
 
 fn output_json<T: serde::Serialize>(format: OutputFormat, value: &T) {
     match format {
@@ -384,18 +399,19 @@ fn parse_timelock_kind(s: &str) -> Option<TimelockKind> {
     }
 }
 
-
 macro_rules! dispatch_view {
     ($client:expr, $method:ident) => {
         match $client {
             Client::Vault(c) => c.$method().await,
             Client::KeyPool(c) => c.$method().await,
+            Client::View(c) => c.$method().await,
         }
     };
     ($client:expr, $method:ident, $($arg:expr),+) => {
         match $client {
             Client::Vault(c) => c.$method($($arg),+).await,
             Client::KeyPool(c) => c.$method($($arg),+).await,
+            Client::View(c) => c.$method($($arg),+).await,
         }
     };
 }
@@ -420,52 +436,101 @@ macro_rules! view_json_map {
 
 async fn handle_view(client: &Client, cmd: ViewCommands, format: OutputFormat) {
     match cmd {
-        ViewCommands::GetConfiguration => view_json!(format, dispatch_view!(client, get_configuration)),
-        ViewCommands::GetTotalAssets => view_json!(format, dispatch_view!(client, get_total_assets)),
-        ViewCommands::GetLastTotalAssets => view_json!(format, dispatch_view!(client, get_last_total_assets)),
-        ViewCommands::GetIdleBalance => view_json!(format, dispatch_view!(client, get_idle_balance)),
-        ViewCommands::GetTotalSupply => view_json!(format, dispatch_view!(client, get_total_supply)),
+        ViewCommands::GetConfiguration => {
+            view_json!(format, dispatch_view!(client, get_configuration))
+        }
+        ViewCommands::GetTotalAssets => {
+            view_json!(format, dispatch_view!(client, get_total_assets))
+        }
+        ViewCommands::GetLastTotalAssets => {
+            view_json!(format, dispatch_view!(client, get_last_total_assets))
+        }
+        ViewCommands::GetIdleBalance => {
+            view_json!(format, dispatch_view!(client, get_idle_balance))
+        }
+        ViewCommands::GetTotalSupply => {
+            view_json!(format, dispatch_view!(client, get_total_supply))
+        }
         ViewCommands::GetMaxDeposit => view_json!(format, dispatch_view!(client, get_max_deposit)),
         ViewCommands::GetMaxSingleMarketDeposit => {
-            view_json!(format, dispatch_view!(client, get_max_single_market_deposit))
+            view_json!(
+                format,
+                dispatch_view!(client, get_max_single_market_deposit)
+            )
         }
         ViewCommands::GetFeeAnchor => view_json!(format, dispatch_view!(client, get_fee_anchor)),
         ViewCommands::GetFees => view_json!(format, dispatch_view!(client, get_fees)),
-        ViewCommands::GetRestrictions => view_json!(format, dispatch_view!(client, get_restrictions)),
+        ViewCommands::GetRestrictions => {
+            view_json!(format, dispatch_view!(client, get_restrictions))
+        }
         ViewCommands::GetCapGroups => view_json!(format, dispatch_view!(client, get_cap_groups)),
         ViewCommands::GetPendingGovernanceActions => {
-            view_json!(format, dispatch_view!(client, get_pending_governance_actions))
+            view_json!(
+                format,
+                dispatch_view!(client, get_pending_governance_actions)
+            )
         }
-        ViewCommands::GetWithdrawingOpId => view_json!(format, dispatch_view!(client, get_withdrawing_op_id)),
+        ViewCommands::GetWithdrawingOpId => {
+            view_json!(format, dispatch_view!(client, get_withdrawing_op_id))
+        }
         ViewCommands::HasPendingMarketWithdrawal => {
-            view_json!(format, dispatch_view!(client, has_pending_market_withdrawal))
+            view_json!(
+                format,
+                dispatch_view!(client, has_pending_market_withdrawal)
+            )
         }
         ViewCommands::GetCurrentWithdrawRequestId => {
-            view_json!(format, dispatch_view!(client, get_current_withdraw_request_id))
+            view_json!(
+                format,
+                dispatch_view!(client, get_current_withdraw_request_id)
+            )
         }
         ViewCommands::QueueTail => view_json!(format, dispatch_view!(client, queue_tail)),
         ViewCommands::PeekNextPendingWithdrawalId => {
-            view_json!(format, dispatch_view!(client, peek_next_pending_withdrawal_id))
+            view_json!(
+                format,
+                dispatch_view!(client, peek_next_pending_withdrawal_id)
+            )
         }
         ViewCommands::BuildRealAssetsReport => {
             view_json!(format, dispatch_view!(client, build_real_assets_report))
         }
-        ViewCommands::ListMarketsWithIds => view_json!(format, dispatch_view!(client, list_markets_with_ids)),
-        ViewCommands::GetVaultSnapshot => view_json!(format, dispatch_view!(client, get_vault_snapshot)),
+        ViewCommands::ListMarketsWithIds => {
+            view_json!(format, dispatch_view!(client, list_markets_with_ids))
+        }
+        ViewCommands::GetVaultSnapshot => {
+            view_json!(format, dispatch_view!(client, get_vault_snapshot))
+        }
         ViewCommands::ConvertToShares(args) => {
-            view_json!(format, dispatch_view!(client, convert_to_shares, &args.amount))
+            view_json!(
+                format,
+                dispatch_view!(client, convert_to_shares, &args.amount)
+            )
         }
         ViewCommands::ConvertToAssets(args) => {
-            view_json!(format, dispatch_view!(client, convert_to_assets, &args.amount))
+            view_json!(
+                format,
+                dispatch_view!(client, convert_to_assets, &args.amount)
+            )
         }
         ViewCommands::PreviewDeposit(args) => {
-            view_json!(format, dispatch_view!(client, preview_deposit, &args.amount))
+            view_json!(
+                format,
+                dispatch_view!(client, preview_deposit, &args.amount)
+            )
         }
-        ViewCommands::PreviewMint(args) => view_json!(format, dispatch_view!(client, preview_mint, &args.amount)),
+        ViewCommands::PreviewMint(args) => {
+            view_json!(format, dispatch_view!(client, preview_mint, &args.amount))
+        }
         ViewCommands::PreviewWithdraw(args) => {
-            view_json!(format, dispatch_view!(client, preview_withdraw, &args.amount))
+            view_json!(
+                format,
+                dispatch_view!(client, preview_withdraw, &args.amount)
+            )
         }
-        ViewCommands::PreviewRedeem(args) => view_json!(format, dispatch_view!(client, preview_redeem, &args.amount)),
+        ViewCommands::PreviewRedeem(args) => {
+            view_json!(format, dispatch_view!(client, preview_redeem, &args.amount))
+        }
         ViewCommands::GetMarketIdOfAccount(args) => {
             let market = AccountId::from(args.market);
             view_json_map!(
@@ -506,18 +571,23 @@ async fn handle_view(client: &Client, cmd: ViewCommands, format: OutputFormat) {
     }
 }
 
-
 macro_rules! dispatch_tx {
     ($client:expr, $method:ident) => {
         match $client {
             Client::Vault(c) => c.$method().await,
             Client::KeyPool(c) => c.$method().await,
+            Client::View(_) => Err(ErrorWrapper::Wrapped(
+                "VaultViewClient is read-only; tx commands are not supported".to_string(),
+            )),
         }
     };
     ($client:expr, $method:ident, $($arg:expr),+) => {
         match $client {
             Client::Vault(c) => c.$method($($arg),+).await,
             Client::KeyPool(c) => c.$method($($arg),+).await,
+            Client::View(_) => Err(ErrorWrapper::Wrapped(
+                "VaultViewClient is read-only; tx commands are not supported".to_string(),
+            )),
         }
     };
 }
@@ -544,13 +614,22 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
     match cmd {
         TxCommands::DepositSupply(args) => {
             let gas = args.gas_tgas.map(tgas).or(Some(SUPPLY_GAS.as_gas()));
-            tx_ok!(format, dispatch_tx!(client, deposit_supply, &args.amount, gas))
+            tx_ok!(
+                format,
+                dispatch_tx!(client, deposit_supply, &args.amount, gas)
+            )
         }
         TxCommands::Withdraw(args) => {
             let receiver = AccountId::from(args.receiver);
             tx_ok!(
                 format,
-                dispatch_tx!(client, withdraw, &args.assets, &receiver, &args.deposit_yocto)
+                dispatch_tx!(
+                    client,
+                    withdraw,
+                    &args.assets,
+                    &receiver,
+                    &args.deposit_yocto
+                )
             )
         }
         TxCommands::Redeem(args) => {
@@ -561,13 +640,14 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
             )
         }
         TxCommands::Reallocate(args) => {
-            let common_delta: templar_common::vault::AllocationDelta = match parse_json_arg(&args.json) {
-                Ok(d) => d,
-                Err(e) => {
-                    output_error(format, &e);
-                    return;
-                }
-            };
+            let common_delta: templar_common::vault::AllocationDelta =
+                match parse_json_arg(&args.json) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        output_error(format, &e);
+                        return;
+                    }
+                };
             let delta: AllocationDelta = common_delta.into();
             tx_ok!(format, dispatch_tx!(client, reallocate, &delta))
         }
@@ -592,7 +672,12 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
             let market = MarketId::from(args.market_id);
             tx_ok!(
                 format,
-                dispatch_tx!(client, execute_rebalance_withdrawal, market, args.batch_limit)
+                dispatch_tx!(
+                    client,
+                    execute_rebalance_withdrawal,
+                    market,
+                    args.batch_limit
+                )
             )
         }
         TxCommands::RefreshMarkets(args) => {
@@ -600,7 +685,9 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
                 args.market_ids.into_iter().map(MarketId::from).collect();
             tx_json!(format, dispatch_tx!(client, refresh_markets, &market_ids))
         }
-        TxCommands::RefreshAllMarkets => tx_json!(format, dispatch_tx!(client, refresh_all_markets)),
+        TxCommands::RefreshAllMarkets => {
+            tx_json!(format, dispatch_tx!(client, refresh_all_markets))
+        }
         TxCommands::SetSupplyQueue(args) => {
             let market_ids: Vec<MarketId> =
                 args.market_ids.into_iter().map(MarketId::from).collect();
@@ -615,20 +702,27 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
         }
         TxCommands::SetIsAllocator(args) => {
             let account = AccountId::from(args.account);
-            tx_ok!(format, dispatch_tx!(client, set_is_allocator, &account, args.allowed))
+            tx_ok!(
+                format,
+                dispatch_tx!(client, set_is_allocator, &account, args.allowed)
+            )
         }
         TxCommands::SubmitGuardian(args) => {
             let account = AccountId::from(args.account);
             tx_ok!(format, dispatch_tx!(client, submit_guardian, &account))
         }
         TxCommands::AcceptGuardian => tx_ok!(format, dispatch_tx!(client, accept_guardian)),
-        TxCommands::RevokePendingGuardian => tx_ok!(format, dispatch_tx!(client, revoke_pending_guardian)),
+        TxCommands::RevokePendingGuardian => {
+            tx_ok!(format, dispatch_tx!(client, revoke_pending_guardian))
+        }
         TxCommands::SubmitSentinel(args) => {
             let account = AccountId::from(args.account);
             tx_ok!(format, dispatch_tx!(client, submit_sentinel, &account))
         }
         TxCommands::AcceptSentinel => tx_ok!(format, dispatch_tx!(client, accept_sentinel)),
-        TxCommands::RevokePendingSentinel => tx_ok!(format, dispatch_tx!(client, revoke_pending_sentinel)),
+        TxCommands::RevokePendingSentinel => {
+            tx_ok!(format, dispatch_tx!(client, revoke_pending_sentinel))
+        }
         TxCommands::SetSkimRecipient(args) => {
             let account = AccountId::from(args.account);
             tx_ok!(format, dispatch_tx!(client, set_skim_recipient, &account))
@@ -638,13 +732,14 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
             tx_ok!(format, dispatch_tx!(client, skim, &account))
         }
         TxCommands::SetFees(args) => {
-            let common_fees: templar_common::vault::Fees<near_sdk::json_types::U128> = match parse_json_arg(&args.json) {
-                Ok(f) => f,
-                Err(e) => {
-                    output_error(format, &e);
-                    return;
-                }
-            };
+            let common_fees: templar_common::vault::Fees<near_sdk::json_types::U128> =
+                match parse_json_arg(&args.json) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        output_error(format, &e);
+                        return;
+                    }
+                };
             let fees: Fees = common_fees.into();
             tx_ok!(format, dispatch_tx!(client, set_fees, fees))
         }
@@ -652,13 +747,21 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
         TxCommands::RevokePendingFees => tx_ok!(format, dispatch_tx!(client, revoke_pending_fees)),
         TxCommands::SubmitTimelock(args) => {
             let kind = args.kind.as_ref().and_then(|s| parse_timelock_kind(s));
-            tx_ok!(format, dispatch_tx!(client, submit_timelock, args.new_timelock_ns, kind))
+            tx_ok!(
+                format,
+                dispatch_tx!(client, submit_timelock, args.new_timelock_ns, kind)
+            )
         }
         TxCommands::AcceptTimelock => tx_ok!(format, dispatch_tx!(client, accept_timelock)),
-        TxCommands::RevokePendingTimelock => tx_ok!(format, dispatch_tx!(client, revoke_pending_timelock)),
+        TxCommands::RevokePendingTimelock => {
+            tx_ok!(format, dispatch_tx!(client, revoke_pending_timelock))
+        }
         TxCommands::SubmitCap(args) => {
             let market = AccountId::from(args.market);
-            tx_ok!(format, dispatch_tx!(client, submit_cap, &market, &args.new_cap))
+            tx_ok!(
+                format,
+                dispatch_tx!(client, submit_cap, &market, &args.new_cap)
+            )
         }
         TxCommands::AcceptCap(args) => {
             let market = AccountId::from(args.account);
@@ -669,13 +772,14 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
             tx_ok!(format, dispatch_tx!(client, revoke_pending_cap, &market))
         }
         TxCommands::SubmitCapGroupUpdate(args) => {
-            let common_update: templar_common::vault::CapGroupUpdate = match parse_json_arg(&args.json) {
-                Ok(u) => u,
-                Err(e) => {
-                    output_error(format, &e);
-                    return;
-                }
-            };
+            let common_update: templar_common::vault::CapGroupUpdate =
+                match parse_json_arg(&args.json) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        output_error(format, &e);
+                        return;
+                    }
+                };
             let update: CapGroupUpdate = match common_update {
                 templar_common::vault::CapGroupUpdate::SetCap { cap_group, new_cap } => {
                     CapGroupUpdate::SetCap {
@@ -697,16 +801,20 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
                     }
                 }
             };
-            tx_ok!(format, dispatch_tx!(client, submit_cap_group_update, update))
+            tx_ok!(
+                format,
+                dispatch_tx!(client, submit_cap_group_update, update)
+            )
         }
         TxCommands::AcceptCapGroupUpdate(args) => {
-            let common_key: templar_common::vault::CapGroupUpdateKey = match parse_json_arg(&args.json) {
-                Ok(k) => k,
-                Err(e) => {
-                    output_error(format, &e);
-                    return;
-                }
-            };
+            let common_key: templar_common::vault::CapGroupUpdateKey =
+                match parse_json_arg(&args.json) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        output_error(format, &e);
+                        return;
+                    }
+                };
             let key: CapGroupUpdateKey = match common_key {
                 templar_common::vault::CapGroupUpdateKey::SetCap { cap_group } => {
                     CapGroupUpdateKey::SetCap {
@@ -727,13 +835,14 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
             tx_ok!(format, dispatch_tx!(client, accept_cap_group_update, key))
         }
         TxCommands::RevokePendingCapGroupUpdate(args) => {
-            let common_key: templar_common::vault::CapGroupUpdateKey = match parse_json_arg(&args.json) {
-                Ok(k) => k,
-                Err(e) => {
-                    output_error(format, &e);
-                    return;
-                }
-            };
+            let common_key: templar_common::vault::CapGroupUpdateKey =
+                match parse_json_arg(&args.json) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        output_error(format, &e);
+                        return;
+                    }
+                };
             let key: CapGroupUpdateKey = match common_key {
                 templar_common::vault::CapGroupUpdateKey::SetCap { cap_group } => {
                     CapGroupUpdateKey::SetCap {
@@ -751,21 +860,27 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
                     }
                 }
             };
-            tx_ok!(format, dispatch_tx!(client, revoke_pending_cap_group_update, key))
+            tx_ok!(
+                format,
+                dispatch_tx!(client, revoke_pending_cap_group_update, key)
+            )
         }
         TxCommands::SetRestrictions(args) => {
-            let common_restrictions: Option<templar_common::vault::Restrictions> = match parse_json_arg(&args.json) {
-                Ok(r) => r,
-                Err(e) => {
-                    output_error(format, &e);
-                    return;
-                }
-            };
+            let common_restrictions: Option<templar_common::vault::Restrictions> =
+                match parse_json_arg(&args.json) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        output_error(format, &e);
+                        return;
+                    }
+                };
             let restrictions: Option<Restrictions> = common_restrictions.map(Into::into);
             tx_ok!(format, dispatch_tx!(client, set_restrictions, restrictions))
         }
         TxCommands::AcceptRestrictions => tx_ok!(format, dispatch_tx!(client, accept_restrictions)),
-        TxCommands::RevokePendingRestrictions => tx_ok!(format, dispatch_tx!(client, revoke_pending_restrictions)),
+        TxCommands::RevokePendingRestrictions => {
+            tx_ok!(format, dispatch_tx!(client, revoke_pending_restrictions))
+        }
         TxCommands::SubmitMarketRemoval(args) => {
             let market = AccountId::from(args.account);
             tx_ok!(format, dispatch_tx!(client, submit_market_removal, &market))
@@ -776,14 +891,18 @@ async fn handle_tx(client: &Client, cmd: TxCommands, format: OutputFormat) {
         }
         TxCommands::RevokePendingMarketRemoval(args) => {
             let market = AccountId::from(args.account);
-            tx_ok!(format, dispatch_tx!(client, revoke_pending_market_removal, &market))
+            tx_ok!(
+                format,
+                dispatch_tx!(client, revoke_pending_market_removal, &market)
+            )
         }
         TxCommands::Unbrick => tx_ok!(format, dispatch_tx!(client, unbrick)),
-        TxCommands::Abdicate(args) => tx_ok!(format, dispatch_tx!(client, abdicate, args.method_name)),
+        TxCommands::Abdicate(args) => {
+            tx_ok!(format, dispatch_tx!(client, abdicate, args.method_name))
+        }
         TxCommands::ClearViewCache => tx_ok!(format, dispatch_tx!(client, clear_view_cache)),
     }
 }
-
 
 #[tokio::main]
 async fn main() {
@@ -792,16 +911,26 @@ async fn main() {
     let cli = Cli::parse();
     let format = cli.global.output;
 
-    let client = match Client::new(&cli.global) {
-        Ok(c) => c,
-        Err(e) => {
-            output_error(format, &format!("Failed to create client: {:?}", e));
-            std::process::exit(1);
-        }
-    };
-
     match cli.command {
-        Commands::View(cmd) => handle_view(&client, cmd, format).await,
-        Commands::Tx(cmd) => handle_tx(&client, cmd, format).await,
+        Commands::View(cmd) => {
+            let client = match Client::new_view(&cli.global) {
+                Ok(c) => c,
+                Err(e) => {
+                    output_error(format, &format!("Failed to create client: {:?}", e));
+                    std::process::exit(1);
+                }
+            };
+            handle_view(&client, cmd, format).await
+        }
+        Commands::Tx(cmd) => {
+            let client = match Client::new_tx(&cli.global) {
+                Ok(c) => c,
+                Err(e) => {
+                    output_error(format, &format!("Failed to create client: {:?}", e));
+                    std::process::exit(1);
+                }
+            };
+            handle_tx(&client, cmd, format).await
+        }
     }
 }
