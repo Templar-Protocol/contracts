@@ -111,7 +111,6 @@ impl VaultClient {
         Self::new_single_key(rpc_url, vault, credential, VaultClientConfig::default())
     }
 
-
     #[uniffi::constructor]
     #[instrument(skip(credentials, config), fields(rpc_url = %rpc_url))]
     pub fn new_key_pool(
