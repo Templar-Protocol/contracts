@@ -207,56 +207,7 @@ impl VaultClient {
         self.inner.clear_view_cache().await
     }
 
-    // ---------------------------------------------------------------------
-    // Complex methods not covered by impl_vault_methods!
-    // ---------------------------------------------------------------------
-
-    pub async fn get_cap_groups(&self) -> Result<Vec<crate::CapGroup>, ErrorWrapper> {
-        self.inner.get_cap_groups().await
-    }
-
-    pub async fn get_pending_governance_actions(
-        &self,
-    ) -> Result<Vec<crate::PendingGovernanceAction>, ErrorWrapper> {
-        self.inner.get_pending_governance_actions().await
-    }
-
-    pub async fn get_market_id_of_account(
-        &self,
-        market: &AccountId,
-    ) -> Result<Option<crate::MarketId>, ErrorWrapper> {
-        self.inner.get_market_id_of_account(market).await
-    }
-
-    pub async fn get_market_account_by_id(
-        &self,
-        market_id: crate::MarketId,
-    ) -> Result<Option<AccountId>, ErrorWrapper> {
-        self.inner.get_market_account_by_id(market_id).await
-    }
-
-    pub async fn list_markets_with_ids(&self) -> Result<Vec<crate::MarketWithId>, ErrorWrapper> {
-        self.inner.list_markets_with_ids().await
-    }
-
-    pub async fn get_vault_snapshot(&self) -> Result<crate::VaultSnapshot, ErrorWrapper> {
-        self.inner.get_vault_snapshot().await
-    }
-
-    pub async fn resolve_market_ids(
-        &self,
-        markets: &[AccountId],
-    ) -> Result<Vec<Option<crate::MarketId>>, ErrorWrapper> {
-        self.inner.resolve_market_ids(markets).await
-    }
-
-    pub async fn resolve_market_accounts(
-        &self,
-        market_ids: &[crate::MarketId],
-    ) -> Result<Vec<Option<AccountId>>, ErrorWrapper> {
-        self.inner.resolve_market_accounts(market_ids).await
-    }
-
+    /// Refresh all markets and return the real assets report.
     pub async fn refresh_all_markets(&self) -> Result<crate::RealAssetsReport, ErrorWrapper> {
         self.inner.refresh_all_markets().await
     }
@@ -335,6 +286,9 @@ impl VaultClient {
         parse_account_id(id)
     }
 }
+
+// Generate complex view methods via macro
+crate::impl_vault_view_methods!(VaultClient);
 
 // Generate common vault methods via macro
 crate::impl_vault_methods!(VaultClient);
