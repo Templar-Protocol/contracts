@@ -13,10 +13,11 @@ use serde::{de::DeserializeOwned, Serialize};
 use tracing::instrument;
 
 use crate::{
-    lock_ext::RwLockExt, parse_account_id, AccountId, AllocationDelta, CapGroup, CapGroupUpdate,
-    CapGroupUpdateKey, ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128, KeyPoolConfig, MarketId,
-    MarketWithId, PendingGovernanceAction, PendingValueSerde, RealAssetsReport, Restrictions,
-    TimelockKind, VaultConfiguration, VaultSnapshot, ViewCache, ViewCacheKey,
+    lock_ext::RwLockExt, parse_account_id, retry, AccountId, AllocationDelta, CapGroup,
+    CapGroupUpdate, CapGroupUpdateKey, ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128,
+    KeyPoolConfig, MarketId, MarketWithId, PendingGovernanceAction, PendingValueSerde,
+    RealAssetsReport, Restrictions, TimelockKind, VaultConfiguration, VaultSnapshot, ViewCache,
+    ViewCacheKey,
 };
 
 #[derive(uniffi::Object)]
@@ -288,12 +289,10 @@ impl VaultViewClient {
         }
 
         let timeout = Duration::from_secs(self.config.timeout_seconds);
-        let retry = self.config.retry.map(|r| r.normalized());
-        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
-        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+        let mut retry_state = retry::RetryState::new(self.config.retry);
 
         loop {
-            attempts_left = attempts_left.saturating_sub(1);
+            retry_state.begin_attempt();
 
             let response = tokio::time::timeout(
                 timeout,
@@ -312,23 +311,15 @@ impl VaultViewClient {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => {
                     let err: anyhow::Error = e.into();
-                    if attempts_left == 0 || !should_retry(&err) {
+                    if !retry_state.should_retry_err(&err).await {
                         return Err(err);
-                    }
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
                     }
                     continue;
                 }
                 Err(e) => {
                     let err: anyhow::Error = e.into();
-                    if attempts_left == 0 || !should_retry(&err) {
+                    if !retry_state.should_retry_err(&err).await {
                         return Err(err);
-                    }
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
                     }
                     continue;
                 }
@@ -374,18 +365,6 @@ impl VaultViewClient {
             "VaultViewClient is read-only; contract calls are not supported".to_string(),
         ))
     }
-}
-
-fn should_retry(err: &anyhow::Error) -> bool {
-    for cause in err.chain() {
-        if cause.is::<tokio::time::error::Elapsed>() {
-            return true;
-        }
-        if cause.is::<std::io::Error>() {
-            return true;
-        }
-    }
-    false
 }
 
 crate::impl_vault_methods!(VaultViewClient);

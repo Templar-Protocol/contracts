@@ -12327,6 +12327,7 @@ dependencies = [
  "near-jsonrpc-primitives 0.31.1",
  "near-primitives 0.31.1",
  "near-sdk",
+ "paste",
  "rstest",
  "serde",
  "serde_json",

@@ -39,6 +39,7 @@ mod lock_ext;
 #[macro_use]
 mod methods;
 mod client;
+mod retry;
 mod view_client;
 
 use lock_ext::{MutexExt, RwLockExt};
@@ -94,62 +95,105 @@ impl From<AccountId> for String {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MarketId(pub u32);
+/// Generate a UniFFI-compatible newtype wrapper with standard conversions.
+///
+/// This macro generates:
+/// - A newtype struct with standard derives
+/// - `uniffi::custom_type!` registration
+/// - `From<Inner>` and `From<Wrapper>` for inner type conversions
+/// - `From<External>` and `From<Wrapper>` for external type conversions
+macro_rules! define_uniffi_wrapper {
+    // Variant with external type conversion and extra derives
+    ($name:ident, $inner:ty, [$($derive:ident),*], $external:path) => {
+        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash $(, $derive)*)]
+        pub struct $name(pub $inner);
 
-uniffi::custom_type!(MarketId, u32);
+        uniffi::custom_type!($name, $inner);
 
-impl From<u32> for MarketId {
-    fn from(value: u32) -> Self {
-        MarketId(value)
-    }
+        impl From<$inner> for $name {
+            fn from(value: $inner) -> Self {
+                $name(value)
+            }
+        }
+
+        impl From<$name> for $inner {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl From<$external> for $name {
+            fn from(value: $external) -> Self {
+                $name(value.0)
+            }
+        }
+
+        impl From<$name> for $external {
+            fn from(value: $name) -> Self {
+                $external(value.0)
+            }
+        }
+    };
 }
 
-impl From<MarketId> for u32 {
-    fn from(value: MarketId) -> Self {
-        value.0
-    }
-}
+define_uniffi_wrapper!(MarketId, u32, [Copy], templar_common::vault::MarketId);
+define_uniffi_wrapper!(CapGroupId, String, [], templar_common::vault::CapGroupId);
 
-impl From<templar_common::vault::MarketId> for MarketId {
-    fn from(value: templar_common::vault::MarketId) -> Self {
-        MarketId(value.0)
-    }
-}
+/// Generate a UniFFI-compatible builder for a simple struct.
+///
+/// This macro generates:
+/// - An internal state struct with optional fields
+/// - A builder struct with `#[derive(uniffi::Object, Default)]`
+/// - A `#[uniffi::export]` impl block with setters and build method
+///
+/// Note: Due to proc-macro limitations, this generates code that must be
+/// wrapped in a `paste::paste!` block for identifier concatenation.
+macro_rules! define_uniffi_builder {
+    (
+        $builder:ident,
+        $target:ident,
+        { $($field:ident: $field_ty:ty),* $(,)? }
+    ) => {
+        paste::paste! {
+            #[derive(Default)]
+            struct [<$builder State>] {
+                $($field: Option<$field_ty>,)*
+            }
 
-impl From<MarketId> for templar_common::vault::MarketId {
-    fn from(value: MarketId) -> Self {
-        templar_common::vault::MarketId(value.0)
-    }
-}
+            #[derive(uniffi::Object, Default)]
+            pub struct $builder {
+                state: Mutex<[<$builder State>]>,
+            }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CapGroupId(pub String);
+            #[uniffi::export]
+            impl $builder {
+                #[uniffi::constructor]
+                pub fn new() -> Self {
+                    Self::default()
+                }
 
-uniffi::custom_type!(CapGroupId, String);
+                $(
+                    pub fn [<set_ $field>](&self, $field: $field_ty) -> Result<(), ErrorWrapper> {
+                        let mut state = self.state.lock_or_poison()?;
+                        state.$field = Some($field);
+                        Ok(())
+                    }
+                )*
 
-impl From<String> for CapGroupId {
-    fn from(value: String) -> Self {
-        CapGroupId(value)
-    }
-}
-
-impl From<CapGroupId> for String {
-    fn from(value: CapGroupId) -> Self {
-        value.0
-    }
-}
-
-impl From<templar_common::vault::CapGroupId> for CapGroupId {
-    fn from(value: templar_common::vault::CapGroupId) -> Self {
-        CapGroupId(value.0)
-    }
-}
-
-impl From<CapGroupId> for templar_common::vault::CapGroupId {
-    fn from(value: CapGroupId) -> Self {
-        templar_common::vault::CapGroupId(value.0)
-    }
+                pub fn build(&self) -> Result<$target, ErrorWrapper> {
+                    let state = self.state.lock_or_poison()?;
+                    $(
+                        let Some($field) = state.$field.clone() else {
+                            return Err(ErrorWrapper::Wrapped(
+                                concat!("missing ", stringify!($field)).to_string()
+                            ));
+                        };
+                    )*
+                    Ok($target { $($field),* })
+                }
+            }
+        }
+    };
 }
 
 #[derive(uniffi::Enum)]
@@ -254,50 +298,10 @@ impl TryFrom<Fee> for templar_common::vault::Fee<U128> {
     }
 }
 
-#[derive(Default)]
-struct FeeBuilderState {
-    fee: Option<ForeignU128>,
-    recipient: Option<AccountId>,
-}
-
-#[derive(uniffi::Object, Default)]
-pub struct FeeBuilder {
-    state: Mutex<FeeBuilderState>,
-}
-
-#[uniffi::export]
-impl FeeBuilder {
-    #[uniffi::constructor]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_fee(&self, fee: ForeignU128) -> Result<(), ErrorWrapper> {
-        let mut state = self.state.lock_or_poison()?;
-        state.fee = Some(fee);
-        Ok(())
-    }
-
-    pub fn set_recipient(&self, recipient: AccountId) -> Result<(), ErrorWrapper> {
-        let mut state = self.state.lock_or_poison()?;
-        state.recipient = Some(recipient);
-        Ok(())
-    }
-
-    pub fn build(&self) -> Result<Fee, ErrorWrapper> {
-        let state = self.state.lock_or_poison()?;
-
-        let Some(fee) = state.fee.clone() else {
-            return Err(ErrorWrapper::Wrapped("missing fee".to_string()));
-        };
-
-        let Some(recipient) = state.recipient.clone() else {
-            return Err(ErrorWrapper::Wrapped("missing recipient".to_string()));
-        };
-
-        Ok(Fee { fee, recipient })
-    }
-}
+define_uniffi_builder!(FeeBuilder, Fee, {
+    fee: ForeignU128,
+    recipient: AccountId,
+});
 
 #[derive(uniffi::Record, Debug, Clone)]
 pub struct Fees {
@@ -1748,12 +1752,10 @@ impl Client {
             }
         }
 
-        let retry = self.retry.map(RetryConfig::normalized);
-        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
-        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+        let mut retry_state = retry::RetryState::new(self.retry);
 
         loop {
-            attempts_left = attempts_left.saturating_sub(1);
+            retry_state.begin_attempt();
 
             let response = tokio::time::timeout(
                 Duration::from_secs(timeout),
@@ -1772,23 +1774,15 @@ impl Client {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => {
                     let err: anyhow::Error = e.into();
-                    if attempts_left == 0 || !should_retry(&err) {
+                    if !retry_state.should_retry_err(&err).await {
                         return Err(err);
-                    }
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
                     }
                     continue;
                 }
                 Err(e) => {
                     let err: anyhow::Error = e.into();
-                    if attempts_left == 0 || !should_retry(&err) {
+                    if !retry_state.should_retry_err(&err).await {
                         return Err(err);
-                    }
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
                     }
                     continue;
                 }
@@ -1841,12 +1835,10 @@ impl Client {
         let called_at = Instant::now();
         let deadline = called_at + Duration::from_secs(timeout);
 
-        let retry = self.retry.map(RetryConfig::normalized);
-        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
-        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+        let mut retry_state = retry::RetryState::new(self.retry);
 
         let result = loop {
-            attempts_left = attempts_left.saturating_sub(1);
+            retry_state.begin_attempt();
 
             let send_res = self
                 .inner
@@ -1863,13 +1855,11 @@ impl Client {
                         break Err(e);
                     }
 
-                    if retry.is_none() || attempts_left == 0 || e.handler_error().is_some() {
+                    // For transactions, only retry transport errors (no handler_error)
+                    if e.handler_error().is_some()
+                        || !retry_state.should_retry_unconditional().await
+                    {
                         break Err(e);
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                    if let Some(r) = retry {
-                        backoff_ms = (backoff_ms.saturating_mul(2)).min(r.max_backoff_ms);
                     }
                 }
             }
@@ -1925,7 +1915,7 @@ impl Client {
                         continue;
                     }
 
-                    if retry.is_some() && status_err.handler_error().is_none() {
+                    if self.retry.is_some() && status_err.handler_error().is_none() {
                         continue;
                     }
 
@@ -2010,18 +2000,6 @@ impl Client {
 
         serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)
     }
-}
-
-fn should_retry(err: &anyhow::Error) -> bool {
-    for cause in err.chain() {
-        if cause.is::<tokio::time::error::Elapsed>() {
-            return true;
-        }
-        if cause.is::<std::io::Error>() {
-            return true;
-        }
-    }
-    false
 }
 
 pub(crate) fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
