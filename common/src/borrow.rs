@@ -747,7 +747,8 @@ impl<'a> BorrowPositionGuard<'a> {
         let liability_reduction = self.reduce_borrow_asset_liability(proof, recovered);
         self.market
             .record_borrow_asset_yield_distribution(liability_reduction.remaining);
-        self.market.borrow_asset_balance += initial_liquidation.recovered;
+
+        self.market.borrow_asset_balance += recovered;
 
         MarketEvent::Liquidation {
             liquidator_id,
