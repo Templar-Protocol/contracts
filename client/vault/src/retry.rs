@@ -70,17 +70,6 @@ impl RetryState {
         true
     }
 
-    /// Check if we should retry (without checking error type), and if so, sleep for backoff.
-    ///
-    /// Useful when the caller has already determined the error is retryable.
-    pub async fn should_retry_unconditional(&mut self) -> bool {
-        if self.attempts_left == 0 {
-            return false;
-        }
-        self.sleep_and_backoff().await;
-        true
-    }
-
     /// Sleep for current backoff duration and increase backoff for next attempt.
     async fn sleep_and_backoff(&mut self) {
         tokio::time::sleep(Duration::from_millis(self.backoff_ms)).await;
