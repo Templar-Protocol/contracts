@@ -228,7 +228,12 @@ impl VaultClient {
     /// * `msg` - Optional message for the vault (defaults to "Supply" for standard deposit)
     ///
     /// # Returns
-    /// The amount of tokens actually used by the vault (as string).
+    /// The amount of tokens actually used by the vault (computed as `amount - unused`).
+    ///
+    /// # Note
+    /// Per NEP-141, ft_on_transfer returns the *unused* amount to refund. We compute
+    /// `used = amount - unused` here. However, this value should not be fully trusted
+    /// for accounting—verify via balance changes instead.
     #[instrument(skip(self, token, amount, msg))]
     pub async fn ft_transfer_call(
         &self,
@@ -267,21 +272,32 @@ impl VaultClient {
 
         let status = self
             .inner
-            .call(&token_id, "ft_transfer_call", args, Some(FT_TRANSFER_GAS), Some(1))
+            .call(
+                &token_id,
+                "ft_transfer_call",
+                args,
+                Some(FT_TRANSFER_GAS),
+                Some(1),
+            )
             .await
             .map_err(ErrorWrapper::from)?;
 
         match status {
             FinalExecutionStatus::SuccessValue(bytes) => {
-                // ft_transfer_call returns U128 of tokens used
-                let used: near_sdk::json_types::U128 =
+                // Per NEP-141, ft_on_transfer returns U128 of *unused* tokens (to refund).
+                // We compute used = amount - unused.
+                let unused: near_sdk::json_types::U128 =
                     serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)?;
-                Ok(used.0.to_string())
+                let used = amount_u128.saturating_sub(unused.0);
+                Ok(used.to_string())
             }
-            FinalExecutionStatus::Failure(err) => {
-                Err(ErrorWrapper::Wrapped(format!("ft_transfer_call failed: {:?}", err)))
-            }
-            _ => Err(ErrorWrapper::Wrapped("Unexpected execution status".to_string())),
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
+                "ft_transfer_call failed: {:?}",
+                err
+            ))),
+            _ => Err(ErrorWrapper::Wrapped(
+                "Unexpected execution status".to_string(),
+            )),
         }
     }
 
@@ -384,10 +400,13 @@ impl VaultClient {
                     available: balance.available.0.to_string(),
                 })
             }
-            FinalExecutionStatus::Failure(err) => {
-                Err(ErrorWrapper::Wrapped(format!("storage_deposit failed: {:?}", err)))
-            }
-            _ => Err(ErrorWrapper::Wrapped("Unexpected execution status".to_string())),
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
+                "storage_deposit failed: {:?}",
+                err
+            ))),
+            _ => Err(ErrorWrapper::Wrapped(
+                "Unexpected execution status".to_string(),
+            )),
         }
     }
 
@@ -415,7 +434,13 @@ impl VaultClient {
         let account = parse_account_id(account_id)?;
         let balance: Option<Balance> = self
             .inner
-            .view(&token_id, "storage_balance_of", Args { account_id: account })
+            .view(
+                &token_id,
+                "storage_balance_of",
+                Args {
+                    account_id: account,
+                },
+            )
             .await
             .map_err(ErrorWrapper::from)?;
 
@@ -490,10 +515,13 @@ impl VaultClient {
                     available: balance.available.0.to_string(),
                 })
             }
-            FinalExecutionStatus::Failure(err) => {
-                Err(ErrorWrapper::Wrapped(format!("token_storage_deposit failed: {:?}", err)))
-            }
-            _ => Err(ErrorWrapper::Wrapped("Unexpected execution status".to_string())),
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
+                "token_storage_deposit failed: {:?}",
+                err
+            ))),
+            _ => Err(ErrorWrapper::Wrapped(
+                "Unexpected execution status".to_string(),
+            )),
         }
     }
 }

@@ -712,7 +712,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 amount=deposit_amount,
                 msg=None,
             )
-            print(f"✓ Deposit transaction submitted (tokens used: {used})")
+            print(f"✓ Deposit transaction submitted (unused/refunded: {used})")
 
             # Verify assets increased
             after_deposit_assets = await user_client.get_total_assets()
