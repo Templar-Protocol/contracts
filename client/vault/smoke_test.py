@@ -786,61 +786,133 @@ async def test_happy_path_flow(config: SmokeTestConfig):
     except Exception as e:
         print(f"⚠ Redeem failed: {e}")
 
-    # === Step 5: Execute withdrawal (if allocator available and funds in idle) ===
+    # === Step 5: Execute withdrawals (flush queue) ===
     if allocator_client and markets:
-        withdrawing_op = await user_client.get_withdrawing_op_id()
         market_ids = [m.market_id for m in markets]
 
-        if withdrawing_op is None:
-            # Need to execute_withdrawal to start the process
-            print(f"Step 5 - Starting withdrawal execution...")
+        # The vault processes one queued withdrawal per execute_withdrawal() call.
+        # Flush the entire queue by repeating: start op -> drive -> wait for idle -> repeat.
+        max_cycles = 10
+        for cycle in range(max_cycles):
             try:
-                await allocator_client.execute_withdrawal(market_ids)
-                print("✓ Execute withdrawal route submitted")
-                withdrawing_op = await user_client.get_withdrawing_op_id()
-            except Exception as e:
-                print(f"⚠ Execute withdrawal failed: {e}")
-        else:
-            print(f"Step 5 - Withdrawal already in progress: op_id={withdrawing_op}")
+                # Best-effort cache clearing to avoid reading stale head/op state.
+                try:
+                    await user_client.clear_view_cache()
+                except Exception:
+                    pass
 
-        # Drive any in-progress withdrawal to completion
-        if withdrawing_op is not None:
-            print(f"  Driving withdrawal op_id={withdrawing_op} to completion...")
-            try:
-                # Execute market withdrawals until done
-                max_iterations = 10
-                for i in range(max_iterations):
-                    op_id = await user_client.get_withdrawing_op_id()
-                    if op_id is None:
-                        print("  ✓ Withdrawal completed (vault now idle)")
+                head = await user_client.peek_next_pending_withdrawal_id()
+                if head is None:
+                    print("Step 5 - Withdrawal queue empty")
+                    break
+
+                print(
+                    f"Step 5 - Flushing withdrawal queue (cycle {cycle + 1}/{max_cycles}, head={head})..."
+                )
+
+                # If we're in payout, withdrawing_op_id() may be None but current request id is Some.
+                # Wait until the vault is truly idle before starting a new withdrawal.
+                while True:
+                    withdrawing_op = await user_client.get_withdrawing_op_id()
+                    current_req = await user_client.get_current_withdraw_request_id()
+
+                    if withdrawing_op is None and current_req is None:
                         break
 
-                    # Try each market
-                    for market in markets:
-                        try:
-                            await allocator_client.execute_market_withdrawal(
-                                op_id,
-                                market.market_id,
-                                None,  # batch_limit
-                            )
-                            print(
-                                f"    Executed withdrawal from market {market.market_id}"
-                            )
-                        except Exception as e:
-                            # May fail if this market has no funds to withdraw
-                            pass
+                    if withdrawing_op is None and current_req is not None:
+                        # Payout in progress; nothing to do but wait for callbacks.
+                        await asyncio.sleep(1)
+                        continue
 
-                    # Check if we're done
-                    op_id = await user_client.get_withdrawing_op_id()
-                    if op_id is None:
-                        print("  ✓ Withdrawal completed (vault now idle)")
+                    # Drive an in-progress withdrawing op via market execution.
+                    print(f"  Driving withdrawal op_id={withdrawing_op}...")
+                    max_iterations = 10
+                    for _ in range(max_iterations):
+                        op_id = await user_client.get_withdrawing_op_id()
+                        if op_id is None:
+                            break
+
+                        for market in markets:
+                            try:
+                                await allocator_client.execute_market_withdrawal(
+                                    op_id,
+                                    market.market_id,
+                                    None,  # batch_limit
+                                )
+                                print(
+                                    f"    Executed withdrawal from market {market.market_id}"
+                                )
+                            except Exception:
+                                # May fail if market has nothing ready to withdraw.
+                                pass
+
+                        # Let the chain progress between iterations.
+                        await asyncio.sleep(1)
+
+                    # After driving, wait for payout to finish (if it started).
+                    while True:
+                        op_id = await user_client.get_withdrawing_op_id()
+                        current_req = (
+                            await user_client.get_current_withdraw_request_id()
+                        )
+                        if op_id is None and current_req is None:
+                            break
+                        await asyncio.sleep(1)
+
+                # Start the next queued withdrawal (processes the current head).
+                try:
+                    await allocator_client.execute_withdrawal(market_ids)
+                    print("  ✓ Execute withdrawal route submitted")
+                except Exception as e:
+                    print(f"  ⚠ execute_withdrawal failed: {e}")
+
+                # Now wait/drive until the vault becomes idle again.
+                while True:
+                    withdrawing_op = await user_client.get_withdrawing_op_id()
+                    current_req = await user_client.get_current_withdraw_request_id()
+
+                    if withdrawing_op is None and current_req is None:
                         break
-                else:
+
+                    if withdrawing_op is None and current_req is not None:
+                        await asyncio.sleep(1)
+                        continue
+
+                    # withdrawing_op is active
+                    max_iterations = 10
+                    for _ in range(max_iterations):
+                        op_id = await user_client.get_withdrawing_op_id()
+                        if op_id is None:
+                            break
+
+                        for market in markets:
+                            try:
+                                await allocator_client.execute_market_withdrawal(
+                                    op_id,
+                                    market.market_id,
+                                    None,
+                                )
+                                print(
+                                    f"    Executed withdrawal from market {market.market_id}"
+                                )
+                            except Exception:
+                                pass
+
+                        await asyncio.sleep(1)
+
+                # Detect lack of progress to avoid looping forever.
+                new_head = await user_client.peek_next_pending_withdrawal_id()
+                if new_head == head:
                     print(
-                        f"  ⚠ Withdrawal not completed after {max_iterations} iterations"
+                        f"  ⚠ Queue head did not advance (still {new_head}); stopping flush"
                     )
+                    break
+
             except Exception as e:
-                print(f"  ⚠ Driving withdrawal failed: {e}")
+                print(f"⚠ Step 5 flush failed: {e}")
+                break
+        else:
+            print(f"⚠ Step 5 flush did not complete after {max_cycles} cycles")
     else:
         print("Step 5 - Skipping execute withdrawal: no allocator or no markets")
 
