@@ -772,6 +772,73 @@ impl KeyPoolClient {
 
         serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)
     }
+
+    // -------------------------------------------------------------------------
+    // FT transfer-call support (for deposit flows)
+    // -------------------------------------------------------------------------
+
+    /// Call `ft_transfer_call` on a token contract.
+    ///
+    /// This is the standard NEP-141 method for transferring tokens with a message
+    /// to a receiver contract.
+    #[instrument(skip(self, msg), fields(token = %token.0, receiver = %receiver.0, amount = %amount))]
+    pub async fn ft_transfer_call(
+        &self,
+        token: &AccountId,
+        receiver: &AccountId,
+        amount: &ForeignU128,
+        msg: String,
+        gas: Option<Gas>,
+    ) -> Result<(), ErrorWrapper> {
+        let token_id = self.near_id(token)?;
+        let receiver_id = self.near_id(receiver)?;
+        let amount_u128 = crate::parse_u128(amount)?;
+
+        #[derive(Serialize)]
+        struct FtTransferCallArgs {
+            receiver_id: NearAccountId,
+            amount: U128,
+            msg: String,
+        }
+
+        let args = FtTransferCallArgs {
+            receiver_id,
+            amount: U128(amount_u128),
+            msg,
+        };
+
+        // ft_transfer_call requires exactly 1 yoctoNEAR attached
+        self.call(&token_id, "ft_transfer_call", args, gas, Some(1))
+            .await
+            .map(|_| ())
+            .map_err(ErrorWrapper::from)
+    }
+
+    /// Deposit assets into the vault via `ft_transfer_call`.
+    ///
+    /// This fetches the vault configuration to determine the underlying token,
+    /// then calls `ft_transfer_call` with `DepositMsg::Supply`.
+    #[instrument(skip(self), fields(amount = %amount))]
+    pub async fn deposit_supply(
+        &self,
+        amount: &ForeignU128,
+        gas: Option<Gas>,
+    ) -> Result<(), ErrorWrapper> {
+        // 1. Get configuration to find underlying token
+        let config = self.get_configuration().await?;
+        let token = match config.underlying_token {
+            crate::UnderlyingToken::Nep141 { contract_id } => contract_id,
+            crate::UnderlyingToken::Nep245 { contract_id, .. } => contract_id,
+        };
+
+        // 2. Serialize DepositMsg::Supply
+        let msg = serde_json::to_string(&templar_common::vault::DepositMsg::Supply)
+            .map_err(|e| ErrorWrapper::Wrapped(e.to_string()))?;
+
+        let gas = gas.or(Some(templar_common::vault::SUPPLY_GAS.as_gas()));
+        self.ft_transfer_call(&token, &self.vault_account(), amount, msg, gas)
+            .await
+    }
 }
 
 fn should_retry(err: &anyhow::Error) -> bool {

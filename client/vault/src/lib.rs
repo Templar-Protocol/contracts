@@ -47,7 +47,8 @@ uniffi::setup_scaffolding!();
 
 type ForeignU128 = String;
 
-#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct RetryConfig {
     pub max_attempts: u32,
     pub initial_backoff_ms: u64,
@@ -67,7 +68,8 @@ impl RetryConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct AccountId(String);
 
 uniffi::custom_type!(AccountId, String);
@@ -94,7 +96,8 @@ impl From<AccountId> for String {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct MarketId(pub u32);
 
 uniffi::custom_type!(MarketId, u32);
@@ -123,7 +126,8 @@ impl From<MarketId> for templar_common::vault::MarketId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct CapGroupId(pub String);
 
 uniffi::custom_type!(CapGroupId, String);
@@ -168,7 +172,8 @@ pub trait EventHandler {
     fn handle(&self, event: Event);
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Delta {
     pub market: MarketId,
     pub amount: ForeignU128,
@@ -194,7 +199,8 @@ impl TryFrom<Delta> for templar_common::vault::Delta {
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone)]
+#[derive(uniffi::Enum, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum AllocationDelta {
     Supply(Delta),
     Withdraw(Delta),
@@ -228,7 +234,8 @@ impl TryFrom<AllocationDelta> for templar_common::vault::AllocationDelta {
     }
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Fee {
     pub fee: ForeignU128,
     pub recipient: AccountId,
@@ -299,7 +306,8 @@ impl FeeBuilder {
     }
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Fees {
     pub performance: Fee,
     pub management: Fee,
@@ -424,7 +432,8 @@ impl FeesBuilder {
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum Restrictions {
     Paused,
     BlackList(Vec<AccountId>),
@@ -469,7 +478,8 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone)]
+#[derive(uniffi::Enum, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum CapGroupUpdate {
     SetCap {
         cap_group: CapGroupId,
@@ -513,7 +523,8 @@ impl TryFrom<CapGroupUpdate> for templar_common::vault::CapGroupUpdate {
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone)]
+#[derive(uniffi::Enum, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum CapGroupUpdateKey {
     SetCap { cap_group: CapGroupId },
     SetRelativeCap { cap_group: CapGroupId },
@@ -552,7 +563,8 @@ pub enum TimelockKind {
     MarketRemoval,
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct FeeAccrualAnchor {
     pub total_assets: ForeignU128,
     pub timestamp_ns: u64,
@@ -567,19 +579,22 @@ impl From<templar_common::vault::FeeAccrualAnchor> for FeeAccrualAnchor {
     }
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct MarketWithId {
     pub market_id: MarketId,
     pub account: AccountId,
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct MarketAssets {
     pub market_id: MarketId,
     pub assets: ForeignU128,
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct RealAssetsReport {
     pub total_assets: ForeignU128,
     pub per_market: Vec<MarketAssets>,
@@ -603,7 +618,8 @@ impl From<templar_common::vault::RealAssetsReport> for RealAssetsReport {
     }
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct CapGroup {
     pub id: CapGroupId,
     pub cap: ForeignU128,
@@ -633,7 +649,8 @@ impl
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone)]
+#[derive(uniffi::Enum, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum TimelockedAction {
     GuardianChange {
         account: AccountId,
@@ -672,7 +689,8 @@ pub enum TimelockedAction {
     },
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct PendingGovernanceAction {
     pub action: TimelockedAction,
     pub valid_at_ns: u64,
@@ -785,7 +803,8 @@ pub(crate) struct PendingValueSerde {
     pub valid_at_ns: u64,
 }
 
-#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum UnderlyingToken {
     Nep141 {
         contract_id: AccountId,
@@ -796,7 +815,8 @@ pub enum UnderlyingToken {
     },
 }
 
-#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct FeeWad {
     pub fee_wad: ForeignU128,
     pub recipient: AccountId,
@@ -811,7 +831,8 @@ impl From<templar_common::vault::Fee<templar_common::vault::wad::Wad>> for FeeWa
     }
 }
 
-#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct FeesWad {
     pub performance: FeeWad,
     pub management: FeeWad,
@@ -830,7 +851,8 @@ impl From<templar_common::vault::Fees<templar_common::vault::wad::Wad>> for Fees
     }
 }
 
-#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct VaultConfiguration {
     pub owner: AccountId,
     pub curator: AccountId,
@@ -883,7 +905,8 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
     }
 }
 
-#[derive(uniffi::Record, Debug, Clone)]
+#[derive(uniffi::Record, Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct VaultSnapshot {
     pub configuration: VaultConfiguration,
     pub total_assets: ForeignU128,
