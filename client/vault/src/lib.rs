@@ -1,8 +1,7 @@
-use std::{collections::BTreeSet, fmt::Display, str::FromStr, sync::Mutex, time::Duration};
+use std::{collections::BTreeSet, fmt::Display, str::FromStr, sync::Mutex};
 
 use mini_moka::sync::Cache as MokaCache;
 use near_account_id::AccountId as NearAccountId;
-use near_crypto::SecretKey;
 use near_primitives::types::Gas;
 use near_sdk::json_types::{U128, U64};
 use serde::{Deserialize, Serialize};
@@ -18,6 +17,7 @@ mod methods;
 mod client;
 mod retry;
 mod view_client;
+mod view_core;
 
 use lock_ext::MutexExt;
 
@@ -978,8 +978,10 @@ impl Display for ErrorWrapper {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
-    use near_crypto::KeyType;
+    use near_crypto::{KeyType, SecretKey};
     use rstest::{fixture, rstest};
 
     #[fixture]
