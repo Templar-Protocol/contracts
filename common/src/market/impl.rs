@@ -645,41 +645,24 @@ mod tests {
             8_000_000.into()
         );
 
-        // Liquidate the position: initial
-        let initial = {
-            let snapshot = tick(&mut market);
-            let mut borrow_position = market
-                .borrow_position_guard(snapshot, borrow_id.clone())
-                .unwrap();
-            let interest_proof = borrow_position.accumulate_interest();
-            borrow_position
-                .record_liquidation_initial(
-                    interest_proof,
-                    1_000_000.into(),
-                    None,
-                    &price_pair(1, 2), // should cause 100% of the position to be liquidated
-                    env::block_timestamp_ms(),
-                )
-                .unwrap()
-        };
-        assert_eq!(market.borrow_asset_balance, 9_000_000.into());
-        assert_eq!(
-            market.get_borrow_asset_available_to_borrow(),
-            8_000_000.into()
-        );
-
-        // Liquidate the position: final
+        // Liquidate the position
         {
             let snapshot = tick(&mut market);
             let mut borrow_position = market
                 .borrow_position_guard(snapshot, borrow_id.clone())
                 .unwrap();
             let interest_proof = borrow_position.accumulate_interest();
-            borrow_position.record_liquidation_final(
-                interest_proof,
-                "liquidator.near".parse().unwrap(),
-                &initial,
-            );
+            let liquidation = borrow_position
+                .record_liquidation(
+                    interest_proof,
+                    "liquidator.near".parse().unwrap(),
+                    1_000_000.into(),
+                    None,
+                    &price_pair(1, 2), // should cause 100% of the position to be liquidated
+                    env::block_timestamp_ms(),
+                )
+                .unwrap();
+            assert_eq!(u128::from(liquidation.liquidated), 2_000_000);
         }
         assert_eq!(market.borrow_asset_balance, 10_000_000.into());
         assert_eq!(
