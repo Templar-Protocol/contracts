@@ -1,11 +1,15 @@
 use std::collections::HashMap;
 
-use near_sdk::json_types::{U128, U64};
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
+use near_sdk::{
+    base64::prelude::*,
+    json_types::{U128, U64},
+};
+
 use templar_universal_account::{
     authentication::passkey::Passkey, contract_state::Migration, NEAR_TESTNET_CHAIN_ID,
 };
-use test_utils::{worker, ContractController, UniversalAccountController};
+use test_utils::*;
 
 type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
 
@@ -13,26 +17,32 @@ static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_p
 
 #[rstest::rstest]
 #[tokio::test]
-pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
+pub async fn from_0_2_0(#[future(awt)] worker: Sandbox) {
     let sk = p256::SecretKey::from_bytes(&[0x55u8; 32].into()).unwrap();
     let passkey = Passkey(sk.public_key().into());
 
-    let ua = worker
-        .dev_deploy(UniversalAccountController::wasm_0_2_0())
-        .await
-        .unwrap();
+    accounts!(worker, universal_account);
+    universal_account
+        .deploy(UniversalAccountController::wasm_0_2_0().to_vec())
+        .await;
     let state_patch: StatePatch = near_sdk::borsh::from_slice(WASM_0_2_0_STATE_PATCH).unwrap();
-    for (key, value) in state_patch {
-        worker.patch_state(ua.id(), &key, &value).await.unwrap();
-    }
-
-    let contract = ua
-        .as_account()
-        .deploy(UniversalAccountController::wasm().await)
+    worker
+        .patch_state(universal_account.id.clone())
+        .storage_entries(
+            state_patch
+                .iter()
+                .map(|(k, v)| (BASE64_STANDARD.encode(k), BASE64_STANDARD.encode(v))),
+        )
+        .send()
         .await
-        .unwrap()
         .unwrap();
-    let ua = UniversalAccountController { contract };
+
+    universal_account
+        .deploy(UniversalAccountController::wasm().await.to_vec())
+        .await;
+    let ua = UniversalAccountController {
+        account: universal_account,
+    };
 
     assert_eq!(ua.get_stored_state_version().await, 0);
     assert_eq!(ua.get_target_state_version().await, 1);
@@ -40,7 +50,7 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
 
     let r = ua
         .migrate(
-            ua.contract().as_account(),
+            ua.account(),
             Migration::V0 {
                 chain_id: U128(NEAR_TESTNET_CHAIN_ID),
             },
@@ -63,39 +73,45 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(get_key.index, U64(0));
     assert_eq!(get_key.name, Some("Templar Universal Account".to_string()));
     assert_eq!(get_key.nonce, U64(0));
-    assert_eq!(&get_key.verifying_contract, ua.contract().as_account().id());
+    assert_eq!(&get_key.verifying_contract, ua.account().id());
 }
 
 #[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Stored state version 1 != args `from_version` 0"]
-pub async fn from_0_2_0_fail_migrate_twice(#[future(awt)] worker: Worker<Sandbox>) {
-    let ua = worker
-        .dev_deploy(UniversalAccountController::wasm_0_2_0())
-        .await
-        .unwrap();
+pub async fn from_0_2_0_fail_migrate_twice(#[future(awt)] worker: Sandbox) {
+    accounts!(worker, universal_account);
+    universal_account
+        .deploy(UniversalAccountController::wasm_0_2_0().to_vec())
+        .await;
     let state_patch: StatePatch = near_sdk::borsh::from_slice(WASM_0_2_0_STATE_PATCH).unwrap();
-    for (key, value) in state_patch {
-        worker.patch_state(ua.id(), &key, &value).await.unwrap();
-    }
-
-    let contract = ua
-        .as_account()
-        .deploy(UniversalAccountController::wasm().await)
+    worker
+        .patch_state(universal_account.id.clone())
+        .storage_entries(
+            state_patch
+                .iter()
+                .map(|(k, v)| (BASE64_STANDARD.encode(k), BASE64_STANDARD.encode(v))),
+        )
+        .send()
         .await
-        .unwrap()
         .unwrap();
-    let ua = UniversalAccountController { contract };
+
+    universal_account
+        .deploy(UniversalAccountController::wasm().await.to_vec())
+        .await;
+    let ua = UniversalAccountController {
+        account: universal_account,
+    };
 
     ua.migrate(
-        ua.contract().as_account(),
+        ua.account(),
         Migration::V0 {
             chain_id: U128(NEAR_TESTNET_CHAIN_ID),
         },
     )
     .await;
     ua.migrate(
-        ua.contract().as_account(),
+        ua.account(),
         Migration::V0 {
             chain_id: U128(NEAR_TESTNET_CHAIN_ID),
         },

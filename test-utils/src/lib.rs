@@ -1,24 +1,30 @@
-use std::{num::NonZero, path::Path, str::FromStr};
+use std::{num::NonZero, path::Path, str::FromStr, sync::Arc};
 
-use crate::controller::vault::{UnifiedVaultController, VaultController};
+pub use near_api;
+pub use near_sandbox::{self, Sandbox};
+
 pub use controller::{
     ft::FtController,
+    lst_oracle::LstOracleController,
     market::{MarketController, UnifiedMarketController},
+    mt::MtController,
     oracle::OracleController,
     registry::RegistryController,
     storage_management::StorageManagementController,
+    token::TokenController,
     universal_account::UniversalAccountController,
+    vault::{UnifiedVaultController, VaultController},
     ContractController,
 };
-use controller::{mt::MtController, token::TokenController};
+use near_api::{
+    types::transaction::result::{ExecutionSuccess, ValueOrReceiptId},
+    NetworkConfig,
+};
+use near_sandbox::GenesisAccount;
 use near_sdk::{
     json_types::{I64, U64},
+    serde::Serialize,
     serde_json, AccountId, NearToken,
-};
-use near_workspaces::{
-    network::Sandbox,
-    result::{ExecutionSuccess, ValueOrReceiptId},
-    Account, DevNetwork, Worker,
 };
 use templar_common::{
     asset::FungibleAsset,
@@ -43,11 +49,104 @@ pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
 
+pub fn default_secret_key() -> near_api::SecretKey {
+    near_api::SecretKey::from_str(&GenesisAccount::default().private_key).unwrap()
+}
+
+#[derive(Clone)]
+pub struct TestAccount {
+    pub id: AccountId,
+    pub network: NetworkConfig,
+    pub secret_key: near_api::SecretKey,
+    signer: Arc<near_api::Signer>,
+}
+
+impl std::fmt::Debug for TestAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestAccount")
+            .field("id", &self.id)
+            .field("network", &self.network)
+            .finish()
+    }
+}
+
+impl TestAccount {
+    pub fn new(id: AccountId, network: NetworkConfig, secret_key: near_api::SecretKey) -> Self {
+        let signer = near_api::Signer::from_secret_key(secret_key.clone()).unwrap();
+        Self {
+            id,
+            network,
+            secret_key,
+            signer,
+        }
+    }
+
+    pub fn signer(&self) -> Arc<near_api::Signer> {
+        Arc::clone(&self.signer)
+    }
+
+    pub fn clone_with_id(&self, id: AccountId) -> Self {
+        Self {
+            id,
+            network: self.network.clone(),
+            secret_key: self.secret_key.clone(),
+            signer: Arc::clone(&self.signer),
+        }
+    }
+
+    pub fn id(&self) -> &AccountId {
+        &self.id
+    }
+
+    pub fn contract(&self) -> near_api::Contract {
+        near_api::Contract(self.id.clone())
+    }
+
+    pub fn public_key_string(&self) -> String {
+        self.secret_key.public_key().to_string()
+    }
+
+    pub async fn deploy(&self, code: Vec<u8>) {
+        near_api::Contract::deploy(self.id.clone())
+            .use_code(code)
+            .without_init_call()
+            .with_signer(Arc::clone(&self.signer))
+            .send_to(&self.network)
+            .await
+            .unwrap()
+            .assert_success();
+    }
+
+    pub async fn deploy_init(
+        &self,
+        code: Vec<u8>,
+        init_method_name: &str,
+        init_args: impl Serialize,
+    ) {
+        near_api::Contract::deploy(self.id.clone())
+            .use_code(code)
+            .with_init_call(init_method_name, init_args)
+            .unwrap()
+            .with_signer(Arc::clone(&self.signer))
+            .send_to(&self.network)
+            .await
+            .unwrap()
+            .assert_success();
+    }
+
+    pub async fn list_access_keys(&self) -> Vec<(near_api::PublicKey, near_api::types::AccessKey)> {
+        near_api::Account(self.id.clone())
+            .list_keys()
+            .fetch_from(&self.network)
+            .await
+            .unwrap()
+            .data
+    }
+}
+
 #[rstest::fixture]
-pub async fn worker() -> Worker<Sandbox> {
-    near_workspaces::sandbox_with_version("2.8.0")
-        .await
-        .unwrap()
+pub async fn worker() -> Sandbox {
+    Sandbox::start_sandbox().await.unwrap()
 }
 
 pub fn to_price(price: f64) -> pyth::Price {
@@ -59,25 +158,24 @@ pub fn to_price(price: f64) -> pyth::Price {
     }
 }
 
-pub async fn create_prefixed_account(
-    prefix: &str,
-    worker: &Worker<impl DevNetwork + 'static>,
-) -> Account {
-    let (genid, sk) = worker.generate_dev_account_credentials();
-    let new_id: AccountId = format!("{prefix}{}", &genid.as_str()[prefix.len()..])
-        .parse()
-        .unwrap();
-    worker
-        .create_root_account_subaccount(new_id, sk)
-        .await
-        .unwrap()
-        .unwrap()
-}
-
 #[macro_export]
 macro_rules! accounts {
-    ($w: expr, $($n:ident),*) => {
-        $(let $n = $crate::create_prefixed_account(stringify!($n), &$w).await;)*
+    ($w:expr, $($n:ident),*) => {
+        let disambiguator = ::std::time::SystemTime::UNIX_EPOCH.elapsed().unwrap().subsec_nanos();
+        let network = $crate::near_api::NetworkConfig::from_rpc_url("sandbox", $w.rpc_addr.parse().unwrap());
+        let secret_key = $crate::default_secret_key();
+
+        #[allow(unused_parens)]
+        let ($($n,)*) = ::tokio::join!($({
+            let network = network.clone();
+            let secret_key = secret_key.clone();
+            async {
+                let id = format!("{}_{}", stringify!($n), disambiguator).parse().unwrap();
+                let a = $crate::TestAccount::new(id, network, secret_key);
+                $crate::near_sandbox::Sandbox::create_account(&$w, a.id.clone()).send().await.unwrap();
+                a
+            }
+        }),*);
     };
 }
 
@@ -189,18 +287,18 @@ async fn get_contract(name: &str, path: &str) -> Vec<u8> {
 
 pub struct SetupEverything {
     pub c: UnifiedMarketController,
-    pub protocol_yield_user: Account,
-    pub insurance_yield_user: Account,
+    pub protocol_yield_user: TestAccount,
+    pub insurance_yield_user: TestAccount,
     pub vault: UnifiedVaultController,
-    pub vault_owner: Account,
-    pub vault_curator: Account,
-    pub vault_guardian: Account,
-    pub skim_recipient: Account,
-    pub fee_recipient: Account,
+    pub vault_owner: TestAccount,
+    pub vault_curator: TestAccount,
+    pub vault_guardian: TestAccount,
+    pub skim_recipient: TestAccount,
+    pub fee_recipient: TestAccount,
 }
 
 pub async fn setup_everything(
-    worker: &Worker<Sandbox>,
+    worker: &Sandbox,
     customize_market_configuration: impl FnOnce(&mut MarketConfiguration),
     customize_vault_configuration: impl FnOnce(&mut VaultConfiguration),
 ) -> SetupEverything {
@@ -220,23 +318,23 @@ pub async fn setup_everything(
         fee_recipient
     );
     let mut config = market_configuration(
-        price_oracle.id().clone(),
-        borrow_asset.id().clone(),
-        collateral_asset.id().clone(),
-        protocol_yield_user.id().clone(),
+        price_oracle.id.clone(),
+        borrow_asset.id.clone(),
+        collateral_asset.id.clone(),
+        protocol_yield_user.id.clone(),
         YieldWeights::new_with_supply_weight(8)
-            .with_static(protocol_yield_user.id().clone(), 1)
-            .with_static(insurance_yield_user.id().clone(), 1),
+            .with_static(protocol_yield_user.id.clone(), 1)
+            .with_static(insurance_yield_user.id.clone(), 1),
     );
     customize_market_configuration(&mut config);
 
     let mut vault_config = vault_configuration(
-        vault_owner.id().clone(),
-        vault_curator.id().clone(),
-        vault_guardian.id().clone(),
-        borrow_asset.id().clone(),
-        skim_recipient.id().clone(),
-        fee_recipient.id().clone(),
+        vault_owner.id.clone(),
+        vault_curator.id.clone(),
+        vault_guardian.id.clone(),
+        borrow_asset.id.clone(),
+        skim_recipient.id.clone(),
+        fee_recipient.id.clone(),
     );
     customize_vault_configuration(&mut vault_config);
 
@@ -244,7 +342,7 @@ pub async fn setup_everything(
         MarketController::deploy(market, &config),
         OracleController::deploy(price_oracle),
         async {
-            if config.borrow_asset.is_nep141(borrow_asset.id()) {
+            if config.borrow_asset.is_nep141(&borrow_asset.id) {
                 TokenController::Ft {
                     controller: FtController::deploy(borrow_asset, "Borrow Asset", "BORROW").await,
                 }
@@ -256,7 +354,7 @@ pub async fn setup_everything(
             }
         },
         async {
-            if config.collateral_asset.is_nep141(collateral_asset.id()) {
+            if config.collateral_asset.is_nep141(&collateral_asset.id) {
                 TokenController::Ft {
                     controller: FtController::deploy(
                         collateral_asset,
@@ -275,26 +373,29 @@ pub async fn setup_everything(
         VaultController::deploy(vault, &vault_config)
     );
 
+    eprintln!("setup_everything[UnifiedMarketController::new]");
     let c =
         UnifiedMarketController::new(market, config, price_oracle, borrow_asset, collateral_asset);
 
-    c.set_borrow_asset_price(1.0).await;
-    c.set_collateral_asset_price(1.0).await;
-
+    eprintln!("setup_everything[UnifiedVaultController::new]");
     let v = UnifiedVaultController::new(vault, vault_config, c.clone());
 
-    let mkt = c.market.contract().as_account();
+    let mkt = c.market.account();
     // Asset opt-ins.
+    eprintln!("setup_everything[asset opt-ins]");
     tokio::join!(
+        c.set_borrow_asset_price(1.0),
+        c.set_collateral_asset_price(1.0),
         c.storage_deposits(mkt),
         c.init_account(&protocol_yield_user),
         c.init_account(&insurance_yield_user),
-        v.storage_deposits(v.vault.contract().as_account()),
+        v.storage_deposits(v.vault.account()),
         v.storage_deposits(&skim_recipient),
         v.storage_deposits(&fee_recipient),
     );
 
-    v.setup_caps(&vault_owner, &[mkt.id().clone()], u128::MAX)
+    eprintln!("setup_everything[setup_caps]");
+    v.setup_caps(&vault_owner, &[mkt.id().to_owned()], u128::MAX)
         .await;
 
     SetupEverything {
@@ -310,18 +411,18 @@ pub async fn setup_everything(
     }
 }
 
-pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
+pub async fn setup_registry(worker: &Sandbox) -> RegistryController {
     accounts!(worker, registry);
 
     let r = RegistryController::new(registry).await;
 
-    let wasm = controller::market::load_wasm().await;
+    let wasm = controller::market::MarketController::wasm().await;
 
     let cost_per_byte = NearToken::from_near(1).saturating_div(10 * 1_000);
     let deployment_cost = cost_per_byte.saturating_mul(wasm.len() as u128);
 
     r.add_version(
-        r.contract.as_account(),
+        &r.account,
         deployment_cost,
         "market@0.0.0",
         DeployMode::GlobalHash,

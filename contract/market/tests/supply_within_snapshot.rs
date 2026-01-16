@@ -1,4 +1,4 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 use templar_common::{
     dec,
@@ -12,7 +12,7 @@ use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn funds_activation(#[future(awt)] worker: Worker<Sandbox>) {
+async fn funds_activation(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -115,7 +115,7 @@ async fn funds_activation(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn partial_snapshot_no_earnings(#[future(awt)] worker: Worker<Sandbox>) {
+async fn partial_snapshot_no_earnings(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)

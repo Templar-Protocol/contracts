@@ -37,7 +37,6 @@ templar-universal-account.workspace = true
 alloy = { workspace = true, features = ["signer-local"] }
 ed25519-dalek.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
 p256.workspace = true
 rstest.workspace = true
 templar-universal-account = { workspace = true, features = ["signing"] }

@@ -1,14 +1,13 @@
 use std::time::Duration;
 
-use near_sdk::{serde_json::json, NearToken};
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 use templar_common::{asset::BorrowAssetAmount, dec, interest_rate_strategy::InterestRateStrategy};
 use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn static_yield_success(#[future(awt)] worker: Worker<Sandbox>) {
+async fn static_yield_success(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c, protocol_yield_user, insurance_yield_user)
@@ -114,7 +113,7 @@ async fn static_yield_success(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn static_yield_fail_storage_unregistered(#[future(awt)] worker: Worker<Sandbox>) {
+async fn static_yield_fail_storage_unregistered(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c, protocol_yield_user, insurance_yield_user)
@@ -144,16 +143,10 @@ async fn static_yield_fail_storage_unregistered(#[future(awt)] worker: Worker<Sa
     eprintln!("Record after accumulate: {record_after_accumulate}");
     assert_ne!(record_after_accumulate, 0.into());
 
-    let r = protocol_yield_user
-        .call(c.borrow_asset.contract().id(), "patch_storage_unregister")
-        .args_json(json!({"force": true}))
-        .deposit(NearToken::from_yoctonear(1))
-        .transact()
-        .await
-        .unwrap()
-        .into_result()
-        .unwrap();
-
+    let r = c
+        .borrow_asset
+        .patch_storage_unregister(&protocol_yield_user, true)
+        .await;
     eprintln!("Storage unregister: {r:?}");
 
     let r = c.withdraw_static_yield(&protocol_yield_user, None).await;

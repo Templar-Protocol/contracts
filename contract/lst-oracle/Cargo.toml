@@ -36,8 +36,9 @@ templar-common.workspace = true
 
 [dev-dependencies]
 hex-literal.workspace = true
+near-api.workspace = true
+near-sandbox.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
 rstest.workspace = true
 test-utils.workspace = true
 tokio.workspace = true

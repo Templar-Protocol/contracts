@@ -1,5 +1,4 @@
-use near_sdk::{serde_json::json, NearToken};
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 use tokio::task::JoinSet;
 
@@ -7,7 +6,7 @@ use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+async fn collateral_withdrawal(#[future(awt)] worker: Sandbox) {
     let amounts = [10u128; 30];
 
     setup_test!(worker extract(c) accounts(borrow_user));
@@ -33,18 +32,9 @@ async fn collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
     }
 
     let (successful_withdrawals, ()) = tokio::join!(set.join_all(), async {
-        borrow_user
-            .call(
-                c.collateral_asset.contract().id(),
-                "patch_storage_unregister",
-            )
-            .args_json(json!({"force": true}))
-            .deposit(NearToken::from_yoctonear(1))
-            .transact()
-            .await
-            .unwrap()
-            .into_result()
-            .unwrap();
+        c.collateral_asset
+            .patch_storage_unregister(&borrow_user, true)
+            .await;
     });
 
     let had_failure = successful_withdrawals.iter().any(|amount| *amount == 0);
@@ -68,7 +58,7 @@ async fn collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
 #[rstest]
 #[tokio::test]
 #[should_panic = "attempt to subtract with overflow"]
-async fn excessive_collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+async fn excessive_collateral_withdrawal(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(borrow_user_1, borrow_user_2));
 
     c.collateralize(&borrow_user_1, 1_000_000).await;

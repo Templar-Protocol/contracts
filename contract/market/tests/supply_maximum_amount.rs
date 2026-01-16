@@ -1,4 +1,4 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use templar_common::{market::HarvestYieldMode, time_chunk::TimeChunkConfiguration};
@@ -10,7 +10,7 @@ use test_utils::*;
 #[case([1; 25], 10_000)]
 #[tokio::test]
 async fn supply_within_maximum(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] deposits: impl IntoIterator<Item = u128>,
     #[case] supply_maximum: u128,
 ) {
@@ -42,7 +42,7 @@ async fn supply_within_maximum(
 #[tokio::test]
 #[should_panic = "Smart contract panicked: New supply position is outside of allowable range"]
 async fn supply_beyond_maximum(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] deposits: impl IntoIterator<Item = u128>,
     #[case] supply_maximum: u128,
 ) {
@@ -66,7 +66,7 @@ async fn supply_beyond_maximum(
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: New supply position is outside of allowable range"]
-async fn harvest_yield_beyond_maximum(#[future(awt)] worker: Worker<Sandbox>) {
+async fn harvest_yield_beyond_maximum(#[future(awt)] worker: Sandbox) {
     const LIMIT: u128 = 1_000_000;
     setup_test!(
         worker

@@ -1,45 +1,51 @@
-use near_sdk::{serde_json::json, AccountId};
-use near_workspaces::{Account, Contract};
+use std::sync::Arc;
+
+use near_sdk::{serde_json::json, AccountId, AccountIdRef};
+use tokio::sync::OnceCell;
+
 use templar_common::oracle::{
     price_transformer::PriceTransformer,
     pyth::{OracleResponse, PriceIdentifier},
 };
-use tokio::sync::OnceCell;
-
-use crate::{define, get_contract};
 
 use super::ContractController;
+use crate::{define, get_contract, TestAccount};
 
 pub struct LstOracleController {
-    pub contract: Contract,
+    pub account: TestAccount,
 }
 
 impl ContractController for LstOracleController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
 impl LstOracleController {
-    pub async fn deploy(account: Account, oracle_id: &AccountId) -> Self {
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM
-            .get_or_init(|| get_contract("templar_lst_oracle_contract", "contract/lst-oracle"))
-            .await;
+        WASM.get_or_init(|| get_contract("templar_lst_oracle_contract", "contract/lst-oracle"))
+            .await
+    }
 
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
-        contract
-            .call("new")
-            .args_json(json!({
-                "oracle_id": oracle_id,
-            }))
-            .transact()
+    pub async fn deploy(account: TestAccount, oracle_id: &AccountIdRef) -> Self {
+        near_api::Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call(
+                "new",
+                json!({
+                    "oracle_id": oracle_id,
+                }),
+            )
+            .unwrap()
+            .with_signer(Arc::clone(&account.signer))
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
-        Self { contract }
+        Self { account }
     }
 
     define! {

@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use near_sdk::{serde_json::json, NearToken};
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use templar_common::withdrawal_queue::WithdrawalQueueStatus;
@@ -9,7 +8,7 @@ use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn successful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+async fn successful_withdrawal(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user));
 
     c.supply_and_harvest_until_activation(&supply_user, 10_000)
@@ -38,7 +37,7 @@ async fn successful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn unsuccessful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+async fn unsuccessful_withdrawal(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
@@ -75,7 +74,7 @@ async fn unsuccessful_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
-async fn attempt_to_withdraw_more_than_deposit_incoming(#[future(awt)] worker: Worker<Sandbox>) {
+async fn attempt_to_withdraw_more_than_deposit_incoming(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user));
 
     c.supply(&supply_user, 10_000).await;
@@ -86,7 +85,7 @@ async fn attempt_to_withdraw_more_than_deposit_incoming(#[future(awt)] worker: W
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to withdraw more than current deposit"]
-async fn attempt_to_withdraw_more_than_deposit(#[future(awt)] worker: Worker<Sandbox>) {
+async fn attempt_to_withdraw_more_than_deposit(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user));
 
     c.supply_and_harvest_until_activation(&supply_user, 10_000)
@@ -97,7 +96,7 @@ async fn attempt_to_withdraw_more_than_deposit(#[future(awt)] worker: Worker<San
 
 #[rstest]
 #[tokio::test]
-async fn partial_fulfillment(#[future(awt)] worker: Worker<Sandbox>) {
+async fn partial_fulfillment(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user_1, supply_user_2, borrow_user));
 
     tokio::join!(
@@ -149,7 +148,7 @@ async fn partial_fulfillment(#[future(awt)] worker: Worker<Sandbox>) {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Withdrawal amount is outside of allowable range"]
 async fn attempt_to_withdraw_outside_configured_range(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] amount: u128,
 ) {
     setup_test!(
@@ -170,7 +169,7 @@ async fn attempt_to_withdraw_outside_configured_range(
 
 #[rstest]
 #[tokio::test]
-async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Worker<Sandbox>) {
+async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user, supply_user_2));
 
     tokio::join!(
@@ -189,15 +188,9 @@ async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Worke
     eprintln!("Withdrawal queue status: {status:#?}");
 
     // supply_user_2 deletes his token account
-    supply_user_2
-        .call(c.borrow_asset.contract().id(), "patch_storage_unregister")
-        .args_json(json!({"force": true}))
-        .deposit(NearToken::from_yoctonear(1))
-        .transact()
-        .await
-        .unwrap()
-        .into_result()
-        .unwrap();
+    c.borrow_asset
+        .patch_storage_unregister(&supply_user_2, true)
+        .await;
 
     let position_1_before = c.get_supply_position(supply_user.id()).await.unwrap();
     let position_2_before = c.get_supply_position(supply_user_2.id()).await.unwrap();
@@ -250,7 +243,7 @@ async fn supply_withdrawal_after_storage_unregister(#[future(awt)] worker: Worke
 
 #[rstest]
 #[tokio::test]
-async fn deposit_during_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+async fn deposit_during_withdrawal(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user, borrow_user));
 
     c.supply(&supply_user, 10_000).await;
@@ -278,7 +271,7 @@ async fn deposit_during_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn batch_fulfillment(#[future(awt)] worker: Worker<Sandbox>) {
+async fn batch_fulfillment(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user_1, supply_user_2, supply_user_3));
 
     tokio::join!(
@@ -315,7 +308,7 @@ async fn batch_fulfillment(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn batch_fulfillment_partial(#[future(awt)] worker: Worker<Sandbox>) {
+async fn batch_fulfillment_partial(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user_1, supply_user_2, supply_user_3, borrow_user));
 
     tokio::join!(
@@ -356,7 +349,7 @@ async fn batch_fulfillment_partial(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn measure_gas(#[future(awt)] worker: Worker<Sandbox>) {
+async fn measure_gas(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(supply_user_1, supply_user_2, supply_user_3, supply_user_4));
 
     tokio::join!(

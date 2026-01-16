@@ -1,4 +1,4 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use templar_common::{
@@ -8,7 +8,7 @@ use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn fast_borrow_is_not_free(#[future(awt)] worker: Worker<Sandbox>) {
+async fn fast_borrow_is_not_free(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)

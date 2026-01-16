@@ -1,3 +1,4 @@
+use near_sandbox::Sandbox;
 use test_utils::*;
 
 use templar_common::{
@@ -6,10 +7,10 @@ use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
 };
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_asset`: must not equal `collateral_asset`"]
-async fn borrow_asset_is_collateral_asset() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn borrow_asset_is_collateral_asset(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -20,10 +21,10 @@ async fn borrow_asset_is_collateral_asset() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_interest_rate_strategy`: out of bounds"]
-async fn borrow_interest_rate_strategy_exceed_apy_limit() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn borrow_interest_rate_strategy_exceed_apy_limit(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -35,10 +36,10 @@ async fn borrow_interest_rate_strategy_exceed_apy_limit() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_maintenance`: out of bounds"]
-async fn borrow_mcr_maintenance_less_than_1() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn borrow_mcr_maintenance_less_than_1(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -49,10 +50,10 @@ async fn borrow_mcr_maintenance_less_than_1() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_maintenance`: out of bounds"]
-async fn borrow_mcr_maintenance_less_than_borrow_mcr_liquidation() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn borrow_mcr_maintenance_less_than_borrow_mcr_liquidation(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -64,10 +65,10 @@ async fn borrow_mcr_maintenance_less_than_borrow_mcr_liquidation() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_mcr_liquidation`: out of bounds"]
-async fn borrow_mcr_liquidation_less_than_1() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn borrow_mcr_liquidation_less_than_1(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -78,10 +79,10 @@ async fn borrow_mcr_liquidation_less_than_1() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_asset_maximum_usage_ratio`: out of bounds"]
-async fn borrow_asset_maximum_usage_ratio_is_zero() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn borrow_asset_maximum_usage_ratio_is_zero(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -92,10 +93,10 @@ async fn borrow_asset_maximum_usage_ratio_is_zero() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `borrow_asset_maximum_usage_ratio`: out of bounds"]
-async fn borrow_asset_maximum_usage_ratio_greater_than_1() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn borrow_asset_maximum_usage_ratio_greater_than_1(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -106,10 +107,10 @@ async fn borrow_asset_maximum_usage_ratio_greater_than_1() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `supply_withdrawal_range.minimum`: out of bounds"]
-async fn withdrawal_minimum_greater_than_supply_minimum() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn withdrawal_minimum_greater_than_supply_minimum(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -121,10 +122,10 @@ async fn withdrawal_minimum_greater_than_supply_minimum() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `supply_withdrawal_fee.fee`: out of bounds"]
-async fn withdrawal_fee_greater_than_withdrawal_minimum() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn withdrawal_fee_greater_than_withdrawal_minimum(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {
@@ -141,10 +142,10 @@ async fn withdrawal_fee_greater_than_withdrawal_minimum() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Invalid configuration field `liquidation_maximum_spread`: out of bounds"]
-async fn liquidation_maximum_spread_greater_than_1() {
-    let worker = near_workspaces::sandbox().await.unwrap();
+async fn liquidation_maximum_spread_greater_than_1(#[future(awt)] worker: Sandbox) {
     setup_everything(
         &worker,
         |c| {

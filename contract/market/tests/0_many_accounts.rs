@@ -1,10 +1,11 @@
 // This test is particularly long-running. Since tests are run in lexographical
 // order, this test is named 0_... to start it running sooner.
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
-use near_sdk::NearToken;
-use near_workspaces::{network::Sandbox, Worker};
+use near_api::{NetworkConfig, SecretKey};
+use near_sandbox::{GenesisAccount, Sandbox};
+use near_sdk::{AccountId, NearToken};
 use rstest::rstest;
 use test_utils::*;
 use tokio::{
@@ -17,8 +18,10 @@ const COUNT: usize = 100;
 #[allow(clippy::too_many_lines)]
 #[rstest]
 #[tokio::test]
-async fn many_accounts(#[future(awt)] worker: Worker<Sandbox>) {
+async fn many_accounts(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(first_supply));
+
+    let network = NetworkConfig::from_rpc_url("sandbox", worker.rpc_addr.parse().unwrap());
 
     c.supply_and_harvest_until_activation(&first_supply, 100_000)
         .await;
@@ -42,23 +45,45 @@ async fn many_accounts(#[future(awt)] worker: Worker<Sandbox>) {
 
     let (send, mut recv) = mpsc::channel(COUNT);
 
+    let worker = Arc::new(worker);
+
     set.spawn({
-        let worker = worker.clone();
+        let worker = Arc::clone(&worker);
+
         async move {
             let mut total = 0;
 
+            let genesis = GenesisAccount::default();
+            let secret_key = SecretKey::from_str(&genesis.private_key).unwrap();
+            let account = TestAccount::new(genesis.account_id, network, secret_key);
+
             'outer: for i in 0.. {
-                let account = create_prefixed_account(&format!("borrower_{i}"), &worker).await;
+                let account_id: AccountId = format!("borrower_{i}").parse().unwrap();
+                worker
+                    .create_account(account_id.clone())
+                    .send()
+                    .await
+                    .unwrap();
                 for _ in 0..100 {
-                    let sub = account
-                        .create_subaccount(&format!("sub_{total}"))
-                        .initial_balance(NearToken::from_near(9).saturating_div(10))
-                        .transact()
+                    let sub_id = account_id
+                        .clone()
+                        .sub_account(format!("sub_{total}"))
+                        .unwrap();
+                    near_api::Account::create_account(sub_id.clone())
+                        .fund_myself(
+                            account_id.clone(),
+                            NearToken::from_near(9).saturating_div(10),
+                        )
+                        .with_public_key(account.secret_key.public_key())
+                        .with_signer(account.signer())
+                        .send_to(&account.network)
                         .await
                         .unwrap()
-                        .unwrap();
+                        .assert_success();
 
-                    send.send((total, sub)).await.unwrap();
+                    send.send((total, account.clone_with_id(sub_id)))
+                        .await
+                        .unwrap();
                     total += 1;
                     if total >= COUNT {
                         break 'outer;

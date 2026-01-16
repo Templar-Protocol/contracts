@@ -1,14 +1,15 @@
 #![allow(clippy::unwrap_used)]
 
+use near_sandbox::Sandbox;
 use near_sdk::{
     borsh, env,
     json_types::{U128, U64},
     serde_json::{self, json},
     NearToken,
 };
-use near_workspaces::{network::Sandbox, Worker};
 use p256::{ecdsa::signature::Signer, elliptic_curve::rand_core::OsRng};
 use rstest::rstest;
+
 use templar_universal_account::{
     authentication::{
         ed25519::{raw, sep53},
@@ -26,10 +27,7 @@ use templar_universal_account::{
     ExecuteArgs, ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters,
     NEAR_TESTNET_CHAIN_ID,
 };
-use test_utils::{
-    controller::universal_account::UniversalAccountController, worker, ContractController,
-    FtController, StorageManagementController,
-};
+use test_utils::*;
 
 fn mint(amount: u128) -> FunctionCallAction {
     FunctionCallAction {
@@ -156,39 +154,35 @@ fn ed_sign() {
 struct Setup {
     uac: UniversalAccountController,
     ft: FtController,
-    third_party: near_workspaces::Account,
+    third_party: TestAccount,
 }
 
-async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Setup {
+async fn setup(worker: &Sandbox, sk: &TestSigner, migrated: bool) -> Setup {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
 
     let make_uac = || async move {
         if migrated {
-            let c = uni_account
-                .deploy(UniversalAccountController::wasm_0_2_0())
-                .await
-                .unwrap()
-                .unwrap();
-            c.call("new")
-                .args_json(json!({
-                    "key": sk.id(),
-                }))
-                .transact()
-                .await
-                .unwrap()
-                .unwrap();
+            uni_account
+                .deploy_init(
+                    UniversalAccountController::wasm_0_2_0().to_vec(),
+                    "new",
+                    json!({
+                        "key": sk.id(),
+                    }),
+                )
+                .await;
 
-            let ua = uni_account
-                .deploy(UniversalAccountController::wasm().await)
-                .await
-                .unwrap()
-                .unwrap();
+            uni_account
+                .deploy(UniversalAccountController::wasm().await.to_vec())
+                .await;
 
-            let ua = UniversalAccountController { contract: ua };
+            let ua = UniversalAccountController {
+                account: uni_account,
+            };
 
             let r = ua
                 .migrate(
-                    ua.contract().as_account(),
+                    ua.account(),
                     Migration::V0 {
                         chain_id: U128(NEAR_TESTNET_CHAIN_ID),
                     },
@@ -212,7 +206,7 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Set
 
     ft.storage_deposit_for(
         &third_party,
-        uac.contract().id(),
+        uac.account().id(),
         NearToken::from_near(1).saturating_div(4),
     )
     .await;
@@ -227,7 +221,7 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Set
 #[rstest]
 #[tokio::test]
 pub async fn universal_account(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[values(
         (TestSigner::random_passkey(), false),
         (TestSigner::random_passkey(), true),
@@ -264,10 +258,10 @@ pub async fn universal_account(
                 index: U64(0),
                 nonce: U64(1),
             })
-            .verifying_contract(uac.contract().id().clone())
+            .verifying_contract(uac.account().id().clone())
             .build_salt(),
         vec![Transaction {
-            receiver_id: ft.contract().id().clone(),
+            receiver_id: ft.account().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
@@ -281,7 +275,7 @@ pub async fn universal_account(
         assert!(o.is_success(), "Expect success on all receipts: {o:?}");
     }
 
-    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    let balance = ft.ft_balance_of(uac.account.id()).await;
     assert_eq!(balance.0, 100, "Function call should succeed");
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
@@ -291,7 +285,7 @@ pub async fn universal_account(
     assert_eq!(key_entry.nonce.0, 1);
     assert_eq!(key_entry.chain_id, Some(NEAR_TESTNET_CHAIN_ID.into()));
     assert_eq!(key_entry.name, Some("Templar Universal Account".into()));
-    assert_eq!(&key_entry.verifying_contract, uac.contract().id());
+    assert_eq!(&key_entry.verifying_contract, uac.account().id());
     assert_eq!(key_entry.version, Some("1.2.1".into()));
     assert_eq!(
         key_entry.salt,
@@ -308,7 +302,7 @@ pub async fn universal_account(
     let payload = WithRawString::from_parsed(Payload::new(
         key_entry.next_nonce(),
         vec![Transaction {
-            receiver_id: ft.contract().id().clone(),
+            receiver_id: ft.account().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
@@ -322,7 +316,7 @@ pub async fn universal_account(
         assert!(o.is_success(), "Expect success on all receipts: {o:?}");
     }
 
-    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    let balance = ft.ft_balance_of(uac.account.id()).await;
     assert_eq!(balance.0, 200, "Function call should succeed");
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
@@ -336,7 +330,7 @@ pub async fn universal_account(
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Execution parameter `nonce` mismatch: expected `2`, got `3`"]
 async fn skip_nonce(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[values(
         (TestSigner::random_passkey(), false),
         (TestSigner::random_passkey(), true),
@@ -363,10 +357,10 @@ async fn skip_nonce(
                 index: U64(0),
                 nonce: U64(1),
             })
-            .verifying_contract(uac.contract().id().clone())
+            .verifying_contract(uac.account().id().clone())
             .build_salt(),
         vec![Transaction {
-            receiver_id: ft.contract().id().clone(),
+            receiver_id: ft.account().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
@@ -376,7 +370,7 @@ async fn skip_nonce(
 
     uac.execute(&third_party, execute_args).await;
 
-    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    let balance = ft.ft_balance_of(uac.account.id()).await;
     assert_eq!(balance.0, 100, "Function call should not succeed");
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
@@ -394,10 +388,10 @@ async fn skip_nonce(
                 index: U64(0),
                 nonce: U64(3),
             })
-            .verifying_contract(uac.contract().id().clone())
+            .verifying_contract(uac.account().id().clone())
             .build_salt(),
         vec![Transaction {
-            receiver_id: ft.contract().id().clone(),
+            receiver_id: ft.account().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
@@ -412,7 +406,7 @@ async fn skip_nonce(
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Execution parameter `nonce` mismatch: expected `2`, got `1`"]
 async fn reuse_nonce(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[values(
         (TestSigner::random_passkey(), false),
         (TestSigner::random_passkey(), true),
@@ -439,10 +433,10 @@ async fn reuse_nonce(
                 index: U64(0),
                 nonce: U64(1),
             })
-            .verifying_contract(uac.contract().id().clone())
+            .verifying_contract(uac.account().id().clone())
             .build_salt(),
         vec![Transaction {
-            receiver_id: ft.contract().id().clone(),
+            receiver_id: ft.account().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),
@@ -452,7 +446,7 @@ async fn reuse_nonce(
 
     uac.execute(&third_party, execute_args).await;
 
-    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    let balance = ft.ft_balance_of(uac.account.id()).await;
     assert_eq!(balance.0, 100, "Function call should succeed");
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
@@ -470,10 +464,10 @@ async fn reuse_nonce(
                 index: U64(0),
                 nonce: U64(1),
             })
-            .verifying_contract(uac.contract().id().clone())
+            .verifying_contract(uac.account().id().clone())
             .build_salt(),
         vec![Transaction {
-            receiver_id: ft.contract().id().clone(),
+            receiver_id: ft.account().id().clone(),
             actions: vec![mint(100).into()].into(),
         }]
         .into(),

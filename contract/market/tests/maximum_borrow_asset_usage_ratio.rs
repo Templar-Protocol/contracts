@@ -1,4 +1,4 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use templar_common::number::Decimal;
@@ -10,10 +10,7 @@ use test_utils::*;
 #[case(99)]
 #[case(100)]
 #[tokio::test]
-async fn borrow_within_maximum_usage_ratio(
-    #[future(awt)] worker: Worker<Sandbox>,
-    #[case] percent: u16,
-) {
+async fn borrow_within_maximum_usage_ratio(#[future(awt)] worker: Sandbox, #[case] percent: u16) {
     setup_test!(
         worker
         extract(c)
@@ -50,10 +47,7 @@ async fn borrow_within_maximum_usage_ratio(
 #[case(100)]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Insufficient borrow asset available"]
-async fn borrow_exceeds_maximum_usage_ratio(
-    #[future(awt)] worker: Worker<Sandbox>,
-    #[case] percent: u16,
-) {
+async fn borrow_exceeds_maximum_usage_ratio(#[future(awt)] worker: Sandbox, #[case] percent: u16) {
     setup_test!(
         worker
         extract(c)

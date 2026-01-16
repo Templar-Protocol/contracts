@@ -1,4 +1,4 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 use tokio::join;
 
@@ -16,7 +16,7 @@ use test_utils::*;
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_happy(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] borrow_mt: bool,
     #[case] collateral_mt: bool,
 ) {
@@ -50,14 +50,14 @@ async fn test_happy(
         assert_eq!(
             &configuration.collateral_asset.into_nep245().unwrap(),
             &(
-                c.collateral_asset.contract().id().clone(),
+                c.collateral_asset.account().id().clone(),
                 "mt_collateral".to_string()
             ),
         );
     } else {
         assert_eq!(
             &configuration.collateral_asset.into_nep141().unwrap(),
-            c.collateral_asset.contract().id(),
+            c.collateral_asset.account().id(),
         );
     }
 
@@ -65,14 +65,14 @@ async fn test_happy(
         assert_eq!(
             &configuration.borrow_asset.into_nep245().unwrap(),
             &(
-                c.borrow_asset.contract().id().clone(),
+                c.borrow_asset.account().id().clone(),
                 "mt_borrow".to_string()
             ),
         );
     } else {
         assert_eq!(
             &configuration.borrow_asset.into_nep141().unwrap(),
-            c.borrow_asset.contract().id(),
+            c.borrow_asset.account().id(),
         );
     }
 
@@ -285,7 +285,7 @@ async fn test_happy(
             let balance_before = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
             let result = c.withdraw_static_yield(&protocol_yield_user, None).await;
             for receipt in result.receipt_outcomes() {
-                assert!(&receipt.executor_id != c.collateral_asset.contract().id());
+                assert!(&receipt.executor_id != c.collateral_asset.account().id());
             }
             assert!(result.failures().is_empty());
             let balance_after = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
@@ -300,7 +300,7 @@ async fn test_happy(
             let balance_before = c.borrow_asset.balance_of(insurance_yield_user.id()).await;
             let result = c.withdraw_static_yield(&insurance_yield_user, None).await;
             for receipt in result.receipt_outcomes() {
-                assert!(&receipt.executor_id != c.collateral_asset.contract().id());
+                assert!(&receipt.executor_id != c.collateral_asset.account().id());
             }
             assert!(result.failures().is_empty());
             let balance_after = c.borrow_asset.balance_of(insurance_yield_user.id()).await;

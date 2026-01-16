@@ -1,11 +1,11 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn disable_collateralize_if_still_liquidatable(#[future(awt)] worker: Worker<Sandbox>) {
+async fn disable_collateralize_if_still_liquidatable(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
@@ -35,9 +35,7 @@ async fn disable_collateralize_if_still_liquidatable(#[future(awt)] worker: Work
 
 #[rstest]
 #[tokio::test]
-async fn allow_sufficient_collateralization_during_liquidation(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
+async fn allow_sufficient_collateralization_during_liquidation(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(
@@ -68,7 +66,7 @@ async fn allow_sufficient_collateralization_during_liquidation(
 
 #[rstest]
 #[tokio::test]
-async fn repayment(#[future(awt)] worker: Worker<Sandbox>) {
+async fn repayment(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     tokio::join!(

@@ -1,12 +1,10 @@
 use std::{collections::HashMap, ops::Deref};
 
+use near_api::types::transaction::result::ExecutionSuccess;
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
     AccountId, AccountIdRef, NearToken,
-};
-use near_workspaces::{
-    network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use templar_common::{
     accumulator::Accumulator,
@@ -26,37 +24,41 @@ use tokio::sync::OnceCell;
 
 use crate::{
     controller::storage_management::StorageManagementController, define, get_contract, to_price,
+    TestAccount,
 };
 
 use super::{oracle::OracleController, token::TokenController, ContractController};
 
 #[derive(Clone)]
 pub struct MarketController {
-    pub(crate) contract: Contract,
+    pub account: TestAccount,
 }
 
 impl ContractController for MarketController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
 impl StorageManagementController for MarketController {}
 
 impl MarketController {
-    pub async fn deploy(account: Account, configuration: &MarketConfiguration) -> Self {
-        let wasm = load_wasm().await;
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+        WASM.get_or_init(|| get_contract("templar_market_contract", "contract/market"))
+            .await
+    }
 
-        let init_call = contract
-            .call("new")
-            .args_json(json!({
-                "configuration": configuration,
-            }))
-            .transact()
+    pub async fn deploy(account: TestAccount, configuration: &MarketConfiguration) -> Self {
+        let init_call = near_api::Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call("new", json!({ "configuration": configuration }))
+            .unwrap()
+            .with_signer(account.signer())
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
         eprintln!("Init call logs");
         eprintln!("--------------");
@@ -65,7 +67,7 @@ impl MarketController {
         }
         eprintln!("--------------");
 
-        Self { contract }
+        Self { account }
     }
 
     define! {
@@ -123,13 +125,6 @@ impl MarketController {
     }
 }
 
-static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
-
-pub async fn load_wasm() -> &'static [u8] {
-    WASM.get_or_init(|| get_contract("templar_market_contract", "contract/market"))
-        .await
-}
-
 #[derive(Clone)]
 pub struct UnifiedMarketController {
     pub market: MarketController,
@@ -147,45 +142,36 @@ impl Deref for UnifiedMarketController {
     }
 }
 
-fn contract_with_dummy_sk(worker: &Worker<Sandbox>, account_id: AccountId) -> Contract {
-    let dummy_key = SecretKey::from_seed(near_workspaces::types::KeyType::ED25519, "");
-
-    Contract::from_secret_key(account_id, dummy_key.clone(), worker)
-}
-
 impl UnifiedMarketController {
-    pub async fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {
+    pub async fn attach(account: TestAccount) -> Self {
         let market = MarketController {
-            contract: contract_with_dummy_sk(worker, market_id),
+            account: account.clone(),
         };
-
         let configuration = market.get_configuration().await;
 
         let price_oracle = OracleController {
-            contract: contract_with_dummy_sk(
-                worker,
-                configuration.price_oracle_configuration.account_id.clone(),
-            ),
+            account: account
+                .clone_with_id(configuration.price_oracle_configuration.account_id.clone()),
         };
 
         let borrow_asset =
             if let Some(account_id) = configuration.borrow_asset.clone().into_nep141() {
-                TokenController::ft(contract_with_dummy_sk(worker, account_id))
+                TokenController::ft(account.clone_with_id(account_id))
             } else if let Some((account_id, token_id)) =
                 configuration.borrow_asset.clone().into_nep245()
             {
-                TokenController::mt(contract_with_dummy_sk(worker, account_id), token_id)
+                TokenController::mt(account.clone_with_id(account_id), token_id)
             } else {
                 unreachable!()
             };
 
         let collateral_asset =
             if let Some(account_id) = configuration.collateral_asset.clone().into_nep141() {
-                TokenController::ft(contract_with_dummy_sk(worker, account_id))
+                TokenController::ft(account.clone_with_id(account_id))
             } else if let Some((account_id, token_id)) =
                 configuration.collateral_asset.clone().into_nep245()
             {
-                TokenController::mt(contract_with_dummy_sk(worker, account_id), token_id)
+                TokenController::mt(account.clone_with_id(account_id), token_id)
             } else {
                 unreachable!()
             };
@@ -215,7 +201,7 @@ impl UnifiedMarketController {
         }
     }
 
-    pub async fn init_account(&self, account: &Account) {
+    pub async fn init_account(&self, account: &TestAccount) {
         const AMOUNT: U128 = U128(100_000_000);
 
         self.storage_deposits(account).await;
@@ -223,10 +209,11 @@ impl UnifiedMarketController {
         self.borrow_asset.mint(account, AMOUNT).await;
     }
 
-    pub async fn storage_deposits(&self, account: &Account) {
+    pub async fn storage_deposits(&self, account: &TestAccount) {
         eprintln!("Performing storage deposits for {}...", account.id());
         let bounds = self.market.storage_balance_bounds().await;
         self.market.storage_deposit(account, bounds.min).await;
+
         if let TokenController::Ft { ref controller } = self.borrow_asset {
             controller
                 .storage_deposit(account, NearToken::from_near(1).saturating_div(100))
@@ -243,7 +230,7 @@ impl UnifiedMarketController {
         eprintln!("Setting collateral asset price...",);
         self.price_oracle
             .set_price(
-                self.price_oracle.contract().as_account(),
+                &self.account,
                 self.configuration
                     .price_oracle_configuration
                     .collateral_asset_price_id,
@@ -256,7 +243,7 @@ impl UnifiedMarketController {
         eprintln!("Setting collateral asset price...",);
         self.price_oracle
             .set_price(
-                self.price_oracle.contract().as_account(),
+                &self.account,
                 self.configuration
                     .price_oracle_configuration
                     .collateral_asset_price_id,
@@ -269,7 +256,7 @@ impl UnifiedMarketController {
         eprintln!("Setting borrow asset price...",);
         self.price_oracle
             .set_price(
-                self.price_oracle.contract().as_account(),
+                &self.account,
                 self.configuration
                     .price_oracle_configuration
                     .borrow_asset_price_id,
@@ -282,7 +269,7 @@ impl UnifiedMarketController {
         eprintln!("Setting borrow asset price...",);
         self.price_oracle
             .set_price(
-                self.price_oracle.contract().as_account(),
+                &self.account,
                 self.configuration
                     .price_oracle_configuration
                     .borrow_asset_price_id,
@@ -309,15 +296,15 @@ impl UnifiedMarketController {
             .await
     }
 
-    pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn supply(&self, supply_user: &TestAccount, amount: u128) -> ExecutionSuccess {
         eprintln!(
             "{} transferring {amount} tokens for supply...",
-            supply_user.id()
+            supply_user.id
         );
         self.borrow_asset
             .transfer_call(
                 supply_user,
-                self.market.contract().id(),
+                &self.market.account().id,
                 amount,
                 serde_json::to_string(&DepositMsg::Supply).unwrap(),
             )
@@ -326,12 +313,12 @@ impl UnifiedMarketController {
 
     pub async fn supply_and_harvest_until_activation(
         &self,
-        supply_user: &Account,
+        supply_user: &TestAccount,
         amount: u128,
     ) -> ExecutionSuccess {
         let e = self.supply(supply_user, amount).await;
         while !self
-            .get_supply_position(supply_user.id())
+            .get_supply_position(&supply_user.id)
             .await
             .unwrap()
             .get_deposit()
@@ -343,15 +330,15 @@ impl UnifiedMarketController {
         e
     }
 
-    pub async fn collateralize(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn collateralize(&self, borrow_user: &TestAccount, amount: u128) -> ExecutionSuccess {
         eprintln!(
             "{} transferring {amount} tokens for collateral...",
-            borrow_user.id(),
+            borrow_user.id,
         );
         self.collateral_asset
             .transfer_call(
                 borrow_user,
-                self.market.contract().id(),
+                &self.market.account().id,
                 amount,
                 serde_json::to_string(&DepositMsg::Collateralize).unwrap(),
             )
@@ -360,11 +347,11 @@ impl UnifiedMarketController {
 
     pub async fn repay(
         &self,
-        borrow_user: &Account,
+        borrow_user: &TestAccount,
         account_id: Option<&AccountIdRef>,
         amount: u128,
     ) -> ExecutionSuccess {
-        eprintln!("{} repaying {amount} tokens...", borrow_user.id());
+        eprintln!("{} repaying {amount} tokens...", borrow_user.id);
         let msg = account_id.map_or(DepositMsg::Repay, |account_id| {
             DepositMsg::RepayAccount(RepayAccountMsg {
                 account_id: account_id.to_owned(),
@@ -373,7 +360,7 @@ impl UnifiedMarketController {
         self.borrow_asset
             .transfer_call(
                 borrow_user,
-                self.market.contract().id(),
+                &self.market.account().id,
                 amount,
                 serde_json::to_string(&msg).unwrap(),
             )
@@ -382,21 +369,19 @@ impl UnifiedMarketController {
 
     pub async fn liquidate(
         &self,
-        liquidator_user: &Account,
+        liquidator_user: &TestAccount,
         account_id: &AccountId,
         expect_receive_collateral: CollateralAssetAmount,
         borrow_asset_amount: BorrowAssetAmount,
     ) -> ExecutionSuccess {
         eprintln!(
             "{} executing liquidation against {} for {}...",
-            liquidator_user.id(),
-            account_id,
-            borrow_asset_amount,
+            liquidator_user.id, account_id, borrow_asset_amount,
         );
         self.borrow_asset
             .transfer_call(
                 liquidator_user,
-                self.market.contract().id(),
+                &self.market.account().id,
                 borrow_asset_amount,
                 serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
                     account_id: account_id.clone(),

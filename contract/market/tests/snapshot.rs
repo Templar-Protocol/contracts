@@ -1,4 +1,4 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use partial::check;
 use rstest::rstest;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_captures_borrow_and_collateral_state(#[future(awt)] worker: Worker<Sandbox>) {
+async fn snapshot_captures_borrow_and_collateral_state(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -66,7 +66,7 @@ async fn snapshot_captures_borrow_and_collateral_state(#[future(awt)] worker: Wo
 
 #[rstest]
 #[tokio::test]
-async fn multiple_snapshots_show_progression(#[future(awt)] worker: Worker<Sandbox>) {
+async fn multiple_snapshots_show_progression(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -112,7 +112,7 @@ async fn multiple_snapshots_show_progression(#[future(awt)] worker: Worker<Sandb
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_reflects_repayment_changes(#[future(awt)] worker: Worker<Sandbox>) {
+async fn snapshot_reflects_repayment_changes(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -169,7 +169,7 @@ async fn snapshot_reflects_repayment_changes(#[future(awt)] worker: Worker<Sandb
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_handles_zero_operations(#[future(awt)] worker: Worker<Sandbox>) {
+async fn snapshot_handles_zero_operations(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -208,7 +208,7 @@ async fn snapshot_handles_zero_operations(#[future(awt)] worker: Worker<Sandbox>
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_with_full_repayment(#[future(awt)] worker: Worker<Sandbox>) {
+async fn snapshot_with_full_repayment(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -271,7 +271,7 @@ async fn snapshot_with_full_repayment(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_field_validation(#[future(awt)] worker: Worker<Sandbox>) {
+async fn snapshot_field_validation(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -342,7 +342,7 @@ async fn snapshot_field_validation(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn many_users_different_snapshots(#[future(awt)] worker: Worker<Sandbox>) {
+async fn many_users_different_snapshots(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -400,7 +400,7 @@ async fn many_users_different_snapshots(#[future(awt)] worker: Worker<Sandbox>) 
 
 #[rstest]
 #[tokio::test]
-async fn many_users_same_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
+async fn many_users_same_snapshot(#[future(awt)] worker: Sandbox) {
     eprintln!("Fast-forwarding...");
     // Need to fast forward right away because otherwise the contract will panic because it can't construct a previous time chunk
     worker.fast_forward(100).await.unwrap();
@@ -466,7 +466,7 @@ async fn many_users_same_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn incoming(#[future(awt)] worker: Worker<Sandbox>) {
+async fn incoming(#[future(awt)] worker: Sandbox) {
     setup_test!(worker extract(c) accounts(borrow_user, supply_user));
 
     c.supply(&supply_user, 2_000_000).await;

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 use tokio::time::Instant;
 
@@ -21,7 +21,7 @@ use test_utils::*;
 )]
 #[tokio::test]
 async fn interest_rate(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] principal: u128,
     #[case] strategy: InterestRateStrategy,
 ) {

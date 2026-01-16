@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use near_sandbox::Sandbox;
 use near_sdk::json_types::U64;
-use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 
 use templar_common::fee::{Fee, TimeBasedFee, TimeBasedFeeFunction};
@@ -9,7 +9,7 @@ use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn supply_withdrawal_fee_flat(#[future(awt)] worker: Worker<Sandbox>) {
+async fn supply_withdrawal_fee_flat(#[future(awt)] worker: Sandbox) {
     let fee = TimeBasedFee {
         fee: Fee::Flat(100.into()),
         duration: U64(1000 * 60 * 60 * 24 * 30),
@@ -70,7 +70,7 @@ async fn supply_withdrawal_fee_flat(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn supply_withdrawal_fee_expired(#[future(awt)] worker: Worker<Sandbox>) {
+async fn supply_withdrawal_fee_expired(#[future(awt)] worker: Sandbox) {
     let fee = TimeBasedFee {
         fee: Fee::Flat(100.into()),
         duration: U64(1000), // 1 second

@@ -1,7 +1,7 @@
+use near_api::types::transaction::result::ExecutionSuccess;
 use near_sdk::{json_types::U128, AccountId};
-use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 
-use crate::FtController;
+use crate::{FtController, StorageManagementController, TestAccount};
 
 use super::{mt::MtController, ContractController};
 
@@ -17,29 +17,31 @@ pub enum TokenController {
 }
 
 impl ContractController for TokenController {
-    fn contract(&self) -> &Contract {
+    fn account(&self) -> &TestAccount {
         match self {
-            TokenController::Ft { controller } => controller.contract(),
-            TokenController::Mt { controller, .. } => controller.contract(),
+            TokenController::Ft { controller } => controller.account(),
+            TokenController::Mt { controller, .. } => controller.account(),
         }
     }
 }
 
+impl StorageManagementController for TokenController {}
+
 impl TokenController {
-    pub fn ft(contract: Contract) -> Self {
+    pub fn ft(contract: TestAccount) -> Self {
         Self::Ft {
-            controller: FtController { contract },
+            controller: FtController { account: contract },
         }
     }
 
-    pub fn mt(contract: Contract, token_id: String) -> Self {
+    pub fn mt(contract: TestAccount, token_id: String) -> Self {
         Self::Mt {
-            controller: MtController { contract },
+            controller: MtController { account: contract },
             token_id,
         }
     }
 
-    pub async fn mint(&self, account: &Account, amount: impl Into<U128>) -> ExecutionSuccess {
+    pub async fn mint(&self, account: &TestAccount, amount: impl Into<U128>) -> ExecutionSuccess {
         match self {
             TokenController::Ft { controller } => controller.mint(account, amount).await,
             TokenController::Mt {
@@ -61,7 +63,7 @@ impl TokenController {
 
     pub async fn transfer(
         &self,
-        sender: &Account,
+        sender: &TestAccount,
         receiver_id: impl Into<&AccountId>,
         amount: impl Into<U128>,
     ) -> ExecutionSuccess {
@@ -82,7 +84,7 @@ impl TokenController {
 
     pub async fn transfer_call(
         &self,
-        sender: &Account,
+        sender: &TestAccount,
         receiver_id: impl Into<&AccountId>,
         amount: impl Into<U128>,
         msg: impl Into<String>,
@@ -114,24 +116,20 @@ impl TokenController {
         }
     }
 
-    pub async fn set_redemption_rate(&self, redemption_rate: impl Into<U128>) {
+    pub async fn set_redemption_rate(&self, redemption_rate: impl Into<U128>) -> ExecutionSuccess {
         match self {
             Self::Ft { controller } => {
                 controller
-                    .set_redemption_rate(controller.contract.as_account(), redemption_rate)
-                    .await;
+                    .set_redemption_rate(controller.account(), redemption_rate)
+                    .await
             }
             Self::Mt {
                 controller,
                 token_id,
             } => {
                 controller
-                    .set_redemption_rate(
-                        controller.contract.as_account(),
-                        token_id,
-                        redemption_rate,
-                    )
-                    .await;
+                    .set_redemption_rate(controller.account(), token_id, redemption_rate)
+                    .await
             }
         }
     }

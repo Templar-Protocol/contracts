@@ -1,10 +1,12 @@
 #![allow(async_fn_in_trait)]
 
+use near_api::types::transaction::result::ExecutionSuccess;
 use near_sdk::{
     serde::{de::DeserializeOwned, Serialize},
     serde_json, Gas, NearToken,
 };
-use near_workspaces::{result::ExecutionSuccess, Account, Contract};
+
+use crate::TestAccount;
 
 pub mod ft;
 pub mod lst_oracle;
@@ -18,21 +20,26 @@ pub mod universal_account;
 pub mod vault;
 
 pub trait ContractController {
-    fn contract(&self) -> &Contract;
+    fn account(&self) -> &TestAccount;
 
-    async fn view<T: DeserializeOwned>(&self, function_name: &str, args: impl Serialize) -> T {
-        self.contract()
-            .view(function_name)
-            .args_json(args)
+    async fn view<T: DeserializeOwned + Send + Sync>(
+        &self,
+        function_name: &str,
+        args: impl Serialize,
+    ) -> T {
+        self.account()
+            .contract()
+            .call_function(function_name, args)
+            .read_only()
+            .fetch_from(&self.account().network)
             .await
             .unwrap()
-            .json::<T>()
-            .unwrap()
+            .data
     }
 
     async fn call_raw(
         &self,
-        account: &Account,
+        account: &TestAccount,
         function_name: &str,
         args: Vec<u8>,
         deposit: NearToken,
@@ -40,23 +47,25 @@ pub trait ContractController {
     ) -> ExecutionSuccess {
         eprintln!(
             "{} calls {}->{function_name}(...)",
-            &account.id().as_str()[0..16],
-            &self.contract().id().as_str()[0..16],
+            &account.id,
+            &self.account().id,
         );
-        account
-            .call(self.contract().id(), function_name)
-            .args(args)
+        self.account()
+            .contract()
+            .call_function_raw(function_name, args)
+            .transaction()
             .deposit(deposit)
             .gas(gas)
-            .transact()
+            .with_signer(account.id.clone(), account.signer())
+            .send_to(&self.account().network)
             .await
             .unwrap()
-            .unwrap()
+            .assert_success()
     }
 
     async fn call_exec(
         &self,
-        account: &Account,
+        account: &TestAccount,
         function_name: &str,
         args: impl Serialize,
         deposit: NearToken,
@@ -71,23 +80,25 @@ pub trait ContractController {
         };
         eprintln!(
             "{} calls {}->{function_name}({args_s})",
-            &account.id().as_str()[0..16],
-            &self.contract().id().as_str()[0..16],
+            &account.id,
+            &self.account().id,
         );
-        account
-            .call(self.contract().id(), function_name)
-            .args_json(args)
+        self.account()
+            .contract()
+            .call_function(function_name, args)
+            .transaction()
             .deposit(deposit)
             .gas(gas)
-            .transact()
+            .with_signer(account.id.clone(), account.signer())
+            .send_to(&self.account().network)
             .await
             .unwrap()
-            .unwrap()
+            .assert_success()
     }
 
     async fn call<T: DeserializeOwned>(
         &self,
-        account: &Account,
+        account: &TestAccount,
         function_name: &str,
         args: impl Serialize,
         deposit: NearToken,
@@ -95,22 +106,25 @@ pub trait ContractController {
     ) -> T {
         eprintln!(
             "{} calls {}->{function_name}({})",
-            &account.id().as_str()[0..16],
-            &self.contract().id().as_str()[0..16],
+            &account.id,
+            &self.account().id,
             &{
                 let mut a = serde_json::to_string(&args).unwrap();
                 a.truncate(256);
                 a
             },
         );
-        account
-            .call(self.contract().id(), function_name)
-            .args_json(args)
+        self.account()
+            .contract()
+            .call_function(function_name, args)
+            .transaction()
             .deposit(deposit)
             .gas(gas)
-            .transact()
+            .with_signer(account.id.clone(), account.signer())
+            .send_to(&self.account().network)
             .await
             .unwrap()
+            .assert_success()
             .json::<T>()
             .unwrap()
     }
@@ -178,9 +192,9 @@ macro_rules! define {
         #[allow(unused_parens)]
         $v async fn $fn_name(
             &self,
-            executor: &::near_workspaces::Account,
+            executor: &$crate::TestAccount,
             $($arg : impl Into<$arg_t>),*
-        ) -> define! { @modifiers is_exec($($m)*) then(::near_workspaces::result::ExecutionSuccess) else(($($ret_t)?)) } {
+        ) -> define! { @modifiers is_exec($($m)*) then($crate::near_api::types::transaction::result::ExecutionSuccess) else(($($ret_t)?)) } {
             #[allow(unused_assignments, unused_mut)]
             let mut deposit = ::near_sdk::NearToken::ZERO;
             #[allow(unused_assignments, unused_mut)]

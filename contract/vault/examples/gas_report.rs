@@ -3,12 +3,12 @@
 use near_sdk::{json_types::U128, Gas};
 use rand::Rng as _;
 use templar_common::vault::{AllocationDelta, Delta};
-use test_utils::{setup_test, ContractController};
+use test_utils::*;
 
 #[tokio::main]
 async fn main() {
     const ITERATIONS: usize = 128;
-    let worker = near_workspaces::sandbox().await.unwrap();
+    let worker = worker().await;
 
     setup_test!(
         worker
@@ -22,7 +22,7 @@ async fn main() {
 
     let max = c.borrow_asset.balance_of(user1.id()).await;
     let g = || rand::thread_rng().gen_range(0..=max);
-    let m = c.market.contract().id().clone();
+    let m = c.market.account().id().clone();
 
     let user1_amount = max / ITERATIONS as u128;
 
@@ -60,7 +60,7 @@ async fn main() {
     let submit_cap_gas = vault
         .submit_cap(
             &vault_curator,
-            c.market.contract().id().clone(),
+            c.market.account().id().clone(),
             U128(user3_amount),
         )
         .await
@@ -79,7 +79,7 @@ async fn main() {
             / ITERATIONS as f64;
     }
 
-    let withdraw_route = vec![c.market.contract().id().clone()];
+    let withdraw_route = vec![c.market.account().id().clone()];
 
     let mut execute_withdraw_gas_average = 0f64;
     for _ in 0..ITERATIONS {
