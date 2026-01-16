@@ -6,6 +6,50 @@
 //! - retry/backoff
 //!
 //! Internally it is backed by [`KeyPoolClient`].
+//!
+//! # Migration from Legacy `Client`
+//!
+//! The legacy `Client` has been removed. Use `VaultClient` instead:
+//!
+//! ## Single-key usage (equivalent to old `Client::new_client`)
+//!
+//! ```ignore
+//! // Old:
+//! let client = Client::new_client(rpc_url, &signer_account, &signer_key, &vault, timeout)?;
+//!
+//! // New:
+//! let credential = KeyCredential {
+//!     account_id: signer_account,
+//!     secret_key: signer_key.to_string(),
+//! };
+//! let client = VaultClient::new_single_key_default(rpc_url, &vault, credential)?;
+//! ```
+//!
+//! ## With custom timeout and retry config
+//!
+//! ```ignore
+//! // Old:
+//! let client = Client::new_client_with_retry(rpc_url, &signer_account, &signer_key, &vault, timeout, retry)?;
+//!
+//! // New:
+//! let credential = KeyCredential {
+//!     account_id: signer_account,
+//!     secret_key: signer_key.to_string(),
+//! };
+//! let config = VaultClientConfig {
+//!     timeout_seconds: timeout,
+//!     retry: Some(retry),
+//!     ..VaultClientConfig::default()
+//! };
+//! let client = VaultClient::new_single_key(rpc_url, &vault, credential, config)?;
+//! ```
+//!
+//! ## Key differences
+//!
+//! - `VaultClient` uses `KeyCredential` struct instead of separate account/key parameters
+//! - Configuration is bundled in `VaultClientConfig` with sensible defaults
+//! - View cache is enabled by default (set `view_cache_capacity: 0` to disable)
+//! - `VaultClient` supports multi-key pools for high-concurrency scenarios
 
 use anyhow::Result;
 use near_account_id::AccountId as NearAccountId;
