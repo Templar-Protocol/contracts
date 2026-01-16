@@ -48,10 +48,11 @@ smoke-test-view: python
 		echo "Optional: UNDERLYING_TOKEN=<token.testnet>"; \
 		exit 1; \
 	fi
-	PYTHONPATH="$(PY_OUT)" \
+	@PYTHONPATH="$(PY_OUT)" \
 	VAULT_ACCOUNT="$(VAULT_ACCOUNT)" \
 	UNDERLYING_TOKEN="$(UNDERLYING_TOKEN)" \
-	RPC_URL="$(or $(RPC_URL),https://rpc.testnet.near.org)" \
+	RPC_URL="$(or $(RPC_URL),https://rpc.testnet.fastnear.com)" \
+	RPC_API_KEY="$(RPC_API_KEY)" \
 	python3 smoke_test.py
 
 # Full happy path integration tests (requires funded accounts)
@@ -66,14 +67,16 @@ smoke-test-full: python
 		echo "  [ALLOCATOR_SECRET_KEY='ed25519:...']"; \
 		exit 1; \
 	fi
-	PYTHONPATH="$(PY_OUT)" \
+	@PYTHONPATH="$(PY_OUT)" \
 	VAULT_ACCOUNT="$(VAULT_ACCOUNT)" \
 	UNDERLYING_TOKEN="$(UNDERLYING_TOKEN)" \
+	MARKET_ACCOUNT="$(MARKET_ACCOUNT)" \
 	USER_ACCOUNT="$(USER_ACCOUNT)" \
 	USER_SECRET_KEY="$(USER_SECRET_KEY)" \
 	ALLOCATOR_ACCOUNT="$(ALLOCATOR_ACCOUNT)" \
 	ALLOCATOR_SECRET_KEY="$(ALLOCATOR_SECRET_KEY)" \
-	RPC_URL="$(or $(RPC_URL),https://rpc.testnet.near.org)" \
+	RPC_URL="$(or $(RPC_URL),https://rpc.testnet.fastnear.com)" \
+	RPC_API_KEY="$(RPC_API_KEY)" \
 	RUN_FULL_TESTS=1 \
 	python3 smoke_test.py --full
 
