@@ -183,6 +183,29 @@ async def test_vault_client_creation():
     )
 
 
+async def test_vault_client_single_key_default():
+    """Test VaultClient.new_single_key_default() - the simple single-key API."""
+    cred = KeyCredential(
+        account_id=AccountId("test.testnet"),
+        secret_key="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af3e7MvFrog1CMNn67PCi6eC8x9TgDxCV9ySeGir",
+    )
+
+    client = VaultClient.new_single_key_default(
+        rpc_url="https://rpc.testnet.near.org",
+        vault=AccountId("vault.testnet"),
+        credential=cred,
+    )
+
+    health = client.get_pool_health()
+    assert health.total_keys == 1
+    assert health.healthy_keys == 1
+
+    vault = client.vault_account()
+    assert vault == "vault.testnet"
+
+    print(f"✓ VaultClient.new_single_key_default() works (vault: {vault})")
+
+
 def main():
     print("=" * 50)
     print("Templar Vault Client Python Smoke Test")
@@ -200,6 +223,7 @@ def main():
     # Async tests
     asyncio.run(test_client_creation_with_valid_key())
     asyncio.run(test_vault_client_creation())
+    asyncio.run(test_vault_client_single_key_default())
 
     print()
     print("=" * 50)
