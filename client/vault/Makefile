@@ -26,7 +26,7 @@ else
 	endif
 endif
 
-.PHONY: gen python smoke-test
+.PHONY: gen python smoke-test smoke-test-view smoke-test-full
 
 gen:
 	cargo run --features=uniffi/cli --bin uniffi-bindgen $@
@@ -36,8 +36,46 @@ python: $(PY_OUT)
 	$(UNIFFI_BINDGEN) generate --language python --library "$(DYLIB)" --out-dir "$(PY_OUT)" --no-format
 	cp "$(DYLIB)" "$(PY_OUT)/"
 
+# Basic smoke test (no env vars needed)
 smoke-test: python
 	PYTHONPATH="$(PY_OUT)" python3 smoke_test.py
+
+# View-only integration tests (read-only, requires VAULT_ACCOUNT)
+# Usage: make smoke-test-view VAULT_ACCOUNT=myvault.testnet
+smoke-test-view: python
+	@if [ -z "$(VAULT_ACCOUNT)" ]; then \
+		echo "Usage: make smoke-test-view VAULT_ACCOUNT=<vault.testnet>"; \
+		echo "Optional: UNDERLYING_TOKEN=<token.testnet>"; \
+		exit 1; \
+	fi
+	PYTHONPATH="$(PY_OUT)" \
+	VAULT_ACCOUNT="$(VAULT_ACCOUNT)" \
+	UNDERLYING_TOKEN="$(UNDERLYING_TOKEN)" \
+	RPC_URL="$(or $(RPC_URL),https://rpc.testnet.near.org)" \
+	python3 smoke_test.py
+
+# Full happy path integration tests (requires funded accounts)
+# Usage: make smoke-test-full VAULT_ACCOUNT=<vault> USER_ACCOUNT=<acc> USER_SECRET_KEY=<key> ...
+smoke-test-full: python
+	@if [ -z "$(VAULT_ACCOUNT)" ] || [ -z "$(USER_SECRET_KEY)" ]; then \
+		echo "Usage: make smoke-test-full \\"; \
+		echo "  VAULT_ACCOUNT=<vault.testnet> \\"; \
+		echo "  USER_ACCOUNT=<user.testnet> \\"; \
+		echo "  USER_SECRET_KEY='ed25519:...' \\"; \
+		echo "  [ALLOCATOR_ACCOUNT=<allocator.testnet>] \\"; \
+		echo "  [ALLOCATOR_SECRET_KEY='ed25519:...']"; \
+		exit 1; \
+	fi
+	PYTHONPATH="$(PY_OUT)" \
+	VAULT_ACCOUNT="$(VAULT_ACCOUNT)" \
+	UNDERLYING_TOKEN="$(UNDERLYING_TOKEN)" \
+	USER_ACCOUNT="$(USER_ACCOUNT)" \
+	USER_SECRET_KEY="$(USER_SECRET_KEY)" \
+	ALLOCATOR_ACCOUNT="$(ALLOCATOR_ACCOUNT)" \
+	ALLOCATOR_SECRET_KEY="$(ALLOCATOR_SECRET_KEY)" \
+	RPC_URL="$(or $(RPC_URL),https://rpc.testnet.near.org)" \
+	RUN_FULL_TESTS=1 \
+	python3 smoke_test.py --full
 
 $(PY_OUT):
 	mkdir -p "$(PY_OUT)"
