@@ -324,7 +324,9 @@ async def test_view_methods(config: SmokeTestConfig):
 
     # === Configuration ===
     vault_config = await client.get_configuration()
-    print(f"  Configuration: owner={vault_config.owner}, curator={vault_config.curator}")
+    print(
+        f"  Configuration: owner={vault_config.owner}, curator={vault_config.curator}"
+    )
 
     fees = await client.get_fees()
     print(f"  Fees: management={fees.management}, performance={fees.performance}")
@@ -333,7 +335,9 @@ async def test_view_methods(config: SmokeTestConfig):
     print(f"  Restrictions: {restrictions}")
 
     fee_anchor = await client.get_fee_anchor()
-    print(f"  Fee anchor: timestamp_ns={fee_anchor.timestamp_ns}, total_assets={fee_anchor.total_assets}")
+    print(
+        f"  Fee anchor: timestamp_ns={fee_anchor.timestamp_ns}, total_assets={fee_anchor.total_assets}"
+    )
 
     print("✓ Configuration getters work")
 
@@ -353,13 +357,13 @@ async def test_view_methods(config: SmokeTestConfig):
     print(f"  Withdrawing op ID: {withdrawing_op}")
 
     pending_id = await client.peek_next_pending_withdrawal_id()
-    print(f"  Next pending withdrawal ID: {pending_id}")
+    print(f"  Queue head (next to process): {pending_id}")
 
     current_req = await client.get_current_withdraw_request_id()
     print(f"  Current withdraw request ID: {current_req}")
 
     queue_tail = await client.queue_tail()
-    print(f"  Queue tail: {queue_tail}")
+    print(f"  Queue tail (next ID to assign): {queue_tail}")
 
     has_pending = await client.has_pending_market_withdrawal()
     print(f"  Has pending market withdrawal: {has_pending}")
@@ -486,11 +490,15 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                     except:
                         pass
             else:
-                print(f"  ⚠ Could not clear withdrawal after {max_iterations} iterations")
+                print(
+                    f"  ⚠ Could not clear withdrawal after {max_iterations} iterations"
+                )
         except Exception as e:
             print(f"  ⚠ Error clearing withdrawal: {e}")
     elif withdrawing_op is not None:
-        print(f"⚠ Withdrawal in progress (op_id={withdrawing_op}) but no allocator to clear it")
+        print(
+            f"⚠ Withdrawal in progress (op_id={withdrawing_op}) but no allocator to clear it"
+        )
 
     # === Step 1: Check initial state ===
     initial_assets = await user_client.get_total_assets()
@@ -510,17 +518,25 @@ async def test_happy_path_flow(config: SmokeTestConfig):
     # === Step 1.5: Curator setup (if allocator available) ===
     if allocator_client:
         print()
-        print("Step 1.5 - Curator setup (registering vault and setting supply_queue)...")
+        print(
+            "Step 1.5 - Curator setup (registering vault and setting supply_queue)..."
+        )
 
         vault_account = AccountId(config.vault_account)
-        token_storage_deposit_amount = "1250000000000000000000"  # 0.00125 NEAR for tokens
-        market_storage_deposit_amount = "10000000000000000000000"  # 0.01 NEAR for markets
+        token_storage_deposit_amount = (
+            "1250000000000000000000"  # 0.00125 NEAR for tokens
+        )
+        market_storage_deposit_amount = (
+            "10000000000000000000000"  # 0.01 NEAR for markets
+        )
 
         # Register vault with itself (NEP-145)
         # This is needed for the vault to hold its own shares (fee accrual)
         print(f"  Checking vault self-registration...")
         try:
-            vault_self_balance = await allocator_client.storage_balance_of(vault_account)
+            vault_self_balance = await allocator_client.storage_balance_of(
+                vault_account
+            )
             if vault_self_balance is None:
                 print(f"    Registering vault with itself...")
                 bounds = await allocator_client.storage_balance_bounds()
@@ -537,7 +553,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         # Register vault with underlying token contract (NEP-145)
         # This is needed so the vault can receive tokens from depositors
         if config.underlying_token:
-            print(f"  Checking vault registration with token {config.underlying_token}...")
+            print(
+                f"  Checking vault registration with token {config.underlying_token}..."
+            )
             try:
                 token_balance = await allocator_client.token_storage_balance_of(
                     AccountId(config.underlying_token),
@@ -607,7 +625,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                             vault_account,
                             market_storage_deposit_amount,
                         )
-                        print(f"    ✓ Vault registered with market: total={storage.total}")
+                        print(
+                            f"    ✓ Vault registered with market: total={storage.total}"
+                        )
                     else:
                         print(f"    ✓ Already registered: total={market_balance.total}")
                 except Exception as e:
@@ -618,7 +638,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 print(f"  Setting supply_queue with {len(markets)} markets...")
                 try:
                     market_ids = [m.market_id for m in markets]
-                    supply_queue_deposit = "840000000000000000000"  # ~0.00084 NEAR per market
+                    supply_queue_deposit = (
+                        "840000000000000000000"  # ~0.00084 NEAR per market
+                    )
                     await allocator_client.set_supply_queue(
                         markets=market_ids,
                         deposit_yocto=supply_queue_deposit,
@@ -716,7 +738,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         market = markets[0]
         # Reallocate a small amount from idle to market
         reallocate_amount = str(min(int(after_deposit_idle), 1000000))  # Up to 1 token
-        print(f"Step 3 - Reallocating {reallocate_amount} to market {market.market_id} ({market.account})...")
+        print(
+            f"Step 3 - Reallocating {reallocate_amount} to market {market.market_id} ({market.account})..."
+        )
 
         delta = AllocationDelta.SUPPLY(
             Delta(market=market.market_id, amount=reallocate_amount)
@@ -756,9 +780,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         )
         print("✓ Redeem transaction submitted")
 
-        # Check withdrawal is queued
+        # Check withdrawal queue state
         pending_id = await user_client.peek_next_pending_withdrawal_id()
-        print(f"  Pending withdrawal ID: {pending_id}")
+        print(f"  Queue head after redeem: {pending_id}")
     except Exception as e:
         print(f"⚠ Redeem failed: {e}")
 
@@ -799,7 +823,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                                 market.market_id,
                                 None,  # batch_limit
                             )
-                            print(f"    Executed withdrawal from market {market.market_id}")
+                            print(
+                                f"    Executed withdrawal from market {market.market_id}"
+                            )
                         except Exception as e:
                             # May fail if this market has no funds to withdraw
                             pass
@@ -810,7 +836,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                         print("  ✓ Withdrawal completed (vault now idle)")
                         break
                 else:
-                    print(f"  ⚠ Withdrawal not completed after {max_iterations} iterations")
+                    print(
+                        f"  ⚠ Withdrawal not completed after {max_iterations} iterations"
+                    )
             except Exception as e:
                 print(f"  ⚠ Driving withdrawal failed: {e}")
     else:
