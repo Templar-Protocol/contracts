@@ -12,8 +12,8 @@ macro_rules! impl_view_cache_methods {
     ($client:ty) => {
         impl $client {
             pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) {
-                use $crate::lock_ext::RwLockExt;
                 use std::time::Duration;
+                use $crate::lock_ext::RwLockExt;
 
                 if capacity == 0 {
                     *self.view_cache.write_recover() = None;
@@ -57,7 +57,9 @@ macro_rules! impl_vault_view_methods {
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
             #[instrument(skip(self))]
-            pub async fn get_cap_groups(&self) -> Result<Vec<$crate::CapGroup>, $crate::ErrorWrapper> {
+            pub async fn get_cap_groups(
+                &self,
+            ) -> Result<Vec<$crate::CapGroup>, $crate::ErrorWrapper> {
                 let groups = self
                     .view::<Vec<(
                         templar_common::vault::CapGroupId,
@@ -82,7 +84,11 @@ macro_rules! impl_vault_view_methods {
                 &self,
             ) -> Result<Vec<$crate::PendingGovernanceAction>, $crate::ErrorWrapper> {
                 let pending = self
-                    .view::<Vec<$crate::PendingValueSerde>>(&self.vault, "get_pending_governance_actions", ())
+                    .view::<Vec<$crate::PendingValueSerde>>(
+                        &self.vault,
+                        "get_pending_governance_actions",
+                        (),
+                    )
                     .await
                     .map_err($crate::ErrorWrapper::from)?;
 
@@ -113,9 +119,9 @@ macro_rules! impl_vault_view_methods {
                     return Ok(None);
                 };
 
-                let id_u32: u32 =
-                    u.0.try_into()
-                        .map_err(|_| $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string()))?;
+                let id_u32: u32 = u.0.try_into().map_err(|_| {
+                    $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string())
+                })?;
 
                 Ok(Some($crate::MarketId(id_u32)))
             }
@@ -140,7 +146,9 @@ macro_rules! impl_vault_view_methods {
             }
 
             #[instrument(skip(self))]
-            pub async fn list_markets_with_ids(&self) -> Result<Vec<$crate::MarketWithId>, $crate::ErrorWrapper> {
+            pub async fn list_markets_with_ids(
+                &self,
+            ) -> Result<Vec<$crate::MarketWithId>, $crate::ErrorWrapper> {
                 use near_account_id::AccountId as NearAccountId;
 
                 let res = self
@@ -148,24 +156,26 @@ macro_rules! impl_vault_view_methods {
                     .await
                     .map_err($crate::ErrorWrapper::from)?;
 
-                let mapped =
-                    res.into_iter()
-                        .map(|(id, account)| {
-                            let id_u32: u32 = id.0.try_into().map_err(|_| {
-                                $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string())
-                            })?;
-                            Ok($crate::MarketWithId {
-                                market_id: $crate::MarketId(id_u32),
-                                account: $crate::AccountId::from(account.to_string()),
-                            })
+                let mapped = res
+                    .into_iter()
+                    .map(|(id, account)| {
+                        let id_u32: u32 = id.0.try_into().map_err(|_| {
+                            $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string())
+                        })?;
+                        Ok($crate::MarketWithId {
+                            market_id: $crate::MarketId(id_u32),
+                            account: $crate::AccountId::from(account.to_string()),
                         })
-                        .collect::<Result<Vec<_>, $crate::ErrorWrapper>>()?;
+                    })
+                    .collect::<Result<Vec<_>, $crate::ErrorWrapper>>()?;
 
                 Ok(mapped)
             }
 
             #[instrument(skip(self))]
-            pub async fn get_vault_snapshot(&self) -> Result<$crate::VaultSnapshot, $crate::ErrorWrapper> {
+            pub async fn get_vault_snapshot(
+                &self,
+            ) -> Result<$crate::VaultSnapshot, $crate::ErrorWrapper> {
                 Ok($crate::VaultSnapshot {
                     configuration: self.get_configuration().await?,
                     total_assets: self.get_total_assets().await?,

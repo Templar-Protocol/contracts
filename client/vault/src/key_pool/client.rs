@@ -28,11 +28,10 @@ use tracing::{debug, instrument, warn};
 use zeroize::Zeroize;
 
 use crate::{
-    parse_account_id, AccountId, AllocationDelta,
-    CapGroupUpdate, CapGroupUpdateKey, ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128,
-    MarketId, RealAssetsReport,
-    Restrictions, RetryConfig, TimelockKind, VaultConfiguration, ViewCache,
-    DEFAULT_GAS, MAX_POLL_INTERVAL_MILLIS, view_core,
+    parse_account_id, view_core, AccountId, AllocationDelta, CapGroupUpdate, CapGroupUpdateKey,
+    ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128, MarketId, RealAssetsReport, Restrictions,
+    RetryConfig, TimelockKind, VaultConfiguration, ViewCache, DEFAULT_GAS,
+    MAX_POLL_INTERVAL_MILLIS,
 };
 
 use super::{health::PoolHealth, pool::KeyPool, slot::KeySlot};
@@ -175,8 +174,8 @@ impl KeyPoolClient {
         let inner = {
             let client = JsonRpcClient::connect(rpc_url);
             if let Some(api_key) = &config.rpc_api_key {
-                let api_key = ApiKey::new(api_key)
-                    .map_err(|e| ErrorWrapper::Wrapped(e.to_string()))?;
+                let api_key =
+                    ApiKey::new(api_key).map_err(|e| ErrorWrapper::Wrapped(e.to_string()))?;
                 client.header(api_key)
             } else {
                 client
@@ -233,7 +232,15 @@ impl KeyPoolClient {
         function_name: &str,
         args: impl Serialize,
     ) -> Result<T> {
-        view_core::view_with_cache(&self.inner, &self.config, &self.view_cache, account_id, function_name, args).await
+        view_core::view_with_cache(
+            &self.inner,
+            &self.config,
+            &self.view_cache,
+            account_id,
+            function_name,
+            args,
+        )
+        .await
     }
 
     /// Execute a state-changing contract call with pool-aware nonce management.
