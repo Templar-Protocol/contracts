@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use near_account_id::AccountId as NearAccountId;
 use near_crypto::{InMemorySigner, SecretKey};
 use near_jsonrpc_client::{
+    auth::ApiKey,
     methods::{
         send_tx::RpcSendTransactionRequest,
         tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
@@ -100,6 +101,9 @@ pub struct KeyPoolConfig {
 
     /// View cache TTL in seconds.
     pub view_cache_ttl_seconds: u64,
+
+    /// Optional RPC API key for authenticated endpoints (e.g., FastNEAR).
+    pub rpc_api_key: Option<String>,
 }
 
 impl Default for KeyPoolConfig {
@@ -115,6 +119,7 @@ impl Default for KeyPoolConfig {
             block_hash_ttl_seconds: 30,
             view_cache_capacity: 100,
             view_cache_ttl_seconds: 5,
+            rpc_api_key: None,
         }
     }
 }
@@ -167,7 +172,16 @@ impl KeyPoolClient {
             ));
         }
 
-        let inner = JsonRpcClient::connect(rpc_url);
+        let inner = {
+            let client = JsonRpcClient::connect(rpc_url);
+            if let Some(api_key) = &config.rpc_api_key {
+                let api_key = ApiKey::new(api_key)
+                    .map_err(|e| ErrorWrapper::Wrapped(e.to_string()))?;
+                client.header(api_key)
+            } else {
+                client
+            }
+        };
         let vault: NearAccountId = parse_account_id(vault)?;
 
         let block_hash_ttl = Duration::from_secs(config.block_hash_ttl_seconds);
