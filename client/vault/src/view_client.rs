@@ -2,7 +2,7 @@ use std::sync::RwLock;
 
 use anyhow::Result;
 use near_account_id::AccountId as NearAccountId;
-use near_jsonrpc_client::JsonRpcClient;
+use near_jsonrpc_client::{auth::ApiKey, JsonRpcClient};
 use near_primitives::types::Gas;
 use near_sdk::json_types::{U128, U64};
 use serde::{de::DeserializeOwned, Serialize};
@@ -38,7 +38,16 @@ impl VaultViewClient {
         vault: &AccountId,
         config: KeyPoolConfig,
     ) -> Result<Self, ErrorWrapper> {
-        let inner = JsonRpcClient::connect(rpc_url);
+        let inner = {
+            let client = JsonRpcClient::connect(rpc_url);
+            if let Some(api_key) = &config.rpc_api_key {
+                let api_key = ApiKey::new(api_key)
+                    .map_err(|e| ErrorWrapper::Wrapped(e.to_string()))?;
+                client.header(api_key)
+            } else {
+                client
+            }
+        };
         let vault: NearAccountId = parse_account_id(vault)?;
 
         let view_cache = view_core::build_view_cache(&config);

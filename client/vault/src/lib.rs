@@ -886,6 +886,20 @@ pub struct VaultSnapshot {
     pub markets_with_ids: Vec<MarketWithId>,
 }
 
+/// Storage balance bounds from NEP-145.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct StorageBalanceBounds {
+    pub min: ForeignU128,
+    pub max: Option<ForeignU128>,
+}
+
+/// Storage balance from NEP-145.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct StorageBalance {
+    pub total: ForeignU128,
+    pub available: ForeignU128,
+}
+
 pub const DEFAULT_GAS: Gas = 300_000_000_000_000;
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 
