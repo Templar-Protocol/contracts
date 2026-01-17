@@ -5,6 +5,8 @@ use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 use schemars::JsonSchema;
 
+use crate::verify_key;
+
 use super::with_raw_string::WithRawString;
 use super::{
     CheckSignatureError, ExecutionContextProvider, HashForSigning, Key, MessageWithSignature,
@@ -28,15 +30,7 @@ fn sig_base(
     .concat()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [borsh, json])]
-pub struct Passkey(pub crate::encoding::p256::PublicKey);
-
-impl std::fmt::Display for Passkey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+verify_key!(Passkey(crate::encoding::p256::PublicKey));
 
 impl<T> Key<Message<T>> for Passkey {
     fn check_signature(

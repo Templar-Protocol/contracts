@@ -121,7 +121,7 @@ impl TestSigner {
             }
             TestSigner::Eip712(key) => {
                 let message = eip712::Message(payload);
-                let mws = message.sign(key);
+                let mws = message.sign(key).unwrap();
                 ExecuteArgsMessage {
                     key: eip712::VerifyKey(key.address().into()),
                     mws: Box::new(mws),

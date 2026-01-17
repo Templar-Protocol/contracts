@@ -16,6 +16,21 @@ mod payload;
 pub use payload::*;
 pub mod with_raw_string;
 
+#[macro_export]
+macro_rules! verify_key {
+    ($n:ident ($inner: ty)) => {
+        #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+        #[::near_sdk::near(serializers = [borsh, json])]
+        pub struct $n(pub $inner);
+
+        impl ::std::fmt::Display for $n {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+    };
+}
+
 pub trait SignableMessage {
     type Key: Key<Self>
     where

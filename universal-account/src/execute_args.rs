@@ -224,7 +224,7 @@ mod tests {
 
         let message = eip712::Message::from_parsed(payload());
 
-        let signed_message = message.sign(&sk);
+        let signed_message = message.sign(&sk).unwrap();
 
         ExecuteArgsMessage {
             key: eip712::VerifyKey(sk.address().into()),

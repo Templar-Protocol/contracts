@@ -9,17 +9,9 @@ use super::{
     with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
     MessageWithValidSignature, Payload, SignableMessage,
 };
-use crate::encoding;
+use crate::{encoding, verify_key};
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-pub struct VerifyKey(pub encoding::ethereum::Address);
-
-impl std::fmt::Display for VerifyKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+verify_key!(VerifyKey(encoding::ethereum::Address));
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
@@ -79,29 +71,22 @@ impl<T: serde::Serialize> Message<T> {
         Ok(sol_payload.eip712_signing_hash(domain))
     }
 
-    /// # Panics
+    /// # Errors
     ///
-    /// - Serialization errors
     /// - Signing errors
     #[cfg(any(test, feature = "signing"))]
     pub fn sign(
         self,
         key: &alloy::signers::local::PrivateKeySigner,
-    ) -> super::MessageWithSignature<Self> {
+    ) -> Result<super::MessageWithSignature<Self>, alloy::signers::Error> {
         use alloy::signers::SignerSync;
         let domain = Eip712Domain::from(self.0.parsed.parameters());
-        #[allow(
-            clippy::unwrap_used,
-            reason = "This function should not be used in a case where panicking is unsafe"
-        )]
-        let signature = key
-            .sign_hash_sync(&self.eip712_prehash(&domain).unwrap())
-            .unwrap();
-        super::MessageWithSignature {
+        let signature = key.sign_hash_sync(&self.eip712_prehash(&domain).unwrap())?;
+        Ok(super::MessageWithSignature {
             message: self,
             signature: signature.into(),
             auxiliary: (),
-        }
+        })
     }
 }
 
@@ -175,7 +160,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mws = message.sign(&signer);
+        let mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer.address().into());
 
@@ -188,7 +173,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mws = message.sign(&signer);
+        let mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer2().address().into());
 
@@ -201,7 +186,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mut mws = message.sign(&signer);
+        let mut mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer.address().into());
 
@@ -218,7 +203,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mut mws = message.sign(&signer);
+        let mut mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer.address().into());
 

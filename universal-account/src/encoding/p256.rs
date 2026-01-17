@@ -17,6 +17,12 @@ type ByteEncoding = [u8; KEY_LENGTH];
 #[near(serializers = [])]
 pub struct PublicKey(pub p256::PublicKey);
 
+impl std::hash::Hash for PublicKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_sec1_bytes().hash(state);
+    }
+}
+
 impl From<PublicKey> for p256::PublicKey {
     fn from(value: PublicKey) -> Self {
         value.0
