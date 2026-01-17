@@ -7,7 +7,7 @@ use near_sdk::{
 
 use super::{
     with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
-    MessageWithValidSignature, Payload, SignableMessage, SolBytes,
+    MessageWithValidSignature, Payload, SignableMessage,
 };
 use crate::encoding;
 
@@ -73,8 +73,8 @@ impl<T: serde::Serialize> Message<T> {
         &self,
         domain: &Eip712Domain,
     ) -> Result<alloy::primitives::FixedBytes<32>, serde_json::Error> {
-        let sol_payload = SolBytes {
-            inner: self.0.raw.clone().into_bytes().into(),
+        let sol_payload = super::solidity::Payload {
+            payload: self.0.raw.clone(),
         };
         Ok(sol_payload.eip712_signing_hash(domain))
     }
