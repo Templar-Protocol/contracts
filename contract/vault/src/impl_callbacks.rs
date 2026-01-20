@@ -7,13 +7,15 @@ use crate::{
     governance::Gate,
     near,
     op_guard::{AllocatingSpec, OpGuard, PayoutSpec, RefreshingSpec, WithdrawingSpec},
-    Contract, ContractExt, Error, Nep141Controller, OpState, RealAssetsReport,
+    Contract, ContractExt, Error, Nep141Controller, RealAssetsReport,
 };
+
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
     env, json_types::U128, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
 };
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};
+
 use templar_common::{
     guard::GuardSpec,
     market::ext_market,
@@ -21,7 +23,7 @@ use templar_common::{
     supply::SupplyPosition,
     vault::{
         AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
-        IdleBalanceDelta, MarketId, PayoutState, PositionReportOutcome, Reason,
+        IdleBalanceDelta, MarketId, OpState, PayoutState, PositionReportOutcome, Reason,
         WithdrawalAccountingKind, WithdrawingState, AFTER_SEND_TO_USER_GAS,
         EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS,
         SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
@@ -329,7 +331,7 @@ impl Contract {
                     op_id: op_id.into(),
                     market,
                     position: Some(position.clone()),
-                    before: Option::None,
+                    before: None,
                 }
                 .emit();
                 position.get_deposit().total().into()
@@ -339,7 +341,7 @@ impl Contract {
                     outcome: PositionReportOutcome::Missing,
                     op_id: op_id.into(),
                     market,
-                    position: Option::None,
+                    position: None,
                     before: Some(principal),
                 }
                 .emit();
@@ -353,7 +355,7 @@ impl Contract {
                     outcome: PositionReportOutcome::ReadFailed,
                     op_id: op_id.into(),
                     market,
-                    position: Option::None,
+                    position: None,
                     before: Some(principal),
                 }
                 .emit();
