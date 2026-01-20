@@ -41,6 +41,27 @@ Vault deployments will eventually be immutable (no contract upgrades). Until the
 - Total assets = idle balance + sum of all market principals.
 - Accounting is independent of any withdraw order; price only changes when cash actually moves.
 
+## Donations and idle resync
+
+A "donation" is a plain NEP-141 `ft_transfer` of the underlying token directly to the vault account
+(i.e. not `ft_transfer_call`). Since `ft_transfer` does not invoke the vault receiver hook, the
+vault does not update `idle_balance` automatically.
+
+This can make AUM appear stale:
+- `get_total_assets()` remains unchanged even though the underlying token balance increased.
+- Later operations that read `ft_balance_of(vault)` may suddenly discover the extra funds.
+
+To make donations visible deterministically, the vault exposes a permissionless entrypoint:
+- `resync_idle_balance()`
+
+`resync_idle_balance()` reads `ft_balance_of(vault)` and reconciles the stored `idle_balance` to
+match. It is:
+- blocking (while in-flight, deposits/withdraw/redeem are blocked), and
+- rate-limited by a cooldown (default: 120 seconds).
+
+Fee semantics: if the resync increases idle (i.e. a donation was discovered), the vault bumps
+`fee_anchor.total_assets` by the same delta so the donation does not generate performance fees.
+
 ## Codebase map
 
 - src/lib.rs

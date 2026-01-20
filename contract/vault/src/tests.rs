@@ -39,10 +39,10 @@ use templar_common::vault::Fees;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
 use templar_common::vault::PendingWithdrawal;
-use templar_common::vault::MAX_TIMELOCK_NS;
 use templar_common::vault::{
     AllocatingState, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
-    MarketConfiguration, MarketId, Restrictions, WithdrawingState, YEAR_NS,
+    IdleResyncOutcome, MarketConfiguration, MarketId, Restrictions, WithdrawingState,
+    MAX_TIMELOCK_NS, YEAR_NS,
 };
 
 #[fixture]
@@ -160,6 +160,16 @@ fn must_market_id(c: &Contract, market: &AccountId) -> MarketId {
 fn must_market_record<'a>(c: &'a Contract, market: &AccountId) -> &'a crate::MarketRecord {
     let market_id = must_market_id(c, market);
     c.markets.get(&market_id).expect("market must exist")
+}
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(msg) => *msg,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(msg) => (*msg).to_string(),
+            Err(_) => String::new(),
+        },
+    }
 }
 
 #[fixture]
@@ -1349,7 +1359,6 @@ fn convert_roundtrip_bounds_cases(assets: u128, shares: u128) {
 #[test]
 fn refresh_markets_updates_principals_and_emits_events() {
     let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     let m1 = mk(7001);
@@ -1357,10 +1366,12 @@ fn refresh_markets_updates_principals_and_emits_events() {
     let m1_id = c.insert_market_for_tests(m1, MarketConfiguration::default(), 10);
     let m2_id = c.insert_market_for_tests(m2, MarketConfiguration::default(), 20);
 
-    set_block_ts(
+    set_ctx_with_gas(
         &vault_id,
         &vault_id,
-        crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1),
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
     );
 
     let op_id = c.next_op_id;
@@ -1392,15 +1403,24 @@ fn refresh_markets_updates_principals_and_emits_events() {
 #[should_panic(expected = "Refresh throttled")]
 fn refresh_markets_throttles_without_time_advance() {
     let vault_id = accounts(0);
-    setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
 
     let market_id = c.insert_market_for_tests(mk(7003), MarketConfiguration::default(), 0);
 
-    set_block_ts(
+    set_ctx_with_gas(
         &vault_id,
         &vault_id,
-        crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1),
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
     );
 
     let op_id = c.next_op_id;
@@ -1410,7 +1430,379 @@ fn refresh_markets_throttles_without_time_advance() {
     let _ = c.refresh_01_settle(Ok(Some(pos)), market_id, op_id, 0, U128(0));
     assert!(matches!(c.op_state, OpState::Idle));
 
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
     c.refresh_markets(vec![market_id]);
+}
+
+#[test]
+fn idle_resync_callback_increase_updates_idle_and_bumps_fee_anchor() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report =
+        c.resync_idle_balance_01_settle(Ok(U128(150)), op_id, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::Ok);
+    assert_eq!(report.before_idle, U128(100));
+    assert_eq!(report.actual_idle, U128(150));
+    assert_eq!(report.after_idle, U128(150));
+    assert_eq!(report.increased_by, U128(50));
+    assert_eq!(report.decreased_by, U128(0));
+    assert_eq!(report.fee_anchor_bump, U128(50));
+    assert_eq!(report.resynced_at_ns.0, finished_at_ns);
+
+    assert_eq!(c.idle_balance, 150);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_050);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(joined.contains("\"event\":\"idle_resync_completed\""));
+}
+
+#[test]
+fn idle_resync_callback_decrease_updates_idle_without_bumping_fee_anchor() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report = c.resync_idle_balance_01_settle(Ok(U128(80)), op_id, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::Ok);
+    assert_eq!(report.before_idle, U128(100));
+    assert_eq!(report.actual_idle, U128(80));
+    assert_eq!(report.after_idle, U128(80));
+    assert_eq!(report.increased_by, U128(0));
+    assert_eq!(report.decreased_by, U128(20));
+    assert_eq!(report.fee_anchor_bump, U128(0));
+    assert_eq!(report.resynced_at_ns.0, finished_at_ns);
+
+    assert_eq!(c.idle_balance, 80);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(joined.contains("\"event\":\"idle_resync_completed\""));
+}
+
+#[test]
+fn idle_resync_callback_balance_read_failure_stops_and_clears_inflight() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report = c.resync_idle_balance_01_settle(
+        Err(near_sdk::PromiseError::Failed),
+        op_id,
+        caller.clone(),
+        U128(100),
+        0,
+    );
+
+    assert_eq!(report.outcome, IdleResyncOutcome::BalanceReadFailed);
+    assert_eq!(report.before_idle, U128(100));
+    assert_eq!(report.actual_idle, U128(100));
+    assert_eq!(report.after_idle, U128(100));
+    assert_eq!(report.increased_by, U128(0));
+    assert_eq!(report.decreased_by, U128(0));
+    assert_eq!(report.fee_anchor_bump, U128(0));
+    assert_eq!(report.resynced_at_ns.0, finished_at_ns);
+
+    assert_eq!(c.idle_balance, 100);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(
+        joined.contains("\"event\":\"idle_resync_stopped\"")
+            && joined.contains("BalanceReadFailed")
+    );
+}
+
+#[test]
+fn idle_resync_callback_mismatched_op_id_is_ignored_without_mutating_state() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    c.idle_resync_inflight_op_id = 999;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id: 999,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report = c.resync_idle_balance_01_settle(Ok(U128(150)), 888, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::Ignored);
+    assert_eq!(c.idle_balance, 100);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert_eq!(c.idle_resync_inflight_op_id, 999);
+    assert!(matches!(c.op_state, OpState::Allocating(_)));
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(joined.contains("\"event\":\"idle_resync_callback_ignored\""));
+}
+
+#[test]
+fn idle_resync_callback_unexpected_state_clears_inflight_and_returns_idle() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Idle;
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report =
+        c.resync_idle_balance_01_settle(Ok(U128(150)), op_id, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::UnexpectedState);
+    assert_eq!(c.idle_balance, 100);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(
+        joined.contains("\"event\":\"idle_resync_stopped\"")
+            && joined.contains("IdleResyncUnexpectedState")
+    );
+}
+
+#[test]
+fn idle_resync_cooldown_throttles_and_allows_after_cooldown() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let mut logs = String::new();
+
+    let cooldown = c.idle_resync_cooldown_ns;
+    let t0 = cooldown.saturating_add(1);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.resync_idle_balance();
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    set_ctx_with_gas(&vault_id, &caller, Some(t0.saturating_add(5)), None, None);
+    let _ = c.resync_idle_balance_01_settle(Ok(U128(0)), op_id, caller.clone(), U128(0), t0);
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let throttled =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.resync_idle_balance()));
+    let throttled_msg = throttled
+        .err()
+        .map(panic_payload_to_string)
+        .unwrap_or_default();
+    assert!(throttled_msg.contains("Idle resync throttled"));
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0.saturating_add(cooldown)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id2 = c.next_op_id;
+    let _ = c.resync_idle_balance();
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0.saturating_add(cooldown).saturating_add(5)),
+        None,
+        None,
+    );
+    let _ = c.resync_idle_balance_01_settle(
+        Ok(U128(0)),
+        op_id2,
+        caller.clone(),
+        U128(0),
+        t0.saturating_add(cooldown),
+    );
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    assert!(logs.contains("\"event\":\"idle_resync_started\""));
+    assert!(logs.contains("\"event\":\"idle_resync_completed\""));
+}
+
+#[test]
+#[should_panic(expected = "Cannot deposit during idle resync")]
+fn execute_supply_is_blocked_during_idle_resync() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    c.idle_resync_inflight_op_id = 1;
+
+    let sender = mk(1);
+    let asset_id = c.underlying_asset.contract_id().into();
+    let _ = c.execute_supply(sender, asset_id, 1);
+}
+
+#[test]
+#[should_panic(expected = "Cannot withdraw/redeem during idle resync")]
+fn withdraw_is_blocked_during_idle_resync() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    c.idle_resync_inflight_op_id = 1;
+
+    let caller = mk(1);
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.withdraw(U128(1), mk(2));
+}
+
+#[test]
+#[should_panic(expected = "Cannot withdraw/redeem during idle resync")]
+fn redeem_is_blocked_during_idle_resync() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    c.idle_resync_inflight_op_id = 1;
+
+    let caller = mk(1);
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        None,
+        Some(crate::storage_management::yocto_for_ft_account()),
+        None,
+    );
+    let _ = c.redeem(U128(1), mk(2));
 }
 
 #[rstest(

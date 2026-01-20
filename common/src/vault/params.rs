@@ -17,6 +17,13 @@ pub const CREATE_WITHDRAW_REQ_GAS: Gas = buffer(5);
 // Balance reads against the underlying NEP-141
 pub const FT_BALANCE_OF_GAS: Gas = Gas::from_tgas(5);
 
+// Idle balance resync (ft_balance_of + callback)
+const RESYNC_IDLE_CALLBACK: u64 = 5;
+pub const RESYNC_IDLE_CALLBACK_GAS: Gas = buffer(RESYNC_IDLE_CALLBACK);
+
+// 5 TGAS for ft_balance_of + callback buffer
+pub const RESYNC_IDLE_GAS: Gas = buffer(5 + RESYNC_IDLE_CALLBACK);
+
 // Execute the next withdrawal request on a market
 const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ: u64 = 20;
 pub const EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS: Gas =

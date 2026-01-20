@@ -85,6 +85,16 @@ pub fn set_block_ts(vault_id: &AccountId, signer: &AccountId, ts: u64) {
 }
 
 pub fn set_ctx(vault_id: &AccountId, signer: &AccountId, ts: Option<u64>, deposit: Option<u128>) {
+    set_ctx_with_gas(vault_id, signer, ts, deposit, None);
+}
+
+pub fn set_ctx_with_gas(
+    vault_id: &AccountId,
+    signer: &AccountId,
+    ts: Option<u64>,
+    deposit: Option<u128>,
+    prepaid_gas: Option<near_sdk::Gas>,
+) {
     let mut ctx = VMContextBuilder::new();
     ctx.current_account_id(vault_id.clone());
     ctx.signer_account_id(signer.clone());
@@ -94,6 +104,9 @@ pub fn set_ctx(vault_id: &AccountId, signer: &AccountId, ts: Option<u64>, deposi
     }
     if let Some(amount) = deposit {
         ctx.attached_deposit(NearToken::from_yoctonear(amount));
+    }
+    if let Some(gas) = prepaid_gas {
+        ctx.prepaid_gas(gas);
     }
     testing_env!(ctx.build());
 }

@@ -118,6 +118,10 @@ impl Contract {
             templar_common::panic_with_message("Cannot deposit during payout");
         }
 
+        if self.idle_resync_inflight_op_id != 0 {
+            templar_common::panic_with_message("Cannot deposit during idle resync");
+        }
+
         self.internal_accrue_fee();
 
         let max = self.get_max_deposit().0;

@@ -95,6 +95,9 @@ impl VaultController {
         #[call(exec, tgas(300))]
         pub fn execute_rebalance_withdrawal(market_id: MarketId, batch_limit: Option<u32>);
 
+        #[call(exec, tgas(30))]
+        pub fn resync_idle_balance();
+
         #[call(exec, tgas(30), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn withdraw(amount: U128, receiver: AccountId);
 

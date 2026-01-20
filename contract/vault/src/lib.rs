@@ -56,6 +56,7 @@ const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 
 pub mod aum;
 pub mod governance;
+
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
 pub(crate) mod op_guard;
@@ -162,6 +163,10 @@ pub struct Contract {
     /// Cooldown between refresh_markets calls (ns)
     refresh_cooldown_ns: u64,
 
+    idle_resync_last_ns: u64,
+    idle_resync_cooldown_ns: u64,
+    idle_resync_inflight_op_id: u64,
+
     /// Virtual offsets used only in conversions/previews to harden edge cases
     virtual_shares: u128,
     virtual_assets: u128,
@@ -216,6 +221,7 @@ impl Contract {
             restrictions,
             fees,
             refresh_cooldown_ns,
+            idle_resync_cooldown_ns,
         } = configuration;
 
         require!(
@@ -256,6 +262,11 @@ impl Contract {
             refresh_cooldown_ns: refresh_cooldown_ns
                 .map(|v| v.0)
                 .unwrap_or(DEFAULT_REFRESH_COOLDOWN_NS),
+            idle_resync_last_ns: 0,
+            idle_resync_cooldown_ns: idle_resync_cooldown_ns
+                .map(|v| v.0)
+                .unwrap_or(120_000_000_000),
+            idle_resync_inflight_op_id: 0,
             pending_withdrawals: IterableMap::new(
                 [
                     b'v'.into_storage_key().as_slice(),
@@ -281,6 +292,7 @@ impl Contract {
             min: NearToken::from_yoctonear(yocto_for_ft_account()),
             max: None,
         });
+
         contract
     }
 
@@ -289,6 +301,9 @@ impl Contract {
     #[payable]
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
         require_at_least(templar_common::vault::WITHDRAW_GAS);
+        if self.idle_resync_inflight_op_id != 0 {
+            panic_with_message("Cannot withdraw/redeem during idle resync");
+        }
         self.internal_accrue_fee();
         let shares_needed = self.preview_withdraw(amount).0;
         Event::WithdrawPreview {
@@ -310,6 +325,10 @@ impl Contract {
         self.gate.enforce_policy(&receiver);
 
         require!(shares > 0, "Invalid shares");
+
+        if self.idle_resync_inflight_op_id != 0 {
+            panic_with_message("Cannot withdraw/redeem during idle resync");
+        }
 
         let _ = require_attached_for_pending_withdrawal();
 
@@ -563,6 +582,70 @@ impl Contract {
         refreshing.refresh_step(op_id)
     }
 
+    /// Permissionless and throttled.
+    /// Re-syncs idle_balance to the vault's actual underlying FT balance.
+    /// Blocking: sets op_state to Allocating during the async balance read.
+    pub fn resync_idle_balance(
+        &mut self,
+    ) -> PromiseOrValue<templar_common::vault::ResyncIdleReport> {
+        require_at_least(templar_common::vault::RESYNC_IDLE_GAS);
+        self.ensure_idle();
+
+        if self.idle_resync_inflight_op_id != 0 {
+            panic_with_message("Idle resync already in flight")
+        }
+
+        let now = env::block_timestamp();
+        require!(
+            now.saturating_sub(self.idle_resync_last_ns) >= self.idle_resync_cooldown_ns,
+            "Idle resync throttled"
+        );
+
+        self.idle_resync_last_ns = now;
+
+        self.internal_accrue_fee();
+
+        let op_id = self.next_op_id;
+        self.next_op_id = self.next_op_id.saturating_add(1);
+
+        self.idle_resync_inflight_op_id = op_id;
+
+        let before_idle = self.idle_balance;
+        let caller = env::predecessor_account_id();
+
+        self.op_state = OpState::Allocating(AllocatingState {
+            op_id,
+            index: 0,
+            remaining: 0,
+            plan: Vec::new(),
+        });
+
+        Event::IdleResyncStarted {
+            op_id: op_id.into(),
+            caller: caller.clone(),
+            before_idle: U128(before_idle),
+            started_at_ns: now.into(),
+        }
+        .emit();
+
+        PromiseOrValue::Promise(
+            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                .with_static_gas(FT_BALANCE_OF_GAS)
+                .with_unused_gas_weight(0)
+                .ft_balance_of(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(templar_common::vault::RESYNC_IDLE_CALLBACK_GAS)
+                        .resync_idle_balance_01_settle(
+                            op_id,
+                            caller.clone(),
+                            U128(before_idle),
+                            now,
+                        ),
+                ),
+        )
+    }
+
     /// Allocator/Curator/Owner only. Unbricks the current in-flight withdrawal or payout:
     /// - If Withdrawing: refunds escrowed shares to the owner and dequeues the pending request.
     /// - If in Payout: re-syncs idle_balance with the underlying FT balance,
@@ -749,6 +832,7 @@ impl Contract {
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
             restrictions: self.gate.restrictions.clone(),
             refresh_cooldown_ns: Some(self.refresh_cooldown_ns.into()),
+            idle_resync_cooldown_ns: Some(self.idle_resync_cooldown_ns.into()),
         }
     }
 

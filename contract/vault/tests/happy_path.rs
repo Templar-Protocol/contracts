@@ -1,7 +1,7 @@
 #![allow(clippy::all, clippy::pedantic)]
 
 use near_sdk::json_types::U128;
-use near_workspaces::{network::Sandbox, Worker};
+use near_workspaces::{network::Sandbox, operations::Function, types::Gas, Worker};
 use rstest::rstest;
 use templar_common::vault::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_common::{
@@ -9,6 +9,55 @@ use templar_common::{
     number::Decimal,
     vault::{AllocationDelta, Delta},
 };
+
+#[rstest]
+#[tokio::test]
+async fn donation_does_not_change_aum_until_resync(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(vault, c, vault_curator)
+        accounts(supply_user, borrow_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
+    vault.init_account(&supply_user).await;
+
+    let amount: U128 = 1000.into();
+    vault.supply(&supply_user, amount.0).await;
+
+    let total_assets_before_donation = vault.get_total_assets().await;
+    let idle_before_donation = vault.get_idle_balance().await;
+
+    c.borrow_asset
+        .transfer(&supply_user, vault.contract().id(), 123)
+        .await;
+
+    assert_eq!(
+        vault.get_total_assets().await,
+        total_assets_before_donation,
+        "Donation should not change accounting until resync",
+    );
+    assert_eq!(
+        vault.get_idle_balance().await,
+        idle_before_donation,
+        "Donation should not change idle accounting until resync",
+    );
+
+    vault.resync_idle_balance(&supply_user).await;
+
+    assert_eq!(
+        vault.get_total_assets().await.0,
+        total_assets_before_donation.0.saturating_add(123),
+        "After resync, total assets should include the donation",
+    );
+    assert_eq!(
+        vault.get_idle_balance().await.0,
+        idle_before_donation.0.saturating_add(123),
+        "After resync, idle balance should include the donation",
+    );
+}
 use test_utils::{
     controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
     UnifiedMarketController,
@@ -85,7 +134,6 @@ async fn set_fees_accepts_max_total_assets_growth_rate(#[future(awt)] worker: Wo
 
 #[rstest]
 #[tokio::test]
-#[should_panic = "Invariant: Only one op in flight"]
 async fn state_machine_is_locked_when_another_op_is_running(
     #[future(awt)] worker: Worker<Sandbox>,
 ) {
@@ -94,20 +142,34 @@ async fn state_machine_is_locked_when_another_op_is_running(
         extract(vault, c, vault_owner)
         accounts(supply_user, borrow_user)
     );
-    let amount = 1000;
-    vault.supply(&supply_user, amount).await;
+
+    vault.supply(&supply_user, 1).await;
 
     let market_id = vault
         .market_id_of(vault.market.market.contract().id())
         .await;
 
-    futures::future::select_all((0..100).map(|_| {
-        Box::pin(vault.allocate(
-            &vault_owner,
-            AllocationDelta::Supply(Delta::new(market_id, U128(1))),
-        ))
-    }))
-    .await;
+    let tx = vault_owner
+        .batch(vault.contract().id())
+        .call(Function::new("resync_idle_balance").gas(Gas::from_tgas(30)))
+        .call(
+            Function::new("reallocate")
+                .args_json(near_sdk::serde_json::json!({
+                    "delta": AllocationDelta::Supply(Delta::new(market_id, U128(1))),
+                }))
+                .gas(Gas::from_tgas(270)),
+        )
+        .transact()
+        .await
+        .unwrap();
+
+    assert!(tx.is_failure(), "Batch transaction should fail");
+
+    let failure_text = format!("{:#?}", tx.failures());
+    assert!(
+        failure_text.contains("Invariant: Only one op in flight"),
+        "Expected ensure_idle invariant failure, got failures: {failure_text}"
+    );
 }
 
 #[rstest]
@@ -139,6 +201,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     vault.supply(&supply_user, amount.0).await;
     let after_supply_balance = c.borrow_asset.balance_of(supply_user.id()).await;
     println!("After supply of {}: {}", amount.0, after_supply_balance);
+
     c.collateralize(&borrow_user, 2000).await;
 
     let market_id = vault.market_id_of(c.market.contract().id()).await;

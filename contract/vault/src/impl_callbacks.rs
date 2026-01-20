@@ -680,7 +680,7 @@ impl Contract {
         .emit();
 
         if let Some(actual_idle) = actual_idle {
-            payout.resync_idle_balance(actual_idle);
+            payout.resync_idle_balance_to(actual_idle);
         }
 
         if escrow_shares > 0 {
@@ -848,6 +848,131 @@ impl Contract {
         let mut refreshing = refreshing.replace_state(next_state);
 
         refreshing.refresh_step(op_id)
+    }
+
+    #[private]
+    pub fn resync_idle_balance_01_settle(
+        &mut self,
+        #[callback_result] balance: Result<U128, PromiseError>,
+        op_id: u64,
+        caller: AccountId,
+        before_idle: U128,
+        _started_at_ns: u64,
+    ) -> templar_common::vault::ResyncIdleReport {
+        use templar_common::vault::{IdleResyncOutcome, ResyncIdleReport};
+
+        let finished_at_ns = env::block_timestamp();
+        let inflight = self.idle_resync_inflight_op_id;
+
+        if inflight == 0 || inflight != op_id {
+            Event::IdleResyncCallbackIgnored {
+                op_id: op_id.into(),
+                reason: Reason::Other("mismatched op_id".to_string()),
+            }
+            .emit();
+            return ResyncIdleReport {
+                outcome: IdleResyncOutcome::Ignored,
+                before_idle,
+                actual_idle: before_idle,
+                after_idle: before_idle,
+                increased_by: U128(0),
+                decreased_by: U128(0),
+                fee_anchor_bump: U128(0),
+                resynced_at_ns: finished_at_ns.into(),
+            };
+        }
+
+        let valid_state = matches!(
+            self.op_state,
+            OpState::Allocating(AllocatingState {
+                op_id: cur,
+                index: 0,
+                remaining: 0,
+                ref plan
+            }) if cur == op_id && plan.is_empty()
+        );
+
+        if !valid_state {
+            Event::IdleResyncStopped {
+                op_id: op_id.into(),
+                caller,
+                before_idle,
+                reason: Some(Reason::Other("IdleResyncUnexpectedState".to_string())),
+                finished_at_ns: finished_at_ns.into(),
+            }
+            .emit();
+            self.idle_resync_inflight_op_id = 0;
+            self.op_state = OpState::Idle;
+            return ResyncIdleReport {
+                outcome: IdleResyncOutcome::UnexpectedState,
+                before_idle,
+                actual_idle: before_idle,
+                after_idle: before_idle,
+                increased_by: U128(0),
+                decreased_by: U128(0),
+                fee_anchor_bump: U128(0),
+                resynced_at_ns: finished_at_ns.into(),
+            };
+        }
+
+        let Ok(U128(actual_idle)) = balance else {
+            Event::IdleResyncStopped {
+                op_id: op_id.into(),
+                caller,
+                before_idle,
+                reason: Some(Reason::Other(Error::BalanceReadFailed.to_string())),
+                finished_at_ns: finished_at_ns.into(),
+            }
+            .emit();
+            self.idle_resync_inflight_op_id = 0;
+            self.op_state = OpState::Idle;
+            return ResyncIdleReport {
+                outcome: IdleResyncOutcome::BalanceReadFailed,
+                before_idle,
+                actual_idle: before_idle,
+                after_idle: before_idle,
+                increased_by: U128(0),
+                decreased_by: U128(0),
+                fee_anchor_bump: U128(0),
+                resynced_at_ns: finished_at_ns.into(),
+            };
+        };
+
+        self.resync_idle_balance_to(actual_idle);
+        let after_idle = self.idle_balance;
+
+        let increased_by = after_idle.saturating_sub(before_idle.0);
+        let decreased_by = before_idle.0.saturating_sub(after_idle);
+
+        self.fee_anchor.total_assets =
+            U128(self.fee_anchor.total_assets.0.saturating_add(increased_by));
+
+        Event::IdleResyncCompleted {
+            op_id: op_id.into(),
+            caller,
+            before_idle,
+            actual_idle: U128(actual_idle),
+            after_idle: U128(after_idle),
+            increased_by: U128(increased_by),
+            decreased_by: U128(decreased_by),
+            fee_anchor_bump: U128(increased_by),
+            finished_at_ns: finished_at_ns.into(),
+        }
+        .emit();
+
+        self.idle_resync_inflight_op_id = 0;
+        self.op_state = OpState::Idle;
+
+        ResyncIdleReport {
+            outcome: IdleResyncOutcome::Ok,
+            before_idle,
+            actual_idle: U128(actual_idle),
+            after_idle: U128(after_idle),
+            increased_by: U128(increased_by),
+            decreased_by: U128(decreased_by),
+            fee_anchor_bump: U128(increased_by),
+            resynced_at_ns: finished_at_ns.into(),
+        }
     }
 }
 
@@ -1052,7 +1177,7 @@ impl Contract {
         self.idle_balance = delta.apply(idle_balance);
     }
 
-    fn resync_idle_balance(&mut self, actual: u128) {
+    fn resync_idle_balance_to(&mut self, actual: u128) {
         match actual.cmp(&self.idle_balance) {
             Ordering::Greater => self.update_idle_balance(IdleBalanceDelta::Increase(U128(
                 actual.saturating_sub(self.idle_balance),
@@ -1103,7 +1228,7 @@ impl Contract {
 
         self.set_market_principal(market_id, effective_principal);
 
-        self.resync_idle_balance(after_balance.0);
+        self.resync_idle_balance_to(after_balance.0);
 
         (principal_delta, inflow, creditable)
     }

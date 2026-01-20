@@ -176,6 +176,7 @@ pub fn vault_configuration(
         decimals: NonZero::new(24).unwrap(),
         restrictions: None,
         refresh_cooldown_ns: None,
+        idle_resync_cooldown_ns: None,
     }
 }
 

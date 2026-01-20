@@ -32,6 +32,28 @@ pub struct RealAssetsReport {
     pub refreshed_at: U64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub enum IdleResyncOutcome {
+    Ok,
+    BalanceReadFailed,
+    UnexpectedState,
+    Ignored,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct ResyncIdleReport {
+    pub outcome: IdleResyncOutcome,
+    pub before_idle: U128,
+    pub actual_idle: U128,
+    pub after_idle: U128,
+    pub increased_by: U128,
+    pub decreased_by: U128,
+    pub fee_anchor_bump: U128,
+    pub resynced_at_ns: U64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct CapGroupId(pub String);
@@ -210,6 +232,8 @@ pub struct VaultConfiguration {
     pub restrictions: Option<Restrictions>,
     /// Optional cooldown (ns) between refresh_markets calls; defaults to contract constant if None.
     pub refresh_cooldown_ns: Option<U64>,
+    /// Optional cooldown (ns) between idle_resync calls; defaults to contract constant if None.
+    pub idle_resync_cooldown_ns: Option<U64>,
 }
 
 /// Restrictions that can be applied to the vault.
@@ -997,6 +1021,36 @@ pub enum Event {
 
     #[event_version("1.0.0")]
     VaultBalance { amount: U128 },
+
+    #[event_version("1.0.0")]
+    IdleResyncStarted {
+        op_id: U64,
+        caller: AccountId,
+        before_idle: U128,
+        started_at_ns: U64,
+    },
+    #[event_version("1.0.0")]
+    IdleResyncCompleted {
+        op_id: U64,
+        caller: AccountId,
+        before_idle: U128,
+        actual_idle: U128,
+        after_idle: U128,
+        increased_by: U128,
+        decreased_by: U128,
+        fee_anchor_bump: U128,
+        finished_at_ns: U64,
+    },
+    #[event_version("1.0.0")]
+    IdleResyncStopped {
+        op_id: U64,
+        caller: AccountId,
+        before_idle: U128,
+        reason: Option<Reason>,
+        finished_at_ns: U64,
+    },
+    #[event_version("1.0.0")]
+    IdleResyncCallbackIgnored { op_id: U64, reason: Reason },
 }
 
 #[near(serializers = [borsh, json])]
