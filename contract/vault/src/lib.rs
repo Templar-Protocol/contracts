@@ -1057,9 +1057,8 @@ impl Contract {
         }
     }
 
-    pub fn get_market_id_of_account(&self, market: AccountId) -> Option<U64> {
+    pub fn get_market_id_of_account(&self, market: AccountId) -> Option<MarketId> {
         self.market_id_of(&market)
-            .map(|id| U64::from(u64::from(u32::from(id))))
     }
 
     pub fn get_market_account_by_id(&self, market_id: U64) -> Option<AccountId> {

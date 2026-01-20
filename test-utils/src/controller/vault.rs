@@ -70,7 +70,7 @@ impl VaultController {
         #[view] pub fn get_fees() -> Fees<U128>;
         #[view] pub fn get_restrictions() -> Option<Restrictions>;
 
-        #[view] pub fn get_market_id_of_account(market: AccountId) -> Option<U64>;
+        #[view] pub fn get_market_id_of_account(market: AccountId) -> Option<MarketId>;
 
         #[view] pub fn get_market_supply(market: &AccountId) -> U128;
         #[view] pub fn get_next_op_id() -> u64;
