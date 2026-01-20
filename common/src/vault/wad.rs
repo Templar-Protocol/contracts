@@ -55,14 +55,10 @@ impl Number {
     #[inline]
     #[must_use]
     pub fn as_u128_saturating(self) -> u128 {
-        let mut b32 = [0u8; 32];
-        self.0.write_as_little_endian(&mut b32);
-        if b32[16..].iter().any(|&b| b != 0) {
+        if self.0 .0[2] != 0 || self.0 .0[3] != 0 {
             u128::MAX
         } else {
-            let mut b16 = [0u8; 16];
-            b16.copy_from_slice(&b32[..16]);
-            u128::from_le_bytes(b16)
+            self.0.as_u128()
         }
     }
 
