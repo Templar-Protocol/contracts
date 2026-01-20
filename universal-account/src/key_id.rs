@@ -1,7 +1,7 @@
 use near_sdk::near;
 
 use crate::authentication::{
-    ed25519::{raw, sep53},
+    ed25519::{eip191, raw, sep53},
     eip712,
     passkey::Passkey,
 };
@@ -13,6 +13,7 @@ pub enum KeyId {
     Ed25519RawKey(raw::VerifyKey),
     Eip712(eip712::VerifyKey),
     Sep53(sep53::VerifyKey),
+    Eip191(eip191::VerifyKey),
 }
 
 impl std::fmt::Display for KeyId {
@@ -22,6 +23,7 @@ impl std::fmt::Display for KeyId {
             Self::Ed25519RawKey(key) => write!(f, "{}", key.0),
             Self::Eip712(key) => write!(f, "{}", key.0),
             Self::Sep53(key) => write!(f, "{}", key.0),
+            Self::Eip191(key) => write!(f, "{}", key.0),
         }
     }
 }

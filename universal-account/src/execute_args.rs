@@ -5,7 +5,7 @@ use near_sdk::{
 
 use crate::{
     authentication::{
-        ed25519::{raw, sep53},
+        ed25519::{eip191, raw, sep53},
         eip712,
         passkey::{self, Passkey},
         CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
@@ -14,46 +14,39 @@ use crate::{
     KeyId, PayloadExecutionParameters,
 };
 
-#[derive(Debug, Clone)]
-#[near(serializers = [json])]
-#[serde(bound = "T: DeserializeOwned")]
-pub enum ExecuteArgs<T: serde::Serialize> {
-    Passkey(ExecuteArgsMessage<Passkey, passkey::Message<T>>),
-    Ed25519Raw(ExecuteArgsMessage<raw::VerifyKey, raw::Message<T>>),
-    Eip712(ExecuteArgsMessage<eip712::VerifyKey, eip712::Message<T>>),
-    Sep53(ExecuteArgsMessage<sep53::VerifyKey, sep53::Message<T>>),
+macro_rules! execute_args {
+    ($(
+        $n:ident (
+            $verify_key: ty, $message: ty
+        )
+    ),*) => {
+        #[derive(Debug, Clone)]
+        #[near(serializers = [json])]
+        #[serde(bound = "T: DeserializeOwned")]
+        pub enum ExecuteArgs<T: serde::Serialize> {
+            $(
+                $n (ExecuteArgsMessage<$verify_key, $message>)
+            ),*
+        }
+
+        $(
+            impl<T: serde::Serialize> From<ExecuteArgsMessage<$verify_key, $message>>
+                for ExecuteArgs<T>
+            {
+                fn from(value: ExecuteArgsMessage<$verify_key, $message>) -> Self {
+                    Self::$n(value)
+                }
+            }
+        )*
+    };
 }
 
-impl<T: serde::Serialize> From<ExecuteArgsMessage<Passkey, passkey::Message<T>>>
-    for ExecuteArgs<T>
-{
-    fn from(value: ExecuteArgsMessage<Passkey, passkey::Message<T>>) -> Self {
-        Self::Passkey(value)
-    }
-}
-
-impl<T: serde::Serialize> From<ExecuteArgsMessage<raw::VerifyKey, raw::Message<T>>>
-    for ExecuteArgs<T>
-{
-    fn from(value: ExecuteArgsMessage<raw::VerifyKey, raw::Message<T>>) -> Self {
-        Self::Ed25519Raw(value)
-    }
-}
-
-impl<T: serde::Serialize> From<ExecuteArgsMessage<sep53::VerifyKey, sep53::Message<T>>>
-    for ExecuteArgs<T>
-{
-    fn from(value: ExecuteArgsMessage<sep53::VerifyKey, sep53::Message<T>>) -> Self {
-        Self::Sep53(value)
-    }
-}
-
-impl<T: serde::Serialize> From<ExecuteArgsMessage<eip712::VerifyKey, eip712::Message<T>>>
-    for ExecuteArgs<T>
-{
-    fn from(value: ExecuteArgsMessage<eip712::VerifyKey, eip712::Message<T>>) -> Self {
-        Self::Eip712(value)
-    }
+execute_args! {
+    Passkey(Passkey, passkey::Message<T>),
+    Ed25519Raw(raw::VerifyKey, raw::Message<T>),
+    Eip712(eip712::VerifyKey, eip712::Message<T>),
+    Sep53(sep53::VerifyKey, sep53::Message<T>),
+    Eip191(eip191::VerifyKey, eip191::Message<T>)
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +133,7 @@ impl<T: serde::Serialize> ExecuteArgs<T> {
             Self::Ed25519Raw(args) => KeyId::Ed25519RawKey(args.key.clone()),
             Self::Eip712(args) => KeyId::Eip712(args.key.clone()),
             Self::Sep53(args) => KeyId::Sep53(args.key.clone()),
+            Self::Eip191(args) => KeyId::Eip191(args.key.clone()),
         }
     }
 
@@ -149,6 +143,7 @@ impl<T: serde::Serialize> ExecuteArgs<T> {
             Self::Ed25519Raw(args) => args.mws.message.0.parsed.payload_ref(),
             Self::Eip712(args) => args.mws.message.0.parsed.payload_ref(),
             Self::Sep53(args) => args.mws.message.0.parsed.payload_ref(),
+            Self::Eip191(args) => args.mws.message.0.parsed.payload_ref(),
         }
     }
 
@@ -166,6 +161,7 @@ impl<T: serde::Serialize> ExecuteArgs<T> {
             ExecuteArgs::Ed25519Raw(args) => args.verify(expected_parameters, allowed_origin),
             ExecuteArgs::Eip712(args) => args.verify(expected_parameters, allowed_origin),
             ExecuteArgs::Sep53(args) => args.verify(expected_parameters, allowed_origin),
+            ExecuteArgs::Eip191(args) => args.verify(expected_parameters, allowed_origin),
         }
     }
 }
@@ -217,6 +213,20 @@ mod tests {
                 .build_salt(),
             payload,
         )
+    }
+
+    fn eip191_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
+        let sk = PrivateKeySigner::random();
+
+        let message = eip191::Message::from_parsed(payload());
+
+        let signed_message = message.sign(&sk).unwrap();
+
+        ExecuteArgsMessage {
+            key: eip191::VerifyKey(sk.address().into()),
+            mws: Box::new(signed_message),
+        }
+        .into()
     }
 
     fn eip712_execute_args() -> ExecuteArgs<Box<[Transaction]>> {
@@ -302,7 +312,8 @@ mod tests {
             passkey_execute_args(),
             ed25519_raw_execute_args(),
             eip712_execute_args(),
-            sep53_execute_args()
+            sep53_execute_args(),
+            eip191_execute_args()
         )]
         exec_args: ExecuteArgs<Box<[Transaction]>>,
         #[case] executor_account_id: AccountId,
@@ -378,6 +389,7 @@ mod tests {
     #[case::ed25519_raw(r#"{"Ed25519Raw":{"key":"ed25519:8XxGb8AcgHB3xZhJ9q9mZpjwv1VYN3d5e9WPpQfzTwWT","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":"ed25519:5tR2qHLfP23vCVwfuFsZfFSjtUCV1CKXPyfjoEegbcpgri2cMohXHHaG5bZqGtcasnDHDLj5Btd6eGmnW4wRLS5h"}}"#)]
     #[case::eip712(r#"{"Eip712":{"key":"0x12106199ccfb79eb650e73cdcc5349a40085eb71","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":{"r":"0xba2cf4a66e89a835e275d687e873401f2d5b2e39e8acb13c186c836756cf7d7f","s":"0x7c06faa007afdf67623ea9e19b4bbf038cf31769c3d821f23aa5d942617c5e3b","yParity":"0x0","v":"0x0"}}}"#)]
     #[case::sep53(r#"{"Sep53":{"key":"GBTSG6JQJN3FF443PWHWHRRSJOEX3INJ364HHI345S4HSUREQTHA5BRD","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":"ed25519:2XKrCfu8WufagnqSmMzycQugR453fq9nPGFeuxs4oVB8b3WJPRt8e6FrtKk1VvdMSsCVWNj29HGpwatUAhzM4E2U"}}"#)]
+    #[case::eip191(r#"{"Eip191":{"key":"0x1494e3644415fcbb6ddc429e4caa1c885efef75b","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":{"r":"0x6ecfd6a8d1622a435da977a6c729c2520864547a59b18daf816a13f08e7f21d0","s":"0xf2122f2c7306bc963cdd855ab2401257e67434e55874698b6a4b7eb5bed7882","yParity":"0x1","v":"0x1"}}}"#)]
     fn parse_all_formats_with_chain_id(#[case] text: &str) {
         let json = serde_json::from_str::<ExecuteArgs<Box<[Transaction]>>>(text).unwrap();
 
@@ -401,6 +413,7 @@ mod tests {
     #[case::ed25519_raw(r#"{"Ed25519Raw":{"key":"ed25519:8XxGb8AcgHB3xZhJ9q9mZpjwv1VYN3d5e9WPpQfzTwWT","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":"ed25519:5tR2qHLfP23vCVfwuFsZfFSjtUCV1CKXPyfjoEegbcpgri2cMohXHHaG5bZqGtcasnDHDLj5Btd6eGmnW4wRLS5h"}}"#)]
     #[case::eip712(r#"{"Eip712":{"key":"0x6df4f5ccbe9b41418937640474ade95e4c2994fc","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":{"r":"0x648b99c53bc33fe5ba30293660e251772e9e9a8ddd12ee6be96821530d8f6729","s":"0x26dd0c40b6b63a8f14cd6cb58b1d90cefe2bbd9d7b656645ce9988b6a03a8aa4","yParity":"0x1","v":"0x1"}}}"#)]
     #[case::sep53(r#"{"Sep53":{"key":"GBTSG6JQJN3FF443PWHWHRRSJOEX3INJ364HHI345S4HSUREQTHA5BRD","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":"ed25519:2XKrCfu8WufagnqSmMzycQugR453fq9nPGFeuxs4oVB8b3WJPRt8e6FrtKk1VvdMSsCVWN2j9HGpwatUAhzM4E2U"}}"#)]
+    #[case::eip191(r#"{"Eip191":{"key":"0x1494e3644415fcbb6ddc429e4caa1c885efef75b","message":"{\"version\":\"1\",\"parameters\":{\"block_height\":\"12345\",\"index\":\"1\",\"nonce\":\"44\",\"name\":\"Templar Universal Account\",\"version\":\"1.2.1\",\"chain_id\":\"398\",\"verifying_contract\":\"my-universal-account.near\",\"salt\":\"2vkBPYckQRiVSZ6mEDWAtpK8k9thWMc6MwnKQTR1zFuq\"},\"payload\":[{\"receiver_id\":\"token.near\",\"actions\":[{\"FunctionCall\":{\"function_name\":\"ft_transfer\",\"arguments\":\"eyJyZWNlaXZlcl9pZCI6InJlY2VpdmVyLm5lYXIiLCJhbW91bnQiOiIxMDAifQ==\",\"amount\":\"1\",\"gas\":\"30000000000000\"}}]}]}","signature":{"r":"0x6ecfd6a8d1622a435da977a6c729c2520864547a59b18daf816a13f08e7f21d0","s":"0xf2122f2c7306bc963cdd85a5b2401257e67434e55874698b6a4b7eb5bed7882","yParity":"0x1","v":"0x1"}}}"#)]
     fn parse_all_formats_with_chain_id_invalid_signature(#[case] text: &str) {
         let json = serde_json::from_str::<ExecuteArgs<Box<[Transaction]>>>(text).unwrap();
 
