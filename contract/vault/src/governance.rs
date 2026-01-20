@@ -1,6 +1,6 @@
 use templar_common::vault::{
     wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
-    CapGroupUpdate, CapGroupUpdateKey, TimestampNs, MAX_QUEUE_LEN,
+    CapGroupUpdate, CapGroupUpdateKey, TimelockKind, TimestampNs, MAX_QUEUE_LEN,
 };
 
 use super::*;
@@ -11,16 +11,6 @@ use templar_common::{
     panic_with_message,
     vault::{PendingValue, Restrictions},
 };
-
-#[near(serializers = [borsh, json])]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimelockKind {
-    Guardian,
-    Sentinel,
-    Config,
-    Cap,
-    MarketRemoval,
-}
 
 #[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, PartialEq, Eq)]

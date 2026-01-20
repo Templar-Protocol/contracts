@@ -62,6 +62,8 @@ pub mod impl_token_receiver;
 pub(crate) mod op_guard;
 pub mod storage_management;
 
+mod impl_vault_external;
+
 #[cfg(test)]
 mod test_utils;
 
@@ -1056,18 +1058,19 @@ impl Contract {
     }
 
     pub fn get_market_id_of_account(&self, market: AccountId) -> Option<U64> {
-        self.market_id_of(&market).map(Into::into)
+        self.market_id_of(&market)
+            .map(|id| U64::from(u64::from(u32::from(id))))
     }
 
     pub fn get_market_account_by_id(&self, market_id: U64) -> Option<AccountId> {
-        self.market_account_by_id(MarketId::from(market_id))
+        self.market_account_by_id(MarketId::from(market_id.0 as u32))
             .cloned()
     }
 
     pub fn list_markets_with_ids(&self) -> Vec<(U64, AccountId)> {
         self.markets
             .iter()
-            .map(|(id, rec)| ((*id).into(), rec.account.clone()))
+            .map(|(id, rec)| (U64::from(u64::from(u32::from(*id))), rec.account.clone()))
             .collect()
     }
 }

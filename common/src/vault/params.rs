@@ -7,6 +7,16 @@ pub const MIN_TIMELOCK_NS: u64 = 0;
 pub const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
 pub const MAX_QUEUE_LEN: usize = 64;
 
+#[near(serializers = [borsh, json])]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelockKind {
+    Guardian,
+    Sentinel,
+    Config,
+    Cap,
+    MarketRemoval,
+}
+
 // Fetching a position
 const GET_SUPPLY_POSITION: u64 = 4;
 pub const GET_SUPPLY_POSITION_GAS: Gas = Gas::from_tgas(GET_SUPPLY_POSITION);

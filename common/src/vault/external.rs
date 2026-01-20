@@ -1,70 +1,71 @@
 use super::*;
 
 #[near_sdk::ext_contract(ext_vault)]
-pub trait VaultExt {
-    // Role and admin
-    fn set_curator(account: AccountId);
-    fn set_is_allocator(account: AccountId, allowed: bool);
-    fn submit_guardian(new_g: AccountId);
-    fn accept_guardian();
-    fn revoke_pending_guardian();
-    fn submit_sentinel(new_s: AccountId);
-    fn accept_sentinel();
-    fn revoke_pending_sentinel();
-    fn set_skim_recipient(account: AccountId);
-    fn set_fees(fees: Fees<U128>);
-    fn accept_fees();
-    fn revoke_pending_fees();
-    fn set_restrictions(restrictions: Option<Restrictions>);
-    fn accept_restrictions();
-    fn revoke_pending_restrictions();
-    fn submit_timelock(new_timelock_ns: U64);
-    fn accept_timelock();
-    fn revoke_pending_timelock();
+pub trait VaultExternalInterface {
+    fn set_curator(&mut self, account: AccountId);
+    fn set_is_allocator(&mut self, account: AccountId, allowed: bool);
+    fn submit_guardian(&mut self, new_g: AccountId);
+    fn accept_guardian(&mut self);
+    fn revoke_pending_guardian(&mut self);
+    fn submit_sentinel(&mut self, new_s: AccountId);
+    fn accept_sentinel(&mut self);
+    fn revoke_pending_sentinel(&mut self);
+    fn set_skim_recipient(&mut self, account: AccountId);
+    fn set_fees(&mut self, fees: Fees<U128>);
+    fn accept_fees(&mut self);
+    fn revoke_pending_fees(&mut self);
+    fn set_restrictions(&mut self, restrictions: Option<Restrictions>);
+    fn accept_restrictions(&mut self);
+    fn revoke_pending_restrictions(&mut self);
+    fn submit_timelock(&mut self, new_timelock_ns: U64, kind: Option<TimelockKind>);
+    fn accept_timelock(&mut self);
+    fn revoke_pending_timelock(&mut self);
 
-    // Market config and queues
-    fn submit_cap(market: AccountId, new_cap: U128);
-    fn accept_cap(market: AccountId);
-    fn revoke_pending_cap(market: AccountId);
-    fn submit_cap_group_update(update: CapGroupUpdate);
-    fn accept_cap_group_update(update: CapGroupUpdateKey);
-    fn revoke_pending_cap_group_update(update: CapGroupUpdateKey);
-    fn submit_market_removal(market: AccountId);
-    fn revoke_pending_market_removal(market: AccountId);
-    fn set_supply_queue(markets: Vec<MarketId>);
+    fn submit_cap(&mut self, market: AccountId, new_cap: U128);
+    fn accept_cap(&mut self, market: AccountId);
+    fn revoke_pending_cap(&mut self, market: AccountId);
+    fn submit_cap_group_update(&mut self, update: CapGroupUpdate);
+    fn accept_cap_group_update(&mut self, update: CapGroupUpdateKey);
+    fn revoke_pending_cap_group_update(&mut self, update: CapGroupUpdateKey);
+    fn submit_market_removal(&mut self, market: AccountId);
+    fn revoke_pending_market_removal(&mut self, market: AccountId);
+    fn set_supply_queue(&mut self, markets: Vec<MarketId>);
 
-    // User flows
-    fn withdraw(amount: U128, receiver: AccountId) -> PromiseOrValue<()>;
-    fn redeem(shares: U128, receiver: AccountId) -> PromiseOrValue<()>;
-    fn reallocate(delta: AllocationDelta) -> PromiseOrValue<()>;
+    fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()>;
+    fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()>;
+    fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()>;
     fn execute_rebalance_withdrawal(
+        &mut self,
         market_id: MarketId,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()>;
-    fn execute_withdrawal(route: Vec<MarketId>) -> PromiseOrValue<()>;
+    fn execute_withdrawal(&mut self, route: Vec<MarketId>) -> PromiseOrValue<()>;
     fn execute_market_withdrawal(
+        &mut self,
         op_id: U64,
         market: MarketId,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()>;
-    fn unbrick() -> PromiseOrValue<()>;
-    fn skim(token: AccountId) -> Promise;
-    fn refresh_markets(markets: Vec<MarketId>) -> PromiseOrValue<()>;
+    fn unbrick(&mut self) -> PromiseOrValue<()>;
+    fn skim(&mut self, token: AccountId) -> Promise;
+    fn refresh_markets(&mut self, markets: Vec<MarketId>) -> PromiseOrValue<RealAssetsReport>;
 
-    // Views
-    fn get_configuration() -> VaultConfiguration;
-    fn get_total_assets() -> U128;
-    fn get_last_total_assets() -> U128;
-    fn get_total_supply() -> U128;
-    fn get_max_deposit() -> U128;
-    fn convert_to_shares(assets: U128) -> U128;
-    fn convert_to_assets(shares: U128) -> U128;
-    fn preview_deposit(assets: U128) -> U128;
-    fn preview_mint(shares: U128) -> U128;
-    fn preview_withdraw(assets: U128) -> U128;
-    fn preview_redeem(shares: U128) -> U128;
-    fn get_cap_groups() -> Vec<(CapGroupId, CapGroupRecord)>;
-    fn get_fee_anchor_timestamp() -> U64;
-    fn get_fees() -> Fees<U128>;
-    fn get_restrictions() -> Option<Restrictions>;
+    fn get_configuration(&self) -> VaultConfiguration;
+    fn get_total_assets(&self) -> U128;
+    fn get_last_total_assets(&self) -> U128;
+    fn get_total_supply(&self) -> U128;
+    fn get_max_deposit(&self) -> U128;
+    fn convert_to_shares(&self, assets: U128) -> U128;
+    fn convert_to_assets(&self, shares: U128) -> U128;
+    fn preview_deposit(&self, assets: U128) -> U128;
+    fn preview_mint(&self, shares: U128) -> U128;
+    fn preview_withdraw(&self, assets: U128) -> U128;
+    fn preview_redeem(&self, shares: U128) -> U128;
+    fn get_cap_groups(&self) -> Vec<(CapGroupId, CapGroupRecord)>;
+    fn get_fee_anchor_timestamp(&self) -> U64;
+    fn get_fees(&self) -> Fees<U128>;
+    fn get_restrictions(&self) -> Option<Restrictions>;
 }
+
+pub trait VaultExt: VaultExternalInterface {}
+impl<T: VaultExternalInterface + ?Sized> VaultExt for T {}

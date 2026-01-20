@@ -140,10 +140,8 @@ impl Contract {
 
         let current_index = allocating.state().index;
         if current_index != market_index {
-            return allocating.stop_and_exit(Some(&Error::IndexDrifted(
-                current_index,
-                market_index,
-            )));
+            return allocating
+                .stop_and_exit(Some(&Error::IndexDrifted(current_index, market_index)));
         }
 
         let SupplyReconciliation {
@@ -331,7 +329,7 @@ impl Contract {
                     op_id: op_id.into(),
                     market,
                     position: Some(position.clone()),
-                    before: None,
+                    before: Option::None,
                 }
                 .emit();
                 position.get_deposit().total().into()
@@ -341,7 +339,7 @@ impl Contract {
                     outcome: PositionReportOutcome::Missing,
                     op_id: op_id.into(),
                     market,
-                    position: None,
+                    position: Option::None,
                     before: Some(principal),
                 }
                 .emit();
@@ -355,7 +353,7 @@ impl Contract {
                     outcome: PositionReportOutcome::ReadFailed,
                     op_id: op_id.into(),
                     market,
-                    position: None,
+                    position: Option::None,
                     before: Some(principal),
                 }
                 .emit();
@@ -981,7 +979,10 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        let s: &AllocatingState = self.op_state.as_ref();
+        let s = self
+            .op_state
+            .as_allocating()
+            .unwrap_or_else(|| panic_with_message("OpState::Allocating expected"));
         let op_id = s.op_id;
 
         msg.map_or(Event::AllocationCompleted { op_id: s.op_id }, |m| {
@@ -1007,7 +1008,10 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        let s: &WithdrawingState = self.op_state.as_ref();
+        let s = self
+            .op_state
+            .as_withdrawing()
+            .unwrap_or_else(|| panic_with_message("OpState::Withdrawing expected"));
         let op_id = s.op_id;
 
         Event::WithdrawalStopped {
@@ -1043,7 +1047,10 @@ impl Contract {
         &mut self,
         msg: Option<&T>,
     ) {
-        let s: &PayoutState = self.op_state.as_ref();
+        let s = self
+            .op_state
+            .as_payout()
+            .unwrap_or_else(|| panic_with_message("OpState::Payout expected"));
         let op_id = s.op_id;
         Event::PayoutStopped {
             op_id: (s.op_id).into(),
