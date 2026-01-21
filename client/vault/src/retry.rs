@@ -18,22 +18,6 @@ pub fn should_retry(err: &anyhow::Error) -> bool {
 }
 
 /// Manages retry state with exponential backoff.
-///
-/// Usage:
-/// ```ignore
-/// let mut retry_state = RetryState::new(config);
-/// loop {
-///     match operation().await {
-///         Ok(result) => return Ok(result),
-///         Err(e) => {
-///             if !retry_state.should_retry_err(&e).await {
-///                 return Err(e);
-///             }
-///             // continues to next iteration
-///         }
-///     }
-/// }
-/// ```
 pub struct RetryState {
     attempts_left: u32,
     backoff_ms: u64,

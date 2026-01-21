@@ -238,10 +238,6 @@ macro_rules! impl_vault_view_methods {
 #[macro_export]
 macro_rules! impl_vault_methods {
     ($client:ty) => {
-        // =====================================================================
-        // Simple U128 View Methods (no args)
-        // =====================================================================
-
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
             #[instrument(skip(self))]
@@ -275,10 +271,6 @@ macro_rules! impl_vault_methods {
                     .await
             }
         }
-
-        // =====================================================================
-        // U128 View Methods (with args)
-        // =====================================================================
 
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
@@ -336,10 +328,6 @@ macro_rules! impl_vault_methods {
                 self.vault_view_u128("preview_redeem", (shares,)).await
             }
         }
-
-        // =====================================================================
-        // Typed View Methods
-        // =====================================================================
 
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
@@ -448,10 +436,6 @@ macro_rules! impl_vault_methods {
             }
         }
 
-        // =====================================================================
-        // Simple Call Methods (no args, no deposit)
-        // =====================================================================
-
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
             #[instrument(skip(self))]
@@ -509,10 +493,6 @@ macro_rules! impl_vault_methods {
                 self.vault_call("unbrick", ()).await
             }
         }
-
-        // =====================================================================
-        // Call Methods (with args)
-        // =====================================================================
 
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
