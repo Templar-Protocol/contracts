@@ -567,6 +567,56 @@ pub struct RealAssetsReport {
     pub refreshed_at_ns: u64,
 }
 
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum IdleResyncOutcome {
+    Ok,
+    BalanceReadFailed,
+    UnexpectedState,
+    Ignored,
+}
+
+impl From<templar_common::vault::IdleResyncOutcome> for IdleResyncOutcome {
+    fn from(value: templar_common::vault::IdleResyncOutcome) -> Self {
+        match value {
+            templar_common::vault::IdleResyncOutcome::Ok => IdleResyncOutcome::Ok,
+            templar_common::vault::IdleResyncOutcome::BalanceReadFailed => {
+                IdleResyncOutcome::BalanceReadFailed
+            }
+            templar_common::vault::IdleResyncOutcome::UnexpectedState => {
+                IdleResyncOutcome::UnexpectedState
+            }
+            templar_common::vault::IdleResyncOutcome::Ignored => IdleResyncOutcome::Ignored,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct ResyncIdleReport {
+    pub outcome: IdleResyncOutcome,
+    pub before_idle: ForeignU128,
+    pub actual_idle: ForeignU128,
+    pub after_idle: ForeignU128,
+    pub increased_by: ForeignU128,
+    pub decreased_by: ForeignU128,
+    pub fee_anchor_bump: ForeignU128,
+    pub resynced_at_ns: u64,
+}
+
+impl From<templar_common::vault::ResyncIdleReport> for ResyncIdleReport {
+    fn from(value: templar_common::vault::ResyncIdleReport) -> Self {
+        ResyncIdleReport {
+            outcome: value.outcome.into(),
+            before_idle: value.before_idle.0.to_string(),
+            actual_idle: value.actual_idle.0.to_string(),
+            after_idle: value.after_idle.0.to_string(),
+            increased_by: value.increased_by.0.to_string(),
+            decreased_by: value.decreased_by.0.to_string(),
+            fee_anchor_bump: value.fee_anchor_bump.0.to_string(),
+            resynced_at_ns: value.resynced_at_ns.0,
+        }
+    }
+}
+
 impl From<templar_common::vault::RealAssetsReport> for RealAssetsReport {
     fn from(value: templar_common::vault::RealAssetsReport) -> Self {
         RealAssetsReport {
@@ -826,6 +876,7 @@ pub struct VaultConfiguration {
     pub decimals: u8,
     pub restrictions: Option<Restrictions>,
     pub refresh_cooldown_ns: Option<u64>,
+    pub idle_resync_cooldown_ns: Option<u64>,
 }
 
 impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
@@ -860,6 +911,7 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
             decimals: value.decimals.get(),
             restrictions: value.restrictions.map(Into::into),
             refresh_cooldown_ns: value.refresh_cooldown_ns.map(|u| u.0),
+            idle_resync_cooldown_ns: value.idle_resync_cooldown_ns.map(|u| u.0),
         }
     }
 }
