@@ -669,6 +669,25 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         print(f"Step 2 - Depositing {deposit_amount} tokens via ft_transfer_call...")
         print(f"  Token: {config.underlying_token}")
 
+        # Pre-deposit sanity check: token balance can persist even if the vault account was deleted
+        # and redeployed with the same account ID. In that case, the vault's stored idle_balance
+        # will be stale (0) until refresh_idle_balance.
+        try:
+            vault_id = AccountId(config.vault_account)
+            token_balance = await user_client.ft_balance_of(
+                token=AccountId(config.underlying_token),
+                account_id=vault_id,
+            )
+            idle_before = await user_client.get_idle_balance()
+            print(f"  Vault token balance (ft_balance_of): {token_balance}")
+            print(f"  Vault idle_balance (accounted):     {idle_before}")
+            if int(token_balance) > int(idle_before):
+                print(
+                    "  ⚠ Token balance > idle_balance. If this vault was redeployed, you likely need refresh_idle_balance before deposits."
+                )
+        except Exception as e:
+            print(f"  ⚠ Pre-deposit token balance check failed: {e}")
+
         # Register user with vault (NEP-145) if not already registered
         print("  Checking vault storage registration...")
         try:
@@ -714,26 +733,78 @@ async def test_happy_path_flow(config: SmokeTestConfig):
             )
             print(f"✓ Deposit transaction submitted (unused/refunded: {used})")
 
+            await user_client.clear_view_cache()
+            if allocator_client:
+                await allocator_client.clear_view_cache()
+
             # Verify assets increased
             after_deposit_assets = await user_client.get_total_assets()
             after_deposit_idle = await user_client.get_idle_balance()
             print(f"  Total assets after: {after_deposit_assets}")
             print(f"  Idle balance after: {after_deposit_idle}")
 
-            if int(after_deposit_idle) > int(initial_idle):
-                print("✓ Deposit verified: idle balance increased")
+            if int(max_deposit) == 0:
+                if int(used) == 0 and int(after_deposit_idle) == int(initial_idle):
+                    print("✓ Deposit refunded (expected: max_deposit=0)")
+                else:
+                    print(
+                        "⚠ Deposit behavior unexpected: max_deposit=0 but deposit may have partially succeeded"
+                    )
             else:
-                print("⚠ Deposit: idle balance did not increase")
+                if int(after_deposit_idle) > int(initial_idle):
+                    print("✓ Deposit verified: idle balance increased")
+                else:
+                    print("⚠ Deposit: idle balance did not increase")
 
-            # Optional: refresh idle balance directly (permissionless).
-            # This exercises the new client method without requiring a donation.
+            # Donation demo: plain ft_transfer (no receiver hook) + refresh_idle_balance.
+            # This is the intended "donation" behavior: token balance changes immediately,
+            # but vault idle_balance only changes after refresh_idle_balance.
             if allocator_client:
                 try:
-                    print("Step 2b - Calling refresh_idle_balance...")
+                    donation_amount = "1"
+                    vault_id = AccountId(config.vault_account)
+
+                    print(
+                        f"Step 2b - Donating {donation_amount} token via ft_transfer (no hook)..."
+                    )
+
+                    before_token = await allocator_client.ft_balance_of(
+                        token=AccountId(config.underlying_token),
+                        account_id=vault_id,
+                    )
+                    before_idle = await user_client.get_idle_balance()
+
+                    await allocator_client.ft_transfer(
+                        token=AccountId(config.underlying_token),
+                        amount=donation_amount,
+                        memo="smoke_test donation",
+                    )
+
+                    await user_client.clear_view_cache()
+                    await allocator_client.clear_view_cache()
+
+                    after_token = await allocator_client.ft_balance_of(
+                        token=AccountId(config.underlying_token),
+                        account_id=vault_id,
+                    )
+                    after_idle_before_refresh = await user_client.get_idle_balance()
+
+                    print(f"  token balance before: {before_token}")
+                    print(f"  token balance after:  {after_token}")
+                    print(f"  idle before refresh:  {after_idle_before_refresh}")
+
+                    print("  Calling refresh_idle_balance...")
                     report = await allocator_client.refresh_idle_balance()
+
+                    await user_client.clear_view_cache()
+                    await allocator_client.clear_view_cache()
+
+                    after_idle = await user_client.get_idle_balance()
+
                     print(f"  refresh_idle_balance outcome: {report.outcome}")
+                    print(f"  idle after refresh:  {after_idle}")
                 except Exception as e:
-                    print(f"  ⚠ refresh_idle_balance smoke step failed: {e}")
+                    print(f"  ⚠ donation/refresh smoke step failed: {e}")
         except Exception as e:
             print(f"⚠ Deposit failed: {e}")
             print("  (User may not have sufficient token balance or allowance)")
@@ -778,23 +849,32 @@ async def test_happy_path_flow(config: SmokeTestConfig):
             print("Step 3 - Skipping reallocate: no idle balance to reallocate")
 
     # === Step 4: Request withdrawal (redeem shares) ===
-    # Get user's current shares - we'll try to redeem a small amount
-    redeem_amount = "1000"  # Small amount to test the flow
-    print(f"Step 4 - Requesting withdrawal of {redeem_amount} shares...")
-
+    # Only attempt redeem if shares exist.
     try:
-        await user_client.redeem(
-            redeem_amount,
-            AccountId(config.user_account),
-            "3000000000000000000000",  # 0.003 NEAR for withdrawal storage
-        )
-        print("✓ Redeem transaction submitted")
+        await user_client.clear_view_cache()
+    except Exception:
+        pass
 
-        # Check withdrawal queue state
-        pending_id = await user_client.peek_next_pending_withdrawal_id()
-        print(f"  Queue head after redeem: {pending_id}")
-    except Exception as e:
-        print(f"⚠ Redeem failed: {e}")
+    total_supply_after = await user_client.get_total_supply()
+    if int(total_supply_after) == 0:
+        print("Step 4 - Skipping redeem: total_supply is 0 (no shares minted)")
+    else:
+        redeem_amount = "1000"  # Small amount to test the flow
+        print(f"Step 4 - Requesting withdrawal of {redeem_amount} shares...")
+
+        try:
+            await user_client.redeem(
+                redeem_amount,
+                AccountId(config.user_account),
+                "3000000000000000000000",  # 0.003 NEAR for withdrawal storage
+            )
+            print("✓ Redeem transaction submitted")
+
+            # Check withdrawal queue state
+            pending_id = await user_client.peek_next_pending_withdrawal_id()
+            print(f"  Queue head after redeem: {pending_id}")
+        except Exception as e:
+            print(f"⚠ Redeem failed: {e}")
 
     # === Step 5: Execute withdrawals (flush queue) ===
     if allocator_client and markets:

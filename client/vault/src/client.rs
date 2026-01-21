@@ -302,6 +302,82 @@ impl VaultClient {
         }
     }
 
+    /// Transfer fungible tokens directly to the vault via `ft_transfer`.
+    ///
+    /// This is a "donation" from the vault's perspective (no receiver hook), so it will NOT
+    /// update the vault's stored `idle_balance` until you call `refresh_idle_balance()`.
+    #[instrument(skip(self, token, amount, memo))]
+    pub async fn ft_transfer(
+        &self,
+        token: &AccountId,
+        amount: &ForeignU128,
+        memo: Option<String>,
+    ) -> Result<(), ErrorWrapper> {
+        let token_id = parse_account_id(token)?;
+        let amount_u128 = crate::parse_u128(amount)?;
+
+        #[derive(serde::Serialize)]
+        struct Args {
+            receiver_id: near_account_id::AccountId,
+            amount: near_sdk::json_types::U128,
+            memo: Option<String>,
+        }
+
+        // ft_transfer requires exactly 1 yoctoNEAR deposit
+        const FT_TRANSFER_GAS: Gas = 30_000_000_000_000; // 30 TGas
+
+        let status = self
+            .inner
+            .call(
+                &token_id,
+                "ft_transfer",
+                Args {
+                    receiver_id: self.vault.clone(),
+                    amount: near_sdk::json_types::U128(amount_u128),
+                    memo,
+                },
+                Some(FT_TRANSFER_GAS),
+                Some(1),
+            )
+            .await
+            .map_err(ErrorWrapper::from)?;
+
+        match status {
+            FinalExecutionStatus::SuccessValue(_) => Ok(()),
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
+                "ft_transfer failed: {:?}",
+                err
+            ))),
+            _ => Err(ErrorWrapper::Wrapped(
+                "Unexpected execution status".to_string(),
+            )),
+        }
+    }
+
+    /// Read `ft_balance_of(account_id)` from an arbitrary NEP-141 token.
+    #[instrument(skip(self, token, account_id))]
+    pub async fn ft_balance_of(
+        &self,
+        token: &AccountId,
+        account_id: &AccountId,
+    ) -> Result<ForeignU128, ErrorWrapper> {
+        let token_id = parse_account_id(token)?;
+        let account_id = parse_account_id(account_id)?;
+
+        #[derive(serde::Serialize)]
+        struct Args {
+            account_id: near_account_id::AccountId,
+        }
+
+        let balance: U128 = self
+            .inner
+            .view(&token_id, "ft_balance_of", Args { account_id })
+            .await
+            .map_err(ErrorWrapper::from)?;
+
+        Ok(balance.0.to_string())
+    }
+
     // =========================================================================
     // NEP-145 Storage Management
     // =========================================================================
@@ -420,6 +496,18 @@ impl VaultClient {
         token: &AccountId,
         account_id: &AccountId,
     ) -> Result<Option<crate::StorageBalance>, ErrorWrapper> {
+        self.storage_balance_of_on(token, account_id).await
+    }
+
+    /// NEP-145 `storage_balance_of` against an arbitrary contract.
+    ///
+    /// Returns None if the account is not registered.
+    #[instrument(skip(self))]
+    pub async fn storage_balance_of_on(
+        &self,
+        contract_id: &AccountId,
+        account_id: &AccountId,
+    ) -> Result<Option<crate::StorageBalance>, ErrorWrapper> {
         #[derive(serde::Serialize)]
         struct Args {
             account_id: near_account_id::AccountId,
@@ -431,12 +519,12 @@ impl VaultClient {
             available: U128,
         }
 
-        let token_id = parse_account_id(token)?;
+        let contract_id = parse_account_id(contract_id)?;
         let account = parse_account_id(account_id)?;
         let balance: Option<Balance> = self
             .inner
             .view(
-                &token_id,
+                &contract_id,
                 "storage_balance_of",
                 Args {
                     account_id: account,
@@ -471,6 +559,18 @@ impl VaultClient {
         account_id: Option<AccountId>,
         deposit_yocto: &ForeignU128,
     ) -> Result<crate::StorageBalance, ErrorWrapper> {
+        self.storage_deposit_on(token, account_id, deposit_yocto)
+            .await
+    }
+
+    /// NEP-145 `storage_deposit` against an arbitrary contract.
+    #[instrument(skip(self))]
+    pub async fn storage_deposit_on(
+        &self,
+        contract_id: &AccountId,
+        account_id: Option<AccountId>,
+        deposit_yocto: &ForeignU128,
+    ) -> Result<crate::StorageBalance, ErrorWrapper> {
         #[derive(serde::Serialize)]
         struct Args {
             account_id: Option<near_account_id::AccountId>,
@@ -483,7 +583,7 @@ impl VaultClient {
             available: U128,
         }
 
-        let token_id = parse_account_id(token)?;
+        let contract_id = parse_account_id(contract_id)?;
         let account = match account_id {
             Some(ref id) => Some(parse_account_id(id)?),
             None => None,
@@ -495,7 +595,7 @@ impl VaultClient {
         let status = self
             .inner
             .call(
-                &token_id,
+                &contract_id,
                 "storage_deposit",
                 Args {
                     account_id: account,
@@ -517,7 +617,7 @@ impl VaultClient {
                 })
             }
             FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
-                "token_storage_deposit failed: {:?}",
+                "storage_deposit_on failed: {:?}",
                 err
             ))),
             _ => Err(ErrorWrapper::Wrapped(
