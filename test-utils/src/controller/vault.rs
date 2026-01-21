@@ -98,6 +98,9 @@ impl VaultController {
         #[call(exec, tgas(30))]
         pub fn resync_idle_balance();
 
+        #[call(exec, tgas(30))]
+        pub fn refresh_idle_balance["resync_idle_balance"]();
+
         #[call(exec, tgas(30), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn withdraw(amount: U128, receiver: AccountId);
 

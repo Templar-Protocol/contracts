@@ -724,6 +724,16 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 print("✓ Deposit verified: idle balance increased")
             else:
                 print("⚠ Deposit: idle balance did not increase")
+
+            # Optional: refresh idle balance directly (permissionless).
+            # This exercises the new client method without requiring a donation.
+            if allocator_client:
+                try:
+                    print("Step 2b - Calling refresh_idle_balance...")
+                    report = await allocator_client.refresh_idle_balance()
+                    print(f"  refresh_idle_balance outcome: {report.outcome}")
+                except Exception as e:
+                    print(f"  ⚠ refresh_idle_balance smoke step failed: {e}")
         except Exception as e:
             print(f"⚠ Deposit failed: {e}")
             print("  (User may not have sufficient token balance or allowance)")

@@ -30,7 +30,7 @@ use zeroize::Zeroize;
 use crate::{
     parse_account_id, view_core, AccountId, AllocationDelta, CapGroupUpdate, CapGroupUpdateKey,
     ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128, MarketId, RealAssetsReport, Restrictions,
-    RetryConfig, TimelockKind, VaultConfiguration, ViewCache, DEFAULT_GAS,
+    ResyncIdleReport, RetryConfig, TimelockKind, VaultConfiguration, ViewCache, DEFAULT_GAS,
     MAX_POLL_INTERVAL_MILLIS,
 };
 

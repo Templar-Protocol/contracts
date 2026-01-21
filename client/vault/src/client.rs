@@ -62,8 +62,9 @@ use tracing::instrument;
 #[allow(unused_imports)]
 use crate::{
     parse_account_id, AccountId, AllocationDelta, CapGroupUpdate, CapGroupUpdateKey, ErrorWrapper,
-    FeeAccrualAnchor, Fees, ForeignU128, KeyCredential, KeyPoolClient, KeyPoolConfig, MarketId,
-    PoolHealth, RealAssetsReport, Restrictions, RetryConfig, TimelockKind, VaultConfiguration,
+    FeeAccrualAnchor, Fees, ForeignU128, IdleResyncOutcome, KeyCredential, KeyPoolClient,
+    KeyPoolConfig, MarketId, PoolHealth, RealAssetsReport, Restrictions, ResyncIdleReport,
+    RetryConfig, TimelockKind, VaultConfiguration,
 };
 
 /// Configuration for [`VaultClient`].

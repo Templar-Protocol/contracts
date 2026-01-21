@@ -599,6 +599,15 @@ macro_rules! impl_vault_methods {
                 .await
             }
 
+            #[instrument(skip(self))]
+            pub async fn refresh_idle_balance(&self) -> Result<ResyncIdleReport, ErrorWrapper> {
+                const RESYNC_IDLE_GAS: Gas = 30_000_000_000_000;
+                let report: templar_common::vault::ResyncIdleReport = self
+                    .vault_call_returning("resync_idle_balance", (), Some(RESYNC_IDLE_GAS), None)
+                    .await?;
+                Ok(report.into())
+            }
+
             #[instrument(skip(self, token))]
             pub async fn skim(&self, token: &AccountId) -> Result<(), ErrorWrapper> {
                 self.vault_call("skim", (self.near_id(token)?,)).await

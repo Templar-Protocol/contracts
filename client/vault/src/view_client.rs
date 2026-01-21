@@ -11,7 +11,7 @@ use tracing::instrument;
 use crate::{
     parse_account_id, view_core, AccountId, AllocationDelta, CapGroupUpdate, CapGroupUpdateKey,
     ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128, KeyPoolConfig, MarketId, RealAssetsReport,
-    Restrictions, TimelockKind, VaultConfiguration, ViewCache,
+    Restrictions, ResyncIdleReport, TimelockKind, VaultConfiguration, ViewCache,
 };
 
 #[derive(uniffi::Object)]
