@@ -1,8 +1,3 @@
-//! Core view functionality shared between KeyPoolClient and VaultViewClient.
-//!
-//! This module extracts the common view call logic with caching and retry support
-//! to eliminate code duplication across client implementations.
-
 use std::{sync::RwLock, time::Duration};
 
 use anyhow::{bail, Result};

@@ -129,13 +129,8 @@ impl VaultViewClient {
     }
 }
 
-// Generate view cache management methods via macro
 crate::impl_view_cache_methods!(VaultViewClient);
-
-// Generate complex view methods via macro
 crate::impl_vault_view_methods!(VaultViewClient);
-
-// Generate common vault methods via macro
 crate::impl_vault_methods!(VaultViewClient);
 
 #[cfg(test)]
