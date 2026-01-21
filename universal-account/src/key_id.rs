@@ -51,3 +51,9 @@ impl From<eip712::VerifyKey> for KeyId {
         Self::Eip712(value)
     }
 }
+
+impl From<eip191::VerifyKey> for KeyId {
+    fn from(value: eip191::VerifyKey) -> Self {
+        Self::Eip191(value)
+    }
+}

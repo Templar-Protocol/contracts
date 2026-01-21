@@ -100,6 +100,7 @@ pub async fn account_id(
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use templar_universal_account::authentication::ed25519::eip191;
 
     use super::*;
 
@@ -119,6 +120,10 @@ mod tests {
     #[case::eip712(
         eip712::VerifyKey("0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E".parse().unwrap()).into(),
         "8a98745b4d35",
+    )]
+    #[case::eip191(
+        eip191::VerifyKey("0x03a607faedb00b3f9c747a9cb303255ef86a4da8".parse().unwrap()).into(),
+        "6616024d8ced",
     )]
     #[test]
     fn account_slug_regression(#[case] key: KeyId, #[case] expected_slug: &str) {
