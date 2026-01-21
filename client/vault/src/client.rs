@@ -1,55 +1,5 @@
 //! Canonical vault client for high-concurrency use.
-//!
-//! This is the preferred UniFFI surface. It supports:
-//! - multi-key transaction submission (nonce-safe)
-//! - view caching
-//! - retry/backoff
-//!
-//! Internally it is backed by [`KeyPoolClient`].
-//!
-//! # Migration from Legacy `Client`
-//!
-//! The legacy `Client` has been removed. Use `VaultClient` instead:
-//!
-//! ## Single-key usage (equivalent to old `Client::new_client`)
-//!
-//! ```ignore
-//! // Old:
-//! let client = Client::new_client(rpc_url, &signer_account, &signer_key, &vault, timeout)?;
-//!
-//! // New:
-//! let credential = KeyCredential {
-//!     account_id: signer_account,
-//!     secret_key: signer_key.to_string(),
-//! };
-//! let client = VaultClient::new_single_key_default(rpc_url, &vault, credential)?;
-//! ```
-//!
-//! ## With custom timeout and retry config
-//!
-//! ```ignore
-//! // Old:
-//! let client = Client::new_client_with_retry(rpc_url, &signer_account, &signer_key, &vault, timeout, retry)?;
-//!
-//! // New:
-//! let credential = KeyCredential {
-//!     account_id: signer_account,
-//!     secret_key: signer_key.to_string(),
-//! };
-//! let config = VaultClientConfig {
-//!     timeout_seconds: timeout,
-//!     retry: Some(retry),
-//!     ..VaultClientConfig::default()
-//! };
-//! let client = VaultClient::new_single_key(rpc_url, &vault, credential, config)?;
-//! ```
-//!
-//! ## Key differences
-//!
-//! - `VaultClient` uses `KeyCredential` struct instead of separate account/key parameters
-//! - Configuration is bundled in `VaultClientConfig` with sensible defaults
-//! - View cache is enabled by default (set `view_cache_capacity: 0` to disable)
-//! - `VaultClient` supports multi-key pools for high-concurrency scenarios
+//! Canonical vault client for high-concurrency use.
 
 use anyhow::Result;
 use near_account_id::AccountId as NearAccountId;
@@ -58,6 +8,12 @@ use near_primitives::views::FinalExecutionStatus;
 use near_sdk::json_types::{U128, U64};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::instrument;
+
+const ONE_YOCTO: u128 = 1;
+
+const FT_TRANSFER_CALL_GAS: Gas = 100_000_000_000_000;
+const FT_TRANSFER_GAS: Gas = 30_000_000_000_000;
+const STORAGE_DEPOSIT_GAS: Gas = 30_000_000_000_000;
 
 #[allow(unused_imports)]
 use crate::{
@@ -96,10 +52,6 @@ pub struct VaultClientConfig {
 
 impl Default for VaultClientConfig {
     fn default() -> Self {
-        // Hedgefund/service defaults:
-        // - retries enabled
-        // - moderately aggressive nonce retries (multi-key concurrency)
-        // - view cache enabled but short TTL
         Self {
             timeout_seconds: 60,
             retry: Some(RetryConfig {
@@ -132,10 +84,7 @@ impl From<VaultClientConfig> for KeyPoolConfig {
 
 #[derive(uniffi::Object)]
 pub struct VaultClient {
-    // Required by impl_vault_methods!
     vault: NearAccountId,
-
-    // Actual implementation.
     inner: KeyPoolClient,
 }
 
@@ -245,7 +194,6 @@ impl VaultClient {
         let token_id = parse_account_id(token)?;
         let amount_u128 = crate::parse_u128(amount)?;
 
-        // NEP-141 ft_transfer_call args
         #[derive(serde::Serialize)]
         struct FtTransferCallArgs {
             receiver_id: near_account_id::AccountId,
@@ -254,7 +202,6 @@ impl VaultClient {
             msg: String,
         }
 
-        // Default to DepositMsg::Supply for standard vault deposits
         let msg = msg.unwrap_or_else(|| {
             serde_json::to_string(&templar_common::vault::DepositMsg::Supply)
                 .expect("DepositMsg serialization cannot fail")
@@ -267,26 +214,20 @@ impl VaultClient {
             msg,
         };
 
-        // ft_transfer_call requires exactly 1 yoctoNEAR deposit
-        // Use high gas limit for cross-contract call
-        const FT_TRANSFER_GAS: Gas = 100_000_000_000_000; // 100 TGas
-
         let status = self
             .inner
             .call(
                 &token_id,
                 "ft_transfer_call",
                 args,
-                Some(FT_TRANSFER_GAS),
-                Some(1),
+                Some(FT_TRANSFER_CALL_GAS),
+                Some(ONE_YOCTO),
             )
             .await
             .map_err(ErrorWrapper::from)?;
 
         match status {
             FinalExecutionStatus::SuccessValue(bytes) => {
-                // Per NEP-141, ft_on_transfer returns U128 of *unused* tokens (to refund).
-                // We compute used = amount - unused.
                 let unused: near_sdk::json_types::U128 =
                     serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)?;
                 let used = amount_u128.saturating_sub(unused.0);
@@ -323,9 +264,6 @@ impl VaultClient {
             memo: Option<String>,
         }
 
-        // ft_transfer requires exactly 1 yoctoNEAR deposit
-        const FT_TRANSFER_GAS: Gas = 30_000_000_000_000; // 30 TGas
-
         let status = self
             .inner
             .call(
@@ -337,7 +275,7 @@ impl VaultClient {
                     memo,
                 },
                 Some(FT_TRANSFER_GAS),
-                Some(1),
+                Some(ONE_YOCTO),
             )
             .await
             .map_err(ErrorWrapper::from)?;
@@ -377,10 +315,6 @@ impl VaultClient {
 
         Ok(balance.0.to_string())
     }
-
-    // =========================================================================
-    // NEP-145 Storage Management
-    // =========================================================================
 
     /// Get storage balance bounds for the vault contract (NEP-145).
     ///
@@ -450,8 +384,6 @@ impl VaultClient {
             None => None,
         };
         let deposit = crate::parse_u128(deposit_yocto)?;
-
-        const STORAGE_DEPOSIT_GAS: Gas = 30_000_000_000_000; // 30 TGas
 
         let status = self
             .inner
@@ -590,8 +522,6 @@ impl VaultClient {
         };
         let deposit = crate::parse_u128(deposit_yocto)?;
 
-        const STORAGE_DEPOSIT_GAS: Gas = 30_000_000_000_000; // 30 TGas
-
         let status = self
             .inner
             .call(
@@ -626,10 +556,6 @@ impl VaultClient {
         }
     }
 }
-
-// -------------------------------------------------------------------------
-// Helper methods required by impl_vault_methods!
-// -------------------------------------------------------------------------
 
 impl VaultClient {
     async fn vault_view_u128(
@@ -701,8 +627,5 @@ impl VaultClient {
     }
 }
 
-// Generate complex view methods via macro
 crate::impl_vault_view_methods!(VaultClient);
-
-// Generate common vault methods via macro
 crate::impl_vault_methods!(VaultClient);
