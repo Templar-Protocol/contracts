@@ -534,13 +534,8 @@ impl KeyPoolClient {
     }
 }
 
-// Generate view cache management methods via macro
 crate::impl_view_cache_methods!(KeyPoolClient);
-
-// Generate complex view methods via macro
 crate::impl_vault_view_methods!(KeyPoolClient);
-
-// Generate common vault methods via macro
 crate::impl_vault_methods!(KeyPoolClient);
 
 #[cfg(test)]

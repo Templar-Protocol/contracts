@@ -88,11 +88,6 @@ impl KeyPool {
 
     /// Select the best available key for a transaction.
     ///
-    /// Selection strategy:
-    /// 1. Filter to healthy keys only
-    /// 2. Find keys with minimum in-flight count
-    /// 3. Among those, select round-robin
-    ///
     /// # Errors
     ///
     /// Returns `PoolError::AllKeysUnhealthy` if no healthy keys are available.
@@ -103,16 +98,13 @@ impl KeyPool {
             return Err(PoolError::AllKeysUnhealthy);
         }
 
-        // Find minimum in-flight count
-        let min_in_flight = healthy.iter().map(|s| s.in_flight_count()).min().unwrap(); // Safe: healthy is non-empty
+        let min_in_flight = healthy.iter().map(|s| s.in_flight_count()).min().unwrap();
 
-        // Among keys with min in-flight, collect candidates
         let candidates: Vec<_> = healthy
             .into_iter()
             .filter(|s| s.in_flight_count() == min_in_flight)
             .collect();
 
-        // Round-robin among candidates
         let idx = self.next_index.fetch_add(1, Ordering::Relaxed) % candidates.len();
         Ok(candidates[idx].clone())
     }
