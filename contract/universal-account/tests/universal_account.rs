@@ -16,7 +16,6 @@ use templar_universal_account::{
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
-            Passkey,
         },
         with_raw_string::WithRawString,
         HashForSigning, MessageWithSignature, Payload,
@@ -75,15 +74,11 @@ impl TestSigner {
 
     fn id(&self) -> KeyId {
         match self {
-            Self::Passkey(key) => KeyId::Passkey(Passkey(key.public_key().into())),
-            Self::Ed25519Raw(key) => {
-                KeyId::Ed25519RawKey(raw::VerifyKey(key.verifying_key().to_bytes().into()))
-            }
-            Self::Eip712(key) => KeyId::Eip712(eip712::VerifyKey(key.address().into())),
-            Self::Sep53(key) => {
-                KeyId::Sep53(sep53::VerifyKey(key.verifying_key().to_bytes().into()))
-            }
-            Self::Eip191(key) => KeyId::Eip191(eip191::VerifyKey(key.address().into())),
+            Self::Passkey(key) => passkey::VerifyKey(key.public_key().into()).into(),
+            Self::Ed25519Raw(key) => raw::VerifyKey(key.verifying_key().to_bytes().into()).into(),
+            Self::Eip712(key) => eip712::VerifyKey(key.address().into()).into(),
+            Self::Sep53(key) => sep53::VerifyKey(key.verifying_key().to_bytes().into()).into(),
+            Self::Eip191(key) => eip191::VerifyKey(key.address().into()).into(),
         }
     }
 
@@ -109,7 +104,7 @@ impl TestSigner {
                 );
 
                 ExecuteArgsMessage {
-                    key: Passkey(secret_key.public_key().into()),
+                    key: passkey::VerifyKey(secret_key.public_key().into()),
                     mws: Box::new(message),
                 }
                 .into()
@@ -156,16 +151,6 @@ impl TestSigner {
             }
         }
     }
-}
-
-#[test]
-fn ed_sign() {
-    let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
-    let message = b"Hello";
-    let signature = key.sign(message.as_slice()).to_bytes();
-    let verify_result =
-        near_sdk::env::ed25519_verify(&signature, message, key.verifying_key().as_bytes());
-    eprintln!("Result: {verify_result:?}");
 }
 
 struct Setup {

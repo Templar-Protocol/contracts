@@ -6,20 +6,14 @@ use near_sdk::{
 use crate::{
     authentication::{
         ed25519::{eip191, raw, sep53},
-        eip712,
-        passkey::{self, Passkey},
-        CheckSignatureError, ExecutionContextProvider, ExecutionError, Key, MessageWithSignature,
-        MessageWithValidSignature, SignableMessage,
+        eip712, passkey, CheckSignatureError, ExecutionContextProvider, ExecutionError, Key,
+        MessageWithSignature, MessageWithValidSignature, SignableMessage,
     },
     KeyId, PayloadExecutionParameters,
 };
 
 macro_rules! execute_args {
-    ($(
-        $n:ident (
-            $verify_key: ty, $message: ty
-        )
-    ),*) => {
+    ($( $n:ident ( $verify_key: ty, $message: ty ) ),*) => {
         #[derive(Debug, Clone)]
         #[near(serializers = [json])]
         #[serde(bound = "T: DeserializeOwned")]
@@ -38,11 +32,39 @@ macro_rules! execute_args {
                 }
             }
         )*
+
+        impl<T: serde::Serialize> ExecuteArgs<T> {
+            pub fn key_id(&self) -> KeyId {
+                match self {
+                    $( Self::$n(args) => KeyId::$n(args.key.clone()), )*
+                }
+            }
+
+            pub fn message_unchecked(&self) -> &T {
+                match self {
+                    $( Self::$n(args) => args.mws.message.0.parsed.payload_ref(), )*
+                }
+            }
+
+            /// # Errors
+            ///
+            /// - If signature verification fails
+            /// - If execution parameters do not match
+            pub fn verify(
+                self,
+                expected_parameters: &PayloadExecutionParameters,
+                allowed_origin: impl FnOnce(Option<&str>) -> bool,
+            ) -> Result<T, VerificationError> {
+                match self {
+                    $( Self::$n(args) => args.verify(expected_parameters, allowed_origin), )*
+                }
+            }
+        }
     };
 }
 
 execute_args! {
-    Passkey(Passkey, passkey::Message<T>),
+    Passkey(passkey::VerifyKey, passkey::Message<T>),
     Ed25519Raw(raw::VerifyKey, raw::Message<T>),
     Eip712(eip712::VerifyKey, eip712::Message<T>),
     Sep53(sep53::VerifyKey, sep53::Message<T>),
@@ -124,46 +146,6 @@ pub enum VerificationError {
     Signature(#[from] CheckSignatureError),
     #[error(transparent)]
     Execution(#[from] ExecutionError),
-}
-
-impl<T: serde::Serialize> ExecuteArgs<T> {
-    pub fn key_id(&self) -> KeyId {
-        match self {
-            Self::Passkey(args) => KeyId::Passkey(args.key.clone()),
-            Self::Ed25519Raw(args) => KeyId::Ed25519RawKey(args.key.clone()),
-            Self::Eip712(args) => KeyId::Eip712(args.key.clone()),
-            Self::Sep53(args) => KeyId::Sep53(args.key.clone()),
-            Self::Eip191(args) => KeyId::Eip191(args.key.clone()),
-        }
-    }
-
-    pub fn message_unchecked(&self) -> &T {
-        match self {
-            Self::Passkey(args) => args.mws.message.0.parsed.payload_ref(),
-            Self::Ed25519Raw(args) => args.mws.message.0.parsed.payload_ref(),
-            Self::Eip712(args) => args.mws.message.0.parsed.payload_ref(),
-            Self::Sep53(args) => args.mws.message.0.parsed.payload_ref(),
-            Self::Eip191(args) => args.mws.message.0.parsed.payload_ref(),
-        }
-    }
-
-    /// # Errors
-    ///
-    /// - If signature verification fails
-    /// - If execution parameters do not match
-    pub fn verify(
-        self,
-        expected_parameters: &PayloadExecutionParameters,
-        allowed_origin: impl FnOnce(Option<&str>) -> bool,
-    ) -> Result<T, VerificationError> {
-        match self {
-            ExecuteArgs::Passkey(args) => args.verify(expected_parameters, allowed_origin),
-            ExecuteArgs::Ed25519Raw(args) => args.verify(expected_parameters, allowed_origin),
-            ExecuteArgs::Eip712(args) => args.verify(expected_parameters, allowed_origin),
-            ExecuteArgs::Sep53(args) => args.verify(expected_parameters, allowed_origin),
-            ExecuteArgs::Eip191(args) => args.verify(expected_parameters, allowed_origin),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -290,7 +272,7 @@ mod tests {
         );
 
         ExecuteArgsMessage {
-            key: Passkey(sk.public_key().into()),
+            key: passkey::VerifyKey(sk.public_key().into()),
             mws: Box::new(signed_message),
         }
         .into()

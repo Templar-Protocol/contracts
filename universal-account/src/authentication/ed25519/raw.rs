@@ -1,13 +1,13 @@
 use near_sdk::env;
 
 use crate::{
-    authentication::{HashForSigning, Key},
-    encoding, verify_key,
+    authentication::{verify_key, HashForSigning, Key},
+    encoding,
 };
 
 pub type Message<T> = super::Message<VerifyKey, T>;
 
-verify_key!(VerifyKey(encoding::ed25519::PublicKey));
+verify_key!(encoding::ed25519::PublicKey);
 
 impl super::Ed25519Variant for VerifyKey {
     const PREFIX: &'static [u8] = b"\x19UAccount Signed Message:\n";

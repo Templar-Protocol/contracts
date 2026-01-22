@@ -5,12 +5,11 @@ use near_sdk::{
 };
 
 use super::{
-    with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
+    verify_key, with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
     MessageWithValidSignature, Payload, SignableMessage,
 };
-use crate::{encoding, verify_key};
 
-verify_key!(VerifyKey(encoding::ethereum::Address));
+verify_key!(crate::encoding::ethereum::Address);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
@@ -28,7 +27,7 @@ impl<T> Message<T> {
 
 impl<T: serde::Serialize> SignableMessage for Message<T> {
     type Key = VerifyKey;
-    type Signature = encoding::ethereum::Signature;
+    type Signature = crate::encoding::ethereum::Signature;
     type Auxiliary = ();
 }
 

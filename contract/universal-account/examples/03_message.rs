@@ -6,7 +6,7 @@ use near_sdk::serde_json::{self, json};
 
 use templar_universal_account::{
     authentication::{
-        passkey::{self, data::AuthenticatorData, Passkey, PasskeySignatureData},
+        passkey::{self, data::AuthenticatorData, PasskeySignatureData},
         MessageWithSignature,
     },
     encoding::p256::PublicKey,
@@ -27,7 +27,7 @@ pub fn main() {
     let passkey: PublicKey = "p256:S8avjv5zYFYhViXo7giqwynnMdox3RAytXQ7FG9a2tj8WxZnU6KUr36MSuUvgrwk4uGNMdiXt6vwtL9yBvj6VAUL".parse().unwrap();
 
     let args = json!({
-        "key": KeyId::Passkey(Passkey(passkey)),
+        "key": KeyId::Passkey(passkey::VerifyKey(passkey)),
         "message": message,
     });
 

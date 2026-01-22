@@ -5,12 +5,10 @@ use p256::ecdsa::signature::{SignerMut, Verifier};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 use schemars::JsonSchema;
 
-use crate::verify_key;
-
 use super::with_raw_string::WithRawString;
 use super::{
-    CheckSignatureError, ExecutionContextProvider, HashForSigning, Key, MessageWithSignature,
-    MessageWithValidSignature, Payload,
+    verify_key, CheckSignatureError, ExecutionContextProvider, HashForSigning, Key,
+    MessageWithSignature, MessageWithValidSignature, Payload,
 };
 
 use data::{AuthenticatorData, ClientDataJson};
@@ -30,9 +28,9 @@ fn sig_base(
     .concat()
 }
 
-verify_key!(Passkey(crate::encoding::p256::PublicKey));
+verify_key!(crate::encoding::p256::PublicKey);
 
-impl<T> Key<Message<T>> for Passkey {
+impl<T> Key<Message<T>> for VerifyKey {
     fn check_signature(
         &self,
         mws: &super::MessageWithSignature<Message<T>>,
@@ -67,7 +65,7 @@ impl<T> Key<Message<T>> for Passkey {
 pub struct Message<T>(pub WithRawString<Payload<T>>);
 
 impl<T> super::SignableMessage for Message<T> {
-    type Key = Passkey;
+    type Key = VerifyKey;
     type Signature = Signature;
     type Auxiliary = PasskeySignatureData;
 }
@@ -177,7 +175,7 @@ mod tests {
 
         let mws = message.sign(&signer, authenticator_data(), client_data_json(challenge));
 
-        let verify_key = Passkey(signer.public_key().into());
+        let verify_key = VerifyKey(signer.public_key().into());
         verify_key.verify_signature(mws).unwrap();
     }
 
@@ -191,7 +189,7 @@ mod tests {
 
         let mws = message.sign(&signer, authenticator_data(), client_data_json(challenge));
 
-        let verify_key = Passkey(signer.public_key().into());
+        let verify_key = VerifyKey(signer.public_key().into());
         verify_key.verify_signature(mws).unwrap();
     }
 }

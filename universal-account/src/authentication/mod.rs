@@ -16,20 +16,40 @@ mod payload;
 pub use payload::*;
 pub mod with_raw_string;
 
-#[macro_export]
 macro_rules! verify_key {
-    ($n:ident ($inner: ty)) => {
+    ($inner: ty) => {
         #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
         #[::near_sdk::near(serializers = [borsh, json])]
-        pub struct $n(pub $inner);
+        pub struct VerifyKey(pub $inner);
 
-        impl ::std::fmt::Display for $n {
+        impl From<$inner> for VerifyKey {
+            fn from(value: $inner) -> Self {
+                Self(value)
+            }
+        }
+
+        impl AsRef<$inner> for VerifyKey {
+            fn as_ref(&self) -> &$inner {
+                &self.0
+            }
+        }
+
+        impl ::std::ops::Deref for VerifyKey {
+            type Target = $inner;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl ::std::fmt::Display for VerifyKey {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 self.0.fmt(f)
             }
         }
     };
 }
+use verify_key;
 
 pub trait SignableMessage {
     type Key: Key<Self>
