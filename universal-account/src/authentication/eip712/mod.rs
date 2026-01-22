@@ -2,12 +2,11 @@ use alloy::sol_types::{Eip712Domain, SolStruct};
 use near_sdk::{
     near,
     serde::{self, de::DeserializeOwned, Serialize},
-    serde_json,
 };
 
 use super::{
     with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
-    MessageWithValidSignature, Payload, SignableMessage, SolBytes,
+    MessageWithValidSignature, Payload, SignableMessage,
 };
 use crate::encoding;
 
@@ -48,10 +47,7 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
     ) -> Result<(), CheckSignatureError> {
         let calculated_domain = Eip712Domain::from(mws.message.0.parsed.parameters());
 
-        let prehash = mws
-            .message
-            .eip712_prehash(&calculated_domain)
-            .map_err(CheckSignatureError::other)?;
+        let prehash = mws.message.eip712_prehash(&calculated_domain);
 
         let recovered_address = mws
             .signature
@@ -69,14 +65,11 @@ impl<T: serde::Serialize> Message<T> {
     /// # Errors
     ///
     /// - If serialization of `T` to bytes fails.
-    pub fn eip712_prehash(
-        &self,
-        domain: &Eip712Domain,
-    ) -> Result<alloy::primitives::FixedBytes<32>, serde_json::Error> {
-        let sol_payload = SolBytes {
-            inner: self.0.raw.clone().into_bytes().into(),
-        };
-        Ok(sol_payload.eip712_signing_hash(domain))
+    pub fn eip712_prehash(&self, domain: &Eip712Domain) -> alloy::primitives::FixedBytes<32> {
+        super::solidity::Payload {
+            payload: self.0.raw.clone(),
+        }
+        .eip712_signing_hash(domain)
     }
 
     /// # Panics
@@ -94,9 +87,7 @@ impl<T: serde::Serialize> Message<T> {
             clippy::unwrap_used,
             reason = "This function should not be used in a case where panicking is unsafe"
         )]
-        let signature = key
-            .sign_hash_sync(&self.eip712_prehash(&domain).unwrap())
-            .unwrap();
+        let signature = key.sign_hash_sync(&self.eip712_prehash(&domain)).unwrap();
         super::MessageWithSignature {
             message: self,
             signature: signature.into(),
@@ -122,7 +113,7 @@ mod tests {
     use std::str::FromStr;
 
     use alloy::signers::local::PrivateKeySigner;
-    use near_sdk::AccountId;
+    use near_sdk::{serde_json, AccountId};
 
     use crate::{
         authentication::payload::Payload,
