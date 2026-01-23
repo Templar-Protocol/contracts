@@ -1,15 +1,17 @@
-use alloy::sol_types::{Eip712Domain, SolStruct};
 use near_sdk::{
     near,
     serde::{self, de::DeserializeOwned, Serialize},
 };
 
-use super::{
-    verify_key, with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
-    MessageWithValidSignature, Payload, SignableMessage,
+use crate::{
+    authentication::{
+        verify_key, with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider,
+        Key, MessageWithValidSignature, Payload, SignableMessage,
+    },
+    encoding,
 };
 
-verify_key!(crate::encoding::ethereum::Address);
+verify_key!(encoding::ethereum::Address);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
@@ -27,7 +29,7 @@ impl<T> Message<T> {
 
 impl<T: serde::Serialize> SignableMessage for Message<T> {
     type Key = VerifyKey;
-    type Signature = crate::encoding::ethereum::Signature;
+    type Signature = encoding::ethereum::Signature;
     type Auxiliary = ();
 }
 
@@ -36,15 +38,11 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
         &self,
         mws: &super::MessageWithSignature<Message<T>>,
     ) -> Result<(), CheckSignatureError> {
-        let calculated_domain = Eip712Domain::from(mws.message.0.parsed.parameters());
-
-        let prehash = mws.message.eip712_prehash(&calculated_domain);
-
         let recovered_address = mws
             .signature
             .0
-            .recover_address_from_prehash(&prehash)
-            .map_err(CheckSignatureError::other)?;
+            .recover_address_from_prehash(&mws.message.eip191_hash())
+            .map_err(|_| CheckSignatureError::InvalidSignature)?;
 
         (recovered_address == self.0 .0)
             .then_some(())
@@ -53,14 +51,8 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
 }
 
 impl<T: serde::Serialize> Message<T> {
-    /// # Errors
-    ///
-    /// - If serialization of `T` to bytes fails.
-    pub fn eip712_prehash(&self, domain: &Eip712Domain) -> alloy::primitives::FixedBytes<32> {
-        super::solidity::Payload {
-            payload: self.0.raw.clone(),
-        }
-        .eip712_signing_hash(domain)
+    pub fn eip191_hash(&self) -> alloy::primitives::FixedBytes<32> {
+        alloy::primitives::eip191_hash_message(&self.0.raw)
     }
 
     /// # Errors
@@ -72,8 +64,8 @@ impl<T: serde::Serialize> Message<T> {
         key: &alloy::signers::local::PrivateKeySigner,
     ) -> Result<super::MessageWithSignature<Self>, alloy::signers::Error> {
         use alloy::signers::SignerSync;
-        let domain = Eip712Domain::from(self.0.parsed.parameters());
-        let signature = key.sign_hash_sync(&self.eip712_prehash(&domain))?;
+
+        let signature = key.sign_hash_sync(&self.eip191_hash())?;
         Ok(super::MessageWithSignature {
             message: self,
             signature: signature.into(),

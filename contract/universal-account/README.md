@@ -6,7 +6,7 @@ Currently supported:
 
 - NIST-P256 (Webauthn passkey)
 - Raw Ed25519 (Solana)
-- Ethereum EIP-712
+- Ethereum EIP-191 and EIP-712
 - Stellar SEP-53
 
 ## Build & Deploy

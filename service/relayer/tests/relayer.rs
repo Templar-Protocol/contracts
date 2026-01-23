@@ -46,7 +46,6 @@ use templar_universal_account::{
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
-            Passkey,
         },
         HashForSigning, MessageWithSignature, Payload,
     },
@@ -256,7 +255,7 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] init_test: InitTe
     let InitTest { worker, app, c, .. } = init_test;
 
     let secret_key = p256::SecretKey::from_bytes(&[0xa8; 32].into()).unwrap();
-    let passkey = Passkey(PublicKey(secret_key.public_key()));
+    let passkey = passkey::VerifyKey(PublicKey(secret_key.public_key()));
 
     let ua = worker
         .dev_deploy(UniversalAccountController::wasm_0_2_0())
@@ -404,7 +403,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
     // Deploy a universal account.
 
     let secret_key = p256::SecretKey::random(&mut OsRng);
-    let passkey = Passkey(PublicKey(secret_key.public_key()));
+    let passkey = passkey::VerifyKey(PublicKey(secret_key.public_key()));
 
     let message = create_message(
         &secret_key,
@@ -659,7 +658,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
     // Deploy a universal account.
 
     let secret_key = p256::SecretKey::random(&mut OsRng);
-    let passkey = Passkey(PublicKey(secret_key.public_key()));
+    let passkey = passkey::VerifyKey(PublicKey(secret_key.public_key()));
 
     let message = create_message(
         &secret_key,
@@ -729,7 +728,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     let parameters = load_parameters(ua_account_id.clone(), KeyId::Passkey(passkey.clone())).await;
     let secret_key_2 = p256::SecretKey::random(&mut OsRng);
-    let passkey_2 = Passkey(PublicKey(secret_key_2.public_key()));
+    let passkey_2 = passkey::VerifyKey(PublicKey(secret_key_2.public_key()));
 
     let message = create_execute_message(
         &secret_key,
