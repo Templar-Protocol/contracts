@@ -12,6 +12,33 @@ use crate::{app::App, bridge::ChainId};
 
 use super::models::{WithdrawRequest, WithdrawResponse, WithdrawStatus};
 
+/// Parse human-readable amount to smallest units
+fn parse_amount(amount_str: &str, decimals: u8) -> Result<u128, String> {
+    let parts: Vec<&str> = amount_str.split('.').collect();
+    let (whole, frac) = match parts.len() {
+        1 => (parts[0], ""),
+        2 => (parts[0], parts[1]),
+        _ => return Err("Invalid amount format".to_string()),
+    };
+
+    let whole_num: u128 = whole
+        .parse()
+        .map_err(|e| format!("Invalid whole part: {}", e))?;
+
+    let frac_padded = format!("{:0<width$}", frac, width = decimals as usize);
+    let frac_trimmed = &frac_padded[..decimals as usize];
+    let frac_num: u128 = frac_trimmed
+        .parse()
+        .map_err(|e| format!("Invalid fractional part: {}", e))?;
+
+    let multiplier = 10u128.pow(decimals as u32);
+    whole_num
+        .checked_mul(multiplier)
+        .ok_or_else(|| "Overflow".to_string())?
+        .checked_add(frac_num)
+        .ok_or_else(|| "Overflow".to_string())
+}
+
 /// POST /withdraw - Withdraw funds from NEAR to external chain
 ///
 /// Initiates a withdrawal from NEAR to external chains (EVM, Solana) via the bridge.
@@ -27,22 +54,6 @@ use super::models::{WithdrawRequest, WithdrawResponse, WithdrawStatus};
     )
 )]
 pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) -> Response {
-    let amount: u128 = match req.amount.parse() {
-        Ok(amt) => amt,
-        Err(e) => {
-            error!(error = %e, "Invalid amount format");
-            return error_response(StatusCode::BAD_REQUEST, format!("Invalid amount: {}", e));
-        }
-    };
-
-    if amount == 0 {
-        error!("Amount must be greater than zero");
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Amount must be greater than zero".to_string(),
-        );
-    }
-
     // Parse destination chain - support both "ethereum" and "eth:1" formats
     let (chain_id, chain_name) = match parse_chain(&req.destination_chain) {
         Ok(result) => result,
@@ -57,6 +68,56 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         chain_name = %chain_name,
         "Parsed destination chain"
     );
+
+    // Get token info first to determine decimals for parsing
+    let token_info = match app
+        .bridge_client
+        .find_token(&req.asset, &chain_id.to_string())
+        .await
+    {
+        Ok(Some(info)) => {
+            debug!(
+                token = %info.asset_name,
+                near_token = %info.near_token_id,
+                decimals = %info.decimals,
+                "Token resolved"
+            );
+            Some(info)
+        }
+        Ok(None) => {
+            warn!(
+                asset = %req.asset,
+                chain = %chain_id,
+                "Token not found in bridge - using default 6 decimals"
+            );
+            None
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to query bridge for token info - using default 6 decimals"
+            );
+            None
+        }
+    };
+
+    // Parse human-readable amount to smallest units
+    let decimals = token_info.as_ref().map(|i| i.decimals).unwrap_or(6);
+    let amount: u128 = match parse_amount(&req.amount, decimals) {
+        Ok(amt) => amt,
+        Err(e) => {
+            error!(error = %e, "Invalid amount format");
+            return error_response(StatusCode::BAD_REQUEST, format!("Invalid amount: {}", e));
+        }
+    };
+
+    if amount == 0 {
+        error!("Amount must be greater than zero");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Amount must be greater than zero".to_string(),
+        );
+    }
 
     let destination_address = match app.config.get_withdraw_address(&chain_name) {
         Some(addr) => addr,
@@ -521,6 +582,43 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_parse_amount_whole() {
+        assert_eq!(parse_amount("100", 6).unwrap(), 100_000_000);
+    }
+
+    #[test]
+    fn test_parse_amount_decimal() {
+        assert_eq!(parse_amount("100.5", 6).unwrap(), 100_500_000);
+    }
+
+    #[test]
+    fn test_parse_amount_small() {
+        assert_eq!(parse_amount("0.2", 6).unwrap(), 200_000);
+    }
+
+    #[test]
+    fn test_parse_amount_stellar_decimals() {
+        assert_eq!(parse_amount("0.2", 7).unwrap(), 2_000_000);
+    }
+
+    #[test]
+    fn test_parse_amount_high_precision() {
+        assert_eq!(parse_amount("1.123456", 6).unwrap(), 1_123_456);
+    }
+
+    #[test]
+    fn test_parse_amount_truncate() {
+        // More decimals than supported should truncate
+        assert_eq!(parse_amount("1.1234567", 6).unwrap(), 1_123_456);
+    }
+
+    #[test]
+    fn test_parse_amount_invalid() {
+        assert!(parse_amount("invalid", 6).is_err());
+        assert!(parse_amount("1.2.3", 6).is_err());
+    }
+
     #[tokio::test]
     async fn test_withdraw_pending() {
         let app = create_test_app();
@@ -528,7 +626,7 @@ mod tests {
         let req = WithdrawRequest {
             destination_chain: "ethereum".to_string(),
             asset: "usdc".to_string(),
-            amount: "500000".to_string(),
+            amount: "0.5".to_string(), // Human-readable: 0.5 USDC
             dry_run: false,
         };
 
@@ -545,7 +643,7 @@ mod tests {
         let req = WithdrawRequest {
             destination_chain: "eth:42161".to_string(), // Arbitrum
             asset: "usdc".to_string(),
-            amount: "1000000".to_string(),
+            amount: "1.0".to_string(), // Human-readable: 1 USDC
             dry_run: false,
         };
 
@@ -594,7 +692,7 @@ mod tests {
         let req = WithdrawRequest {
             destination_chain: "bitcoin".to_string(),
             asset: "usdc".to_string(),
-            amount: "500000".to_string(),
+            amount: "0.5".to_string(), // Human-readable: 0.5 USDC
             dry_run: false,
         };
 

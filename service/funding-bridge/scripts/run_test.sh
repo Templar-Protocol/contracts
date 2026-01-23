@@ -173,25 +173,14 @@ EOF
     rm -f "$REQUEST_FILE"
 
 else
-    # For withdrawals, destination address comes from service config
-    # Convert amount to smallest units
-    # Note: Stellar uses 7 decimals, EVM/Solana/NEAR use 6 decimals for USDC
-    if [ "$CHAIN_NAME" = "stellar" ]; then
-        DECIMALS=7
-        MULTIPLIER=10000000
-    else
-        DECIMALS=6
-        MULTIPLIER=1000000
-    fi
-    AMOUNT_INT=$(echo "$AMOUNT * $MULTIPLIER" | bc | cut -d'.' -f1)
-
+    # For withdrawals, use human-readable amounts (same as deposits)
     # Create withdrawal request
     REQUEST_FILE="/tmp/funding_bridge_test_withdraw.json"
     cat > "$REQUEST_FILE" <<EOF
 {
   "destination_chain": "$CHAIN_NAME",
   "asset": "USDC",
-  "amount": "$AMOUNT_INT",
+  "amount": "$AMOUNT",
   "dry_run": false
 }
 EOF
@@ -201,7 +190,7 @@ EOF
     echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
     echo -e "Destination Chain: ${BLUE}$CHAIN_NAME${NC}"
     echo -e "Asset:             ${BLUE}USDC${NC}"
-    echo -e "Amount:            ${BLUE}$AMOUNT USDC ($AMOUNT_INT smallest units, $DECIMALS decimals)${NC}"
+    echo -e "Amount:            ${BLUE}$AMOUNT USDC${NC}"
     echo ""
 
     # Make request
