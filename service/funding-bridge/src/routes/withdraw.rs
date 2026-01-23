@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::{app::App, bridge::ChainId};
 
@@ -82,27 +82,38 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
                 decimals = %info.decimals,
                 "Token resolved"
             );
-            Some(info)
+            info
         }
         Ok(None) => {
-            warn!(
+            error!(
                 asset = %req.asset,
                 chain = %chain_id,
-                "Token not found in bridge - using default 6 decimals"
+                "Token not found in bridge API"
             );
-            None
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Asset '{}' not found for chain {}. Please verify the asset is supported by the bridge.",
+                    req.asset, chain_id
+                ),
+            );
         }
         Err(e) => {
-            warn!(
+            error!(
                 error = %e,
-                "Failed to query bridge for token info - using default 6 decimals"
+                asset = %req.asset,
+                chain = %chain_id,
+                "Failed to query bridge API for token info"
             );
-            None
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Bridge API error: {}", e),
+            );
         }
     };
 
-    // Parse human-readable amount to smallest units
-    let decimals = token_info.as_ref().map(|i| i.decimals).unwrap_or(6);
+    // Parse human-readable amount to smallest units using token decimals from bridge
+    let decimals = token_info.decimals;
     let amount: u128 = match parse_amount(&req.amount, decimals) {
         Ok(amt) => amt,
         Err(e) => {
@@ -135,36 +146,10 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
         }
     };
 
-    let token_info = match app
-        .bridge_client
-        .find_token(&req.asset, &chain_id.to_string())
-        .await
-    {
-        Ok(Some(info)) => {
-            debug!(
-                token = %info.asset_name,
-                near_token = %info.near_token_id,
-                destination = %destination_address,
-                "Token resolved"
-            );
-            Some(info)
-        }
-        Ok(None) => {
-            warn!(
-                asset = %req.asset,
-                chain = %chain_id,
-                "Token not found in bridge - proceeding anyway"
-            );
-            None
-        }
-        Err(e) => {
-            warn!(
-                error = %e,
-                "Failed to query bridge for token info - proceeding anyway"
-            );
-            None
-        }
-    };
+    debug!(
+        destination = %destination_address,
+        "Withdrawal destination resolved"
+    );
 
     // If dry run, return success immediately
     if app.dry_run || req.dry_run {
@@ -271,41 +256,8 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
             .into_response();
     }
 
-    // For cross-chain withdrawals, resolve to OMFT token ID
-    let near_token_id = if let Some(info) = &token_info {
-        info.near_token_id.clone()
-    } else {
-        // Fallback: use token registry to resolve OMFT token ID
-        match app
-            .token_registry
-            .resolve_to_omft(&req.asset, &chain_id.to_string())
-            .await
-        {
-            Ok(omft_id) => {
-                info!(
-                    asset = %req.asset,
-                    omft_id = %omft_id,
-                    "Resolved asset to OMFT token ID"
-                );
-                omft_id
-            }
-            Err(e) => {
-                error!(
-                    asset = %req.asset,
-                    chain = %chain_id,
-                    error = %e,
-                    "Failed to resolve asset to OMFT token ID"
-                );
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "Unknown asset '{}' for chain {}: {}",
-                        req.asset, chain_id, e
-                    ),
-                );
-            }
-        }
-    };
+    // For cross-chain withdrawals, use OMFT token ID from bridge
+    let near_token_id = token_info.near_token_id.clone();
 
     // Build withdrawal intent using NEAR Intents protocol for cross-chain transfers
     let intent_builder = crate::intents::WithdrawalIntentBuilder::new(
@@ -314,20 +266,10 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
     );
 
     // Detect token type and use appropriate withdrawal method
-    let is_nep245 = token_info
-        .as_ref()
-        .map(|info| info.is_nep245())
-        .unwrap_or_else(|| near_token_id.starts_with("nep245:") || near_token_id.contains(':'));
+    let is_nep245 = token_info.is_nep245();
 
     let execute_args = if is_nep245 {
-        let token_id = if let Some(info) = &token_info {
-            info.withdrawal_token_id()
-        } else {
-            near_token_id
-                .strip_prefix("nep245:")
-                .unwrap_or(&near_token_id)
-                .to_string()
-        };
+        let token_id = token_info.withdrawal_token_id();
 
         debug!(
             token_id = %token_id,
@@ -632,8 +574,8 @@ mod tests {
 
         let response = withdraw(State(app), Json(req)).await;
 
-        // Should succeed with dry_run NearHandler (returns immediately)
-        assert_eq!(response.status(), StatusCode::OK);
+        // Bridge API not available in tests - should get SERVICE_UNAVAILABLE
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -649,8 +591,8 @@ mod tests {
 
         let response = withdraw(State(app), Json(req)).await;
 
-        // Should succeed with dry_run NearHandler
-        assert_eq!(response.status(), StatusCode::OK);
+        // Bridge API not available in tests - should get SERVICE_UNAVAILABLE
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -666,7 +608,8 @@ mod tests {
 
         let response = withdraw(State(app), Json(req)).await;
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // Bridge API not available in tests - checked before amount parsing
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -682,7 +625,8 @@ mod tests {
 
         let response = withdraw(State(app), Json(req)).await;
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // Bridge API not available in tests - checked before amount validation
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -708,13 +652,14 @@ mod tests {
         let req = WithdrawRequest {
             destination_chain: "arbitrum".to_string(),
             asset: "usdc".to_string(),
-            amount: "500000".to_string(),
+            amount: "0.5".to_string(),
             dry_run: true,
         };
 
         let response = withdraw(State(app), Json(req)).await;
 
-        assert_eq!(response.status(), StatusCode::OK);
+        // Bridge API not available in tests - checked before dry_run
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -727,14 +672,14 @@ mod tests {
         let req = WithdrawRequest {
             destination_chain: "near".to_string(),
             asset: "usdc".to_string(),
-            amount: "1000000".to_string(),
+            amount: "1.0".to_string(),
             dry_run: true, // Use dry run to skip bridge API calls
         };
 
         let response = withdraw(State(app), Json(req)).await;
 
-        // Should succeed in dry run mode
-        assert_eq!(response.status(), StatusCode::OK);
+        // Bridge API not available in tests
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         // Cleanup
         std::env::remove_var("NEAR_ACCOUNT");
@@ -750,14 +695,14 @@ mod tests {
         let req = WithdrawRequest {
             destination_chain: "near:mainnet".to_string(),
             asset: "usdt".to_string(),
-            amount: "2000000".to_string(),
+            amount: "2.0".to_string(),
             dry_run: true, // Use dry run to skip bridge API calls
         };
 
         let response = withdraw(State(app), Json(req)).await;
 
-        // Should succeed in dry run mode
-        assert_eq!(response.status(), StatusCode::OK);
+        // Bridge API not available in tests
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         // Cleanup
         std::env::remove_var("NEAR_ACCOUNT");
