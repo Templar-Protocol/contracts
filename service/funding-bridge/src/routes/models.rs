@@ -59,7 +59,7 @@ pub struct WithdrawRequest {
     /// Asset identifier
     pub asset: String,
 
-    /// Amount to withdraw (in smallest units)
+    /// Amount to withdraw (in human-readable format, e.g., "100.5")
     pub amount: String,
 
     /// If true, log actions but don't execute
