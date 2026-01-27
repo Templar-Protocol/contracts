@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use templar_universal_account::{
     authentication::{
         ed25519::{eip191, raw, sep53},
-        eip712, passkey,
+        passkey,
     },
     KeyId,
 };
@@ -77,7 +77,6 @@ pub async fn index(State(app): State<App>) -> impl IntoResponse {
 pub enum KeyQuery {
     Passkey { key: passkey::VerifyKey },
     Ed25519Raw { key: raw::VerifyKey },
-    Eip712 { key: eip712::VerifyKey },
     Sep53 { key: sep53::VerifyKey },
     Eip191 { key: eip191::VerifyKey },
 }
@@ -87,7 +86,6 @@ impl From<KeyQuery> for KeyId {
         match value {
             KeyQuery::Passkey { key } => key.into(),
             KeyQuery::Ed25519Raw { key } => key.into(),
-            KeyQuery::Eip712 { key } => key.into(),
             KeyQuery::Sep53 { key } => key.into(),
             KeyQuery::Eip191 { key } => key.into(),
         }
@@ -101,7 +99,6 @@ impl From<KeyId> for KeyQuery {
         match value {
             KeyId::Passkey(key) => Self::Passkey { key },
             KeyId::Ed25519Raw(key) => Self::Ed25519Raw { key },
-            KeyId::Eip712(key) => Self::Eip712 { key },
             KeyId::Sep53(key) => Self::Sep53 { key },
             KeyId::Eip191(key) => Self::Eip191 { key },
         }
@@ -139,10 +136,6 @@ mod tests {
     #[case::sep53(
         sep53::VerifyKey("GBPNJTA5DARWSGLGPAGUHZBE44IOCFSKCL525WK7VZK6BEX4DPLIJXZ7".parse().unwrap()).into(),
         "3ccc6b968690",
-    )]
-    #[case::eip712(
-        eip712::VerifyKey("0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E".parse().unwrap()).into(),
-        "8a98745b4d35",
     )]
     #[case::eip191(
         eip191::VerifyKey("0x03a607faedb00b3f9c747a9cb303255ef86a4da8".parse().unwrap()).into(),

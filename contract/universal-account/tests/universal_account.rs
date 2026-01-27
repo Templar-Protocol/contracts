@@ -12,7 +12,6 @@ use rstest::rstest;
 use templar_universal_account::{
     authentication::{
         ed25519::{eip191, raw, sep53},
-        eip712,
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
@@ -46,7 +45,6 @@ fn mint(amount: u128) -> FunctionCallAction {
 enum TestSigner {
     Passkey(p256::SecretKey),
     Ed25519Raw(ed25519_dalek::SigningKey),
-    Eip712(alloy::signers::local::PrivateKeySigner),
     Sep53(ed25519_dalek::SigningKey),
     Eip191(alloy::signers::local::PrivateKeySigner),
 }
@@ -58,10 +56,6 @@ impl TestSigner {
 
     fn random_ed25519_raw() -> Self {
         Self::Ed25519Raw(ed25519_dalek::SigningKey::generate(&mut OsRng))
-    }
-
-    fn random_eip712() -> Self {
-        Self::Eip712(alloy::signers::local::PrivateKeySigner::random())
     }
 
     fn random_sep53() -> Self {
@@ -76,7 +70,6 @@ impl TestSigner {
         match self {
             Self::Passkey(key) => passkey::VerifyKey(key.public_key().into()).into(),
             Self::Ed25519Raw(key) => raw::VerifyKey(key.verifying_key().to_bytes().into()).into(),
-            Self::Eip712(key) => eip712::VerifyKey(key.address().into()).into(),
             Self::Sep53(key) => sep53::VerifyKey(key.verifying_key().to_bytes().into()).into(),
             Self::Eip191(key) => eip191::VerifyKey(key.address().into()).into(),
         }
@@ -117,15 +110,6 @@ impl TestSigner {
                 ExecuteArgsMessage {
                     key: raw::VerifyKey(key.verifying_key().to_bytes().into()),
                     mws: Box::new(message),
-                }
-                .into()
-            }
-            TestSigner::Eip712(key) => {
-                let message = eip712::Message(payload);
-                let mws = message.sign(key).unwrap();
-                ExecuteArgsMessage {
-                    key: eip712::VerifyKey(key.address().into()),
-                    mws: Box::new(mws),
                 }
                 .into()
             }
@@ -233,7 +217,6 @@ pub async fn universal_account(
         (TestSigner::random_passkey(), true),
         (TestSigner::random_ed25519_raw(), false),
         (TestSigner::random_ed25519_raw(), true),
-        (TestSigner::random_eip712(), false),
         (TestSigner::random_sep53(), false),
         (TestSigner::random_eip191(), false),
     )]
@@ -343,7 +326,6 @@ async fn skip_nonce(
         (TestSigner::random_passkey(), true),
         (TestSigner::random_ed25519_raw(), false),
         (TestSigner::random_ed25519_raw(), true),
-        (TestSigner::random_eip712(), false),
         (TestSigner::random_sep53(), false),
         (TestSigner::random_eip191(), false),
     )]
@@ -420,7 +402,6 @@ async fn reuse_nonce(
         (TestSigner::random_passkey(), true),
         (TestSigner::random_ed25519_raw(), false),
         (TestSigner::random_ed25519_raw(), true),
-        (TestSigner::random_eip712(), false),
         (TestSigner::random_sep53(), false),
         (TestSigner::random_eip191(), false),
     )]

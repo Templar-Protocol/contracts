@@ -10,7 +10,6 @@ use schemars::JsonSchema;
 use crate::PayloadExecutionParameters;
 
 pub mod ed25519;
-pub mod eip712;
 pub mod passkey;
 mod payload;
 pub use payload::*;
