@@ -1,0 +1,25 @@
+[package]
+edition = "2021"
+name = "redstone-adapter"
+publish = false
+version = "1.0.0"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+doctest = false
+
+[features]
+agnostic-tests = []
+
+[dependencies]
+hex-literal = "1.0.0"
+near-sdk.workspace = true
+near-sdk-contract-tools.workspace = true
+redstone-common = { path = "../redstone-common" }
+redstone = { workspace = true, default-features = false, features = [] }
+templar-common.workspace = true
+primitive-types.workspace = true
+
+[dev-dependencies]
+hex = { workspace = true }
+soroban-sdk = { workspace = true, features = ["testutils"] }
