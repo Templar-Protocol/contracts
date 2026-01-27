@@ -157,6 +157,7 @@ async fn interest_rate(
             let r = c
                 .repay(
                     &borrow_user,
+                    None,
                     u128::from(
                         borrow_position_before.get_total_borrow_asset_liability()
                             + borrow_position_before.interest.pending_estimate,
@@ -181,6 +182,7 @@ async fn interest_rate(
             let borrow_position_before = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
             c.repay(
                 &borrow_user_2,
+                None,
                 u128::from(
                     borrow_position_before.get_total_borrow_asset_liability()
                         + borrow_position_before.interest.pending_estimate,

@@ -32,7 +32,6 @@ fuzz_target!(|data: (u32, u128, u128, u128, u128, u64, u8)| {
     position.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
     position.borrow_asset_principal = BorrowAssetAmount::new(principal_amount);
     position.borrow_asset_in_flight = BorrowAssetAmount::new(in_flight_amount);
-    position.liquidation_lock = CollateralAssetAmount::new(0); // Start with no lock
 
     // Test getters with populated values
     let liability = position.get_total_borrow_asset_liability();
@@ -51,7 +50,6 @@ fuzz_target!(|data: (u32, u128, u128, u128, u128, u64, u8)| {
         if position.collateral_asset_deposit.is_zero()
             && liability.is_zero()
             && position.borrow_asset_in_flight.is_zero()
-            && position.liquidation_lock.is_zero()
         {
             assert!(
                 can_remove,
@@ -93,7 +91,6 @@ fuzz_target!(|data: (u32, u128, u128, u128, u128, u64, u8)| {
             // Test liquidation lock
             let mut pos = BorrowPosition::new(snapshot_index);
             pos.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
-            pos.liquidation_lock = CollateralAssetAmount::new(collateral_amount / 2);
             let total = pos.get_total_collateral_amount();
             // Total should be sum of deposit and lock
             let _ = total;
@@ -121,7 +118,6 @@ fuzz_target!(|data: (u32, u128, u128, u128, u128, u64, u8)| {
             pos.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
             pos.borrow_asset_principal = BorrowAssetAmount::new(principal_amount);
             pos.borrow_asset_in_flight = BorrowAssetAmount::new(in_flight_amount);
-            pos.liquidation_lock = CollateralAssetAmount::new(collateral_amount / 10);
 
             let _ = pos.get_total_borrow_asset_liability();
             let _ = pos.get_total_collateral_amount();

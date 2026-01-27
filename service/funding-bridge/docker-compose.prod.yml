@@ -1,0 +1,53 @@
+services:
+  funding-bridge:
+    image: templar-funding-bridge:latest
+    container_name: templar-funding-bridge-prod
+    restart: always
+
+    env_file:
+      - .env
+
+    environment:
+      - RUST_LOG=info,templar_funding_bridge=info
+      - RUST_BACKTRACE=0
+
+    command: [
+      "--port", "${PORT:-3000}",
+      "--network", "${NETWORK:-mainnet}",
+      "--near-treasury-account", "${NEAR_TREASURY_ACCOUNT}",
+      "--near-treasury-key", "${NEAR_TREASURY_KEY}"
+    ]
+
+    ports:
+      - "${PORT:-3000}:3000"
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp

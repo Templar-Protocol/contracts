@@ -23,7 +23,7 @@ use near_jsonrpc_client::{
         send_tx::RpcSendTransactionRequest,
         tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
     },
-    JsonRpcClient, NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL,
+    JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
@@ -122,8 +122,8 @@ impl Network {
     #[must_use]
     pub fn rpc_url(&self) -> &str {
         match self {
-            Network::Mainnet => NEAR_MAINNET_RPC_URL,
-            Network::Testnet => NEAR_TESTNET_RPC_URL,
+            Network::Mainnet => "https://rpc.mainnet.fastnear.com",
+            Network::Testnet => "https://rpc.testnet.fastnear.com",
         }
     }
 }
@@ -166,6 +166,39 @@ pub async fn get_access_key_data(
     let block_hash = access_key_query_response.block_hash;
 
     Ok((nonce, block_hash))
+}
+
+/// Check if an account ID exists on NEAR.
+///
+/// # Arguments
+///
+/// * `client` - JSON-RPC client instance
+/// * `account_id` - Account ID to check
+///
+/// # Returns
+///
+/// True if the account exists, false otherwise
+#[instrument(skip(client), level = "debug")]
+pub async fn account_exists(client: &JsonRpcClient, account_id: &AccountId) -> RpcResult<bool> {
+    let result = client
+        .call(RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: QueryRequest::ViewAccount {
+                account_id: account_id.clone(),
+            },
+        })
+        .await;
+
+    match result {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if e.handler_error().is_some() {
+                Ok(false)
+            } else {
+                Err(RpcError::ViewMethodError(e))
+            }
+        }
+    }
 }
 
 /// Serialize and encode data for NEAR contract calls.
@@ -359,6 +392,52 @@ pub async fn list_deployments(
     Ok(all_deployments)
 }
 
+/// Contract source metadata as defined by NEP-330
+#[derive(Debug, Clone)]
+#[near(serializers = [json])]
+pub struct ContractSourceMetadata {
+    /// Contract version (semver format)
+    pub version: String,
+    /// Link to source code repository
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// Standards implemented by the contract
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standards: Option<Vec<Standard>>,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [json])]
+pub struct Standard {
+    pub standard: String,
+    pub version: String,
+}
+
+pub fn is_v1_0_0(version: &str) -> bool {
+    version == "1.0.0"
+}
+
+/// Get contract source metadata (NEP-330)
+///
+/// Returns `None` if the contract doesn't implement NEP-330 or the call fails.
+pub async fn get_contract_version(
+    client: &JsonRpcClient,
+    contract_id: &AccountId,
+) -> Option<String> {
+    let result: Result<ContractSourceMetadata, RpcError> = view(
+        client,
+        contract_id.clone(),
+        "contract_source_metadata",
+        near_sdk::serde_json::json!({}),
+    )
+    .await;
+
+    match result {
+        Ok(metadata) => Some(metadata.version),
+        Err(_) => None,
+    }
+}
+
 /// List all deployments from multiple registry contracts concurrently.
 ///
 /// # Arguments
@@ -385,7 +464,16 @@ pub async fn list_all_deployments(
         .try_concat()
         .await?;
 
-    Ok(all_markets)
+    let existing = futures::stream::iter(all_markets.into_iter())
+        .filter(|market_id| {
+            let client = client.clone();
+            let market_id = market_id.clone();
+            async move { account_exists(&client, &market_id).await.unwrap_or(false) }
+        })
+        .collect::<Vec<AccountId>>()
+        .await;
+
+    Ok(existing)
 }
 
 #[cfg(test)]
@@ -399,6 +487,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use wiremock::matchers::body_string_contains;
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, Request, ResponseTemplate,
@@ -505,6 +594,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/"))
+            .and(body_string_contains("list_deployments"))
             .respond_with(move |req: &Request| {
                 let (params, id) = parse_query_request(req);
                 assert_eq!(
@@ -531,6 +621,25 @@ mod tests {
             .mount(&server)
             .await;
 
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("view_account"))
+            .respond_with(move |req: &Request| {
+                let (_params, id) = parse_query_request(req);
+                let response = json!({
+                    "amount": "4686230356236922693424338633",
+                    "block_hash": "5dFRkorSHHyeMc77auarw2jJ67CAnBiExh3bbhNStfC9",
+                    "block_height": 175_548_555,
+                    "code_hash": "11111111111111111111111111111111",
+                    "locked": "0",
+                    "storage_paid_at": 0,
+                    "storage_usage": 28677,
+                });
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&response, &id))
+            })
+            .mount(&server)
+            .await;
+
         let deployments = list_all_deployments(
             client,
             vec![
@@ -551,5 +660,64 @@ mod tests {
                 AccountId::from_str("mb2.testnet").unwrap()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn get_contract_version_returns_version() {
+        let server = MockServer::start().await;
+        let client = JsonRpcClient::connect(server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(|req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("method_name").and_then(JsonValue::as_str),
+                    Some("contract_source_metadata")
+                );
+
+                let metadata = ContractSourceMetadata {
+                    version: "2.1.3".to_string(),
+                    link: None,
+                    standards: None,
+                };
+                let payload =
+                    call_result_response(near_sdk::serde_json::to_vec(&metadata).unwrap());
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let version =
+            get_contract_version(&client, &AccountId::from_str("market.testnet").unwrap()).await;
+
+        assert_eq!(version.as_deref(), Some("2.1.3"));
+    }
+
+    #[tokio::test]
+    async fn get_contract_version_returns_none_on_error() {
+        let server = MockServer::start().await;
+        let client = JsonRpcClient::connect(server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(|req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("method_name").and_then(JsonValue::as_str),
+                    Some("contract_source_metadata")
+                );
+
+                // Return invalid JSON payload to force a deserialize error
+                let payload = call_result_response(vec![0_u8]);
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let version =
+            get_contract_version(&client, &AccountId::from_str("market.testnet").unwrap()).await;
+
+        assert!(version.is_none());
     }
 }

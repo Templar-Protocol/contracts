@@ -6,10 +6,10 @@ use std::{str::FromStr, sync::Arc};
 
 use clap::Parser;
 use near_sdk::AccountId;
+use templar_common::utils::Network;
 
 use crate::{
     liquidation_strategy::{FullLiquidationStrategy, PartialLiquidationStrategy},
-    rpc::Network,
     service::ServiceConfig,
     CollateralStrategy,
 };
@@ -118,10 +118,11 @@ pub struct Args {
     #[arg(long, env = "PARTIAL_LIQUIDATION_PERCENTAGE", value_parser = validate_percentage, default_value = "50")]
     pub partial_percentage: u8,
 
-    /// Fixed liquidation amount in token base units (only used with fixed-amount strategy)
-    /// Example: 1000000000 for 1000 USDC (6 decimals)
-    #[arg(long, env = "FIXED_LIQUIDATION_AMOUNT")]
-    pub fixed_liquidation_amount: Option<u128>,
+    /// Fixed liquidation amount in USD (only used with fixed-amount strategy)
+    /// Example: 100.0 for $100 USD (works across all USD-based markets with any decimals)
+    /// Only supports USD-based borrow assets (USDC, USDT, DAI, etc.)
+    #[arg(long, env = "FIXED_LIQUIDATION_AMOUNT_USD")]
+    pub fixed_liquidation_amount_usd: Option<f64>,
 
     /// Minimum profit margin in basis points
     #[arg(long, env = "MIN_PROFIT_BPS", default_value_t = 50)]
@@ -158,6 +159,18 @@ pub struct Args {
     /// Maximum iterations for loop liquidation (safety limit)
     #[arg(long, env = "MAX_LOOP_ITERATIONS", default_value_t = 10)]
     pub max_loop_iterations: u32,
+
+    /// Pyth Hermes API URL for price updates
+    #[arg(
+        long,
+        env = "PYTH_HERMES_URL",
+        default_value = "https://hermes.pyth.network"
+    )]
+    pub hermes_url: String,
+
+    /// Enable automatic Pyth price updates before liquidations
+    #[arg(long, env = "AUTO_UPDATE_PRICES", default_value_t = false)]
+    pub auto_update_prices: bool,
 }
 
 impl Args {
@@ -184,16 +197,18 @@ impl Args {
                 ))
             }
             LiquidationStrategyArg::FixedAmount => {
-                let Some(fixed_amount) = self.fixed_liquidation_amount else {
-                    panic!("FIXED_LIQUIDATION_AMOUNT must be set when using fixed-amount strategy");
+                let Some(fixed_amount_usd) = self.fixed_liquidation_amount_usd else {
+                    panic!(
+                        "FIXED_LIQUIDATION_AMOUNT_USD must be set when using fixed-amount strategy"
+                    );
                 };
                 tracing::info!(
-                    fixed_amount = fixed_amount,
-                    "Using FixedAmountLiquidationStrategy"
+                    fixed_amount_usd = fixed_amount_usd,
+                    "Using FixedAmountLiquidationStrategy (USD-based, works across all USD markets)"
                 );
                 Arc::new(
                     crate::liquidation_strategy::FixedAmountLiquidationStrategy::new(
-                        fixed_amount,
+                        fixed_amount_usd,
                         self.min_profit_bps,
                     ),
                 )
@@ -298,6 +313,8 @@ impl Args {
             ignored_collateral_assets,
             loop_liquidation: self.loop_liquidation,
             max_loop_iterations: self.max_loop_iterations,
+            hermes_url: self.hermes_url.clone(),
+            auto_update_prices: self.auto_update_prices,
         }
     }
 
@@ -317,8 +334,9 @@ impl Args {
 
 #[cfg(test)]
 mod tests {
+    use templar_common::utils::Network;
+
     use super::*;
-    use crate::rpc::Network;
 
     fn create_test_args() -> Args {
         Args {
@@ -335,7 +353,7 @@ mod tests {
             concurrency: 10,
             liquidation_strategy: LiquidationStrategyArg::Partial,
             partial_percentage: 50,
-            fixed_liquidation_amount: None,
+            fixed_liquidation_amount_usd: None,
             min_profit_bps: 100,
             dry_run: false,
             collateral_strategy: "hold".to_string(),
@@ -345,6 +363,8 @@ mod tests {
             ignored_collateral_assets: vec![],
             loop_liquidation: false,
             max_loop_iterations: 10,
+            hermes_url: "https://hermes.pyth.network".to_string(),
+            auto_update_prices: false,
         }
     }
 

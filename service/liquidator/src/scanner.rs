@@ -108,7 +108,7 @@ impl MarketScanner {
         tracing::info!(
             market = %self.market,
             total_positions = all_positions.len(),
-            "Fetched all borrow positions"
+            "Fetched borrow positions"
         );
 
         Ok(all_positions)
@@ -232,7 +232,7 @@ impl MarketScanner {
             }
         }
 
-        tracing::info!(
+        tracing::debug!(
             market = %self.market,
             version = %version_string,
             "Market is compatible"

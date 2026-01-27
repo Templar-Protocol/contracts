@@ -312,10 +312,8 @@ impl MarketExternalInterface for Contract {
         match mode {
             HarvestYieldMode::Compounding => {
                 let proof = supply_position.accumulate_yield();
-                // Compound yield by withdrawing it and recording it as an immediate deposit.
                 let total_yield = supply_position.total_yield();
-                supply_position.record_yield_withdrawal(total_yield);
-                supply_position.record_deposit(proof, total_yield, env::block_timestamp_ms());
+                supply_position.record_yield_compound(proof, total_yield);
                 require!(
                     supply_position.is_within_allowable_range(),
                     "New supply position is outside of allowable range",
@@ -368,6 +366,7 @@ impl MarketExternalInterface for Contract {
         yield_record.remove(amount);
 
         self.static_yield.insert(&predecessor, &yield_record);
+        self.borrow_asset_balance -= amount;
 
         self.configuration
             .borrow_asset

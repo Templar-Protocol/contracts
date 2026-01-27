@@ -103,12 +103,24 @@ jobs:
         run: |
           echo "Disk space before cleanup:"
           df -h
-          # Remove unnecessary pre-installed packages
+          
+          # Remove large pre-installed packages
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          
+          # Remove unnecessary packages
+          sudo apt-get remove -y '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-chrome-stable firefox powershell mono-devel || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          
+          # Clean Docker
           sudo docker image prune --all --force
+          sudo docker system prune --all --volumes --force
+          
           echo "Disk space after cleanup:"
           df -h
 
@@ -136,9 +148,22 @@ jobs:
         run: |
           # --lib: unit tests only (excludes slow WASM integration tests)
           cargo llvm-cov nextest --lib --lcov --output-path coverage.lcov
-          # Clean up intermediate coverage files to save space
+          
+          # Aggressive cleanup to free disk space
+          echo "Cleaning up build artifacts..."
           rm -rf target/llvm-cov-target/*/debug/deps/*.profraw 2>/dev/null || true
           rm -rf target/llvm-cov-target/*/debug/incremental 2>/dev/null || true
+          rm -rf target/llvm-cov-target/*/debug/build 2>/dev/null || true
+          rm -rf target/debug/incremental 2>/dev/null || true
+          rm -rf target/debug/build 2>/dev/null || true
+          
+          # Remove unnecessary cargo cache
+          rm -rf ~/.cargo/registry/index
+          rm -rf ~/.cargo/registry/cache
+          rm -rf ~/.cargo/git/db
+          
+          echo "Disk space after cleanup:"
+          df -h
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

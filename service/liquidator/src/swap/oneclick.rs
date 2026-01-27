@@ -346,9 +346,7 @@ impl OneClickSwap {
         let recipient = self.signer.get_account_id().to_string();
 
         let from_str = from_asset.to_string();
-        let from_symbol = crate::format::asset_symbol(&from_str);
-        let from_decimals = crate::format::asset_decimals(from_symbol);
-        let to_symbol = crate::format::asset_symbol(&to_asset.to_string());
+        let to_str = to_asset.to_string();
 
         // Calculate deadline (30 minutes from now)
         let deadline = chrono::Utc::now() + chrono::Duration::minutes(30);
@@ -385,8 +383,9 @@ impl OneClickSwap {
         let url = format!("{ONECLICK_API_BASE}/v0/quote");
 
         tracing::info!(
-            swap = %format!("{from_symbol}→{to_symbol}"),
-            amount = %crate::format::format_amount(u128::from(input_amount), from_decimals, from_symbol),
+            from = %from_str,
+            to = %to_str,
+            amount_raw = %u128::from(input_amount),
             "Requesting quote from 1-Click API"
         );
 
@@ -443,11 +442,9 @@ impl OneClickSwap {
             .parse()
             .unwrap_or_default();
 
-        let to_decimals = crate::format::asset_decimals(to_symbol);
-
         tracing::info!(
-            out = %crate::format::format_amount(amount_out_u128, to_decimals, to_symbol),
-            min_out = %crate::format::format_amount(min_amount_out_u128, to_decimals, to_symbol),
+            out_raw = %amount_out_u128,
+            min_out_raw = %min_amount_out_u128,
             time_estimate_s = %quote_response.quote.time_estimate,
             "Quote received"
         );
@@ -560,12 +557,10 @@ impl OneClickSwap {
         _memo: Option<&str>,
     ) -> AppResult<String> {
         let asset_str = from_asset.to_string();
-        let symbol = crate::format::asset_symbol(&asset_str);
-        let decimals = crate::format::asset_decimals(symbol);
 
         tracing::info!(
-            asset = %crate::format::format_asset_for_log(from_asset),
-            amount = %crate::format::format_amount(amount.0, decimals, symbol),
+            asset = %asset_str,
+            amount_raw = %amount.0,
             deposit_address = %deposit_address,
             "Depositing tokens to 1-Click"
         );

@@ -94,7 +94,11 @@ async fn run_service(
     args: Args,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let client = JsonRpcClient::connect(args.network.rpc_url());
+    let rpc_url = args
+        .rpc_url
+        .as_deref()
+        .unwrap_or_else(|| args.network.rpc_url());
+    let client = JsonRpcClient::connect(rpc_url);
     let signer = Arc::new(InMemorySigner::from_secret_key(
         args.signer_account.clone(),
         args.signer_key.clone(),
@@ -109,7 +113,9 @@ mod tests {
     use near_crypto::{InMemorySigner, KeyType, SecretKey};
     use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryResponse};
     use near_primitives::hash::CryptoHash;
+    use near_sdk::AccountId;
     use std::collections::HashMap;
+    use std::env;
     use std::str::FromStr;
     use tokio::time::{self, Duration};
     use wiremock::{
@@ -267,6 +273,7 @@ mod tests {
             signer_key: SecretKey::from_random(KeyType::ED25519),
             signer_account: "signer.testnet".parse().unwrap(),
             network: Network::Testnet,
+            rpc_url: None,
             timeout: 5,
             interval: 1,
             static_interval: 2,
@@ -296,5 +303,41 @@ mod tests {
                 + static_calls.load(std::sync::atomic::Ordering::SeqCst)
                 >= 1
         );
+    }
+
+    #[test]
+    fn registries_env_is_space_delimited() {
+        let sk = SecretKey::from_random(KeyType::ED25519);
+        let original_regs = env::var("REGISTRIES_ACCOUNT_IDS").ok();
+        let original_signer = env::var("SIGNER_ACCOUNT_ID").ok();
+        let original_key = env::var("SIGNER_KEY").ok();
+
+        env::set_var("REGISTRIES_ACCOUNT_IDS", "one.testnet two.testnet");
+        env::set_var("SIGNER_ACCOUNT_ID", "signer.testnet");
+        env::set_var("SIGNER_KEY", sk.to_string());
+
+        let args = Args::parse_from(["accumulator"]);
+        let expected: Vec<AccountId> = vec![
+            "one.testnet".parse().unwrap(),
+            "two.testnet".parse().unwrap(),
+        ];
+
+        assert_eq!(args.registries, expected);
+
+        if let Some(val) = original_regs {
+            env::set_var("REGISTRIES_ACCOUNT_IDS", val);
+        } else {
+            env::remove_var("REGISTRIES_ACCOUNT_IDS");
+        }
+        if let Some(val) = original_signer {
+            env::set_var("SIGNER_ACCOUNT_ID", val);
+        } else {
+            env::remove_var("SIGNER_ACCOUNT_ID");
+        }
+        if let Some(val) = original_key {
+            env::set_var("SIGNER_KEY", val);
+        } else {
+            env::remove_var("SIGNER_KEY");
+        }
     }
 }

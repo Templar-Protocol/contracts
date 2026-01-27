@@ -2,24 +2,14 @@ use alloy::sol_types::{Eip712Domain, SolStruct};
 use near_sdk::{
     near,
     serde::{self, de::DeserializeOwned, Serialize},
-    serde_json,
 };
 
 use super::{
-    with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
-    MessageWithValidSignature, Payload, SignableMessage, SolBytes,
+    verify_key, with_raw_string::WithRawString, CheckSignatureError, ExecutionContextProvider, Key,
+    MessageWithValidSignature, Payload, SignableMessage,
 };
-use crate::encoding;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-pub struct VerifyKey(pub encoding::ethereum::Address);
-
-impl std::fmt::Display for VerifyKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+verify_key!(crate::encoding::ethereum::Address);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json])]
@@ -37,7 +27,7 @@ impl<T> Message<T> {
 
 impl<T: serde::Serialize> SignableMessage for Message<T> {
     type Key = VerifyKey;
-    type Signature = encoding::ethereum::Signature;
+    type Signature = crate::encoding::ethereum::Signature;
     type Auxiliary = ();
 }
 
@@ -48,10 +38,7 @@ impl<T: serde::Serialize> Key<Message<T>> for VerifyKey {
     ) -> Result<(), CheckSignatureError> {
         let calculated_domain = Eip712Domain::from(mws.message.0.parsed.parameters());
 
-        let prehash = mws
-            .message
-            .eip712_prehash(&calculated_domain)
-            .map_err(CheckSignatureError::other)?;
+        let prehash = mws.message.eip712_prehash(&calculated_domain);
 
         let recovered_address = mws
             .signature
@@ -69,39 +56,29 @@ impl<T: serde::Serialize> Message<T> {
     /// # Errors
     ///
     /// - If serialization of `T` to bytes fails.
-    pub fn eip712_prehash(
-        &self,
-        domain: &Eip712Domain,
-    ) -> Result<alloy::primitives::FixedBytes<32>, serde_json::Error> {
-        let sol_payload = SolBytes {
-            inner: self.0.raw.clone().into_bytes().into(),
-        };
-        Ok(sol_payload.eip712_signing_hash(domain))
+    pub fn eip712_prehash(&self, domain: &Eip712Domain) -> alloy::primitives::FixedBytes<32> {
+        super::solidity::Payload {
+            payload: self.0.raw.clone(),
+        }
+        .eip712_signing_hash(domain)
     }
 
-    /// # Panics
+    /// # Errors
     ///
-    /// - Serialization errors
     /// - Signing errors
     #[cfg(any(test, feature = "signing"))]
     pub fn sign(
         self,
         key: &alloy::signers::local::PrivateKeySigner,
-    ) -> super::MessageWithSignature<Self> {
+    ) -> Result<super::MessageWithSignature<Self>, alloy::signers::Error> {
         use alloy::signers::SignerSync;
         let domain = Eip712Domain::from(self.0.parsed.parameters());
-        #[allow(
-            clippy::unwrap_used,
-            reason = "This function should not be used in a case where panicking is unsafe"
-        )]
-        let signature = key
-            .sign_hash_sync(&self.eip712_prehash(&domain).unwrap())
-            .unwrap();
-        super::MessageWithSignature {
+        let signature = key.sign_hash_sync(&self.eip712_prehash(&domain))?;
+        Ok(super::MessageWithSignature {
             message: self,
             signature: signature.into(),
             auxiliary: (),
-        }
+        })
     }
 }
 
@@ -122,7 +99,7 @@ mod tests {
     use std::str::FromStr;
 
     use alloy::signers::local::PrivateKeySigner;
-    use near_sdk::AccountId;
+    use near_sdk::{serde_json, AccountId};
 
     use crate::{
         authentication::payload::Payload,
@@ -175,7 +152,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mws = message.sign(&signer);
+        let mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer.address().into());
 
@@ -188,7 +165,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mws = message.sign(&signer);
+        let mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer2().address().into());
 
@@ -201,7 +178,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mut mws = message.sign(&signer);
+        let mut mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer.address().into());
 
@@ -218,7 +195,7 @@ mod tests {
         let signer = signer();
         let message = message();
 
-        let mut mws = message.sign(&signer);
+        let mut mws = message.sign(&signer).unwrap();
 
         let verify_key = VerifyKey(signer.address().into());
 

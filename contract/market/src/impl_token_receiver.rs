@@ -52,54 +52,55 @@ impl FungibleTokenReceiver for Contract {
             DepositMsg::Collateralize => {
                 let amount = use_collateral_asset();
 
-                PromiseOrValue::Promise(
-                    self.configuration
-                        .price_oracle_configuration
-                        .retrieve_price_pair()
-                        .then(
-                            self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .collateralize_transfer_call_01_consume_price(
-                                    sender_id,
-                                    amount,
-                                    RETURN_STYLE,
-                                ),
-                        ),
-                )
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .collateralize_transfer_call_01_consume_price(
+                                sender_id,
+                                amount,
+                                RETURN_STYLE,
+                            ),
+                    )
+                    .into()
             }
             DepositMsg::Repay => {
                 let amount = use_borrow_asset();
 
-                PromiseOrValue::Promise(
-                    self.configuration
-                        .price_oracle_configuration
-                        .retrieve_price_pair()
-                        .then(
-                            self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .repay_transfer_call_01_consume_price(
-                                    sender_id,
-                                    amount,
-                                    RETURN_STYLE,
-                                ),
-                        ),
-                )
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .repay_transfer_call_01_consume_price(sender_id, amount, RETURN_STYLE),
+                    )
+                    .into()
+            }
+            DepositMsg::RepayAccount(msg) => {
+                let amount = use_borrow_asset();
+
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .repay_transfer_call_01_consume_price(
+                                msg.account_id,
+                                amount,
+                                RETURN_STYLE,
+                            ),
+                    )
+                    .into()
             }
             DepositMsg::Liquidate(msg) => {
                 let amount = use_borrow_asset();
 
-                PromiseOrValue::Promise(
-                    self.configuration
-                        .price_oracle_configuration
-                        .retrieve_price_pair()
-                        .then(
-                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .liquidate_transfer_call_01_consume_price(
-                                    sender_id,
-                                    amount,
-                                    msg,
-                                    RETURN_STYLE,
-                                ),
-                        ),
-                )
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .liquidate_transfer_call_01_consume_price(
+                                sender_id,
+                                amount,
+                                msg,
+                                RETURN_STYLE,
+                            ),
+                    )
+                    .into()
             }
         }
     }
@@ -174,54 +175,55 @@ impl Nep245Receiver for Contract {
             DepositMsg::Collateralize => {
                 let amount = use_collateral_asset();
 
-                PromiseOrValue::Promise(
-                    self.configuration
-                        .price_oracle_configuration
-                        .retrieve_price_pair()
-                        .then(
-                            self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .collateralize_transfer_call_01_consume_price(
-                                    sender_id,
-                                    amount,
-                                    RETURN_STYLE,
-                                ),
-                        ),
-                )
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .collateralize_transfer_call_01_consume_price(
+                                sender_id,
+                                amount,
+                                RETURN_STYLE,
+                            ),
+                    )
+                    .into()
             }
             DepositMsg::Repay => {
                 let amount = use_borrow_asset();
 
-                PromiseOrValue::Promise(
-                    self.configuration
-                        .price_oracle_configuration
-                        .retrieve_price_pair()
-                        .then(
-                            self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .repay_transfer_call_01_consume_price(
-                                    sender_id,
-                                    amount,
-                                    RETURN_STYLE,
-                                ),
-                        ),
-                )
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .repay_transfer_call_01_consume_price(sender_id, amount, RETURN_STYLE),
+                    )
+                    .into()
+            }
+            DepositMsg::RepayAccount(msg) => {
+                let amount = use_borrow_asset();
+
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .repay_transfer_call_01_consume_price(
+                                msg.account_id,
+                                amount,
+                                RETURN_STYLE,
+                            ),
+                    )
+                    .into()
             }
             DepositMsg::Liquidate(msg) => {
                 let amount = use_borrow_asset();
 
-                PromiseOrValue::Promise(
-                    self.configuration
-                        .price_oracle_configuration
-                        .retrieve_price_pair()
-                        .then(
-                            self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
-                                .liquidate_transfer_call_01_consume_price(
-                                    sender_id,
-                                    amount,
-                                    msg,
-                                    RETURN_STYLE,
-                                ),
-                        ),
-                )
+                self.retrieve_price_pair()
+                    .then(
+                        self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE)
+                            .liquidate_transfer_call_01_consume_price(
+                                sender_id,
+                                amount,
+                                msg,
+                                RETURN_STYLE,
+                            ),
+                    )
+                    .into()
             }
         }
     }

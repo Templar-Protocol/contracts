@@ -10,7 +10,7 @@
 #
 # Arguments:
 #   direction   - deposit or withdraw
-#   network     - eth, arbitrum, base, solana, stellar
+#   network     - eth, arbitrum, base, solana, stellar, near
 #   amount      - Amount in USDC (e.g., 1.5 for 1.5 USDC)
 #
 # Examples:
@@ -18,6 +18,8 @@
 #   ./scripts/run_test.sh withdraw eth 0.5       # Withdraw 0.5 USDC from NEAR to Ethereum
 #   ./scripts/run_test.sh deposit stellar 2.0    # Deposit 2 USDC from Stellar to NEAR
 #   ./scripts/run_test.sh deposit arbitrum 10    # Deposit 10 USDC from Arbitrum to NEAR
+#   ./scripts/run_test.sh deposit near 5.0       # Deposit 5 USDC from external NEAR wallet to treasury
+#   ./scripts/run_test.sh withdraw near 1.0      # Withdraw 1 USDC from treasury to NEAR wallet
 #
 
 set -e
@@ -44,7 +46,7 @@ show_usage() {
     echo ""
     echo "Arguments:"
     echo "  direction   deposit or withdraw"
-    echo "  network     eth, arbitrum, base, optimism, solana, stellar"
+    echo "  network     eth, arbitrum, base, optimism, solana, stellar, near"
     echo "  amount      Amount in USDC (e.g., 1.0)"
     echo ""
     echo "Examples:"
@@ -52,9 +54,12 @@ show_usage() {
     echo "  $0 withdraw eth 0.5       # Withdraw from NEAR treasury to Ethereum"
     echo "  $0 deposit stellar 2.0    # Deposit from Stellar to NEAR treasury"
     echo "  $0 deposit arbitrum 10    # Deposit from Arbitrum to NEAR treasury"
+    echo "  $0 deposit near 5.0       # Deposit from external NEAR wallet to treasury"
+    echo "  $0 withdraw near 1.0      # Withdraw from treasury to NEAR wallet"
     echo ""
     echo "Note: Withdrawal destinations are configured in .env file:"
-    echo "  WITHDRAW_ETH_ADDRESS, WITHDRAW_ARBITRUM_ADDRESS, etc."
+    echo "  ETH_WITHDRAW_ADDRESS, ARBITRUM_WITHDRAW_ADDRESS, etc."
+    echo "  NEAR uses NEAR_EXTERNAL_ACCOUNT for withdrawals"
     echo ""
     exit 1
 }
@@ -96,9 +101,12 @@ case "$NETWORK" in
     xlm|stellar)
         CHAIN_NAME="stellar"
         ;;
+    near|NEAR)
+        CHAIN_NAME="near"
+        ;;
     *)
         echo -e "${RED}Error: Invalid network '$NETWORK'${NC}"
-        echo "Must be 'eth', 'arbitrum', 'base', 'optimism', 'solana', or 'stellar'"
+        echo "Must be 'eth', 'arbitrum', 'base', 'optimism', 'solana', 'stellar', or 'near'"
         exit 1
         ;;
 esac
@@ -165,25 +173,14 @@ EOF
     rm -f "$REQUEST_FILE"
 
 else
-    # For withdrawals, destination address comes from service config
-    # Convert amount to smallest units
-    # Note: Stellar uses 7 decimals, EVM/Solana use 6 decimals
-    if [ "$CHAIN_NAME" = "stellar" ]; then
-        DECIMALS=7
-        MULTIPLIER=10000000
-    else
-        DECIMALS=6
-        MULTIPLIER=1000000
-    fi
-    AMOUNT_INT=$(echo "$AMOUNT * $MULTIPLIER" | bc | cut -d'.' -f1)
-
+    # For withdrawals, use human-readable amounts (same as deposits)
     # Create withdrawal request
     REQUEST_FILE="/tmp/funding_bridge_test_withdraw.json"
     cat > "$REQUEST_FILE" <<EOF
 {
   "destination_chain": "$CHAIN_NAME",
   "asset": "USDC",
-  "amount": "$AMOUNT_INT",
+  "amount": "$AMOUNT",
   "dry_run": false
 }
 EOF
@@ -193,7 +190,7 @@ EOF
     echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
     echo -e "Destination Chain: ${BLUE}$CHAIN_NAME${NC}"
     echo -e "Asset:             ${BLUE}USDC${NC}"
-    echo -e "Amount:            ${BLUE}$AMOUNT USDC ($AMOUNT_INT smallest units, $DECIMALS decimals)${NC}"
+    echo -e "Amount:            ${BLUE}$AMOUNT USDC${NC}"
     echo ""
 
     # Make request

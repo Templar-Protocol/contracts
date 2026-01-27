@@ -16,7 +16,7 @@ impl Network {
     /// Get default RPC URL for network
     pub fn rpc_url(&self) -> &'static str {
         match self {
-            Network::Mainnet => "https://rpc.mainnet.near.org",
+            Network::Mainnet => "https://free.rpc.fastnear.com",
             Network::Testnet => "https://rpc.testnet.near.org",
         }
     }
@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn test_network_rpc_url_mainnet() {
-        assert_eq!(Network::Mainnet.rpc_url(), "https://rpc.mainnet.near.org");
+        assert_eq!(Network::Mainnet.rpc_url(), "https://free.rpc.fastnear.com");
     }
 
     #[test]

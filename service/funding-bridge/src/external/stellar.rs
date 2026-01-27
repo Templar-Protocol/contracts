@@ -230,7 +230,6 @@ impl StellarHandler {
             "Building Stellar payment transaction"
         );
 
-        // Fetch source account for sequence number
         let account_url = format!(
             "{}/accounts/{}",
             self.config.horizon_url,
@@ -250,17 +249,14 @@ impl StellarHandler {
                 ExternalChainError::RpcConnectionFailed(format!("Failed to parse account: {}", e))
             })?;
 
-        // Parse sequence number
         let sequence: i64 = account.sequence.parse().map_err(|e| {
             ExternalChainError::TransactionFailed(format!("Invalid sequence: {}", e))
         })?;
 
-        // Parse destination public key
         let destination_pk = PublicKey::from_account_id(destination).map_err(|e| {
             ExternalChainError::InvalidAddress(format!("Invalid destination: {}", e))
         })?;
 
-        // Create Stellar asset
         let stellar_asset = match &asset.issuer {
             None => StellarBaseAsset::new_native(),
             Some(issuer) => {
@@ -278,7 +274,6 @@ impl StellarHandler {
         let amount = Amount::from_str(&amount_str)
             .map_err(|e| ExternalChainError::InvalidAmount(format!("Invalid amount: {}", e)))?;
 
-        // Build payment operation
         let payment = Operation::new_payment()
             .with_destination(destination_pk)
             .with_amount(amount)
@@ -289,12 +284,10 @@ impl StellarHandler {
                 ExternalChainError::TransactionFailed(format!("Failed to build payment op: {}", e))
             })?;
 
-        // Get source public key
         let source_pk = PublicKey::from_account_id(self.keypair.public_key()).map_err(|e| {
             ExternalChainError::InvalidPrivateKey(format!("Invalid source key: {}", e))
         })?;
 
-        // Build transaction
         let network = if self.config.network_passphrase.contains("Public") {
             Network::new_public()
         } else {
@@ -332,7 +325,6 @@ impl StellarHandler {
             ExternalChainError::TransactionFailed(format!("Failed to encode XDR: {}", e))
         })?;
 
-        // Submit transaction to Horizon
         let submit_url = format!("{}/transactions", self.config.horizon_url);
         let params = [("tx", tx_envelope)];
 
@@ -368,6 +360,10 @@ impl ExternalChainHandler for StellarHandler {
         &self.config.chain_id
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn supports_token(&self, asset: &str) -> bool {
         self.config.assets.contains_key(asset)
     }
@@ -388,7 +384,6 @@ impl ExternalChainHandler for StellarHandler {
             "Initiating Stellar transfer"
         );
 
-        // Get asset configuration
         let stellar_asset =
             self.config
                 .assets
@@ -398,12 +393,10 @@ impl ExternalChainHandler for StellarHandler {
                     chain: self.config.chain_id.clone(),
                 })?;
 
-        // Parse amount
         let amount_stroops = self
             .parse_amount(amount, stellar_asset.decimals)
             .map_err(ExternalChainError::InvalidAmount)?;
 
-        // Submit payment transaction
         let tx_hash = self
             .submit_payment(to_address, stellar_asset, amount_stroops, memo)
             .await?;
@@ -421,25 +414,17 @@ impl ExternalChainHandler for StellarHandler {
 /// - `STELLAR_SECRET_KEY`: Stellar secret key (S...)
 ///
 /// Optional:
-/// - `STELLAR_NETWORK`: "mainnet" (default) or "testnet"
 /// - `STELLAR_HORIZON_URL`: Custom Horizon API URL (overrides default)
 ///
 /// To derive a secret key from a BIP39 seed phrase, use:
 /// `node scripts/derive-stellar-key.js "your seed phrase here"`
 pub fn stellar_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
-    let network = std::env::var("STELLAR_NETWORK").unwrap_or_else(|_| "mainnet".to_string());
+    let mut config = StellarConfig::mainnet();
 
-    let mut config = match network.as_str() {
-        "testnet" => StellarConfig::testnet(),
-        _ => StellarConfig::mainnet(),
-    };
-
-    // Allow Horizon URL override
     if let Ok(horizon_url) = std::env::var("STELLAR_HORIZON_URL") {
         config.horizon_url = horizon_url;
     }
 
-    // Load secret key
     if let Ok(secret_key) = std::env::var("STELLAR_SECRET_KEY") {
         match StellarHandler::new(config.clone(), &secret_key) {
             Ok(handler) => {

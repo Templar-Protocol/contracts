@@ -273,16 +273,14 @@ impl LiquidationExecutor {
             return Ok(false);
         }
 
-        // Get asset info for formatted logging
-        let from_str = collateral_asset.to_string();
-        let to_str = borrow_asset.to_string();
-        let coll_symbol = crate::format::asset_symbol(&from_str);
-        let coll_decimals = crate::format::asset_decimals(coll_symbol);
-        let borrow_symbol = crate::format::asset_symbol(&to_str);
+        // Get asset IDs for logging
+        let from_asset_id = collateral_asset.to_string();
+        let to_asset_id = borrow_asset.to_string();
 
         tracing::info!(
-            swap = %format!("{coll_symbol}→{borrow_symbol}"),
-            amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
+            from = %from_asset_id,
+            to = %to_asset_id,
+            amount_raw = %u128::from(collateral_amount),
             "JIT swap: collateral→borrow"
         );
 
@@ -295,14 +293,16 @@ impl LiquidationExecutor {
             Ok(status) => {
                 if let FinalExecutionStatus::SuccessValue(_) = status {
                     tracing::info!(
-                        swap = %format!("{coll_symbol}→{borrow_symbol}"),
-                        amount = %crate::format::format_amount(u128::from(collateral_amount), coll_decimals, coll_symbol),
+                        from = %from_asset_id,
+                        to = %to_asset_id,
+                        amount_raw = %u128::from(collateral_amount),
                         "JIT swap completed - inventory replenished"
                     );
                     Ok(true)
                 } else {
                     tracing::warn!(
-                        swap = %format!("{coll_symbol}→{borrow_symbol}"),
+                        from = %from_asset_id,
+                        to = %to_asset_id,
                         status = ?status,
                         "JIT swap failed (non-fatal) - holding collateral"
                     );
@@ -311,7 +311,8 @@ impl LiquidationExecutor {
             }
             Err(e) => {
                 tracing::warn!(
-                    swap = %format!("{coll_symbol}→{borrow_symbol}"),
+                    from = %from_asset_id,
+                    to = %to_asset_id,
                     reason = %e,
                     "JIT swap failed (non-fatal) - holding collateral"
                 );

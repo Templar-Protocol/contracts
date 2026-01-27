@@ -4,7 +4,7 @@ use axum::{extract::State, Json};
 use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
 use near_sdk::{
     serde::{Deserialize, Serialize},
-    AccountId, NearToken,
+    serde_json, AccountId, NearToken,
 };
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_universal_account::{
@@ -12,17 +12,34 @@ use templar_universal_account::{
     ExecuteArgs,
 };
 
-use crate::{app::App, client::near::STORAGE_DEPOSIT_GAS, route::SimpleResponse};
+use crate::{app::App, route::SimpleResponse};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct RelayRequest {
     pub account_id: AccountId,
-    pub args: ExecuteArgs<Box<[Transaction]>>,
+    pub args: serde_json::Value,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
     #[serde(default)]
     pub update_price_feeds: HashSet<PriceIdentifier>,
+}
+
+impl RelayRequest {
+    /// # Errors
+    ///
+    /// - Serialization of arguments
+    pub fn new(
+        account_id: AccountId,
+        args: impl Into<ExecuteArgs<Box<[Transaction]>>>,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            account_id,
+            args: serde_json::to_value(args.into())?,
+            storage_deposit: HashSet::default(),
+            update_price_feeds: HashSet::default(),
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -37,12 +54,27 @@ pub async fn relay(
     State(app): State<App>,
     Json(RelayRequest {
         account_id,
-        args,
+        args: args_raw,
         storage_deposit,
         update_price_feeds,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
+
+    // This is a stopgap measure to support the old args passed by the FE.
+    // Once the FE is fully-upgraded to support the new args format, this
+    // should be removed, and we should deserialize `args` to `ExecuteArgs`
+    // directly in `RelayRequest`.
+    let args = match serde_json::to_string(&args_raw)
+        .and_then(|s| serde_json::from_str::<ExecuteArgs<Box<[Transaction]>>>(&s))
+    {
+        Ok(a) => a,
+        Err(e) => {
+            let msg = format!("Invalid args: {e}");
+            tracing::info!("{msg}");
+            return SimpleResponse::Rejected { reason: msg };
+        }
+    };
 
     let parameters = match app
         .ua_near
@@ -89,7 +121,6 @@ pub async fn relay(
         let receiver_id = &transaction.receiver_id;
         if receiver_id == &account_id {
             // Reflexive action - allow all.
-            let protocol_config = app.cache.protocol_configuration().await;
             // One exception: recursive "execute" call, since that could be used to bypass gas restrictions.
             // There is not a good use-case for this anyways, so it should be okay to reject wholesale.
             for a in &transaction.actions {
@@ -105,6 +136,8 @@ pub async fn relay(
                     _ => {}
                 }
             }
+
+            let protocol_config = app.cache.protocol_configuration().await;
 
             gas += transaction
                 .actions
@@ -167,84 +200,17 @@ pub async fn relay(
 
     // Deposit for storage before sending the user's transaction.
     for contract_id in storage_deposit {
-        let Some(storage_balance_bounds) = accounts
-            .allowed_contract_data
-            .get(contract_id)
-            .and_then(|c| {
-                c.storage_balance_bounds
-                    .as_ref()
-                    .filter(|b| !b.min.is_zero())
-            })
-        else {
+        let Some(contract_data) = accounts.allowed_contract_data.get(contract_id) else {
             continue;
         };
 
-        let storage_balance = match app
-            .relay_near
-            .load_storage_balance_of(contract_id.clone(), &account_id)
+        if let Err(e) = app
+            .storage_deposit_top_up(contract_data, contract_id.clone(), account_id.clone())
             .await
         {
-            Ok(storage_balance) => storage_balance,
-            Err(e) => {
-                return SimpleResponse::Failure {
-                    error: e.to_string(),
-                };
-            }
-        };
-
-        if storage_balance.is_some() {
-            continue;
-        }
-
-        let storage_deposit_amount = storage_balance_bounds
-            .min
-            .saturating_mul(app.args.relay.storage_deposit_multiplier_cents)
-            .saturating_div(100);
-
-        let Some(cost_of_gas) = app
-            .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
-            .await
-            .map(|amount| amount.saturating_add(storage_deposit_amount))
-        else {
+            tracing::warn!(error = %e, "Storage deposit error");
             return SimpleResponse::Failure {
-                error: "Failed to estimate gas cost".to_string(),
-            };
-        };
-
-        let signed_transaction = app
-            .relay_near
-            .construct_storage_deposit_transaction(
-                &app.cache,
-                account_id.clone(),
-                contract_id.clone(),
-                storage_deposit_amount,
-            )
-            .await;
-
-        let resolve_transaction = match app
-            .send_and_resolve_transaction(
-                account_id.clone(),
-                cost_of_gas,
-                storage_deposit_amount,
-                signed_transaction,
-                TxExecutionStatus::Final,
-            )
-            .await
-        {
-            Ok(future) => future,
-            Err(e) => {
-                tracing::error!("Send transaction failure: {e}");
-                return SimpleResponse::Failure {
-                    error: e.to_string(),
-                };
-            }
-        };
-
-        // Resolve synchronously.
-        if let Err(e) = resolve_transaction.await {
-            tracing::error!("Resolve transaction failure: {e}");
-            return SimpleResponse::Failure {
-                error: e.to_string(),
+                error: format!("Storage deposit error: {e}"),
             };
         }
     }
@@ -272,7 +238,7 @@ pub async fn relay(
     // Send the user's transaction
     let signed_transaction = app
         .relay_near
-        .construct_ua_execute_transaction(&app.cache, account_id.clone(), args, gas)
+        .construct_ua_execute_transaction(&app.cache, account_id.clone(), &args_raw, gas)
         .await;
     let Some(cost_of_gas) = app.estimate_cost_of_gas(near_sdk::Gas::from_gas(gas)).await else {
         tracing::error!("Failed to estimate cost of gas");

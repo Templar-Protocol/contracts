@@ -116,18 +116,18 @@ validate_config() {
     print_info "Validating configuration..."
 
     # Check required variables
-    if [ -z "$NEAR_ACCOUNT" ]; then
-        print_error "NEAR_ACCOUNT is required"
+    if [ -z "$NEAR_TREASURY_ACCOUNT" ]; then
+        print_error "NEAR_TREASURY_ACCOUNT is required"
         exit 1
     fi
 
-    if [ -z "$NEAR_SIGNER_KEY" ]; then
-        print_error "NEAR_SIGNER_KEY is required"
+    if [ -z "$NEAR_TREASURY_KEY" ]; then
+        print_error "NEAR_TREASURY_KEY is required"
         exit 1
     fi
 
     # Check for placeholder values
-    if [[ "$NEAR_SIGNER_KEY" == *"YOUR_PRIVATE_KEY_HERE"* ]]; then
+    if [[ "$NEAR_TREASURY_KEY" == *"YOUR_PRIVATE_KEY_HERE"* ]]; then
         print_error "Please replace placeholder values in .env"
         exit 1
     fi
@@ -145,7 +145,7 @@ print_config() {
     echo -e "${BLUE}Configuration:${NC}"
     echo "  Network: ${NETWORK:-mainnet}"
     echo "  Port: ${PORT:-3000}"
-    echo "  Treasury: $NEAR_ACCOUNT"
+    echo "  Treasury: $NEAR_TREASURY_ACCOUNT"
     echo "  Dry Run: ${DRY_RUN:-false}"
     echo "  Log Level: ${RUST_LOG:-info}"
 
@@ -165,6 +165,12 @@ print_config() {
         echo "  Stellar Deposits: Enabled"
     else
         echo "  Stellar Deposits: Disabled"
+    fi
+
+    if [ -n "$NEAR_ACCOUNT" ] && [ -n "$NEAR_KEY" ]; then
+        echo "  NEAR Deposits: Enabled"
+    else
+        echo "  NEAR Deposits: Disabled"
     fi
     echo ""
 }

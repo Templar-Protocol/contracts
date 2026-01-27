@@ -136,7 +136,7 @@ async fn withdraw_below_minimum(#[future(awt)] worker: Worker<Sandbox>) {
         borrow_position_before.get_total_borrow_asset_liability(),
         100.into()
     );
-    c.repay(&borrow_user, 91).await;
+    c.repay(&borrow_user, None, 91).await;
     let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(

@@ -10,6 +10,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use near_crypto::{InMemorySigner, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
+use templar_common::utils::Network;
 use tokio::{
     select,
     sync::RwLock,
@@ -20,7 +21,7 @@ use tracing::Instrument;
 use crate::{
     inventory::InventoryManager,
     liquidation_strategy::LiquidationStrategy,
-    rpc::{list_all_deployments, view, Network},
+    rpc::{list_all_deployments, view},
     CollateralStrategy, Liquidator, LiquidatorError,
 };
 
@@ -65,6 +66,10 @@ pub struct ServiceConfig {
     pub loop_liquidation: bool,
     /// Maximum iterations for loop liquidation (safety limit)
     pub max_loop_iterations: u32,
+    /// Pyth Hermes API URL for price updates
+    pub hermes_url: String,
+    /// Enable automatic Pyth price updates before liquidations
+    pub auto_update_prices: bool,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -437,6 +442,16 @@ impl LiquidatorService {
                 // Clone Signer enum
                 let signer = Arc::new(self.signer.clone());
 
+                let signer_for_oracle = if self.config.auto_update_prices {
+                    // Use config which has account and key
+                    Some((
+                        self.config.signer_account.clone(),
+                        self.config.signer_key.clone(),
+                    ))
+                } else {
+                    None
+                };
+
                 let mut liquidator = Liquidator::new(
                     &self.client,
                     signer,
@@ -450,6 +465,9 @@ impl LiquidatorService {
                     self.oneclick_provider.clone(),
                     self.config.loop_liquidation,
                     self.config.max_loop_iterations,
+                    Some(self.config.hermes_url.clone()),
+                    self.config.auto_update_prices,
+                    &signer_for_oracle,
                 );
 
                 // Fetch market version for version-specific liquidation logic

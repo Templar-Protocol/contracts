@@ -1,13 +1,14 @@
 [workspace]
 resolver = "3"
 members = [
-    "common",
-    "contract/*",
-    "fuzz",
-    "mock/*",
-    "service/*",
-    "test-utils",
-    "universal-account",
+  "common",
+  "contract/*",
+  "fuzz",
+  "tools/*",
+  "mock/*",
+  "service/*",
+  "test-utils",
+  "universal-account",
 ]
 
 [workspace.package]
