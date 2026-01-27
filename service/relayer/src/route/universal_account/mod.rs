@@ -7,7 +7,7 @@ use axum::{
     routing, Json, Router,
 };
 use near_sdk::{
-    json_types::U64,
+    json_types::{U128, U64},
     serde::{Deserialize, Serialize},
     AccountId,
 };
@@ -40,6 +40,8 @@ pub fn router() -> Router<App> {
         .route("/relay", routing::post(relay::relay))
 }
 
+// pub fn
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Index {
@@ -51,6 +53,10 @@ pub struct Index {
     pub pow_difficulty: usize,
     /// The block hash that is included in the creation request must not be older than this many seconds.
     pub blockref_max_age_secs: U64,
+    /// The chain ID that the UA must be deployed on and configured to.
+    pub chain_id: U128,
+    /// The version key of the UA contract that the relayer will deploy from the registry.
+    pub version_key: String,
 }
 
 pub async fn index(State(app): State<App>) -> impl IntoResponse {
@@ -59,6 +65,8 @@ pub async fn index(State(app): State<App>) -> impl IntoResponse {
         registry_id: app.args.ua.registry_id,
         pow_difficulty: app.args.ua.pow_difficulty,
         blockref_max_age_secs: app.args.ua.blockref_max_age.as_secs().into(),
+        chain_id: app.args.ua.chain_id.into(),
+        version_key: app.args.ua.version_key.clone(),
     })
 }
 
