@@ -10,6 +10,7 @@ borsh.workspace = true
 hex.workspace = true
 near-contract-standards.workspace = true
 near-sdk.workspace = true
+templar-vault-kernel.workspace = true
 thiserror.workspace = true
 primitive-types.workspace = true
 schemars.workspace = true
