@@ -1139,14 +1139,8 @@ impl Contract {
             return 0;
         };
 
-        let rel_cap = rec.relative_cap.min(Wad::one());
-        if rel_cap >= Wad::one() {
-            return rec.cap.0;
-        }
-
-        let rel_cap_assets: u128 = rel_cap.apply_floored(total_assets.into()).into();
-
-        rec.cap.0.min(rel_cap_assets)
+        // Use curator-primitives for cap group calculations
+        crate::policy::compute_effective_cap_for_common(rec, total_assets)
     }
 
     fn cap_group_room_remaining_at(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
@@ -1154,8 +1148,8 @@ impl Contract {
             return 0;
         };
 
-        self.cap_group_effective_cap(cap_group, total_assets)
-            .saturating_sub(rec.principal)
+        // Use curator-primitives for cap group calculations
+        crate::policy::compute_available_capacity_for_common(rec, total_assets)
     }
 
     fn cap_group_room_remaining(&self, cap_group: &CapGroupId) -> u128 {
