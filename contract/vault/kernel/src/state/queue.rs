@@ -442,12 +442,371 @@ where
 }
 
 // ============================================================================
+// Queue Storage Types
+// ============================================================================
+
+use alloc::collections::BTreeMap;
+
+// Re-export MAX_PENDING from vault module for convenience
+pub use crate::state::vault::MAX_PENDING;
+
+/// Withdrawal queue storage with FIFO ordering.
+///
+/// Maintains pending withdrawals keyed by monotonic IDs with escrow parity.
+/// The queue uses a BTreeMap for efficient iteration and lookup, with two
+/// pointers to track the FIFO head and next ID to allocate.
+///
+/// # Invariants
+///
+/// - `pending_withdrawals.len() <= max_pending_withdrawals <= MAX_PENDING`
+/// - `next_withdraw_to_execute <= next_pending_withdrawal_id`
+/// - If `pending_withdrawals.len() > 0`, then `pending_withdrawals` contains `next_withdraw_to_execute`
+/// - FIFO withdrawal ordering; no skipping head
+#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WithdrawQueue {
+    /// Pending withdrawals keyed by monotonic ID.
+    pub pending_withdrawals: BTreeMap<u64, PendingWithdrawal>,
+    /// ID of the next withdrawal to execute (queue head).
+    pub next_withdraw_to_execute: u64,
+    /// Next ID to allocate for new withdrawals (monotonic, never decremented).
+    pub next_pending_withdrawal_id: u64,
+}
+
+impl Default for WithdrawQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WithdrawQueue {
+    /// Create a new empty withdrawal queue.
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            pending_withdrawals: BTreeMap::new(),
+            next_withdraw_to_execute: 0,
+            next_pending_withdrawal_id: 0,
+        }
+    }
+
+    /// Create a queue with initial state (for testing or recovery).
+    #[inline]
+    #[must_use]
+    pub fn with_state(
+        pending_withdrawals: BTreeMap<u64, PendingWithdrawal>,
+        next_withdraw_to_execute: u64,
+        next_pending_withdrawal_id: u64,
+    ) -> Self {
+        Self {
+            pending_withdrawals,
+            next_withdraw_to_execute,
+            next_pending_withdrawal_id,
+        }
+    }
+
+    /// Returns the current queue length.
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.pending_withdrawals.len()
+    }
+
+    /// Returns true if the queue is empty.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pending_withdrawals.is_empty()
+    }
+
+    /// Check if the queue can accept a new withdrawal given the max limit.
+    ///
+    /// # Arguments
+    /// * `max_pending` - Maximum allowed pending withdrawals.
+    ///
+    /// # Returns
+    /// `true` if the queue has room for another withdrawal.
+    #[inline]
+    #[must_use]
+    pub fn can_enqueue(&self, max_pending: u32) -> bool {
+        self.pending_withdrawals.len() < (max_pending as usize).min(MAX_PENDING)
+    }
+
+    /// Enqueue a new pending withdrawal.
+    ///
+    /// Allocates a new monotonic ID and inserts the withdrawal at the tail.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner of the shares being redeemed.
+    /// * `receiver` - Receiver of the assets.
+    /// * `escrow_shares` - Shares held in escrow.
+    /// * `expected_assets` - Expected assets at time of request.
+    /// * `requested_at_ns` - Timestamp of the request.
+    /// * `max_pending` - Maximum allowed pending withdrawals.
+    ///
+    /// # Returns
+    /// `Ok(id)` with the allocated withdrawal ID, or `Err(QueueError)` if full.
+    pub fn enqueue(
+        &mut self,
+        owner: ActorId,
+        receiver: ActorId,
+        escrow_shares: u128,
+        expected_assets: u128,
+        requested_at_ns: TimestampNs,
+        max_pending: u32,
+    ) -> Result<u64, QueueError> {
+        if !self.can_enqueue(max_pending) {
+            return Err(QueueError::QueueFull {
+                current: self.pending_withdrawals.len() as u32,
+                max: max_pending,
+            });
+        }
+
+        let id = self.next_pending_withdrawal_id;
+        let withdrawal = PendingWithdrawal::new(
+            owner,
+            receiver,
+            escrow_shares,
+            expected_assets,
+            requested_at_ns,
+        );
+
+        self.pending_withdrawals.insert(id, withdrawal);
+        self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
+
+        Ok(id)
+    }
+
+    /// Enqueue a pre-constructed pending withdrawal.
+    ///
+    /// Allocates a new monotonic ID and inserts the withdrawal at the tail.
+    ///
+    /// # Arguments
+    /// * `withdrawal` - The pending withdrawal to enqueue.
+    /// * `max_pending` - Maximum allowed pending withdrawals.
+    ///
+    /// # Returns
+    /// `Ok(id)` with the allocated withdrawal ID, or `Err(QueueError)` if full.
+    pub fn enqueue_withdrawal(
+        &mut self,
+        withdrawal: PendingWithdrawal,
+        max_pending: u32,
+    ) -> Result<u64, QueueError> {
+        if !self.can_enqueue(max_pending) {
+            return Err(QueueError::QueueFull {
+                current: self.pending_withdrawals.len() as u32,
+                max: max_pending,
+            });
+        }
+
+        let id = self.next_pending_withdrawal_id;
+        self.pending_withdrawals.insert(id, withdrawal);
+        self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
+
+        Ok(id)
+    }
+
+    /// Peek at the head of the queue without removing it.
+    ///
+    /// # Returns
+    /// `Some((id, &withdrawal))` if non-empty, `None` if empty.
+    #[must_use]
+    pub fn peek(&self) -> Option<(u64, &PendingWithdrawal)> {
+        if self.is_empty() {
+            return None;
+        }
+        self.pending_withdrawals
+            .get(&self.next_withdraw_to_execute)
+            .map(|w| (self.next_withdraw_to_execute, w))
+    }
+
+    /// Get the head of the queue (same as peek).
+    ///
+    /// # Returns
+    /// `Some((id, &withdrawal))` if non-empty, `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn head(&self) -> Option<(u64, &PendingWithdrawal)> {
+        self.peek()
+    }
+
+    /// Dequeue and return the head of the queue (FIFO).
+    ///
+    /// Removes the head and advances `next_withdraw_to_execute` to the next
+    /// available ID in the queue (or to `next_pending_withdrawal_id` if empty).
+    ///
+    /// # Returns
+    /// `Some((id, withdrawal))` if non-empty, `None` if empty.
+    pub fn dequeue(&mut self) -> Option<(u64, PendingWithdrawal)> {
+        if self.is_empty() {
+            return None;
+        }
+
+        let head_id = self.next_withdraw_to_execute;
+        let withdrawal = self.pending_withdrawals.remove(&head_id)?;
+
+        // Advance to the next ID in the queue
+        self.next_withdraw_to_execute = self
+            .pending_withdrawals
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(self.next_pending_withdrawal_id);
+
+        Some((head_id, withdrawal))
+    }
+
+    /// Get a pending withdrawal by ID.
+    ///
+    /// # Arguments
+    /// * `id` - The withdrawal ID to look up.
+    ///
+    /// # Returns
+    /// `Some(&withdrawal)` if found, `None` otherwise.
+    #[inline]
+    #[must_use]
+    pub fn get(&self, id: u64) -> Option<&PendingWithdrawal> {
+        self.pending_withdrawals.get(&id)
+    }
+
+    /// Get a mutable reference to a pending withdrawal by ID.
+    ///
+    /// # Arguments
+    /// * `id` - The withdrawal ID to look up.
+    ///
+    /// # Returns
+    /// `Some(&mut withdrawal)` if found, `None` otherwise.
+    #[inline]
+    #[must_use]
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut PendingWithdrawal> {
+        self.pending_withdrawals.get_mut(&id)
+    }
+
+    /// Check if a withdrawal ID exists in the queue.
+    ///
+    /// # Arguments
+    /// * `id` - The withdrawal ID to check.
+    ///
+    /// # Returns
+    /// `true` if the withdrawal exists.
+    #[inline]
+    #[must_use]
+    pub fn contains(&self, id: u64) -> bool {
+        self.pending_withdrawals.contains_key(&id)
+    }
+
+    /// Iterate over all pending withdrawals in FIFO order.
+    ///
+    /// # Returns
+    /// Iterator yielding `(id, &withdrawal)` pairs in order.
+    #[must_use]
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &PendingWithdrawal)> {
+        self.pending_withdrawals.iter().map(|(&k, v)| (k, v))
+    }
+
+    /// Check invariants for the withdrawal queue.
+    ///
+    /// Validates:
+    /// - `next_withdraw_to_execute <= next_pending_withdrawal_id`
+    /// - If non-empty, head ID exists in the map
+    ///
+    /// # Returns
+    /// `true` if all invariants hold.
+    #[must_use]
+    pub fn check_invariants(&self) -> bool {
+        // next_withdraw_to_execute <= next_pending_withdrawal_id
+        if self.next_withdraw_to_execute > self.next_pending_withdrawal_id {
+            return false;
+        }
+
+        // If non-empty, the head must exist
+        if !self.is_empty() && !self.pending_withdrawals.contains_key(&self.next_withdraw_to_execute) {
+            return false;
+        }
+
+        true
+    }
+
+    /// Check invariants including the max pending limit.
+    ///
+    /// # Arguments
+    /// * `max_pending` - Maximum allowed pending withdrawals.
+    ///
+    /// # Returns
+    /// `true` if all invariants hold including queue length bounds.
+    #[must_use]
+    pub fn check_invariants_with_max(&self, max_pending: u32) -> bool {
+        // Check basic invariants first
+        if !self.check_invariants() {
+            return false;
+        }
+
+        // pending_withdrawals.len() <= max_pending_withdrawals <= MAX_PENDING
+        let len = self.pending_withdrawals.len();
+        if len > (max_pending as usize) || (max_pending as usize) > MAX_PENDING {
+            return false;
+        }
+
+        true
+    }
+
+    /// Compute aggregate queue statistics.
+    ///
+    /// # Returns
+    /// `QueueStatus` with totals.
+    #[must_use]
+    pub fn status(&self) -> QueueStatus {
+        compute_queue_status(self.pending_withdrawals.values())
+    }
+
+    /// Get total escrowed shares across all pending withdrawals.
+    ///
+    /// # Returns
+    /// Total escrow shares.
+    #[must_use]
+    pub fn total_escrow_shares(&self) -> u128 {
+        self.pending_withdrawals
+            .values()
+            .map(|w| w.escrow_shares)
+            .fold(0u128, |acc, x| acc.saturating_add(x))
+    }
+
+    /// Get total expected assets across all pending withdrawals.
+    ///
+    /// # Returns
+    /// Total expected assets.
+    #[must_use]
+    pub fn total_expected_assets(&self) -> u128 {
+        self.pending_withdrawals
+            .values()
+            .map(|w| w.expected_assets)
+            .fold(0u128, |acc, x| acc.saturating_add(x))
+    }
+}
+
+/// Errors that can occur during queue operations.
+#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueueError {
+    /// Queue is at maximum capacity.
+    QueueFull { current: u32, max: u32 },
+    /// Withdrawal ID not found.
+    WithdrawalNotFound { id: u64 },
+    /// Queue is empty.
+    QueueEmpty,
+    /// Invariant violation detected.
+    InvariantViolation { message: alloc::string::String },
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
     use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -729,6 +1088,656 @@ mod tests {
         );
         assert_eq!(settlement.to_burn, 50);
         assert_eq!(settlement.refund, 50);
+    }
+
+    // =========================================================================
+    // WithdrawQueue Tests
+    // =========================================================================
+
+    #[test]
+    fn test_withdraw_queue_new() {
+        let queue = WithdrawQueue::new();
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+        assert_eq!(queue.next_withdraw_to_execute, 0);
+        assert_eq!(queue.next_pending_withdrawal_id, 0);
+        assert!(queue.check_invariants());
+    }
+
+    #[test]
+    fn test_withdraw_queue_enqueue() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        let id = queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        assert_eq!(id, 0);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.next_pending_withdrawal_id, 1);
+        assert_eq!(queue.next_withdraw_to_execute, 0);
+        assert!(queue.check_invariants());
+    }
+
+    #[test]
+    fn test_withdraw_queue_enqueue_multiple() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        let id1 = queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        let id2 = queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        let id3 = queue
+            .enqueue(
+                "charlie".to_string(),
+                "charlie".to_string(),
+                300,
+                3000,
+                3_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
+        assert_eq!(id3, 2);
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.next_pending_withdrawal_id, 3);
+        assert_eq!(queue.next_withdraw_to_execute, 0);
+        assert!(queue.check_invariants());
+    }
+
+    #[test]
+    fn test_withdraw_queue_enqueue_full() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 2u32;
+
+        // Enqueue up to max
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        // Should fail when full
+        let result = queue.enqueue(
+            "charlie".to_string(),
+            "charlie".to_string(),
+            300,
+            3000,
+            3_000_000_000_000,
+            max_pending,
+        );
+        assert!(result.is_err());
+        match result {
+            Err(QueueError::QueueFull { current, max }) => {
+                assert_eq!(current, 2);
+                assert_eq!(max, 2);
+            }
+            _ => panic!("Expected QueueFull error"),
+        }
+    }
+
+    #[test]
+    fn test_withdraw_queue_peek() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        // Empty queue
+        assert!(queue.peek().is_none());
+
+        // Add items
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        // Peek should return the first item
+        let (id, withdrawal) = queue.peek().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(withdrawal.owner, "alice");
+        assert_eq!(withdrawal.escrow_shares, 100);
+
+        // Peek again should return the same item
+        let (id2, _) = queue.peek().unwrap();
+        assert_eq!(id2, 0);
+        assert_eq!(queue.len(), 2); // Length unchanged
+    }
+
+    #[test]
+    fn test_withdraw_queue_head() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        let (id, withdrawal) = queue.head().unwrap();
+        assert_eq!(id, 0);
+        assert_eq!(withdrawal.owner, "alice");
+    }
+
+    #[test]
+    fn test_withdraw_queue_dequeue() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        // Empty queue
+        assert!(queue.dequeue().is_none());
+
+        // Add items
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "charlie".to_string(),
+                "charlie".to_string(),
+                300,
+                3000,
+                3_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        // Dequeue first
+        let (id1, w1) = queue.dequeue().unwrap();
+        assert_eq!(id1, 0);
+        assert_eq!(w1.owner, "alice");
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.next_withdraw_to_execute, 1);
+        assert!(queue.check_invariants());
+
+        // Dequeue second
+        let (id2, w2) = queue.dequeue().unwrap();
+        assert_eq!(id2, 1);
+        assert_eq!(w2.owner, "bob");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.next_withdraw_to_execute, 2);
+        assert!(queue.check_invariants());
+
+        // Dequeue third
+        let (id3, w3) = queue.dequeue().unwrap();
+        assert_eq!(id3, 2);
+        assert_eq!(w3.owner, "charlie");
+        assert_eq!(queue.len(), 0);
+        assert_eq!(queue.next_withdraw_to_execute, 3);
+        assert!(queue.check_invariants());
+
+        // Empty again
+        assert!(queue.dequeue().is_none());
+    }
+
+    #[test]
+    fn test_withdraw_queue_get() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        // Get existing
+        let w = queue.get(0).unwrap();
+        assert_eq!(w.owner, "alice");
+
+        let w = queue.get(1).unwrap();
+        assert_eq!(w.owner, "bob");
+
+        // Get non-existing
+        assert!(queue.get(2).is_none());
+        assert!(queue.get(999).is_none());
+    }
+
+    #[test]
+    fn test_withdraw_queue_contains() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        assert!(queue.contains(0));
+        assert!(!queue.contains(1));
+        assert!(!queue.contains(999));
+    }
+
+    #[test]
+    fn test_withdraw_queue_iter() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        let items: Vec<_> = queue.iter().collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0, 0);
+        assert_eq!(items[0].1.owner, "alice");
+        assert_eq!(items[1].0, 1);
+        assert_eq!(items[1].1.owner, "bob");
+    }
+
+    #[test]
+    fn test_withdraw_queue_status() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "charlie".to_string(),
+                "charlie".to_string(),
+                300,
+                3000,
+                3_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        let status = queue.status();
+        assert_eq!(status.length, 3);
+        assert_eq!(status.total_expected_assets, 6000);
+        assert_eq!(status.total_escrow_shares, 600);
+    }
+
+    #[test]
+    fn test_withdraw_queue_total_escrow_shares() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        assert_eq!(queue.total_escrow_shares(), 300);
+    }
+
+    #[test]
+    fn test_withdraw_queue_total_expected_assets() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        assert_eq!(queue.total_expected_assets(), 3000);
+    }
+
+    #[test]
+    fn test_withdraw_queue_check_invariants() {
+        let mut queue = WithdrawQueue::new();
+        assert!(queue.check_invariants());
+
+        // After enqueue
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                100,
+            )
+            .unwrap();
+        assert!(queue.check_invariants());
+
+        // After dequeue
+        queue.dequeue();
+        assert!(queue.check_invariants());
+    }
+
+    #[test]
+    fn test_withdraw_queue_check_invariants_with_max() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+        queue
+            .enqueue(
+                "bob".to_string(),
+                "bob".to_string(),
+                200,
+                2000,
+                2_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        // Valid max
+        assert!(queue.check_invariants_with_max(100));
+        assert!(queue.check_invariants_with_max(1024));
+
+        // Max too low
+        assert!(!queue.check_invariants_with_max(1));
+
+        // Max exceeds MAX_PENDING
+        assert!(!queue.check_invariants_with_max(2000));
+    }
+
+    #[test]
+    fn test_withdraw_queue_invariant_violation_head_missing() {
+        // Manually create an invalid queue state
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            5,
+            PendingWithdrawal::new(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+            ),
+        );
+
+        let queue = WithdrawQueue::with_state(
+            pending,
+            0, // head points to non-existent ID 0
+            6,
+        );
+
+        assert!(!queue.check_invariants());
+    }
+
+    #[test]
+    fn test_withdraw_queue_invariant_violation_head_exceeds_next() {
+        let queue = WithdrawQueue::with_state(
+            BTreeMap::new(),
+            10, // head > next_pending_withdrawal_id
+            5,
+        );
+
+        assert!(!queue.check_invariants());
+    }
+
+    #[test]
+    fn test_withdraw_queue_fifo_ordering() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        // Enqueue in order
+        for i in 0..5 {
+            queue
+                .enqueue(
+                    format!("user_{}", i),
+                    format!("user_{}", i),
+                    (i as u128 + 1) * 100,
+                    (i as u128 + 1) * 1000,
+                    (i as u64 + 1) * 1_000_000_000_000,
+                    max_pending,
+                )
+                .unwrap();
+        }
+
+        // Dequeue should maintain FIFO order
+        for i in 0..5 {
+            let (id, w) = queue.dequeue().unwrap();
+            assert_eq!(id, i);
+            assert_eq!(w.owner, format!("user_{}", i));
+        }
+    }
+
+    #[test]
+    fn test_withdraw_queue_can_enqueue_respects_max_pending() {
+        let queue = WithdrawQueue::new();
+
+        assert!(queue.can_enqueue(1));
+        assert!(queue.can_enqueue(100));
+        assert!(queue.can_enqueue(1024));
+        assert!(queue.can_enqueue(2000)); // clamped to MAX_PENDING
+    }
+
+    #[test]
+    fn test_withdraw_queue_enqueue_withdrawal() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        let w = PendingWithdrawal::new(
+            "alice".to_string(),
+            "bob".to_string(),
+            100,
+            1000,
+            1_000_000_000_000,
+        );
+
+        let id = queue.enqueue_withdrawal(w.clone(), max_pending).unwrap();
+        assert_eq!(id, 0);
+
+        let stored = queue.get(0).unwrap();
+        assert_eq!(stored.owner, "alice");
+        assert_eq!(stored.receiver, "bob");
+    }
+
+    #[test]
+    fn test_withdraw_queue_get_mut() {
+        let mut queue = WithdrawQueue::new();
+        let max_pending = 100u32;
+
+        queue
+            .enqueue(
+                "alice".to_string(),
+                "alice".to_string(),
+                100,
+                1000,
+                1_000_000_000_000,
+                max_pending,
+            )
+            .unwrap();
+
+        // Modify the withdrawal
+        if let Some(w) = queue.get_mut(0) {
+            w.escrow_shares = 200;
+        }
+
+        // Verify modification
+        let w = queue.get(0).unwrap();
+        assert_eq!(w.escrow_shares, 200);
+    }
+
+    #[test]
+    fn test_withdraw_queue_empty_operations() {
+        let queue = WithdrawQueue::new();
+
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+        assert!(queue.peek().is_none());
+        assert!(queue.head().is_none());
+        assert!(queue.get(0).is_none());
+        assert!(!queue.contains(0));
+        assert_eq!(queue.total_escrow_shares(), 0);
+        assert_eq!(queue.total_expected_assets(), 0);
+
+        let status = queue.status();
+        assert_eq!(status.length, 0);
+        assert_eq!(status.total_escrow_shares, 0);
+        assert_eq!(status.total_expected_assets, 0);
     }
 }
 
@@ -1098,6 +2107,340 @@ mod proptests {
 
             prop_assert!(result.assets_out <= expected);
             prop_assert!(result.assets_out <= available);
+        }
+
+        // ===================================================================
+        // WithdrawQueue Property Tests
+        // ===================================================================
+
+        // ===================================================================
+        // Property: enqueue increases length by 1
+        // Invariant: len(after) = len(before) + 1
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_enqueue_increases_length(
+            num_enqueues in 1usize..20usize,
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+
+            for i in 0..num_enqueues {
+                let len_before = queue.len();
+                queue.enqueue(
+                    format!("owner_{}", i),
+                    format!("receiver_{}", i),
+                    100,
+                    1000,
+                    i as u64,
+                    max_pending,
+                ).unwrap();
+                prop_assert_eq!(queue.len(), len_before + 1);
+            }
+        }
+
+        // ===================================================================
+        // Property: dequeue decreases length by 1
+        // Invariant: len(after) = len(before) - 1 when non-empty
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_dequeue_decreases_length(
+            num_enqueues in 1usize..20usize,
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+
+            // Enqueue items
+            for i in 0..num_enqueues {
+                queue.enqueue(
+                    format!("owner_{}", i),
+                    format!("receiver_{}", i),
+                    100,
+                    1000,
+                    i as u64,
+                    max_pending,
+                ).unwrap();
+            }
+
+            // Dequeue all
+            for _ in 0..num_enqueues {
+                let len_before = queue.len();
+                queue.dequeue();
+                prop_assert_eq!(queue.len(), len_before - 1);
+            }
+        }
+
+        // ===================================================================
+        // Property: invariants hold after any sequence of enqueue/dequeue
+        // Invariant: check_invariants() returns true
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_invariants_maintained(
+            operations in proptest::collection::vec(0u8..2u8, 0..50),
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+            let mut counter = 0u64;
+
+            for op in operations {
+                if op == 0 && queue.len() < max_pending as usize {
+                    queue.enqueue(
+                        format!("owner_{}", counter),
+                        format!("receiver_{}", counter),
+                        100,
+                        1000,
+                        counter,
+                        max_pending,
+                    ).unwrap();
+                    counter += 1;
+                } else if op == 1 && !queue.is_empty() {
+                    queue.dequeue();
+                }
+                prop_assert!(queue.check_invariants(), "Invariant violated after operation");
+            }
+        }
+
+        // ===================================================================
+        // Property: FIFO ordering is preserved
+        // Invariant: dequeue returns items in insertion order
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_fifo_ordering(
+            num_items in 1usize..20usize,
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+
+            // Enqueue with sequential IDs
+            for i in 0..num_items {
+                queue.enqueue(
+                    format!("owner_{}", i),
+                    format!("receiver_{}", i),
+                    (i as u128) + 1,
+                    (i as u128 + 1) * 1000,
+                    i as u64,
+                    max_pending,
+                ).unwrap();
+            }
+
+            // Dequeue should return in FIFO order
+            for i in 0..num_items {
+                let (id, w) = queue.dequeue().unwrap();
+                prop_assert_eq!(id, i as u64, "ID mismatch at position {}", i);
+                prop_assert_eq!(w.owner, format!("owner_{}", i), "Owner mismatch at position {}", i);
+            }
+        }
+
+        // ===================================================================
+        // Property: next_pending_withdrawal_id is monotonic
+        // Invariant: ID always increases
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_id_monotonic(
+            num_enqueues in 1usize..20usize,
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+            let mut last_id: Option<u64> = None;
+
+            for i in 0..num_enqueues {
+                let id = queue.enqueue(
+                    format!("owner_{}", i),
+                    format!("receiver_{}", i),
+                    100,
+                    1000,
+                    i as u64,
+                    max_pending,
+                ).unwrap();
+
+                if let Some(prev) = last_id {
+                    prop_assert!(id > prev, "ID not monotonically increasing");
+                }
+                last_id = Some(id);
+            }
+        }
+
+        // ===================================================================
+        // Property: next_withdraw_to_execute <= next_pending_withdrawal_id
+        // Invariant: head pointer never exceeds next ID
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_head_bounded(
+            operations in proptest::collection::vec(0u8..2u8, 0..50),
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+            let mut counter = 0u64;
+
+            for op in operations {
+                if op == 0 && queue.len() < max_pending as usize {
+                    queue.enqueue(
+                        format!("owner_{}", counter),
+                        format!("receiver_{}", counter),
+                        100,
+                        1000,
+                        counter,
+                        max_pending,
+                    ).unwrap();
+                    counter += 1;
+                } else if op == 1 && !queue.is_empty() {
+                    queue.dequeue();
+                }
+                prop_assert!(
+                    queue.next_withdraw_to_execute <= queue.next_pending_withdrawal_id,
+                    "Head {} > next_id {}",
+                    queue.next_withdraw_to_execute,
+                    queue.next_pending_withdrawal_id
+                );
+            }
+        }
+
+        // ===================================================================
+        // Property: total_escrow_shares equals sum of all escrow_shares
+        // Invariant: Aggregation is correct
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_total_escrow_correct(
+            withdrawals in arb_queue(10),
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+
+            for w in &withdrawals {
+                let _ = queue.enqueue_withdrawal(w.clone(), max_pending);
+            }
+
+            let expected: u128 = queue.iter().map(|(_, w)| w.escrow_shares).sum();
+            prop_assert_eq!(queue.total_escrow_shares(), expected);
+        }
+
+        // ===================================================================
+        // Property: total_expected_assets equals sum of all expected_assets
+        // Invariant: Aggregation is correct
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_total_expected_correct(
+            withdrawals in arb_queue(10),
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+
+            for w in &withdrawals {
+                let _ = queue.enqueue_withdrawal(w.clone(), max_pending);
+            }
+
+            let expected: u128 = queue.iter().map(|(_, w)| w.expected_assets).sum();
+            prop_assert_eq!(queue.total_expected_assets(), expected);
+        }
+
+        // ===================================================================
+        // Property: queue length bounded by max_pending
+        // Invariant: len <= max_pending
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_length_bounded(
+            max_pending in 1u32..50u32,
+            num_attempts in 0usize..100usize,
+        ) {
+            let mut queue = WithdrawQueue::new();
+
+            for i in 0..num_attempts {
+                let _ = queue.enqueue(
+                    format!("owner_{}", i),
+                    format!("receiver_{}", i),
+                    100,
+                    1000,
+                    i as u64,
+                    max_pending,
+                );
+            }
+
+            prop_assert!(
+                queue.len() <= max_pending as usize,
+                "Queue length {} exceeds max {}",
+                queue.len(),
+                max_pending
+            );
+        }
+
+        // ===================================================================
+        // Property: peek returns the same value as head
+        // Invariant: peek() == head()
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_peek_equals_head(
+            num_enqueues in 1usize..10usize,
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+
+            for i in 0..num_enqueues {
+                queue.enqueue(
+                    format!("owner_{}", i),
+                    format!("receiver_{}", i),
+                    100,
+                    1000,
+                    i as u64,
+                    max_pending,
+                ).unwrap();
+            }
+
+            let peek_result = queue.peek();
+            let head_result = queue.head();
+
+            prop_assert_eq!(peek_result, head_result);
+        }
+
+        // ===================================================================
+        // Property: get returns correct withdrawal by ID
+        // Invariant: get(id) returns the withdrawal with that ID
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_get_by_id(
+            num_enqueues in 1usize..10usize,
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+            let mut ids = alloc::vec::Vec::new();
+
+            for i in 0..num_enqueues {
+                let id = queue.enqueue(
+                    format!("owner_{}", i),
+                    format!("receiver_{}", i),
+                    (i as u128) + 1,
+                    (i as u128 + 1) * 1000,
+                    i as u64,
+                    max_pending,
+                ).unwrap();
+                ids.push(id);
+            }
+
+            // Verify each ID returns the correct withdrawal
+            for (i, id) in ids.iter().enumerate() {
+                let w = queue.get(*id).unwrap();
+                prop_assert_eq!(&w.owner, &format!("owner_{}", i));
+                prop_assert_eq!(w.escrow_shares, (i as u128) + 1);
+            }
+        }
+
+        // ===================================================================
+        // Property: status matches queue contents
+        // Invariant: status.length == len() and totals match
+        // ===================================================================
+        #[test]
+        fn withdraw_queue_status_matches(
+            withdrawals in arb_queue(10),
+        ) {
+            let mut queue = WithdrawQueue::new();
+            let max_pending = 100u32;
+
+            for w in &withdrawals {
+                let _ = queue.enqueue_withdrawal(w.clone(), max_pending);
+            }
+
+            let status = queue.status();
+            prop_assert_eq!(status.length as usize, queue.len());
+            prop_assert_eq!(status.total_escrow_shares, queue.total_escrow_shares());
+            prop_assert_eq!(status.total_expected_assets, queue.total_expected_assets());
         }
     }
 }

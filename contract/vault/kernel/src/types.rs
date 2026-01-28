@@ -20,13 +20,20 @@ pub type ActualIdx = u32;
 
 /// Generic actor identifier (account/address).
 /// On NEAR: maps to AccountId
-/// On Soroban: maps to Address
+/// On Soroban: maps to Address.to_string()
+///
+/// Note: Canonical 32-byte `Address` is used for kernel effects and
+/// chain-agnostic identifiers. `ActorId` remains a human-readable form for
+/// queue/escrow bookkeeping.
 pub type ActorId = String;
 
-/// Raw address as bytes (32 bytes).
+/// Canonical address bytes (32 bytes).
+/// Executors map chain-native account identifiers to this form (sha256 hash).
 pub type Address = [u8; 32];
 
-/// Asset identifier - 32-byte hash or canonical identifier.
+/// Asset identifier as a fixed 32-byte hash.
+/// Executors map chain-native asset identifiers (e.g., NEAR account id)
+/// to this form (sha256 hash) and maintain the mapping.
 #[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AssetId(pub [u8; 32]);
@@ -35,6 +42,23 @@ impl AssetId {
     /// Create an AssetId from raw bytes.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
+    }
+
+    /// Return the raw bytes for this AssetId.
+    pub const fn as_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
+
+impl From<[u8; 32]> for AssetId {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<AssetId> for [u8; 32] {
+    fn from(asset_id: AssetId) -> [u8; 32] {
+        asset_id.0
     }
 }
 
