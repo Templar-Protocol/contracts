@@ -636,13 +636,11 @@ impl Contract {
         self.ensure_idle();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
-        // Invariant: supply_queue has no duplicates
-        let mut seen = HashSet::new();
-        for m in &markets {
-            if !seen.insert(*m) {
-                panic_with_message(&format!("Duplicate market {m}"));
-            }
-        }
+        // Invariant: supply_queue has no duplicates (using curator-primitives validation)
+        require!(
+            crate::policy::validate_supply_queue_no_duplicates(&markets),
+            "Duplicate market in supply queue"
+        );
 
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {
