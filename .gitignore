@@ -28,3 +28,4 @@ _site/
 client/vault/dist/
 
 .aider*
+**/target
