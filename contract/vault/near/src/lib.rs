@@ -1783,6 +1783,12 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
 
+        // Validate withdraw route has no duplicates using curator-primitives
+        require!(
+            crate::policy::validate_withdraw_route_no_duplicates(&route),
+            "Duplicate market in withdraw route"
+        );
+
         let mut idle = crate::op_guard::IdleGuard::new(self);
 
         let op_id = idle.next_op_id;

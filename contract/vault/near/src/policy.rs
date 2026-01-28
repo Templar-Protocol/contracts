@@ -75,18 +75,35 @@ pub fn enforce_common_cap_group(
 }
 
 /// Compute the effective cap for a common CapGroupRecord.
+///
+/// Note: This preserves NEAR vault semantics where `relative_cap >= 100%` (Wad::one())
+/// means "no relative cap constraint, use absolute cap". This differs from the general
+/// curator-primitives behavior which would compute 100% of total_assets.
 pub fn compute_effective_cap_for_common(record: &CommonCapGroupRecord, total_assets: u128) -> u128 {
+    use templar_common::vault::wad::Wad;
+
+    // NEAR vault semantics: relative_cap >= 100% means no relative cap constraint
+    let rel_cap = record.relative_cap.min(Wad::one());
+    if rel_cap >= Wad::one() {
+        return record.cap.0;
+    }
+
+    // Use curator-primitives for the general case
     let cap = to_primitive_cap_group(record);
     compute_effective_cap(&cap, total_assets)
 }
 
 /// Compute available capacity for a common CapGroupRecord.
+///
+/// Note: This preserves NEAR vault semantics where `relative_cap >= 100%` (Wad::one())
+/// means "no relative cap constraint, use absolute cap". This differs from the general
+/// curator-primitives behavior which would compute 100% of total_assets.
 pub fn compute_available_capacity_for_common(
     record: &CommonCapGroupRecord,
     total_assets: u128,
 ) -> u128 {
-    let cap = to_primitive_cap_group(record);
-    compute_available_capacity(&cap, record.principal, total_assets)
+    let effective_cap = compute_effective_cap_for_common(record, total_assets);
+    effective_cap.saturating_sub(record.principal)
 }
 
 /// Validate a supply queue represented as a Vec<MarketId>.
@@ -168,6 +185,7 @@ pub fn get_locked_market_ids(lock_set: &MarketLockSet, current_ns: u64) -> Vec<M
 mod tests {
     use super::*;
     use near_sdk::json_types::U128;
+    use templar_common::vault::wad::Wad;
 
     const WAD: u128 = 1_000_000_000_000_000_000_000_000;
 
