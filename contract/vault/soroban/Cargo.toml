@@ -1,0 +1,22 @@
+[package]
+name = "templar-soroban-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Soroban effect interpreter and runtime for Templar Protocol vaults"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+# Core dependency - vault kernel types
+templar-vault-kernel = { path = "../kernel" }
+
+# Curator primitives for policy and recovery
+templar-curator-primitives = { path = "../curator-primitives" }
+
+[dev-dependencies]
