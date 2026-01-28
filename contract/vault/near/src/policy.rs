@@ -5,13 +5,14 @@
 //! - Re-exports of curator-primitives pure functions for policy enforcement
 //! - NEAR-specific wrappers where needed
 
-use templar_common::vault::{
-    wad::Wad, CapGroupId as CommonCapGroupId, CapGroupRecord as CommonCapGroupRecord, MarketId,
-};
-use templar_curator_primitives::policy::{
+use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, MarketId};
+
+// Re-export curator-primitives types for external consumers
+pub use templar_curator_primitives::policy::{
     cap_group::{
         can_allocate_to_group, compute_available_capacity, compute_effective_cap, enforce_cap_group,
-        CapGroup, CapGroupError, CapGroupRecord as PrimitiveCapGroupRecord,
+        CapGroup, CapGroupError, CapGroupId as PrimitiveCapGroupId,
+        CapGroupRecord as PrimitiveCapGroupRecord,
     },
     market_lock::{
         acquire_lock, cleanup_expired_locks, clear_all_locks, find_locked_targets,
@@ -28,31 +29,6 @@ use templar_curator_primitives::policy::{
         compute_route_total, to_withdrawal_plan, validate_withdraw_route, WithdrawRoute,
         WithdrawRouteEntry, WithdrawRouteError,
     },
-};
-
-// Re-export curator-primitives types for external consumers
-pub use templar_curator_primitives::policy::{
-    cap_group::{CapGroup, CapGroupError, CapGroupId as PrimitiveCapGroupId},
-    market_lock::{MarketLock, MarketLockSet},
-    supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},
-    withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
-};
-
-// Re-export pure functions for policy enforcement
-pub use templar_curator_primitives::policy::cap_group::{
-    can_allocate_to_group, compute_available_capacity, compute_effective_cap, enforce_cap_group,
-};
-pub use templar_curator_primitives::policy::market_lock::{
-    acquire_lock, cleanup_expired_locks, clear_all_locks, find_locked_targets, get_locked_targets,
-    is_locked_by_op, is_market_locked, release_all_by_op, release_lock, release_lock_by_op,
-};
-pub use templar_curator_primitives::policy::supply_queue::{
-    compute_queue_total, compute_queue_totals_by_target, dequeue_supply, drain_queue,
-    enqueue_supply, remove_target_entries, to_allocation_plan,
-};
-pub use templar_curator_primitives::policy::withdraw_route::{
-    build_withdraw_route, build_withdraw_route_with_liquidity, compute_available_liquidity,
-    compute_route_total, to_withdrawal_plan, validate_withdraw_route,
 };
 
 /// Convert a common CapGroupRecord to a curator-primitives CapGroup for use with pure functions.
@@ -99,10 +75,7 @@ pub fn enforce_common_cap_group(
 }
 
 /// Compute the effective cap for a common CapGroupRecord.
-pub fn compute_effective_cap_for_common(
-    record: &CommonCapGroupRecord,
-    total_assets: u128,
-) -> u128 {
+pub fn compute_effective_cap_for_common(record: &CommonCapGroupRecord, total_assets: u128) -> u128 {
     let cap = to_primitive_cap_group(record);
     compute_effective_cap(&cap, total_assets)
 }
@@ -140,8 +113,7 @@ pub fn build_withdraw_route_from_markets(
     target_amount: u128,
 ) -> Result<Vec<(MarketId, u128)>, WithdrawRouteError> {
     // Convert to TargetId (u32) for curator-primitives
-    let target_principals: Vec<(u32, u128)> =
-        principals.iter().map(|(m, p)| (m.0, *p)).collect();
+    let target_principals: Vec<(u32, u128)> = principals.iter().map(|(m, p)| (m.0, *p)).collect();
 
     let route = build_withdraw_route(&target_principals, target_amount)?;
 
@@ -240,7 +212,10 @@ mod tests {
 
         // Invalid allocation
         let result = enforce_common_cap_group(&record, 800, 2000);
-        assert!(matches!(result, Err(CapGroupError::ExceedsAbsoluteCap { .. })));
+        assert!(matches!(
+            result,
+            Err(CapGroupError::ExceedsAbsoluteCap { .. })
+        ));
     }
 
     #[test]
