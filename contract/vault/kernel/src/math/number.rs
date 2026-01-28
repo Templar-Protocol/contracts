@@ -111,16 +111,21 @@ mod near_impl {
 }
 
 impl Number {
+    /// Zero constant.
+    pub const ZERO: Self = Number(U256::zero());
+    /// One constant.
+    pub const ONE: Self = Number(U256::one());
+
     #[inline]
     #[must_use]
-    pub fn zero() -> Self {
-        Number(U256::zero())
+    pub const fn zero() -> Self {
+        Self::ZERO
     }
 
     #[inline]
     #[must_use]
-    pub fn one() -> Self {
-        Number(U256::one())
+    pub const fn one() -> Self {
+        Self::ONE
     }
 
     #[inline]
