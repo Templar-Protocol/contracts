@@ -1,0 +1,850 @@
+//! Integration tests for the Soroban curator vault.
+//!
+//! These tests verify full flows: deposit -> allocate -> refresh -> withdraw.
+
+extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+use templar_soroban_vault::{
+    auth::PermissiveAuth,
+    contract::{ContractConfig, CuratorVault},
+    effects::MockInterpreter,
+    error::RuntimeError,
+    market::{AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt},
+    rbac::{RbacAuth, RbacConfig, Role},
+    storage::MemoryStorage,
+    Storage, // Import the trait
+};
+use templar_vault_kernel::Address;
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+/// Mock market adapter that tracks calls.
+#[derive(Clone, Debug, Default)]
+struct TrackingMarketAdapter {
+    pub supply_calls: Vec<(u32, u128)>,
+    pub withdraw_calls: Vec<(u32, u128)>,
+    pub total_assets_per_market: Vec<u128>,
+    pub fail_on_market: Option<u32>,
+}
+
+impl TrackingMarketAdapter {
+    #[allow(dead_code)] // For future failure tests
+    fn new() -> Self {
+        Self {
+            supply_calls: Vec::new(),
+            withdraw_calls: Vec::new(),
+            total_assets_per_market: vec![1000, 2000, 3000], // default assets
+            fail_on_market: None,
+        }
+    }
+
+    #[allow(dead_code)] // For future failure tests
+    fn with_failure(market_id: u32) -> Self {
+        Self {
+            fail_on_market: Some(market_id),
+            ..Self::new()
+        }
+    }
+}
+
+impl MarketAdapter for TrackingMarketAdapter {
+    fn supply(&mut self, market: MarketRef, amount: u128) -> Result<(), RuntimeError> {
+        if Some(market.market_id) == self.fail_on_market {
+            return Err(RuntimeError::effect_failed("market supply failed"));
+        }
+        self.supply_calls.push((market.market_id, amount));
+        Ok(())
+    }
+
+    fn withdraw(&mut self, market: MarketRef, amount: u128) -> Result<(), RuntimeError> {
+        if Some(market.market_id) == self.fail_on_market {
+            return Err(RuntimeError::effect_failed("market withdraw failed"));
+        }
+        self.withdraw_calls.push((market.market_id, amount));
+        Ok(())
+    }
+
+    fn total_assets(&self, market: MarketRef) -> Result<u128, RuntimeError> {
+        if Some(market.market_id) == self.fail_on_market {
+            return Err(RuntimeError::effect_failed("market total_assets failed"));
+        }
+        let idx = market.market_id as usize;
+        Ok(*self.total_assets_per_market.get(idx).unwrap_or(&0))
+    }
+}
+
+/// Mock cross-chain adapter.
+#[derive(Clone, Debug, Default)]
+struct MockCrossChainAdapter {
+    next_attempt: AttemptId,
+    settled_external_assets: i128,
+}
+
+impl MockCrossChainAdapter {
+    fn new() -> Self {
+        Self {
+            next_attempt: 1,
+            settled_external_assets: 5000,
+        }
+    }
+}
+
+impl CrossChainMarketAdapter for MockCrossChainAdapter {
+    fn submit_intent(&mut self, _plan_bytes: Vec<u8>) -> Result<AttemptId, RuntimeError> {
+        let id = self.next_attempt;
+        self.next_attempt += 1;
+        Ok(id)
+    }
+
+    fn settle(
+        &mut self,
+        op_id: u64,
+        attempt_id: AttemptId,
+    ) -> Result<SettlementReceipt, RuntimeError> {
+        Ok(SettlementReceipt {
+            op_id,
+            attempt_id,
+            new_external_assets: self.settled_external_assets,
+        })
+    }
+
+    fn total_assets(&self, _market: MarketRef) -> Result<u128, RuntimeError> {
+        Ok(self.settled_external_assets as u128)
+    }
+}
+
+fn test_config() -> ContractConfig {
+    ContractConfig::new(
+        [1u8; 32],       // admin
+        vec![[2u8; 32]], // guardians
+        vec![[3u8; 32]], // allocators
+        [4u8; 32],       // asset_address
+        [5u8; 32],       // share_address
+    )
+}
+
+fn admin_addr() -> Address {
+    [1u8; 32]
+}
+
+fn guardian_addr() -> Address {
+    [2u8; 32]
+}
+
+fn allocator_addr() -> Address {
+    [3u8; 32]
+}
+
+fn user_addr() -> Address {
+    [10u8; 32]
+}
+
+type TestVault = CuratorVault<
+    MemoryStorage,
+    PermissiveAuth,
+    MockInterpreter,
+    TrackingMarketAdapter,
+    MockCrossChainAdapter,
+>;
+
+fn create_test_vault() -> TestVault {
+    let mut vault = CuratorVault::new(
+        test_config(),
+        MemoryStorage::new(),
+        PermissiveAuth,
+        MockInterpreter::new(),
+        TrackingMarketAdapter::new(),
+        MockCrossChainAdapter::new(),
+    );
+    vault.load_state().unwrap();
+    vault
+}
+
+type RbacVault = CuratorVault<
+    MemoryStorage,
+    RbacAuth,
+    MockInterpreter,
+    TrackingMarketAdapter,
+    MockCrossChainAdapter,
+>;
+
+fn create_rbac_vault() -> RbacVault {
+    let mut rbac_config = RbacConfig::with_admin(admin_addr());
+    rbac_config.add_role(guardian_addr(), Role::Guardian);
+    rbac_config.add_role(allocator_addr(), Role::Allocator);
+
+    let mut vault = CuratorVault::new(
+        test_config(),
+        MemoryStorage::new(),
+        RbacAuth::new(rbac_config),
+        MockInterpreter::new(),
+        TrackingMarketAdapter::new(),
+        MockCrossChainAdapter::new(),
+    );
+    vault.load_state().unwrap();
+    vault
+}
+
+// ============================================================================
+// Deposit Flow Tests
+// ============================================================================
+
+#[test]
+fn test_deposit_flow_single() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let receiver = [11u8; 32];
+
+    let result = vault.deposit(user, receiver, 1000, 0, 100).unwrap();
+
+    assert_eq!(result.shares_minted, 1000);
+    assert_eq!(result.total_shares, 1000);
+    assert_eq!(result.total_assets, 1000);
+
+    // Verify state
+    assert_eq!(vault.state().total_assets, 1000);
+    assert_eq!(vault.state().total_shares, 1000);
+    assert_eq!(vault.state().idle_assets, 1000);
+    assert_eq!(vault.state().external_assets, 0);
+}
+
+#[test]
+fn test_deposit_flow_multiple() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let receiver = [11u8; 32];
+
+    // First deposit
+    vault.deposit(user, receiver, 1000, 0, 100).unwrap();
+
+    // Second deposit - should maintain 1:1 ratio
+    let result = vault.deposit(user, receiver, 500, 0, 200).unwrap();
+
+    assert_eq!(result.shares_minted, 500);
+    assert_eq!(result.total_shares, 1500);
+    assert_eq!(result.total_assets, 1500);
+}
+
+#[test]
+fn test_deposit_flow_with_slippage_protection() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let receiver = [11u8; 32];
+
+    // First deposit to establish ratio
+    vault.deposit(user, receiver, 1000, 0, 100).unwrap();
+
+    // Second deposit with min_shares_out
+    let result = vault.deposit(user, receiver, 500, 500, 200).unwrap();
+    assert_eq!(result.shares_minted, 500);
+
+    // Deposit that would violate slippage should fail
+    let result = vault.deposit(user, receiver, 100, 200, 300);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_deposit_flow_zero_amount_fails() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let receiver = [11u8; 32];
+
+    let result = vault.deposit(user, receiver, 0, 0, 100);
+    assert!(result.is_err());
+}
+
+// ============================================================================
+// Allocation Flow Tests
+// ============================================================================
+
+#[test]
+fn test_allocation_flow_basic() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let user = user_addr();
+
+    // Setup: deposit some funds
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Begin allocation
+    let op_id = vault
+        .begin_allocating(allocator, vec![(0, 3000), (1, 2000)])
+        .unwrap();
+
+    assert!(vault.state().op_state.is_allocating());
+    assert_eq!(op_id, 0);
+
+    // Sync external assets (simulating market supply completion)
+    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+
+    assert_eq!(vault.state().external_assets, 5000);
+
+    // Finish allocation
+    let result = vault.finish_allocating(allocator, op_id).unwrap();
+
+    assert_eq!(result.op_id, op_id);
+    assert!(vault.state().op_state.is_idle());
+}
+
+#[test]
+fn test_allocation_flow_abort() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let user = user_addr();
+
+    // Setup: deposit some funds
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+    let initial_idle = vault.state().idle_assets;
+
+    // Begin allocation
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+
+    // Abort (restoring 3000 to idle)
+    vault.abort_allocating(allocator, op_id, 3000).unwrap();
+
+    assert!(vault.state().op_state.is_idle());
+    assert_eq!(vault.state().idle_assets, initial_idle + 3000);
+}
+
+#[test]
+fn test_allocation_flow_wrong_op_id_fails() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let user = user_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+
+    // Try to finish with wrong op_id
+    let result = vault.finish_allocating(allocator, op_id + 999);
+    assert!(result.is_err());
+}
+
+// ============================================================================
+// Refresh Flow Tests
+// ============================================================================
+
+#[test]
+fn test_refresh_flow_basic() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let user = user_addr();
+
+    // Setup
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Begin refresh
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1, 2]).unwrap();
+
+    assert!(vault.state().op_state.is_refreshing());
+
+    // Sync external assets (simulating market read completion)
+    vault.sync_external_assets(allocator, 6000, op_id).unwrap();
+
+    // Finish refresh
+    let result = vault.finish_refreshing(allocator, op_id).unwrap();
+
+    assert_eq!(result.op_id, op_id);
+    assert!(vault.state().op_state.is_idle());
+    assert_eq!(vault.state().external_assets, 6000);
+}
+
+#[test]
+fn test_refresh_flow_abort() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let user = user_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1]).unwrap();
+
+    // Abort refresh
+    vault.abort_refreshing(allocator, op_id).unwrap();
+
+    assert!(vault.state().op_state.is_idle());
+}
+
+// ============================================================================
+// RBAC Tests
+// ============================================================================
+
+#[test]
+fn test_rbac_user_can_deposit() {
+    let mut vault = create_rbac_vault();
+    let user = user_addr();
+
+    // User should be able to deposit
+    let result = vault.deposit(user, user, 1000, 0, 100);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_rbac_user_cannot_allocate() {
+    let mut vault = create_rbac_vault();
+    let user = user_addr();
+
+    // Setup
+    vault
+        .deposit(admin_addr(), admin_addr(), 10000, 0, 100)
+        .unwrap();
+
+    // User should not be able to begin allocation
+    let result = vault.begin_allocating(user, vec![(0, 5000)]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_rbac_allocator_can_allocate() {
+    let mut vault = create_rbac_vault();
+    let allocator = allocator_addr();
+
+    // Setup
+    vault
+        .deposit(admin_addr(), admin_addr(), 10000, 0, 100)
+        .unwrap();
+
+    // Allocator should be able to begin allocation
+    let result = vault.begin_allocating(allocator, vec![(0, 5000)]);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_rbac_admin_can_do_everything() {
+    let mut vault = create_rbac_vault();
+    let admin = admin_addr();
+
+    // Deposit
+    vault.deposit(admin, admin, 10000, 0, 100).unwrap();
+
+    // Begin allocation (admin has all privileges)
+    let op_id = vault.begin_allocating(admin, vec![(0, 5000)]).unwrap();
+
+    // Sync external assets
+    vault.sync_external_assets(admin, 5000, op_id).unwrap();
+
+    // Finish allocation
+    vault.finish_allocating(admin, op_id).unwrap();
+
+    // Begin refresh
+    let op_id = vault.begin_refreshing(admin, vec![0]).unwrap();
+    vault.finish_refreshing(admin, op_id).unwrap();
+}
+
+#[test]
+fn test_rbac_pause_by_guardian() {
+    let mut vault = create_rbac_vault();
+    let guardian = guardian_addr();
+
+    // Guardian should be able to pause
+    let result = vault.pause(guardian, true);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_rbac_user_cannot_pause() {
+    let mut vault = create_rbac_vault();
+    let user = user_addr();
+
+    // User should not be able to pause
+    let result = vault.pause(user, true);
+    assert!(result.is_err());
+}
+
+// ============================================================================
+// State Persistence Tests
+// ============================================================================
+
+#[test]
+fn test_state_persists_after_deposit() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    vault.deposit(user, user, 1000, 0, 100).unwrap();
+
+    // Verify storage was updated
+    let stored = vault.storage.load_state().unwrap().unwrap();
+    assert_eq!(stored.state.total_assets, 1000);
+    assert_eq!(stored.state.total_shares, 1000);
+}
+
+#[test]
+fn test_state_persists_after_allocation() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let user = user_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.finish_allocating(allocator, op_id).unwrap();
+
+    // Verify storage was updated
+    let stored = vault.storage.load_state().unwrap().unwrap();
+    assert_eq!(stored.state.external_assets, 5000);
+    assert!(stored.state.op_state.is_idle());
+}
+
+// ============================================================================
+// Effect Execution Tests
+// ============================================================================
+
+#[test]
+fn test_deposit_emits_mint_effect() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let receiver = [11u8; 32];
+
+    vault.deposit(user, receiver, 1000, 0, 100).unwrap();
+
+    // Check that MintShares effect was recorded
+    let effects = &vault.interpreter.effects;
+    assert_eq!(effects.len(), 1);
+    assert!(matches!(
+        effects[0],
+        templar_vault_kernel::effects::KernelEffect::MintShares { shares: 1000, .. }
+    ));
+}
+
+// ============================================================================
+// Full Flow Integration Tests
+// ============================================================================
+
+#[test]
+fn test_full_flow_deposit_allocate_refresh() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    // 1. Deposit
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+    assert_eq!(vault.state().total_assets, 10000);
+    assert_eq!(vault.state().idle_assets, 10000);
+
+    // 2. Allocate to markets
+    let op_id = vault
+        .begin_allocating(allocator, vec![(0, 5000), (1, 3000)])
+        .unwrap();
+    vault.sync_external_assets(allocator, 8000, op_id).unwrap();
+    vault.finish_allocating(allocator, op_id).unwrap();
+
+    assert_eq!(vault.state().external_assets, 8000);
+
+    // 3. Refresh markets
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1]).unwrap();
+    vault.sync_external_assets(allocator, 9000, op_id).unwrap(); // markets grew
+    vault.finish_refreshing(allocator, op_id).unwrap();
+
+    // Total assets should now be 10000 + 1000 (growth from 8000 to 9000)
+    assert_eq!(vault.state().external_assets, 9000);
+    // Total assets = idle (10000 - 8000 = 2000 if we tracked correctly) + external (9000)
+    // In our implementation, total_assets is adjusted based on external_assets changes
+}
+
+// ============================================================================
+// Withdraw Flow Tests
+// ============================================================================
+
+#[test]
+fn test_withdraw_request_basic() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    // First deposit some funds
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Request withdrawal
+    let result = vault.request_withdraw(user, user, 1000, 0, 200).unwrap();
+
+    assert!(result.shares_escrowed > 0);
+    assert_eq!(result.shares_escrowed, 1000);
+}
+
+#[test]
+fn test_withdraw_request_calculates_assets_correctly() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    // Deposit and establish share ratio
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Withdraw half the shares - should get half the assets
+    let result = vault.request_withdraw(user, user, 5000, 4000, 200).unwrap();
+    assert_eq!(result.shares_escrowed, 5000);
+}
+
+#[test]
+fn test_withdraw_request_slippage_protection() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    // Deposit
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Withdraw with unrealistic min_assets_out should fail
+    let result = vault.request_withdraw(user, user, 1000, 2000, 200);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_withdraw_request_zero_shares_fails() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    // Deposit first
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Try to withdraw zero shares
+    let result = vault.request_withdraw(user, user, 0, 0, 200);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_withdraw_request_no_shares_fails() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    // Try to withdraw without any deposits
+    let result = vault.request_withdraw(user, user, 1000, 0, 100);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_execute_withdraw_requires_idle() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    // Deposit
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Start allocation (vault not idle)
+    vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+
+    // Execute withdraw should fail when not idle
+    let result = vault.execute_withdraw(user, 200);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_execute_withdraw_in_idle_state() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    // Deposit
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Execute withdraw in idle state
+    let result = vault.execute_withdraw(user, 200);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_withdraw_flow_with_allocation() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    // 1. Deposit
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // 2. Allocate some to markets
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.finish_allocating(allocator, op_id).unwrap();
+
+    // 3. Now request withdrawal (from idle state)
+    let result = vault.request_withdraw(user, user, 2000, 0, 300);
+    assert!(result.is_ok());
+}
+
+// ============================================================================
+// Full Flow Integration Tests - Deposit, Allocate, Refresh, Withdraw
+// ============================================================================
+
+#[test]
+fn test_full_flow_deposit_allocate_refresh_withdraw() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    // 1. Deposit
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+    assert_eq!(vault.state().total_assets, 10000);
+    assert_eq!(vault.state().total_shares, 10000);
+
+    // 2. Allocate to markets
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.finish_allocating(allocator, op_id).unwrap();
+    assert_eq!(vault.state().external_assets, 5000);
+
+    // 3. Refresh - markets grew
+    let op_id = vault.begin_refreshing(allocator, vec![0]).unwrap();
+    vault.sync_external_assets(allocator, 6000, op_id).unwrap(); // 20% growth
+    vault.finish_refreshing(allocator, op_id).unwrap();
+    assert_eq!(vault.state().external_assets, 6000);
+
+    // 4. Request withdrawal
+    let result = vault.request_withdraw(user, user, 5000, 0, 400).unwrap();
+    assert!(result.shares_escrowed > 0);
+
+    // 5. Execute withdrawal (in idle state)
+    let result = vault.execute_withdraw(user, 500);
+    assert!(result.is_ok());
+}
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+#[test]
+fn test_multiple_deposits_share_calculation() {
+    let mut vault = create_test_vault();
+    let user1 = user_addr();
+    let user2 = [20u8; 32];
+
+    // First deposit - 1:1 ratio
+    vault.deposit(user1, user1, 1000, 0, 100).unwrap();
+    assert_eq!(vault.state().total_shares, 1000);
+
+    // Second deposit - should maintain ratio
+    let result = vault.deposit(user2, user2, 2000, 0, 200).unwrap();
+    assert_eq!(result.shares_minted, 2000);
+    assert_eq!(vault.state().total_shares, 3000);
+    assert_eq!(vault.state().total_assets, 3000);
+}
+
+#[test]
+fn test_share_dilution_after_yield() {
+    let mut vault = create_test_vault();
+    let user1 = user_addr();
+    let user2 = [20u8; 32];
+    let allocator = allocator_addr();
+
+    // User1 deposits
+    vault.deposit(user1, user1, 1000, 0, 100).unwrap();
+
+    // Allocate half to external (keep some idle)
+    let op_id = vault
+        .begin_allocating(allocator, vec![(0, 500)])
+        .unwrap();
+    vault.sync_external_assets(allocator, 500, op_id).unwrap();
+    vault.finish_allocating(allocator, op_id).unwrap();
+
+    // Market grows - 20% yield (500 -> 600)
+    let op_id = vault.begin_refreshing(allocator, vec![0]).unwrap();
+    vault.sync_external_assets(allocator, 600, op_id).unwrap();
+    vault.finish_refreshing(allocator, op_id).unwrap();
+
+    // After refresh: external_assets = 600, total_assets is adjusted by the yield
+    assert_eq!(vault.state().external_assets, 600);
+    let total_assets = vault.state().total_assets;
+    let total_shares = vault.state().total_shares;
+
+    // User2 deposits 1100
+    // shares = amount * total_shares / total_assets
+    let expected_shares = 1100u128 * total_shares / total_assets;
+    let result = vault.deposit(user2, user2, 1100, 0, 300).unwrap();
+    assert_eq!(result.shares_minted, expected_shares);
+}
+
+#[test]
+fn test_allocation_multiple_markets() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    // Deposit
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Allocate to multiple markets
+    let op_id = vault
+        .begin_allocating(allocator, vec![(0, 3000), (1, 2000), (2, 1000)])
+        .unwrap();
+
+    // Sync total external
+    vault.sync_external_assets(allocator, 6000, op_id).unwrap();
+    vault.finish_allocating(allocator, op_id).unwrap();
+
+    assert_eq!(vault.state().external_assets, 6000);
+}
+
+#[test]
+fn test_refresh_multiple_markets() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    // Setup
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.finish_allocating(allocator, op_id).unwrap();
+
+    // Refresh multiple markets
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1, 2]).unwrap();
+    vault.sync_external_assets(allocator, 6000, op_id).unwrap();
+    vault.finish_refreshing(allocator, op_id).unwrap();
+
+    assert_eq!(vault.state().external_assets, 6000);
+}
+
+// ============================================================================
+// Concurrency / State Machine Tests
+// ============================================================================
+
+#[test]
+fn test_cannot_allocate_while_allocating() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Start first allocation
+    vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+
+    // Try to start second allocation - should fail
+    let result = vault.begin_allocating(allocator, vec![(1, 3000)]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cannot_refresh_while_allocating() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Start allocation
+    vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+
+    // Try to start refresh - should fail
+    let result = vault.begin_refreshing(allocator, vec![0, 1]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cannot_allocate_while_refreshing() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    // Start refresh
+    vault.begin_refreshing(allocator, vec![0, 1]).unwrap();
+
+    // Try to start allocation - should fail
+    let result = vault.begin_allocating(allocator, vec![(0, 5000)]);
+    assert!(result.is_err());
+}

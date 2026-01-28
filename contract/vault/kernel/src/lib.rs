@@ -8,6 +8,8 @@ pub mod effects;
 pub mod error;
 pub mod fee;
 pub mod guardrails;
+#[cfg(kani)]
+pub mod kani;
 pub mod math;
 pub mod restrictions;
 pub mod state;

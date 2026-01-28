@@ -1,5 +1,5 @@
 [package]
-name = "templar-soroban-runtime"
+name = "templar-soroban-vault"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -20,3 +20,4 @@ templar-vault-kernel = { path = "../kernel" }
 templar-curator-primitives = { path = "../curator-primitives" }
 
 [dev-dependencies]
+proptest = "1.4"

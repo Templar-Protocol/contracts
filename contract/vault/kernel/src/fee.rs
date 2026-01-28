@@ -27,7 +27,10 @@ use crate::types::Address;
 ///
 /// This generic type uses a string recipient for maximum chain flexibility.
 /// For spec-compliant 32-byte address recipients, see `FeeSlot`.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fee<T> {
     /// The fee rate (interpretation depends on T).
@@ -40,7 +43,10 @@ pub struct Fee<T> {
 ///
 /// This generic type uses `Fee<T>` with string recipients.
 /// For spec-compliant types, see `FeesSpec`.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fees<T> {
     /// Performance fee (charged on profits).
@@ -67,7 +73,10 @@ pub struct Fees<T> {
 ///
 /// The executor is responsible for mapping chain-native addresses to/from
 /// this canonical 32-byte format.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeeSlot {
     /// The fee rate as a WAD value (1e24 = 100%).
@@ -115,7 +124,10 @@ impl Default for FeeSlot {
 ///
 /// This type matches the kernel spec exactly and uses fixed-size addresses
 /// for performance and predictable serialization.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeesSpec {
     /// Performance fee (charged on profits).

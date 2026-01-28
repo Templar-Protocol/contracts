@@ -162,9 +162,16 @@ pub trait EffectInterpreter {
             match effect {
                 KernelEffect::MintShares { shares, .. } => summary.record_mint(*shares),
                 KernelEffect::BurnShares { shares, .. } => summary.record_burn(*shares),
-                KernelEffect::TransferShares { shares, .. } => summary.record_share_transfer(*shares),
-                KernelEffect::TransferAssets { amount, .. } => summary.record_asset_transfer(*amount),
+                KernelEffect::TransferShares { shares, .. } => {
+                    summary.record_share_transfer(*shares)
+                }
+                KernelEffect::TransferAssets { amount, .. } => {
+                    summary.record_asset_transfer(*amount)
+                }
                 KernelEffect::EmitEvent { .. } => summary.record_event(),
+                // Chain-specific effects (NEAR only) - unreachable in Soroban context
+                #[allow(unreachable_patterns)]
+                _ => {}
             }
         }
 
@@ -237,12 +244,7 @@ mod tests {
     use templar_vault_kernel::effects::KernelEvent;
 
     fn test_context() -> EffectContext {
-        EffectContext::new(
-            1_000_000_000_000,
-            [1u8; 32],
-            [2u8; 32],
-            [3u8; 32],
-        )
+        EffectContext::new(1_000_000_000_000, [1u8; 32], [2u8; 32], [3u8; 32])
     }
 
     #[test]
@@ -353,12 +355,10 @@ mod tests {
         interpreter.failure_msg = Some("fail on second");
         let ctx = test_context();
 
-        let effects = vec![
-            KernelEffect::MintShares {
-                owner: [0u8; 32],
-                shares: 100,
-            },
-        ];
+        let effects = vec![KernelEffect::MintShares {
+            owner: [0u8; 32],
+            shares: 100,
+        }];
 
         let result = interpreter.execute_effects(&effects, &ctx);
         assert!(result.is_err());
@@ -366,12 +366,7 @@ mod tests {
 
     #[test]
     fn test_effect_context_new() {
-        let ctx = EffectContext::new(
-            123,
-            [1u8; 32],
-            [2u8; 32],
-            [3u8; 32],
-        );
+        let ctx = EffectContext::new(123, [1u8; 32], [2u8; 32], [3u8; 32]);
         assert_eq!(ctx.now_ns, 123);
         assert_eq!(ctx.vault_address, [1u8; 32]);
         assert_eq!(ctx.asset_address, [2u8; 32]);

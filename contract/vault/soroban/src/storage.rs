@@ -327,10 +327,7 @@ mod tests {
 
     #[test]
     fn test_migrator_rejects_future_version() {
-        let state = VersionedState::with_version(
-            StorageVersion::new(999),
-            VaultState::default(),
-        );
+        let state = VersionedState::with_version(StorageVersion::new(999), VaultState::default());
         let result = Migrator::migrate(state);
 
         assert!(result.is_err());

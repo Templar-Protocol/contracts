@@ -39,30 +39,17 @@ use crate::types::ActorId;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TransitionError {
     /// Attempted a transition that requires Idle state, but the machine was not Idle.
-    NotIdle {
-        current_state: &'static str,
-    },
+    NotIdle { current_state: &'static str },
     /// Attempted a transition that requires Allocating state.
-    NotAllocating {
-        current_state: &'static str,
-    },
+    NotAllocating { current_state: &'static str },
     /// Attempted a transition that requires Withdrawing state.
-    NotWithdrawing {
-        current_state: &'static str,
-    },
+    NotWithdrawing { current_state: &'static str },
     /// Attempted a transition that requires Refreshing state.
-    NotRefreshing {
-        current_state: &'static str,
-    },
+    NotRefreshing { current_state: &'static str },
     /// Attempted a transition that requires Payout state.
-    NotPayout {
-        current_state: &'static str,
-    },
+    NotPayout { current_state: &'static str },
     /// Operation ID mismatch - the callback doesn't match the current operation.
-    OpIdMismatch {
-        expected: u64,
-        actual: u64,
-    },
+    OpIdMismatch { expected: u64, actual: u64 },
     /// The allocation plan is empty.
     EmptyAllocationPlan,
     /// The refresh plan is empty.
@@ -72,20 +59,11 @@ pub enum TransitionError {
     /// Zero escrow shares - nothing to withdraw.
     ZeroEscrowShares,
     /// Invalid index in the operation.
-    InvalidIndex {
-        index: u32,
-        max: u32,
-    },
+    InvalidIndex { index: u32, max: u32 },
     /// Attempted to collect more than remaining.
-    CollectionOverflow {
-        collected: u128,
-        remaining: u128,
-    },
+    CollectionOverflow { collected: u128, remaining: u128 },
     /// Burn shares exceed escrow shares.
-    BurnExceedsEscrow {
-        burn: u128,
-        escrow: u128,
-    },
+    BurnExceedsEscrow { burn: u128, escrow: u128 },
 }
 
 impl TransitionError {
@@ -142,11 +120,7 @@ pub type TransitionRes = Result<TransitionResult, TransitionError>;
 /// * `Ok(TransitionResult)` with new Allocating state
 /// * `Err(TransitionError::NotIdle)` if not in Idle state
 /// * `Err(TransitionError::EmptyAllocationPlan)` if plan is empty
-pub fn start_allocation(
-    state: OpState,
-    plan: Vec<(TargetId, u128)>,
-    op_id: u64,
-) -> TransitionRes {
+pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64) -> TransitionRes {
     if !state.is_idle() {
         return Err(TransitionError::NotIdle {
             current_state: TransitionError::state_name(&state),
@@ -967,10 +941,10 @@ mod tests {
 
         assert!(result.new_state.is_idle());
         // Should have a TransferShares effect for refund
-        assert!(result.effects.iter().any(|e| matches!(
-            e,
-            KernelEffect::TransferShares { shares: 100, .. }
-        )));
+        assert!(result
+            .effects
+            .iter()
+            .any(|e| matches!(e, KernelEffect::TransferShares { shares: 100, .. })));
     }
 
     // -------------------------------------------------------------------------
@@ -1047,16 +1021,16 @@ mod tests {
         assert!(result.new_state.is_idle());
 
         // Should have BurnShares effect
-        assert!(result.effects.iter().any(|e| matches!(
-            e,
-            KernelEffect::BurnShares { shares: 400, .. }
-        )));
+        assert!(result
+            .effects
+            .iter()
+            .any(|e| matches!(e, KernelEffect::BurnShares { shares: 400, .. })));
 
         // Should have TransferShares effect for refund (500 - 400 = 100)
-        assert!(result.effects.iter().any(|e| matches!(
-            e,
-            KernelEffect::TransferShares { shares: 100, .. }
-        )));
+        assert!(result
+            .effects
+            .iter()
+            .any(|e| matches!(e, KernelEffect::TransferShares { shares: 100, .. })));
     }
 
     #[test]
@@ -1081,10 +1055,10 @@ mod tests {
             .any(|e| matches!(e, KernelEffect::BurnShares { .. })));
 
         // Should have TransferShares effect for full refund (500 shares)
-        assert!(result.effects.iter().any(|e| matches!(
-            e,
-            KernelEffect::TransferShares { shares: 500, .. }
-        )));
+        assert!(result
+            .effects
+            .iter()
+            .any(|e| matches!(e, KernelEffect::TransferShares { shares: 500, .. })));
     }
 
     #[test]
@@ -1215,18 +1189,15 @@ mod proptests {
 
     /// Strategy for generating an allocation plan
     fn arb_plan(max_len: usize) -> impl Strategy<Value = Vec<(TargetId, u128)>> {
-        proptest::collection::vec(
-            (0u32..100u32, 1u128..=1_000_000_000u128),
-            1..=max_len
-        )
+        proptest::collection::vec((0u32..100u32, 1u128..=1_000_000_000u128), 1..=max_len)
     }
 
     /// Strategy for generating a withdrawal request
     fn arb_withdrawal_request() -> impl Strategy<Value = WithdrawalRequest> {
         (
-            1u64..u64::MAX,              // op_id
-            1u128..=1_000_000_000u128,   // amount
-            1u128..=1_000_000_000u128,   // escrow_shares
+            1u64..u64::MAX,            // op_id
+            1u128..=1_000_000_000u128, // amount
+            1u128..=1_000_000_000u128, // escrow_shares
         )
             .prop_map(|(op_id, amount, escrow_shares)| WithdrawalRequest {
                 op_id,

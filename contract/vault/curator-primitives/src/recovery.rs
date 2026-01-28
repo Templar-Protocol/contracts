@@ -146,7 +146,10 @@ pub enum RecoveryError {
     /// Operation is not stuck (and force not set).
     NotStuck { op_id: u64 },
     /// Recovery action conflicts with current state.
-    ActionConflict { action: &'static str, state: &'static str },
+    ActionConflict {
+        action: &'static str,
+        state: &'static str,
+    },
 }
 
 /// Outcome of a recovery operation.
@@ -233,11 +236,19 @@ pub fn determine_recovery_action(state: &OpState, _context: &RecoveryContext) ->
         },
 
         OpState::Refreshing(refresh) => {
-            let completed_targets: Vec<TargetId> =
-                refresh.plan.iter().take(refresh.index as usize).copied().collect();
+            let completed_targets: Vec<TargetId> = refresh
+                .plan
+                .iter()
+                .take(refresh.index as usize)
+                .copied()
+                .collect();
 
-            let remaining_targets: Vec<TargetId> =
-                refresh.plan.iter().skip(refresh.index as usize).copied().collect();
+            let remaining_targets: Vec<TargetId> = refresh
+                .plan
+                .iter()
+                .skip(refresh.index as usize)
+                .copied()
+                .collect();
 
             RecoveryAction::AbortRefreshing {
                 op_id: refresh.op_id,
@@ -324,11 +335,19 @@ pub fn handle_refresh_failure(
     state: &RefreshingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    let completed_targets: Vec<TargetId> =
-        state.plan.iter().take(state.index as usize).copied().collect();
+    let completed_targets: Vec<TargetId> = state
+        .plan
+        .iter()
+        .take(state.index as usize)
+        .copied()
+        .collect();
 
-    let remaining_targets: Vec<TargetId> =
-        state.plan.iter().skip(state.index as usize).copied().collect();
+    let remaining_targets: Vec<TargetId> = state
+        .plan
+        .iter()
+        .skip(state.index as usize)
+        .copied()
+        .collect();
 
     RecoveryOutcome::success_with_message(
         RecoveryAction::AbortRefreshing {
@@ -645,7 +664,11 @@ mod tests {
         assert!(outcome.success);
         assert_eq!(outcome.message, Some(String::from("Market unavailable")));
         match outcome.action {
-            RecoveryAction::AbortAllocating { op_id, remaining, completed_targets } => {
+            RecoveryAction::AbortAllocating {
+                op_id,
+                remaining,
+                completed_targets,
+            } => {
                 assert_eq!(op_id, 1);
                 assert_eq!(remaining, 500);
                 assert_eq!(completed_targets, vec![0, 1]);

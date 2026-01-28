@@ -54,7 +54,10 @@ use crate::types::ActorId;
 pub type TargetId = u32;
 
 /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdleState;
 
@@ -63,7 +66,10 @@ pub struct IdleState;
 /// # Transitions
 /// - On completion of allocation: `Withdrawing` (to satisfy pending user requests) or `Idle` (if stopped).
 /// - On stop/failure: `Idle`.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocatingState {
     /// Unique operation id used to correlate async callbacks and detect drift.
@@ -82,7 +88,10 @@ pub struct AllocatingState {
 /// - Advance within queue: `Withdrawing` (index increments) while collecting funds.
 /// - When enough is collected to satisfy the request: `Payout`.
 /// - If the op is stopped or cannot proceed and needs to refund: `Idle` (escrow_shares refunded).
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawingState {
     /// Unique operation id used to correlate async callbacks and detect drift.
@@ -108,7 +117,10 @@ pub struct WithdrawingState {
 /// # Transitions
 /// - On completion: `Idle`.
 /// - On failure: `Idle` (with potentially stale AUM data).
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefreshingState {
     /// Unique operation id used to correlate async callbacks and detect drift.
@@ -128,7 +140,10 @@ pub struct RefreshingState {
 /// - `idle_balance` decreases only on payout success by `amount`.
 /// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
 /// - On failure, all `escrow_shares` are refunded.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayoutState {
     /// Unique operation id used to correlate async callbacks and detect drift.
@@ -156,7 +171,10 @@ pub struct PayoutState {
 /// # Invariants
 /// - `idle_balance` increases only when funds are received and decreases only on payout success.
 /// - `escrow_shares` are refunded on stop/failure or partially burned/refunded on payout success.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpState {
     /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.

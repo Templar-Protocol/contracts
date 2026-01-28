@@ -22,7 +22,10 @@ pub use crate::types::EscrowSettlement;
 /// Escrow entry for a single actor.
 ///
 /// Tracks shares held in escrow for a pending withdrawal.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EscrowEntry {
     /// Actor whose shares are escrowed.
@@ -62,7 +65,10 @@ impl EscrowEntry {
 }
 
 /// Result of applying a settlement to an escrow entry.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettlementResult {
     /// Shares actually burned from escrow.
@@ -74,7 +80,10 @@ pub struct SettlementResult {
 }
 
 /// Aggregate escrow statistics.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EscrowStats {
     /// Total number of escrow entries.
@@ -100,7 +109,10 @@ pub struct EscrowStats {
 /// # Returns
 /// `Some(SettlementResult)` if valid, `None` if settlement exceeds escrow.
 #[must_use]
-pub fn apply_settlement(entry: &EscrowEntry, settlement: &EscrowSettlement) -> Option<SettlementResult> {
+pub fn apply_settlement(
+    entry: &EscrowEntry,
+    settlement: &EscrowSettlement,
+) -> Option<SettlementResult> {
     let total_settled = settlement.to_burn.saturating_add(settlement.refund);
 
     if total_settled > entry.shares {
@@ -421,13 +433,28 @@ mod tests {
         let entry = make_entry("alice", 100, 1000);
 
         // Valid settlement
-        assert!(can_apply_settlement(&entry, &EscrowSettlement::partial(50, 50)));
-        assert!(can_apply_settlement(&entry, &EscrowSettlement::burn_all(100)));
-        assert!(can_apply_settlement(&entry, &EscrowSettlement::refund_all(100)));
+        assert!(can_apply_settlement(
+            &entry,
+            &EscrowSettlement::partial(50, 50)
+        ));
+        assert!(can_apply_settlement(
+            &entry,
+            &EscrowSettlement::burn_all(100)
+        ));
+        assert!(can_apply_settlement(
+            &entry,
+            &EscrowSettlement::refund_all(100)
+        ));
 
         // Invalid settlement (exceeds shares)
-        assert!(!can_apply_settlement(&entry, &EscrowSettlement::partial(60, 50)));
-        assert!(!can_apply_settlement(&entry, &EscrowSettlement::burn_all(101)));
+        assert!(!can_apply_settlement(
+            &entry,
+            &EscrowSettlement::partial(60, 50)
+        ));
+        assert!(!can_apply_settlement(
+            &entry,
+            &EscrowSettlement::burn_all(101)
+        ));
     }
 
     #[test]
@@ -460,10 +487,8 @@ mod tests {
 
     #[test]
     fn test_find_by_owner() {
-        let entries: Vec<EscrowEntry> = vec![
-            make_entry("alice", 100, 1000),
-            make_entry("bob", 200, 2000),
-        ];
+        let entries: Vec<EscrowEntry> =
+            vec![make_entry("alice", 100, 1000), make_entry("bob", 200, 2000)];
 
         let found = find_by_owner(&entries, &"bob".to_string());
         assert!(found.is_some());
@@ -501,18 +526,13 @@ mod proptests {
     /// Strategy for generating an EscrowEntry
     fn arb_entry() -> impl Strategy<Value = EscrowEntry> {
         (
-            1u32..1000u32,       // owner index
-            0u128..=u64::MAX as u128,  // shares
-            0u64..u64::MAX,      // created_at
-            0u128..=u64::MAX as u128,  // expected_assets
+            1u32..1000u32,            // owner index
+            0u128..=u64::MAX as u128, // shares
+            0u64..u64::MAX,           // created_at
+            0u128..=u64::MAX as u128, // expected_assets
         )
             .prop_map(|(owner_idx, shares, ts, expected)| {
-                EscrowEntry::new(
-                    format!("owner_{}", owner_idx),
-                    shares,
-                    ts,
-                    expected,
-                )
+                EscrowEntry::new(format!("owner_{}", owner_idx), shares, ts, expected)
             })
     }
 

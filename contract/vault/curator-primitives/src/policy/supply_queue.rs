@@ -311,7 +311,10 @@ mod tests {
         let queue = enqueue_supply(&queue, entry2).unwrap();
         let result = enqueue_supply(&queue, entry3);
 
-        assert!(matches!(result, Err(SupplyQueueError::QueueFull { max_length: 2 })));
+        assert!(matches!(
+            result,
+            Err(SupplyQueueError::QueueFull { max_length: 2 })
+        ));
     }
 
     #[test]

@@ -286,11 +286,7 @@ mod tests {
         let d = U512::from(denom);
         let q = prod / d;
         let r = prod % d;
-        let q = if r.is_zero() {
-            q
-        } else {
-            q + U512::from(1u8)
-        };
+        let q = if r.is_zero() { q } else { q + U512::from(1u8) };
         Number::as_u256_trunc(q)
     }
 

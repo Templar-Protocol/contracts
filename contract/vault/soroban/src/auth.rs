@@ -37,6 +37,8 @@ pub enum ActionKind {
     SettlePayout,
     /// Refresh fees.
     RefreshFees,
+    /// Privileged manual reconciliation of external assets.
+    ManualReconcile,
 }
 
 impl ActionKind {
@@ -62,10 +64,7 @@ impl ActionKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthError {
     /// Caller is not authorized for this action.
-    NotAuthorized {
-        caller: Address,
-        action: ActionKind,
-    },
+    NotAuthorized { caller: Address, action: ActionKind },
     /// Invalid proof provided.
     InvalidProof,
     /// Missing required role.
@@ -107,7 +106,12 @@ pub trait AuthAdapter {
     /// # Returns
     ///
     /// `Ok(())` if authorized, `Err(AuthError)` otherwise.
-    fn authorize(&self, action: ActionKind, caller: Address, proof: Option<&[u8]>) -> AuthResult<()>;
+    fn authorize(
+        &self,
+        action: ActionKind,
+        caller: Address,
+        proof: Option<&[u8]>,
+    ) -> AuthResult<()>;
 
     /// Check if the vault is currently paused.
     fn is_paused(&self) -> bool;
@@ -118,7 +122,12 @@ pub trait AuthAdapter {
 pub struct PermissiveAuth;
 
 impl AuthAdapter for PermissiveAuth {
-    fn authorize(&self, _action: ActionKind, _caller: Address, _proof: Option<&[u8]>) -> AuthResult<()> {
+    fn authorize(
+        &self,
+        _action: ActionKind,
+        _caller: Address,
+        _proof: Option<&[u8]>,
+    ) -> AuthResult<()> {
         Ok(())
     }
 
@@ -150,7 +159,12 @@ impl StrictAuth {
 }
 
 impl AuthAdapter for StrictAuth {
-    fn authorize(&self, action: ActionKind, caller: Address, _proof: Option<&[u8]>) -> AuthResult<()> {
+    fn authorize(
+        &self,
+        action: ActionKind,
+        caller: Address,
+        _proof: Option<&[u8]>,
+    ) -> AuthResult<()> {
         if self.paused && action != ActionKind::Pause {
             return Err(AuthError::VaultPaused);
         }
@@ -180,6 +194,7 @@ mod tests {
         assert!(!ActionKind::Pause.is_user_facing());
         assert!(!ActionKind::BeginAllocating.is_user_facing());
         assert!(!ActionKind::FinishAllocating.is_user_facing());
+        assert!(!ActionKind::ManualReconcile.is_user_facing());
     }
 
     #[test]
@@ -190,6 +205,7 @@ mod tests {
         assert!(ActionKind::Pause.is_privileged());
         assert!(ActionKind::BeginAllocating.is_privileged());
         assert!(ActionKind::AbortAllocating.is_privileged());
+        assert!(ActionKind::ManualReconcile.is_privileged());
     }
 
     #[test]

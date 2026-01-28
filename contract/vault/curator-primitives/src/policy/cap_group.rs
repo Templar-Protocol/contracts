@@ -413,11 +413,17 @@ mod tests {
 
         // Exceeds absolute cap
         let result = enforce_cap_group(&cap, 0, 1001, 3000);
-        assert!(matches!(result, Err(CapGroupError::ExceedsAbsoluteCap { .. })));
+        assert!(matches!(
+            result,
+            Err(CapGroupError::ExceedsAbsoluteCap { .. })
+        ));
 
         // Exceeds relative cap (500 effective cap when total = 1000)
         let result = enforce_cap_group(&cap, 0, 501, 1000);
-        assert!(matches!(result, Err(CapGroupError::ExceedsRelativeCap { .. })));
+        assert!(matches!(
+            result,
+            Err(CapGroupError::ExceedsRelativeCap { .. })
+        ));
     }
 
     #[test]

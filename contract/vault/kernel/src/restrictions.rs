@@ -14,7 +14,10 @@ use crate::types::ActorId;
 /// Restrictions that can be applied to the vault.
 ///
 /// Supports Pausing, Whitelist, and Blacklist functionality.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Restrictions {
     /// Vault is paused - all operations blocked.
@@ -82,8 +85,12 @@ mod tests {
         let r = Restrictions::BlackList(blacklist);
 
         let self_id = String::from("vault.near");
-        assert!(r.is_restricted(&String::from("bad.near"), &self_id).is_some());
-        assert!(r.is_restricted(&String::from("good.near"), &self_id).is_none());
+        assert!(r
+            .is_restricted(&String::from("bad.near"), &self_id)
+            .is_some());
+        assert!(r
+            .is_restricted(&String::from("good.near"), &self_id)
+            .is_none());
     }
 
     #[test]
@@ -93,8 +100,12 @@ mod tests {
         let r = Restrictions::WhiteList(whitelist);
 
         let self_id = String::from("vault.near");
-        assert!(r.is_restricted(&String::from("alice.near"), &self_id).is_none());
+        assert!(r
+            .is_restricted(&String::from("alice.near"), &self_id)
+            .is_none());
         assert!(r.is_restricted(&self_id, &self_id).is_none());
-        assert!(r.is_restricted(&String::from("bob.near"), &self_id).is_some());
+        assert!(r
+            .is_restricted(&String::from("bob.near"), &self_id)
+            .is_some());
     }
 }

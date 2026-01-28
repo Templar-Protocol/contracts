@@ -8,10 +8,7 @@ pub enum RuntimeError {
     /// Authorization failed.
     Unauthorized(String),
     /// Insufficient balance for the operation.
-    InsufficientBalance {
-        available: u128,
-        required: u128,
-    },
+    InsufficientBalance { available: u128, required: u128 },
     /// Invalid operation state.
     InvalidState(String),
     /// Storage error.
@@ -32,11 +29,28 @@ impl RuntimeError {
         Self::Unauthorized(msg.into())
     }
 
+    /// Create a contract error (alias for invalid_state).
+    #[inline]
+    #[must_use]
+    pub fn contract_error(msg: impl Into<String>) -> Self {
+        Self::InvalidState(msg.into())
+    }
+
+    /// Create a transition error (alias for kernel_error).
+    #[inline]
+    #[must_use]
+    pub fn transition_error<E: core::fmt::Debug>(err: E) -> Self {
+        Self::KernelError(alloc::format!("{:?}", err))
+    }
+
     /// Create an insufficient balance error.
     #[inline]
     #[must_use]
     pub const fn insufficient_balance(available: u128, required: u128) -> Self {
-        Self::InsufficientBalance { available, required }
+        Self::InsufficientBalance {
+            available,
+            required,
+        }
     }
 
     /// Create an invalid state error.
@@ -75,6 +89,21 @@ impl RuntimeError {
     }
 }
 
+impl From<crate::auth::AuthError> for RuntimeError {
+    fn from(err: crate::auth::AuthError) -> Self {
+        match err {
+            crate::auth::AuthError::NotAuthorized { caller, action } => RuntimeError::unauthorized(
+                alloc::format!("{:?} not authorized for {:?}", caller, action),
+            ),
+            crate::auth::AuthError::InvalidProof => RuntimeError::unauthorized("invalid proof"),
+            crate::auth::AuthError::MissingRole(role) => {
+                RuntimeError::unauthorized(alloc::format!("missing role: {}", role))
+            }
+            crate::auth::AuthError::VaultPaused => RuntimeError::invalid_state("vault is paused"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +135,12 @@ mod tests {
         assert!(matches!(err, RuntimeError::InvalidInput(_)));
 
         let err = RuntimeError::kernel_error("kernel failed");
+        assert!(matches!(err, RuntimeError::KernelError(_)));
+
+        let err = RuntimeError::contract_error("contract error");
+        assert!(matches!(err, RuntimeError::InvalidState(_)));
+
+        let err = RuntimeError::transition_error("transition failed");
         assert!(matches!(err, RuntimeError::KernelError(_)));
     }
 }

@@ -37,7 +37,10 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingWithdrawal {
     /// Owner of the shares being redeemed.
@@ -81,7 +84,10 @@ impl PendingWithdrawal {
 }
 
 /// Result of attempting to satisfy a withdrawal from available assets.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalResult {
     /// Assets actually transferred to the receiver.
@@ -91,7 +97,10 @@ pub struct WithdrawalResult {
 }
 
 /// Status information for a single withdrawal request in the queue.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalRequestStatus {
     /// Position in the queue (0 = head).
@@ -103,7 +112,10 @@ pub struct WithdrawalRequestStatus {
 }
 
 /// Aggregate status of the entire withdrawal queue.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueStatus {
     /// Number of pending withdrawal requests.
@@ -154,7 +166,11 @@ pub fn can_enqueue(current_length: u32) -> bool {
 /// * `cooldown_ns` - Required cooldown period (nanoseconds).
 #[inline]
 #[must_use]
-pub fn is_past_cooldown(requested_at_ns: TimestampNs, now_ns: TimestampNs, cooldown_ns: u64) -> bool {
+pub fn is_past_cooldown(
+    requested_at_ns: TimestampNs,
+    now_ns: TimestampNs,
+    cooldown_ns: u64,
+) -> bool {
     now_ns >= requested_at_ns.saturating_add(cooldown_ns)
 }
 
@@ -462,7 +478,10 @@ pub use crate::state::vault::MAX_PENDING;
 /// - `next_withdraw_to_execute <= next_pending_withdrawal_id`
 /// - If `pending_withdrawals.len() > 0`, then `pending_withdrawals` contains `next_withdraw_to_execute`
 /// - FIFO withdrawal ordering; no skipping head
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
@@ -721,7 +740,11 @@ impl WithdrawQueue {
         }
 
         // If non-empty, the head must exist
-        if !self.is_empty() && !self.pending_withdrawals.contains_key(&self.next_withdraw_to_execute) {
+        if !self.is_empty()
+            && !self
+                .pending_withdrawals
+                .contains_key(&self.next_withdraw_to_execute)
+        {
             return false;
         }
 
@@ -786,7 +809,10 @@ impl WithdrawQueue {
 }
 
 /// Errors that can occur during queue operations.
-#[cfg_attr(feature = "near", derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "near",
+    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueueError {
     /// Queue is at maximum capacity.
@@ -844,11 +870,19 @@ mod tests {
 
         // Not yet past cooldown
         assert!(!is_past_cooldown(requested, requested, cooldown));
-        assert!(!is_past_cooldown(requested, requested + cooldown - 1, cooldown));
+        assert!(!is_past_cooldown(
+            requested,
+            requested + cooldown - 1,
+            cooldown
+        ));
 
         // Past cooldown
         assert!(is_past_cooldown(requested, requested + cooldown, cooldown));
-        assert!(is_past_cooldown(requested, requested + cooldown + 1, cooldown));
+        assert!(is_past_cooldown(
+            requested,
+            requested + cooldown + 1,
+            cooldown
+        ));
     }
 
     #[test]
@@ -1618,8 +1652,7 @@ mod tests {
         );
 
         let queue = WithdrawQueue::with_state(
-            pending,
-            0, // head points to non-existent ID 0
+            pending, 0, // head points to non-existent ID 0
             6,
         );
 
@@ -1756,10 +1789,10 @@ mod proptests {
     /// Strategy for generating a PendingWithdrawal
     fn arb_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
         (
-            1u32..1000u32,       // owner index
-            1u128..=u64::MAX as u128,  // shares
-            MIN_WITHDRAWAL_ASSETS..=u64::MAX as u128,  // expected_assets
-            0u64..u64::MAX,      // timestamp
+            1u32..1000u32,                            // owner index
+            1u128..=u64::MAX as u128,                 // shares
+            MIN_WITHDRAWAL_ASSETS..=u64::MAX as u128, // expected_assets
+            0u64..u64::MAX,                           // timestamp
         )
             .prop_map(|(owner_idx, shares, expected, ts)| {
                 PendingWithdrawal::new(

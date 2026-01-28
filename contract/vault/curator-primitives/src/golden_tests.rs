@@ -65,9 +65,19 @@ impl Default for NearVaultSnapshot {
             idle_balance: 3_000_000_000_000,  // 3M USDC idle
             cap_groups: vec![
                 // "stable" group: 5M absolute cap, 60% relative cap, 3M current
-                ("stable", 5_000_000_000_000, WAD * 60 / 100, 3_000_000_000_000),
+                (
+                    "stable",
+                    5_000_000_000_000,
+                    WAD * 60 / 100,
+                    3_000_000_000_000,
+                ),
                 // "volatile" group: 3M absolute cap, 30% relative cap, 2.5M current
-                ("volatile", 3_000_000_000_000, WAD * 30 / 100, 2_500_000_000_000),
+                (
+                    "volatile",
+                    3_000_000_000_000,
+                    WAD * 30 / 100,
+                    2_500_000_000_000,
+                ),
                 // "new" group: 2M absolute cap, 20% relative cap, 1.5M current
                 ("new", 2_000_000_000_000, WAD * 20 / 100, 1_500_000_000_000),
             ],
@@ -230,10 +240,26 @@ fn golden_supply_queue_priority_ordering() {
     let mut queue = SupplyQueue::new();
 
     // Add entries with different priorities
-    queue = enqueue_supply(&queue, SupplyQueueEntry::with_priority(0, 100_000_000_000, 0)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::with_priority(1, 200_000_000_000, 5)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::with_priority(2, 300_000_000_000, 10)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::with_priority(3, 400_000_000_000, 3)).unwrap();
+    queue = enqueue_supply(
+        &queue,
+        SupplyQueueEntry::with_priority(0, 100_000_000_000, 0),
+    )
+    .unwrap();
+    queue = enqueue_supply(
+        &queue,
+        SupplyQueueEntry::with_priority(1, 200_000_000_000, 5),
+    )
+    .unwrap();
+    queue = enqueue_supply(
+        &queue,
+        SupplyQueueEntry::with_priority(2, 300_000_000_000, 10),
+    )
+    .unwrap();
+    queue = enqueue_supply(
+        &queue,
+        SupplyQueueEntry::with_priority(3, 400_000_000_000, 3),
+    )
+    .unwrap();
 
     // Expected order by priority (highest first): 2, 1, 3, 0
     let entries: Vec<u32> = queue.entries.iter().map(|e| e.target_id).collect();
@@ -293,7 +319,11 @@ fn golden_withdraw_route_validation() {
 #[test]
 fn golden_refresh_plan_building() {
     let snapshot = NearVaultSnapshot::default();
-    let enabled_targets: Vec<u32> = snapshot.market_principals.iter().map(|(id, _)| *id).collect();
+    let enabled_targets: Vec<u32> = snapshot
+        .market_principals
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
 
     // Build refresh plan for all markets
     let plan = build_refresh_plan(&enabled_targets, Some(30_000_000_000)).unwrap();
@@ -512,7 +542,11 @@ fn golden_refresh_after_allocation() {
     let snapshot = NearVaultSnapshot::default();
 
     // Build refresh plan for all markets
-    let enabled_targets: Vec<u32> = snapshot.market_principals.iter().map(|(id, _)| *id).collect();
+    let enabled_targets: Vec<u32> = snapshot
+        .market_principals
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
     let plan = build_refresh_plan(&enabled_targets, None).unwrap();
 
     // Validate plan

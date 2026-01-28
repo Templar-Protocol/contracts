@@ -38,7 +38,11 @@ impl WithdrawRouteEntry {
     }
 
     /// Create a new entry with known liquidity.
-    pub fn with_liquidity(target_id: TargetId, max_amount: u128, available_liquidity: u128) -> Self {
+    pub fn with_liquidity(
+        target_id: TargetId,
+        max_amount: u128,
+        available_liquidity: u128,
+    ) -> Self {
         Self {
             target_id,
             max_amount,
@@ -225,11 +229,8 @@ pub fn build_withdraw_route(
     }
 
     // Create entries sorted by principal (largest first)
-    let mut sorted: Vec<(TargetId, u128)> = principals
-        .iter()
-        .filter(|(_, p)| *p > 0)
-        .cloned()
-        .collect();
+    let mut sorted: Vec<(TargetId, u128)> =
+        principals.iter().filter(|(_, p)| *p > 0).cloned().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
     let entries: Vec<WithdrawRouteEntry> = sorted
