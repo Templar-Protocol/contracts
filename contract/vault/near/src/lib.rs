@@ -61,6 +61,7 @@ pub use templar_common::vault::wad::{mul_div_ceil, mul_div_floor, Number, Wad};
 
 pub mod aum;
 pub mod governance;
+pub mod policy;
 
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
