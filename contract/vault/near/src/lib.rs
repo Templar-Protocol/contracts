@@ -38,8 +38,8 @@ use templar_common::{
     vault::{
         require_at_least,
         wad::{
-            compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
-            Number, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+            compute_fee_shares, compute_fee_shares_from_assets, MAX_MANAGEMENT_FEE_WAD,
+            MAX_PERFORMANCE_FEE_WAD,
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
         FeeAccrualAnchor, Fees, IdleBalanceDelta, Locker, MarketConfiguration, MarketId, OpState,
@@ -53,6 +53,11 @@ use templar_common::{
 };
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
+
+// Re-export share math types and functions for tests and external consumers.
+// Note: These types originate from templar_vault_kernel and are available via
+// templar_common::kernel or templar_common::vault::wad with NEAR Borsh compatibility.
+pub use templar_common::vault::wad::{mul_div_ceil, mul_div_floor, Number, Wad};
 
 pub mod aum;
 pub mod governance;

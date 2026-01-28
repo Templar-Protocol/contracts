@@ -10,6 +10,9 @@ path = "src/lib.rs"
 [features]
 default = []
 near = ["dep:near-sdk", "dep:borsh", "dep:serde", "dep:schemars"]
+# kani feature flag for conditional compilation of Kani harnesses
+# Note: Kani verifier is run via `cargo kani`, not as a library dependency
+kani = []
 
 [dependencies]
 primitive-types = { version = "0.14.0", default-features = false }
@@ -21,3 +24,6 @@ near-sdk = { version = "5.17.2", optional = true, features = ["unstable", "non-c
 
 [dev-dependencies]
 proptest = "1.4"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
