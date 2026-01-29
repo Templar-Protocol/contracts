@@ -1,3 +1,4 @@
+use crate::restrictions::Restrictions;
 use crate::transitions::TransitionError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,4 +21,6 @@ pub enum KernelError {
     Transition(TransitionError),
     /// Action not implemented yet.
     NotImplemented,
+    /// Action blocked by restrictions.
+    Restricted(Restrictions),
 }

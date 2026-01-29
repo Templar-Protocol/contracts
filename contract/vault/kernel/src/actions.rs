@@ -11,6 +11,7 @@ use crate::math::number::Number;
 use alloc::vec;
 use alloc::vec::Vec;
 use crate::math::wad::mul_div_floor;
+use crate::restrictions::Restrictions;
 use crate::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::transitions::{
@@ -152,6 +153,8 @@ fn convert_to_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> 
 pub fn apply_action(
     mut state: VaultState,
     config: &VaultConfig,
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
     action: KernelAction,
 ) -> Result<KernelResult, KernelError> {
     match action {
@@ -162,6 +165,8 @@ pub fn apply_action(
             min_shares_out,
             now_ns: _,
         } => {
+            enforce_restrictions(config, restrictions, self_id, &owner)?;
+            enforce_restrictions(config, restrictions, self_id, &receiver)?;
             if !state.is_idle() {
                 return Err(KernelError::InvalidState("deposit requires Idle"));
             }
@@ -208,6 +213,8 @@ pub fn apply_action(
             min_assets_out,
             now_ns,
         } => {
+            enforce_restrictions(config, restrictions, self_id, &owner)?;
+            enforce_restrictions(config, restrictions, self_id, &receiver)?;
             if !state.is_idle() {
                 return Err(KernelError::InvalidState("request_withdraw requires Idle"));
             }
@@ -263,6 +270,9 @@ pub fn apply_action(
                 };
                 let pending = pending_ref.clone();
 
+                enforce_restrictions(config, restrictions, self_id, &pending.owner)?;
+                enforce_restrictions(config, restrictions, self_id, &pending.receiver)?;
+
                 if !is_past_cooldown(pending.requested_at_ns, now_ns, DEFAULT_COOLDOWN_NS) {
                     return Err(KernelError::Cooldown {
                         requested_at: pending.requested_at_ns,
@@ -307,6 +317,9 @@ pub fn apply_action(
                         "withdrawal queue head mismatch",
                     ));
                 }
+
+                enforce_restrictions(config, restrictions, self_id, &withdraw.owner)?;
+                enforce_restrictions(config, restrictions, self_id, &withdraw.receiver)?;
 
                 let result =
                     withdrawal_step_callback(state.op_state.clone(), withdraw.op_id, 0)
@@ -598,6 +611,23 @@ pub fn apply_action(
     }
 }
 
+fn enforce_restrictions(
+    config: &VaultConfig,
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
+    actor: &Address,
+) -> Result<(), KernelError> {
+    if config.paused {
+        return Err(KernelError::Restricted(Restrictions::Paused));
+    }
+    if let Some(restrictions) = restrictions {
+        if let Some(reason) = restrictions.is_restricted(actor, self_id) {
+            return Err(KernelError::Restricted(reason));
+        }
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -645,6 +675,8 @@ mod tests {
         let result = apply_action(
             state,
             &config,
+            None,
+            &addr(0xFF),
             KernelAction::RequestWithdraw {
                 owner: addr(1),
                 receiver: addr(2),
@@ -683,6 +715,8 @@ mod tests {
         let result = apply_action(
             state,
             &config,
+            None,
+            &addr(0xFF),
             KernelAction::ExecuteWithdraw {
                 now_ns: DEFAULT_COOLDOWN_NS + 1,
             },
@@ -722,6 +756,8 @@ mod tests {
         let result = apply_action(
             state,
             &config,
+            None,
+            &addr(0xFF),
             KernelAction::ExecuteWithdraw { now_ns: 0 },
         )
         .unwrap();
@@ -731,5 +767,61 @@ mod tests {
         assert_eq!(withdraw.index, 1);
         assert_eq!(withdraw.collected, 0);
         assert_eq!(withdraw.remaining, 200);
+    }
+
+    #[test]
+    fn deposit_blocked_when_paused() {
+        let state = VaultState::new();
+        let mut config = test_config();
+        config.paused = true;
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::Deposit {
+                owner: addr(1),
+                receiver: addr(2),
+                assets_in: 10,
+                min_shares_out: 0,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::Restricted(Restrictions::Paused))
+        ));
+    }
+
+    #[test]
+    fn request_withdraw_blocked_by_blacklist() {
+        use alloc::collections::BTreeSet;
+
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+        let mut blacklist = BTreeSet::new();
+        blacklist.insert(addr(9));
+        let restrictions = Restrictions::BlackList(blacklist);
+
+        let result = apply_action(
+            state,
+            &config,
+            Some(&restrictions),
+            &addr(0xFF),
+            KernelAction::RequestWithdraw {
+                owner: addr(9),
+                receiver: addr(3),
+                shares: 10,
+                min_assets_out: 0,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::Restricted(Restrictions::BlackList(_)))
+        ));
     }
 }
