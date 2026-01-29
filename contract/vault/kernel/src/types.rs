@@ -3,6 +3,7 @@
 //! These types are designed to be portable across NEAR and Soroban.
 
 use alloc::string::String;
+use derive_more::{From, Into};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -36,7 +37,7 @@ pub type Address = [u8; 32];
 /// to this form (sha256 hash) and maintain the mapping.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
 pub struct AssetId(pub [u8; 32]);
 
 impl AssetId {
@@ -48,18 +49,6 @@ impl AssetId {
     /// Return the raw bytes for this AssetId.
     pub const fn as_bytes(&self) -> [u8; 32] {
         self.0
-    }
-}
-
-impl From<[u8; 32]> for AssetId {
-    fn from(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-
-impl From<AssetId> for [u8; 32] {
-    fn from(asset_id: AssetId) -> [u8; 32] {
-        asset_id.0
     }
 }
 
@@ -100,5 +89,5 @@ impl EscrowSettlement {
 /// Kernel version identifier.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, From, Into)]
 pub struct KernelVersion(pub u32);
