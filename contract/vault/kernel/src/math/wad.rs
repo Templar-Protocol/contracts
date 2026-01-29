@@ -4,6 +4,7 @@
 
 use core::ops::Div;
 
+use derive_more::{From, Into};
 use primitive_types::{U256, U512};
 
 use super::number::Number;
@@ -21,7 +22,7 @@ pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 ///
 /// When the `serde` feature is enabled, serializes transparently as Number
 /// (which serializes to a decimal string for JSON compatibility).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Wad(pub Number);
 
 #[cfg(feature = "serde")]
@@ -163,24 +164,10 @@ impl From<u128> for Wad {
     }
 }
 
-impl From<Number> for Wad {
-    #[inline]
-    fn from(value: Number) -> Self {
-        Wad(value)
-    }
-}
-
 impl From<Wad> for u128 {
     #[inline]
     fn from(w: Wad) -> u128 {
         w.as_u128_trunc()
-    }
-}
-
-impl From<Wad> for Number {
-    #[inline]
-    fn from(value: Wad) -> Self {
-        value.0
     }
 }
 

@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use derive_more::{From, Into};
 use near_sdk::{json_types::U64, near, require, AccountId};
 
 use crate::{
@@ -15,6 +16,7 @@ use crate::{
 /// This struct can only be constructed after accumulating yield on a
 /// supply position. This serves as proof that the yield has accrued, so it
 /// is safe to perform certain other operations.
+#[derive(From, Into)]
 pub struct YieldAccumulationProof(());
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]

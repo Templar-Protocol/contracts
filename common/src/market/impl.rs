@@ -1,3 +1,4 @@
+use derive_more::{From, Into};
 use near_sdk::{
     collections::{LookupMap, UnorderedMap},
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
@@ -19,7 +20,7 @@ use crate::{
     YEAR_PER_MS,
 };
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, From, Into)]
 pub struct SnapshotProof(());
 
 #[derive(BorshStorageKey)]

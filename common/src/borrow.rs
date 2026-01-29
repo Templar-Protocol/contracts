@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use derive_more::{From, Into};
 use near_sdk::{env, json_types::U64, near, AccountId};
 
 use crate::{
@@ -15,7 +16,7 @@ use crate::{
 /// This struct can only be constructed after accumulating interest on a
 /// borrow position. This serves as proof that the interest has accrued, so it
 /// is safe to perform certain other operations.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, From, Into)]
 pub struct InterestAccumulationProof(());
 
 #[cfg(test)]
