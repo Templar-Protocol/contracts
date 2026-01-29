@@ -23,6 +23,7 @@ async fn success_above_mcr_maintenance(
             c.borrow_origination_fee = Fee::zero();
             c.borrow_mcr_liquidation = liquidation;
             c.borrow_mcr_maintenance = maintenance;
+            c.liquidation_maximum_spread = Decimal::ZERO;
         })
     );
 
