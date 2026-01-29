@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use near_crypto::{SecretKey, Signer};
 use near_jsonrpc_client::{
     errors::JsonRpcError,
@@ -231,7 +231,7 @@ impl Accumulator {
                 }
             })
             .buffer_unordered(concurrency)
-            .for_each(|_| async {})
+            .for_each(|()| async {})
             .await;
 
         Ok(())
@@ -281,7 +281,7 @@ impl Accumulator {
                 }
             })
             .buffer_unordered(concurrency)
-            .for_each(|_| async {})
+            .for_each(|()| async {})
             .await;
 
         Ok(())

@@ -1,24 +1,22 @@
 pub mod calculator;
-pub mod common;
 pub mod config;
 pub mod contract;
 pub mod curve;
-pub mod editor;
-pub mod interactive;
 pub mod logger;
 pub mod oracle;
 pub mod output;
 pub mod rpc;
+pub mod ui;
 
 pub use calculator::InterestRateCalculator;
 pub use config::{ConfigBuilder, ConfigValidator};
 pub use contract::ContractReader;
-pub use editor::ConfigEditor;
-pub use interactive::InteractivePrompt;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::query::RpcQueryError};
 pub use oracle::PriceValidator;
 pub use output::ConfigFormatter;
 pub use templar_common::market::MarketConfiguration;
+pub use ui::prompt::wizard::MarketPrompter as ConfigEditor;
+pub use ui::prompt::wizard::MarketPrompter as InteractivePrompt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {

@@ -2,9 +2,8 @@ use crate::CliResult;
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use market_config_cli::{
     calculator::parameters::CurveParameters,
-    common::prompt::utils::prompt_decimal,
-    common::shared::map_dialoguer_err,
     curve::{strategy_from_name, CurveInput, ModelArg},
+    ui::prompt::{error::map_dialoguer_err, helpers::prompt_decimal},
     CliError,
 };
 use near_sdk::AccountId;

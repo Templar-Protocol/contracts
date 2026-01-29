@@ -1,8 +1,8 @@
-use crate::prompts::{prompt_contract_id, prompt_network, prompt_path};
+use crate::cli_prompts::{prompt_contract_id, prompt_network, prompt_path};
 use dialoguer::{theme::ColorfulTheme, Confirm};
 use market_config_cli::calculator::parameters::CurveParameters;
-use market_config_cli::common::shared::map_dialoguer_err;
 use market_config_cli::logger;
+use market_config_cli::ui::prompt::error::map_dialoguer_err;
 use market_config_cli::{
     CliResult, ConfigEditor, ConfigValidator, ContractReader, InteractivePrompt,
     InterestRateCalculator, MarketConfiguration,

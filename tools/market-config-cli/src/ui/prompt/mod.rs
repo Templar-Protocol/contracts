@@ -1,17 +1,22 @@
-pub mod market_prompter;
+pub mod error;
+pub mod helpers;
+pub mod parsers;
 pub mod ranges;
-pub mod utils;
-pub use market_prompter::MarketPrompter;
+pub mod types;
+pub mod wizard;
 
-use crate::common::shared::map_dialoguer_err;
+pub use wizard::MarketPrompter;
+
 use crate::{logger, oracle::PriceValidator, CliError, CliResult, ConfigBuilder, ConfigValidator};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input};
+use error::map_dialoguer_err;
+use helpers::{prompt_decimal, prompt_decimals};
 use near_sdk::AccountId;
+use parsers::{parse_asset_input, parse_price_id};
 use templar_common::{
     asset::{AssetClass, FungibleAsset},
     oracle::pyth::PriceIdentifier,
 };
-use utils::{parse_asset_input, parse_price_id, prompt_decimal, prompt_decimals};
 
 pub struct PromptContext<'a> {
     pub theme: &'a ColorfulTheme,

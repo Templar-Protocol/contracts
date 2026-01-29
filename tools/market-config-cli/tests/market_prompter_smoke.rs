@@ -1,5 +1,5 @@
 use dialoguer::theme::ColorfulTheme;
-use market_config_cli::common::prompt::market_prompter::MarketPrompter;
+use market_config_cli::ui::prompt::wizard::MarketPrompter;
 use templar_common::utils::Network;
 
 #[test]

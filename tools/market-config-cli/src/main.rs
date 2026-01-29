@@ -1,7 +1,8 @@
+mod cli_prompts;
 mod commands;
-mod prompts;
 
 use clap::{Args, Parser, Subcommand};
+use cli_prompts::resolve_curve_params;
 use commands::{
     handle_calculate_curve, handle_from_contract, handle_from_template, handle_interactive,
     handle_validate,
@@ -10,7 +11,6 @@ use dialoguer::theme::ColorfulTheme;
 use market_config_cli::curve::{CurveInput, ModelArg};
 use market_config_cli::{logger, CliResult};
 use near_sdk::AccountId;
-use prompts::resolve_curve_params;
 use std::path::PathBuf;
 use templar_common::{number::Decimal, utils::Network};
 
