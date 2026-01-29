@@ -44,6 +44,12 @@ impl WithdrawRouteEntry {
     }
 }
 
+impl From<(TargetId, u128)> for WithdrawRouteEntry {
+    fn from(value: (TargetId, u128)) -> Self {
+        Self::new(value.0, value.1)
+    }
+}
+
 /// A planned route for withdrawing assets.
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

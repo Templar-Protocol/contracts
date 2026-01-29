@@ -97,7 +97,7 @@ pub fn compute_available_capacity_for_common(
 pub fn validate_supply_queue_no_duplicates(queue: &[MarketId]) -> bool {
     let mut seen = std::collections::HashSet::new();
     for m in queue {
-        if !seen.insert(m.0) {
+        if !seen.insert(u32::from(*m)) {
             return false;
         }
     }
@@ -113,7 +113,10 @@ pub fn build_withdraw_route_from_markets(
     target_amount: u128,
 ) -> Result<Vec<(MarketId, u128)>, WithdrawRouteError> {
     // Convert to TargetId (u32) for curator-primitives
-    let target_principals: Vec<(u32, u128)> = principals.iter().map(|(m, p)| (m.0, *p)).collect();
+    let target_principals: Vec<(u32, u128)> = principals
+        .iter()
+        .map(|(m, p)| (u32::from(*m), *p))
+        .collect();
 
     let route = build_withdraw_route(&target_principals, target_amount)?;
 
@@ -121,7 +124,7 @@ pub fn build_withdraw_route_from_markets(
     Ok(route
         .entries
         .iter()
-        .map(|e| (MarketId(e.target_id), e.max_amount))
+        .map(|e| (MarketId::from(e.target_id), e.max_amount))
         .collect())
 }
 
@@ -131,7 +134,7 @@ pub fn build_withdraw_route_from_markets(
 pub fn validate_withdraw_route_no_duplicates(route: &[MarketId]) -> bool {
     let mut seen = std::collections::HashSet::new();
     for m in route {
-        if !seen.insert(m.0) {
+        if !seen.insert(u32::from(*m)) {
             return false;
         }
     }
@@ -146,14 +149,14 @@ pub fn find_locked_markets(
     markets: &[MarketId],
     current_ns: u64,
 ) -> Vec<MarketId> {
-    let targets: Vec<u32> = markets.iter().map(|m| m.0).collect();
+    let targets: Vec<u32> = markets.iter().copied().map(u32::from).collect();
     let locked = find_locked_targets(lock_set, &targets, current_ns);
-    locked.into_iter().map(MarketId).collect()
+    locked.into_iter().map(MarketId::from).collect()
 }
 
 /// Check if a specific market is locked.
 pub fn is_market_id_locked(lock_set: &MarketLockSet, market: MarketId, current_ns: u64) -> bool {
-    is_market_locked(lock_set, market.0, current_ns)
+    is_market_locked(lock_set, u32::from(market), current_ns)
 }
 
 /// Get all locked market IDs.

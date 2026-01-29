@@ -55,6 +55,12 @@ impl SupplyQueueEntry {
     }
 }
 
+impl From<(TargetId, u128)> for SupplyQueueEntry {
+    fn from(value: (TargetId, u128)) -> Self {
+        Self::new(value.0, value.1)
+    }
+}
+
 /// A queue of pending supply requests.
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

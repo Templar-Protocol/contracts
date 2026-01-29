@@ -163,10 +163,24 @@ impl From<u128> for Wad {
     }
 }
 
+impl From<Number> for Wad {
+    #[inline]
+    fn from(value: Number) -> Self {
+        Wad(value)
+    }
+}
+
 impl From<Wad> for u128 {
     #[inline]
     fn from(w: Wad) -> u128 {
         w.as_u128_trunc()
+    }
+}
+
+impl From<Wad> for Number {
+    #[inline]
+    fn from(value: Wad) -> Self {
+        value.0
     }
 }
 
