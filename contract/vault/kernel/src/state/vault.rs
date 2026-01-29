@@ -1,8 +1,8 @@
 //! Core vault state and configuration types.
 //!
 //! This module provides the chain-agnostic `VaultState` struct that holds
-//! all state required by the kernel. Queue and escrow storage are handled
-//! separately by chain-specific executors.
+//! all state required by the kernel, including the withdrawal queue.
+//! Executors are responsible for persisting this state to storage.
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::fee::Fees;
 use crate::math::wad::Wad;
 use crate::state::op_state::OpState;
+use crate::state::queue::WithdrawQueue;
 use crate::types::TimestampNs;
 
 // ============================================================================
@@ -121,12 +122,12 @@ impl VaultConfig {
 /// This struct contains all the state managed by the kernel. Chain-specific
 /// executors are responsible for:
 /// - Persisting this state to storage
-/// - Managing the pending withdrawal queue (keyed by withdrawal ID)
 /// - Handling share/asset token balances
 ///
 /// # Invariants
 ///
 /// - `total_assets == idle_assets + external_assets`
+/// - `withdraw_queue.check_invariants()`
 /// - `next_op_id` is monotonically increasing
 /// - Operations can only proceed when `op_state` allows them
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
@@ -145,6 +146,8 @@ pub struct VaultState {
     pub fee_anchor: FeeAccrualAnchor,
     /// Current operation state machine state.
     pub op_state: OpState,
+    /// Pending withdrawal queue owned by the kernel.
+    pub withdraw_queue: WithdrawQueue,
     /// Next operation ID to allocate.
     /// Monotonically increasing, never decremented.
     pub next_op_id: u64,
@@ -154,7 +157,7 @@ impl VaultState {
     /// Create a new vault state initialized to zero/idle.
     #[inline]
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             total_assets: 0,
             total_shares: 0,
@@ -162,6 +165,7 @@ impl VaultState {
             external_assets: 0,
             fee_anchor: FeeAccrualAnchor::zero(),
             op_state: OpState::Idle,
+            withdraw_queue: WithdrawQueue::new(),
             next_op_id: 0,
         }
     }
@@ -169,7 +173,7 @@ impl VaultState {
     /// Create a vault state with initial values.
     #[inline]
     #[must_use]
-    pub const fn with_initial(
+    pub fn with_initial(
         total_assets: u128,
         total_shares: u128,
         idle_assets: u128,
@@ -183,6 +187,7 @@ impl VaultState {
             external_assets,
             fee_anchor: FeeAccrualAnchor::new(total_assets, timestamp_ns),
             op_state: OpState::Idle,
+            withdraw_queue: WithdrawQueue::new(),
             next_op_id: 0,
         }
     }
@@ -194,6 +199,7 @@ impl VaultState {
     #[must_use]
     pub fn check_invariant(&self) -> bool {
         self.total_assets == self.idle_assets.saturating_add(self.external_assets)
+            && self.withdraw_queue.check_invariants()
     }
 
     /// Allocate and return the next operation ID.
@@ -234,6 +240,8 @@ impl Default for VaultState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::collections::BTreeMap;
+    use crate::state::queue::{PendingWithdrawal, WithdrawQueue};
 
     #[test]
     fn test_fee_anchor_new() {
@@ -288,6 +296,19 @@ mod tests {
         state.total_assets = 1000;
         state.idle_assets = 400;
         state.external_assets = 500; // 400 + 500 = 900 != 1000
+        assert!(!state.check_invariant());
+    }
+
+    #[test]
+    fn test_vault_state_queue_invariant_violation() {
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            5,
+            PendingWithdrawal::new([1u8; 32], [1u8; 32], 100, 1000, 0),
+        );
+
+        let mut state = VaultState::new();
+        state.withdraw_queue = WithdrawQueue::with_state(pending, 0, 6);
         assert!(!state.check_invariant());
     }
 
