@@ -23,11 +23,11 @@ use crate::policy::withdraw_route::{
     WithdrawRouteEntry,
 };
 use crate::recovery::{
-    compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryAction,
-    RecoveryContext,
+    compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
 };
 use templar_vault_kernel::{
-    AllocatingState, OpState, PayoutState, RefreshingState, WithdrawingState,
+    AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
+    WithdrawingState,
 };
 
 // WAD constant matching templar-vault-kernel
@@ -368,17 +368,12 @@ fn golden_recovery_allocating_state() {
     });
 
     let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx);
+    let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
     match action {
-        RecoveryAction::AbortAllocating {
-            op_id,
-            remaining,
-            completed_targets,
-        } => {
+        KernelAction::AbortAllocating { op_id, restore_idle } => {
             assert_eq!(op_id, 42);
-            assert_eq!(remaining, 500_000_000_000);
-            assert_eq!(completed_targets, vec![0, 1]); // First 2 completed
+            assert_eq!(restore_idle, 500_000_000_000);
         }
         _ => panic!("Expected AbortAllocating"),
     }
@@ -403,19 +398,12 @@ fn golden_recovery_withdrawing_state() {
     });
 
     let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx);
+    let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
     match action {
-        RecoveryAction::AbortWithdrawing {
-            op_id,
-            escrow_shares,
-            owner,
-            collected,
-        } => {
+        KernelAction::AbortWithdrawing { op_id, refund_shares } => {
             assert_eq!(op_id, 43);
-            assert_eq!(escrow_shares, 1_000_000_000_000);
-            assert_eq!(owner, owner_addr(1));
-            assert_eq!(collected, 600_000_000_000);
+            assert_eq!(refund_shares, 1_000_000_000_000);
         }
         _ => panic!("Expected AbortWithdrawing"),
     }
@@ -433,20 +421,21 @@ fn golden_recovery_payout_state() {
     });
 
     let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx);
+    let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
     match action {
-        RecoveryAction::SettlePayout {
-            op_id,
-            success,
-            burn_shares,
-            refund_shares,
-            ..
-        } => {
+        KernelAction::SettlePayout { op_id, outcome } => {
             assert_eq!(op_id, 44);
-            assert!(!success); // Recovery always fails payout
-            assert_eq!(burn_shares, 0);
-            assert_eq!(refund_shares, 500_000_000_000); // Full refund
+            match outcome {
+                PayoutOutcome::Failure {
+                    restore_idle,
+                    refund_shares,
+                } => {
+                    assert_eq!(restore_idle, 1_000_000_000_000);
+                    assert_eq!(refund_shares, 500_000_000_000); // Full refund
+                }
+                _ => panic!("Expected failure outcome"),
+            }
         }
         _ => panic!("Expected SettlePayout"),
     }
@@ -572,17 +561,11 @@ fn golden_refresh_after_allocation() {
 
     // Check recovery from stuck refresh
     let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx);
+    let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
     match action {
-        RecoveryAction::AbortRefreshing {
-            op_id,
-            completed_targets,
-            remaining_targets,
-        } => {
+        KernelAction::AbortRefreshing { op_id } => {
             assert_eq!(op_id, 100);
-            assert_eq!(completed_targets.len(), 1);
-            assert_eq!(remaining_targets.len(), 2);
         }
         _ => panic!("Expected AbortRefreshing"),
     }

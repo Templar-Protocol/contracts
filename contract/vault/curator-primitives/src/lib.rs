@@ -49,6 +49,6 @@ pub use policy::{
 
 pub use recovery::{
     determine_recovery_action, handle_allocation_failure, handle_payout_failure,
-    handle_refresh_failure, handle_withdrawal_failure, RecoveryAction, RecoveryContext,
-    RecoveryError, RecoveryOutcome,
+    handle_refresh_failure, handle_withdrawal_failure, RecoveryContext, RecoveryError,
+    RecoveryOutcome,
 };

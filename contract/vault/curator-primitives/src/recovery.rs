@@ -5,10 +5,10 @@
 //!
 //! # Recovery Actions
 //!
-//! - `AbortAllocating`: Cancel an allocation operation and return to Idle
-//! - `AbortWithdrawing`: Cancel a withdrawal operation and refund escrow
-//! - `AbortRefreshing`: Cancel a refresh operation and return to Idle
-//! - `SettlePayout`: Complete a payout operation (success or failure path)
+//! - `KernelAction::AbortAllocating`: Cancel an allocation operation and return to Idle
+//! - `KernelAction::AbortWithdrawing`: Cancel a withdrawal operation and refund escrow
+//! - `KernelAction::AbortRefreshing`: Cancel a refresh operation and return to Idle
+//! - `KernelAction::SettlePayout`: Complete a payout operation (success or failure path)
 //!
 //! # Design Principles
 //!
@@ -17,73 +17,10 @@
 //! 3. Recovery should be safe to retry
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use templar_vault_kernel::{
-    AllocatingState, Address, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
+    AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
+    WithdrawingState,
 };
-
-/// Actions that can be taken during recovery.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecoveryAction {
-    /// Abort the current allocation and return to Idle.
-    AbortAllocating {
-        /// Operation ID being aborted.
-        op_id: u64,
-        /// Remaining amount that was not allocated.
-        remaining: u128,
-        /// Targets that were already allocated to.
-        completed_targets: Vec<TargetId>,
-    },
-
-    /// Abort the current withdrawal and refund escrow shares.
-    AbortWithdrawing {
-        /// Operation ID being aborted.
-        op_id: u64,
-        /// Shares to refund to the owner.
-        escrow_shares: u128,
-        /// Owner to receive the refund.
-        owner: Address,
-        /// Amount already collected (stays in idle balance).
-        collected: u128,
-    },
-
-    /// Abort the current refresh and return to Idle.
-    AbortRefreshing {
-        /// Operation ID being aborted.
-        op_id: u64,
-        /// Targets that were already refreshed.
-        completed_targets: Vec<TargetId>,
-        /// Targets that were not refreshed.
-        remaining_targets: Vec<TargetId>,
-    },
-
-    /// Settle the payout operation.
-    SettlePayout {
-        /// Operation ID being settled.
-        op_id: u64,
-        /// Whether the payout succeeded.
-        success: bool,
-        /// Shares to burn (only on success).
-        burn_shares: u128,
-        /// Shares to refund.
-        refund_shares: u128,
-        /// Owner to receive refunds.
-        owner: Address,
-        /// Amount paid out (only on success).
-        amount: u128,
-    },
-
-    /// No action needed - already in Idle state.
-    NoActionNeeded,
-
-    /// State is unknown or corrupted.
-    UnknownState {
-        /// Description of the issue.
-        description: String,
-    },
-}
 
 /// Context for determining recovery actions.
 #[derive(Clone, Debug)]
@@ -151,7 +88,7 @@ pub enum RecoveryError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryOutcome {
     /// The action that was taken.
-    pub action: RecoveryAction,
+    pub action: KernelAction,
     /// Whether recovery was successful.
     pub success: bool,
     /// Optional message describing the outcome.
@@ -160,7 +97,7 @@ pub struct RecoveryOutcome {
 
 impl RecoveryOutcome {
     /// Create a successful recovery outcome.
-    pub fn success(action: RecoveryAction) -> Self {
+    pub fn success(action: KernelAction) -> Self {
         Self {
             action,
             success: true,
@@ -169,7 +106,7 @@ impl RecoveryOutcome {
     }
 
     /// Create a successful outcome with a message.
-    pub fn success_with_message(action: RecoveryAction, message: impl Into<String>) -> Self {
+    pub fn success_with_message(action: KernelAction, message: impl Into<String>) -> Self {
         Self {
             action,
             success: true,
@@ -178,7 +115,7 @@ impl RecoveryOutcome {
     }
 
     /// Create a failed recovery outcome.
-    pub fn failure(action: RecoveryAction, message: impl Into<String>) -> Self {
+    pub fn failure(action: KernelAction, message: impl Into<String>) -> Self {
         Self {
             action,
             success: false,
@@ -194,66 +131,28 @@ impl RecoveryOutcome {
 /// * `context` - Recovery context with timestamps and settings
 ///
 /// # Returns
-/// The recovery action to take.
-pub fn determine_recovery_action(state: &OpState, _context: &RecoveryContext) -> RecoveryAction {
+/// The recovery action to take, if any.
+pub fn determine_recovery_action(
+    state: &OpState,
+    _context: &RecoveryContext,
+) -> Option<KernelAction> {
     match state {
-        OpState::Idle => RecoveryAction::NoActionNeeded,
-
-        OpState::Allocating(alloc) => {
-            let completed_targets: Vec<TargetId> = alloc
-                .plan
-                .iter()
-                .take(alloc.index as usize)
-                .map(|(t, _)| *t)
-                .collect();
-
-            RecoveryAction::AbortAllocating {
-                op_id: alloc.op_id,
-                remaining: alloc.remaining,
-                completed_targets,
-            }
-        }
-
-        OpState::Withdrawing(withdraw) => RecoveryAction::AbortWithdrawing {
+        OpState::Idle => None,
+        OpState::Allocating(alloc) => Some(KernelAction::AbortAllocating {
+            op_id: alloc.op_id,
+            restore_idle: alloc.remaining,
+        }),
+        OpState::Withdrawing(withdraw) => Some(KernelAction::AbortWithdrawing {
             op_id: withdraw.op_id,
-            escrow_shares: withdraw.escrow_shares,
-            owner: withdraw.owner,
-            collected: withdraw.collected,
-        },
-
-        OpState::Refreshing(refresh) => {
-            let completed_targets: Vec<TargetId> = refresh
-                .plan
-                .iter()
-                .take(refresh.index as usize)
-                .copied()
-                .collect();
-
-            let remaining_targets: Vec<TargetId> = refresh
-                .plan
-                .iter()
-                .skip(refresh.index as usize)
-                .copied()
-                .collect();
-
-            RecoveryAction::AbortRefreshing {
-                op_id: refresh.op_id,
-                completed_targets,
-                remaining_targets,
-            }
-        }
-
-        OpState::Payout(payout) => {
-            // On recovery, we fail the payout and refund all shares
-            RecoveryAction::SettlePayout {
-                op_id: payout.op_id,
-                success: false,
-                burn_shares: 0,
-                refund_shares: payout.escrow_shares,
-                owner: payout.owner,
-                amount: 0,
-            }
-        }
+            refund_shares: withdraw.escrow_shares,
+        }),
+        OpState::Refreshing(refresh) => Some(KernelAction::AbortRefreshing {
+            op_id: refresh.op_id,
+        }),
+        OpState::Payout(payout) => Some(KernelAction::SettlePayout {
+            op_id: payout.op_id,
+            outcome: compute_payout_failure_outcome(payout.escrow_shares, payout.amount),
+        }),
     }
 }
 
@@ -269,18 +168,10 @@ pub fn handle_allocation_failure(
     state: &AllocatingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    let completed_targets: Vec<TargetId> = state
-        .plan
-        .iter()
-        .take(state.index as usize)
-        .map(|(t, _)| *t)
-        .collect();
-
     RecoveryOutcome::success_with_message(
-        RecoveryAction::AbortAllocating {
+        KernelAction::AbortAllocating {
             op_id: state.op_id,
-            remaining: state.remaining,
-            completed_targets,
+            restore_idle: state.remaining,
         },
         failure_reason,
     )
@@ -299,11 +190,9 @@ pub fn handle_withdrawal_failure(
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
     RecoveryOutcome::success_with_message(
-        RecoveryAction::AbortWithdrawing {
+        KernelAction::AbortWithdrawing {
             op_id: state.op_id,
-            escrow_shares: state.escrow_shares,
-            owner: state.owner,
-            collected: state.collected,
+            refund_shares: state.escrow_shares,
         },
         failure_reason,
     )
@@ -321,26 +210,8 @@ pub fn handle_refresh_failure(
     state: &RefreshingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    let completed_targets: Vec<TargetId> = state
-        .plan
-        .iter()
-        .take(state.index as usize)
-        .copied()
-        .collect();
-
-    let remaining_targets: Vec<TargetId> = state
-        .plan
-        .iter()
-        .skip(state.index as usize)
-        .copied()
-        .collect();
-
     RecoveryOutcome::success_with_message(
-        RecoveryAction::AbortRefreshing {
-            op_id: state.op_id,
-            completed_targets,
-            remaining_targets,
-        },
+        KernelAction::AbortRefreshing { op_id: state.op_id },
         failure_reason,
     )
 }
@@ -355,16 +226,13 @@ pub fn handle_refresh_failure(
 /// Recovery outcome with full escrow refund.
 pub fn handle_payout_failure(
     state: &PayoutState,
+    restore_idle: u128,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
     RecoveryOutcome::success_with_message(
-        RecoveryAction::SettlePayout {
+        KernelAction::SettlePayout {
             op_id: state.op_id,
-            success: false,
-            burn_shares: 0,
-            refund_shares: state.escrow_shares,
-            owner: state.owner,
-            amount: 0,
+            outcome: compute_payout_failure_outcome(state.escrow_shares, restore_idle),
         },
         failure_reason,
     )
@@ -406,6 +274,33 @@ pub fn compute_settlement_shares(
     let refund = escrow_shares.saturating_sub(burn);
 
     (burn, refund)
+}
+
+/// Compute a success payout outcome from escrow and collected amounts.
+///
+/// This maps recovery math into kernel `PayoutOutcome::Success`.
+#[must_use]
+pub fn compute_payout_success_outcome(
+    escrow_shares: u128,
+    expected_amount: u128,
+    collected_amount: u128,
+) -> PayoutOutcome {
+    let (burn_shares, refund_shares) =
+        compute_settlement_shares(escrow_shares, expected_amount, collected_amount);
+
+    PayoutOutcome::Success {
+        burn_shares,
+        refund_shares,
+    }
+}
+
+/// Compute a failure payout outcome from escrow shares and idle restore amount.
+#[must_use]
+pub fn compute_payout_failure_outcome(escrow_shares: u128, restore_idle: u128) -> PayoutOutcome {
+    PayoutOutcome::Failure {
+        restore_idle,
+        refund_shares: escrow_shares,
+    }
 }
 
 /// Compute recovery statistics from the current state.
@@ -475,6 +370,7 @@ mod tests {
     use super::*;
     use alloc::string::String;
     use alloc::vec;
+    use templar_vault_kernel::Address;
 
     fn addr_with_tag(tag: u8, index: u64) -> Address {
         let mut addr = [0u8; 32];
@@ -498,7 +394,7 @@ mod tests {
 
         let action = determine_recovery_action(&state, &ctx);
 
-        assert!(matches!(action, RecoveryAction::NoActionNeeded));
+        assert!(action.is_none());
     }
 
     #[test]
@@ -511,17 +407,12 @@ mod tests {
         });
         let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx);
+        let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
         match action {
-            RecoveryAction::AbortAllocating {
-                op_id,
-                remaining,
-                completed_targets,
-            } => {
+            KernelAction::AbortAllocating { op_id, restore_idle } => {
                 assert_eq!(op_id, 1);
-                assert_eq!(remaining, 500);
-                assert_eq!(completed_targets, vec![0, 1]);
+                assert_eq!(restore_idle, 500);
             }
             _ => panic!("Expected AbortAllocating"),
         }
@@ -540,19 +431,12 @@ mod tests {
         });
         let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx);
+        let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
         match action {
-            RecoveryAction::AbortWithdrawing {
-                op_id,
-                escrow_shares,
-                owner,
-                collected,
-            } => {
+            KernelAction::AbortWithdrawing { op_id, refund_shares } => {
                 assert_eq!(op_id, 2);
-                assert_eq!(escrow_shares, 1000);
-                assert_eq!(owner, owner_addr(1));
-                assert_eq!(collected, 600);
+                assert_eq!(refund_shares, 1000);
             }
             _ => panic!("Expected AbortWithdrawing"),
         }
@@ -567,17 +451,11 @@ mod tests {
         });
         let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx);
+        let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
         match action {
-            RecoveryAction::AbortRefreshing {
-                op_id,
-                completed_targets,
-                remaining_targets,
-            } => {
+            KernelAction::AbortRefreshing { op_id } => {
                 assert_eq!(op_id, 3);
-                assert_eq!(completed_targets, vec![0]);
-                assert_eq!(remaining_targets, vec![1, 2]);
             }
             _ => panic!("Expected AbortRefreshing"),
         }
@@ -595,20 +473,21 @@ mod tests {
         });
         let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx);
+        let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
         match action {
-            RecoveryAction::SettlePayout {
-                op_id,
-                success,
-                burn_shares,
-                refund_shares,
-                ..
-            } => {
+            KernelAction::SettlePayout { op_id, outcome } => {
                 assert_eq!(op_id, 4);
-                assert!(!success); // Recovery always fails the payout
-                assert_eq!(burn_shares, 0);
-                assert_eq!(refund_shares, 500);
+                match outcome {
+                    PayoutOutcome::Failure {
+                        restore_idle,
+                        refund_shares,
+                    } => {
+                        assert_eq!(restore_idle, 1000);
+                        assert_eq!(refund_shares, 500);
+                    }
+                    _ => panic!("Expected failure outcome"),
+                }
             }
             _ => panic!("Expected SettlePayout"),
         }
@@ -635,6 +514,36 @@ mod tests {
         let (burn, refund) = compute_settlement_shares(1000, 500, 600);
         assert_eq!(burn, 1000);
         assert_eq!(refund, 0);
+    }
+
+    #[test]
+    fn test_compute_payout_success_outcome_maps_settlement() {
+        let outcome = compute_payout_success_outcome(1000, 500, 250);
+        match outcome {
+            PayoutOutcome::Success {
+                burn_shares,
+                refund_shares,
+            } => {
+                assert_eq!(burn_shares, 500);
+                assert_eq!(refund_shares, 500);
+            }
+            _ => panic!("Expected success outcome"),
+        }
+    }
+
+    #[test]
+    fn test_compute_payout_failure_outcome_refunds_all() {
+        let outcome = compute_payout_failure_outcome(1000, 250);
+        match outcome {
+            PayoutOutcome::Failure {
+                restore_idle,
+                refund_shares,
+            } => {
+                assert_eq!(restore_idle, 250);
+                assert_eq!(refund_shares, 1000);
+            }
+            _ => panic!("Expected failure outcome"),
+        }
     }
 
     #[test]
@@ -665,14 +574,9 @@ mod tests {
         assert!(outcome.success);
         assert_eq!(outcome.message, Some(String::from("Market unavailable")));
         match outcome.action {
-            RecoveryAction::AbortAllocating {
-                op_id,
-                remaining,
-                completed_targets,
-            } => {
+            KernelAction::AbortAllocating { op_id, restore_idle } => {
                 assert_eq!(op_id, 1);
-                assert_eq!(remaining, 500);
-                assert_eq!(completed_targets, vec![0, 1]);
+                assert_eq!(restore_idle, 500);
             }
             _ => panic!("Expected AbortAllocating"),
         }
@@ -694,15 +598,9 @@ mod tests {
 
         assert!(outcome.success);
         match outcome.action {
-            RecoveryAction::AbortWithdrawing {
-                op_id,
-                escrow_shares,
-                collected,
-                ..
-            } => {
+            KernelAction::AbortWithdrawing { op_id, refund_shares } => {
                 assert_eq!(op_id, 2);
-                assert_eq!(escrow_shares, 1000);
-                assert_eq!(collected, 600);
+                assert_eq!(refund_shares, 1000);
             }
             _ => panic!("Expected AbortWithdrawing"),
         }
@@ -720,14 +618,8 @@ mod tests {
 
         assert!(outcome.success);
         match outcome.action {
-            RecoveryAction::AbortRefreshing {
-                op_id,
-                completed_targets,
-                remaining_targets,
-            } => {
+            KernelAction::AbortRefreshing { op_id } => {
                 assert_eq!(op_id, 3);
-                assert_eq!(completed_targets, vec![0]);
-                assert_eq!(remaining_targets, vec![1, 2]);
             }
             _ => panic!("Expected AbortRefreshing"),
         }
@@ -744,21 +636,22 @@ mod tests {
             burn_shares: 400,
         };
 
-        let outcome = handle_payout_failure(&state, "Transfer rejected");
+        let outcome = handle_payout_failure(&state, 1000, "Transfer rejected");
 
         assert!(outcome.success);
         match outcome.action {
-            RecoveryAction::SettlePayout {
-                op_id,
-                success,
-                burn_shares,
-                refund_shares,
-                ..
-            } => {
+            KernelAction::SettlePayout { op_id, outcome } => {
                 assert_eq!(op_id, 4);
-                assert!(!success);
-                assert_eq!(burn_shares, 0);
-                assert_eq!(refund_shares, 500);
+                match outcome {
+                    PayoutOutcome::Failure {
+                        restore_idle,
+                        refund_shares,
+                    } => {
+                        assert_eq!(restore_idle, 1000);
+                        assert_eq!(refund_shares, 500);
+                    }
+                    _ => panic!("Expected failure outcome"),
+                }
             }
             _ => panic!("Expected SettlePayout"),
         }
@@ -815,7 +708,7 @@ mod tests {
 
     #[test]
     fn test_recovery_outcome_creation() {
-        let action = RecoveryAction::NoActionNeeded;
+        let action = KernelAction::AbortRefreshing { op_id: 1 };
 
         let success = RecoveryOutcome::success(action.clone());
         assert!(success.success);
