@@ -44,7 +44,7 @@
     "maximum": "10000000000"
   },
   "supply_withdrawal_range": {
-    "minimum": "400000",
+    "minimum": "0",
     "maximum": null
   },
   "supply_withdrawal_fee": {
