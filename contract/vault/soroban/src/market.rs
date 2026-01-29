@@ -87,6 +87,12 @@ impl From<[u8; 32]> for SorobanAddress {
     }
 }
 
+impl From<SorobanAddress> for [u8; 32] {
+    fn from(value: SorobanAddress) -> Self {
+        value.0
+    }
+}
+
 /// Mock Soroban bytes (placeholder for `soroban_sdk::Bytes`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bytes(pub Vec<u8>);
@@ -110,6 +116,12 @@ impl Bytes {
 impl From<Vec<u8>> for Bytes {
     fn from(v: Vec<u8>) -> Self {
         Self(v)
+    }
+}
+
+impl From<Bytes> for Vec<u8> {
+    fn from(value: Bytes) -> Self {
+        value.0
     }
 }
 
@@ -282,6 +294,18 @@ impl MarketRef {
             market_id,
             asset_id,
         }
+    }
+}
+
+impl From<(TargetId, AssetId)> for MarketRef {
+    fn from(value: (TargetId, AssetId)) -> Self {
+        Self::new(value.0, value.1)
+    }
+}
+
+impl From<MarketRef> for (TargetId, AssetId) {
+    fn from(value: MarketRef) -> Self {
+        (value.market_id, value.asset_id)
     }
 }
 
@@ -486,7 +510,7 @@ mod tests {
     #[test]
     fn test_market_ref_new() {
         let asset = AssetId::from([7u8; 32]);
-        let market_ref = MarketRef::new(42, asset.clone());
+        let market_ref: MarketRef = (42, asset.clone()).into();
         assert_eq!(market_ref.market_id, 42);
         assert_eq!(market_ref.asset_id, asset);
     }

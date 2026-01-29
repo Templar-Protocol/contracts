@@ -76,6 +76,12 @@ impl From<&str> for CapGroupId {
     }
 }
 
+impl From<CapGroupId> for String {
+    fn from(value: CapGroupId) -> Self {
+        value.0
+    }
+}
+
 impl core::fmt::Display for CapGroupId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.0.fmt(f)

@@ -40,6 +40,18 @@ impl StorageVersion {
     }
 }
 
+impl From<u32> for StorageVersion {
+    fn from(value: u32) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<StorageVersion> for u32 {
+    fn from(value: StorageVersion) -> Self {
+        value.0
+    }
+}
+
 impl Default for StorageVersion {
     fn default() -> Self {
         Self::CURRENT

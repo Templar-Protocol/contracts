@@ -456,7 +456,7 @@ pub fn reconcile_external_assets<A: MarketAdapter>(
 pub fn build_refresh_plan(asset_id: AssetId, markets: &[TargetId]) -> Vec<MarketRef> {
     markets
         .iter()
-        .map(|market_id| MarketRef::new(*market_id, asset_id.clone()))
+        .map(|market_id| (*market_id, asset_id.clone()).into())
         .collect()
 }
 
@@ -499,9 +499,9 @@ mod tests {
         };
         let asset = AssetId::from([7u8; 32]);
         let plan = vec![
-            MarketRef::new(1, asset.clone()),
-            MarketRef::new(2, asset.clone()),
-            MarketRef::new(3, asset),
+            (1, asset.clone()).into(),
+            (2, asset.clone()).into(),
+            (3, asset).into(),
         ];
 
         let record = reconcile_external_assets(&adapter, 42, &plan).unwrap();
