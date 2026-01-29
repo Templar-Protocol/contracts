@@ -23,7 +23,12 @@ fn deposit_effects_execute() {
             shares: 100,
         },
         KernelEffect::EmitEvent {
-            event: templar_vault_kernel::effects::KernelEvent::Placeholder,
+            event: templar_vault_kernel::effects::KernelEvent::DepositProcessed {
+                owner: [8u8; 32],
+                receiver: [9u8; 32],
+                assets_in: 1000,
+                shares_out: 100,
+            },
         },
     ];
 
@@ -86,8 +91,8 @@ fn withdrawal_flow_reaches_idle() {
     let request = WithdrawalRequest {
         op_id,
         amount: 150,
-        receiver: "receiver".to_string(),
-        owner: "owner".to_string(),
+        receiver: [6u8; 32],
+        owner: [5u8; 32],
         escrow_shares: 150,
     };
 

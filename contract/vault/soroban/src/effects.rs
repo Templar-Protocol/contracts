@@ -316,7 +316,7 @@ mod tests {
                 amount: 1000,
             },
             KernelEffect::EmitEvent {
-                event: KernelEvent::Placeholder,
+                event: KernelEvent::RefreshCompleted { op_id: 1 },
             },
         ];
 

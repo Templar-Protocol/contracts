@@ -133,6 +133,7 @@ pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64)
 
     let total: u128 = plan.iter().map(|(_, amt)| amt).sum();
 
+    let plan_len = plan.len() as u32;
     let new_state = OpState::Allocating(AllocatingState {
         op_id,
         index: 0,
@@ -143,7 +144,11 @@ pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64)
     Ok(TransitionResult::with_effects(
         new_state,
         vec![KernelEffect::EmitEvent {
-            event: KernelEvent::Placeholder,
+            event: KernelEvent::AllocationStarted {
+                op_id,
+                total,
+                plan_len,
+            },
         }],
     ))
 }
@@ -188,7 +193,11 @@ pub fn allocation_step_callback(
         return Ok(TransitionResult::with_effects(
             OpState::Idle,
             vec![KernelEffect::EmitEvent {
-                event: KernelEvent::Placeholder,
+                event: KernelEvent::AllocationStepFailed {
+                    op_id: alloc.op_id,
+                    index: alloc.index,
+                    remaining: alloc.remaining,
+                },
             }],
         ));
     }
@@ -251,7 +260,10 @@ pub fn complete_allocation(
             Ok(TransitionResult::with_effects(
                 new_state,
                 vec![KernelEffect::EmitEvent {
-                    event: KernelEvent::Placeholder,
+                    event: KernelEvent::AllocationCompleted {
+                        op_id,
+                        has_withdrawal: true,
+                    },
                 }],
             ))
         }
@@ -260,7 +272,10 @@ pub fn complete_allocation(
             Ok(TransitionResult::with_effects(
                 OpState::Idle,
                 vec![KernelEffect::EmitEvent {
-                    event: KernelEvent::Placeholder,
+                    event: KernelEvent::AllocationCompleted {
+                        op_id,
+                        has_withdrawal: false,
+                    },
                 }],
             ))
         }
@@ -323,7 +338,13 @@ pub fn start_withdrawal(state: OpState, request: WithdrawalRequest) -> Transitio
     Ok(TransitionResult::with_effects(
         new_state,
         vec![KernelEffect::EmitEvent {
-            event: KernelEvent::Placeholder,
+            event: KernelEvent::WithdrawalStarted {
+                op_id: request.op_id,
+                amount: request.amount,
+                escrow_shares: request.escrow_shares,
+                owner: request.owner,
+                receiver: request.receiver,
+            },
         }],
     ))
 }
@@ -420,7 +441,11 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
     Ok(TransitionResult::with_effects(
         new_state,
         vec![KernelEffect::EmitEvent {
-            event: KernelEvent::Placeholder,
+            event: KernelEvent::WithdrawalCollected {
+                op_id,
+                burn_shares,
+                collected: withdraw.collected,
+            },
         }],
     ))
 }
@@ -467,7 +492,10 @@ pub fn stop_withdrawal(state: OpState, op_id: u64) -> TransitionRes {
     }
 
     effects.push(KernelEffect::EmitEvent {
-        event: KernelEvent::Placeholder,
+        event: KernelEvent::WithdrawalStopped {
+            op_id,
+            escrow_shares: withdraw.escrow_shares,
+        },
     });
 
     Ok(TransitionResult::with_effects(OpState::Idle, effects))
@@ -497,6 +525,7 @@ pub fn start_refresh(state: OpState, plan: Vec<TargetId>, op_id: u64) -> Transit
         return Err(TransitionError::EmptyRefreshPlan);
     }
 
+    let plan_len = plan.len() as u32;
     let new_state = OpState::Refreshing(RefreshingState {
         op_id,
         index: 0,
@@ -506,7 +535,10 @@ pub fn start_refresh(state: OpState, plan: Vec<TargetId>, op_id: u64) -> Transit
     Ok(TransitionResult::with_effects(
         new_state,
         vec![KernelEffect::EmitEvent {
-            event: KernelEvent::Placeholder,
+            event: KernelEvent::RefreshStarted {
+                op_id,
+                plan_len,
+            },
         }],
     ))
 }
@@ -575,7 +607,7 @@ pub fn complete_refresh(state: OpState, op_id: u64) -> TransitionRes {
     Ok(TransitionResult::with_effects(
         OpState::Idle,
         vec![KernelEffect::EmitEvent {
-            event: KernelEvent::Placeholder,
+            event: KernelEvent::RefreshCompleted { op_id },
         }],
     ))
 }
@@ -614,9 +646,14 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
 
     let owner_address = payout.owner;
 
+    let mut burn_shares = 0u128;
+    let mut refund_shares = 0u128;
+    let mut amount = 0u128;
+
     if success {
         // Burn the designated shares
         if payout.burn_shares > 0 {
+            burn_shares = payout.burn_shares;
             effects.push(KernelEffect::BurnShares {
                 owner: owner_address,
                 shares: payout.burn_shares,
@@ -624,7 +661,7 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
         }
 
         // Refund any remaining escrow shares
-        let refund_shares = payout.escrow_shares.saturating_sub(payout.burn_shares);
+        refund_shares = payout.escrow_shares.saturating_sub(payout.burn_shares);
         if refund_shares > 0 {
             let escrow_address = [0u8; 32];
             effects.push(KernelEffect::TransferShares {
@@ -633,9 +670,12 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
                 shares: refund_shares,
             });
         }
+
+        amount = payout.amount;
     } else {
         // On failure, refund all escrow shares
         if payout.escrow_shares > 0 {
+            refund_shares = payout.escrow_shares;
             let escrow_address = [0u8; 32];
             effects.push(KernelEffect::TransferShares {
                 from: escrow_address,
@@ -646,7 +686,13 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
     }
 
     effects.push(KernelEffect::EmitEvent {
-        event: KernelEvent::Placeholder,
+        event: KernelEvent::PayoutCompleted {
+            op_id,
+            success,
+            burn_shares,
+            refund_shares,
+            amount,
+        },
     });
 
     Ok(TransitionResult::with_effects(OpState::Idle, effects))
@@ -1601,5 +1647,111 @@ mod proptests {
             prop_assert!(result.is_err());
             prop_assert!(matches!(result, Err(TransitionError::EmptyRefreshPlan)));
         }
+    }
+
+    fn extract_event(effects: &[KernelEffect]) -> Option<&KernelEvent> {
+        effects.iter().find_map(|effect| {
+            if let KernelEffect::EmitEvent { event } = effect {
+                Some(event)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[test]
+    fn start_allocation_emits_event() {
+        let plan = vec![(0, 100), (1, 200)];
+        let result = start_allocation(OpState::Idle, plan.clone(), 7).unwrap();
+        let event = extract_event(&result.effects).expect("event");
+
+        assert!(matches!(
+            event,
+            KernelEvent::AllocationStarted { op_id: 7, total: 300, plan_len: 2 }
+        ));
+    }
+
+    #[test]
+    fn complete_allocation_emits_event() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 9,
+            index: 0,
+            remaining: 0,
+            plan: vec![(0, 1)],
+        });
+
+        let result = complete_allocation(state, 9, None).unwrap();
+        let event = extract_event(&result.effects).expect("event");
+        assert!(matches!(
+            event,
+            KernelEvent::AllocationCompleted { op_id: 9, has_withdrawal: false }
+        ));
+    }
+
+    #[test]
+    fn withdrawal_events_emitted() {
+        let request = WithdrawalRequest {
+            op_id: 3,
+            amount: 500,
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
+            escrow_shares: 250,
+        };
+        let result = start_withdrawal(OpState::Idle, request).unwrap();
+        let event = extract_event(&result.effects).expect("event");
+        assert!(matches!(
+            event,
+            KernelEvent::WithdrawalStarted { op_id: 3, amount: 500, escrow_shares: 250, .. }
+        ));
+
+        let state = OpState::Withdrawing(WithdrawingState {
+            op_id: 3,
+            index: 0,
+            remaining: 0,
+            collected: 500,
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
+            escrow_shares: 250,
+        });
+        let result = withdrawal_collected(state, 3, 200).unwrap();
+        let event = extract_event(&result.effects).expect("event");
+        assert!(matches!(
+            event,
+            KernelEvent::WithdrawalCollected { op_id: 3, burn_shares: 200, collected: 500 }
+        ));
+    }
+
+    #[test]
+    fn refresh_and_payout_events_emitted() {
+        let result = start_refresh(OpState::Idle, vec![0, 1], 11).unwrap();
+        let event = extract_event(&result.effects).expect("event");
+        assert!(matches!(
+            event,
+            KernelEvent::RefreshStarted { op_id: 11, plan_len: 2 }
+        ));
+
+        let state = OpState::Refreshing(RefreshingState {
+            op_id: 11,
+            index: 2,
+            plan: vec![0, 1],
+        });
+        let result = complete_refresh(state, 11).unwrap();
+        let event = extract_event(&result.effects).expect("event");
+        assert!(matches!(event, KernelEvent::RefreshCompleted { op_id: 11 }));
+
+        let state = OpState::Payout(PayoutState {
+            op_id: 22,
+            receiver: receiver_addr(2),
+            amount: 100,
+            owner: owner_addr(2),
+            escrow_shares: 50,
+            burn_shares: 50,
+        });
+        let result = payout_complete(state, true, 22).unwrap();
+        let event = extract_event(&result.effects).expect("event");
+        assert!(matches!(
+            event,
+            KernelEvent::PayoutCompleted { op_id: 22, success: true, burn_shares: 50, refund_shares: 0, amount: 100 }
+        ));
     }
 }

@@ -1,0 +1,388 @@
+//! Kernel action dispatch for vault state transitions.
+//!
+//! This module defines the public `KernelAction` enum and a dispatcher that
+//! applies actions to `VaultState` and returns effects.
+
+extern crate alloc;
+
+use crate::effects::KernelEffect;
+use crate::error::KernelError;
+use crate::math::number::Number;
+use alloc::vec;
+use alloc::vec::Vec;
+use crate::math::wad::mul_div_floor;
+use crate::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
+use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
+use crate::transitions::{
+    complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
+    WithdrawalRequest,
+};
+use crate::types::{Address, TimestampNs};
+use crate::state::op_state::{OpState, TargetId};
+
+/// Result of applying a kernel action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelResult {
+    pub state: VaultState,
+    pub effects: Vec<KernelEffect>,
+}
+
+impl KernelResult {
+    pub fn new(state: VaultState, effects: Vec<KernelEffect>) -> Self {
+        Self { state, effects }
+    }
+}
+
+/// Outcome for payout settlement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PayoutOutcome {
+    Success {
+        burn_shares: u128,
+        refund_shares: u128,
+    },
+    Failure {
+        restore_idle: u128,
+        refund_shares: u128,
+    },
+}
+
+/// Kernel actions supported by the dispatcher.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KernelAction {
+    BeginAllocating {
+        op_id: u64,
+        plan: Vec<(TargetId, u128)>,
+        now_ns: TimestampNs,
+    },
+    Deposit {
+        owner: Address,
+        receiver: Address,
+        assets_in: u128,
+        min_shares_out: u128,
+        now_ns: TimestampNs,
+    },
+    RequestWithdraw {
+        owner: Address,
+        receiver: Address,
+        shares: u128,
+        min_assets_out: u128,
+        now_ns: TimestampNs,
+    },
+    ExecuteWithdraw {
+        now_ns: TimestampNs,
+    },
+    BeginRefreshing {
+        op_id: u64,
+        plan: Vec<TargetId>,
+        now_ns: TimestampNs,
+    },
+    FinishAllocating {
+        op_id: u64,
+        now_ns: TimestampNs,
+    },
+    SyncExternalAssets {
+        new_external_assets: u128,
+        op_id: u64,
+        now_ns: TimestampNs,
+    },
+    FinishRefreshing {
+        op_id: u64,
+        now_ns: TimestampNs,
+    },
+    AbortRefreshing {
+        op_id: u64,
+    },
+    SettlePayout {
+        op_id: u64,
+        outcome: PayoutOutcome,
+    },
+    AbortAllocating {
+        op_id: u64,
+        restore_idle: u128,
+    },
+    AbortWithdrawing {
+        op_id: u64,
+        refund_shares: u128,
+    },
+    RefreshFees {
+        now_ns: TimestampNs,
+    },
+    Pause { paused: bool },
+}
+
+fn effective_totals(state: &VaultState, config: &VaultConfig) -> (u128, u128) {
+    let supply = state
+        .total_shares
+        .saturating_add(config.virtual_shares)
+        .saturating_add(1);
+    let assets = state
+        .total_assets
+        .saturating_add(config.virtual_assets)
+        .saturating_add(1);
+    (supply, assets)
+}
+
+fn convert_to_shares(state: &VaultState, config: &VaultConfig, assets: u128) -> u128 {
+    let (supply, assets_total) = effective_totals(state, config);
+    u128::from(mul_div_floor(
+        Number::from(assets),
+        Number::from(supply),
+        Number::from(assets_total),
+    ))
+}
+
+fn convert_to_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
+    let (supply, assets_total) = effective_totals(state, config);
+    u128::from(mul_div_floor(
+        Number::from(shares),
+        Number::from(assets_total),
+        Number::from(supply),
+    ))
+}
+
+/// Apply a kernel action to state, returning updated state and effects.
+pub fn apply_action(
+    mut state: VaultState,
+    config: &VaultConfig,
+    action: KernelAction,
+) -> Result<KernelResult, KernelError> {
+    match action {
+        KernelAction::Deposit {
+            owner,
+            receiver,
+            assets_in,
+            min_shares_out,
+            now_ns: _,
+        } => {
+            if !state.is_idle() {
+                return Err(KernelError::InvalidState("deposit requires Idle"));
+            }
+            if assets_in == 0 {
+                return Err(KernelError::Slippage {
+                    min: min_shares_out,
+                    actual: 0,
+                });
+            }
+
+            let shares_out = convert_to_shares(&state, config, assets_in);
+            if shares_out < min_shares_out {
+                return Err(KernelError::Slippage {
+                    min: min_shares_out,
+                    actual: shares_out,
+                });
+            }
+
+            state.total_assets = state.total_assets.saturating_add(assets_in);
+            state.idle_assets = state.idle_assets.saturating_add(assets_in);
+            state.total_shares = state.total_shares.saturating_add(shares_out);
+
+            let effects = vec![
+                KernelEffect::MintShares {
+                    owner: receiver,
+                    shares: shares_out,
+                },
+                KernelEffect::EmitEvent {
+                    event: crate::effects::KernelEvent::DepositProcessed {
+                        owner,
+                        receiver,
+                        assets_in,
+                        shares_out,
+                    },
+                },
+            ];
+
+            Ok(KernelResult::new(state, effects))
+        }
+        KernelAction::RequestWithdraw {
+            owner,
+            receiver,
+            shares,
+            min_assets_out,
+            now_ns,
+        } => {
+            if !state.is_idle() {
+                return Err(KernelError::InvalidState("request_withdraw requires Idle"));
+            }
+            if shares == 0 {
+                return Err(KernelError::Slippage {
+                    min: min_assets_out,
+                    actual: 0,
+                });
+            }
+
+            let expected_assets = convert_to_assets(&state, config, shares);
+            if expected_assets < min_assets_out {
+                return Err(KernelError::Slippage {
+                    min: min_assets_out,
+                    actual: expected_assets,
+                });
+            }
+            if expected_assets < config.min_withdrawal_assets {
+                return Err(KernelError::MinWithdrawal {
+                    amount: expected_assets,
+                    min: config.min_withdrawal_assets,
+                });
+            }
+
+            let id = state
+                .withdraw_queue
+                .enqueue(owner, receiver, shares, expected_assets, now_ns, config.max_pending_withdrawals)
+                .map_err(|_| KernelError::QueueFull)?;
+
+            let effects = vec![
+                KernelEffect::TransferShares {
+                    from: owner,
+                    to: [0u8; 32],
+                    shares,
+                },
+                KernelEffect::EmitEvent {
+                    event: crate::effects::KernelEvent::WithdrawalRequested {
+                        id,
+                        owner,
+                        receiver,
+                        shares,
+                        expected_assets,
+                    },
+                },
+            ];
+
+            Ok(KernelResult::new(state, effects))
+        }
+        KernelAction::ExecuteWithdraw { now_ns } => {
+            if !state.is_idle() {
+                return Err(KernelError::InvalidState("execute_withdraw requires Idle"));
+            }
+
+            let Some((_, pending_ref)) = state.withdraw_queue.head() else {
+                return Err(KernelError::EmptyQueue);
+            };
+            let pending = pending_ref.clone();
+
+            if !is_past_cooldown(pending.requested_at_ns, now_ns, DEFAULT_COOLDOWN_NS) {
+                return Err(KernelError::Cooldown {
+                    requested_at: pending.requested_at_ns,
+                    now: now_ns,
+                    cooldown_ns: DEFAULT_COOLDOWN_NS,
+                });
+            }
+
+            let op_id = state.allocate_op_id();
+            let request = WithdrawalRequest {
+                op_id,
+                amount: pending.expected_assets,
+                receiver: pending.receiver,
+                owner: pending.owner,
+                escrow_shares: pending.escrow_shares,
+            };
+
+            let result =
+                start_withdrawal(state.op_state.clone(), request).map_err(KernelError::Transition)?;
+            state.op_state = result.new_state;
+
+            Ok(KernelResult::new(state, result.effects))
+        }
+        KernelAction::BeginAllocating { op_id, plan, .. } => {
+            let result =
+                start_allocation(state.op_state.clone(), plan, op_id).map_err(KernelError::Transition)?;
+            state.op_state = result.new_state;
+            Ok(KernelResult::new(state, result.effects))
+        }
+        KernelAction::FinishAllocating { op_id, now_ns } => {
+            let pending = state.withdraw_queue.head().and_then(|(_, w)| {
+                if is_past_cooldown(w.requested_at_ns, now_ns, DEFAULT_COOLDOWN_NS) {
+                    Some(w.clone())
+                } else {
+                    None
+                }
+            });
+
+            let pending_req = pending.map(|w| WithdrawalRequest {
+                op_id: state.allocate_op_id(),
+                amount: w.expected_assets,
+                receiver: w.receiver,
+                owner: w.owner,
+                escrow_shares: w.escrow_shares,
+            });
+
+            let result = complete_allocation(state.op_state.clone(), op_id, pending_req)
+                .map_err(KernelError::Transition)?;
+            state.op_state = result.new_state;
+            Ok(KernelResult::new(state, result.effects))
+        }
+        KernelAction::BeginRefreshing { op_id, plan, .. } => {
+            let result =
+                start_refresh(state.op_state.clone(), plan, op_id).map_err(KernelError::Transition)?;
+            state.op_state = result.new_state;
+            Ok(KernelResult::new(state, result.effects))
+        }
+        KernelAction::FinishRefreshing { op_id, .. } => {
+            let result =
+                complete_refresh(state.op_state.clone(), op_id).map_err(KernelError::Transition)?;
+            state.op_state = result.new_state;
+            Ok(KernelResult::new(state, result.effects))
+        }
+        KernelAction::SyncExternalAssets {
+            new_external_assets,
+            op_id,
+            ..
+        } => {
+            let Some(active_op_id) = state.op_state.op_id() else {
+                return Err(KernelError::InvalidState("sync_external_assets requires active op"));
+            };
+
+            if active_op_id != op_id {
+                return Err(KernelError::OpIdMismatch {
+                    expected: active_op_id,
+                    actual: op_id,
+                });
+            }
+
+            match state.op_state {
+                OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => {}
+                _ => {
+                    return Err(KernelError::InvalidState(
+                        "sync_external_assets requires Allocating/Withdrawing/Refreshing",
+                    ));
+                }
+            }
+
+            state.external_assets = new_external_assets;
+            state.total_assets = state.idle_assets.saturating_add(new_external_assets);
+
+            let total_assets = state.total_assets;
+            Ok(KernelResult::new(
+                state,
+                vec![KernelEffect::EmitEvent {
+                    event: crate::effects::KernelEvent::ExternalAssetsSynced {
+                        op_id,
+                        new_external_assets,
+                        total_assets,
+                    },
+                }],
+            ))
+        }
+        KernelAction::AbortRefreshing { op_id } => {
+            let result =
+                complete_refresh(state.op_state.clone(), op_id).map_err(KernelError::Transition)?;
+            state.op_state = result.new_state;
+            Ok(KernelResult::new(state, result.effects))
+        }
+        KernelAction::AbortAllocating { .. }
+        | KernelAction::AbortWithdrawing { .. }
+        | KernelAction::SettlePayout { .. }
+        | KernelAction::Pause { .. } => Err(KernelError::NotImplemented),
+        KernelAction::RefreshFees { now_ns } => {
+            state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, now_ns);
+            let total_assets = state.total_assets;
+            Ok(KernelResult::new(
+                state,
+                vec![KernelEffect::EmitEvent {
+                    event: crate::effects::KernelEvent::FeesRefreshed {
+                        now_ns,
+                        total_assets,
+                    },
+                }],
+            ))
+        }
+    }
+}

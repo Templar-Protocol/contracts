@@ -746,7 +746,7 @@ where
         // Phase 4: Emit audit event
         let ctx = self.effect_context(now_ns);
         let effect = templar_vault_kernel::effects::KernelEffect::EmitEvent {
-            event: templar_vault_kernel::effects::KernelEvent::Placeholder,
+            event: templar_vault_kernel::effects::KernelEvent::RefreshCompleted { op_id },
         };
         self.interpreter.execute_effect(&effect, &ctx)?;
 
