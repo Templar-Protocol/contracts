@@ -15,7 +15,7 @@ use crate::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::transitions::{
     complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
-    WithdrawalRequest,
+    stop_withdrawal, withdrawal_step_callback, WithdrawalRequest,
 };
 use crate::types::{Address, TimestampNs};
 use crate::state::op_state::{OpState, TargetId};
@@ -224,7 +224,7 @@ pub fn apply_action(
                 });
             }
 
-            let id = state
+            let _id = state
                 .withdraw_queue
                 .enqueue(owner, receiver, shares, expected_assets, now_ns, config.max_pending_withdrawals)
                 .map_err(|_| KernelError::QueueFull)?;
@@ -236,51 +236,74 @@ pub fn apply_action(
                     shares,
                 },
                 KernelEffect::EmitEvent {
-                    event: crate::effects::KernelEvent::WithdrawalRequested {
-                        id,
-                        owner,
-                        receiver,
-                        shares,
-                        expected_assets,
-                    },
+                    event: crate::effects::KernelEvent::Placeholder,
                 },
             ];
 
             Ok(KernelResult::new(state, effects))
         }
-        KernelAction::ExecuteWithdraw { now_ns } => {
-            if !state.is_idle() {
-                return Err(KernelError::InvalidState("execute_withdraw requires Idle"));
+        KernelAction::ExecuteWithdraw { now_ns } => match state.op_state.clone() {
+            OpState::Idle => {
+                let Some((_, pending_ref)) = state.withdraw_queue.head() else {
+                    return Err(KernelError::EmptyQueue);
+                };
+                let pending = pending_ref.clone();
+
+                if !is_past_cooldown(pending.requested_at_ns, now_ns, DEFAULT_COOLDOWN_NS) {
+                    return Err(KernelError::Cooldown {
+                        requested_at: pending.requested_at_ns,
+                        now: now_ns,
+                        cooldown_ns: DEFAULT_COOLDOWN_NS,
+                    });
+                }
+
+                let op_id = state.allocate_op_id();
+                let request = WithdrawalRequest {
+                    op_id,
+                    amount: pending.expected_assets,
+                    receiver: pending.receiver,
+                    owner: pending.owner,
+                    escrow_shares: pending.escrow_shares,
+                };
+
+                let result =
+                    start_withdrawal(state.op_state.clone(), request).map_err(KernelError::Transition)?;
+                state.op_state = result.new_state;
+
+                Ok(KernelResult::new(state, result.effects))
             }
+            OpState::Withdrawing(_) => {
+                let Some((_, pending_ref)) = state.withdraw_queue.head() else {
+                    return Err(KernelError::EmptyQueue);
+                };
+                let withdraw = match &state.op_state {
+                    OpState::Withdrawing(s) => s,
+                    _ => {
+                        return Err(KernelError::InvalidState(
+                            "execute_withdraw requires Withdrawing",
+                        ))
+                    }
+                };
 
-            let Some((_, pending_ref)) = state.withdraw_queue.head() else {
-                return Err(KernelError::EmptyQueue);
-            };
-            let pending = pending_ref.clone();
+                if pending_ref.owner != withdraw.owner
+                    || pending_ref.receiver != withdraw.receiver
+                    || pending_ref.escrow_shares != withdraw.escrow_shares
+                {
+                    return Err(KernelError::InvalidState(
+                        "withdrawal queue head mismatch",
+                    ));
+                }
 
-            if !is_past_cooldown(pending.requested_at_ns, now_ns, DEFAULT_COOLDOWN_NS) {
-                return Err(KernelError::Cooldown {
-                    requested_at: pending.requested_at_ns,
-                    now: now_ns,
-                    cooldown_ns: DEFAULT_COOLDOWN_NS,
-                });
+                let result =
+                    withdrawal_step_callback(state.op_state.clone(), withdraw.op_id, 0)
+                        .map_err(KernelError::Transition)?;
+                state.op_state = result.new_state;
+                Ok(KernelResult::new(state, result.effects))
             }
-
-            let op_id = state.allocate_op_id();
-            let request = WithdrawalRequest {
-                op_id,
-                amount: pending.expected_assets,
-                receiver: pending.receiver,
-                owner: pending.owner,
-                escrow_shares: pending.escrow_shares,
-            };
-
-            let result =
-                start_withdrawal(state.op_state.clone(), request).map_err(KernelError::Transition)?;
-            state.op_state = result.new_state;
-
-            Ok(KernelResult::new(state, result.effects))
-        }
+            _ => Err(KernelError::InvalidState(
+                "execute_withdraw requires Idle or Withdrawing",
+            )),
+        },
         KernelAction::BeginAllocating { op_id, plan, .. } => {
             let result =
                 start_allocation(state.op_state.clone(), plan, op_id).map_err(KernelError::Transition)?;
@@ -362,15 +385,189 @@ pub fn apply_action(
             ))
         }
         KernelAction::AbortRefreshing { op_id } => {
+            let current_op_id = state
+                .op_state
+                .op_id()
+                .ok_or(KernelError::InvalidState("abort_refreshing requires active op"))?;
+            if current_op_id != op_id {
+                return Err(KernelError::OpIdMismatch {
+                    expected: current_op_id,
+                    actual: op_id,
+                });
+            }
+
+            if !matches!(state.op_state, OpState::Refreshing(_)) {
+                return Err(KernelError::InvalidState(
+                    "abort_refreshing requires Refreshing",
+                ));
+            }
+
+            state.op_state = OpState::Idle;
+            Ok(KernelResult::new(state, vec![]))
+        }
+        KernelAction::AbortAllocating { op_id, restore_idle } => {
+            let alloc = match &state.op_state {
+                OpState::Allocating(s) => s,
+                _ => {
+                    return Err(KernelError::InvalidState(
+                        "abort_allocating requires Allocating",
+                    ))
+                }
+            };
+
+            if alloc.op_id != op_id {
+                return Err(KernelError::OpIdMismatch {
+                    expected: alloc.op_id,
+                    actual: op_id,
+                });
+            }
+            if restore_idle != alloc.remaining {
+                return Err(KernelError::InvalidState(
+                    "abort_allocating restore_idle mismatch",
+                ));
+            }
+
+            state.idle_assets = state.idle_assets.saturating_add(restore_idle);
+            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            state.op_state = OpState::Idle;
+            Ok(KernelResult::new(state, vec![]))
+        }
+        KernelAction::AbortWithdrawing {
+            op_id,
+            refund_shares,
+        } => {
+            let withdraw = match &state.op_state {
+                OpState::Withdrawing(s) => s,
+                _ => {
+                    return Err(KernelError::InvalidState(
+                        "abort_withdrawing requires Withdrawing",
+                    ))
+                }
+            };
+
+            if withdraw.op_id != op_id {
+                return Err(KernelError::OpIdMismatch {
+                    expected: withdraw.op_id,
+                    actual: op_id,
+                });
+            }
+            if refund_shares != withdraw.escrow_shares {
+                return Err(KernelError::InvalidState(
+                    "abort_withdrawing refund_shares mismatch",
+                ));
+            }
+
+            let Some((_, pending)) = state.withdraw_queue.head() else {
+                return Err(KernelError::EmptyQueue);
+            };
+            if pending.owner != withdraw.owner
+                || pending.receiver != withdraw.receiver
+                || pending.escrow_shares != withdraw.escrow_shares
+            {
+                return Err(KernelError::InvalidState(
+                    "withdrawal queue head mismatch",
+                ));
+            }
+
             let result =
-                complete_refresh(state.op_state.clone(), op_id).map_err(KernelError::Transition)?;
+                stop_withdrawal(state.op_state.clone(), op_id).map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
+            state.withdraw_queue.dequeue();
             Ok(KernelResult::new(state, result.effects))
         }
-        KernelAction::AbortAllocating { .. }
-        | KernelAction::AbortWithdrawing { .. }
-        | KernelAction::SettlePayout { .. }
-        | KernelAction::Pause { .. } => Err(KernelError::NotImplemented),
+        KernelAction::SettlePayout { op_id, outcome } => {
+            let payout = match &state.op_state {
+                OpState::Payout(s) => s,
+                _ => {
+                    return Err(KernelError::InvalidState(
+                        "settle_payout requires Payout",
+                    ))
+                }
+            };
+
+            if payout.op_id != op_id {
+                return Err(KernelError::OpIdMismatch {
+                    expected: payout.op_id,
+                    actual: op_id,
+                });
+            }
+
+            let Some((_, pending)) = state.withdraw_queue.head() else {
+                return Err(KernelError::EmptyQueue);
+            };
+            if pending.owner != payout.owner
+                || pending.receiver != payout.receiver
+                || pending.escrow_shares != payout.escrow_shares
+            {
+                return Err(KernelError::InvalidState(
+                    "withdrawal queue head mismatch",
+                ));
+            }
+
+            let escrow_address = [0u8; 32];
+            let mut effects = Vec::new();
+
+            match outcome {
+                PayoutOutcome::Success {
+                    burn_shares,
+                    refund_shares,
+                } => {
+                    if burn_shares.saturating_add(refund_shares) != payout.escrow_shares {
+                        return Err(KernelError::InvalidState(
+                            "payout success settlement mismatch",
+                        ));
+                    }
+
+                    if burn_shares > 0 {
+                        effects.push(KernelEffect::BurnShares {
+                            owner: payout.owner,
+                            shares: burn_shares,
+                        });
+                        state.total_shares = state.total_shares.saturating_sub(burn_shares);
+                    }
+                    if refund_shares > 0 {
+                        effects.push(KernelEffect::TransferShares {
+                            from: escrow_address,
+                            to: payout.owner,
+                            shares: refund_shares,
+                        });
+                    }
+
+                    state.op_state = OpState::Idle;
+                }
+                PayoutOutcome::Failure {
+                    restore_idle,
+                    refund_shares,
+                } => {
+                    if refund_shares != payout.escrow_shares {
+                        return Err(KernelError::InvalidState(
+                            "payout failure settlement mismatch",
+                        ));
+                    }
+
+                    if refund_shares > 0 {
+                        effects.push(KernelEffect::TransferShares {
+                            from: escrow_address,
+                            to: payout.owner,
+                            shares: refund_shares,
+                        });
+                    }
+
+                    state.idle_assets = state.idle_assets.saturating_add(restore_idle);
+                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                    state.op_state = OpState::Idle;
+                }
+            }
+
+            state.withdraw_queue.dequeue();
+            Ok(KernelResult::new(state, effects))
+        }
+        KernelAction::Pause { paused } => Ok(KernelResult::new(
+            state,
+            vec![KernelEffect::EmitEvent {
+                event: crate::effects::KernelEvent::PauseUpdated { paused },
+            }],
+        )),
         KernelAction::RefreshFees { now_ns } => {
             state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, now_ns);
             let total_assets = state.total_assets;
