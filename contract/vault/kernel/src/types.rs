@@ -2,7 +2,6 @@
 //!
 //! These types are designed to be portable across NEAR and Soroban.
 
-use alloc::string::String;
 use derive_more::{From, Into};
 
 #[cfg(feature = "borsh")]
@@ -18,15 +17,6 @@ pub type ExpectedIdx = u32;
 
 /// Actual index reached during processing.
 pub type ActualIdx = u32;
-
-/// Generic actor identifier (account/address).
-/// On NEAR: maps to AccountId
-/// On Soroban: maps to Address.to_string()
-///
-/// Note: Canonical 32-byte `Address` is used for kernel effects and
-/// chain-agnostic identifiers. `ActorId` remains a human-readable form for
-/// queue/escrow bookkeeping.
-pub type ActorId = String;
 
 /// Canonical address bytes (32 bytes).
 /// Executors map chain-native account identifiers to this form (sha256 hash).

@@ -5,16 +5,27 @@
 #![cfg(kani)]
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
-
 use kani::any;
 
 use crate::state::queue::PendingWithdrawal;
+use crate::types::Address;
+
+fn owner_addr() -> Address {
+    let mut addr = [0u8; 32];
+    addr[0] = 0x11;
+    addr
+}
+
+fn receiver_addr() -> Address {
+    let mut addr = [0u8; 32];
+    addr[0] = 0x22;
+    addr
+}
 
 fn dummy_withdrawal() -> PendingWithdrawal {
     PendingWithdrawal {
-        owner: String::from("owner"),
-        receiver: String::from("receiver"),
+        owner: owner_addr(),
+        receiver: receiver_addr(),
         escrow_shares: 1,
         expected_assets: 1,
         requested_at_ns: 0,

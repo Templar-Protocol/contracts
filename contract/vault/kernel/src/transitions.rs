@@ -33,7 +33,7 @@ use crate::effects::{KernelEffect, KernelEvent};
 use crate::state::op_state::{
     AllocatingState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
-use crate::types::ActorId;
+use crate::types::Address;
 
 /// Error types for state transitions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,9 +279,9 @@ pub struct WithdrawalRequest {
     /// Amount of assets to withdraw.
     pub amount: u128,
     /// Receiver of the assets.
-    pub receiver: ActorId,
+    pub receiver: Address,
     /// Owner of the shares being redeemed.
-    pub owner: ActorId,
+    pub owner: Address,
     /// Shares held in escrow for this withdrawal.
     pub escrow_shares: u128,
 }
@@ -367,8 +367,8 @@ pub fn withdrawal_step_callback(
         index: new_index,
         remaining: new_remaining,
         collected: new_collected,
-        receiver: withdraw.receiver.clone(),
-        owner: withdraw.owner.clone(),
+        receiver: withdraw.receiver,
+        owner: withdraw.owner,
         escrow_shares: withdraw.escrow_shares,
     });
 
@@ -410,9 +410,9 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
 
     let new_state = OpState::Payout(PayoutState {
         op_id: withdraw.op_id,
-        receiver: withdraw.receiver.clone(),
+        receiver: withdraw.receiver,
         amount: withdraw.collected,
-        owner: withdraw.owner.clone(),
+        owner: withdraw.owner,
         escrow_shares: withdraw.escrow_shares,
         burn_shares,
     });
@@ -458,12 +458,7 @@ pub fn stop_withdrawal(state: OpState, op_id: u64) -> TransitionRes {
     if withdraw.escrow_shares > 0 {
         // Using a placeholder address for escrow - runtime will substitute
         let escrow_address = [0u8; 32];
-        let mut owner_address = [0u8; 32];
-        // Copy owner bytes if available (simplified - real impl would convert)
-        let owner_bytes = withdraw.owner.as_bytes();
-        let len = owner_bytes.len().min(32);
-        owner_address[..len].copy_from_slice(&owner_bytes[..len]);
-
+        let owner_address = withdraw.owner;
         effects.push(KernelEffect::TransferShares {
             from: escrow_address,
             to: owner_address,
@@ -617,11 +612,7 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
 
     let mut effects = vec![];
 
-    // Convert owner to address bytes (simplified)
-    let mut owner_address = [0u8; 32];
-    let owner_bytes = payout.owner.as_bytes();
-    let len = owner_bytes.len().min(32);
-    owner_address[..len].copy_from_slice(&owner_bytes[..len]);
+    let owner_address = payout.owner;
 
     if success {
         // Burn the designated shares
@@ -668,7 +659,21 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::String;
+
+    fn addr_with_tag(tag: u8, index: u64) -> Address {
+        let mut addr = [0u8; 32];
+        addr[0] = tag;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
+
+    fn owner_addr(index: u64) -> Address {
+        addr_with_tag(0x11, index)
+    }
+
+    fn receiver_addr(index: u64) -> Address {
+        addr_with_tag(0x22, index)
+    }
 
     // -------------------------------------------------------------------------
     // Allocation Tests
@@ -790,8 +795,8 @@ mod tests {
         let request = WithdrawalRequest {
             op_id: 2,
             amount: 300,
-            receiver: String::from("receiver.near"),
-            owner: String::from("owner.near"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 100,
         };
 
@@ -801,7 +806,7 @@ mod tests {
         let withdraw = result.new_state.as_withdrawing().unwrap();
         assert_eq!(withdraw.op_id, 2);
         assert_eq!(withdraw.remaining, 300);
-        assert_eq!(withdraw.receiver, "receiver.near");
+        assert_eq!(withdraw.receiver, receiver_addr(1));
     }
 
     // -------------------------------------------------------------------------
@@ -814,8 +819,8 @@ mod tests {
         let request = WithdrawalRequest {
             op_id: 1,
             amount: 1000,
-            receiver: String::from("receiver.near"),
-            owner: String::from("owner.near"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 500,
         };
 
@@ -835,8 +840,8 @@ mod tests {
         let request = WithdrawalRequest {
             op_id: 1,
             amount: 0,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 100,
         };
 
@@ -851,8 +856,8 @@ mod tests {
         let request = WithdrawalRequest {
             op_id: 1,
             amount: 1000,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 0,
         };
 
@@ -868,8 +873,8 @@ mod tests {
             index: 0,
             remaining: 1000,
             collected: 0,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 500,
         });
 
@@ -888,8 +893,8 @@ mod tests {
             index: 2,
             remaining: 0,
             collected: 1000,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 500,
         });
 
@@ -909,8 +914,8 @@ mod tests {
             index: 0,
             remaining: 0,
             collected: 1000,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 500,
         });
 
@@ -932,8 +937,8 @@ mod tests {
             index: 1,
             remaining: 500,
             collected: 500,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 100,
         });
 
@@ -1009,9 +1014,9 @@ mod tests {
     fn test_payout_complete_success() {
         let state = OpState::Payout(PayoutState {
             op_id: 1,
-            receiver: String::from("receiver"),
+            receiver: receiver_addr(1),
             amount: 1000,
-            owner: String::from("owner"),
+            owner: owner_addr(1),
             escrow_shares: 500,
             burn_shares: 400,
         });
@@ -1037,9 +1042,9 @@ mod tests {
     fn test_payout_complete_failure_refunds_all() {
         let state = OpState::Payout(PayoutState {
             op_id: 1,
-            receiver: String::from("receiver"),
+            receiver: receiver_addr(1),
             amount: 1000,
-            owner: String::from("owner"),
+            owner: owner_addr(1),
             escrow_shares: 500,
             burn_shares: 400,
         });
@@ -1074,9 +1079,9 @@ mod tests {
     fn test_payout_complete_wrong_op_id_error() {
         let state = OpState::Payout(PayoutState {
             op_id: 1,
-            receiver: String::from("receiver"),
+            receiver: receiver_addr(1),
             amount: 1000,
-            owner: String::from("owner"),
+            owner: owner_addr(1),
             escrow_shares: 500,
             burn_shares: 400,
         });
@@ -1127,8 +1132,8 @@ mod tests {
         let request = WithdrawalRequest {
             op_id: 1,
             amount: 1000,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 500,
         };
         let result = start_withdrawal(state, request).unwrap();
@@ -1163,8 +1168,8 @@ mod tests {
         let request = WithdrawalRequest {
             op_id: 2,
             amount: 500,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 250,
         };
         let result = complete_allocation(result.new_state, 1, Some(request)).unwrap();
@@ -1182,10 +1187,24 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
-    use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
     use proptest::prelude::*;
+
+    fn addr_with_tag(tag: u8, index: u64) -> Address {
+        let mut addr = [0u8; 32];
+        addr[0] = tag;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
+
+    fn owner_addr(index: u64) -> Address {
+        addr_with_tag(0x11, index)
+    }
+
+    fn receiver_addr(index: u64) -> Address {
+        addr_with_tag(0x22, index)
+    }
 
     /// Strategy for generating an allocation plan
     fn arb_plan(max_len: usize) -> impl Strategy<Value = Vec<(TargetId, u128)>> {
@@ -1202,8 +1221,8 @@ mod proptests {
             .prop_map(|(op_id, amount, escrow_shares)| WithdrawalRequest {
                 op_id,
                 amount,
-                receiver: String::from("receiver.near"),
-                owner: String::from("owner.near"),
+                receiver: receiver_addr(1),
+                owner: owner_addr(1),
                 escrow_shares,
             })
     }
@@ -1498,9 +1517,9 @@ mod proptests {
             let burn_shares = (escrow_shares as u128 * burn_pct as u128) / 100;
             let payout = PayoutState {
                 op_id,
-                receiver: String::from("receiver"),
+                receiver: receiver_addr(1),
                 amount,
-                owner: String::from("owner"),
+                owner: owner_addr(1),
                 escrow_shares,
                 burn_shares,
             };
@@ -1523,8 +1542,8 @@ mod proptests {
             let request = WithdrawalRequest {
                 op_id,
                 amount: 0,
-                receiver: String::from("receiver"),
-                owner: String::from("owner"),
+                receiver: receiver_addr(1),
+                owner: owner_addr(1),
                 escrow_shares,
             };
             let result = start_withdrawal(OpState::Idle, request);
@@ -1545,8 +1564,8 @@ mod proptests {
             let request = WithdrawalRequest {
                 op_id,
                 amount,
-                receiver: String::from("receiver"),
-                owner: String::from("owner"),
+                receiver: receiver_addr(1),
+                owner: owner_addr(1),
                 escrow_shares: 0,
             };
             let result = start_withdrawal(OpState::Idle, request);

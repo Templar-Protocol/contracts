@@ -10,7 +10,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
 use crate::math::number::Number;
-use crate::types::{ActorId, TimestampNs};
+use crate::types::{Address, TimestampNs};
 
 // Re-export EscrowSettlement from types module
 pub use crate::types::EscrowSettlement;
@@ -27,7 +27,7 @@ pub use crate::types::EscrowSettlement;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EscrowEntry {
     /// Actor whose shares are escrowed.
-    pub owner: ActorId,
+    pub owner: Address,
     /// Number of shares held in escrow.
     pub shares: u128,
     /// Timestamp when escrow was created.
@@ -41,7 +41,7 @@ impl EscrowEntry {
     #[inline]
     #[must_use]
     pub fn new(
-        owner: ActorId,
+        owner: Address,
         shares: u128,
         created_at_ns: TimestampNs,
         expected_assets: u128,
@@ -258,7 +258,7 @@ where
 /// # Returns
 /// `Some(&EscrowEntry)` if found, `None` otherwise.
 #[must_use]
-pub fn find_by_owner<'a, I>(entries: I, owner: &ActorId) -> Option<&'a EscrowEntry>
+pub fn find_by_owner<'a, I>(entries: I, owner: &Address) -> Option<&'a EscrowEntry>
 where
     I: IntoIterator<Item = &'a EscrowEntry>,
 {
@@ -301,6 +301,14 @@ where
         .fold(0u128, |acc, x| acc.saturating_add(x))
 }
 
+#[cfg(test)]
+fn owner_addr(index: u64) -> Address {
+    let mut addr = [0u8; 32];
+    addr[0] = 0x11;
+    addr[1..9].copy_from_slice(&index.to_le_bytes());
+    addr
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -308,13 +316,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
 
-    fn make_entry(owner: &str, shares: u128, expected: u128) -> EscrowEntry {
+    fn make_entry(owner: u64, shares: u128, expected: u128) -> EscrowEntry {
         EscrowEntry::new(
-            owner.to_string(),
+            owner_addr(owner),
             shares,
             1_000_000_000_000, // 1 second in ns
             expected,
@@ -323,16 +330,16 @@ mod tests {
 
     #[test]
     fn test_escrow_entry_is_empty() {
-        let entry = make_entry("alice", 0, 1000);
+        let entry = make_entry(1, 0, 1000);
         assert!(entry.is_empty());
 
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
         assert!(!entry.is_empty());
     }
 
     #[test]
     fn test_apply_settlement_valid() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
         let settlement = EscrowSettlement::partial(60, 40);
 
         let result = apply_settlement(&entry, &settlement);
@@ -345,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_apply_settlement_partial() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
         let settlement = EscrowSettlement::partial(30, 20);
 
         let result = apply_settlement(&entry, &settlement);
@@ -358,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_apply_settlement_exceeds_escrow() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
         let settlement = EscrowSettlement::partial(80, 30); // 110 > 100
 
         let result = apply_settlement(&entry, &settlement);
@@ -367,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_settle_full_burn() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
         let settlement = settle_full_burn(&entry);
 
         assert_eq!(settlement.to_burn, 100);
@@ -376,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_settle_full_refund() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
         let settlement = settle_full_refund(&entry);
 
         assert_eq!(settlement.to_burn, 0);
@@ -385,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_settle_proportional_full() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
 
         // Full assets available
         let settlement = settle_proportional(&entry, 1000);
@@ -400,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_settle_proportional_zero() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
 
         let settlement = settle_proportional(&entry, 0);
         assert_eq!(settlement.to_burn, 0);
@@ -409,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_settle_proportional_partial() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
 
         // 50% available
         let settlement = settle_proportional(&entry, 500);
@@ -424,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_can_apply_settlement() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
 
         // Valid settlement
         assert!(can_apply_settlement(
@@ -453,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_is_stale() {
-        let entry = make_entry("alice", 100, 1000);
+        let entry = make_entry(1, 100, 1000);
         let max_age = 60_000_000_000u64; // 60 seconds
 
         // Not stale
@@ -468,9 +475,9 @@ mod tests {
     #[test]
     fn test_compute_escrow_stats() {
         let entries: Vec<EscrowEntry> = vec![
-            make_entry("alice", 100, 1000),
-            make_entry("bob", 200, 2000),
-            make_entry("charlie", 300, 3000),
+            make_entry(1, 100, 1000),
+            make_entry(2, 200, 2000),
+            make_entry(3, 300, 3000),
         ];
 
         let stats = compute_escrow_stats(&entries);
@@ -482,13 +489,13 @@ mod tests {
     #[test]
     fn test_find_by_owner() {
         let entries: Vec<EscrowEntry> =
-            vec![make_entry("alice", 100, 1000), make_entry("bob", 200, 2000)];
+            vec![make_entry(1, 100, 1000), make_entry(2, 200, 2000)];
 
-        let found = find_by_owner(&entries, &"bob".to_string());
+        let found = find_by_owner(&entries, &owner_addr(2));
         assert!(found.is_some());
         assert_eq!(found.unwrap().shares, 200);
 
-        let not_found = find_by_owner(&entries, &"charlie".to_string());
+        let not_found = find_by_owner(&entries, &owner_addr(3));
         assert!(not_found.is_none());
     }
 
@@ -512,10 +519,15 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
-    use alloc::format;
-    use alloc::string::ToString;
     use alloc::vec::Vec;
     use proptest::prelude::*;
+
+    fn owner_addr(index: u64) -> Address {
+        let mut addr = [0u8; 32];
+        addr[0] = 0x11;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
 
     /// Strategy for generating an EscrowEntry
     fn arb_entry() -> impl Strategy<Value = EscrowEntry> {
@@ -526,7 +538,7 @@ mod proptests {
             0u128..=u64::MAX as u128, // expected_assets
         )
             .prop_map(|(owner_idx, shares, ts, expected)| {
-                EscrowEntry::new(format!("owner_{}", owner_idx), shares, ts, expected)
+                EscrowEntry::new(owner_addr(owner_idx as u64), shares, ts, expected)
             })
     }
 
@@ -547,7 +559,7 @@ mod proptests {
             actual_assets in 0u128..=u64::MAX as u128,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 expected_assets,
@@ -569,7 +581,7 @@ mod proptests {
         ) {
             let actual_assets = expected_assets.saturating_add(extra);
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 expected_assets,
@@ -590,7 +602,7 @@ mod proptests {
             expected_assets in 1u128..=u64::MAX as u128,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 expected_assets,
@@ -611,7 +623,7 @@ mod proptests {
             expected_assets in 0u128..=u64::MAX as u128,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 expected_assets,
@@ -632,7 +644,7 @@ mod proptests {
             expected_assets in 0u128..=u64::MAX as u128,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 expected_assets,
@@ -653,7 +665,7 @@ mod proptests {
             burn_ratio in 0u8..=100u8,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 1000,
@@ -681,7 +693,7 @@ mod proptests {
             excess in 1u128..=1_000_000u128,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 1000,
@@ -703,7 +715,7 @@ mod proptests {
             refund in 0u128..=u64::MAX as u128 / 2,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 1000,
@@ -726,7 +738,7 @@ mod proptests {
             delta in 0u64..=u64::MAX / 4,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 100,
                 created_at,
                 1000,
@@ -800,7 +812,7 @@ mod proptests {
             shares in 0u128..=u64::MAX as u128,
         ) {
             let entry = EscrowEntry::new(
-                "owner".to_string(),
+                owner_addr(1),
                 shares,
                 0,
                 1000,

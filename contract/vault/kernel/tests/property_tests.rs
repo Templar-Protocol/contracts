@@ -48,12 +48,27 @@ use templar_vault_kernel::{
         start_refresh, start_withdrawal, stop_withdrawal, withdrawal_collected,
         withdrawal_step_callback, TransitionError, WithdrawalRequest,
     },
-    types::EscrowSettlement,
+    types::{Address, EscrowSettlement},
 };
 
 // ============================================================================
 // Arbitrary Strategies
 // ============================================================================
+
+fn addr_with_tag(tag: u8, index: u64) -> Address {
+    let mut addr = [0u8; 32];
+    addr[0] = tag;
+    addr[1..9].copy_from_slice(&index.to_le_bytes());
+    addr
+}
+
+fn owner_addr(index: u64) -> Address {
+    addr_with_tag(0x11, index)
+}
+
+fn receiver_addr(index: u64) -> Address {
+    addr_with_tag(0x22, index)
+}
 
 /// Generate a valid allocation plan
 fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<(u32, u128)>> {
@@ -75,8 +90,8 @@ fn arb_withdrawal_request() -> impl Strategy<Value = WithdrawalRequest> {
         .prop_map(|(op_id, amount, escrow_shares)| WithdrawalRequest {
             op_id,
             amount,
-            receiver: String::from("receiver.near"),
-            owner: String::from("owner.near"),
+            receiver: receiver_addr(op_id),
+            owner: owner_addr(op_id),
             escrow_shares,
         })
 }
@@ -91,8 +106,8 @@ fn arb_pending_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
     )
         .prop_map(|(escrow_shares, expected_assets, requested_at_ns)| {
             PendingWithdrawal::new(
-                String::from("owner"),
-                String::from("receiver"),
+                owner_addr(1),
+                receiver_addr(1),
                 escrow_shares,
                 expected_assets,
                 requested_at_ns,
@@ -109,7 +124,7 @@ fn arb_escrow_entry() -> impl Strategy<Value = EscrowEntry> {
         0u128..=u64::MAX as u128, // expected_assets
     )
         .prop_map(|(shares, ts, expected)| {
-            EscrowEntry::new(String::from("owner"), shares, ts, expected)
+            EscrowEntry::new(owner_addr(1), shares, ts, expected)
         })
 }
 
@@ -262,8 +277,8 @@ proptest! {
         let mut queue = WithdrawQueue::new();
         for i in 0..count {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64 * 1_000_000_000,
@@ -280,8 +295,8 @@ proptest! {
         let mut queue = WithdrawQueue::new();
         for i in 0..enqueues {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -298,8 +313,8 @@ proptest! {
         let mut queue = WithdrawQueue::new();
         for i in 0..enqueues {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -318,8 +333,8 @@ proptest! {
         let mut ids = Vec::new();
         for i in 0..enqueues {
             let id = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -341,8 +356,8 @@ proptest! {
         let mut queue = WithdrawQueue::new();
         for i in 0..enqueues {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -365,8 +380,8 @@ proptest! {
         let mut queue = WithdrawQueue::new();
         for i in 0..max_pending {
             let result = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -377,8 +392,8 @@ proptest! {
 
         // One more should fail
         let result = queue.enqueue(
-            String::from("extra_owner"),
-            String::from("extra_receiver"),
+            owner_addr(9),
+            receiver_addr(9),
             100,
             1000,
             max_pending as u64,
@@ -405,8 +420,8 @@ proptest! {
             let shares = (i as u128 + 1) * 100;
             let assets = (i as u128 + 1) * 1000;
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 shares,
                 assets,
                 i as u64,
@@ -429,8 +444,8 @@ proptest! {
         let mut ids = Vec::new();
         for i in 0..enqueues {
             let id = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -451,8 +466,8 @@ proptest! {
         let mut queue = WithdrawQueue::new();
         for i in 0..enqueues {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100 + i as u128,
                 1000 + i as u128,
                 i as u64,
@@ -462,7 +477,7 @@ proptest! {
 
         for i in 0..enqueues {
             let withdrawal = queue.get(i as u64).unwrap();
-            prop_assert_eq!(&withdrawal.owner, &format!("owner_{}", i));
+            prop_assert_eq!(&withdrawal.owner, &owner_addr(i as u64));
             prop_assert_eq!(withdrawal.escrow_shares, 100 + i as u128);
         }
     }
@@ -502,8 +517,8 @@ proptest! {
     ) {
         let withdrawals: Vec<PendingWithdrawal> = (0..enqueues)
             .map(|i| PendingWithdrawal::new(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -525,8 +540,8 @@ proptest! {
     fn prop_compute_queue_status(enqueues in 0usize..=10) {
         let withdrawals: Vec<PendingWithdrawal> = (0..enqueues)
             .map(|i| PendingWithdrawal::new(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 (i as u128 + 1) * 100,
                 (i as u128 + 1) * 1000,
                 i as u64,
@@ -1040,8 +1055,8 @@ proptest! {
         let request = WithdrawalRequest {
             op_id,
             amount: 0,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares,
         };
         let result = start_withdrawal(OpState::Idle, request);
@@ -1060,8 +1075,8 @@ proptest! {
         let request = WithdrawalRequest {
             op_id,
             amount,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 0,
         };
         let result = start_withdrawal(OpState::Idle, request);
@@ -1185,9 +1200,9 @@ proptest! {
         let burn_shares = escrow_shares * burn_pct as u128 / 100;
         let payout = PayoutState {
             op_id,
-            receiver: String::from("receiver"),
+            receiver: receiver_addr(1),
             amount,
-            owner: String::from("owner"),
+            owner: owner_addr(1),
             escrow_shares,
             burn_shares,
         };
@@ -1208,7 +1223,7 @@ proptest! {
         expected_assets in 1u128..=u64::MAX as u128,
         actual_assets in 0u128..=u64::MAX as u128,
     ) {
-        let entry = EscrowEntry::new(String::from("owner"), shares, 0, expected_assets);
+        let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected_assets);
         let settlement = settle_proportional(&entry, actual_assets);
         let total = settlement.to_burn.saturating_add(settlement.refund);
         prop_assert_eq!(total, shares);
@@ -1220,7 +1235,7 @@ proptest! {
         shares in 0u128..=u64::MAX as u128,
         expected in 0u128..=u64::MAX as u128,
     ) {
-        let entry = EscrowEntry::new(String::from("owner"), shares, 0, expected);
+        let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected);
         let settlement = settle_full_burn(&entry);
         prop_assert_eq!(settlement.to_burn, shares);
         prop_assert_eq!(settlement.refund, 0);
@@ -1232,7 +1247,7 @@ proptest! {
         shares in 0u128..=u64::MAX as u128,
         expected in 0u128..=u64::MAX as u128,
     ) {
-        let entry = EscrowEntry::new(String::from("owner"), shares, 0, expected);
+        let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected);
         let settlement = settle_full_refund(&entry);
         prop_assert_eq!(settlement.to_burn, 0);
         prop_assert_eq!(settlement.refund, shares);
@@ -1244,7 +1259,7 @@ proptest! {
         shares in 1u128..=u64::MAX as u128 - 1,
         excess in 1u128..=1_000_000u128,
     ) {
-        let entry = EscrowEntry::new(String::from("owner"), shares, 0, 1000);
+        let entry = EscrowEntry::new(owner_addr(1), shares, 0, 1000);
         let settlement = EscrowSettlement::partial(shares, excess);
         let result = apply_settlement(&entry, &settlement);
         prop_assert!(result.is_none());
@@ -1257,7 +1272,7 @@ proptest! {
         to_burn in 0u128..=u64::MAX as u128 / 2,
         refund in 0u128..=u64::MAX as u128 / 2,
     ) {
-        let entry = EscrowEntry::new(String::from("owner"), shares, 0, 1000);
+        let entry = EscrowEntry::new(owner_addr(1), shares, 0, 1000);
         let settlement = EscrowSettlement::partial(to_burn, refund);
         let total = to_burn.saturating_add(refund);
         let can = can_apply_settlement(&entry, &settlement);
@@ -1312,7 +1327,7 @@ proptest! {
     fn prop_compute_escrow_stats_accurate(count in 0usize..=10) {
         let entries: Vec<EscrowEntry> = (0..count)
             .map(|i| EscrowEntry::new(
-                format!("owner_{}", i),
+                owner_addr(i as u64),
                 (i as u128 + 1) * 100,
                 i as u64,
                 (i as u128 + 1) * 1000,
@@ -1334,7 +1349,7 @@ proptest! {
     /// Property 70: EscrowEntry::is_empty consistency
     #[test]
     fn prop_escrow_entry_is_empty(shares in 0u128..=u64::MAX as u128) {
-        let entry = EscrowEntry::new(String::from("owner"), shares, 0, 1000);
+        let entry = EscrowEntry::new(owner_addr(1), shares, 0, 1000);
         prop_assert_eq!(entry.is_empty(), shares == 0);
     }
 }

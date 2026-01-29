@@ -38,7 +38,7 @@ pub mod share_math {
 // Re-export types module for backward compatibility
 pub mod types {
     //! Re-export of kernel types for backward compatibility.
-    pub use templar_vault_kernel::types::{ActorId, ActualIdx, AssetId, ExpectedIdx, TimestampNs};
+    pub use templar_vault_kernel::types::{ActualIdx, AssetId, ExpectedIdx, TimestampNs};
     pub use templar_vault_kernel::EscrowSettlement;
 }
 

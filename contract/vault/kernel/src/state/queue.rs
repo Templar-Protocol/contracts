@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::math::number::Number;
 use crate::math::wad::Wad;
-use crate::types::{ActorId, EscrowSettlement, TimestampNs};
+use crate::types::{Address, EscrowSettlement, TimestampNs};
 
 // ============================================================================
 // Constants
@@ -42,9 +42,9 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingWithdrawal {
     /// Owner of the shares being redeemed.
-    pub owner: ActorId,
+    pub owner: Address,
     /// Receiver of the assets (may differ from owner).
-    pub receiver: ActorId,
+    pub receiver: Address,
     /// Shares held in escrow awaiting redemption.
     pub escrow_shares: u128,
     /// Expected assets at time of request (for slippage checking).
@@ -58,8 +58,8 @@ impl PendingWithdrawal {
     #[inline]
     #[must_use]
     pub fn new(
-        owner: ActorId,
-        receiver: ActorId,
+        owner: Address,
+        receiver: Address,
         escrow_shares: u128,
         expected_assets: u128,
         requested_at_ns: TimestampNs,
@@ -426,7 +426,7 @@ where
 #[must_use]
 pub fn find_request_status<'a, I>(
     withdrawals: I,
-    owner: &ActorId,
+    owner: &Address,
 ) -> Option<WithdrawalRequestStatus>
 where
     I: IntoIterator<Item = &'a PendingWithdrawal>,
@@ -558,8 +558,8 @@ impl WithdrawQueue {
     /// `Ok(id)` with the allocated withdrawal ID, or `Err(QueueError)` if full.
     pub fn enqueue(
         &mut self,
-        owner: ActorId,
-        receiver: ActorId,
+        owner: Address,
+        receiver: Address,
         escrow_shares: u128,
         expected_assets: u128,
         requested_at_ns: TimestampNs,
@@ -818,17 +818,23 @@ pub enum QueueError {
 // ============================================================================
 
 #[cfg(test)]
+fn owner_addr(index: u64) -> Address {
+    let mut addr = [0u8; 32];
+    addr[0] = 0x11;
+    addr[1..9].copy_from_slice(&index.to_le_bytes());
+    addr
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::format;
-    use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
 
-    fn make_withdrawal(owner: &str, shares: u128, expected: u128) -> PendingWithdrawal {
+    fn make_withdrawal(owner: u8, shares: u128, expected: u128) -> PendingWithdrawal {
         PendingWithdrawal::new(
-            owner.to_string(),
-            owner.to_string(),
+            owner_addr(owner as u64),
+            owner_addr(owner as u64),
             shares,
             expected,
             1_000_000_000_000, // 1 second in ns
@@ -875,7 +881,7 @@ mod tests {
 
     #[test]
     fn test_can_satisfy_withdrawal() {
-        let w = make_withdrawal("alice", 100, 1000);
+        let w = make_withdrawal(1, 100, 1000);
 
         assert!(can_satisfy_withdrawal(&w, 1000));
         assert!(can_satisfy_withdrawal(&w, 2000));
@@ -885,7 +891,7 @@ mod tests {
 
     #[test]
     fn test_can_partially_satisfy() {
-        let w = make_withdrawal("alice", 100, 10_000);
+        let w = make_withdrawal(1, 100, 10_000);
 
         // Can partially satisfy with >= MIN_WITHDRAWAL_ASSETS but < expected
         assert!(can_partially_satisfy(&w, 5_000));
@@ -903,9 +909,9 @@ mod tests {
     #[test]
     fn test_count_satisfiable() {
         let withdrawals: Vec<PendingWithdrawal> = vec![
-            make_withdrawal("alice", 100, 1000),
-            make_withdrawal("bob", 200, 2000),
-            make_withdrawal("charlie", 300, 3000),
+            make_withdrawal(1, 100, 1000),
+            make_withdrawal(2, 200, 2000),
+            make_withdrawal(3, 300, 3000),
         ];
 
         // Can satisfy all
@@ -981,7 +987,7 @@ mod tests {
 
     #[test]
     fn test_compute_full_withdrawal() {
-        let w = make_withdrawal("alice", 100, 1000);
+        let w = make_withdrawal(1, 100, 1000);
 
         // Sufficient assets
         let result = compute_full_withdrawal(&w, 1000);
@@ -998,7 +1004,7 @@ mod tests {
 
     #[test]
     fn test_compute_partial_withdrawal() {
-        let w = make_withdrawal("alice", 100, 1000);
+        let w = make_withdrawal(1, 100, 1000);
 
         let result = compute_partial_withdrawal(&w, 500);
         assert_eq!(result.assets_out, 500);
@@ -1015,9 +1021,9 @@ mod tests {
     #[test]
     fn test_compute_queue_status() {
         let withdrawals: Vec<PendingWithdrawal> = vec![
-            make_withdrawal("alice", 100, 1000),
-            make_withdrawal("bob", 200, 2000),
-            make_withdrawal("charlie", 300, 3000),
+            make_withdrawal(1, 100, 1000),
+            make_withdrawal(2, 200, 2000),
+            make_withdrawal(3, 300, 3000),
         ];
 
         let status = compute_queue_status(&withdrawals);
@@ -1029,13 +1035,13 @@ mod tests {
     #[test]
     fn test_find_request_status() {
         let withdrawals: Vec<PendingWithdrawal> = vec![
-            make_withdrawal("alice", 100, 1000),
-            make_withdrawal("bob", 200, 2000),
-            make_withdrawal("charlie", 300, 3000),
+            make_withdrawal(1, 100, 1000),
+            make_withdrawal(2, 200, 2000),
+            make_withdrawal(3, 300, 3000),
         ];
 
         // Find alice (first)
-        let status = find_request_status(&withdrawals, &"alice".to_string());
+        let status = find_request_status(&withdrawals, &owner_addr(1));
         assert!(status.is_some());
         let status = status.unwrap();
         assert_eq!(status.index, 0);
@@ -1043,29 +1049,29 @@ mod tests {
         assert_eq!(status.withdrawal.escrow_shares, 100);
 
         // Find bob (second)
-        let status = find_request_status(&withdrawals, &"bob".to_string());
+        let status = find_request_status(&withdrawals, &owner_addr(2));
         assert!(status.is_some());
         let status = status.unwrap();
         assert_eq!(status.index, 1);
         assert_eq!(status.depth_assets, 1000);
 
         // Find charlie (third)
-        let status = find_request_status(&withdrawals, &"charlie".to_string());
+        let status = find_request_status(&withdrawals, &owner_addr(3));
         assert!(status.is_some());
         let status = status.unwrap();
         assert_eq!(status.index, 2);
         assert_eq!(status.depth_assets, 3000);
 
         // Not found
-        let status = find_request_status(&withdrawals, &"dave".to_string());
+        let status = find_request_status(&withdrawals, &owner_addr(9));
         assert!(status.is_none());
     }
 
     #[test]
     fn test_pending_withdrawal_is_past_cooldown() {
         let w = PendingWithdrawal::new(
-            "alice".to_string(),
-            "alice".to_string(),
+            owner_addr(1),
+            owner_addr(1),
             100,
             1000,
             1_000_000_000_000, // 1 second
@@ -1133,8 +1139,8 @@ mod tests {
 
         let id = queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1156,8 +1162,8 @@ mod tests {
 
         let id1 = queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1166,8 +1172,8 @@ mod tests {
             .unwrap();
         let id2 = queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1176,8 +1182,8 @@ mod tests {
             .unwrap();
         let id3 = queue
             .enqueue(
-                "charlie".to_string(),
-                "charlie".to_string(),
+                owner_addr(3),
+                owner_addr(3),
                 300,
                 3000,
                 3_000_000_000_000,
@@ -1202,8 +1208,8 @@ mod tests {
         // Enqueue up to max
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1212,8 +1218,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1223,8 +1229,8 @@ mod tests {
 
         // Should fail when full
         let result = queue.enqueue(
-            "charlie".to_string(),
-            "charlie".to_string(),
+            owner_addr(3),
+            owner_addr(3),
             300,
             3000,
             3_000_000_000_000,
@@ -1251,8 +1257,8 @@ mod tests {
         // Add items
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1261,8 +1267,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1273,7 +1279,7 @@ mod tests {
         // Peek should return the first item
         let (id, withdrawal) = queue.peek().unwrap();
         assert_eq!(id, 0);
-        assert_eq!(withdrawal.owner, "alice");
+        assert_eq!(withdrawal.owner, owner_addr(1));
         assert_eq!(withdrawal.escrow_shares, 100);
 
         // Peek again should return the same item
@@ -1289,8 +1295,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1300,7 +1306,7 @@ mod tests {
 
         let (id, withdrawal) = queue.head().unwrap();
         assert_eq!(id, 0);
-        assert_eq!(withdrawal.owner, "alice");
+        assert_eq!(withdrawal.owner, owner_addr(1));
     }
 
     #[test]
@@ -1314,8 +1320,8 @@ mod tests {
         // Add items
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1324,8 +1330,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1334,8 +1340,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "charlie".to_string(),
-                "charlie".to_string(),
+                owner_addr(3),
+                owner_addr(3),
                 300,
                 3000,
                 3_000_000_000_000,
@@ -1346,7 +1352,7 @@ mod tests {
         // Dequeue first
         let (id1, w1) = queue.dequeue().unwrap();
         assert_eq!(id1, 0);
-        assert_eq!(w1.owner, "alice");
+        assert_eq!(w1.owner, owner_addr(1));
         assert_eq!(queue.len(), 2);
         assert_eq!(queue.next_withdraw_to_execute, 1);
         assert!(queue.check_invariants());
@@ -1354,7 +1360,7 @@ mod tests {
         // Dequeue second
         let (id2, w2) = queue.dequeue().unwrap();
         assert_eq!(id2, 1);
-        assert_eq!(w2.owner, "bob");
+        assert_eq!(w2.owner, owner_addr(2));
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.next_withdraw_to_execute, 2);
         assert!(queue.check_invariants());
@@ -1362,7 +1368,7 @@ mod tests {
         // Dequeue third
         let (id3, w3) = queue.dequeue().unwrap();
         assert_eq!(id3, 2);
-        assert_eq!(w3.owner, "charlie");
+        assert_eq!(w3.owner, owner_addr(3));
         assert_eq!(queue.len(), 0);
         assert_eq!(queue.next_withdraw_to_execute, 3);
         assert!(queue.check_invariants());
@@ -1378,8 +1384,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1388,8 +1394,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1399,10 +1405,10 @@ mod tests {
 
         // Get existing
         let w = queue.get(0).unwrap();
-        assert_eq!(w.owner, "alice");
+        assert_eq!(w.owner, owner_addr(1));
 
         let w = queue.get(1).unwrap();
-        assert_eq!(w.owner, "bob");
+        assert_eq!(w.owner, owner_addr(2));
 
         // Get non-existing
         assert!(queue.get(2).is_none());
@@ -1416,8 +1422,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1437,8 +1443,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1447,8 +1453,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1459,9 +1465,9 @@ mod tests {
         let items: Vec<_> = queue.iter().collect();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].0, 0);
-        assert_eq!(items[0].1.owner, "alice");
+        assert_eq!(items[0].1.owner, owner_addr(1));
         assert_eq!(items[1].0, 1);
-        assert_eq!(items[1].1.owner, "bob");
+        assert_eq!(items[1].1.owner, owner_addr(2));
     }
 
     #[test]
@@ -1471,8 +1477,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1481,8 +1487,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1491,8 +1497,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "charlie".to_string(),
-                "charlie".to_string(),
+                owner_addr(3),
+                owner_addr(3),
                 300,
                 3000,
                 3_000_000_000_000,
@@ -1513,8 +1519,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1523,8 +1529,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1542,8 +1548,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1552,8 +1558,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1572,8 +1578,8 @@ mod tests {
         // After enqueue
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1594,8 +1600,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1604,8 +1610,8 @@ mod tests {
             .unwrap();
         queue
             .enqueue(
-                "bob".to_string(),
-                "bob".to_string(),
+                owner_addr(2),
+                owner_addr(2),
                 200,
                 2000,
                 2_000_000_000_000,
@@ -1631,8 +1637,8 @@ mod tests {
         pending.insert(
             5,
             PendingWithdrawal::new(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1667,8 +1673,8 @@ mod tests {
         for i in 0..5 {
             queue
                 .enqueue(
-                    format!("user_{}", i),
-                    format!("user_{}", i),
+                    owner_addr(i as u64),
+                    owner_addr(i as u64),
                     (i as u128 + 1) * 100,
                     (i as u128 + 1) * 1000,
                     (i as u64 + 1) * 1_000_000_000_000,
@@ -1681,7 +1687,7 @@ mod tests {
         for i in 0..5 {
             let (id, w) = queue.dequeue().unwrap();
             assert_eq!(id, i);
-            assert_eq!(w.owner, format!("user_{}", i));
+            assert_eq!(w.owner, owner_addr(i as u64));
         }
     }
 
@@ -1701,8 +1707,8 @@ mod tests {
         let max_pending = 100u32;
 
         let w = PendingWithdrawal::new(
-            "alice".to_string(),
-            "bob".to_string(),
+            owner_addr(1),
+            owner_addr(2),
             100,
             1000,
             1_000_000_000_000,
@@ -1712,8 +1718,8 @@ mod tests {
         assert_eq!(id, 0);
 
         let stored = queue.get(0).unwrap();
-        assert_eq!(stored.owner, "alice");
-        assert_eq!(stored.receiver, "bob");
+        assert_eq!(stored.owner, owner_addr(1));
+        assert_eq!(stored.receiver, owner_addr(2));
     }
 
     #[test]
@@ -1723,8 +1729,8 @@ mod tests {
 
         queue
             .enqueue(
-                "alice".to_string(),
-                "alice".to_string(),
+                owner_addr(1),
+                owner_addr(1),
                 100,
                 1000,
                 1_000_000_000_000,
@@ -1769,10 +1775,23 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
-    use alloc::format;
-    use alloc::string::ToString;
     use alloc::vec::Vec;
     use proptest::prelude::*;
+
+    fn addr_with_tag(tag: u8, index: u64) -> Address {
+        let mut addr = [0u8; 32];
+        addr[0] = tag;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
+
+    fn owner_addr(index: u64) -> Address {
+        addr_with_tag(0x11, index)
+    }
+
+    fn receiver_addr(index: u64) -> Address {
+        addr_with_tag(0x22, index)
+    }
 
     /// Strategy for generating a PendingWithdrawal
     fn arb_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
@@ -1784,8 +1803,8 @@ mod proptests {
         )
             .prop_map(|(owner_idx, shares, expected, ts)| {
                 PendingWithdrawal::new(
-                    format!("owner_{}", owner_idx),
-                    format!("owner_{}", owner_idx),
+                    owner_addr(owner_idx as u64),
+                    owner_addr(owner_idx as u64),
                     shares,
                     expected,
                     ts,
@@ -2053,8 +2072,8 @@ mod proptests {
             available in 0u128..=u64::MAX as u128,
         ) {
             let w = PendingWithdrawal::new(
-                "owner".to_string(),
-                "receiver".to_string(),
+                owner_addr(1),
+                receiver_addr(1),
                 1000,
                 expected,
                 0,
@@ -2073,8 +2092,8 @@ mod proptests {
             available in 0u128..=u64::MAX as u128,
         ) {
             let w = PendingWithdrawal::new(
-                "owner".to_string(),
-                "receiver".to_string(),
+                owner_addr(1),
+                receiver_addr(1),
                 1000,
                 expected,
                 0,
@@ -2095,8 +2114,8 @@ mod proptests {
             available in 0u128..=u64::MAX as u128,
         ) {
             let w = PendingWithdrawal::new(
-                "owner".to_string(),
-                "receiver".to_string(),
+                owner_addr(1),
+                receiver_addr(1),
                 shares,
                 expected,
                 0,
@@ -2118,8 +2137,8 @@ mod proptests {
             available in 0u128..=u64::MAX as u128,
         ) {
             let w = PendingWithdrawal::new(
-                "owner".to_string(),
-                "receiver".to_string(),
+                owner_addr(1),
+                receiver_addr(1),
                 shares,
                 expected,
                 0,
@@ -2148,8 +2167,8 @@ mod proptests {
             for i in 0..num_enqueues {
                 let len_before = queue.len();
                 queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     100,
                     1000,
                     i as u64,
@@ -2173,8 +2192,8 @@ mod proptests {
             // Enqueue items
             for i in 0..num_enqueues {
                 queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     100,
                     1000,
                     i as u64,
@@ -2205,8 +2224,8 @@ mod proptests {
             for op in operations {
                 if op == 0 && queue.len() < max_pending as usize {
                     queue.enqueue(
-                        format!("owner_{}", counter),
-                        format!("receiver_{}", counter),
+                        owner_addr(counter as u64),
+                        receiver_addr(counter as u64),
                         100,
                         1000,
                         counter,
@@ -2234,8 +2253,8 @@ mod proptests {
             // Enqueue with sequential IDs
             for i in 0..num_items {
                 queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     (i as u128) + 1,
                     (i as u128 + 1) * 1000,
                     i as u64,
@@ -2247,7 +2266,7 @@ mod proptests {
             for i in 0..num_items {
                 let (id, w) = queue.dequeue().unwrap();
                 prop_assert_eq!(id, i as u64, "ID mismatch at position {}", i);
-                prop_assert_eq!(w.owner, format!("owner_{}", i), "Owner mismatch at position {}", i);
+                prop_assert_eq!(w.owner, owner_addr(i as u64), "Owner mismatch at position {}", i);
             }
         }
 
@@ -2265,8 +2284,8 @@ mod proptests {
 
             for i in 0..num_enqueues {
                 let id = queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     100,
                     1000,
                     i as u64,
@@ -2295,8 +2314,8 @@ mod proptests {
             for op in operations {
                 if op == 0 && queue.len() < max_pending as usize {
                     queue.enqueue(
-                        format!("owner_{}", counter),
-                        format!("receiver_{}", counter),
+                        owner_addr(counter as u64),
+                        receiver_addr(counter as u64),
                         100,
                         1000,
                         counter,
@@ -2366,8 +2385,8 @@ mod proptests {
 
             for i in 0..num_attempts {
                 let _ = queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     100,
                     1000,
                     i as u64,
@@ -2396,8 +2415,8 @@ mod proptests {
 
             for i in 0..num_enqueues {
                 queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     100,
                     1000,
                     i as u64,
@@ -2425,8 +2444,8 @@ mod proptests {
 
             for i in 0..num_enqueues {
                 let id = queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     (i as u128) + 1,
                     (i as u128 + 1) * 1000,
                     i as u64,
@@ -2438,7 +2457,7 @@ mod proptests {
             // Verify each ID returns the correct withdrawal
             for (i, id) in ids.iter().enumerate() {
                 let w = queue.get(*id).unwrap();
-                prop_assert_eq!(&w.owner, &format!("owner_{}", i));
+                prop_assert_eq!(&w.owner, &owner_addr(i as u64));
                 prop_assert_eq!(w.escrow_shares, (i as u128) + 1);
             }
         }

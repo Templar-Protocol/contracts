@@ -47,4 +47,4 @@ pub use transitions::{
     withdrawal_collected, withdrawal_step_callback, TransitionError, TransitionRes,
     TransitionResult, WithdrawalRequest,
 };
-pub use types::{ActorId, ActualIdx, Address, AssetId, ExpectedIdx, KernelVersion, TimestampNs};
+pub use types::{ActualIdx, Address, AssetId, ExpectedIdx, KernelVersion, TimestampNs};

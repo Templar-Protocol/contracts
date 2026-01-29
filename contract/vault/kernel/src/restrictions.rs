@@ -9,7 +9,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::types::ActorId;
+use crate::types::Address;
 
 /// Restrictions that can be applied to the vault.
 ///
@@ -21,9 +21,9 @@ pub enum Restrictions {
     /// Vault is paused - all operations blocked.
     Paused,
     /// Blacklist - specified actors are blocked.
-    BlackList(BTreeSet<ActorId>),
+    BlackList(BTreeSet<Address>),
     /// Whitelist - only specified actors are allowed.
-    WhiteList(BTreeSet<ActorId>),
+    WhiteList(BTreeSet<Address>),
 }
 
 impl Restrictions {
@@ -34,7 +34,7 @@ impl Restrictions {
     /// # Arguments
     /// * `actor_id` - The actor to check.
     /// * `self_id` - The vault's own identity (whitelist allows self by default).
-    pub fn is_restricted(&self, actor_id: &ActorId, self_id: &ActorId) -> Option<Restrictions> {
+    pub fn is_restricted(&self, actor_id: &Address, self_id: &Address) -> Option<Restrictions> {
         match self {
             Restrictions::Paused => Some(Restrictions::Paused),
             Restrictions::BlackList(blacklist) => {
@@ -65,13 +65,16 @@ impl Restrictions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::String;
+
+    fn addr(tag: u8) -> Address {
+        [tag; 32]
+    }
 
     #[test]
     fn test_paused_blocks_everyone() {
         let r = Restrictions::Paused;
-        let actor = String::from("alice.near");
-        let self_id = String::from("vault.near");
+        let actor = addr(1);
+        let self_id = addr(2);
         assert!(r.is_restricted(&actor, &self_id).is_some());
         assert!(r.is_restricted(&self_id, &self_id).is_some());
     }
@@ -79,31 +82,23 @@ mod tests {
     #[test]
     fn test_blacklist_blocks_listed() {
         let mut blacklist = BTreeSet::new();
-        blacklist.insert(String::from("bad.near"));
+        blacklist.insert(addr(1));
         let r = Restrictions::BlackList(blacklist);
 
-        let self_id = String::from("vault.near");
-        assert!(r
-            .is_restricted(&String::from("bad.near"), &self_id)
-            .is_some());
-        assert!(r
-            .is_restricted(&String::from("good.near"), &self_id)
-            .is_none());
+        let self_id = addr(2);
+        assert!(r.is_restricted(&addr(1), &self_id).is_some());
+        assert!(r.is_restricted(&addr(3), &self_id).is_none());
     }
 
     #[test]
     fn test_whitelist_allows_listed_and_self() {
         let mut whitelist = BTreeSet::new();
-        whitelist.insert(String::from("alice.near"));
+        whitelist.insert(addr(1));
         let r = Restrictions::WhiteList(whitelist);
 
-        let self_id = String::from("vault.near");
-        assert!(r
-            .is_restricted(&String::from("alice.near"), &self_id)
-            .is_none());
+        let self_id = addr(2);
+        assert!(r.is_restricted(&addr(1), &self_id).is_none());
         assert!(r.is_restricted(&self_id, &self_id).is_none());
-        assert!(r
-            .is_restricted(&String::from("bob.near"), &self_id)
-            .is_some());
+        assert!(r.is_restricted(&addr(3), &self_id).is_some());
     }
 }

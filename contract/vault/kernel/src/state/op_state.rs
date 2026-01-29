@@ -32,8 +32,7 @@
 //!
 //! # Design Notes
 //!
-//! - `ActorId` is imported from `types` module - a `String` type alias for chain-agnostic
-//!   actor identification. On NEAR this maps to `AccountId`, on Soroban to `Address.to_string()`.
+//! - `Address` is the canonical 32-byte account identifier used across chains.
 //! - `TargetId` represents a market/strategy index within the vault.
 //!   This is chain-agnostic (just a u32 index).
 
@@ -44,7 +43,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::types::ActorId;
+use crate::types::Address;
 
 /// Target identifier for allocation destinations (markets, strategies).
 ///
@@ -97,9 +96,9 @@ pub struct WithdrawingState {
     /// Assets already collected and held as idle_balance pending payout.
     pub collected: u128,
     /// Account that should receive the assets during payout.
-    pub receiver: ActorId,
+    pub receiver: Address,
     /// The owner whose shares are being redeemed.
-    pub owner: ActorId,
+    pub owner: Address,
     /// Shares locked in escrow for this request.
     /// - Refunded on stop/failure.
     /// - On payout success, a portion is burned (see burn_shares) and any remainder is refunded.
@@ -139,11 +138,11 @@ pub struct PayoutState {
     /// Unique operation id used to correlate async callbacks and detect drift.
     pub op_id: u64,
     /// Receiver of the asset payout.
-    pub receiver: ActorId,
+    pub receiver: Address,
     /// Amount of assets to transfer out from idle_balance.
     pub amount: u128,
     /// The owner whose shares were escrowed for this payout.
-    pub owner: ActorId,
+    pub owner: Address,
     /// Total shares currently held in escrow for this operation.
     pub escrow_shares: u128,
     /// Portion of `escrow_shares` that will be burned on successful payout.
@@ -341,8 +340,22 @@ impl OpState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::String;
     use alloc::vec;
+
+    fn addr_with_tag(tag: u8, index: u64) -> Address {
+        let mut addr = [0u8; 32];
+        addr[0] = tag;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
+
+    fn owner_addr(index: u64) -> Address {
+        addr_with_tag(0x11, index)
+    }
+
+    fn receiver_addr(index: u64) -> Address {
+        addr_with_tag(0x22, index)
+    }
 
     #[test]
     fn test_idle_state_default() {
@@ -378,8 +391,8 @@ mod tests {
             index: 1,
             remaining: 500,
             collected: 200,
-            receiver: String::from("receiver.near"),
-            owner: String::from("owner.near"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 1000,
         };
         let state: OpState = withdraw.into();
@@ -388,8 +401,8 @@ mod tests {
         assert_eq!(state.op_id(), Some(100));
 
         let inner = state.as_withdrawing().unwrap();
-        assert_eq!(inner.receiver, "receiver.near");
-        assert_eq!(inner.owner, "owner.near");
+        assert_eq!(inner.receiver, receiver_addr(1));
+        assert_eq!(inner.owner, owner_addr(1));
     }
 
     #[test]
@@ -412,9 +425,9 @@ mod tests {
     fn test_payout_state() {
         let payout = PayoutState {
             op_id: 300,
-            receiver: String::from("receiver.near"),
+            receiver: receiver_addr(1),
             amount: 1000,
-            owner: String::from("owner.near"),
+            owner: owner_addr(1),
             escrow_shares: 500,
             burn_shares: 400,
         };
@@ -450,8 +463,8 @@ mod tests {
             index: 0,
             remaining: 50,
             collected: 0,
-            receiver: String::from("r"),
-            owner: String::from("o"),
+            receiver: receiver_addr(2),
+            owner: owner_addr(2),
             escrow_shares: 100,
         };
         let state: OpState = withdraw.into();
@@ -469,9 +482,9 @@ mod tests {
         // Test From<PayoutState>
         let payout = PayoutState {
             op_id: 4,
-            receiver: String::from("r"),
+            receiver: receiver_addr(3),
             amount: 100,
-            owner: String::from("o"),
+            owner: owner_addr(3),
             escrow_shares: 100,
             burn_shares: 100,
         };

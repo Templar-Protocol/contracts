@@ -46,6 +46,21 @@ mod test_equivalents {
         },
     };
 
+    fn addr_with_tag(tag: u8, index: u64) -> [u8; 32] {
+        let mut addr = [0u8; 32];
+        addr[0] = tag;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
+
+    fn owner_addr(index: u64) -> [u8; 32] {
+        addr_with_tag(0x11, index)
+    }
+
+    fn receiver_addr(index: u64) -> [u8; 32] {
+        addr_with_tag(0x22, index)
+    }
+
     /// Test: Queue length never exceeds MAX_PENDING
     #[test]
     fn test_queue_len_bounded() {
@@ -54,8 +69,8 @@ mod test_equivalents {
             let mut queue = WithdrawQueue::new();
             for i in 0..max + 10 {
                 let _ = queue.enqueue(
-                    format!("owner_{}", i),
-                    format!("receiver_{}", i),
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
                     100,
                     1000,
                     i as u64,
@@ -75,8 +90,8 @@ mod test_equivalents {
         // After enqueueing
         for i in 0..10 {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -98,8 +113,8 @@ mod test_equivalents {
 
         for i in 0..5 {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -123,8 +138,8 @@ mod test_equivalents {
         // Enqueue items
         for i in 0..10u64 {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i,
@@ -225,7 +240,7 @@ mod test_equivalents {
     /// Test: Escrow settlement proportional logic
     #[test]
     fn test_escrow_settlement_proportional() {
-        let entry = EscrowEntry::new(String::from("owner"), 100, 0, 1000);
+        let entry = EscrowEntry::new(owner_addr(1), 100, 0, 1000);
 
         // 50% actual
         let s = settle_proportional(&entry, 500);
@@ -285,6 +300,21 @@ mod kani_proofs {
         },
     };
 
+    fn addr_with_tag(tag: u8, index: u64) -> [u8; 32] {
+        let mut addr = [0u8; 32];
+        addr[0] = tag;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
+
+    fn owner_addr(index: u64) -> [u8; 32] {
+        addr_with_tag(0x11, index)
+    }
+
+    fn receiver_addr(index: u64) -> [u8; 32] {
+        addr_with_tag(0x22, index)
+    }
+
     // =========================================================================
     // Queue Invariants
     // =========================================================================
@@ -308,8 +338,8 @@ mod kani_proofs {
 
         for i in 0..n {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -336,8 +366,8 @@ mod kani_proofs {
 
         for i in 0..n {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -363,8 +393,8 @@ mod kani_proofs {
 
         for i in 0..n {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
@@ -394,8 +424,8 @@ mod kani_proofs {
 
         for i in 0..n {
             let _ = queue.enqueue(
-                format!("owner_{}", i),
-                format!("receiver_{}", i),
+                owner_addr(i as u64),
+                receiver_addr(i as u64),
                 100,
                 1000,
                 i as u64,
