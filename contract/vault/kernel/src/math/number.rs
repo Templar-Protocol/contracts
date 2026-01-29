@@ -11,22 +11,16 @@ pub type WIDE = U512;
 
 /// A 256-bit unsigned integer wrapper for precise arithmetic.
 ///
-/// When the `near` feature is enabled, serializes to/from a decimal string
+/// When the `serde` feature is enabled, serializes to/from a decimal string
 /// for compatibility with JSON-based APIs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Number(pub U256);
 
-#[cfg(feature = "near")]
-mod near_impl {
+#[cfg(feature = "serde")]
+mod serde_impl {
     use super::*;
-    use alloc::collections::BTreeMap;
     use alloc::string::ToString;
     use core::fmt;
-    use near_sdk::borsh::schema::{add_definition, Declaration, Definition};
-    use near_sdk::borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
-    use schemars::gen::SchemaGenerator;
-    use schemars::schema::Schema;
-    use schemars::JsonSchema;
     use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
     impl Serialize for Number {
@@ -67,6 +61,14 @@ mod near_impl {
             deserializer.deserialize_str(NumberVisitor)
         }
     }
+}
+
+#[cfg(feature = "borsh")]
+mod borsh_impl {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use borsh::schema::{add_definition, Declaration, Definition};
+    use borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
 
     impl BorshSerialize for Number {
         fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
@@ -95,6 +97,15 @@ mod near_impl {
             "Number".into()
         }
     }
+}
+
+#[cfg(feature = "schemars")]
+mod schemars_impl {
+    use super::*;
+    use alloc::string::ToString;
+    use schemars::gen::SchemaGenerator;
+    use schemars::schema::Schema;
+    use schemars::JsonSchema;
 
     impl JsonSchema for Number {
         fn schema_name() -> alloc::string::String {

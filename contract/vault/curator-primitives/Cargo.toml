@@ -11,16 +11,17 @@ path = "src/lib.rs"
 [features]
 default = []
 std = []
-near = ["dep:near-sdk", "dep:borsh", "dep:serde", "dep:schemars"]
+borsh = ["dep:borsh"]
+serde = ["dep:serde"]
+schemars = ["dep:schemars"]
 
 [dependencies]
 # Core dependency - vault kernel types
 templar-vault-kernel = { path = "../kernel" }
 
-# Optional NEAR dependencies
-borsh = { version = "1.5", optional = true, default-features = true, features = ["unstable__schema"] }
-serde = { version = "1.0", optional = true, features = ["derive"] }
+# Optional serialization dependencies (no_std + alloc)
+borsh = { version = "1.5", optional = true, default-features = false, features = ["derive", "unstable__schema"] }
+serde = { version = "1.0", optional = true, default-features = false, features = ["derive", "alloc"] }
 schemars = { version = "0.8", optional = true }
-near-sdk = { version = "5.17.2", optional = true, features = ["unstable"] }
 
 [dev-dependencies]

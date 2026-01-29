@@ -7,15 +7,8 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 
 /// A lock on a specific market/target.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MarketLock {
     /// The target ID that is locked.
@@ -66,15 +59,8 @@ impl MarketLock {
 }
 
 /// A set of market locks.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct MarketLockSet {
     /// Active locks.

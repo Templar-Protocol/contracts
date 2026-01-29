@@ -4,9 +4,9 @@
 
 use alloc::string::String;
 
-#[cfg(feature = "near")]
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "near")]
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Timestamp in nanoseconds (u64).
@@ -34,10 +34,8 @@ pub type Address = [u8; 32];
 /// Asset identifier as a fixed 32-byte hash.
 /// Executors map chain-native asset identifiers (e.g., NEAR account id)
 /// to this form (sha256 hash) and maintain the mapping.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AssetId(pub [u8; 32]);
 
@@ -66,10 +64,8 @@ impl From<AssetId> for [u8; 32] {
 }
 
 /// Settlement result for escrowed shares.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EscrowSettlement {
     /// Shares to burn (successfully redeemed).
@@ -102,9 +98,7 @@ impl EscrowSettlement {
 }
 
 /// Kernel version identifier.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KernelVersion(pub u32);

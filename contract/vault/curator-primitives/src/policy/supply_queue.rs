@@ -9,15 +9,8 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 
 /// An entry in the supply queue representing a pending allocation.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupplyQueueEntry {
     /// Target market/strategy ID to allocate to.
@@ -63,15 +56,8 @@ impl SupplyQueueEntry {
 }
 
 /// A queue of pending supply requests.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct SupplyQueue {
     /// The queue of pending supply requests.

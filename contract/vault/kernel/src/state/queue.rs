@@ -4,9 +4,9 @@
 //! functions for queue logic. Storage implementation is left to chain-specific
 //! executors (NEAR, Soroban, etc.).
 
-#[cfg(feature = "near")]
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "near")]
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::math::number::Number;
@@ -37,10 +37,8 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingWithdrawal {
     /// Owner of the shares being redeemed.
@@ -84,10 +82,8 @@ impl PendingWithdrawal {
 }
 
 /// Result of attempting to satisfy a withdrawal from available assets.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalResult {
     /// Assets actually transferred to the receiver.
@@ -97,10 +93,8 @@ pub struct WithdrawalResult {
 }
 
 /// Status information for a single withdrawal request in the queue.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalRequestStatus {
     /// Position in the queue (0 = head).
@@ -112,10 +106,8 @@ pub struct WithdrawalRequestStatus {
 }
 
 /// Aggregate status of the entire withdrawal queue.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueStatus {
     /// Number of pending withdrawal requests.
@@ -478,10 +470,8 @@ pub use crate::state::vault::MAX_PENDING;
 /// - `next_withdraw_to_execute <= next_pending_withdrawal_id`
 /// - If `pending_withdrawals.len() > 0`, then `pending_withdrawals` contains `next_withdraw_to_execute`
 /// - FIFO withdrawal ordering; no skipping head
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
@@ -809,10 +799,8 @@ impl WithdrawQueue {
 }
 
 /// Errors that can occur during queue operations.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueueError {
     /// Queue is at maximum capacity.

@@ -19,21 +19,14 @@ pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 
 /// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
 ///
-/// When the `near` feature is enabled, serializes transparently as Number
+/// When the `serde` feature is enabled, serializes transparently as Number
 /// (which serializes to a decimal string for JSON compatibility).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Wad(pub Number);
 
-#[cfg(feature = "near")]
-mod near_impl {
+#[cfg(feature = "serde")]
+mod serde_impl {
     use super::*;
-    use alloc::collections::BTreeMap;
-    use alloc::string::ToString;
-    use near_sdk::borsh::schema::{add_definition, Declaration, Definition};
-    use near_sdk::borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
-    use schemars::gen::SchemaGenerator;
-    use schemars::schema::Schema;
-    use schemars::JsonSchema;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     impl Serialize for Wad {
@@ -54,6 +47,14 @@ mod near_impl {
             <Number as Deserialize>::deserialize(deserializer).map(Wad)
         }
     }
+}
+
+#[cfg(feature = "borsh")]
+mod borsh_impl {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use borsh::schema::{add_definition, Declaration, Definition};
+    use borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
 
     impl BorshSerialize for Wad {
         fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
@@ -77,6 +78,15 @@ mod near_impl {
             "Wad".into()
         }
     }
+}
+
+#[cfg(feature = "schemars")]
+mod schemars_impl {
+    use super::*;
+    use alloc::string::ToString;
+    use schemars::gen::SchemaGenerator;
+    use schemars::schema::Schema;
+    use schemars::JsonSchema;
 
     impl JsonSchema for Wad {
         fn schema_name() -> alloc::string::String {

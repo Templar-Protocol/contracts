@@ -20,15 +20,8 @@ use alloc::string::String;
 use templar_vault_kernel::Wad;
 
 /// Identifier for a cap group.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CapGroupId(pub String);
 
@@ -58,15 +51,8 @@ impl core::fmt::Display for CapGroupId {
 }
 
 /// A cap group defines maximum allocation limits for a set of markets.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
@@ -123,15 +109,8 @@ impl Default for CapGroup {
 }
 
 /// Record tracking the state of a cap group.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct CapGroupRecord {
     /// The cap group configuration.

@@ -2,7 +2,7 @@
 //!
 //! This module provides backward-compatible access to `Wad`, `Number`, and
 //! share math functions. All types are re-exported from `templar_vault_kernel`
-//! with the `near` feature enabled for NEAR Borsh/Serde compatibility.
+//! with `borsh`/`serde` features enabled for NEAR Borsh/Serde compatibility.
 
 // Re-export Number type and WIDE alias
 pub use templar_vault_kernel::math::number::{Number, WIDE};

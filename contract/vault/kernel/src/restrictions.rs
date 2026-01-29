@@ -4,9 +4,9 @@
 
 use alloc::collections::BTreeSet;
 
-#[cfg(feature = "near")]
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "near")]
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::types::ActorId;
@@ -14,10 +14,8 @@ use crate::types::ActorId;
 /// Restrictions that can be applied to the vault.
 ///
 /// Supports Pausing, Whitelist, and Blacklist functionality.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Restrictions {
     /// Vault is paused - all operations blocked.

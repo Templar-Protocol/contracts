@@ -23,15 +23,8 @@ use templar_vault_kernel::{
 };
 
 /// Actions that can be taken during recovery.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryAction {
     /// Abort the current allocation and return to Idle.
@@ -153,15 +146,8 @@ pub enum RecoveryError {
 }
 
 /// Outcome of a recovery operation.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryOutcome {
     /// The action that was taken.

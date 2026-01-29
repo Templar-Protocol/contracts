@@ -4,9 +4,9 @@
 //! functions for escrow logic. Storage implementation is left to chain-specific
 //! executors (NEAR, Soroban, etc.).
 
-#[cfg(feature = "near")]
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "near")]
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::math::number::Number;
@@ -22,10 +22,8 @@ pub use crate::types::EscrowSettlement;
 /// Escrow entry for a single actor.
 ///
 /// Tracks shares held in escrow for a pending withdrawal.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EscrowEntry {
     /// Actor whose shares are escrowed.
@@ -65,10 +63,8 @@ impl EscrowEntry {
 }
 
 /// Result of applying a settlement to an escrow entry.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettlementResult {
     /// Shares actually burned from escrow.
@@ -80,10 +76,8 @@ pub struct SettlementResult {
 }
 
 /// Aggregate escrow statistics.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EscrowStats {
     /// Total number of escrow entries.

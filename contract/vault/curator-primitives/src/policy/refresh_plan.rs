@@ -8,15 +8,8 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 
 /// A plan for refreshing market principal data.
-#[cfg_attr(
-    feature = "near",
-    derive(
-        near_sdk::borsh::BorshSerialize,
-        near_sdk::borsh::BorshDeserialize,
-        serde::Serialize,
-        serde::Deserialize
-    )
-)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct RefreshPlan {
     /// Ordered list of target IDs to refresh.

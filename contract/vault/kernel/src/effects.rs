@@ -2,15 +2,13 @@
 use alloc::vec::Vec;
 
 use crate::types::Address;
-#[cfg(feature = "near")]
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "near")]
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KernelEffect {
     MintShares {
@@ -48,10 +46,8 @@ pub enum KernelEffect {
     },
 }
 
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KernelCallback {
     AllocationStep,
@@ -60,10 +56,8 @@ pub enum KernelCallback {
     PayoutTransfer,
 }
 
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KernelEvent {
     Placeholder,

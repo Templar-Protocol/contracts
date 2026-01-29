@@ -4,9 +4,9 @@
 //! all state required by the kernel. Queue and escrow storage are handled
 //! separately by chain-specific executors.
 
-#[cfg(feature = "near")]
-use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "near")]
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::fee::Fees;
@@ -31,10 +31,8 @@ pub const MAX_PENDING: usize = 1024;
 /// Stores the total assets and timestamp at which fees were last accrued.
 /// Used to calculate time-weighted management fees and performance fees
 /// based on AUM growth.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeeAccrualAnchor {
     /// Total assets at last fee accrual.
@@ -85,10 +83,8 @@ impl Default for FeeAccrualAnchor {
 /// Static configuration for a vault.
 ///
 /// These settings can typically only be changed through governance.
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VaultConfig {
     /// Fee configuration (performance, management, growth cap).
@@ -133,10 +129,8 @@ impl VaultConfig {
 /// - `total_assets == idle_assets + external_assets`
 /// - `next_op_id` is monotonically increasing
 /// - Operations can only proceed when `op_state` allows them
-#[cfg_attr(
-    feature = "near",
-    derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VaultState {
     /// Total assets under management (idle + external).
