@@ -5,7 +5,7 @@
 //! - Re-exports of curator-primitives pure functions for policy enforcement
 //! - NEAR-specific wrappers where needed
 
-use derive_more::{Display, From, Into};
+use crate::convert::{IntoMarketId, IntoTargetId};
 use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, MarketId};
 
 // Re-export curator-primitives types for external consumers
@@ -31,22 +31,6 @@ pub use templar_curator_primitives::policy::{
         WithdrawRouteEntry, WithdrawRouteError,
     },
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, Display)]
-#[display("{_0}")]
-struct MarketTargetId(pub u32);
-
-impl From<MarketId> for MarketTargetId {
-    fn from(value: MarketId) -> Self {
-        Self(u32::from(value))
-    }
-}
-
-impl From<MarketTargetId> for MarketId {
-    fn from(value: MarketTargetId) -> Self {
-        MarketId::from(value.0)
-    }
-}
 
 /// Convert a common CapGroupRecord to a curator-primitives CapGroup for use with pure functions.
 ///
@@ -114,7 +98,7 @@ pub fn compute_available_capacity_for_common(
 pub fn validate_supply_queue_no_duplicates(queue: &[MarketId]) -> bool {
     let mut seen = std::collections::HashSet::new();
     for m in queue {
-        if !seen.insert(MarketTargetId::from(*m)) {
+        if !seen.insert(m.into_target_id()) {
             return false;
         }
     }
@@ -132,7 +116,7 @@ pub fn build_withdraw_route_from_markets(
     // Convert to TargetId (u32) for curator-primitives
     let target_principals: Vec<(u32, u128)> = principals
         .iter()
-        .map(|(m, p)| (MarketTargetId::from(*m).into(), *p))
+        .map(|(m, p)| (m.into_target_id(), *p))
         .collect();
 
     let route = build_withdraw_route(&target_principals, target_amount)?;
@@ -141,7 +125,7 @@ pub fn build_withdraw_route_from_markets(
     Ok(route
         .entries
         .iter()
-        .map(|e| (MarketId::from(MarketTargetId::from(e.target_id)), e.max_amount))
+        .map(|e| (e.target_id.into_market_id(), e.max_amount))
         .collect())
 }
 
@@ -151,7 +135,7 @@ pub fn build_withdraw_route_from_markets(
 pub fn validate_withdraw_route_no_duplicates(route: &[MarketId]) -> bool {
     let mut seen = std::collections::HashSet::new();
     for m in route {
-        if !seen.insert(MarketTargetId::from(*m)) {
+        if !seen.insert(m.into_target_id()) {
             return false;
         }
     }
@@ -166,31 +150,21 @@ pub fn find_locked_markets(
     markets: &[MarketId],
     current_ns: u64,
 ) -> Vec<MarketId> {
-    let targets: Vec<u32> = markets
-        .iter()
-        .copied()
-        .map(MarketTargetId::from)
-        .map(u32::from)
-        .collect();
+    let targets: Vec<u32> = markets.iter().map(|m| m.into_target_id()).collect();
     let locked = find_locked_targets(lock_set, &targets, current_ns);
-    locked
-        .into_iter()
-        .map(MarketTargetId::from)
-        .map(MarketId::from)
-        .collect()
+    locked.into_iter().map(IntoMarketId::into_market_id).collect()
 }
 
 /// Check if a specific market is locked.
 pub fn is_market_id_locked(lock_set: &MarketLockSet, market: MarketId, current_ns: u64) -> bool {
-    is_market_locked(lock_set, MarketTargetId::from(market).into(), current_ns)
+    is_market_locked(lock_set, market.into_target_id(), current_ns)
 }
 
 /// Get all locked market IDs.
 pub fn get_locked_market_ids(lock_set: &MarketLockSet, current_ns: u64) -> Vec<MarketId> {
     get_locked_targets(lock_set, current_ns)
         .into_iter()
-        .map(MarketTargetId::from)
-        .map(MarketId::from)
+        .map(IntoMarketId::into_market_id)
         .collect()
 }
 

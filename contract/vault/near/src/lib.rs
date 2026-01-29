@@ -60,6 +60,7 @@ const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 pub use templar_common::vault::wad::{mul_div_ceil, mul_div_floor, Number, Wad};
 
 pub mod aum;
+pub(crate) mod convert;
 pub mod governance;
 pub mod policy;
 

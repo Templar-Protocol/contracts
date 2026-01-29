@@ -4,6 +4,7 @@
 
 use core::ops::{Add, Div, Sub};
 
+use derive_more::{From, Into};
 use primitive_types::{U256, U512};
 
 /// Wider type for intermediate calculations.
@@ -13,7 +14,7 @@ pub type WIDE = U512;
 ///
 /// When the `serde` feature is enabled, serializes to/from a decimal string
 /// for compatibility with JSON-based APIs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Number(pub U256);
 
 #[cfg(feature = "serde")]
@@ -231,18 +232,6 @@ impl From<Number> for u128 {
     #[inline]
     fn from(n: Number) -> u128 {
         n.as_u128_trunc()
-    }
-}
-impl From<U256> for Number {
-    #[inline]
-    fn from(v: U256) -> Self {
-        Number(v)
-    }
-}
-impl From<Number> for U256 {
-    #[inline]
-    fn from(n: Number) -> U256 {
-        n.0
     }
 }
 impl Div<u128> for Number {
