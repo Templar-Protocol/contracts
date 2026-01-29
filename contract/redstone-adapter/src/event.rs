@@ -1,6 +1,7 @@
 use near_sdk::AccountId;
 use near_sdk_contract_tools::Nep297;
-use redstone_common::PriceData;
+
+use crate::PriceData;
 
 #[derive(Clone, Debug, Nep297)]
 #[nep297(standard = "redstone-adapter", version = "1.0.0")]

@@ -15,7 +15,6 @@ use redstone::{
     network::error::Error as RedStoneError,
     ConfigFactory, FeedValue,
 };
-use redstone_common::PriceData;
 
 use crate::{
     config::{DATA_STALENESS, STELLAR_CONFIG},
@@ -26,6 +25,14 @@ use crate::{
 mod config;
 mod event;
 mod utils;
+
+#[derive(Debug, Clone)]
+#[near_sdk::near(serializers = [json, borsh])]
+pub struct PriceData {
+    pub price: String,
+    pub package_timestamp: u64,
+    pub write_timestamp: u64,
+}
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -46,7 +53,7 @@ pub struct GetPrice {
     pub prices: Vec<U128>,
 }
 
-// #[near]
+#[near]
 impl RedStoneAdapter {
     pub fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrice {
         let (timestamp, prices) = get_prices_from_payload(&feed_ids, &payload.0).unwrap();

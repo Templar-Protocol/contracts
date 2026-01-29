@@ -81,10 +81,3 @@ impl ConfigFactory<(), NearCrypto> for Config {
         NearCrypto
     }
 }
-
-impl Config {
-    pub fn trusted_updaters(&self) -> [AccountId; UPDATER_COUNT] {
-        self.trusted_updaters
-            .map(|trusted| trusted.parse().unwrap())
-    }
-}

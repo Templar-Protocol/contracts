@@ -46,9 +46,11 @@ near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-too
 near-workspaces = { version = "0.21.0", features = ["unstable"] }
 p256 = "0.13.2"
 primitive-types = { version = "0.10.1" }
+redstone = { git = "https://github.com/redstone-finance/rust-sdk", tag = "3.1.0-pre1", default-features = false }
 rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 solana-sdk = "3.0.0"
+soroban-sdk = "23.0.3"
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
 templar-vault-contract = { path = "./contract/vault" }
