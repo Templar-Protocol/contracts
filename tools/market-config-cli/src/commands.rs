@@ -1,7 +1,7 @@
 use crate::prompts::{prompt_contract_id, prompt_network, prompt_path};
-use console::style;
 use dialoguer::{theme::ColorfulTheme, Confirm};
-use market_config_cli::editor::utils::prompt_decimal;
+use market_config_cli::calculator::parameters::CurveParameters;
+use market_config_cli::common::shared::map_dialoguer_err;
 use market_config_cli::logger;
 use market_config_cli::{
     CliResult, ConfigEditor, ConfigValidator, ContractReader, InteractivePrompt,
@@ -22,8 +22,8 @@ pub async fn handle_interactive(
     theme: &ColorfulTheme,
 ) -> CliResult {
     let network = prompt_network(network, theme)?;
-    let prompt = InteractivePrompt::new(network);
-    let config = prompt.run().await?;
+    let prompt = InteractivePrompt::new(theme, network);
+    let config = prompt.run_interactive().await?;
 
     let market_output_path = prompt_path(
         output,
@@ -37,10 +37,10 @@ pub async fn handle_interactive(
         validation_ok = false;
         logger::warn(format!("Validation failed: {err}"));
         let continue_anyway = Confirm::with_theme(theme)
-            .with_prompt("Validation failed. Save configuration anyway?")
+            .with_prompt("Save configuration anyway?")
             .default(false)
             .interact()
-            .map_err(std::io::Error::other)?;
+            .map_err(|err| map_dialoguer_err(&err))?;
         if !continue_anyway {
             return Err(err);
         }
@@ -76,20 +76,20 @@ pub async fn handle_from_contract(
         "Output file path for the generated configuration",
     )?;
 
-    let reader = ContractReader::new(&network.to_string());
+    let reader = ContractReader::new(network)?;
     let config = reader.read_config(contract_id.clone()).await?;
-    println!("✓ Configuration fetched from {contract_id}");
+    logger::success(format!("Configuration fetched from {contract_id}"));
 
     let mut config = config;
     let wants_edit = Confirm::with_theme(theme)
         .with_prompt("Edit configuration before saving?")
         .default(true)
         .interact()
-        .map_err(std::io::Error::other)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
 
     if wants_edit {
-        let editor = ConfigEditor::new(theme);
-        config = editor.edit(config)?;
+        let editor = ConfigEditor::new(theme, network);
+        config = editor.edit_config(config).await?;
     }
 
     let validator = ConfigValidator::new(Some(network));
@@ -98,10 +98,10 @@ pub async fn handle_from_contract(
         validation_ok = false;
         logger::warn(format!("Validation failed: {err}"));
         let continue_anyway = Confirm::with_theme(theme)
-            .with_prompt("Validation failed. Save configuration anyway?")
+            .with_prompt("Save configuration anyway?")
             .default(false)
             .interact()
-            .map_err(std::io::Error::other)?;
+            .map_err(|err| map_dialoguer_err(&err))?;
         if !continue_anyway {
             return Err(err);
         }
@@ -114,7 +114,7 @@ pub async fn handle_from_contract(
             market_path.display()
         ));
     } else {
-        logger::warn(format!(
+        logger::alert(format!(
             "Configuration written without passing validation: {}",
             market_path.display()
         ));
@@ -133,20 +133,36 @@ pub async fn handle_from_template(
     let network = prompt_network(None, theme)?;
     let template_path = prompt_path(template, theme, "Path to wanted configuration")?;
 
-    let template_content = std::fs::read_to_string(&template_path)?;
-    let mut config: MarketConfiguration = serde_json::from_str(&template_content)?;
+    let template_content = match std::fs::read_to_string(&template_path) {
+        Ok(content) => content,
+        Err(err) => {
+            logger::warn(format!(
+                "Template not found or unreadable: {} ({err})",
+                template_path.display()
+            ));
+            return Err(market_config_cli::CliError::Silent(format!(
+                "Unable to read template: {}",
+                template_path.display()
+            )));
+        }
+    };
+    let mut config: MarketConfiguration = serde_json::from_str(&template_content).map_err(|e| {
+        market_config_cli::CliError::Validation(format!(
+            "Failed to parse configuration template: {e}"
+        ))
+    })?;
 
-    println!("Template loaded: {}", template_path.display());
+    logger::info(format!("Template loaded: {}", template_path.display()));
 
     let wants_edit = Confirm::with_theme(theme)
         .with_prompt("Edit configuration before saving?")
         .default(true)
         .interact()
-        .map_err(std::io::Error::other)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
 
     if wants_edit {
-        let editor = ConfigEditor::new(theme);
-        config = editor.edit(config)?;
+        let editor = ConfigEditor::new(theme, network);
+        config = editor.edit_config(config).await?;
     }
 
     let validator = ConfigValidator::new(Some(network));
@@ -155,10 +171,10 @@ pub async fn handle_from_template(
         validation_ok = false;
         logger::warn(format!("Validation failed: {err}"));
         let continue_anyway = Confirm::with_theme(theme)
-            .with_prompt("Validation failed. Save configuration anyway?")
+            .with_prompt("Save configuration anyway?")
             .default(false)
             .interact()
-            .map_err(std::io::Error::other)?;
+            .map_err(|err| map_dialoguer_err(&err))?;
         if !continue_anyway {
             return Err(err);
         }
@@ -177,7 +193,7 @@ pub async fn handle_from_template(
             output_path.display()
         ));
     } else {
-        logger::warn(format!(
+        logger::alert(format!(
             "Configuration written without passing validation: {}",
             output_path.display()
         ));
@@ -200,164 +216,53 @@ pub async fn handle_validate(
         "Path to configuration you want to validate",
     )?;
 
-    println!("Validating configuration: {}", config_path.display());
+    logger::info(format!(
+        "Validating configuration: {}",
+        config_path.display()
+    ));
 
     let market_json = std::fs::read_to_string(&config_path)?;
-    let market_config: serde_json::Value = serde_json::from_str(&market_json)?;
+    let market_config: serde_json::Value = serde_json::from_str(&market_json).map_err(|e| {
+        market_config_cli::CliError::Validation(format!("Failed to parse configuration: {e}"))
+    })?;
 
     let validator = ConfigValidator::new(Some(network));
     validator.validate_json(&market_config).await?;
 
-    println!("{}", style("✓ Configuration is valid!").green());
+    logger::success("Configuration is valid!");
     Ok(())
 }
 
 /// Handle the calculate-curve command flow.
 /// # Errors
-#[allow(clippy::too_many_arguments)]
 pub fn handle_calculate_curve(
-    starting_rate: Option<Decimal>,
-    optimal_rate: Option<Decimal>,
-    optimal_usage: Option<Decimal>,
-    max_rate: Option<Decimal>,
-    display_points: usize,
-    model: Option<&InterestRateStrategy>,
+    params: &CurveParameters,
+    model: &InterestRateStrategy,
     eccentricity: Option<Decimal>,
-    theme: &ColorfulTheme,
 ) -> CliResult {
     let calculator = InterestRateCalculator::new();
     let strategy = match model {
-        Some(InterestRateStrategy::Linear(_)) => {
-            let (start, top_rate) = prompt_or_default_linear(starting_rate, optimal_rate, theme)?;
-            calculator.calculate_linear(start, top_rate)?
+        InterestRateStrategy::Linear(_) => {
+            calculator.calculate_linear(params.starting_rate, params.optimal_rate)?
         }
-        Some(InterestRateStrategy::Exponential2(_)) => {
-            let (start, top, ecc) =
-                prompt_or_default_exponential(starting_rate, optimal_rate, eccentricity, theme)?;
-            calculator.calculate_exponential2(start, top, ecc)?
+        InterestRateStrategy::Exponential2(_) => {
+            let ecc = eccentricity.ok_or_else(|| {
+                market_config_cli::CliError::InvalidInput(
+                    "Exponential model requires eccentricity".into(),
+                )
+            })?;
+            calculator.calculate_exponential2(params.starting_rate, params.optimal_rate, ecc)?
         }
-        _ => {
-            let params = prompt_or_default_piecewise(
-                starting_rate,
-                optimal_rate,
-                optimal_usage,
-                max_rate,
-                theme,
-            )?;
-            calculator.calculate_piecewise(params.0, params.1, params.2, params.3)?
-        }
+        InterestRateStrategy::Piecewise(_) => calculator.calculate_piecewise(
+            params.starting_rate,
+            params.optimal_rate,
+            params.optimal_usage,
+            params.max_rate,
+        )?,
     };
 
     println!("Interest Rate Strategy:");
     println!("{}", serde_json::to_string_pretty(&strategy)?);
-    calculator.display_curve(&strategy, display_points);
+    calculator.display_curve(&strategy, params.display_points);
     Ok(())
-}
-
-fn prompt_or_default_linear(
-    starting_rate: Option<Decimal>,
-    top_rate: Option<Decimal>,
-    theme: &ColorfulTheme,
-) -> CliResult<(Decimal, Decimal)> {
-    let start = match starting_rate {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Starting rate at 0% utilization (e.g., 0.02)",
-            "0.02",
-            "linear starting rate",
-        )?,
-    };
-    let top_rate = match top_rate {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Rate at 100% utilization (e.g., 0.15)",
-            "0.10",
-            "linear top rate",
-        )?,
-    };
-    Ok((start, top_rate))
-}
-
-fn prompt_or_default_exponential(
-    starting_rate: Option<Decimal>,
-    top_rate: Option<Decimal>,
-    eccentricity: Option<Decimal>,
-    theme: &ColorfulTheme,
-) -> CliResult<(Decimal, Decimal, Decimal)> {
-    let start = match starting_rate {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Starting rate at 0% utilization (e.g., 0.02)",
-            "0.02",
-            "exponential starting rate",
-        )?,
-    };
-    let top = match top_rate {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Top rate at 100% utilization (e.g., 0.50)",
-            "0.50",
-            "exponential top rate",
-        )?,
-    };
-    let ecc = match eccentricity {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Curve eccentricity (e.g., 2-12)",
-            "2.0",
-            "exponential eccentricity",
-        )?,
-    };
-    Ok((start, top, ecc))
-}
-
-fn prompt_or_default_piecewise(
-    starting_rate: Option<Decimal>,
-    optimal_rate: Option<Decimal>,
-    optimal_usage: Option<Decimal>,
-    max_rate: Option<Decimal>,
-    theme: &ColorfulTheme,
-) -> CliResult<(Decimal, Decimal, Decimal, Decimal)> {
-    let start = match starting_rate {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Starting rate at 0% utilization (e.g., 0.02)",
-            "0.02",
-            "piecewise starting rate",
-        )?,
-    };
-    let opt_rate = match optimal_rate {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Rate at optimal utilization (e.g., 0.10)",
-            "0.10",
-            "piecewise optimal rate",
-        )?,
-    };
-    let opt_usage = match optimal_usage {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Optimal utilization ratio (e.g., 0.80 for 80%)",
-            "0.80",
-            "piecewise optimal usage",
-        )?,
-    };
-    let max = match max_rate {
-        Some(v) => v,
-        None => prompt_decimal(
-            theme,
-            "Maximum rate at 100% utilization (e.g., 0.50)",
-            "0.50",
-            "piecewise max rate",
-        )?,
-    };
-    Ok((start, opt_rate, opt_usage, max))
 }

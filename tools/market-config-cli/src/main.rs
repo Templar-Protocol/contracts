@@ -8,7 +8,7 @@ use commands::{
 };
 use dialoguer::theme::ColorfulTheme;
 use market_config_cli::curve::{CurveInput, ModelArg};
-use market_config_cli::CliResult;
+use market_config_cli::{logger, CliResult};
 use near_sdk::AccountId;
 use prompts::resolve_curve_params;
 use std::path::PathBuf;
@@ -135,6 +135,23 @@ struct CalculateCurveArgs {
 
 #[tokio::main]
 async fn main() -> CliResult {
+    let result = run_cli().await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(market_config_cli::CliError::Interrupted) => {
+            std::process::exit(130);
+        }
+        Err(market_config_cli::CliError::Silent(_)) => {
+            std::process::exit(1);
+        }
+        Err(err) => {
+            logger::warn(err);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_cli() -> CliResult {
     let cli = Cli::parse();
     let theme = ColorfulTheme::default();
 
@@ -191,16 +208,7 @@ async fn main() -> CliResult {
             };
             let (params, model, eccentricity) = resolve_curve_params(&input, &theme)?;
 
-            handle_calculate_curve(
-                Some(params.starting_rate),
-                Some(params.optimal_rate),
-                Some(params.optimal_usage),
-                Some(params.max_rate),
-                params.display_points,
-                Some(&model),
-                eccentricity,
-                &theme,
-            )?;
+            handle_calculate_curve(&params, &model, eccentricity)?;
         }
     }
     Ok(())

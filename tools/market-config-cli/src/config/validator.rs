@@ -1,10 +1,11 @@
 use crate::{
     oracle::PriceValidator,
-    rpc::{token_metadata, view_account},
+    rpc::{ft_metadata, multitoken_metadata, view_account, MultiTokenMetadata},
     CliError, CliResult,
 };
 use console::{style, Style};
 use indicatif::{ProgressBar, ProgressStyle};
+use near_contract_standards::fungible_token::metadata::FungibleTokenMetadata;
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
 use serde_json::Value;
@@ -156,6 +157,10 @@ impl ConfigValidator {
                 config.collateral_asset.contract_id().as_ref().to_string(),
             ),
         ];
+        let mut accounts = accounts;
+        for account in config.yield_weights.r#static.keys() {
+            accounts.push(("yield recipient", account.to_string()));
+        }
 
         let progress = ProgressBar::new(accounts.len() as u64);
 
@@ -220,7 +225,7 @@ impl ConfigValidator {
         progress.tick();
 
         progress.set_message("borrow asset");
-        let borrow_decimals = fetch_decimals(&client, &config.borrow_asset)
+        let borrow_metadata = fetch_metadata(&client, &config.borrow_asset)
             .await
             .map_err(|e| {
                 CliError::Validation(format!("Failed to fetch borrow asset metadata: {e}"))
@@ -228,12 +233,21 @@ impl ConfigValidator {
         progress.inc(1);
 
         progress.set_message("collateral asset");
-        let collateral_decimals = fetch_decimals(&client, &config.collateral_asset)
+        let collateral_metadata = fetch_metadata(&client, &config.collateral_asset)
             .await
             .map_err(|e| {
                 CliError::Validation(format!("Failed to fetch collateral asset metadata: {e}"))
             })?;
         progress.inc(1);
+
+        let borrow_decimals = match borrow_metadata {
+            TokenMetadata::Nep141(ref m) => m.decimals,
+            TokenMetadata::Nep245(ref m) => m.decimals,
+        };
+        let collateral_decimals = match collateral_metadata {
+            TokenMetadata::Nep141(ref m) => m.decimals,
+            TokenMetadata::Nep245(ref m) => m.decimals,
+        };
 
         progress.finish_with_message(
             Style::new()
@@ -246,22 +260,90 @@ impl ConfigValidator {
     }
 }
 
-async fn fetch_decimals<T: templar_common::asset::AssetClass>(
+pub enum TokenMetadata {
+    Nep141(FungibleTokenMetadata),
+    Nep245(MultiTokenMetadata),
+}
+
+async fn fetch_metadata<T: templar_common::asset::AssetClass>(
     client: &JsonRpcClient,
     asset: &FungibleAsset<T>,
-) -> CliResult<u8> {
+) -> CliResult<TokenMetadata> {
     if let Some((contract_id, token_id)) = asset.clone().into_nep245() {
         let (resolved_contract, resolved_token_id) =
             resolve_nep141_or_nep245_parts(contract_id, &token_id)?;
-        return token_metadata(client, resolved_contract, resolved_token_id).await;
+        let token_id = resolved_token_id.ok_or_else(|| {
+            CliError::Validation(format!("Missing NEP-245 token id for asset '{asset}'"))
+        })?;
+        // return multitoken_metadata(client, resolved_contract, token_id).await;
+
+        let metadata = multitoken_metadata(client, resolved_contract, token_id).await?;
+        return Ok(TokenMetadata::Nep245(metadata));
     }
 
-    #[allow(clippy::unwrap_used, reason = "Parsing should not fail here")]
-    let id: AccountId = asset.contract_id().as_ref().parse().unwrap();
-    token_metadata(client, id, None).await
+    let id: AccountId = asset.contract_id().as_ref().parse().map_err(|e| {
+        CliError::Other(format!(
+            "Unable to parse account_id '{}': {e}",
+            asset.contract_id().as_ref()
+        ))
+    })?;
+
+    let metadata = ft_metadata(client, id).await?;
+    Ok(TokenMetadata::Nep141(metadata))
 }
 
-fn resolve_nep141_or_nep245_parts(
+/// # Errors
+pub async fn check_asset_existence<T: templar_common::asset::AssetClass>(
+    client: &JsonRpcClient,
+    asset: &FungibleAsset<T>,
+) -> CliResult {
+    if let Some((contract_id, token_id)) = asset.clone().into_nep245() {
+        let (resolved_contract, resolved_token_id) =
+            resolve_nep141_or_nep245_parts(contract_id, &token_id)?;
+        // NEP-245 multi-token
+        view_account(client, resolved_contract.clone())
+            .await
+            .map_err(|e| {
+                CliError::Validation(format!(
+                    "Account check failed for '{resolved_contract}': {e}"
+                ))
+            })?;
+
+        if let Some(resolved_token_id) = resolved_token_id {
+            let metadata =
+                multitoken_metadata(client, resolved_contract, resolved_token_id.clone())
+                    .await
+                    .map_err(|e| {
+                        CliError::Validation(format!("Failed to fetch NEP-245 metadata: {e}"))
+                    })?;
+            let metadata_id = metadata
+                .id
+                .as_deref()
+                .ok_or_else(|| CliError::Validation("NEP-245 metadata missing id field".into()))?;
+            if metadata_id != resolved_token_id {
+                return Err(CliError::Validation(format!(
+                    "NEP-245 token id mismatch: expected '{resolved_token_id}', got '{metadata_id}'"
+                )));
+            }
+        }
+    }
+
+    // NEP-141
+    let account_id: AccountId = asset.contract_id().as_ref().parse().map_err(|e| {
+        CliError::Other(format!(
+            "Unable to parse account_id '{}': {e}",
+            asset.contract_id().as_ref()
+        ))
+    })?;
+    view_account(client, account_id.clone())
+        .await
+        .map_err(|e| {
+            CliError::Validation(format!("Account check failed for '{account_id}': {e}"))
+        })?;
+    Ok(())
+}
+
+pub(crate) fn resolve_nep141_or_nep245_parts(
     contract_id: AccountId,
     token_id: &str,
 ) -> CliResult<(AccountId, Option<String>)> {

@@ -84,6 +84,34 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn borrow_asset_ref(&self) -> Option<&FungibleAsset<BorrowAsset>> {
+        self.borrow_asset.as_ref()
+    }
+
+    pub fn time_chunk_duration_ms_value(&self) -> Option<u64> {
+        self.time_chunk_duration_ms
+    }
+
+    pub fn price_max_age_s_value(&self) -> Option<u32> {
+        self.price_max_age_s
+    }
+
+    pub fn borrow_mcr_maintenance_value(&self) -> Option<Decimal> {
+        self.borrow_mcr_maintenance
+    }
+
+    pub fn borrow_mcr_liquidation_value(&self) -> Option<Decimal> {
+        self.borrow_mcr_liquidation
+    }
+
+    pub fn borrow_max_usage_ratio_value(&self) -> Option<Decimal> {
+        self.borrow_max_usage_ratio
+    }
+
+    pub fn liquidation_max_spread_value(&self) -> Option<Decimal> {
+        self.liquidation_max_spread
+    }
+
     /// # Errors
     pub fn borrow_fungible_asset(mut self, asset: FungibleAsset<BorrowAsset>) -> CliResult<Self> {
         self.borrow_asset = Some(asset);
@@ -104,6 +132,10 @@ impl ConfigBuilder {
     ) -> CliResult<Self> {
         self.collateral_asset = Some(asset);
         Ok(self)
+    }
+
+    pub fn collateral_asset_ref(&self) -> Option<&FungibleAsset<CollateralAsset>> {
+        self.collateral_asset.as_ref()
     }
 
     /// # Errors
@@ -150,6 +182,19 @@ impl ConfigBuilder {
     pub fn price_max_age_s(mut self, max_age: u32) -> Self {
         self.price_max_age_s = Some(max_age);
         self
+    }
+
+    pub fn price_oracle_inputs(
+        &self,
+    ) -> Option<(AccountId, PriceIdentifier, PriceIdentifier, i32, i32, u32)> {
+        Some((
+            self.oracle_account_id.clone()?,
+            self.borrow_price_id?,
+            self.collateral_price_id?,
+            self.borrow_decimals?,
+            self.collateral_decimals?,
+            self.price_max_age_s?,
+        ))
     }
 
     #[must_use]

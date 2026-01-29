@@ -31,6 +31,9 @@ pub enum CliError {
     #[error("Oracle error: {0}")]
     Oracle(String),
 
+    #[error("Prompt error: {0}")]
+    Prompt(String),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -57,6 +60,14 @@ pub enum CliError {
     /// Other errors
     #[error("Other error: {0}")]
     Other(String),
+
+    /// User interrupted an interactive prompt
+    #[error("Interrupted by user")]
+    Interrupted,
+
+    /// Error already reported to user; suppress default error printing
+    #[error("{0}")]
+    Silent(String),
 }
 
 pub type CliResult<T = ()> = Result<T, CliError>;

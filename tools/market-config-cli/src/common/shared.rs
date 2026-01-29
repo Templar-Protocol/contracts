@@ -1,21 +1,23 @@
-use std::{io::ErrorKind, process};
+use std::io::ErrorKind;
 
 use console::{style, Term};
 
 use crate::CliError;
 
-pub fn handle_interrupted(err: &dialoguer::Error) {
+pub fn handle_interrupted(err: &dialoguer::Error) -> bool {
     match err {
         dialoguer::Error::IO(io_err) if io_err.kind() == ErrorKind::Interrupted => {
             let _ = Term::stdout().show_cursor();
-            println!("{}", style("\n Configuration aborted").red());
-            process::exit(130);
+            println!("{}", style("\n Configuration aborted by user").yellow());
+            true
         }
-        dialoguer::Error::IO(_) => {}
+        dialoguer::Error::IO(_) => false,
     }
 }
 
-pub fn map_dialoguer_err(err: dialoguer::Error) -> CliError {
-    handle_interrupted(&err);
-    CliError::Io(std::io::Error::other(err))
+pub fn map_dialoguer_err(err: &dialoguer::Error) -> CliError {
+    if handle_interrupted(err) {
+        return CliError::Interrupted;
+    }
+    CliError::Prompt(err.to_string())
 }
