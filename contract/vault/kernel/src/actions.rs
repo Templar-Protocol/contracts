@@ -19,6 +19,10 @@ use crate::transitions::{
 };
 use crate::types::{Address, TimestampNs};
 use crate::state::op_state::{OpState, TargetId};
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// Result of applying a kernel action.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +38,8 @@ impl KernelResult {
 }
 
 /// Outcome for payout settlement.
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PayoutOutcome {
     Success {
@@ -47,6 +53,8 @@ pub enum PayoutOutcome {
 }
 
 /// Kernel actions supported by the dispatcher.
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KernelAction {
     BeginAllocating {
@@ -224,7 +232,7 @@ pub fn apply_action(
                 });
             }
 
-            let _id = state
+            let id = state
                 .withdraw_queue
                 .enqueue(owner, receiver, shares, expected_assets, now_ns, config.max_pending_withdrawals)
                 .map_err(|_| KernelError::QueueFull)?;
@@ -236,7 +244,13 @@ pub fn apply_action(
                     shares,
                 },
                 KernelEffect::EmitEvent {
-                    event: crate::effects::KernelEvent::Placeholder,
+                    event: crate::effects::KernelEvent::WithdrawalRequested {
+                        id,
+                        owner,
+                        receiver,
+                        shares,
+                        expected_assets,
+                    },
                 },
             ];
 
