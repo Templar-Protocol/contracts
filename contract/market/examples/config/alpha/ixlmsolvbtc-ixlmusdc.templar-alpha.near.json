@@ -17,7 +17,7 @@
   "price_oracle_configuration": {
     "account_id": "pyth-oracle.near",
     "collateral_asset_price_id": "f253cf87dc7d5ed5aa14cba5a6e79aee8bcfaef885a0e1b807035a0bbecc36fa",
-    "collateral_asset_decimals": 10,
+    "collateral_asset_decimals": 8,
     "borrow_asset_price_id": "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
     "borrow_asset_decimals": 7,
     "price_maximum_age_s": 60
