@@ -261,7 +261,10 @@ impl MarketConfiguration {
             }
         }
 
-        if self.liquidation_maximum_spread >= 1u32 {
+        if self.liquidation_maximum_spread >= 1u32
+            || self.borrow_mcr_liquidation * (Decimal::ONE - self.liquidation_maximum_spread)
+                < Decimal::ONE
+        {
             return Err(error::out_of_bounds("liquidation_maximum_spread"));
         }
 
