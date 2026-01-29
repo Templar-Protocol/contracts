@@ -36,11 +36,11 @@
   },
   "borrow_maximum_duration_ms": "31536000000",
   "borrow_range": {
-    "minimum": "1",
+    "minimum": "0",
     "maximum": "10000000000"
   },
   "supply_range": {
-    "minimum": "400000",
+    "minimum": "0",
     "maximum": "10000000000"
   },
   "supply_withdrawal_range": {
