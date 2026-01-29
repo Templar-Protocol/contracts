@@ -17,7 +17,10 @@ use templar_soroban_vault::{
     storage::MemoryStorage,
     Storage, // Import the trait
 };
-use templar_vault_kernel::Address;
+use templar_curator_primitives::RecoveryContext;
+use templar_vault_kernel::{
+    Address, OpState, PayoutOutcome, PayoutState, WithdrawingState, MAX_PENDING,
+};
 
 // ============================================================================
 // Test Helpers
@@ -304,11 +307,20 @@ fn test_allocation_flow_abort() {
     // Begin allocation
     let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
 
-    // Abort (restoring 3000 to idle)
-    vault.abort_allocating(allocator, op_id, 3000).unwrap();
+    let restore_idle = vault
+        .state()
+        .op_state
+        .as_allocating()
+        .expect("allocating")
+        .remaining;
+
+    // Abort (restoring remaining to idle)
+    vault
+        .abort_allocating(allocator, op_id, restore_idle)
+        .unwrap();
 
     assert!(vault.state().op_state.is_idle());
-    assert_eq!(vault.state().idle_assets, initial_idle + 3000);
+    assert_eq!(vault.state().idle_assets, initial_idle + restore_idle);
 }
 
 #[test]
@@ -369,6 +381,142 @@ fn test_refresh_flow_abort() {
     vault.abort_refreshing(allocator, op_id).unwrap();
 
     assert!(vault.state().op_state.is_idle());
+}
+
+#[test]
+fn test_abort_withdrawing_clears_queue() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let owner = user_addr();
+    let receiver = user_addr();
+    let expected_assets = 1_000;
+    let escrow_shares = 500;
+
+    let op_id = {
+        let state = vault.state_mut();
+        state.total_shares = escrow_shares;
+        state
+            .withdraw_queue
+            .enqueue(
+                owner,
+                receiver,
+                escrow_shares,
+                expected_assets,
+                0,
+                MAX_PENDING as u32,
+            )
+            .unwrap();
+
+        let op_id = state.allocate_op_id();
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id,
+            index: 0,
+            remaining: expected_assets,
+            collected: 0,
+            receiver,
+            owner,
+            escrow_shares,
+        });
+        op_id
+    };
+
+    vault
+        .abort_withdrawing(allocator, op_id, escrow_shares)
+        .unwrap();
+
+    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().withdraw_queue.is_empty());
+    assert!(!vault.interpreter.effects.is_empty());
+}
+
+#[test]
+fn test_settle_payout_success_burns_and_dequeues() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let owner = user_addr();
+    let receiver = user_addr();
+    let escrow_shares = 500;
+    let burn_shares = 300;
+    let refund_shares = 200;
+    let amount = 1_000;
+
+    let op_id = {
+        let state = vault.state_mut();
+        state.total_shares = escrow_shares;
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, escrow_shares, amount, 0, MAX_PENDING as u32)
+            .unwrap();
+        let op_id = state.allocate_op_id();
+        state.op_state = OpState::Payout(PayoutState {
+            op_id,
+            receiver,
+            amount,
+            owner,
+            escrow_shares,
+            burn_shares,
+        });
+        op_id
+    };
+
+    vault
+        .settle_payout(
+            allocator,
+            op_id,
+            PayoutOutcome::Success {
+                burn_shares,
+                refund_shares,
+            },
+        )
+        .unwrap();
+
+    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().withdraw_queue.is_empty());
+    assert_eq!(
+        vault.state().total_shares,
+        escrow_shares.saturating_sub(burn_shares)
+    );
+}
+
+#[test]
+fn test_recover_payout_failure_restores_idle() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let owner = user_addr();
+    let receiver = user_addr();
+    let escrow_shares = 500;
+    let amount = 1_000;
+
+    let _op_id = {
+        let state = vault.state_mut();
+        state.total_shares = escrow_shares;
+        state.idle_assets = 0;
+        state.total_assets = 0;
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, escrow_shares, amount, 0, MAX_PENDING as u32)
+            .unwrap();
+        let op_id = state.allocate_op_id();
+        state.op_state = OpState::Payout(PayoutState {
+            op_id,
+            receiver,
+            amount,
+            owner,
+            escrow_shares,
+            burn_shares: 0,
+        });
+        op_id
+    };
+
+    let summary = vault
+        .recover(allocator, RecoveryContext::new(0), 0)
+        .unwrap();
+
+    assert!(summary.is_some());
+    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().withdraw_queue.is_empty());
+    assert_eq!(vault.state().idle_assets, amount);
+    assert_eq!(vault.state().total_assets, amount);
 }
 
 // ============================================================================

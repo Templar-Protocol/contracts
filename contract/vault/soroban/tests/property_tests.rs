@@ -355,7 +355,6 @@ proptest! {
     #[test]
     fn prop_abort_allocation_returns_idle(
         deposit_amount in arb_deposit_amount(),
-        restore_idle in 0u128..=1_000_000_000u128,
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
@@ -366,6 +365,12 @@ proptest! {
 
         // Begin and abort
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)]).unwrap();
+        let restore_idle = vault
+            .state()
+            .op_state
+            .as_allocating()
+            .expect("allocating")
+            .remaining;
         vault.abort_allocating(allocator, op_id, restore_idle).unwrap();
 
         prop_assert!(vault.state().op_state.is_idle());

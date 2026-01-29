@@ -4,10 +4,13 @@
 //! Each entrypoint performs authorization, dispatches to kernel transitions,
 //! and executes the returned effects.
 
+use alloc::string::String;
 use alloc::vec::Vec;
+use templar_curator_primitives::{determine_recovery_action, RecoveryContext};
 use templar_vault_kernel::{
-    complete_allocation, complete_refresh, start_allocation, start_refresh, Address, OpState,
-    TargetId, VaultState,
+    apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh, Address,
+    Fee, Fees, KernelAction, OpState, PayoutOutcome, TargetId, VaultConfig, VaultState, Wad,
+    MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::auth::{ActionKind, AuthAdapter};
@@ -235,6 +238,67 @@ where
             self.config.asset_address,
             self.config.share_address,
         )
+    }
+
+    fn kernel_config(&self) -> VaultConfig {
+        VaultConfig {
+            fees: Fees {
+                performance: Fee {
+                    fee: Wad::ZERO,
+                    recipient: String::new(),
+                },
+                management: Fee {
+                    fee: Wad::ZERO,
+                    recipient: String::new(),
+                },
+                max_total_assets_growth_rate: None,
+            },
+            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            max_pending_withdrawals: MAX_PENDING as u32,
+            paused: self.paused,
+            virtual_shares: 0,
+            virtual_assets: 0,
+        }
+    }
+
+    fn apply_kernel_action(
+        &mut self,
+        action: KernelAction,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        let config = self.kernel_config();
+        let state = self.state().clone();
+        let result = apply_action(state, &config, None, &self.config.admin, action)
+            .map_err(RuntimeError::transition_error)?;
+
+        let ctx = self.effect_context(now_ns);
+        let summary = self
+            .interpreter
+            .execute_effects(&result.effects, &ctx)?;
+
+        self.state = Some(result.state);
+        self.save_state()?;
+
+        Ok(summary)
+    }
+
+    fn action_kind_for_kernel(action: &KernelAction) -> ActionKind {
+        match action {
+            KernelAction::BeginAllocating { .. } => ActionKind::BeginAllocating,
+            KernelAction::Deposit { .. } => ActionKind::Deposit,
+            KernelAction::RequestWithdraw { .. } => ActionKind::RequestWithdraw,
+            KernelAction::ExecuteWithdraw { .. } => ActionKind::ExecuteWithdraw,
+            KernelAction::BeginRefreshing { .. } => ActionKind::BeginRefreshing,
+            KernelAction::FinishAllocating { .. } => ActionKind::FinishAllocating,
+            KernelAction::SyncExternalAssets { .. } => ActionKind::SyncExternalAssets,
+            KernelAction::FinishRefreshing { .. } => ActionKind::FinishRefreshing,
+            KernelAction::AbortRefreshing { .. } => ActionKind::AbortRefreshing,
+            KernelAction::SettlePayout { .. } => ActionKind::SettlePayout,
+            KernelAction::AbortAllocating { .. } => ActionKind::AbortAllocating,
+            KernelAction::AbortWithdrawing { .. } => ActionKind::AbortWithdrawing,
+            KernelAction::RefreshFees { .. } => ActionKind::RefreshFees,
+            KernelAction::Pause { .. } => ActionKind::Pause,
+        }
     }
 
     // =========================================================================
@@ -624,23 +688,11 @@ where
         // Authorize
         self.auth
             .authorize(ActionKind::AbortAllocating, caller, None)?;
-
-        let state = self.state_mut();
-
-        // Verify op_id matches
-        if let OpState::Allocating(ref alloc) = state.op_state {
-            if alloc.op_id != op_id {
-                return Err(RuntimeError::contract_error("op_id mismatch"));
-            }
-        } else {
-            return Err(RuntimeError::contract_error("not in allocating state"));
-        }
-
-        // Restore idle assets and return to Idle
-        state.idle_assets = state.idle_assets.saturating_add(restore_idle);
-        state.op_state = OpState::Idle;
-
-        self.save_state()?;
+        let action = KernelAction::AbortAllocating {
+            op_id,
+            restore_idle,
+        };
+        let _summary = self.apply_kernel_action(action, 0)?;
         Ok(())
     }
 
@@ -654,23 +706,72 @@ where
         // Authorize
         self.auth
             .authorize(ActionKind::AbortRefreshing, caller, None)?;
-
-        let state = self.state_mut();
-
-        // Verify op_id matches
-        if let OpState::Refreshing(ref refresh) = state.op_state {
-            if refresh.op_id != op_id {
-                return Err(RuntimeError::contract_error("op_id mismatch"));
-            }
-        } else {
-            return Err(RuntimeError::contract_error("not in refreshing state"));
-        }
-
-        // Return to Idle
-        state.op_state = OpState::Idle;
-
-        self.save_state()?;
+        let action = KernelAction::AbortRefreshing { op_id };
+        let _summary = self.apply_kernel_action(action, 0)?;
         Ok(())
+    }
+
+    /// Abort a withdrawal operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The caller's address (must be allocator)
+    /// * `op_id` - Operation ID to verify correlation
+    /// * `refund_shares` - Shares to refund to the owner
+    pub fn abort_withdrawing(
+        &mut self,
+        caller: Address,
+        op_id: u64,
+        refund_shares: u128,
+    ) -> Result<(), RuntimeError> {
+        self.auth
+            .authorize(ActionKind::AbortWithdrawing, caller, None)?;
+        let action = KernelAction::AbortWithdrawing {
+            op_id,
+            refund_shares,
+        };
+        let _summary = self.apply_kernel_action(action, 0)?;
+        Ok(())
+    }
+
+    /// Settle a payout operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The caller's address (must be allocator)
+    /// * `op_id` - Operation ID to verify correlation
+    /// * `outcome` - Payout outcome (success or failure)
+    pub fn settle_payout(
+        &mut self,
+        caller: Address,
+        op_id: u64,
+        outcome: PayoutOutcome,
+    ) -> Result<(), RuntimeError> {
+        self.auth
+            .authorize(ActionKind::SettlePayout, caller, None)?;
+        let action = KernelAction::SettlePayout { op_id, outcome };
+        let _summary = self.apply_kernel_action(action, 0)?;
+        Ok(())
+    }
+
+    /// Recover from a stuck operation by delegating to curator-primitives.
+    ///
+    /// Returns `Ok(None)` if no recovery action is needed.
+    pub fn recover(
+        &mut self,
+        caller: Address,
+        context: RecoveryContext,
+        now_ns: u64,
+    ) -> Result<Option<EffectSummary>, RuntimeError> {
+        let Some(action) = determine_recovery_action(&self.state().op_state, &context) else {
+            return Ok(None);
+        };
+
+        let kind = Self::action_kind_for_kernel(&action);
+        self.auth.authorize(kind, caller, None)?;
+
+        let summary = self.apply_kernel_action(action, now_ns)?;
+        Ok(Some(summary))
     }
 
     /// Manual reconciliation of external assets.
