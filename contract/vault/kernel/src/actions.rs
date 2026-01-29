@@ -597,3 +597,139 @@ pub fn apply_action(
         }
     }
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+    use crate::effects::KernelEvent;
+    use crate::fee::{Fee, Fees};
+    use crate::math::wad::Wad;
+    use crate::state::op_state::WithdrawingState;
+    use crate::state::queue::DEFAULT_COOLDOWN_NS;
+
+    fn addr(tag: u8) -> Address {
+        [tag; 32]
+    }
+
+    fn test_config() -> VaultConfig {
+        VaultConfig {
+            fees: Fees {
+                performance: Fee {
+                    fee: Wad::ZERO,
+                    recipient: String::new(),
+                },
+                management: Fee {
+                    fee: Wad::ZERO,
+                    recipient: String::new(),
+                },
+                max_total_assets_growth_rate: None,
+            },
+            min_withdrawal_assets: 0,
+            max_pending_withdrawals: 10,
+            paused: false,
+            virtual_shares: 0,
+            virtual_assets: 0,
+        }
+    }
+
+    #[test]
+    fn request_withdraw_enqueues_and_emits_event() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            KernelAction::RequestWithdraw {
+                owner: addr(1),
+                receiver: addr(2),
+                shares: 100,
+                min_assets_out: 0,
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.state.withdraw_queue.len(), 1);
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::TransferShares { .. })
+        ));
+        assert!(matches!(
+            result.effects.get(1),
+            Some(KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalRequested { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn execute_withdraw_idle_starts_withdrawal() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+        let owner = addr(3);
+        let receiver = addr(4);
+
+        let _ = state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        let result = apply_action(
+            state,
+            &config,
+            KernelAction::ExecuteWithdraw {
+                now_ns: DEFAULT_COOLDOWN_NS + 1,
+            },
+        )
+        .unwrap();
+
+        let withdraw = result.state.op_state.as_withdrawing().unwrap();
+        assert_eq!(withdraw.op_id, 0);
+        assert_eq!(withdraw.owner, owner);
+        assert_eq!(withdraw.receiver, receiver);
+        assert_eq!(withdraw.escrow_shares, 100);
+        assert_eq!(withdraw.remaining, 100);
+    }
+
+    #[test]
+    fn execute_withdraw_withdrawing_advances_index() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+        let owner = addr(5);
+        let receiver = addr(6);
+
+        let _ = state
+            .withdraw_queue
+            .enqueue(owner, receiver, 200, 200, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 7,
+            index: 0,
+            remaining: 200,
+            collected: 0,
+            receiver,
+            owner,
+            escrow_shares: 200,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            KernelAction::ExecuteWithdraw { now_ns: 0 },
+        )
+        .unwrap();
+
+        let withdraw = result.state.op_state.as_withdrawing().unwrap();
+        assert_eq!(withdraw.op_id, 7);
+        assert_eq!(withdraw.index, 1);
+        assert_eq!(withdraw.collected, 0);
+        assert_eq!(withdraw.remaining, 200);
+    }
+}
