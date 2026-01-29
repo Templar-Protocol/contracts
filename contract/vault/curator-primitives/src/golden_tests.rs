@@ -33,6 +33,21 @@ use templar_vault_kernel::{
 // WAD constant matching templar-vault-kernel
 const WAD: u128 = 1_000_000_000_000_000_000_000_000;
 
+fn addr_with_tag(tag: u8, index: u64) -> [u8; 32] {
+    let mut addr = [0u8; 32];
+    addr[0] = tag;
+    addr[1..9].copy_from_slice(&index.to_le_bytes());
+    addr
+}
+
+fn owner_addr(index: u64) -> [u8; 32] {
+    addr_with_tag(0x11, index)
+}
+
+fn receiver_addr(index: u64) -> [u8; 32] {
+    addr_with_tag(0x22, index)
+}
+
 /// Snapshot representing a typical NEAR curator vault state.
 /// This represents a vault with:
 /// - 3 markets (IDs 0, 1, 2)
@@ -377,15 +392,13 @@ fn golden_recovery_allocating_state() {
 
 #[test]
 fn golden_recovery_withdrawing_state() {
-    use alloc::string::String;
-
     let state = OpState::Withdrawing(WithdrawingState {
         op_id: 43,
         index: 1,
         remaining: 400_000_000_000,
         collected: 600_000_000_000,
-        receiver: String::from("receiver.near"),
-        owner: String::from("owner.near"),
+        receiver: receiver_addr(1),
+        owner: owner_addr(1),
         escrow_shares: 1_000_000_000_000,
     });
 
@@ -401,7 +414,7 @@ fn golden_recovery_withdrawing_state() {
         } => {
             assert_eq!(op_id, 43);
             assert_eq!(escrow_shares, 1_000_000_000_000);
-            assert_eq!(owner, "owner.near");
+            assert_eq!(owner, owner_addr(1));
             assert_eq!(collected, 600_000_000_000);
         }
         _ => panic!("Expected AbortWithdrawing"),
@@ -410,13 +423,11 @@ fn golden_recovery_withdrawing_state() {
 
 #[test]
 fn golden_recovery_payout_state() {
-    use alloc::string::String;
-
     let state = OpState::Payout(PayoutState {
         op_id: 44,
-        receiver: String::from("receiver.near"),
+        receiver: receiver_addr(1),
         amount: 1_000_000_000_000,
-        owner: String::from("owner.near"),
+        owner: owner_addr(1),
         escrow_shares: 500_000_000_000,
         burn_shares: 400_000_000_000,
     });

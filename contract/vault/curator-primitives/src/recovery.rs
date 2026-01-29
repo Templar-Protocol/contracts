@@ -19,7 +19,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use templar_vault_kernel::{
-    AllocatingState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
+    AllocatingState, Address, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
 
 /// Actions that can be taken during recovery.
@@ -44,7 +44,7 @@ pub enum RecoveryAction {
         /// Shares to refund to the owner.
         escrow_shares: u128,
         /// Owner to receive the refund.
-        owner: String,
+        owner: Address,
         /// Amount already collected (stays in idle balance).
         collected: u128,
     },
@@ -70,7 +70,7 @@ pub enum RecoveryAction {
         /// Shares to refund.
         refund_shares: u128,
         /// Owner to receive refunds.
-        owner: String,
+        owner: Address,
         /// Amount paid out (only on success).
         amount: u128,
     },
@@ -217,7 +217,7 @@ pub fn determine_recovery_action(state: &OpState, _context: &RecoveryContext) ->
         OpState::Withdrawing(withdraw) => RecoveryAction::AbortWithdrawing {
             op_id: withdraw.op_id,
             escrow_shares: withdraw.escrow_shares,
-            owner: withdraw.owner.clone(),
+            owner: withdraw.owner,
             collected: withdraw.collected,
         },
 
@@ -250,7 +250,7 @@ pub fn determine_recovery_action(state: &OpState, _context: &RecoveryContext) ->
                 success: false,
                 burn_shares: 0,
                 refund_shares: payout.escrow_shares,
-                owner: payout.owner.clone(),
+                owner: payout.owner,
                 amount: 0,
             }
         }
@@ -302,7 +302,7 @@ pub fn handle_withdrawal_failure(
         RecoveryAction::AbortWithdrawing {
             op_id: state.op_id,
             escrow_shares: state.escrow_shares,
-            owner: state.owner.clone(),
+            owner: state.owner,
             collected: state.collected,
         },
         failure_reason,
@@ -363,7 +363,7 @@ pub fn handle_payout_failure(
             success: false,
             burn_shares: 0,
             refund_shares: state.escrow_shares,
-            owner: state.owner.clone(),
+            owner: state.owner,
             amount: 0,
         },
         failure_reason,
@@ -476,6 +476,21 @@ mod tests {
     use alloc::string::String;
     use alloc::vec;
 
+    fn addr_with_tag(tag: u8, index: u64) -> Address {
+        let mut addr = [0u8; 32];
+        addr[0] = tag;
+        addr[1..9].copy_from_slice(&index.to_le_bytes());
+        addr
+    }
+
+    fn owner_addr(index: u64) -> Address {
+        addr_with_tag(0x11, index)
+    }
+
+    fn receiver_addr(index: u64) -> Address {
+        addr_with_tag(0x22, index)
+    }
+
     #[test]
     fn test_determine_recovery_action_idle() {
         let state = OpState::Idle;
@@ -519,8 +534,8 @@ mod tests {
             index: 1,
             remaining: 400,
             collected: 600,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 1000,
         });
         let ctx = RecoveryContext::new(1000);
@@ -536,7 +551,7 @@ mod tests {
             } => {
                 assert_eq!(op_id, 2);
                 assert_eq!(escrow_shares, 1000);
-                assert_eq!(owner, "owner");
+                assert_eq!(owner, owner_addr(1));
                 assert_eq!(collected, 600);
             }
             _ => panic!("Expected AbortWithdrawing"),
@@ -572,9 +587,9 @@ mod tests {
     fn test_determine_recovery_action_payout() {
         let state = OpState::Payout(PayoutState {
             op_id: 4,
-            receiver: String::from("receiver"),
+            receiver: receiver_addr(1),
             amount: 1000,
-            owner: String::from("owner"),
+            owner: owner_addr(1),
             escrow_shares: 500,
             burn_shares: 400,
         });
@@ -670,8 +685,8 @@ mod tests {
             index: 1,
             remaining: 400,
             collected: 600,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 1000,
         };
 
@@ -722,9 +737,9 @@ mod tests {
     fn test_handle_payout_failure() {
         let state = PayoutState {
             op_id: 4,
-            receiver: String::from("receiver"),
+            receiver: receiver_addr(1),
             amount: 1000,
-            owner: String::from("owner"),
+            owner: owner_addr(1),
             escrow_shares: 500,
             burn_shares: 400,
         };
@@ -773,8 +788,8 @@ mod tests {
             index: 3,
             remaining: 400,
             collected: 600,
-            receiver: String::from("receiver"),
-            owner: String::from("owner"),
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
             escrow_shares: 1000,
         });
 
