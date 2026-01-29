@@ -36,6 +36,7 @@ pub use policy::{
         build_refresh_plan, compute_refresh_plan_total, validate_refresh_plan, RefreshPlan,
         RefreshPlanError,
     },
+    state::{MarketConfig, PolicyState},
     supply_queue::{
         compute_queue_total, dequeue_supply, enqueue_supply, SupplyQueue, SupplyQueueEntry,
         SupplyQueueError,
