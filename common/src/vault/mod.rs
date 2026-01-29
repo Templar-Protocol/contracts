@@ -1,5 +1,7 @@
 use std::{collections::BTreeSet, num::NonZeroU8};
 
+use derive_more::{Display, From, Into};
+
 use crate::{
     asset::{BorrowAsset, FungibleAsset},
     supply::SupplyPosition,
@@ -60,31 +62,14 @@ pub struct ResyncIdleReport {
     pub resynced_at_ns: U64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
 #[near(serializers = [borsh, json])]
+#[display("{_0}")]
 pub struct CapGroupId(pub String);
-
-impl From<String> for CapGroupId {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
 
 impl From<&str> for CapGroupId {
     fn from(value: &str) -> Self {
         Self(value.to_string())
-    }
-}
-
-impl From<CapGroupId> for String {
-    fn from(value: CapGroupId) -> Self {
-        value.0
-    }
-}
-
-impl core::fmt::Display for CapGroupId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
     }
 }
 
@@ -138,27 +123,10 @@ pub enum CapGroupUpdateKey {
     SetMarketCapGroup { market: MarketId },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, From, Into, Display)]
 #[near(serializers = [borsh, json])]
+#[display("{_0}")]
 pub struct MarketId(pub u32);
-
-impl From<u32> for MarketId {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<MarketId> for u32 {
-    fn from(value: MarketId) -> Self {
-        value.0
-    }
-}
-
-impl core::fmt::Display for MarketId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
-    }
-}
 
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.

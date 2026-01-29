@@ -18,6 +18,7 @@ templar-vault-kernel = { path = "../kernel" }
 
 # Curator primitives for policy and recovery
 templar-curator-primitives = { path = "../curator-primitives" }
+derive_more.workspace = true
 
 [dev-dependencies]
 proptest = "1.4"

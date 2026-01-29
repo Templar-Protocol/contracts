@@ -17,12 +17,14 @@
 //! ```
 
 use alloc::string::String;
+use derive_more::{Display, From, Into};
 use templar_vault_kernel::Wad;
 
 /// Identifier for a cap group.
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
+#[display("{_0}")]
 pub struct CapGroupId(pub String);
 
 impl CapGroupId {
@@ -32,27 +34,9 @@ impl CapGroupId {
     }
 }
 
-impl From<String> for CapGroupId {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
 impl From<&str> for CapGroupId {
     fn from(value: &str) -> Self {
         Self(String::from(value))
-    }
-}
-
-impl From<CapGroupId> for String {
-    fn from(value: CapGroupId) -> Self {
-        value.0
-    }
-}
-
-impl core::fmt::Display for CapGroupId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
     }
 }
 

@@ -11,6 +11,7 @@
 //!    Use kernel types (`MarketRef`) for testing and chain-agnostic logic.
 
 use alloc::vec::Vec;
+use derive_more::{From, Into};
 use templar_vault_kernel::{AssetId, TargetId};
 
 use crate::error::RuntimeError;
@@ -62,7 +63,7 @@ impl Default for Env {
 /// Mock Soroban address (placeholder for `soroban_sdk::Address`).
 ///
 /// In a real Soroban contract, this would be `soroban_sdk::Address`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, From, Into)]
 pub struct SorobanAddress(pub [u8; 32]);
 
 impl SorobanAddress {
@@ -81,20 +82,8 @@ impl SorobanAddress {
     }
 }
 
-impl From<[u8; 32]> for SorobanAddress {
-    fn from(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-
-impl From<SorobanAddress> for [u8; 32] {
-    fn from(value: SorobanAddress) -> Self {
-        value.0
-    }
-}
-
 /// Mock Soroban bytes (placeholder for `soroban_sdk::Bytes`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, From, Into)]
 pub struct Bytes(pub Vec<u8>);
 
 impl Bytes {
@@ -110,18 +99,6 @@ impl Bytes {
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         &self.0
-    }
-}
-
-impl From<Vec<u8>> for Bytes {
-    fn from(v: Vec<u8>) -> Self {
-        Self(v)
-    }
-}
-
-impl From<Bytes> for Vec<u8> {
-    fn from(value: Bytes) -> Self {
-        value.0
     }
 }
 

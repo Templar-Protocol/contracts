@@ -3,12 +3,13 @@
 //! This module provides versioned storage wrappers for persisting vault state
 //! to the Soroban ledger. It handles schema migrations and forward compatibility.
 
+use derive_more::{From, Into};
 use templar_vault_kernel::VaultState;
 
 use crate::error::RuntimeError;
 
 /// Storage version identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct StorageVersion(pub u32);
 
 impl StorageVersion {
@@ -37,18 +38,6 @@ impl StorageVersion {
     #[must_use]
     pub const fn is_compatible(&self) -> bool {
         self.0 <= Self::CURRENT.0
-    }
-}
-
-impl From<u32> for StorageVersion {
-    fn from(value: u32) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<StorageVersion> for u32 {
-    fn from(value: StorageVersion) -> Self {
-        value.0
     }
 }
 

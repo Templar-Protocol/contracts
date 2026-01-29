@@ -18,6 +18,7 @@ schemars = ["dep:schemars"]
 [dependencies]
 # Core dependency - vault kernel types
 templar-vault-kernel = { path = "../kernel" }
+derive_more.workspace = true
 
 # Optional serialization dependencies (no_std + alloc)
 borsh = { version = "1.5", optional = true, default-features = false, features = ["derive", "unstable__schema"] }
