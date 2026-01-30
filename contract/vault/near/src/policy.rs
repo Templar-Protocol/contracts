@@ -4,6 +4,8 @@
 //! - Type conversions between common/near types and curator-primitives types
 //! - Re-exports of curator-primitives pure functions for policy enforcement
 //! - NEAR-specific wrappers where needed
+// Note: adapters that touch templar_common types live here (not in curator-primitives)
+// to keep curator-primitives chain-agnostic and dependency-light.
 
 use crate::convert::{IntoMarketId, IntoTargetId};
 use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, MarketId};
