@@ -1,4 +1,5 @@
 use near_sdk::{env, AccountId};
+use std::vec::Vec;
 use templar_common::vault::{
     AllocatingState as CommonAllocatingState, MarketId, OpState as CommonOpState,
     PayoutState as CommonPayoutState, RefreshingState as CommonRefreshingState,
@@ -50,8 +51,18 @@ impl IntoMarketId for &TargetId {
     }
 }
 
-fn account_to_address(account: &AccountId) -> Address {
-    let hash = env::sha256(account.as_bytes());
+const ADDRESS_DOMAIN: &[u8] = b"templar:near:account-id";
+
+/// Deterministic one-way mapping for AccountId -> Address.
+///
+/// This keeps NEAR storage/API types unchanged (AccountId/U128/U64) while allowing
+/// kernel logic (Address-based) to be applied. The mapping is *not reversible*,
+/// so kernel effects that need AccountId must use executor context, not Address.
+pub(crate) fn account_id_to_address(account: &AccountId) -> Address {
+    let mut bytes = Vec::with_capacity(ADDRESS_DOMAIN.len() + account.as_bytes().len());
+    bytes.extend_from_slice(ADDRESS_DOMAIN);
+    bytes.extend_from_slice(account.as_bytes());
+    let hash = env::sha256(&bytes);
     hash.as_slice()
         .try_into()
         .unwrap_or_else(|_| panic!("expected 32-byte sha256 hash"))
@@ -88,8 +99,8 @@ pub fn to_kernel_op_state(state: &CommonOpState) -> KernelOpState {
             index: *index,
             remaining: *remaining,
             collected: *collected,
-            receiver: account_to_address(receiver),
-            owner: account_to_address(owner),
+            receiver: account_id_to_address(receiver),
+            owner: account_id_to_address(owner),
             escrow_shares: *escrow_shares,
         }),
         CommonOpState::Refreshing(CommonRefreshingState { op_id, index, plan }) => {
@@ -108,9 +119,9 @@ pub fn to_kernel_op_state(state: &CommonOpState) -> KernelOpState {
             burn_shares,
         }) => KernelOpState::Payout(KernelPayoutState {
             op_id: *op_id,
-            receiver: account_to_address(receiver),
+            receiver: account_id_to_address(receiver),
             amount: *amount,
-            owner: account_to_address(owner),
+            owner: account_id_to_address(owner),
             escrow_shares: *escrow_shares,
             burn_shares: *burn_shares,
         }),
