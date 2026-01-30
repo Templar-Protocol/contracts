@@ -27,7 +27,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use proptest::prelude::*;
 
-use templar_soroban_vault::{
+use templar_soroban_runtime::{
     auth::PermissiveAuth,
     contract::{ContractConfig, CuratorVault},
     effects::MockInterpreter,
@@ -313,7 +313,7 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Allocation flow
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)]).unwrap();
+        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
         prop_assert!(vault.state().op_state.is_allocating());
 
         vault.sync_external_assets(allocator, external_assets, op_id).unwrap();
@@ -340,7 +340,7 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Refresh flow
-        let op_id = vault.begin_refreshing(allocator, plan).unwrap();
+        let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
         prop_assert!(vault.state().op_state.is_refreshing());
 
         vault.sync_external_assets(allocator, external_assets, op_id).unwrap();
@@ -364,7 +364,7 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Begin and abort
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)]).unwrap();
+        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
         let restore_idle = vault
             .state()
             .op_state
@@ -392,7 +392,7 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Begin and abort
-        let op_id = vault.begin_refreshing(allocator, plan).unwrap();
+        let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
         vault.abort_refreshing(allocator, op_id).unwrap();
 
         prop_assert!(vault.state().op_state.is_idle());
@@ -466,7 +466,7 @@ proptest! {
         let allocator = allocator_addr();
         vault.deposit(user_addr(), user_addr(), 10000, 0, 100).unwrap();
 
-        let result = vault.begin_allocating(allocator, vec![]);
+        let result = vault.begin_allocating(allocator, vec![], 1000);
         prop_assert!(result.is_err());
     }
 
@@ -486,7 +486,7 @@ proptest! {
         let allocator = allocator_addr();
         vault.deposit(user_addr(), user_addr(), 10000, 0, 100).unwrap();
 
-        let result = vault.begin_refreshing(allocator, vec![]);
+        let result = vault.begin_refreshing(allocator, vec![], 1000);
         prop_assert!(result.is_err());
     }
 
@@ -508,7 +508,7 @@ proptest! {
         let allocator = allocator_addr();
         vault.deposit(user_addr(), user_addr(), 10000, 0, 100).unwrap();
 
-        let soroban_op_id = vault.begin_allocating(allocator, plan).unwrap();
+        let soroban_op_id = vault.begin_allocating(allocator, plan, 1000).unwrap();
         vault.finish_allocating(allocator, soroban_op_id).unwrap();
         prop_assert!(vault.state().op_state.is_idle());
     }
@@ -531,7 +531,7 @@ proptest! {
         let allocator = allocator_addr();
         vault.deposit(user_addr(), user_addr(), 10000, 0, 100).unwrap();
 
-        let soroban_op_id = vault.begin_refreshing(allocator, plan).unwrap();
+        let soroban_op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
         vault.finish_refreshing(allocator, soroban_op_id).unwrap();
         prop_assert!(vault.state().op_state.is_idle());
     }
@@ -611,7 +611,7 @@ proptest! {
 
         for _ in 0..num_ops {
             // Start and finish an allocation
-            let op_id = vault.begin_allocating(allocator, vec![(0, 100)]).unwrap();
+            let op_id = vault.begin_allocating(allocator, vec![(0, 100)], 1000).unwrap();
 
             if let Some(prev) = prev_op_id {
                 prop_assert!(op_id > prev, "op_id should be monotonically increasing");
@@ -643,7 +643,7 @@ proptest! {
 
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)]).unwrap();
+        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
         vault.sync_external_assets(allocator, new_external, op_id).unwrap();
 
         prop_assert_eq!(vault.state().external_assets, new_external);
@@ -666,14 +666,14 @@ proptest! {
         // Setup: deposit and allocate
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)]).unwrap();
+        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
         vault.sync_external_assets(allocator, initial_external, op_id).unwrap();
         vault.finish_allocating(allocator, op_id).unwrap();
 
         let total_before = vault.state().total_assets;
 
         // Refresh with growth
-        let op_id = vault.begin_refreshing(allocator, vec![0]).unwrap();
+        let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
         let new_external = initial_external.saturating_add(growth);
         vault.sync_external_assets(allocator, new_external, op_id).unwrap();
         vault.finish_refreshing(allocator, op_id).unwrap();
@@ -754,10 +754,10 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Start first allocation
-        vault.begin_allocating(allocator, plan1).unwrap();
+        vault.begin_allocating(allocator, plan1, 1000).unwrap();
 
         // Try to start second allocation - should fail
-        let result = vault.begin_allocating(allocator, plan2);
+        let result = vault.begin_allocating(allocator, plan2, 1000);
         prop_assert!(result.is_err());
     }
 
@@ -777,10 +777,10 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Start allocation
-        vault.begin_allocating(allocator, alloc_plan).unwrap();
+        vault.begin_allocating(allocator, alloc_plan, 1000).unwrap();
 
         // Try to start refresh - should fail
-        let result = vault.begin_refreshing(allocator, refresh_plan);
+        let result = vault.begin_refreshing(allocator, refresh_plan, 1000);
         prop_assert!(result.is_err());
     }
 
@@ -800,10 +800,10 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Start refresh
-        vault.begin_refreshing(allocator, refresh_plan).unwrap();
+        vault.begin_refreshing(allocator, refresh_plan, 1000).unwrap();
 
         // Try to start allocation - should fail
-        let result = vault.begin_allocating(allocator, alloc_plan);
+        let result = vault.begin_allocating(allocator, alloc_plan, 1000);
         prop_assert!(result.is_err());
     }
 }

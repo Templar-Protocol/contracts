@@ -7,7 +7,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use templar_soroban_vault::{
+use templar_soroban_runtime::{
     auth::PermissiveAuth,
     contract::{ContractConfig, CuratorVault},
     effects::MockInterpreter,
@@ -276,7 +276,7 @@ fn test_allocation_flow_basic() {
 
     // Begin allocation
     let op_id = vault
-        .begin_allocating(allocator, vec![(0, 3000), (1, 2000)])
+        .begin_allocating(allocator, vec![(0, 3000), (1, 2000)], 1000)
         .unwrap();
 
     assert!(vault.state().op_state.is_allocating());
@@ -305,7 +305,7 @@ fn test_allocation_flow_abort() {
     let initial_idle = vault.state().idle_assets;
 
     // Begin allocation
-    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
 
     let restore_idle = vault
         .state()
@@ -331,7 +331,7 @@ fn test_allocation_flow_wrong_op_id_fails() {
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
-    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Try to finish with wrong op_id
     let result = vault.finish_allocating(allocator, op_id + 999);
@@ -352,7 +352,7 @@ fn test_refresh_flow_basic() {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Begin refresh
-    let op_id = vault.begin_refreshing(allocator, vec![0, 1, 2]).unwrap();
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1, 2], 1000).unwrap();
 
     assert!(vault.state().op_state.is_refreshing());
 
@@ -375,7 +375,7 @@ fn test_refresh_flow_abort() {
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
-    let op_id = vault.begin_refreshing(allocator, vec![0, 1]).unwrap();
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1], 1000).unwrap();
 
     // Abort refresh
     vault.abort_refreshing(allocator, op_id).unwrap();
@@ -544,7 +544,7 @@ fn test_rbac_user_cannot_allocate() {
         .unwrap();
 
     // User should not be able to begin allocation
-    let result = vault.begin_allocating(user, vec![(0, 5000)]);
+    let result = vault.begin_allocating(user, vec![(0, 5000)], 1000);
     assert!(result.is_err());
 }
 
@@ -559,7 +559,7 @@ fn test_rbac_allocator_can_allocate() {
         .unwrap();
 
     // Allocator should be able to begin allocation
-    let result = vault.begin_allocating(allocator, vec![(0, 5000)]);
+    let result = vault.begin_allocating(allocator, vec![(0, 5000)], 1000);
     assert!(result.is_ok());
 }
 
@@ -572,7 +572,7 @@ fn test_rbac_admin_can_do_everything() {
     vault.deposit(admin, admin, 10000, 0, 100).unwrap();
 
     // Begin allocation (admin has all privileges)
-    let op_id = vault.begin_allocating(admin, vec![(0, 5000)]).unwrap();
+    let op_id = vault.begin_allocating(admin, vec![(0, 5000)], 1000).unwrap();
 
     // Sync external assets
     vault.sync_external_assets(admin, 5000, op_id).unwrap();
@@ -581,7 +581,7 @@ fn test_rbac_admin_can_do_everything() {
     vault.finish_allocating(admin, op_id).unwrap();
 
     // Begin refresh
-    let op_id = vault.begin_refreshing(admin, vec![0]).unwrap();
+    let op_id = vault.begin_refreshing(admin, vec![0], 1000).unwrap();
     vault.finish_refreshing(admin, op_id).unwrap();
 }
 
@@ -630,7 +630,7 @@ fn test_state_persists_after_allocation() {
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
-    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
     vault.sync_external_assets(allocator, 5000, op_id).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
@@ -678,7 +678,7 @@ fn test_full_flow_deposit_allocate_refresh() {
 
     // 2. Allocate to markets
     let op_id = vault
-        .begin_allocating(allocator, vec![(0, 5000), (1, 3000)])
+        .begin_allocating(allocator, vec![(0, 5000), (1, 3000)], 1000)
         .unwrap();
     vault.sync_external_assets(allocator, 8000, op_id).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
@@ -686,7 +686,7 @@ fn test_full_flow_deposit_allocate_refresh() {
     assert_eq!(vault.state().external_assets, 8000);
 
     // 3. Refresh markets
-    let op_id = vault.begin_refreshing(allocator, vec![0, 1]).unwrap();
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1], 1000).unwrap();
     vault.sync_external_assets(allocator, 9000, op_id).unwrap(); // markets grew
     vault.finish_refreshing(allocator, op_id).unwrap();
 
@@ -774,7 +774,7 @@ fn test_execute_withdraw_requires_idle() {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Start allocation (vault not idle)
-    vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Execute withdraw should fail when not idle
     let result = vault.execute_withdraw(user, 200);
@@ -804,7 +804,7 @@ fn test_withdraw_flow_with_allocation() {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // 2. Allocate some to markets
-    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
     vault.sync_external_assets(allocator, 5000, op_id).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
@@ -829,13 +829,13 @@ fn test_full_flow_deposit_allocate_refresh_withdraw() {
     assert_eq!(vault.state().total_shares, 10000);
 
     // 2. Allocate to markets
-    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
     vault.sync_external_assets(allocator, 5000, op_id).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
     assert_eq!(vault.state().external_assets, 5000);
 
     // 3. Refresh - markets grew
-    let op_id = vault.begin_refreshing(allocator, vec![0]).unwrap();
+    let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
     vault.sync_external_assets(allocator, 6000, op_id).unwrap(); // 20% growth
     vault.finish_refreshing(allocator, op_id).unwrap();
     assert_eq!(vault.state().external_assets, 6000);
@@ -882,13 +882,13 @@ fn test_share_dilution_after_yield() {
 
     // Allocate half to external (keep some idle)
     let op_id = vault
-        .begin_allocating(allocator, vec![(0, 500)])
+        .begin_allocating(allocator, vec![(0, 500)], 1000)
         .unwrap();
     vault.sync_external_assets(allocator, 500, op_id).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     // Market grows - 20% yield (500 -> 600)
-    let op_id = vault.begin_refreshing(allocator, vec![0]).unwrap();
+    let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
     vault.sync_external_assets(allocator, 600, op_id).unwrap();
     vault.finish_refreshing(allocator, op_id).unwrap();
 
@@ -915,7 +915,7 @@ fn test_allocation_multiple_markets() {
 
     // Allocate to multiple markets
     let op_id = vault
-        .begin_allocating(allocator, vec![(0, 3000), (1, 2000), (2, 1000)])
+        .begin_allocating(allocator, vec![(0, 3000), (1, 2000), (2, 1000)], 1000)
         .unwrap();
 
     // Sync total external
@@ -933,12 +933,12 @@ fn test_refresh_multiple_markets() {
 
     // Setup
     vault.deposit(user, user, 10000, 0, 100).unwrap();
-    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
     vault.sync_external_assets(allocator, 5000, op_id).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     // Refresh multiple markets
-    let op_id = vault.begin_refreshing(allocator, vec![0, 1, 2]).unwrap();
+    let op_id = vault.begin_refreshing(allocator, vec![0, 1, 2], 1000).unwrap();
     vault.sync_external_assets(allocator, 6000, op_id).unwrap();
     vault.finish_refreshing(allocator, op_id).unwrap();
 
@@ -958,10 +958,10 @@ fn test_cannot_allocate_while_allocating() {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Start first allocation
-    vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Try to start second allocation - should fail
-    let result = vault.begin_allocating(allocator, vec![(1, 3000)]);
+    let result = vault.begin_allocating(allocator, vec![(1, 3000)], 1000);
     assert!(result.is_err());
 }
 
@@ -974,10 +974,10 @@ fn test_cannot_refresh_while_allocating() {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Start allocation
-    vault.begin_allocating(allocator, vec![(0, 5000)]).unwrap();
+    vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Try to start refresh - should fail
-    let result = vault.begin_refreshing(allocator, vec![0, 1]);
+    let result = vault.begin_refreshing(allocator, vec![0, 1], 1000);
     assert!(result.is_err());
 }
 
@@ -990,9 +990,9 @@ fn test_cannot_allocate_while_refreshing() {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Start refresh
-    vault.begin_refreshing(allocator, vec![0, 1]).unwrap();
+    vault.begin_refreshing(allocator, vec![0, 1], 1000).unwrap();
 
     // Try to start allocation - should fail
-    let result = vault.begin_allocating(allocator, vec![(0, 5000)]);
+    let result = vault.begin_allocating(allocator, vec![(0, 5000)], 1000);
     assert!(result.is_err());
 }

@@ -129,6 +129,29 @@ pub fn build_refresh_plan_with_locks(
     filter_unlocked_targets(lock_set, targets, current_ns)
 }
 
+/// Filter an allocation plan to exclude locked markets.
+///
+/// This takes a raw plan (as passed to `begin_allocating`) and removes
+/// any entries targeting locked markets.
+///
+/// # Arguments
+/// * `plan` - Allocation plan as (TargetId, amount) pairs
+/// * `lock_set` - The set of active locks
+/// * `current_ns` - Current timestamp for expiry checking
+///
+/// # Returns
+/// Filtered plan with locked targets removed.
+pub fn filter_allocation_plan(
+    plan: &[(TargetId, u128)],
+    lock_set: &MarketLockSet,
+    current_ns: u64,
+) -> Vec<(TargetId, u128)> {
+    plan.iter()
+        .filter(|(target_id, _)| !is_market_locked(lock_set, *target_id, current_ns))
+        .copied()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +267,66 @@ mod tests {
         let unlocked = filter_unlocked_targets(&set, &targets, 1500);
 
         assert!(unlocked.is_empty());
+    }
+
+    #[test]
+    fn test_filter_allocation_plan() {
+        let plan = vec![(1, 100), (2, 200), (3, 300)];
+
+        let mut set = MarketLockSet::new();
+        let lock = MarketLock::new(2, 1000);
+        set = acquire_lock(&set, lock, 1000).unwrap();
+
+        let filtered = super::filter_allocation_plan(&plan, &set, 1500);
+
+        // Target 2 should be excluded
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|(t, _)| *t != 2));
+        // Should include targets 1 and 3 with original amounts
+        assert!(filtered.contains(&(1, 100)));
+        assert!(filtered.contains(&(3, 300)));
+    }
+
+    #[test]
+    fn test_filter_allocation_plan_empty_locks() {
+        let plan = vec![(1, 100), (2, 200)];
+        let set = MarketLockSet::new();
+
+        let filtered = super::filter_allocation_plan(&plan, &set, 1000);
+
+        // All should pass through
+        assert_eq!(filtered, plan);
+    }
+
+    #[test]
+    fn test_filter_allocation_plan_all_locked() {
+        let plan = vec![(1, 100), (2, 200)];
+
+        let mut set = MarketLockSet::new();
+        set = acquire_lock(&set, MarketLock::new(1, 1000), 1000).unwrap();
+        set = acquire_lock(&set, MarketLock::new(2, 1000), 1000).unwrap();
+
+        let filtered = super::filter_allocation_plan(&plan, &set, 1500);
+
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_allocation_plan_respects_expiry() {
+        let plan = vec![(1, 100), (2, 200)];
+
+        let mut set = MarketLockSet::new();
+        // Lock expires at 2000
+        let lock = MarketLock::with_expiry(1, 1000, 2000);
+        set = acquire_lock(&set, lock, 1000).unwrap();
+
+        // Before expiry - target 1 should be filtered
+        let filtered_before = super::filter_allocation_plan(&plan, &set, 1500);
+        assert_eq!(filtered_before.len(), 1);
+        assert_eq!(filtered_before[0], (2, 200));
+
+        // After expiry - all should pass
+        let filtered_after = super::filter_allocation_plan(&plan, &set, 2500);
+        assert_eq!(filtered_after.len(), 2);
     }
 }

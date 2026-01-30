@@ -5,7 +5,7 @@
 //! and executes the returned effects.
 
 use alloc::vec::Vec;
-use templar_curator_primitives::{determine_recovery_action, RecoveryContext};
+use templar_curator_primitives::{determine_recovery_action, PolicyState, RecoveryContext};
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh, Address,
     FeesSpec, KernelAction, OpState, PayoutOutcome, TargetId, VaultConfig, VaultState,
@@ -16,6 +16,7 @@ use crate::auth::{ActionKind, AuthAdapter};
 use crate::effects::{EffectContext, EffectInterpreter, EffectSummary};
 use crate::error::RuntimeError;
 use crate::market::{CrossChainMarketAdapter, MarketAdapter, MarketRef};
+use crate::policy::{build_refresh_plan_with_locks, filter_allocation_plan};
 use crate::reconciliation::{reconcile_external_assets, ReconciliationRecord};
 use crate::storage::{Storage, VersionedState};
 
@@ -151,6 +152,8 @@ where
     pub cross_chain: C,
     /// Vault state (loaded from storage).
     state: Option<VaultState>,
+    /// Policy state (locks, caps, supply queue).
+    policy_state: PolicyState,
     /// Whether the vault is paused.
     paused: bool,
 }
@@ -182,6 +185,7 @@ where
             market,
             cross_chain,
             state: None,
+            policy_state: PolicyState::new(),
             paused: false,
         }
     }
@@ -469,25 +473,33 @@ where
 
     /// Begin an allocation operation.
     ///
+    /// Filters the plan to exclude locked markets before starting.
+    ///
     /// # Arguments
     ///
     /// * `caller` - The caller's address (must be allocator)
     /// * `plan` - Allocation plan: list of (target_id, amount) pairs
+    /// * `current_ns` - Current timestamp in nanoseconds (for lock expiry checks)
     pub fn begin_allocating(
         &mut self,
         caller: Address,
         plan: Vec<(TargetId, u128)>,
+        current_ns: u64,
     ) -> Result<u64, RuntimeError> {
         // Authorize
         self.auth
             .authorize(ActionKind::BeginAllocating, caller, None)?;
 
+        // Filter plan to exclude locked markets
+        let filtered_plan =
+            filter_allocation_plan(&plan, &self.policy_state.locks, current_ns);
+
         let state = self.state_mut();
         let op_id = state.next_op_id;
         state.next_op_id = state.next_op_id.saturating_add(1);
 
-        // Call kernel transition
-        let result = start_allocation(state.op_state.clone(), plan, op_id)
+        // Call kernel transition with filtered plan
+        let result = start_allocation(state.op_state.clone(), filtered_plan, op_id)
             .map_err(RuntimeError::transition_error)?;
 
         state.op_state = result.new_state;
@@ -583,25 +595,33 @@ where
 
     /// Begin a refresh operation.
     ///
+    /// Filters the plan to exclude locked markets before starting.
+    ///
     /// # Arguments
     ///
     /// * `caller` - The caller's address (must be allocator)
     /// * `plan` - List of target IDs to refresh
+    /// * `current_ns` - Current timestamp in nanoseconds (for lock expiry checks)
     pub fn begin_refreshing(
         &mut self,
         caller: Address,
         plan: Vec<TargetId>,
+        current_ns: u64,
     ) -> Result<u64, RuntimeError> {
         // Authorize
         self.auth
             .authorize(ActionKind::BeginRefreshing, caller, None)?;
 
+        // Filter plan to exclude locked markets
+        let filtered_plan =
+            build_refresh_plan_with_locks(&plan, &self.policy_state.locks, current_ns);
+
         let state = self.state_mut();
         let op_id = state.next_op_id;
         state.next_op_id = state.next_op_id.saturating_add(1);
 
-        // Call kernel transition
-        let result = start_refresh(state.op_state.clone(), plan, op_id)
+        // Call kernel transition with filtered plan
+        let result = start_refresh(state.op_state.clone(), filtered_plan, op_id)
             .map_err(RuntimeError::transition_error)?;
 
         state.op_state = result.new_state;
@@ -777,16 +797,21 @@ where
             let op_id = state.next_op_id;
             state.next_op_id = state.next_op_id.saturating_add(1);
 
-            // Build plan from markets
-            let plan: Vec<TargetId> = markets.iter().map(|m| m.market_id).collect();
-
-            // Start refresh
-            let result = start_refresh(state.op_state.clone(), plan, op_id)
-                .map_err(RuntimeError::transition_error)?;
-            state.op_state = result.new_state;
-
             op_id
         };
+
+        // Build plan from markets and filter locked ones
+        let plan: Vec<TargetId> = markets.iter().map(|m| m.market_id).collect();
+        let filtered_plan =
+            build_refresh_plan_with_locks(&plan, &self.policy_state.locks, now_ns);
+
+        // Start refresh with filtered plan
+        {
+            let state = self.state_mut();
+            let result = start_refresh(state.op_state.clone(), filtered_plan, op_id)
+                .map_err(RuntimeError::transition_error)?;
+            state.op_state = result.new_state;
+        }
 
         // Phase 2: Reconcile external assets (releases mutable borrow)
         let record = reconcile_external_assets(&self.market, op_id, &markets)?;
@@ -851,6 +876,95 @@ where
         self.save_state()?;
 
         Ok(0)
+    }
+
+    // =========================================================================
+    // Policy management methods
+    // =========================================================================
+
+    /// Get a reference to the current policy state.
+    #[inline]
+    #[must_use]
+    pub fn policy_state(&self) -> &PolicyState {
+        &self.policy_state
+    }
+
+    /// Get a mutable reference to the current policy state.
+    #[inline]
+    pub fn policy_state_mut(&mut self) -> &mut PolicyState {
+        &mut self.policy_state
+    }
+
+    /// Acquire a market lock.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The caller's address (must be allocator)
+    /// * `target_id` - Market to lock
+    /// * `expiry_ns` - Lock expiry timestamp in nanoseconds
+    /// * `current_ns` - Current timestamp
+    pub fn acquire_market_lock(
+        &mut self,
+        caller: Address,
+        target_id: TargetId,
+        expiry_ns: u64,
+        current_ns: u64,
+    ) -> Result<(), RuntimeError> {
+        use crate::policy::MarketLock;
+        use templar_curator_primitives::policy::market_lock::acquire_lock;
+
+        // Authorize - requires allocator privileges
+        self.auth
+            .authorize(ActionKind::BeginAllocating, caller, None)?;
+
+        let lock = MarketLock::with_expiry(target_id, current_ns, expiry_ns);
+        self.policy_state.locks =
+            acquire_lock(&self.policy_state.locks, lock, current_ns).map_err(|e| {
+                RuntimeError::contract_error(alloc::format!("failed to acquire lock: {:?}", e))
+            })?;
+
+        Ok(())
+    }
+
+    /// Release a market lock.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The caller's address (must be allocator)
+    /// * `target_id` - Market to unlock
+    pub fn release_market_lock(
+        &mut self,
+        caller: Address,
+        target_id: TargetId,
+    ) -> Result<(), RuntimeError> {
+        use templar_curator_primitives::policy::market_lock::release_lock;
+
+        // Authorize - requires allocator privileges
+        self.auth
+            .authorize(ActionKind::BeginAllocating, caller, None)?;
+
+        self.policy_state.locks = release_lock(&self.policy_state.locks, target_id);
+
+        Ok(())
+    }
+
+    /// Check if a market is currently locked.
+    ///
+    /// # Arguments
+    ///
+    /// * `target_id` - Market to check
+    /// * `current_ns` - Current timestamp
+    ///
+    /// # Returns
+    ///
+    /// `true` if the market is locked, `false` otherwise.
+    #[must_use]
+    pub fn is_market_locked(&self, target_id: TargetId, current_ns: u64) -> bool {
+        templar_curator_primitives::policy::market_lock::is_market_locked(
+            &self.policy_state.locks,
+            target_id,
+            current_ns,
+        )
     }
 }
 
@@ -989,7 +1103,7 @@ mod tests {
         let caller = [3u8; 32]; // allocator
 
         let op_id = vault
-            .begin_allocating(caller, vec![(0, 500), (1, 500)])
+            .begin_allocating(caller, vec![(0, 500), (1, 500)], 1000)
             .unwrap();
 
         assert_eq!(op_id, 0);
@@ -1001,7 +1115,7 @@ mod tests {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
 
-        let op_id = vault.begin_allocating(caller, vec![(0, 500)]).unwrap();
+        let op_id = vault.begin_allocating(caller, vec![(0, 500)], 1000).unwrap();
 
         let result = vault.finish_allocating(caller, op_id).unwrap();
 
@@ -1014,7 +1128,7 @@ mod tests {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
 
-        let op_id = vault.begin_refreshing(caller, vec![0, 1]).unwrap();
+        let op_id = vault.begin_refreshing(caller, vec![0, 1], 1000).unwrap();
 
         assert_eq!(op_id, 0);
         assert!(vault.state().op_state.is_refreshing());
@@ -1025,7 +1139,7 @@ mod tests {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
 
-        let op_id = vault.begin_allocating(caller, vec![(0, 500)]).unwrap();
+        let op_id = vault.begin_allocating(caller, vec![(0, 500)], 1000).unwrap();
 
         vault.sync_external_assets(caller, 1000, op_id).unwrap();
 
@@ -1040,7 +1154,7 @@ mod tests {
         // First deposit to have some idle assets
         vault.deposit([1u8; 32], [10u8; 32], 1000, 0, 100).unwrap();
 
-        let op_id = vault.begin_allocating(caller, vec![(0, 500)]).unwrap();
+        let op_id = vault.begin_allocating(caller, vec![(0, 500)], 1000).unwrap();
 
         vault.abort_allocating(caller, op_id, 500).unwrap();
 
@@ -1063,5 +1177,124 @@ mod tests {
         assert!(config.is_privileged(&[1u8; 32])); // admin
         assert!(config.is_privileged(&[3u8; 32])); // allocator
         assert!(!config.is_privileged(&[2u8; 32])); // guardian only
+    }
+
+    // =========================================================================
+    // Policy tests
+    // =========================================================================
+
+    #[test]
+    fn test_acquire_and_release_market_lock() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        // Acquire lock on market 1
+        vault
+            .acquire_market_lock(caller, 1, 5000, 1000)
+            .expect("should acquire lock");
+
+        // Market 1 should be locked
+        assert!(vault.is_market_locked(1, 1500));
+        // Market 2 should not be locked
+        assert!(!vault.is_market_locked(2, 1500));
+
+        // Release lock
+        vault
+            .release_market_lock(caller, 1)
+            .expect("should release lock");
+
+        // Market 1 should now be unlocked
+        assert!(!vault.is_market_locked(1, 1500));
+    }
+
+    #[test]
+    fn test_lock_expiry() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        // Acquire lock that expires at 2000
+        vault
+            .acquire_market_lock(caller, 1, 2000, 1000)
+            .expect("should acquire lock");
+
+        // Market 1 should be locked before expiry
+        assert!(vault.is_market_locked(1, 1500));
+
+        // Market 1 should be unlocked after expiry
+        assert!(!vault.is_market_locked(1, 2500));
+    }
+
+    #[test]
+    fn test_begin_allocating_filters_locked_markets() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        // Lock market 1
+        vault
+            .acquire_market_lock(caller, 1, 5000, 1000)
+            .expect("should acquire lock");
+
+        // Start allocation with markets 0, 1, 2 (1 is locked)
+        let plan = vec![(0, 100), (1, 200), (2, 300)];
+        let op_id = vault
+            .begin_allocating(caller, plan, 1500)
+            .expect("should start allocation");
+
+        assert_eq!(op_id, 0);
+        assert!(vault.state().op_state.is_allocating());
+
+        // The allocation should have filtered out market 1
+        // (We can't directly inspect the plan, but the operation should succeed)
+    }
+
+    #[test]
+    fn test_begin_refreshing_filters_locked_markets() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        // Lock market 2
+        vault
+            .acquire_market_lock(caller, 2, 5000, 1000)
+            .expect("should acquire lock");
+
+        // Start refresh with markets 0, 1, 2 (2 is locked)
+        let plan = vec![0, 1, 2];
+        let op_id = vault
+            .begin_refreshing(caller, plan, 1500)
+            .expect("should start refresh");
+
+        assert_eq!(op_id, 0);
+        assert!(vault.state().op_state.is_refreshing());
+    }
+
+    #[test]
+    fn test_allocating_all_locked_markets() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        // Lock both markets in the plan
+        vault.acquire_market_lock(caller, 0, 5000, 1000).unwrap();
+        vault.acquire_market_lock(caller, 1, 5000, 1000).unwrap();
+
+        // Start allocation with only locked markets - results in empty plan
+        // The kernel rejects empty allocation plans
+        let plan = vec![(0, 100), (1, 200)];
+        let result = vault.begin_allocating(caller, plan, 1500);
+
+        // Empty plan is rejected by kernel
+        assert!(result.is_err());
+        // Vault should still be in idle state
+        assert!(vault.state().op_state.is_idle());
+    }
+
+    #[test]
+    fn test_policy_state_getter() {
+        let vault = create_test_vault();
+
+        // Policy state should be initialized empty
+        assert!(vault.policy_state().locks.is_empty());
+        assert!(vault.policy_state().markets.is_empty());
+        assert!(vault.policy_state().principals.is_empty());
+        assert!(vault.policy_state().cap_groups.is_empty());
     }
 }

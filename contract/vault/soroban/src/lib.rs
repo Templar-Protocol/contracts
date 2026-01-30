@@ -61,5 +61,6 @@ pub use storage::{MemoryStorage, Storage, StorageVersion, VersionedState};
 // Policy re-exports for convenience
 pub use policy::{
     build_allocation_plan_with_locks, build_refresh_plan_with_locks,
-    build_withdrawal_plan_with_locks, filter_unlocked_targets, MarketLock, MarketLockSet,
+    build_withdrawal_plan_with_locks, filter_allocation_plan, filter_unlocked_targets, MarketLock,
+    MarketLockSet,
 };
