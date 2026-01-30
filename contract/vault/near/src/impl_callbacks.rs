@@ -22,11 +22,11 @@ use templar_common::{
     panic_with_message,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
-        IdleBalanceDelta, MarketId, OpState, PayoutState, PositionReportOutcome, Reason,
-        WithdrawalAccountingKind, WithdrawingState, AFTER_SEND_TO_USER_GAS,
-        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS,
-        SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
+        AllocatingState, AllocationPlan, AllocationPositionIssueKind, Event, IdleBalanceDelta,
+        MarketId, OpState, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
+        WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
+        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
+        WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
 
@@ -752,10 +752,7 @@ impl Contract {
         };
 
         if result.is_ok() {
-            let EscrowSettlement {
-                to_burn: burn_shares,
-                refund,
-            } = EscrowSettlement::new(escrow_shares, burn_shares);
+            let refund = escrow_shares.saturating_sub(burn_shares);
 
             if burn_shares > 0 {
                 // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
