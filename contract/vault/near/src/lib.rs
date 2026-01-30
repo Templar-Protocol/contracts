@@ -2,6 +2,7 @@
 
 use crate::{
     aum::AUM,
+    convert::to_kernel_op_state,
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
     storage_management::{
@@ -51,12 +52,17 @@ use templar_common::{
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
+use templar_curator_primitives::{determine_recovery_action, RecoveryContext};
+use templar_vault_kernel::{KernelAction, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 
 // Re-export share math types and functions for tests and external consumers.
 // Note: These types originate from templar_vault_kernel and are available via
 // templar_common::kernel or templar_common::vault::wad with NEAR Borsh compatibility.
+// The NEAR vault still uses templar_common::vault state types (AccountId/U128/U64)
+// to preserve storage layout and JSON APIs. Kernel types use Address ([u8; 32])
+// and plain u128/u64, so swapping requires a migration + Address mapping.
 pub use templar_common::vault::wad::{mul_div_ceil, mul_div_floor, Number, Wad};
 
 pub mod aum;
@@ -663,22 +669,49 @@ impl Contract {
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
         Self::assert_allocator_or_sentinel();
 
-        match self.op_state.clone() {
-            OpState::Withdrawing(s) => {
-                let id = self.next_withdraw_to_execute;
-                Event::UnbrickInvoked {
-                    phase: UnbrickPhase::Withdrawing,
-                    op_id: Some(s.op_id.into()),
-                    id: Some(id.into()),
-                }
-                .emit();
+        let kernel_state = to_kernel_op_state(&self.op_state);
+        let context = RecoveryContext::forced(env::block_timestamp());
+        let Some(action) = determine_recovery_action(&kernel_state, &context) else {
+            return PromiseOrValue::Value(());
+        };
 
-                self.stop_and_exit_withdrawing::<&str>(None);
+        self.apply_kernel_recovery_action(action)
+    }
+
+    fn apply_kernel_recovery_action(&mut self, action: KernelAction) -> PromiseOrValue<()> {
+        match action {
+            KernelAction::AbortAllocating { op_id, .. } => {
+                if matches!(self.op_state, OpState::Allocating(ref s) if s.op_id == op_id) {
+                    self.stop_and_exit_allocating::<&str>(None);
+                }
                 PromiseOrValue::Value(())
             }
-            OpState::Payout(s) => {
+            KernelAction::AbortWithdrawing { op_id, .. } => {
+                if matches!(self.op_state, OpState::Withdrawing(ref s) if s.op_id == op_id) {
+                    let id = self.next_withdraw_to_execute;
+                    Event::UnbrickInvoked {
+                        phase: UnbrickPhase::Withdrawing,
+                        op_id: Some(op_id.into()),
+                        id: Some(id.into()),
+                    }
+                    .emit();
+
+                    self.stop_and_exit_withdrawing::<&str>(None);
+                }
+                PromiseOrValue::Value(())
+            }
+            KernelAction::AbortRefreshing { op_id } => {
+                if matches!(self.op_state, OpState::Refreshing(ref s) if s.op_id == op_id) {
+                    let _ = self.stop_and_exit::<&str>(Some(&"abort_refreshing"));
+                }
+                PromiseOrValue::Value(())
+            }
+            KernelAction::SettlePayout { op_id, outcome } => {
+                if !matches!(self.op_state, OpState::Payout(ref s) if s.op_id == op_id) {
+                    return PromiseOrValue::Value(());
+                }
+
                 let id = self.next_withdraw_to_execute;
-                let op_id = s.op_id;
                 Event::UnbrickInvoked {
                     phase: UnbrickPhase::Payout,
                     op_id: Some(op_id.into()),
@@ -686,21 +719,38 @@ impl Contract {
                 }
                 .emit();
 
-                // Treat stuck payout as failure, but re-sync idle_balance using
-                // the actual underlying FT balance held by the vault account.
-                PromiseOrValue::Promise(
-                    ext_ft_core::ext(self.underlying_asset.contract_id().into())
-                        .with_static_gas(FT_BALANCE_OF_GAS)
-                        .ft_balance_of(env::current_account_id())
-                        .then(
-                            Self::ext(env::current_account_id())
-                                .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .stop_and_exit_payout_01_reconcile(
-                                    op_id,
-                                    Some(Reason::Other("unbrick_payout".to_string())),
+                match outcome {
+                    PayoutOutcome::Success { .. } => {
+                        let (receiver, amount) = match &self.op_state {
+                            OpState::Payout(s) => (s.receiver.clone(), s.amount),
+                            _ => return PromiseOrValue::Value(()),
+                        };
+                        self.payment_01_reconcile_idle_or_refund(
+                            Ok(()),
+                            op_id,
+                            receiver,
+                            U128(amount),
+                        );
+                        PromiseOrValue::Value(())
+                    }
+                    PayoutOutcome::Failure { .. } => {
+                        // Treat stuck payout as failure, but re-sync idle_balance using
+                        // the actual underlying FT balance held by the vault account.
+                        PromiseOrValue::Promise(
+                            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                                .with_static_gas(FT_BALANCE_OF_GAS)
+                                .ft_balance_of(env::current_account_id())
+                                .then(
+                                    Self::ext(env::current_account_id())
+                                        .with_static_gas(AFTER_SEND_TO_USER_GAS)
+                                        .stop_and_exit_payout_01_reconcile(
+                                            op_id,
+                                            Some(Reason::Other("unbrick_payout".to_string())),
+                                        ),
                                 ),
-                        ),
-                )
+                        )
+                    }
+                }
             }
             _ => PromiseOrValue::Value(()),
         }
