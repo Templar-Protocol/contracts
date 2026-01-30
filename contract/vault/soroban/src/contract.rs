@@ -5,7 +5,9 @@
 //! and executes the returned effects.
 
 use alloc::vec::Vec;
-use templar_curator_primitives::{determine_recovery_action, PolicyState, RecoveryContext};
+use templar_curator_primitives::{
+    determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
+};
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh,
     withdrawal_collected, withdrawal_step_callback, Address, FeesSpec, KernelAction, OpState,
@@ -831,16 +833,18 @@ where
         &mut self,
         caller: Address,
         context: RecoveryContext,
-        now_ns: u64,
+        progress: RecoveryProgress,
     ) -> Result<Option<EffectSummary>, RuntimeError> {
-        let Some(action) = determine_recovery_action(&self.state().op_state, &context) else {
+        let Some(action) =
+            determine_recovery_action(&self.state().op_state, &context, &progress)
+        else {
             return Ok(None);
         };
 
         let kind: ActionKind = (&action).into();
         self.auth.authorize(kind, caller, None)?;
 
-        let summary = self.apply_kernel_action(action, now_ns)?;
+        let summary = self.apply_kernel_action(action, context.current_ns)?;
         Ok(Some(summary))
     }
 
@@ -991,15 +995,14 @@ where
         current_ns: u64,
     ) -> Result<(), RuntimeError> {
         use crate::policy::MarketLock;
-        use templar_curator_primitives::policy::market_lock::acquire_lock;
 
         // Authorize - requires allocator privileges
         self.auth
             .authorize(ActionKind::BeginAllocating, caller, None)?;
 
-        let lock = MarketLock::with_expiry(target_id, current_ns, expiry_ns);
+        let lock = MarketLock::new(target_id, current_ns).with_expiry(expiry_ns);
         self.policy_state.locks =
-            acquire_lock(&self.policy_state.locks, lock, current_ns).map_err(|e| {
+            self.policy_state.locks.acquire(lock, current_ns).map_err(|e| {
                 RuntimeError::contract_error(alloc::format!("failed to acquire lock: {:?}", e))
             })?;
 
@@ -1017,13 +1020,11 @@ where
         caller: Address,
         target_id: TargetId,
     ) -> Result<(), RuntimeError> {
-        use templar_curator_primitives::policy::market_lock::release_lock;
-
         // Authorize - requires allocator privileges
         self.auth
             .authorize(ActionKind::BeginAllocating, caller, None)?;
 
-        self.policy_state.locks = release_lock(&self.policy_state.locks, target_id);
+        self.policy_state.locks = self.policy_state.locks.release(target_id);
 
         Ok(())
     }
@@ -1040,11 +1041,7 @@ where
     /// `true` if the market is locked, `false` otherwise.
     #[must_use]
     pub fn is_market_locked(&self, target_id: TargetId, current_ns: u64) -> bool {
-        templar_curator_primitives::policy::market_lock::is_market_locked(
-            &self.policy_state.locks,
-            target_id,
-            current_ns,
-        )
+        self.policy_state.locks.is_locked(target_id, current_ns)
     }
 }
 

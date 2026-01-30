@@ -54,15 +54,25 @@ pub enum PayoutOutcome {
 }
 
 /// Kernel actions supported by the dispatcher.
+///
+/// These actions drive the vault state machine. Each action validates preconditions,
+/// updates state, and returns effects to be executed by the chain-specific runtime.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KernelAction {
+    /// Begin allocating idle assets to external markets according to a plan.
+    ///
+    /// Transitions: Idle → Allocating
     BeginAllocating {
         op_id: u64,
         plan: Vec<(TargetId, u128)>,
         now_ns: TimestampNs,
     },
+
+    /// Deposit assets into the vault and mint shares to the receiver.
+    ///
+    /// Requires: Idle state, non-zero assets, slippage check passes.
     Deposit {
         owner: Address,
         receiver: Address,
@@ -70,6 +80,10 @@ pub enum KernelAction {
         min_shares_out: u128,
         now_ns: TimestampNs,
     },
+
+    /// Request a withdrawal by escrowing shares in the queue.
+    ///
+    /// Requires: Idle state, non-zero shares, slippage and minimum checks pass.
     RequestWithdraw {
         owner: Address,
         receiver: Address,
@@ -77,45 +91,68 @@ pub enum KernelAction {
         min_assets_out: u128,
         now_ns: TimestampNs,
     },
-    ExecuteWithdraw {
-        now_ns: TimestampNs,
-    },
+
+    /// Execute the next pending withdrawal from the queue.
+    ///
+    /// Transitions: Idle → Withdrawing, or advances Withdrawing state.
+    ExecuteWithdraw { now_ns: TimestampNs },
+
+    /// Begin refreshing external market balances.
+    ///
+    /// Transitions: Idle → Refreshing
     BeginRefreshing {
         op_id: u64,
         plan: Vec<TargetId>,
         now_ns: TimestampNs,
     },
-    FinishAllocating {
-        op_id: u64,
-        now_ns: TimestampNs,
-    },
+
+    /// Complete an allocation operation.
+    ///
+    /// Transitions: Allocating → Idle or Allocating → Withdrawing (if pending).
+    FinishAllocating { op_id: u64, now_ns: TimestampNs },
+
+    /// Sync external asset balances during an active operation.
+    ///
+    /// Updates `external_assets` and `total_assets` accounting.
     SyncExternalAssets {
         new_external_assets: u128,
         op_id: u64,
         now_ns: TimestampNs,
     },
-    FinishRefreshing {
-        op_id: u64,
-        now_ns: TimestampNs,
-    },
-    AbortRefreshing {
-        op_id: u64,
-    },
-    SettlePayout {
-        op_id: u64,
-        outcome: PayoutOutcome,
-    },
-    AbortAllocating {
-        op_id: u64,
-        restore_idle: u128,
-    },
-    AbortWithdrawing {
-        op_id: u64,
-        refund_shares: u128,
-    },
-    RefreshFees {
-        now_ns: TimestampNs,
-    },
+
+    /// Complete a refresh operation.
+    ///
+    /// Transitions: Refreshing → Idle
+    FinishRefreshing { op_id: u64, now_ns: TimestampNs },
+
+    /// Abort a refresh operation (e.g., on external call failure).
+    ///
+    /// Transitions: Refreshing → Idle
+    AbortRefreshing { op_id: u64 },
+
+    /// Settle a payout after asset transfer attempt.
+    ///
+    /// Transitions: Payout → Idle (burns/refunds shares based on outcome).
+    SettlePayout { op_id: u64, outcome: PayoutOutcome },
+
+    /// Abort an allocation operation (e.g., on external call failure).
+    ///
+    /// Transitions: Allocating → Idle (restores idle balance).
+    AbortAllocating { op_id: u64, restore_idle: u128 },
+
+    /// Abort a withdrawal operation (e.g., on external call failure).
+    ///
+    /// Transitions: Withdrawing → Idle (refunds escrowed shares).
+    AbortWithdrawing { op_id: u64, refund_shares: u128 },
+
+    /// Refresh fee calculations and mint fee shares.
+    ///
+    /// Accrues management and performance fees based on time and AUM growth.
+    RefreshFees { now_ns: TimestampNs },
+
+    /// Update the vault's paused state.
+    ///
+    /// When paused, deposits and withdrawals are blocked.
     Pause { paused: bool },
 }
 

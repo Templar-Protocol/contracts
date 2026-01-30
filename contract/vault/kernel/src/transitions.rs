@@ -34,40 +34,67 @@ use crate::state::op_state::{
     AllocatingState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
 use crate::types::Address;
+use derive_more::Display;
 
 /// Error types for state transitions.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Display)]
 pub enum TransitionError {
     /// Attempted a transition that requires Idle state, but the machine was not Idle.
+    #[display("requires Idle state, but current state is {current_state}")]
     NotIdle { current_state: &'static str },
+
     /// Attempted a transition that requires Allocating state.
+    #[display("requires Allocating state, but current state is {current_state}")]
     NotAllocating { current_state: &'static str },
+
     /// Attempted a transition that requires Withdrawing state.
+    #[display("requires Withdrawing state, but current state is {current_state}")]
     NotWithdrawing { current_state: &'static str },
+
     /// Attempted a transition that requires Refreshing state.
+    #[display("requires Refreshing state, but current state is {current_state}")]
     NotRefreshing { current_state: &'static str },
+
     /// Attempted a transition that requires Payout state.
+    #[display("requires Payout state, but current state is {current_state}")]
     NotPayout { current_state: &'static str },
+
     /// Operation ID mismatch - the callback doesn't match the current operation.
+    #[display("op_id mismatch: expected {expected}, got {actual}")]
     OpIdMismatch { expected: u64, actual: u64 },
+
     /// The allocation plan is empty.
+    #[display("allocation plan is empty")]
     EmptyAllocationPlan,
+
     /// The refresh plan is empty.
+    #[display("refresh plan is empty")]
     EmptyRefreshPlan,
+
     /// Zero amount requested for withdrawal.
+    #[display("withdrawal amount is zero")]
     ZeroWithdrawalAmount,
+
     /// Zero escrow shares - nothing to withdraw.
+    #[display("escrow shares is zero")]
     ZeroEscrowShares,
+
     /// Invalid index in the operation.
+    #[display("invalid index {index}, max is {max}")]
     InvalidIndex { index: u32, max: u32 },
+
     /// Attempted to collect more than remaining.
+    #[display("collection overflow: collected {collected}, remaining {remaining}")]
     CollectionOverflow { collected: u128, remaining: u128 },
+
     /// Burn shares exceed escrow shares.
+    #[display("burn {burn} exceeds escrow {escrow}")]
     BurnExceedsEscrow { burn: u128, escrow: u128 },
 }
 
 impl TransitionError {
-    fn state_name(state: &OpState) -> &'static str {
+    /// Get the name of an OpState variant as a static string.
+    pub(crate) fn state_name(state: &OpState) -> &'static str {
         match state {
             OpState::Idle => "Idle",
             OpState::Allocating(_) => "Allocating",

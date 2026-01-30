@@ -1,7 +1,7 @@
 //! Policy module bridging curator-primitives with Soroban vault types.
 //!
 //! This module provides:
-//! - Re-exports of curator-primitives pure functions for policy enforcement
+//! - Re-exports of curator-primitives types for policy enforcement
 //! - Soroban-specific helpers for market lock operations
 //! - Type aliases for Soroban market identifiers
 
@@ -10,31 +10,28 @@ use templar_vault_kernel::TargetId;
 
 // Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
-    cap_group::{
-        can_allocate_to_group, compute_available_capacity, compute_effective_cap, enforce_cap_group,
-        CapGroup, CapGroupError, CapGroupId, CapGroupRecord,
-    },
-    market_lock::{
-        acquire_lock, cleanup_expired_locks, clear_all_locks, find_locked_targets,
-        get_locked_targets, is_locked_by_op, is_market_locked, release_all_by_op, release_lock,
-        release_lock_by_op, MarketLock, MarketLockSet,
-    },
-    refresh_plan::{
-        build_refresh_plan, compute_refresh_plan_total, validate_refresh_plan, RefreshPlan,
-        RefreshPlanError,
-    },
+    cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
+    market_lock::{MarketLock, MarketLockSet},
+    refresh_plan::{RefreshPlan, RefreshPlanError},
     state::{MarketConfig, PolicyState},
-    supply_queue::{
-        compute_queue_total, compute_queue_totals_by_target, dequeue_supply, drain_queue,
-        enqueue_supply, remove_target_entries, to_allocation_plan, SupplyQueue, SupplyQueueEntry,
-        SupplyQueueError,
-    },
-    withdraw_route::{
-        build_withdraw_route, build_withdraw_route_with_liquidity, compute_available_liquidity,
-        compute_route_total, to_withdrawal_plan, validate_withdraw_route, WithdrawRoute,
-        WithdrawRouteEntry, WithdrawRouteError,
-    },
+    supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},
+    withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
 };
+
+/// Check if a market is locked.
+#[inline]
+pub fn is_market_locked(lock_set: &MarketLockSet, target_id: TargetId, current_ns: u64) -> bool {
+    lock_set.is_locked(target_id, current_ns)
+}
+
+/// Acquire a lock on a market.
+pub fn acquire_lock(
+    lock_set: &MarketLockSet,
+    lock: MarketLock,
+    current_ns: u64,
+) -> Result<MarketLockSet, MarketLock> {
+    lock_set.acquire(lock, current_ns)
+}
 
 /// Filter a list of targets to exclude locked markets.
 ///
@@ -83,7 +80,7 @@ pub fn build_allocation_plan_with_locks(
         .collect::<Vec<_>>()
         .into();
 
-    to_allocation_plan(&filtered)
+    filtered.to_allocation_plan()
 }
 
 /// Build a withdrawal plan excluding locked markets.
@@ -109,7 +106,7 @@ pub fn build_withdrawal_plan_with_locks(
 
     let filtered_route = WithdrawRoute::from_entries(filtered_entries, route.target_amount);
 
-    to_withdrawal_plan(&filtered_route)
+    filtered_route.to_withdrawal_plan()
 }
 
 /// Build a refresh plan excluding locked markets.
@@ -173,7 +170,7 @@ mod tests {
     #[test]
     fn test_filter_unlocked_after_expiry() {
         let mut set = MarketLockSet::new();
-        let lock = MarketLock::with_expiry(2, 1000, 2000); // expires at 2000
+        let lock = MarketLock::new(2, 1000).with_expiry(2000); // expires at 2000
         set = acquire_lock(&set, lock, 1000).unwrap();
 
         let targets = vec![1, 2, 3];
@@ -317,7 +314,7 @@ mod tests {
 
         let mut set = MarketLockSet::new();
         // Lock expires at 2000
-        let lock = MarketLock::with_expiry(1, 1000, 2000);
+        let lock = MarketLock::new(1, 1000).with_expiry(2000);
         set = acquire_lock(&set, lock, 1000).unwrap();
 
         // Before expiry - target 1 should be filtered

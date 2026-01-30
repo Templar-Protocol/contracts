@@ -4,30 +4,40 @@ use alloc::vec::Vec;
 use crate::types::Address;
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
+use derive_more::IsVariant;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// Side effects produced by kernel state transitions.
+///
+/// The executor layer interprets these effects by interacting with the
+/// underlying blockchain (token operations, external calls, etc.).
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, IsVariant)]
 pub enum KernelEffect {
+    /// Mint new share tokens to an owner.
     MintShares {
         owner: Address,
         shares: u128,
     },
+    /// Burn share tokens from an owner.
     BurnShares {
         owner: Address,
         shares: u128,
     },
+    /// Transfer shares between addresses.
     TransferShares {
         from: Address,
         to: Address,
         shares: u128,
     },
+    /// Transfer underlying assets to a recipient.
     TransferAssets {
         to: Address,
         amount: u128,
     },
+    /// Make an external cross-contract call (NEAR only).
     #[cfg(feature = "near")]
     ExternalCall {
         target: Address,
@@ -36,32 +46,38 @@ pub enum KernelEffect {
         attached_value: u128,
         callback: Option<KernelCallback>,
     },
+    /// Charge storage costs to a payer (NEAR only).
     #[cfg(feature = "near")]
     ChargeStorage {
         payer: Address,
         bytes: u64,
     },
+    /// Emit an event for indexers and clients.
     EmitEvent {
         event: KernelEvent,
     },
 }
 
+/// Callback identifiers for async cross-contract calls.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, IsVariant)]
 pub enum KernelCallback {
+    /// Callback for allocation step completion.
     AllocationStep,
+    /// Callback for withdrawal step completion.
     WithdrawalStep,
+    /// Callback for refresh step completion.
     RefreshStep,
+    /// Callback for payout transfer completion.
     PayoutTransfer,
 }
 
+/// Events emitted by kernel transitions for indexing and observability.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, IsVariant)]
 pub enum KernelEvent {
-    /// Placeholder event for legacy transitions.
-    Placeholder,
     /// Allocation operation started.
     AllocationStarted {
         op_id: u64,
@@ -145,4 +161,10 @@ pub enum KernelEvent {
     PauseUpdated {
         paused: bool,
     },
+}
+
+impl From<KernelEvent> for KernelEffect {
+    fn from(event: KernelEvent) -> Self {
+        Self::EmitEvent { event }
+    }
 }
