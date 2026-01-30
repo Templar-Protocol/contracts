@@ -27,28 +27,17 @@ mod golden_tests;
 
 // Re-exports for convenience
 pub use policy::{
-    cap_group::{
-        can_allocate_to_group, compute_effective_cap, enforce_cap_group, CapGroup, CapGroupError,
-        CapGroupId, CapGroupRecord,
-    },
-    market_lock::{is_market_locked, MarketLock, MarketLockSet},
-    refresh_plan::{
-        build_refresh_plan, compute_refresh_plan_total, validate_refresh_plan, RefreshPlan,
-        RefreshPlanError,
-    },
+    cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
+    cooldown::{Cooldown, CooldownError},
+    market_lock::{MarketLock, MarketLockSet},
+    refresh_plan::{RefreshPlan, RefreshPlanError},
     state::{MarketConfig, PolicyState},
-    supply_queue::{
-        compute_queue_total, dequeue_supply, enqueue_supply, SupplyQueue, SupplyQueueEntry,
-        SupplyQueueError,
-    },
-    withdraw_route::{
-        build_withdraw_route, compute_route_total, validate_withdraw_route, WithdrawRoute,
-        WithdrawRouteEntry, WithdrawRouteError,
-    },
+    supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},
+    withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
 };
 
 pub use recovery::{
     determine_recovery_action, handle_allocation_failure, handle_payout_failure,
-    handle_refresh_failure, handle_withdrawal_failure, RecoveryContext, RecoveryError,
+    handle_payout_failure_default, handle_refresh_failure, handle_withdrawal_failure,
     RecoveryOutcome,
 };

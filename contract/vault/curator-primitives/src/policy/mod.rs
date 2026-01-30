@@ -4,6 +4,7 @@
 //! vault allocations across markets:
 //!
 //! - [`cap_group`]: Maximum allocation caps per market group
+//! - [`cooldown`]: Reusable cooldown/rate-limiting type
 //! - [`supply_queue`]: Pending supply requests
 //! - [`withdraw_route`]: How to withdraw from markets
 //! - [`refresh_plan`]: List of targets to refresh
@@ -11,6 +12,7 @@
 //! - [`state`]: Aggregate policy state for executors
 
 pub mod cap_group;
+pub mod cooldown;
 pub mod market_lock;
 pub mod refresh_plan;
 pub mod state;

@@ -3,6 +3,20 @@
 //! The supply queue holds pending supply requests that will be processed
 //! during the next allocation cycle. This allows batching of deposits
 //! and efficient allocation planning.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use templar_curator_primitives::policy::supply_queue::*;
+//!
+//! let entry = SupplyQueueEntry::new(1, 100)
+//!     .with_priority(10)
+//!     .with_timestamp(1000);
+//!
+//! let queue = SupplyQueue::new();
+//! let queue = queue.enqueue(entry).unwrap();
+//! assert_eq!(queue.total(), 100);
+//! ```
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -25,6 +39,7 @@ pub struct SupplyQueueEntry {
 
 impl SupplyQueueEntry {
     /// Create a new supply queue entry.
+    #[must_use]
     pub fn new(target_id: TargetId, amount: u128) -> Self {
         Self {
             target_id,
@@ -34,24 +49,18 @@ impl SupplyQueueEntry {
         }
     }
 
-    /// Create a new entry with priority.
-    pub fn with_priority(target_id: TargetId, amount: u128, priority: u8) -> Self {
-        Self {
-            target_id,
-            amount,
-            priority,
-            queued_at_ns: 0,
-        }
+    /// Builder method: set priority.
+    #[must_use]
+    pub fn with_priority(mut self, priority: u8) -> Self {
+        self.priority = priority;
+        self
     }
 
-    /// Create a new entry with timestamp.
-    pub fn with_timestamp(target_id: TargetId, amount: u128, queued_at_ns: u64) -> Self {
-        Self {
-            target_id,
-            amount,
-            priority: 0,
-            queued_at_ns,
-        }
+    /// Builder method: set timestamp.
+    #[must_use]
+    pub fn with_timestamp(mut self, queued_at_ns: u64) -> Self {
+        self.queued_at_ns = queued_at_ns;
+        self
     }
 }
 
@@ -74,6 +83,7 @@ pub struct SupplyQueue {
 
 impl SupplyQueue {
     /// Create a new empty supply queue.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: VecDeque::new(),
@@ -82,6 +92,7 @@ impl SupplyQueue {
     }
 
     /// Create a new supply queue with a maximum length.
+    #[must_use]
     pub fn with_max_length(max_length: usize) -> Self {
         Self {
             entries: VecDeque::new(),
@@ -90,18 +101,138 @@ impl SupplyQueue {
     }
 
     /// Returns true if the queue is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Returns the number of entries in the queue.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Returns true if the queue is at maximum capacity.
+    #[must_use]
     pub fn is_full(&self) -> bool {
         self.max_length > 0 && self.entries.len() >= self.max_length
+    }
+
+    /// Add an entry to the supply queue.
+    ///
+    /// Entries are inserted in priority order (higher priority first).
+    /// Within the same priority, FIFO order is maintained.
+    pub fn enqueue(&self, entry: SupplyQueueEntry) -> Result<Self, SupplyQueueError> {
+        if entry.amount == 0 {
+            return Err(SupplyQueueError::ZeroAmount);
+        }
+
+        if self.is_full() {
+            return Err(SupplyQueueError::QueueFull {
+                max_length: self.max_length,
+            });
+        }
+
+        let mut new_queue = self.clone();
+
+        // Insert maintaining priority order (higher priority first)
+        let insert_pos = new_queue
+            .entries
+            .iter()
+            .position(|e| e.priority < entry.priority)
+            .unwrap_or(new_queue.entries.len());
+
+        new_queue.entries.insert(insert_pos, entry);
+
+        Ok(new_queue)
+    }
+
+    /// Remove and return the next entry from the supply queue.
+    pub fn dequeue(&self) -> Result<(Self, SupplyQueueEntry), SupplyQueueError> {
+        if self.is_empty() {
+            return Err(SupplyQueueError::QueueEmpty);
+        }
+
+        let mut new_queue = self.clone();
+        let entry = new_queue
+            .entries
+            .pop_front()
+            .ok_or(SupplyQueueError::QueueEmpty)?;
+
+        Ok((new_queue, entry))
+    }
+
+    /// Peek at the next entry without removing it.
+    #[must_use]
+    pub fn peek(&self) -> Option<&SupplyQueueEntry> {
+        self.entries.front()
+    }
+
+    /// Compute the total amount in the supply queue.
+    #[must_use]
+    pub fn total(&self) -> u128 {
+        self.entries
+            .iter()
+            .fold(0u128, |acc, e| acc.saturating_add(e.amount))
+    }
+
+    /// Compute totals per target in the supply queue.
+    #[must_use]
+    pub fn totals_by_target(&self) -> Vec<(TargetId, u128)> {
+        let mut totals: Vec<(TargetId, u128)> = Vec::new();
+
+        for entry in &self.entries {
+            if let Some((_, amount)) = totals.iter_mut().find(|(id, _)| *id == entry.target_id) {
+                *amount = amount.saturating_add(entry.amount);
+            } else {
+                totals.push((entry.target_id, entry.amount));
+            }
+        }
+
+        totals
+    }
+
+    /// Remove all entries for a specific target from the queue.
+    #[must_use]
+    pub fn remove_target(&self, target_id: TargetId) -> Self {
+        let mut new_queue = self.clone();
+        new_queue.entries.retain(|e| e.target_id != target_id);
+        new_queue
+    }
+
+    /// Drain the queue into a list of entries.
+    #[must_use]
+    pub fn drain(&self) -> (Self, Vec<SupplyQueueEntry>) {
+        let entries: Vec<SupplyQueueEntry> = self.entries.iter().cloned().collect();
+        let empty_queue = Self {
+            entries: VecDeque::new(),
+            max_length: self.max_length,
+        };
+        (empty_queue, entries)
+    }
+
+    /// Convert the queue to an allocation plan.
+    ///
+    /// Aggregates entries by target and returns a plan suitable for the
+    /// allocation state machine.
+    #[must_use]
+    pub fn to_allocation_plan(&self) -> Vec<(TargetId, u128)> {
+        self.totals_by_target()
+    }
+
+    /// Get total amount for a specific target.
+    #[must_use]
+    pub fn total_for_target(&self, target_id: TargetId) -> u128 {
+        self.entries
+            .iter()
+            .filter(|e| e.target_id == target_id)
+            .fold(0u128, |acc, e| acc.saturating_add(e.amount))
+    }
+
+    /// Check if a target has any pending entries.
+    #[must_use]
+    pub fn has_target(&self, target_id: TargetId) -> bool {
+        self.entries.iter().any(|e| e.target_id == target_id)
     }
 }
 
@@ -127,147 +258,6 @@ pub enum SupplyQueueError {
     TargetNotFound { target_id: TargetId },
 }
 
-/// Add an entry to the supply queue.
-///
-/// Entries are added to the back of the queue (FIFO order).
-/// If the queue has a maximum length and is full, returns an error.
-///
-/// # Arguments
-/// * `queue` - The supply queue
-/// * `entry` - The entry to add
-///
-/// # Returns
-/// Updated queue with the new entry, or an error.
-pub fn enqueue_supply(
-    queue: &SupplyQueue,
-    entry: SupplyQueueEntry,
-) -> Result<SupplyQueue, SupplyQueueError> {
-    if entry.amount == 0 {
-        return Err(SupplyQueueError::ZeroAmount);
-    }
-
-    if queue.is_full() {
-        return Err(SupplyQueueError::QueueFull {
-            max_length: queue.max_length,
-        });
-    }
-
-    let mut new_queue = queue.clone();
-
-    // Insert maintaining priority order (higher priority first)
-    let insert_pos = new_queue
-        .entries
-        .iter()
-        .position(|e| e.priority < entry.priority)
-        .unwrap_or(new_queue.entries.len());
-
-    new_queue.entries.insert(insert_pos, entry);
-
-    Ok(new_queue)
-}
-
-/// Remove and return the next entry from the supply queue.
-///
-/// # Arguments
-/// * `queue` - The supply queue
-///
-/// # Returns
-/// Tuple of (updated queue, dequeued entry), or an error if empty.
-pub fn dequeue_supply(
-    queue: &SupplyQueue,
-) -> Result<(SupplyQueue, SupplyQueueEntry), SupplyQueueError> {
-    if queue.is_empty() {
-        return Err(SupplyQueueError::QueueEmpty);
-    }
-
-    let mut new_queue = queue.clone();
-    let entry = new_queue
-        .entries
-        .pop_front()
-        .ok_or(SupplyQueueError::QueueEmpty)?;
-
-    Ok((new_queue, entry))
-}
-
-/// Compute the total amount in the supply queue.
-///
-/// # Arguments
-/// * `queue` - The supply queue
-///
-/// # Returns
-/// Total amount across all entries, using saturating addition.
-pub fn compute_queue_total(queue: &SupplyQueue) -> u128 {
-    queue
-        .entries
-        .iter()
-        .fold(0u128, |acc, e| acc.saturating_add(e.amount))
-}
-
-/// Compute totals per target in the supply queue.
-///
-/// # Arguments
-/// * `queue` - The supply queue
-///
-/// # Returns
-/// Vec of (target_id, total_amount) pairs.
-pub fn compute_queue_totals_by_target(queue: &SupplyQueue) -> Vec<(TargetId, u128)> {
-    let mut totals: Vec<(TargetId, u128)> = Vec::new();
-
-    for entry in &queue.entries {
-        if let Some((_, amount)) = totals.iter_mut().find(|(id, _)| *id == entry.target_id) {
-            *amount = amount.saturating_add(entry.amount);
-        } else {
-            totals.push((entry.target_id, entry.amount));
-        }
-    }
-
-    totals
-}
-
-/// Remove all entries for a specific target from the queue.
-///
-/// # Arguments
-/// * `queue` - The supply queue
-/// * `target_id` - The target to remove
-///
-/// # Returns
-/// Updated queue with entries for the target removed.
-pub fn remove_target_entries(queue: &SupplyQueue, target_id: TargetId) -> SupplyQueue {
-    let mut new_queue = queue.clone();
-    new_queue.entries.retain(|e| e.target_id != target_id);
-    new_queue
-}
-
-/// Drain the queue into a list of entries.
-///
-/// # Arguments
-/// * `queue` - The supply queue
-///
-/// # Returns
-/// Tuple of (empty queue, list of all entries).
-pub fn drain_queue(queue: &SupplyQueue) -> (SupplyQueue, Vec<SupplyQueueEntry>) {
-    let entries: Vec<SupplyQueueEntry> = queue.entries.iter().cloned().collect();
-    let empty_queue = SupplyQueue {
-        entries: VecDeque::new(),
-        max_length: queue.max_length,
-    };
-    (empty_queue, entries)
-}
-
-/// Convert the queue to an allocation plan.
-///
-/// Aggregates entries by target and returns a plan suitable for the
-/// allocation state machine.
-///
-/// # Arguments
-/// * `queue` - The supply queue
-///
-/// # Returns
-/// Vec of (target_id, amount) pairs for allocation.
-pub fn to_allocation_plan(queue: &SupplyQueue) -> Vec<(TargetId, u128)> {
-    compute_queue_totals_by_target(queue)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,7 +275,7 @@ mod tests {
         let queue = SupplyQueue::new();
         let entry = SupplyQueueEntry::new(1, 100);
 
-        let result = enqueue_supply(&queue, entry.clone()).unwrap();
+        let result = queue.enqueue(entry.clone()).unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result.entries[0], entry);
@@ -296,7 +286,7 @@ mod tests {
         let queue = SupplyQueue::new();
         let entry = SupplyQueueEntry::new(1, 0);
 
-        let result = enqueue_supply(&queue, entry);
+        let result = queue.enqueue(entry);
 
         assert!(matches!(result, Err(SupplyQueueError::ZeroAmount)));
     }
@@ -308,9 +298,9 @@ mod tests {
         let entry2 = SupplyQueueEntry::new(2, 200);
         let entry3 = SupplyQueueEntry::new(3, 300);
 
-        let queue = enqueue_supply(&queue, entry1).unwrap();
-        let queue = enqueue_supply(&queue, entry2).unwrap();
-        let result = enqueue_supply(&queue, entry3);
+        let queue = queue.enqueue(entry1).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
+        let result = queue.enqueue(entry3);
 
         assert!(matches!(
             result,
@@ -321,13 +311,13 @@ mod tests {
     #[test]
     fn test_enqueue_with_priority() {
         let queue = SupplyQueue::new();
-        let low = SupplyQueueEntry::with_priority(1, 100, 0);
-        let high = SupplyQueueEntry::with_priority(2, 200, 10);
-        let medium = SupplyQueueEntry::with_priority(3, 300, 5);
+        let low = SupplyQueueEntry::new(1, 100).with_priority(0);
+        let high = SupplyQueueEntry::new(2, 200).with_priority(10);
+        let medium = SupplyQueueEntry::new(3, 300).with_priority(5);
 
-        let queue = enqueue_supply(&queue, low).unwrap();
-        let queue = enqueue_supply(&queue, high).unwrap();
-        let queue = enqueue_supply(&queue, medium).unwrap();
+        let queue = queue.enqueue(low).unwrap();
+        let queue = queue.enqueue(high).unwrap();
+        let queue = queue.enqueue(medium).unwrap();
 
         // High priority should be first
         assert_eq!(queue.entries[0].target_id, 2);
@@ -341,10 +331,10 @@ mod tests {
         let entry1 = SupplyQueueEntry::new(1, 100);
         let entry2 = SupplyQueueEntry::new(2, 200);
 
-        let queue = enqueue_supply(&queue, entry1.clone()).unwrap();
-        let queue = enqueue_supply(&queue, entry2).unwrap();
+        let queue = queue.enqueue(entry1.clone()).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
 
-        let (queue, dequeued) = dequeue_supply(&queue).unwrap();
+        let (queue, dequeued) = queue.dequeue().unwrap();
 
         assert_eq!(dequeued, entry1);
         assert_eq!(queue.len(), 1);
@@ -353,9 +343,21 @@ mod tests {
     #[test]
     fn test_dequeue_empty_error() {
         let queue = SupplyQueue::new();
-        let result = dequeue_supply(&queue);
+        let result = queue.dequeue();
 
         assert!(matches!(result, Err(SupplyQueueError::QueueEmpty)));
+    }
+
+    #[test]
+    fn test_peek() {
+        let queue = SupplyQueue::new();
+        assert!(queue.peek().is_none());
+
+        let entry = SupplyQueueEntry::new(1, 100);
+        let queue = queue.enqueue(entry.clone()).unwrap();
+
+        assert_eq!(queue.peek(), Some(&entry));
+        assert_eq!(queue.len(), 1); // Still in queue
     }
 
     #[test]
@@ -365,11 +367,11 @@ mod tests {
         let entry2 = SupplyQueueEntry::new(2, 200);
         let entry3 = SupplyQueueEntry::new(1, 50);
 
-        let queue = enqueue_supply(&queue, entry1).unwrap();
-        let queue = enqueue_supply(&queue, entry2).unwrap();
-        let queue = enqueue_supply(&queue, entry3).unwrap();
+        let queue = queue.enqueue(entry1).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
+        let queue = queue.enqueue(entry3).unwrap();
 
-        assert_eq!(compute_queue_total(&queue), 350);
+        assert_eq!(queue.total(), 350);
     }
 
     #[test]
@@ -379,11 +381,11 @@ mod tests {
         let entry2 = SupplyQueueEntry::new(2, 200);
         let entry3 = SupplyQueueEntry::new(1, 50);
 
-        let queue = enqueue_supply(&queue, entry1).unwrap();
-        let queue = enqueue_supply(&queue, entry2).unwrap();
-        let queue = enqueue_supply(&queue, entry3).unwrap();
+        let queue = queue.enqueue(entry1).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
+        let queue = queue.enqueue(entry3).unwrap();
 
-        let totals = compute_queue_totals_by_target(&queue);
+        let totals = queue.totals_by_target();
 
         assert_eq!(totals.len(), 2);
         assert!(totals.contains(&(1, 150)));
@@ -397,11 +399,11 @@ mod tests {
         let entry2 = SupplyQueueEntry::new(2, 200);
         let entry3 = SupplyQueueEntry::new(1, 50);
 
-        let queue = enqueue_supply(&queue, entry1).unwrap();
-        let queue = enqueue_supply(&queue, entry2).unwrap();
-        let queue = enqueue_supply(&queue, entry3).unwrap();
+        let queue = queue.enqueue(entry1).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
+        let queue = queue.enqueue(entry3).unwrap();
 
-        let filtered = remove_target_entries(&queue, 1);
+        let filtered = queue.remove_target(1);
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered.entries[0].target_id, 2);
@@ -413,10 +415,10 @@ mod tests {
         let entry1 = SupplyQueueEntry::new(1, 100);
         let entry2 = SupplyQueueEntry::new(2, 200);
 
-        let queue = enqueue_supply(&queue, entry1).unwrap();
-        let queue = enqueue_supply(&queue, entry2).unwrap();
+        let queue = queue.enqueue(entry1).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
 
-        let (empty, entries) = drain_queue(&queue);
+        let (empty, entries) = queue.drain();
 
         assert!(empty.is_empty());
         assert_eq!(entries.len(), 2);
@@ -429,15 +431,53 @@ mod tests {
         let entry2 = SupplyQueueEntry::new(2, 200);
         let entry3 = SupplyQueueEntry::new(1, 50);
 
-        let queue = enqueue_supply(&queue, entry1).unwrap();
-        let queue = enqueue_supply(&queue, entry2).unwrap();
-        let queue = enqueue_supply(&queue, entry3).unwrap();
+        let queue = queue.enqueue(entry1).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
+        let queue = queue.enqueue(entry3).unwrap();
 
-        let plan = to_allocation_plan(&queue);
+        let plan = queue.to_allocation_plan();
 
         // Should be aggregated by target
         assert_eq!(plan.len(), 2);
         assert!(plan.contains(&(1, 150)));
         assert!(plan.contains(&(2, 200)));
+    }
+
+    #[test]
+    fn test_total_for_target() {
+        let queue = SupplyQueue::new();
+        let entry1 = SupplyQueueEntry::new(1, 100);
+        let entry2 = SupplyQueueEntry::new(2, 200);
+        let entry3 = SupplyQueueEntry::new(1, 50);
+
+        let queue = queue.enqueue(entry1).unwrap();
+        let queue = queue.enqueue(entry2).unwrap();
+        let queue = queue.enqueue(entry3).unwrap();
+
+        assert_eq!(queue.total_for_target(1), 150);
+        assert_eq!(queue.total_for_target(2), 200);
+        assert_eq!(queue.total_for_target(3), 0);
+    }
+
+    #[test]
+    fn test_has_target() {
+        let queue = SupplyQueue::new();
+        let entry = SupplyQueueEntry::new(1, 100);
+        let queue = queue.enqueue(entry).unwrap();
+
+        assert!(queue.has_target(1));
+        assert!(!queue.has_target(2));
+    }
+
+    #[test]
+    fn test_builder_pattern() {
+        let entry = SupplyQueueEntry::new(1, 100)
+            .with_priority(5)
+            .with_timestamp(1000);
+
+        assert_eq!(entry.target_id, 1);
+        assert_eq!(entry.amount, 100);
+        assert_eq!(entry.priority, 5);
+        assert_eq!(entry.queued_at_ns, 1000);
     }
 }

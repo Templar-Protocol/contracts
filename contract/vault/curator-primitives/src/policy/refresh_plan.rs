@@ -3,9 +3,23 @@
 //! Refresh plans define which markets need their principal data updated
 //! to maintain accurate AUM calculations. This is used during the
 //! Refreshing state of the vault operation state machine.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use templar_curator_primitives::policy::refresh_plan::*;
+//!
+//! let plan = RefreshPlan::new(vec![1, 2, 3])
+//!     .with_cooldown(1000);
+//!
+//! assert!(plan.validate().is_ok());
+//! assert!(plan.is_ready(500)); // First refresh always allowed
+//! ```
 
 use alloc::{collections::BTreeSet, vec::Vec};
 use templar_vault_kernel::TargetId;
+
+use super::cooldown::Cooldown;
 
 /// A plan for refreshing market principal data.
 #[cfg_attr(
@@ -17,46 +31,56 @@ use templar_vault_kernel::TargetId;
 pub struct RefreshPlan {
     /// Ordered list of target IDs to refresh.
     pub targets: Vec<TargetId>,
-
-    // FIXME: copied across market lock - could we reuse with generic helper??
-    /// Last refresh timestamp (nanoseconds), if known.
-    pub last_refresh_ns: Option<u64>,
-    /// Minimum interval between refreshes (nanoseconds).
-    pub cooldown_ns: u64,
+    /// Cooldown tracking for rate-limiting refreshes.
+    pub cooldown: Cooldown,
 }
 
 impl RefreshPlan {
-    /// Create a new empty refresh plan.
-    pub fn new() -> Self {
+    /// Create a new refresh plan from a list of targets.
+    #[must_use]
+    pub fn new(targets: Vec<TargetId>) -> Self {
+        Self {
+            targets,
+            cooldown: Cooldown::unlimited(),
+        }
+    }
+
+    /// Create an empty refresh plan.
+    #[must_use]
+    pub fn empty() -> Self {
         Self::default()
     }
 
-    /// Create a refresh plan from a list of targets.
-    pub fn from_targets(targets: Vec<TargetId>) -> Self {
-        Self {
-            targets,
-            last_refresh_ns: None,
-            cooldown_ns: 0,
-        }
+    /// Builder method: set cooldown interval.
+    #[must_use]
+    pub fn with_cooldown(mut self, cooldown_ns: u64) -> Self {
+        self.cooldown = Cooldown::new(cooldown_ns);
+        self
     }
 
-    /// Create a refresh plan with cooldown.
-    pub fn with_cooldown(targets: Vec<TargetId>, cooldown_ns: u64) -> Self {
-        Self {
-            targets,
-            last_refresh_ns: None,
-            cooldown_ns,
-        }
+    /// Builder method: set last refresh time (for resuming).
+    #[must_use]
+    pub fn with_last_refresh(mut self, last_refresh_ns: u64) -> Self {
+        self.cooldown = self.cooldown.record(last_refresh_ns);
+        self
     }
 
     /// Returns true if the plan is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.targets.is_empty()
     }
 
     /// Returns the number of targets to refresh.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.targets.len()
+    }
+
+    /// Check if a refresh is ready (cooldown has elapsed).
+    #[must_use]
+    pub fn is_ready(&self, current_ns: u64) -> bool {
+        self.cooldown.is_ready(current_ns)
     }
 
     /// Validate a refresh plan.
@@ -69,13 +93,8 @@ impl RefreshPlan {
             return Err(RefreshPlanError::EmptyPlan);
         }
 
-        let mut seen = BTreeSet::new();
-        for target_id in &self.targets {
-            if !seen.insert(*target_id) {
-                return Err(RefreshPlanError::DuplicateTarget {
-                    target_id: *target_id,
-                });
-            }
+        if let Some(dup) = find_duplicate(&self.targets) {
+            return Err(RefreshPlanError::DuplicateTarget { target_id: dup });
         }
 
         Ok(())
@@ -83,54 +102,62 @@ impl RefreshPlan {
 
     /// Check if a refresh is allowed based on cooldown.
     pub fn check_cooldown(&self, current_ns: u64) -> Result<(), RefreshPlanError> {
-        if self.cooldown_ns == 0 {
-            return Ok(());
-        }
-
-        if let Some(last_refresh) = self.last_refresh_ns {
-            let elapsed = current_ns.saturating_sub(last_refresh);
-            if elapsed < self.cooldown_ns {
-                return Err(RefreshPlanError::OnCooldown {
-                    last_refresh_ns: last_refresh,
-                    cooldown_ns: self.cooldown_ns,
-                    current_ns,
-                });
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Compute the "total" of a refresh plan.
-    pub fn total(&self) -> usize {
-        self.len()
+        self.cooldown.check(current_ns).map_err(|e| match e {
+            super::cooldown::CooldownError::OnCooldown {
+                last_event_ns,
+                interval_ns,
+                current_ns,
+            } => RefreshPlanError::OnCooldown {
+                last_refresh_ns: last_event_ns,
+                cooldown_ns: interval_ns,
+                current_ns,
+            },
+        })
     }
 
     /// Record completion time for a refresh plan.
+    #[must_use]
     pub fn record_completion(&self, timestamp_ns: u64) -> Self {
         Self {
             targets: self.targets.clone(),
-            last_refresh_ns: Some(timestamp_ns),
-            cooldown_ns: self.cooldown_ns,
+            cooldown: self.cooldown.record(timestamp_ns),
         }
     }
 
-    /// Convert a refresh plan to a list of target IDs.
+    /// Convert to a list of target IDs.
+    #[must_use]
     pub fn to_target_list(&self) -> Vec<TargetId> {
         self.targets.clone()
+    }
+
+    /// Get the cooldown interval in nanoseconds.
+    #[must_use]
+    pub fn cooldown_ns(&self) -> u64 {
+        self.cooldown.interval_ns
+    }
+
+    /// Get the last refresh timestamp, if any.
+    #[must_use]
+    pub fn last_refresh_ns(&self) -> Option<u64> {
+        self.cooldown.last_event_ns
     }
 }
 
 impl From<Vec<TargetId>> for RefreshPlan {
     fn from(targets: Vec<TargetId>) -> Self {
-        Self::from_targets(targets)
+        Self::new(targets)
     }
 }
 
-impl From<(Vec<TargetId>, u64)> for RefreshPlan {
-    fn from(value: (Vec<TargetId>, u64)) -> Self {
-        Self::with_cooldown(value.0, value.1)
+/// Helper to find the first duplicate in a slice.
+fn find_duplicate<T: Ord + Copy>(items: &[T]) -> Option<T> {
+    let mut seen = BTreeSet::new();
+    for item in items {
+        if !seen.insert(*item) {
+            return Some(*item);
+        }
     }
+    None
 }
 
 /// Errors that can occur during refresh plan operations.
@@ -150,33 +177,6 @@ pub enum RefreshPlanError {
     TargetNotFound { target_id: TargetId },
 }
 
-/// Validate a refresh plan.
-///
-/// Checks:
-/// - Plan is not empty
-/// - No duplicate targets
-///
-/// # Arguments
-/// * `plan` - The refresh plan to validate
-///
-/// # Returns
-/// `Ok(())` if valid, or the first error found.
-pub fn validate_refresh_plan(plan: &RefreshPlan) -> Result<(), RefreshPlanError> {
-    plan.validate()
-}
-
-/// Check if a refresh is allowed based on cooldown.
-///
-/// # Arguments
-/// * `plan` - The refresh plan with cooldown settings
-/// * `current_ns` - Current timestamp in nanoseconds
-///
-/// # Returns
-/// `Ok(())` if refresh is allowed, or `Err` if still on cooldown.
-pub fn check_refresh_cooldown(plan: &RefreshPlan, current_ns: u64) -> Result<(), RefreshPlanError> {
-    plan.check_cooldown(current_ns)
-}
-
 /// Build a refresh plan from a list of enabled markets.
 ///
 /// # Arguments
@@ -193,11 +193,13 @@ pub fn build_refresh_plan(
         return Err(RefreshPlanError::EmptyPlan);
     }
 
-    Ok(RefreshPlan {
-        targets: enabled_targets.to_vec(),
-        last_refresh_ns: None,
-        cooldown_ns: cooldown_ns.unwrap_or(0),
-    })
+    let plan = RefreshPlan::new(enabled_targets.to_vec());
+    let plan = match cooldown_ns {
+        Some(ns) => plan.with_cooldown(ns),
+        None => plan,
+    };
+
+    Ok(plan)
 }
 
 /// Build a refresh plan for specific targets only.
@@ -216,58 +218,22 @@ pub fn build_targeted_refresh_plan(
         return Err(RefreshPlanError::EmptyPlan);
     }
 
+    // Use BTreeSet for O(log n) lookup
+    let enabled_set: BTreeSet<_> = enabled_targets.iter().copied().collect();
+
     // Validate all targets are enabled
     for target in targets {
-        if !enabled_targets.contains(target) {
+        if !enabled_set.contains(target) {
             return Err(RefreshPlanError::TargetNotFound { target_id: *target });
         }
     }
 
     // Check for duplicates
-    let mut seen: Vec<TargetId> = Vec::new();
-    for target_id in targets {
-        if seen.contains(target_id) {
-            return Err(RefreshPlanError::DuplicateTarget {
-                target_id: *target_id,
-            });
-        }
-        seen.push(*target_id);
+    if let Some(dup) = find_duplicate(targets) {
+        return Err(RefreshPlanError::DuplicateTarget { target_id: dup });
     }
 
-    Ok(RefreshPlan::from_targets(targets.to_vec()))
-}
-
-/// Compute the "total" of a refresh plan.
-///
-/// For refresh plans, this is simply the number of targets,
-/// as there's no monetary amount involved.
-///
-/// # Arguments
-/// * `plan` - The refresh plan
-///
-/// # Returns
-/// Number of targets in the plan.
-pub fn compute_refresh_plan_total(plan: &RefreshPlan) -> usize {
-    plan.total()
-}
-
-/// Update refresh plan with new last refresh timestamp.
-///
-/// # Arguments
-/// * `plan` - The current refresh plan
-/// * `timestamp_ns` - The timestamp of the completed refresh
-///
-/// # Returns
-/// Updated refresh plan with new last_refresh_ns.
-pub fn record_refresh_completion(plan: &RefreshPlan, timestamp_ns: u64) -> RefreshPlan {
-    plan.record_completion(timestamp_ns)
-}
-
-/// Convert a refresh plan to a list of target IDs.
-///
-/// This is useful for passing to the refresh state machine.
-pub fn to_target_list(plan: &RefreshPlan) -> Vec<TargetId> {
-    plan.to_target_list()
+    Ok(RefreshPlan::new(targets.to_vec()))
 }
 
 /// Filter targets that need refresh based on staleness.
@@ -279,6 +245,7 @@ pub fn to_target_list(plan: &RefreshPlan) -> Vec<TargetId> {
 ///
 /// # Returns
 /// List of target IDs that are stale and need refresh.
+#[must_use]
 pub fn filter_stale_targets(
     all_targets: &[(TargetId, u64)],
     max_age_ns: u64,
@@ -303,73 +270,80 @@ mod tests {
     use alloc::vec;
 
     #[test]
-    fn test_new_plan_is_empty() {
-        let plan = RefreshPlan::new();
+    fn test_new_plan() {
+        let plan = RefreshPlan::new(vec![1, 2, 3]);
+        assert!(!plan.is_empty());
+        assert_eq!(plan.len(), 3);
+        assert!(plan.cooldown.is_unlimited());
+    }
+
+    #[test]
+    fn test_empty_plan() {
+        let plan = RefreshPlan::empty();
         assert!(plan.is_empty());
         assert_eq!(plan.len(), 0);
     }
 
     #[test]
-    fn test_from_targets() {
-        let plan = RefreshPlan::from_targets(vec![1, 2, 3]);
-        assert!(!plan.is_empty());
-        assert_eq!(plan.len(), 3);
-    }
-
-    #[test]
     fn test_validate_refresh_plan_success() {
-        let plan = RefreshPlan::from_targets(vec![1, 2, 3]);
-        assert!(validate_refresh_plan(&plan).is_ok());
+        let plan = RefreshPlan::new(vec![1, 2, 3]);
+        assert!(plan.validate().is_ok());
     }
 
     #[test]
     fn test_validate_refresh_plan_empty() {
-        let plan = RefreshPlan::new();
+        let plan = RefreshPlan::empty();
         assert!(matches!(
-            validate_refresh_plan(&plan),
+            plan.validate(),
             Err(RefreshPlanError::EmptyPlan)
         ));
     }
 
     #[test]
     fn test_validate_refresh_plan_duplicate() {
-        let plan = RefreshPlan::from_targets(vec![1, 2, 1]);
+        let plan = RefreshPlan::new(vec![1, 2, 1]);
         assert!(matches!(
-            validate_refresh_plan(&plan),
+            plan.validate(),
             Err(RefreshPlanError::DuplicateTarget { target_id: 1 })
         ));
     }
 
     #[test]
     fn test_check_refresh_cooldown_no_cooldown() {
-        let plan = RefreshPlan::from_targets(vec![1, 2]);
-        assert!(check_refresh_cooldown(&plan, 1000).is_ok());
+        let plan = RefreshPlan::new(vec![1, 2]);
+        assert!(plan.check_cooldown(1000).is_ok());
+        assert!(plan.is_ready(1000));
     }
 
     #[test]
     fn test_check_refresh_cooldown_first_refresh() {
-        let plan = RefreshPlan::with_cooldown(vec![1, 2], 1000);
+        let plan = RefreshPlan::new(vec![1, 2]).with_cooldown(1000);
         // No last_refresh_ns, so first refresh should be allowed
-        assert!(check_refresh_cooldown(&plan, 100).is_ok());
+        assert!(plan.check_cooldown(100).is_ok());
+        assert!(plan.is_ready(100));
     }
 
     #[test]
     fn test_check_refresh_cooldown_on_cooldown() {
-        let mut plan = RefreshPlan::with_cooldown(vec![1, 2], 1000);
-        plan.last_refresh_ns = Some(100);
+        let plan = RefreshPlan::new(vec![1, 2])
+            .with_cooldown(1000)
+            .with_last_refresh(100);
 
         // Only 500ns elapsed, cooldown is 1000ns
-        let result = check_refresh_cooldown(&plan, 600);
+        let result = plan.check_cooldown(600);
         assert!(matches!(result, Err(RefreshPlanError::OnCooldown { .. })));
+        assert!(!plan.is_ready(600));
     }
 
     #[test]
     fn test_check_refresh_cooldown_after_cooldown() {
-        let mut plan = RefreshPlan::with_cooldown(vec![1, 2], 1000);
-        plan.last_refresh_ns = Some(100);
+        let plan = RefreshPlan::new(vec![1, 2])
+            .with_cooldown(1000)
+            .with_last_refresh(100);
 
         // 1100ns elapsed, cooldown is 1000ns
-        assert!(check_refresh_cooldown(&plan, 1200).is_ok());
+        assert!(plan.check_cooldown(1200).is_ok());
+        assert!(plan.is_ready(1200));
     }
 
     #[test]
@@ -378,7 +352,7 @@ mod tests {
         let plan = build_refresh_plan(&enabled, Some(5000)).unwrap();
 
         assert_eq!(plan.targets, vec![1, 2, 3]);
-        assert_eq!(plan.cooldown_ns, 5000);
+        assert_eq!(plan.cooldown_ns(), 5000);
     }
 
     #[test]
@@ -413,18 +387,25 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_refresh_plan_total() {
-        let plan = RefreshPlan::from_targets(vec![1, 2, 3, 4, 5]);
-        assert_eq!(compute_refresh_plan_total(&plan), 5);
+    fn test_build_targeted_refresh_plan_duplicate() {
+        let enabled = vec![1, 2, 3];
+        let targets = vec![1, 2, 1]; // duplicate 1
+
+        let result = build_targeted_refresh_plan(&targets, &enabled);
+
+        assert!(matches!(
+            result,
+            Err(RefreshPlanError::DuplicateTarget { target_id: 1 })
+        ));
     }
 
     #[test]
     fn test_record_refresh_completion() {
-        let plan = RefreshPlan::with_cooldown(vec![1, 2], 1000);
-        let updated = record_refresh_completion(&plan, 5000);
+        let plan = RefreshPlan::new(vec![1, 2]).with_cooldown(1000);
+        let updated = plan.record_completion(5000);
 
-        assert_eq!(updated.last_refresh_ns, Some(5000));
-        assert_eq!(updated.cooldown_ns, 1000);
+        assert_eq!(updated.last_refresh_ns(), Some(5000));
+        assert_eq!(updated.cooldown_ns(), 1000);
         assert_eq!(updated.targets, vec![1, 2]);
     }
 
@@ -450,8 +431,16 @@ mod tests {
 
     #[test]
     fn test_to_target_list() {
-        let plan = RefreshPlan::from_targets(vec![5, 3, 1]);
-        let list = to_target_list(&plan);
+        let plan = RefreshPlan::new(vec![5, 3, 1]);
+        let list = plan.to_target_list();
         assert_eq!(list, vec![5, 3, 1]);
+    }
+
+    #[test]
+    fn test_find_duplicate_helper() {
+        assert_eq!(find_duplicate(&[1, 2, 3]), None);
+        assert_eq!(find_duplicate(&[1, 2, 1]), Some(1));
+        assert_eq!(find_duplicate(&[1, 2, 2, 3]), Some(2));
+        assert_eq!(find_duplicate::<i32>(&[]), None);
     }
 }

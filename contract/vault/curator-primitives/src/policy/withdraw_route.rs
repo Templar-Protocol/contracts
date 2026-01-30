@@ -3,8 +3,22 @@
 //! Withdraw routes define the order and amounts to collect from markets
 //! when satisfying withdrawal requests. This allows curators to optimize
 //! liquidity collection and minimize market impact.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use templar_curator_primitives::policy::withdraw_route::*;
+//!
+//! let entry = WithdrawRouteEntry::new(1, 500)
+//!     .with_liquidity(400);
+//!
+//! let route = WithdrawRoute::new(1000)
+//!     .with_entry(entry);
+//!
+//! assert!(route.validate().is_err()); // Not enough to cover target
+//! ```
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeSet, vec::Vec};
 use templar_vault_kernel::TargetId;
 
 /// An entry in a withdraw route.
@@ -22,6 +36,7 @@ pub struct WithdrawRouteEntry {
 
 impl WithdrawRouteEntry {
     /// Create a new withdraw route entry.
+    #[must_use]
     pub fn new(target_id: TargetId, max_amount: u128) -> Self {
         Self {
             target_id,
@@ -30,17 +45,11 @@ impl WithdrawRouteEntry {
         }
     }
 
-    /// Create a new entry with known liquidity.
-    pub fn with_liquidity(
-        target_id: TargetId,
-        max_amount: u128,
-        available_liquidity: u128,
-    ) -> Self {
-        Self {
-            target_id,
-            max_amount,
-            available_liquidity: Some(available_liquidity),
-        }
+    /// Builder method: set available liquidity.
+    #[must_use]
+    pub fn with_liquidity(mut self, available_liquidity: u128) -> Self {
+        self.available_liquidity = Some(available_liquidity);
+        self
     }
 }
 
@@ -63,6 +72,7 @@ pub struct WithdrawRoute {
 
 impl WithdrawRoute {
     /// Create a new empty withdraw route.
+    #[must_use]
     pub fn new(target_amount: u128) -> Self {
         Self {
             entries: Vec::new(),
@@ -71,6 +81,7 @@ impl WithdrawRoute {
     }
 
     /// Create a withdraw route from entries.
+    #[must_use]
     pub fn from_entries(entries: Vec<WithdrawRouteEntry>, target_amount: u128) -> Self {
         Self {
             entries,
@@ -78,14 +89,122 @@ impl WithdrawRoute {
         }
     }
 
+    /// Builder method: add an entry.
+    #[must_use]
+    pub fn with_entry(mut self, entry: WithdrawRouteEntry) -> Self {
+        self.entries.push(entry);
+        self
+    }
+
+    /// Builder method: add multiple entries.
+    #[must_use]
+    pub fn with_entries(mut self, entries: impl IntoIterator<Item = WithdrawRouteEntry>) -> Self {
+        self.entries.extend(entries);
+        self
+    }
+
     /// Returns true if the route is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Returns the number of entries in the route.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Compute the total maximum amount available in the route.
+    #[must_use]
+    pub fn total(&self) -> u128 {
+        self.entries
+            .iter()
+            .fold(0u128, |acc, e| acc.saturating_add(e.max_amount))
+    }
+
+    /// Compute the total available liquidity in the route.
+    ///
+    /// Only includes entries where liquidity is known.
+    #[must_use]
+    pub fn available_liquidity(&self) -> u128 {
+        self.entries
+            .iter()
+            .filter_map(|e| e.available_liquidity)
+            .fold(0u128, |acc, l| acc.saturating_add(l))
+    }
+
+    /// Check if the route can satisfy the target amount.
+    #[must_use]
+    pub fn can_satisfy(&self) -> bool {
+        self.total() >= self.target_amount
+    }
+
+    /// Validate the withdraw route.
+    ///
+    /// Checks:
+    /// - Target amount is non-zero
+    /// - Route is not empty
+    /// - Route total is at least target amount
+    /// - No duplicate targets
+    /// - No zero max_amount entries
+    pub fn validate(&self) -> Result<(), WithdrawRouteError> {
+        if self.target_amount == 0 {
+            return Err(WithdrawRouteError::ZeroTargetAmount);
+        }
+
+        if self.is_empty() {
+            return Err(WithdrawRouteError::EmptyRoute);
+        }
+
+        // Check for zero amounts and duplicates using BTreeSet
+        let mut seen_targets: BTreeSet<TargetId> = BTreeSet::new();
+        for entry in &self.entries {
+            if entry.max_amount == 0 {
+                return Err(WithdrawRouteError::ZeroMaxAmount {
+                    target_id: entry.target_id,
+                });
+            }
+
+            if !seen_targets.insert(entry.target_id) {
+                return Err(WithdrawRouteError::DuplicateTarget {
+                    target_id: entry.target_id,
+                });
+            }
+        }
+
+        // Check route total covers target
+        if !self.can_satisfy() {
+            return Err(WithdrawRouteError::InsufficientRouteTotal {
+                route_total: self.total(),
+                target_amount: self.target_amount,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Convert to a list of (target_id, amount) pairs.
+    ///
+    /// This is useful for passing to the withdrawal state machine.
+    #[must_use]
+    pub fn to_withdrawal_plan(&self) -> Vec<(TargetId, u128)> {
+        self.entries
+            .iter()
+            .map(|e| (e.target_id, e.max_amount))
+            .collect()
+    }
+
+    /// Get entry for a specific target.
+    #[must_use]
+    pub fn get_entry(&self, target_id: TargetId) -> Option<&WithdrawRouteEntry> {
+        self.entries.iter().find(|e| e.target_id == target_id)
+    }
+
+    /// Check if a target is in the route.
+    #[must_use]
+    pub fn has_target(&self, target_id: TargetId) -> bool {
+        self.entries.iter().any(|e| e.target_id == target_id)
     }
 }
 
@@ -111,89 +230,6 @@ pub enum WithdrawRouteError {
     DuplicateTarget { target_id: TargetId },
     /// Entry has zero max amount.
     ZeroMaxAmount { target_id: TargetId },
-}
-
-/// Compute the total maximum amount available in a withdraw route.
-///
-/// # Arguments
-/// * `route` - The withdraw route
-///
-/// # Returns
-/// Sum of all max_amount values, using saturating addition.
-pub fn compute_route_total(route: &WithdrawRoute) -> u128 {
-    route
-        .entries
-        .iter()
-        .fold(0u128, |acc, e| acc.saturating_add(e.max_amount))
-}
-
-/// Compute the total available liquidity in a withdraw route.
-///
-/// Only includes entries where liquidity is known.
-///
-/// # Arguments
-/// * `route` - The withdraw route
-///
-/// # Returns
-/// Sum of all known available_liquidity values.
-pub fn compute_available_liquidity(route: &WithdrawRoute) -> u128 {
-    route
-        .entries
-        .iter()
-        .filter_map(|e| e.available_liquidity)
-        .fold(0u128, |acc, l| acc.saturating_add(l))
-}
-
-/// Validate a withdraw route.
-///
-/// Checks:
-/// - Target amount is non-zero
-/// - Route is not empty
-/// - Route total is at least target amount
-/// - No duplicate targets
-/// - No zero max_amount entries
-///
-/// # Arguments
-/// * `route` - The withdraw route to validate
-///
-/// # Returns
-/// `Ok(())` if valid, or the first error found.
-pub fn validate_withdraw_route(route: &WithdrawRoute) -> Result<(), WithdrawRouteError> {
-    if route.target_amount == 0 {
-        return Err(WithdrawRouteError::ZeroTargetAmount);
-    }
-
-    if route.is_empty() {
-        return Err(WithdrawRouteError::EmptyRoute);
-    }
-
-    // Check for zero amounts and duplicates
-    let mut seen_targets: Vec<TargetId> = Vec::new();
-    for entry in &route.entries {
-        if entry.max_amount == 0 {
-            return Err(WithdrawRouteError::ZeroMaxAmount {
-                target_id: entry.target_id,
-            });
-        }
-
-        if seen_targets.contains(&entry.target_id) {
-            return Err(WithdrawRouteError::DuplicateTarget {
-                target_id: entry.target_id,
-            });
-        }
-        seen_targets.push(entry.target_id);
-    }
-
-    // Check route total covers target
-    let route_total = compute_route_total(route);
-    if route_total < route.target_amount {
-        return Err(WithdrawRouteError::InsufficientRouteTotal {
-            route_total,
-            target_amount: route.target_amount,
-        });
-    }
-
-    Ok(())
 }
 
 /// Build a withdraw route from market principals.
@@ -240,7 +276,7 @@ pub fn build_withdraw_route(
         return Err(WithdrawRouteError::EmptyRoute);
     }
 
-    Ok((entries, target_amount).into())
+    Ok(WithdrawRoute::from_entries(entries, target_amount))
 }
 
 /// Build a withdraw route with liquidity constraints.
@@ -270,16 +306,12 @@ pub fn build_withdraw_route_with_liquidity(
         .collect();
     sorted.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
 
-    let _total_available: u128 = sorted
-        .iter()
-        .fold(0u128, |acc, (_, _, l)| acc.saturating_add(*l));
-
     // Use the minimum of principal and available liquidity for each entry
     let entries: Vec<WithdrawRouteEntry> = sorted
         .into_iter()
         .map(|(target_id, principal, liquidity)| {
             let max_amount = principal.min(liquidity);
-            WithdrawRouteEntry::with_liquidity(target_id, max_amount, liquidity)
+            WithdrawRouteEntry::new(target_id, max_amount).with_liquidity(liquidity)
         })
         .filter(|e| e.max_amount > 0)
         .collect();
@@ -288,27 +320,16 @@ pub fn build_withdraw_route_with_liquidity(
         return Err(WithdrawRouteError::EmptyRoute);
     }
 
-    let route_total = compute_route_total(&(entries.clone(), target_amount).into());
+    let route = WithdrawRoute::from_entries(entries, target_amount);
 
-    if route_total < target_amount {
+    if !route.can_satisfy() {
         return Err(WithdrawRouteError::InsufficientRouteTotal {
-            route_total,
+            route_total: route.total(),
             target_amount,
         });
     }
 
-    Ok((entries, target_amount).into())
-}
-
-/// Convert a withdraw route to a list of (target_id, amount) pairs.
-///
-/// This is useful for passing to the withdrawal state machine.
-pub fn to_withdrawal_plan(route: &WithdrawRoute) -> Vec<(TargetId, u128)> {
-    route
-        .entries
-        .iter()
-        .map(|e| (e.target_id, e.max_amount))
-        .collect()
+    Ok(route)
 }
 
 #[cfg(test)]
@@ -324,6 +345,25 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_pattern() {
+        let route = WithdrawRoute::new(1000)
+            .with_entry(WithdrawRouteEntry::new(1, 500))
+            .with_entry(WithdrawRouteEntry::new(2, 600));
+
+        assert_eq!(route.len(), 2);
+        assert_eq!(route.total(), 1100);
+    }
+
+    #[test]
+    fn test_entry_builder() {
+        let entry = WithdrawRouteEntry::new(1, 500).with_liquidity(400);
+
+        assert_eq!(entry.target_id, 1);
+        assert_eq!(entry.max_amount, 500);
+        assert_eq!(entry.available_liquidity, Some(400));
+    }
+
+    #[test]
     fn test_compute_route_total() {
         let route = WithdrawRoute::from_entries(
             vec![
@@ -334,7 +374,7 @@ mod tests {
             1000,
         );
 
-        assert_eq!(compute_route_total(&route), 1000);
+        assert_eq!(route.total(), 1000);
     }
 
     #[test]
@@ -347,7 +387,7 @@ mod tests {
             1000,
         );
 
-        assert!(validate_withdraw_route(&route).is_ok());
+        assert!(route.validate().is_ok());
     }
 
     #[test]
@@ -355,7 +395,7 @@ mod tests {
         let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 0);
 
         assert!(matches!(
-            validate_withdraw_route(&route),
+            route.validate(),
             Err(WithdrawRouteError::ZeroTargetAmount)
         ));
     }
@@ -365,7 +405,7 @@ mod tests {
         let route = WithdrawRoute::new(1000);
 
         assert!(matches!(
-            validate_withdraw_route(&route),
+            route.validate(),
             Err(WithdrawRouteError::EmptyRoute)
         ));
     }
@@ -378,7 +418,7 @@ mod tests {
         );
 
         assert!(matches!(
-            validate_withdraw_route(&route),
+            route.validate(),
             Err(WithdrawRouteError::InsufficientRouteTotal { .. })
         ));
     }
@@ -394,7 +434,7 @@ mod tests {
         );
 
         assert!(matches!(
-            validate_withdraw_route(&route),
+            route.validate(),
             Err(WithdrawRouteError::DuplicateTarget { target_id: 1 })
         ));
     }
@@ -410,7 +450,7 @@ mod tests {
         );
 
         assert!(matches!(
-            validate_withdraw_route(&route),
+            route.validate(),
             Err(WithdrawRouteError::ZeroMaxAmount { target_id: 2 })
         ));
     }
@@ -488,14 +528,14 @@ mod tests {
     fn test_compute_available_liquidity() {
         let route = WithdrawRoute::from_entries(
             vec![
-                WithdrawRouteEntry::with_liquidity(1, 500, 400),
+                WithdrawRouteEntry::new(1, 500).with_liquidity(400),
                 WithdrawRouteEntry::new(2, 300), // no liquidity info
-                WithdrawRouteEntry::with_liquidity(3, 200, 200),
+                WithdrawRouteEntry::new(3, 200).with_liquidity(200),
             ],
             1000,
         );
 
-        assert_eq!(compute_available_liquidity(&route), 600);
+        assert_eq!(route.available_liquidity(), 600);
     }
 
     #[test]
@@ -508,8 +548,44 @@ mod tests {
             800,
         );
 
-        let plan = to_withdrawal_plan(&route);
+        let plan = route.to_withdrawal_plan();
 
         assert_eq!(plan, vec![(1, 500), (2, 300)]);
+    }
+
+    #[test]
+    fn test_can_satisfy() {
+        let route = WithdrawRoute::from_entries(
+            vec![WithdrawRouteEntry::new(1, 500)],
+            1000,
+        );
+        assert!(!route.can_satisfy());
+
+        let route = WithdrawRoute::from_entries(
+            vec![WithdrawRouteEntry::new(1, 1000)],
+            1000,
+        );
+        assert!(route.can_satisfy());
+    }
+
+    #[test]
+    fn test_get_entry_and_has_target() {
+        let route = WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 500),
+                WithdrawRouteEntry::new(2, 300),
+            ],
+            800,
+        );
+
+        assert!(route.has_target(1));
+        assert!(route.has_target(2));
+        assert!(!route.has_target(3));
+
+        let entry = route.get_entry(1);
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().max_amount, 500);
+
+        assert!(route.get_entry(3).is_none());
     }
 }

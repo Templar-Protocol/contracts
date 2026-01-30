@@ -8,22 +8,13 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::policy::cap_group::{
-    can_allocate_to_group, compute_available_capacity, compute_effective_cap, enforce_cap_group,
-    CapGroup,
-};
-use crate::policy::refresh_plan::{
-    build_refresh_plan, compute_refresh_plan_total, validate_refresh_plan,
-};
-use crate::policy::supply_queue::{
-    compute_queue_total, enqueue_supply, to_allocation_plan, SupplyQueue, SupplyQueueEntry,
-};
-use crate::policy::withdraw_route::{
-    build_withdraw_route, compute_route_total, validate_withdraw_route, WithdrawRoute,
-    WithdrawRouteEntry,
-};
+use crate::policy::cap_group::CapGroup;
+use crate::policy::refresh_plan::build_refresh_plan;
+use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
+use crate::policy::withdraw_route::{build_withdraw_route, WithdrawRoute, WithdrawRouteEntry};
+use templar_vault_kernel::Wad;
 use crate::recovery::{
-    compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
+    compute_recovery_stats, compute_settlement_shares, determine_recovery_action,
 };
 use templar_vault_kernel::{
     AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
@@ -121,8 +112,10 @@ fn golden_cap_group_effective_caps() {
     ];
 
     for (group_id, abs_cap, rel_cap, _principal) in &snapshot.cap_groups {
-        let cap = CapGroup::new(*abs_cap, *rel_cap);
-        let effective = compute_effective_cap(&cap, snapshot.total_assets);
+        let cap = CapGroup::new()
+            .with_absolute(*abs_cap)
+            .with_relative(Wad::from(*rel_cap));
+        let effective = cap.effective_cap(snapshot.total_assets);
 
         let expected = expected_effective_caps
             .iter()
@@ -154,8 +147,10 @@ fn golden_cap_group_available_capacity() {
     ];
 
     for (group_id, abs_cap, rel_cap, principal) in &snapshot.cap_groups {
-        let cap = CapGroup::new(*abs_cap, *rel_cap);
-        let available = compute_available_capacity(&cap, *principal, snapshot.total_assets);
+        let cap = CapGroup::new()
+            .with_absolute(*abs_cap)
+            .with_relative(Wad::from(*rel_cap));
+        let available = cap.available_capacity(*principal, snapshot.total_assets);
 
         let expected = expected_capacities
             .iter()
@@ -178,36 +173,34 @@ fn golden_cap_group_allocation_validation() {
     // Test allocations against the "volatile" group (3M cap, 2.5M used)
     // Available: 500_000_000_000 (0.5M)
 
-    let volatile_cap = CapGroup::new(3_000_000_000_000, WAD * 30 / 100);
+    let volatile_cap = CapGroup::new()
+        .with_absolute(3_000_000_000_000)
+        .with_relative(Wad::from(WAD * 30 / 100));
     let volatile_principal = 2_500_000_000_000u128;
 
     // Should succeed: allocate 400_000_000_000 (0.4M)
-    assert!(can_allocate_to_group(
-        &volatile_cap,
+    assert!(volatile_cap.can_allocate(
         volatile_principal,
         400_000_000_000,
         snapshot.total_assets
     ));
 
     // Should succeed: allocate exactly 500_000_000_000 (0.5M)
-    assert!(can_allocate_to_group(
-        &volatile_cap,
+    assert!(volatile_cap.can_allocate(
         volatile_principal,
         500_000_000_000,
         snapshot.total_assets
     ));
 
     // Should fail: allocate 600_000_000_000 (0.6M)
-    assert!(!can_allocate_to_group(
-        &volatile_cap,
+    assert!(!volatile_cap.can_allocate(
         volatile_principal,
         600_000_000_000,
         snapshot.total_assets
     ));
 
     // Enforcement should return proper error
-    let result = enforce_cap_group(
-        &volatile_cap,
+    let result = volatile_cap.enforce(
         volatile_principal,
         600_000_000_000,
         snapshot.total_assets,
@@ -225,21 +218,21 @@ fn golden_supply_queue_to_plan() {
     let mut queue = SupplyQueue::new();
 
     // Add entries simulating batched deposits
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(0, 500_000_000_000)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(1, 300_000_000_000)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(0, 200_000_000_000)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(2, 400_000_000_000)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(1, 100_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(0, 500_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(1, 300_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(0, 200_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(2, 400_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(1, 100_000_000_000)).unwrap();
 
     // Expected total: 1.5M
-    let total = compute_queue_total(&queue);
+    let total = queue.total();
     assert_eq!(total, 1_500_000_000_000);
 
     // Expected plan (aggregated by target):
     // Target 0: 700_000_000_000 (0.7M)
     // Target 1: 400_000_000_000 (0.4M)
     // Target 2: 400_000_000_000 (0.4M)
-    let plan = to_allocation_plan(&queue);
+    let plan = queue.to_allocation_plan();
 
     let target_0_amount = plan.iter().find(|(id, _)| *id == 0).map(|(_, a)| *a);
     let target_1_amount = plan.iter().find(|(id, _)| *id == 1).map(|(_, a)| *a);
@@ -255,26 +248,18 @@ fn golden_supply_queue_priority_ordering() {
     let mut queue = SupplyQueue::new();
 
     // Add entries with different priorities
-    queue = enqueue_supply(
-        &queue,
-        SupplyQueueEntry::with_priority(0, 100_000_000_000, 0),
-    )
-    .unwrap();
-    queue = enqueue_supply(
-        &queue,
-        SupplyQueueEntry::with_priority(1, 200_000_000_000, 5),
-    )
-    .unwrap();
-    queue = enqueue_supply(
-        &queue,
-        SupplyQueueEntry::with_priority(2, 300_000_000_000, 10),
-    )
-    .unwrap();
-    queue = enqueue_supply(
-        &queue,
-        SupplyQueueEntry::with_priority(3, 400_000_000_000, 3),
-    )
-    .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(0, 100_000_000_000).with_priority(0))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(1, 200_000_000_000).with_priority(5))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(2, 300_000_000_000).with_priority(10))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(3, 400_000_000_000).with_priority(3))
+        .unwrap();
 
     // Expected order by priority (highest first): 2, 1, 3, 0
     let entries: Vec<u32> = queue.entries.iter().map(|e| e.target_id).collect();
@@ -295,10 +280,10 @@ fn golden_withdraw_route_from_principals() {
     let route = build_withdraw_route(&snapshot.market_principals, target_amount).unwrap();
 
     // Validate route
-    assert!(validate_withdraw_route(&route).is_ok());
+    assert!(route.validate().is_ok());
 
     // Route total should cover target
-    let route_total = compute_route_total(&route);
+    let route_total = route.total();
     assert!(route_total >= target_amount);
 
     // Markets should be sorted by principal (largest first)
@@ -321,10 +306,10 @@ fn golden_withdraw_route_validation() {
     );
 
     // Should be valid (total 2.3M >= target 2M)
-    assert!(validate_withdraw_route(&route).is_ok());
+    assert!(route.validate().is_ok());
 
     // Route total
-    assert_eq!(compute_route_total(&route), 2_300_000_000_000);
+    assert_eq!(route.total(), 2_300_000_000_000);
 }
 
 // ============================================================================
@@ -343,9 +328,9 @@ fn golden_refresh_plan_building() {
     // Build refresh plan for all markets
     let plan = build_refresh_plan(&enabled_targets, Some(30_000_000_000)).unwrap();
 
-    assert!(validate_refresh_plan(&plan).is_ok());
-    assert_eq!(compute_refresh_plan_total(&plan), 3); // 3 markets
-    assert_eq!(plan.cooldown_ns, 30_000_000_000); // 30 seconds
+    assert!(plan.validate().is_ok());
+    assert_eq!(plan.len(), 3); // 3 markets
+    assert_eq!(plan.cooldown_ns(), 30_000_000_000); // 30 seconds
 }
 
 // ============================================================================
@@ -367,8 +352,7 @@ fn golden_recovery_allocating_state() {
         ],
     });
 
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx).expect("expected action");
+    let action = determine_recovery_action(&state).expect("expected action");
 
     match action {
         KernelAction::AbortAllocating { op_id, restore_idle } => {
@@ -397,8 +381,7 @@ fn golden_recovery_withdrawing_state() {
         escrow_shares: 1_000_000_000_000,
     });
 
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx).expect("expected action");
+    let action = determine_recovery_action(&state).expect("expected action");
 
     match action {
         KernelAction::AbortWithdrawing { op_id, refund_shares } => {
@@ -420,8 +403,7 @@ fn golden_recovery_payout_state() {
         burn_shares: 400_000_000_000,
     });
 
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx).expect("expected action");
+    let action = determine_recovery_action(&state).expect("expected action");
 
     match action {
         KernelAction::SettlePayout { op_id, outcome } => {
@@ -499,13 +481,13 @@ fn golden_full_allocation_cycle() {
 
     // Step 1: Create supply queue with batched deposits (1M total)
     let mut queue = SupplyQueue::new();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(0, 400_000_000_000)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(1, 300_000_000_000)).unwrap();
-    queue = enqueue_supply(&queue, SupplyQueueEntry::new(2, 300_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(0, 400_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(1, 300_000_000_000)).unwrap();
+    queue = queue.enqueue(SupplyQueueEntry::new(2, 300_000_000_000)).unwrap();
 
     // Step 2: Convert to allocation plan
-    let plan = to_allocation_plan(&queue);
-    assert_eq!(compute_queue_total(&queue), 1_000_000_000_000);
+    let plan = queue.to_allocation_plan();
+    assert_eq!(queue.total(), 1_000_000_000_000);
 
     // Step 3: Validate against cap groups
     // Market 0 -> "stable" group: 3M + 0.4M = 3.4M < 5M cap (OK)
@@ -524,8 +506,10 @@ fn golden_full_allocation_cycle() {
             })
             .unwrap();
 
-        let cap = CapGroup::new(*abs_cap, *rel_cap);
-        let result = enforce_cap_group(&cap, *principal, *amount, snapshot.total_assets);
+        let cap = CapGroup::new()
+            .with_absolute(*abs_cap)
+            .with_relative(Wad::from(*rel_cap));
+        let result = cap.enforce(*principal, *amount, snapshot.total_assets);
 
         assert!(
             result.is_ok(),
@@ -550,7 +534,7 @@ fn golden_refresh_after_allocation() {
     let plan = build_refresh_plan(&enabled_targets, None).unwrap();
 
     // Validate plan
-    assert!(validate_refresh_plan(&plan).is_ok());
+    assert!(plan.validate().is_ok());
 
     // Simulate refreshing state
     let state = OpState::Refreshing(RefreshingState {
@@ -560,8 +544,7 @@ fn golden_refresh_after_allocation() {
     });
 
     // Check recovery from stuck refresh
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let action = determine_recovery_action(&state, &ctx).expect("expected action");
+    let action = determine_recovery_action(&state).expect("expected action");
 
     match action {
         KernelAction::AbortRefreshing { op_id } => {
