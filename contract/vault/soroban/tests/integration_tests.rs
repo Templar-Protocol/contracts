@@ -21,6 +21,7 @@ use templar_curator_primitives::RecoveryContext;
 use templar_vault_kernel::{
     Address, OpState, PayoutOutcome, PayoutState, WithdrawingState, MAX_PENDING,
 };
+use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 
 // ============================================================================
 // Test Helpers
@@ -713,6 +714,15 @@ fn test_withdraw_request_basic() {
 
     assert!(result.shares_escrowed > 0);
     assert_eq!(result.shares_escrowed, 1000);
+    let (id, pending) = vault
+        .state()
+        .withdraw_queue
+        .head()
+        .expect("pending withdrawal");
+    assert_eq!(id, result.request_id);
+    assert_eq!(pending.owner, user);
+    assert_eq!(pending.receiver, user);
+    assert_eq!(pending.escrow_shares, 1000);
 }
 
 #[test]
@@ -726,6 +736,12 @@ fn test_withdraw_request_calculates_assets_correctly() {
     // Withdraw half the shares - should get half the assets
     let result = vault.request_withdraw(user, user, 5000, 4000, 200).unwrap();
     assert_eq!(result.shares_escrowed, 5000);
+    let (_, pending) = vault
+        .state()
+        .withdraw_queue
+        .head()
+        .expect("pending withdrawal");
+    assert_eq!(pending.expected_assets, 5000);
 }
 
 #[test]
@@ -788,10 +804,13 @@ fn test_execute_withdraw_in_idle_state() {
 
     // Deposit
     vault.deposit(user, user, 10000, 0, 100).unwrap();
+    vault.request_withdraw(user, user, 1000, 0, 0).unwrap();
 
     // Execute withdraw in idle state
-    let result = vault.execute_withdraw(user, 200);
+    let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
     assert!(result.is_ok());
+    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().withdraw_queue.is_empty());
 }
 
 #[test]
@@ -841,12 +860,43 @@ fn test_full_flow_deposit_allocate_refresh_withdraw() {
     assert_eq!(vault.state().external_assets, 6000);
 
     // 4. Request withdrawal
-    let result = vault.request_withdraw(user, user, 5000, 0, 400).unwrap();
+    let result = vault.request_withdraw(user, user, 5000, 0, 0).unwrap();
     assert!(result.shares_escrowed > 0);
 
     // 5. Execute withdrawal (in idle state)
-    let result = vault.execute_withdraw(user, 500);
+    let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
     assert!(result.is_ok());
+    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().withdraw_queue.is_empty());
+}
+
+#[test]
+fn test_withdraw_queue_orders_and_dequeues() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+
+    let first = vault.request_withdraw(user, user, 1000, 0, 0).unwrap();
+    let second = vault.request_withdraw(user, user, 2000, 0, 1).unwrap();
+
+    let (head_id, pending) = vault
+        .state()
+        .withdraw_queue
+        .head()
+        .expect("pending withdrawal");
+    assert_eq!(head_id, first.request_id);
+    assert_eq!(pending.escrow_shares, 1000);
+
+    vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1).unwrap();
+
+    let (next_id, next_pending) = vault
+        .state()
+        .withdraw_queue
+        .head()
+        .expect("second pending withdrawal");
+    assert_eq!(next_id, second.request_id);
+    assert_eq!(next_pending.escrow_shares, 2000);
 }
 
 // ============================================================================

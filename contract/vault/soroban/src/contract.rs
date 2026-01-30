@@ -7,10 +7,12 @@
 use alloc::vec::Vec;
 use templar_curator_primitives::{determine_recovery_action, PolicyState, RecoveryContext};
 use templar_vault_kernel::{
-    apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh, Address,
-    FeesSpec, KernelAction, OpState, PayoutOutcome, TargetId, VaultConfig, VaultState,
-    MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh,
+    withdrawal_collected, withdrawal_step_callback, Address, FeesSpec, KernelAction, OpState,
+    PayoutOutcome, TargetId, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
+use templar_vault_kernel::effects::KernelEffect;
+use templar_vault_kernel::state::queue::{compute_full_withdrawal, compute_partial_withdrawal};
 
 use crate::auth::{ActionKind, AuthAdapter};
 use crate::effects::{EffectContext, EffectInterpreter, EffectSummary};
@@ -366,7 +368,7 @@ where
     pub fn request_withdraw(
         &mut self,
         caller: Address,
-        _receiver: Address,
+        receiver: Address,
         shares: u128,
         min_assets_out: u128,
         now_ns: u64,
@@ -375,45 +377,23 @@ where
         self.auth
             .authorize(ActionKind::RequestWithdraw, caller, None)?;
 
-        if self.auth.is_paused() {
-            return Err(RuntimeError::contract_error("vault is paused"));
-        }
-
-        if shares == 0 {
-            return Err(RuntimeError::contract_error("withdrawal shares is zero"));
-        }
-
-        let state = self.state_mut();
-
-        // Calculate assets for shares
-        let assets = if state.total_shares == 0 {
+        if self.state().total_shares == 0 {
             return Err(RuntimeError::contract_error("no shares in vault"));
-        } else {
-            shares
-                .checked_mul(state.total_assets)
-                .and_then(|n| n.checked_div(state.total_shares))
-                .ok_or_else(|| RuntimeError::contract_error("overflow in asset calculation"))?
-        };
-
-        if assets < min_assets_out {
-            return Err(RuntimeError::contract_error("slippage exceeded"));
         }
 
-        // Generate request ID
-        let request_id = state.next_op_id;
-        state.next_op_id = state.next_op_id.saturating_add(1);
+        let request_id = self
+            .state()
+            .withdraw_queue
+            .next_pending_withdrawal_id;
 
-        // Escrow shares (transfer from owner to escrow via effect)
-        let ctx = self.effect_context(now_ns);
-        let escrow_address = [0u8; 32]; // Placeholder escrow address
-        let effect = templar_vault_kernel::effects::KernelEffect::TransferShares {
-            from: caller,
-            to: escrow_address,
+        let action = KernelAction::RequestWithdraw {
+            owner: caller,
+            receiver,
             shares,
+            min_assets_out,
+            now_ns,
         };
-        self.interpreter.execute_effect(&effect, &ctx)?;
-
-        self.save_state()?;
+        let _summary = self.apply_kernel_action(action, now_ns)?;
 
         Ok(WithdrawRequestResult {
             request_id,
@@ -432,25 +412,125 @@ where
     pub fn execute_withdraw(
         &mut self,
         caller: Address,
-        _now_ns: u64,
+        now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
         // Authorize
         self.auth
             .authorize(ActionKind::ExecuteWithdraw, caller, None)?;
 
-        // Get current state
-        let state = self.state();
+        let mut summary = EffectSummary::new();
 
-        // Check if we're in a state that allows withdrawal execution
-        if !state.op_state.is_idle() {
+        if self.state().op_state.is_idle() {
+            let step_summary = self.apply_kernel_action(
+                KernelAction::ExecuteWithdraw { now_ns },
+                now_ns,
+            )?;
+            summary = merge_summaries(summary, step_summary);
+        } else if !self.state().op_state.is_withdrawing() {
             return Err(RuntimeError::contract_error(
-                "vault not in idle state for withdrawal",
+                "vault not in idle or withdrawing state for withdrawal",
             ));
         }
 
-        // For now, return empty summary - actual implementation would
-        // process the withdrawal queue
-        Ok(EffectSummary::new())
+        if self.state().op_state.is_withdrawing() {
+            let settle_summary = self.complete_withdrawal_from_idle(now_ns)?;
+            summary = merge_summaries(summary, settle_summary);
+        }
+
+        Ok(summary)
+    }
+
+    fn complete_withdrawal_from_idle(&mut self, now_ns: u64) -> Result<EffectSummary, RuntimeError> {
+        let (_, pending) = self
+            .state()
+            .withdraw_queue
+            .head()
+            .ok_or_else(|| RuntimeError::contract_error("withdraw queue empty"))?;
+
+        let withdraw = match &self.state().op_state {
+            OpState::Withdrawing(state) => state,
+            _ => {
+                return Err(RuntimeError::contract_error(
+                    "withdrawal not in progress",
+                ))
+            }
+        };
+
+        if pending.owner != withdraw.owner
+            || pending.receiver != withdraw.receiver
+            || pending.escrow_shares != withdraw.escrow_shares
+        {
+            return Err(RuntimeError::contract_error(
+                "withdrawal queue head mismatch",
+            ));
+        }
+
+        let available_assets = self.state().idle_assets;
+        if available_assets == 0 {
+            return Ok(EffectSummary::new());
+        }
+
+        let withdrawal_result = if available_assets >= pending.expected_assets {
+            compute_full_withdrawal(pending, available_assets)
+                .ok_or_else(|| RuntimeError::contract_error("withdrawal not satisfiable"))?
+        } else {
+            compute_partial_withdrawal(pending, available_assets)
+        };
+
+        let assets_out = withdrawal_result.assets_out;
+        if assets_out == 0 {
+            return Ok(EffectSummary::new());
+        }
+
+        let burn_shares = withdrawal_result.settlement.to_burn;
+        let refund_shares = withdrawal_result.settlement.refund;
+        let op_id = withdraw.op_id;
+
+        let step = withdrawal_step_callback(self.state().op_state.clone(), op_id, assets_out)
+            .map_err(RuntimeError::transition_error)?;
+        self.state_mut().op_state = step.new_state;
+
+        let collected = withdrawal_collected(self.state().op_state.clone(), op_id, burn_shares)
+            .map_err(RuntimeError::transition_error)?;
+        let ctx = self.effect_context(now_ns);
+        let mut summary = self.interpreter.execute_effects(&collected.effects, &ctx)?;
+        self.state_mut().op_state = collected.new_state;
+
+        let payout = match &self.state().op_state {
+            OpState::Payout(state) => state,
+            _ => {
+                return Err(RuntimeError::contract_error(
+                    "expected payout state after withdrawal",
+                ))
+            }
+        };
+
+        let transfer_effects = [KernelEffect::TransferAssets {
+            to: payout.receiver,
+            amount: assets_out,
+        }];
+        let transfer_summary = self
+            .interpreter
+            .execute_effects(&transfer_effects, &ctx)?;
+        summary = merge_summaries(summary, transfer_summary);
+
+        let state = self.state_mut();
+        state.idle_assets = state.idle_assets.saturating_sub(assets_out);
+        state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+
+        let settle_summary = self.apply_kernel_action(
+            KernelAction::SettlePayout {
+                op_id,
+                outcome: PayoutOutcome::Success {
+                    burn_shares,
+                    refund_shares,
+                },
+            },
+            now_ns,
+        )?;
+        summary = merge_summaries(summary, settle_summary);
+
+        Ok(summary)
     }
 
     /// Pause or unpause the vault.
@@ -966,6 +1046,19 @@ where
             current_ns,
         )
     }
+}
+
+fn merge_summaries(mut base: EffectSummary, other: EffectSummary) -> EffectSummary {
+    base.shares_minted = base.shares_minted.saturating_add(other.shares_minted);
+    base.shares_burned = base.shares_burned.saturating_add(other.shares_burned);
+    base.shares_transferred = base
+        .shares_transferred
+        .saturating_add(other.shares_transferred);
+    base.assets_transferred = base
+        .assets_transferred
+        .saturating_add(other.assets_transferred);
+    base.events_emitted = base.events_emitted.saturating_add(other.events_emitted);
+    base
 }
 
 #[cfg(test)]
