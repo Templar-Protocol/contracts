@@ -33,6 +33,7 @@ pub mod contract;
 pub mod effects;
 pub mod error;
 pub mod market;
+pub mod policy;
 pub mod rbac;
 pub mod reconciliation;
 pub mod storage;
@@ -56,3 +57,9 @@ pub use reconciliation::{
     ReconciliationRecord, ResyncRequest, ResyncResult,
 };
 pub use storage::{MemoryStorage, Storage, StorageVersion, VersionedState};
+
+// Policy re-exports for convenience
+pub use policy::{
+    build_allocation_plan_with_locks, build_refresh_plan_with_locks,
+    build_withdrawal_plan_with_locks, filter_unlocked_targets, MarketLock, MarketLockSet,
+};
