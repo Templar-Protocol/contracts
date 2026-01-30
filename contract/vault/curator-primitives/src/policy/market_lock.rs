@@ -84,6 +84,12 @@ impl MarketLockSet {
     }
 }
 
+impl From<Vec<MarketLock>> for MarketLockSet {
+    fn from(locks: Vec<MarketLock>) -> Self {
+        Self { locks }
+    }
+}
+
 /// Check if a market is locked.
 ///
 /// # Arguments

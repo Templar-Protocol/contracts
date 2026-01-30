@@ -59,6 +59,18 @@ impl RefreshPlan {
     }
 }
 
+impl From<Vec<TargetId>> for RefreshPlan {
+    fn from(targets: Vec<TargetId>) -> Self {
+        Self::from_targets(targets)
+    }
+}
+
+impl From<(Vec<TargetId>, u64)> for RefreshPlan {
+    fn from(value: (Vec<TargetId>, u64)) -> Self {
+        Self::with_cooldown(value.0, value.1)
+    }
+}
+
 /// Errors that can occur during refresh plan operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RefreshPlanError {

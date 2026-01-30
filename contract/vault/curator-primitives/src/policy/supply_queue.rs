@@ -105,6 +105,15 @@ impl SupplyQueue {
     }
 }
 
+impl From<Vec<SupplyQueueEntry>> for SupplyQueue {
+    fn from(entries: Vec<SupplyQueueEntry>) -> Self {
+        Self {
+            entries: VecDeque::from(entries),
+            max_length: 0,
+        }
+    }
+}
+
 /// Errors that can occur during supply queue operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SupplyQueueError {

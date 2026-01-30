@@ -89,6 +89,12 @@ impl WithdrawRoute {
     }
 }
 
+impl From<(Vec<WithdrawRouteEntry>, u128)> for WithdrawRoute {
+    fn from(value: (Vec<WithdrawRouteEntry>, u128)) -> Self {
+        Self::from_entries(value.0, value.1)
+    }
+}
+
 /// Errors that can occur during withdraw route operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WithdrawRouteError {
@@ -223,7 +229,7 @@ pub fn build_withdraw_route(
     // Create entries sorted by principal (largest first)
     let mut sorted: Vec<(TargetId, u128)> =
         principals.iter().filter(|(_, p)| *p > 0).cloned().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let entries: Vec<WithdrawRouteEntry> = sorted
         .into_iter()
@@ -234,10 +240,7 @@ pub fn build_withdraw_route(
         return Err(WithdrawRouteError::EmptyRoute);
     }
 
-    Ok(WithdrawRoute {
-        entries,
-        target_amount,
-    })
+    Ok((entries, target_amount).into())
 }
 
 /// Build a withdraw route with liquidity constraints.
@@ -265,7 +268,7 @@ pub fn build_withdraw_route_with_liquidity(
         .filter(|(_, p, _)| *p > 0)
         .cloned()
         .collect();
-    sorted.sort_by(|a, b| b.2.cmp(&a.2));
+    sorted.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
 
     let _total_available: u128 = sorted
         .iter()
@@ -285,10 +288,7 @@ pub fn build_withdraw_route_with_liquidity(
         return Err(WithdrawRouteError::EmptyRoute);
     }
 
-    let route_total = compute_route_total(&WithdrawRoute {
-        entries: entries.clone(),
-        target_amount,
-    });
+    let route_total = compute_route_total(&(entries.clone(), target_amount).into());
 
     if route_total < target_amount {
         return Err(WithdrawRouteError::InsufficientRouteTotal {
@@ -297,10 +297,7 @@ pub fn build_withdraw_route_with_liquidity(
         });
     }
 
-    Ok(WithdrawRoute {
-        entries,
-        target_amount,
-    })
+    Ok((entries, target_amount).into())
 }
 
 /// Convert a withdraw route to a list of (target_id, amount) pairs.
@@ -432,6 +429,18 @@ mod tests {
     }
 
     #[test]
+    fn test_build_withdraw_route_tie_breaker() {
+        let principals = vec![(2, 1000), (1, 1000), (3, 500)];
+
+        let route = build_withdraw_route(&principals, 100).unwrap();
+
+        // Equal principals should be ordered by target_id asc
+        assert_eq!(route.entries[0].target_id, 1);
+        assert_eq!(route.entries[1].target_id, 2);
+        assert_eq!(route.entries[2].target_id, 3);
+    }
+
+    #[test]
     fn test_build_withdraw_route_insufficient() {
         let principals = vec![(1, 100), (2, 50)];
 
@@ -457,6 +466,22 @@ mod tests {
         assert_eq!(route.entries[0].target_id, 1);
         assert_eq!(route.entries[0].max_amount, 800); // min(1000, 800)
         assert_eq!(route.entries[0].available_liquidity, Some(800));
+    }
+
+    #[test]
+    fn test_build_withdraw_route_with_liquidity_tie_breaker() {
+        let market_data = vec![
+            (2, 1000, 500),
+            (1, 200, 500),
+            (3, 300, 400),
+        ];
+
+        let route = build_withdraw_route_with_liquidity(&market_data, 100).unwrap();
+
+        // Equal liquidity should be ordered by target_id asc
+        assert_eq!(route.entries[0].target_id, 1);
+        assert_eq!(route.entries[1].target_id, 2);
+        assert_eq!(route.entries[2].target_id, 3);
     }
 
     #[test]

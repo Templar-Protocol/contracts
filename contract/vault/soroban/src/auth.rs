@@ -4,7 +4,7 @@
 //! can share the runtime while using different authorization mechanisms.
 
 use alloc::string::String;
-use templar_vault_kernel::Address;
+use templar_vault_kernel::{Address, KernelAction};
 
 /// Kinds of actions that require authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +57,33 @@ impl ActionKind {
     #[must_use]
     pub const fn is_privileged(&self) -> bool {
         !self.is_user_facing()
+    }
+}
+
+impl From<&KernelAction> for ActionKind {
+    fn from(action: &KernelAction) -> Self {
+        match action {
+            KernelAction::BeginAllocating { .. } => ActionKind::BeginAllocating,
+            KernelAction::Deposit { .. } => ActionKind::Deposit,
+            KernelAction::RequestWithdraw { .. } => ActionKind::RequestWithdraw,
+            KernelAction::ExecuteWithdraw { .. } => ActionKind::ExecuteWithdraw,
+            KernelAction::BeginRefreshing { .. } => ActionKind::BeginRefreshing,
+            KernelAction::FinishAllocating { .. } => ActionKind::FinishAllocating,
+            KernelAction::SyncExternalAssets { .. } => ActionKind::SyncExternalAssets,
+            KernelAction::FinishRefreshing { .. } => ActionKind::FinishRefreshing,
+            KernelAction::AbortRefreshing { .. } => ActionKind::AbortRefreshing,
+            KernelAction::SettlePayout { .. } => ActionKind::SettlePayout,
+            KernelAction::AbortAllocating { .. } => ActionKind::AbortAllocating,
+            KernelAction::AbortWithdrawing { .. } => ActionKind::AbortWithdrawing,
+            KernelAction::RefreshFees { .. } => ActionKind::RefreshFees,
+            KernelAction::Pause { .. } => ActionKind::Pause,
+        }
+    }
+}
+
+impl From<KernelAction> for ActionKind {
+    fn from(action: KernelAction) -> Self {
+        ActionKind::from(&action)
     }
 }
 

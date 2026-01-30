@@ -282,25 +282,6 @@ where
         Ok(summary)
     }
 
-    fn action_kind_for_kernel(action: &KernelAction) -> ActionKind {
-        match action {
-            KernelAction::BeginAllocating { .. } => ActionKind::BeginAllocating,
-            KernelAction::Deposit { .. } => ActionKind::Deposit,
-            KernelAction::RequestWithdraw { .. } => ActionKind::RequestWithdraw,
-            KernelAction::ExecuteWithdraw { .. } => ActionKind::ExecuteWithdraw,
-            KernelAction::BeginRefreshing { .. } => ActionKind::BeginRefreshing,
-            KernelAction::FinishAllocating { .. } => ActionKind::FinishAllocating,
-            KernelAction::SyncExternalAssets { .. } => ActionKind::SyncExternalAssets,
-            KernelAction::FinishRefreshing { .. } => ActionKind::FinishRefreshing,
-            KernelAction::AbortRefreshing { .. } => ActionKind::AbortRefreshing,
-            KernelAction::SettlePayout { .. } => ActionKind::SettlePayout,
-            KernelAction::AbortAllocating { .. } => ActionKind::AbortAllocating,
-            KernelAction::AbortWithdrawing { .. } => ActionKind::AbortWithdrawing,
-            KernelAction::RefreshFees { .. } => ActionKind::RefreshFees,
-            KernelAction::Pause { .. } => ActionKind::Pause,
-        }
-    }
-
     // =========================================================================
     // User-facing entrypoints
     // =========================================================================
@@ -767,7 +748,7 @@ where
             return Ok(None);
         };
 
-        let kind = Self::action_kind_for_kernel(&action);
+        let kind: ActionKind = (&action).into();
         self.auth.authorize(kind, caller, None)?;
 
         let summary = self.apply_kernel_action(action, now_ns)?;
