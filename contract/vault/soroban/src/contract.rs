@@ -4,12 +4,11 @@
 //! Each entrypoint performs authorization, dispatches to kernel transitions,
 //! and executes the returned effects.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use templar_curator_primitives::{determine_recovery_action, RecoveryContext};
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh, Address,
-    Fee, Fees, KernelAction, OpState, PayoutOutcome, TargetId, VaultConfig, VaultState, Wad,
+    FeesSpec, KernelAction, OpState, PayoutOutcome, TargetId, VaultConfig, VaultState,
     MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 
@@ -242,17 +241,7 @@ where
 
     fn kernel_config(&self) -> VaultConfig {
         VaultConfig {
-            fees: Fees {
-                performance: Fee {
-                    fee: Wad::ZERO,
-                    recipient: String::new(),
-                },
-                management: Fee {
-                    fee: Wad::ZERO,
-                    recipient: String::new(),
-                },
-                max_total_assets_growth_rate: None,
-            },
+            fees: FeesSpec::zero(),
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: self.paused,

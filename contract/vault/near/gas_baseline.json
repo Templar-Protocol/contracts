@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-01-27",
+  "description": "NEAR gas baseline from kernel integration refactor",
+  "iterations": 128,
+  "baseline": {
+    "supply": {
+      "gas_tgas": 8.2,
+      "description": "Deposit assets and mint shares"
+    },
+    "allocate": {
+      "gas_tgas": 20.7,
+      "description": "Allocate idle assets to market"
+    },
+    "withdraw": {
+      "gas_tgas": 4.4,
+      "description": "Request withdrawal (enqueue)"
+    },
+    "execute_withdraw": {
+      "gas_tgas": 10.0,
+      "description": "Execute pending withdrawal"
+    },
+    "submit_cap": {
+      "gas_tgas": 2.7,
+      "description": "Submit allocation cap"
+    }
+  },
+  "notes": [
+    "Baseline captured post kernel/curator-primitives integration",
+    "Values are averages over 128 iterations",
+    "Run `cargo run --example gas_report -p templar-vault-contract` to regenerate"
+  ]
+}
