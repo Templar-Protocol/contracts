@@ -12,7 +12,7 @@
 //!
 //! # Design Principles
 //!
-//! 1. Recovery is deterministic based on current state
+//! 1. Recovery is deterministic based on state and provided timing context
 //! 2. All recovery paths ensure escrow shares are properly handled
 //! 3. Recovery should be safe to retry
 
@@ -21,20 +21,25 @@ use templar_vault_kernel::{
     AllocatingState, EscrowSettlement, KernelAction, OpState, PayoutOutcome, PayoutState,
     RefreshingState, WithdrawingState,
 };
+use typed_builder::TypedBuilder;
 
 /// Context for determining recovery actions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, TypedBuilder)]
+#[builder(field_defaults(setter(into)))]
 pub struct RecoveryContext {
     /// Current timestamp in nanoseconds.
     pub current_ns: u64,
     /// Maximum time an operation can be in progress before considered stuck.
+    /// A value of `0` means "no delay" (treat as immediately eligible).
+    #[builder(default)]
     pub stuck_threshold_ns: u64,
     /// Whether to force recovery even if not stuck.
+    #[builder(default)]
     pub force_recovery: bool,
 }
 
 impl RecoveryContext {
-    /// Create a new recovery context.
+    /// Create a new recovery context with no stuck delay.
     pub fn new(current_ns: u64) -> Self {
         Self {
             current_ns,
@@ -68,18 +73,33 @@ impl Default for RecoveryContext {
     }
 }
 
-/// Errors that can occur during recovery.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecoveryError {
-    /// Cannot recover from this state.
-    InvalidState { state_name: &'static str },
-    /// Operation is not stuck (and force not set).
-    NotStuck { op_id: u64 },
-    /// Recovery action conflicts with current state.
-    ActionConflict {
-        action: &'static str,
-        state: &'static str,
-    },
+/// Progress timestamps for an in-flight operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypedBuilder)]
+#[builder(field_defaults(setter(into)))]
+pub struct RecoveryProgress {
+    /// Timestamp when the operation started.
+    pub started_at_ns: u64,
+    /// Timestamp of the last forward progress (may equal started_at_ns).
+    pub last_progress_ns: u64,
+}
+
+impl RecoveryProgress {
+    /// Create a progress record with only a start time.
+    /// Sets `last_progress_ns` equal to `started_at_ns`.
+    pub const fn new(started_at_ns: u64) -> Self {
+        Self {
+            started_at_ns,
+            last_progress_ns: started_at_ns,
+        }
+    }
+
+    /// Create a progress record with an explicit last-progress timestamp.
+    pub const fn with_last_progress(started_at_ns: u64, last_progress_ns: u64) -> Self {
+        Self {
+            started_at_ns,
+            last_progress_ns,
+        }
+    }
 }
 
 /// Outcome of a recovery operation.
@@ -132,30 +152,29 @@ impl RecoveryOutcome {
 /// # Arguments
 /// * `state` - The current operation state
 /// * `context` - Recovery context with timestamps and settings
+/// * `progress` - Operation start/last-progress timestamps
 ///
 /// # Returns
 /// The recovery action to take, if any.
 pub fn determine_recovery_action(
     state: &OpState,
-    _context: &RecoveryContext,
+    context: &RecoveryContext,
+    progress: &RecoveryProgress,
 ) -> Option<KernelAction> {
+    if matches!(state, OpState::Idle) {
+        return None;
+    }
+
+    if !is_recovery_eligible(context, progress) {
+        return None;
+    }
+
     match state {
         OpState::Idle => None,
-        OpState::Allocating(alloc) => Some(KernelAction::AbortAllocating {
-            op_id: alloc.op_id,
-            restore_idle: alloc.remaining,
-        }),
-        OpState::Withdrawing(withdraw) => Some(KernelAction::AbortWithdrawing {
-            op_id: withdraw.op_id,
-            refund_shares: withdraw.escrow_shares,
-        }),
-        OpState::Refreshing(refresh) => Some(KernelAction::AbortRefreshing {
-            op_id: refresh.op_id,
-        }),
-        OpState::Payout(payout) => Some(KernelAction::SettlePayout {
-            op_id: payout.op_id,
-            outcome: compute_payout_failure_outcome(payout.escrow_shares, payout.amount),
-        }),
+        OpState::Allocating(alloc) => Some(abort_allocating_action(alloc)),
+        OpState::Withdrawing(withdraw) => Some(abort_withdrawing_action(withdraw)),
+        OpState::Refreshing(refresh) => Some(abort_refreshing_action(refresh)),
+        OpState::Payout(payout) => Some(settle_payout_failure_action(payout, payout.amount)),
     }
 }
 
@@ -171,13 +190,7 @@ pub fn handle_allocation_failure(
     state: &AllocatingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    RecoveryOutcome::success_with_message(
-        KernelAction::AbortAllocating {
-            op_id: state.op_id,
-            restore_idle: state.remaining,
-        },
-        failure_reason,
-    )
+    recovery_success_with_message(abort_allocating_action(state), failure_reason)
 }
 
 /// Handle a failed withdrawal operation.
@@ -192,13 +205,7 @@ pub fn handle_withdrawal_failure(
     state: &WithdrawingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    RecoveryOutcome::success_with_message(
-        KernelAction::AbortWithdrawing {
-            op_id: state.op_id,
-            refund_shares: state.escrow_shares,
-        },
-        failure_reason,
-    )
+    recovery_success_with_message(abort_withdrawing_action(state), failure_reason)
 }
 
 /// Handle a failed refresh operation.
@@ -213,10 +220,7 @@ pub fn handle_refresh_failure(
     state: &RefreshingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    RecoveryOutcome::success_with_message(
-        KernelAction::AbortRefreshing { op_id: state.op_id },
-        failure_reason,
-    )
+    recovery_success_with_message(abort_refreshing_action(state), failure_reason)
 }
 
 /// Handle a failed payout operation.
@@ -232,13 +236,18 @@ pub fn handle_payout_failure(
     restore_idle: u128,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    RecoveryOutcome::success_with_message(
-        KernelAction::SettlePayout {
-            op_id: state.op_id,
-            outcome: compute_payout_failure_outcome(state.escrow_shares, restore_idle),
-        },
+    recovery_success_with_message(
+        settle_payout_failure_action(state, restore_idle),
         failure_reason,
     )
+}
+
+/// Handle a failed payout operation using the payout amount as the idle restore value.
+pub fn handle_payout_failure_default(
+    state: &PayoutState,
+    failure_reason: impl Into<String>,
+) -> RecoveryOutcome {
+    handle_payout_failure(state, state.amount, failure_reason)
 }
 
 /// Compute the shares to burn and refund based on collected vs expected amounts.
@@ -266,10 +275,8 @@ pub fn compute_settlement_shares(
         return EscrowSettlement::burn_all(escrow_shares);
     }
 
-    let burn = escrow_shares
-        .saturating_mul(collected_amount)
-        .checked_div(expected_amount)
-        .unwrap_or(0);
+    let burn = (escrow_shares.saturating_mul(collected_amount) / expected_amount)
+        .min(escrow_shares);
 
     EscrowSettlement::partial(burn, escrow_shares.saturating_sub(burn))
 }
@@ -306,7 +313,7 @@ pub fn compute_payout_failure_outcome(escrow_shares: u128, restore_idle: u128) -
 /// Compute recovery statistics from the current state.
 ///
 /// Provides useful metrics for monitoring and debugging recovery operations.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RecoveryStats {
     /// Number of targets completed before failure (for Allocating/Refreshing).
     pub completed_targets: usize,
@@ -331,37 +338,86 @@ pub fn compute_recovery_stats(state: &OpState) -> RecoveryStats {
     match state {
         OpState::Idle => RecoveryStats::default(),
 
-        OpState::Allocating(alloc) => RecoveryStats {
-            completed_targets: alloc.index as usize,
-            remaining_targets: alloc.plan.len().saturating_sub(alloc.index as usize),
-            collected_amount: 0,
-            remaining_amount: alloc.remaining,
-            escrow_shares: 0,
-        },
+        OpState::Allocating(alloc) => {
+            let completed_targets = (alloc.index as usize).min(alloc.plan.len());
+            RecoveryStats {
+                completed_targets,
+                remaining_targets: alloc.plan.len().saturating_sub(completed_targets),
+                remaining_amount: alloc.remaining,
+                ..RecoveryStats::default()
+            }
+        }
 
         OpState::Withdrawing(withdraw) => RecoveryStats {
             completed_targets: withdraw.index as usize,
-            remaining_targets: 0, // Unknown without route info
             collected_amount: withdraw.collected,
             remaining_amount: withdraw.remaining,
             escrow_shares: withdraw.escrow_shares,
+            ..RecoveryStats::default()
         },
 
-        OpState::Refreshing(refresh) => RecoveryStats {
-            completed_targets: refresh.index as usize,
-            remaining_targets: refresh.plan.len().saturating_sub(refresh.index as usize),
-            collected_amount: 0,
-            remaining_amount: 0,
-            escrow_shares: 0,
-        },
+        OpState::Refreshing(refresh) => {
+            let completed_targets = (refresh.index as usize).min(refresh.plan.len());
+            RecoveryStats {
+                completed_targets,
+                remaining_targets: refresh.plan.len().saturating_sub(completed_targets),
+                ..RecoveryStats::default()
+            }
+        }
 
         OpState::Payout(payout) => RecoveryStats {
-            completed_targets: 0,
-            remaining_targets: 0,
             collected_amount: payout.amount,
-            remaining_amount: 0,
             escrow_shares: payout.escrow_shares,
+            ..RecoveryStats::default()
         },
+    }
+}
+
+fn recovery_success_with_message(
+    action: KernelAction,
+    message: impl Into<String>,
+) -> RecoveryOutcome {
+    RecoveryOutcome::success_with_message(action, message)
+}
+
+fn is_recovery_eligible(context: &RecoveryContext, progress: &RecoveryProgress) -> bool {
+    if context.force_recovery {
+        return true;
+    }
+
+    let threshold = context.stuck_threshold_ns;
+    if threshold == 0 {
+        return true;
+    }
+
+    context
+        .current_ns
+        .saturating_sub(progress.last_progress_ns)
+        >= threshold
+}
+
+fn abort_allocating_action(state: &AllocatingState) -> KernelAction {
+    KernelAction::AbortAllocating {
+        op_id: state.op_id,
+        restore_idle: state.remaining,
+    }
+}
+
+fn abort_withdrawing_action(state: &WithdrawingState) -> KernelAction {
+    KernelAction::AbortWithdrawing {
+        op_id: state.op_id,
+        refund_shares: state.escrow_shares,
+    }
+}
+
+fn abort_refreshing_action(state: &RefreshingState) -> KernelAction {
+    KernelAction::AbortRefreshing { op_id: state.op_id }
+}
+
+fn settle_payout_failure_action(state: &PayoutState, restore_idle: u128) -> KernelAction {
+    KernelAction::SettlePayout {
+        op_id: state.op_id,
+        outcome: compute_payout_failure_outcome(state.escrow_shares, restore_idle),
     }
 }
 
@@ -390,9 +446,11 @@ mod tests {
     #[test]
     fn test_determine_recovery_action_idle() {
         let state = OpState::Idle;
-        let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx);
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress);
 
         assert!(action.is_none());
     }
@@ -405,9 +463,11 @@ mod tests {
             remaining: 500,
             plan: vec![(0, 300), (1, 200), (2, 300), (3, 200)],
         });
-        let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx).expect("expected action");
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
         match action {
             KernelAction::AbortAllocating {
@@ -422,6 +482,38 @@ mod tests {
     }
 
     #[test]
+    fn test_determine_recovery_action_not_stuck() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 10,
+            index: 0,
+            remaining: 100,
+            plan: vec![(0, 100)],
+        });
+
+        let ctx = RecoveryContext::with_stuck_threshold(1_000, 500);
+        let progress = RecoveryProgress::with_last_progress(900, 900);
+
+        let action = determine_recovery_action(&state, &ctx, &progress);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_determine_recovery_action_forced_ignores_threshold() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 11,
+            index: 0,
+            remaining: 100,
+            plan: vec![(0, 100)],
+        });
+
+        let ctx = RecoveryContext::forced(1_000);
+        let progress = RecoveryProgress::with_last_progress(999, 999);
+
+        let action = determine_recovery_action(&state, &ctx, &progress);
+        assert!(action.is_some());
+    }
+
+    #[test]
     fn test_determine_recovery_action_withdrawing() {
         let state = OpState::Withdrawing(WithdrawingState {
             op_id: 2,
@@ -432,9 +524,11 @@ mod tests {
             owner: owner_addr(1),
             escrow_shares: 1000,
         });
-        let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx).expect("expected action");
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
         match action {
             KernelAction::AbortWithdrawing {
@@ -455,9 +549,11 @@ mod tests {
             index: 1,
             plan: vec![0, 1, 2],
         });
-        let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx).expect("expected action");
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
         match action {
             KernelAction::AbortRefreshing { op_id } => {
@@ -477,9 +573,11 @@ mod tests {
             escrow_shares: 500,
             burn_shares: 400,
         });
-        let ctx = RecoveryContext::new(1000);
 
-        let action = determine_recovery_action(&state, &ctx).expect("expected action");
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
         match action {
             KernelAction::SettlePayout { op_id, outcome } => {
@@ -661,6 +759,37 @@ mod tests {
                     } => {
                         assert_eq!(restore_idle, 1000);
                         assert_eq!(refund_shares, 500);
+                    }
+                    _ => panic!("Expected failure outcome"),
+                }
+            }
+            _ => panic!("Expected SettlePayout"),
+        }
+    }
+
+    #[test]
+    fn test_handle_payout_failure_default_uses_amount() {
+        let state = PayoutState {
+            op_id: 5,
+            receiver: receiver_addr(2),
+            amount: 1500,
+            owner: owner_addr(2),
+            escrow_shares: 750,
+            burn_shares: 0,
+        };
+
+        let outcome = handle_payout_failure_default(&state, "Transfer rejected");
+
+        match outcome.action {
+            KernelAction::SettlePayout { op_id, outcome } => {
+                assert_eq!(op_id, 5);
+                match outcome {
+                    PayoutOutcome::Failure {
+                        restore_idle,
+                        refund_shares,
+                    } => {
+                        assert_eq!(restore_idle, 1500);
+                        assert_eq!(refund_shares, 750);
                     }
                     _ => panic!("Expected failure outcome"),
                 }

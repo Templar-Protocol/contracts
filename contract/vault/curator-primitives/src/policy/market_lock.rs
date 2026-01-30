@@ -19,6 +19,7 @@
 
 use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
+use typed_builder::TypedBuilder;
 
 /// A lock on a specific market/target.
 #[cfg_attr(
@@ -26,15 +27,18 @@ use templar_vault_kernel::TargetId;
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
+#[builder(field_defaults(setter(into)))]
 pub struct MarketLock {
     /// The target ID that is locked.
     pub target_id: TargetId,
     /// Optional operation ID that holds the lock.
+    #[builder(default, setter(strip_option))]
     pub op_id: Option<u64>,
     /// Timestamp when the lock was acquired (nanoseconds).
     pub locked_at_ns: u64,
     /// Optional expiry timestamp (nanoseconds). `None` means no expiry.
+    #[builder(default, setter(strip_option))]
     pub expires_at_ns: Option<u64>,
 }
 
@@ -50,21 +54,22 @@ impl MarketLock {
         }
     }
 
-    /// Builder method: set operation ID.
+    /// Fluent method: set operation ID.
     #[must_use]
     pub fn with_op_id(mut self, op_id: u64) -> Self {
         self.op_id = Some(op_id);
         self
     }
 
-    /// Builder method: set expiry timestamp.
+    /// Fluent method: set expiry timestamp.
     #[must_use]
     pub fn with_expiry(mut self, expires_at_ns: u64) -> Self {
         self.expires_at_ns = Some(expires_at_ns);
         self
     }
 
-    /// Builder method: set time-to-live from current timestamp.
+    /// Fluent method: set time-to-live from locked_at timestamp.
+    /// This computes `expires_at_ns = locked_at_ns + ttl_ns`.
     #[must_use]
     pub fn with_ttl(mut self, ttl_ns: u64) -> Self {
         self.expires_at_ns = Some(self.locked_at_ns.saturating_add(ttl_ns));

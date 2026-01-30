@@ -22,6 +22,7 @@ use alloc::string::String;
 use core::num::NonZeroU128;
 use derive_more::{Display, From, Into};
 use templar_vault_kernel::Wad;
+use typed_builder::TypedBuilder;
 
 /// Identifier for a cap group.
 #[cfg_attr(
@@ -55,13 +56,15 @@ impl From<&str> for CapGroupId {
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, TypedBuilder)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
     /// `None` means no absolute cap.
+    #[builder(default, setter(transform = |cap: u128| NonZeroU128::new(cap)))]
     pub absolute_cap: Option<NonZeroU128>,
     /// Relative cap as a WAD fraction of total vault assets (1e24 = 100%).
     /// `None` means no relative cap.
+    #[builder(default, setter(transform = |cap: Wad| if cap.is_zero() { None } else { Some(cap) }))]
     pub relative_cap: Option<Wad>,
 }
 
