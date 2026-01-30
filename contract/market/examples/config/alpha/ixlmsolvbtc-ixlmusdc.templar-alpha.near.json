@@ -34,17 +34,17 @@
       "rate_2": "2.4"
     }
   },
-  "borrow_maximum_duration_ms": "31536000000",
+  "borrow_maximum_duration_ms": null,
   "borrow_range": {
-    "minimum": "0",
+    "minimum": "1",
     "maximum": "10000000000"
   },
   "supply_range": {
-    "minimum": "0",
+    "minimum": "400000",
     "maximum": "10000000000"
   },
   "supply_withdrawal_range": {
-    "minimum": "0",
+    "minimum": "400000",
     "maximum": null
   },
   "supply_withdrawal_fee": {
