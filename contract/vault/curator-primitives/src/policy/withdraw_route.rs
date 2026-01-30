@@ -9,8 +9,16 @@
 //! ```ignore
 //! use templar_curator_primitives::policy::withdraw_route::*;
 //!
+//! // Using the fluent API
 //! let entry = WithdrawRouteEntry::new(1, 500)
 //!     .with_liquidity(400);
+//!
+//! // Or using TypedBuilder
+//! let entry = WithdrawRouteEntry::builder()
+//!     .target_id(1)
+//!     .max_amount(500)
+//!     .available_liquidity(Some(400))
+//!     .build();
 //!
 //! let route = WithdrawRoute::new(1000)
 //!     .with_entry(entry);
@@ -20,17 +28,20 @@
 
 use alloc::{collections::BTreeSet, vec::Vec};
 use templar_vault_kernel::TargetId;
+use typed_builder::TypedBuilder;
 
 /// An entry in a withdraw route.
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
+#[builder(field_defaults(setter(into)))]
 pub struct WithdrawRouteEntry {
     /// Target market/strategy ID to withdraw from.
     pub target_id: TargetId,
     /// Maximum amount to withdraw from this target.
     pub max_amount: u128,
     /// Available liquidity at this target (if known).
+    #[builder(default)]
     pub available_liquidity: Option<u128>,
 }
 
@@ -45,7 +56,7 @@ impl WithdrawRouteEntry {
         }
     }
 
-    /// Builder method: set available liquidity.
+    /// Fluent method: set available liquidity.
     #[must_use]
     pub fn with_liquidity(mut self, available_liquidity: u128) -> Self {
         self.available_liquidity = Some(available_liquidity);

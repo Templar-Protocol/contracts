@@ -19,6 +19,7 @@ schemars = ["dep:schemars"]
 # Core dependency - vault kernel types
 templar-vault-kernel = { path = "../kernel" }
 derive_more.workspace = true
+typed-builder = "0.20"
 
 # Optional serialization dependencies (no_std + alloc)
 borsh = { version = "1.5", optional = true, default-features = false, features = ["derive", "unstable__schema"] }
@@ -26,3 +27,7 @@ serde = { version = "1.0", optional = true, default-features = false, features =
 schemars = { version = "0.8", optional = true }
 
 [dev-dependencies]
+proptest = "1.4"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

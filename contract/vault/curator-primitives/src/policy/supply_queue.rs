@@ -9,9 +9,18 @@
 //! ```ignore
 //! use templar_curator_primitives::policy::supply_queue::*;
 //!
+//! // Using the fluent API
 //! let entry = SupplyQueueEntry::new(1, 100)
 //!     .with_priority(10)
 //!     .with_timestamp(1000);
+//!
+//! // Or using TypedBuilder
+//! let entry = SupplyQueueEntry::builder()
+//!     .target_id(1)
+//!     .amount(100)
+//!     .priority(10)
+//!     .queued_at_ns(1000)
+//!     .build();
 //!
 //! let queue = SupplyQueue::new();
 //! let queue = queue.enqueue(entry).unwrap();
@@ -21,24 +30,28 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
+use typed_builder::TypedBuilder;
 
 /// An entry in the supply queue representing a pending allocation.
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
+#[builder(field_defaults(setter(into)))]
 pub struct SupplyQueueEntry {
     /// Target market/strategy ID to allocate to.
     pub target_id: TargetId,
     /// Amount to allocate in underlying asset units.
     pub amount: u128,
     /// Priority (higher = process first). Default is 0.
+    #[builder(default)]
     pub priority: u8,
     /// Timestamp when this entry was queued (nanoseconds).
+    #[builder(default)]
     pub queued_at_ns: u64,
 }
 
 impl SupplyQueueEntry {
-    /// Create a new supply queue entry.
+    /// Create a new supply queue entry with default priority and timestamp.
     #[must_use]
     pub fn new(target_id: TargetId, amount: u128) -> Self {
         Self {
@@ -49,14 +62,14 @@ impl SupplyQueueEntry {
         }
     }
 
-    /// Builder method: set priority.
+    /// Fluent method: set priority.
     #[must_use]
     pub fn with_priority(mut self, priority: u8) -> Self {
         self.priority = priority;
         self
     }
 
-    /// Builder method: set timestamp.
+    /// Fluent method: set timestamp.
     #[must_use]
     pub fn with_timestamp(mut self, queued_at_ns: u64) -> Self {
         self.queued_at_ns = queued_at_ns;
