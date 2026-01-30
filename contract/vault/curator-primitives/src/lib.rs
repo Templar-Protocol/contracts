@@ -39,5 +39,5 @@ pub use policy::{
 pub use recovery::{
     determine_recovery_action, handle_allocation_failure, handle_payout_failure,
     handle_payout_failure_default, handle_refresh_failure, handle_withdrawal_failure,
-    RecoveryOutcome,
+    RecoveryContext, RecoveryOutcome, RecoveryProgress,
 };

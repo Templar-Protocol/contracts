@@ -163,7 +163,7 @@ pub struct PayoutState {
 /// - `escrow_shares` are refunded on stop/failure or partially burned/refunded on payout success.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, Default, PartialEq, Eq, IsVariant)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, From, IsVariant)]
 pub enum OpState {
     /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
     #[default]

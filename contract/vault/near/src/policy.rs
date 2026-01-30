@@ -11,23 +11,17 @@ use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, MarketId};
 // Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
     cap_group::{
-        can_allocate_to_group, compute_available_capacity, compute_effective_cap, enforce_cap_group,
         CapGroup, CapGroupError, CapGroupId as PrimitiveCapGroupId,
         CapGroupRecord as PrimitiveCapGroupRecord,
     },
     market_lock::{
-        acquire_lock, cleanup_expired_locks, clear_all_locks, find_locked_targets,
-        get_locked_targets, is_locked_by_op, is_market_locked, release_all_by_op, release_lock,
-        release_lock_by_op, MarketLock, MarketLockSet,
+        MarketLock, MarketLockSet,
     },
     supply_queue::{
-        compute_queue_total, compute_queue_totals_by_target, dequeue_supply, drain_queue,
-        enqueue_supply, remove_target_entries, to_allocation_plan, SupplyQueue, SupplyQueueEntry,
-        SupplyQueueError,
+        SupplyQueue, SupplyQueueEntry, SupplyQueueError,
     },
     withdraw_route::{
-        build_withdraw_route, build_withdraw_route_with_liquidity, compute_available_liquidity,
-        compute_route_total, to_withdrawal_plan, validate_withdraw_route, WithdrawRoute,
+        build_withdraw_route, build_withdraw_route_with_liquidity, WithdrawRoute,
         WithdrawRouteEntry, WithdrawRouteError,
     },
 };
@@ -37,10 +31,9 @@ pub use templar_curator_primitives::policy::{
 /// The common module stores cap and relative_cap directly on the record,
 /// while curator-primitives separates them into a CapGroup struct.
 pub fn to_primitive_cap_group(record: &CommonCapGroupRecord) -> CapGroup {
-    CapGroup {
-        absolute_cap: record.cap.0,
-        relative_cap: record.relative_cap,
-    }
+    CapGroup::new()
+        .with_absolute(record.cap.0)
+        .with_relative(record.relative_cap)
 }
 
 /// Convert a common CapGroupRecord to a curator-primitives CapGroupRecord.
@@ -53,32 +46,32 @@ pub fn to_primitive_cap_group_record(record: &CommonCapGroupRecord) -> Primitive
 
 /// Check if an allocation is allowed for a cap group using common types.
 ///
-/// This is a convenience wrapper around the curator-primitives `can_allocate_to_group` function.
+/// This is a convenience wrapper around the curator-primitives `CapGroup::can_allocate` method.
 pub fn can_allocate_to_common_cap_group(
     record: &CommonCapGroupRecord,
     amount: u128,
     total_assets: u128,
 ) -> bool {
     let cap = to_primitive_cap_group(record);
-    can_allocate_to_group(&cap, record.principal, amount, total_assets)
+    cap.can_allocate(record.principal, amount, total_assets)
 }
 
 /// Enforce cap group constraints using common types.
 ///
-/// This is a convenience wrapper around the curator-primitives `enforce_cap_group` function.
+/// This is a convenience wrapper around the curator-primitives `CapGroup::enforce` method.
 pub fn enforce_common_cap_group(
     record: &CommonCapGroupRecord,
     amount: u128,
     total_assets: u128,
 ) -> Result<(), CapGroupError> {
     let cap = to_primitive_cap_group(record);
-    enforce_cap_group(&cap, record.principal, amount, total_assets)
+    cap.enforce(record.principal, amount, total_assets)
 }
 
 /// Compute the effective cap for a common CapGroupRecord.
 pub fn compute_effective_cap_for_common(record: &CommonCapGroupRecord, total_assets: u128) -> u128 {
     let cap = to_primitive_cap_group(record);
-    compute_effective_cap(&cap, total_assets)
+    cap.effective_cap(total_assets)
 }
 
 /// Compute available capacity for a common CapGroupRecord.
@@ -87,7 +80,7 @@ pub fn compute_available_capacity_for_common(
     total_assets: u128,
 ) -> u128 {
     let cap = to_primitive_cap_group(record);
-    compute_available_capacity(&cap, record.principal, total_assets)
+    cap.available_capacity(record.principal, total_assets)
 }
 
 /// Validate a supply queue represented as a Vec<MarketId>.
@@ -151,18 +144,19 @@ pub fn find_locked_markets(
     current_ns: u64,
 ) -> Vec<MarketId> {
     let targets: Vec<u32> = markets.iter().map(|m| m.into_target_id()).collect();
-    let locked = find_locked_targets(lock_set, &targets, current_ns);
+    let locked = lock_set.find_locked_targets(&targets, current_ns);
     locked.into_iter().map(IntoMarketId::into_market_id).collect()
 }
 
 /// Check if a specific market is locked.
 pub fn is_market_id_locked(lock_set: &MarketLockSet, market: MarketId, current_ns: u64) -> bool {
-    is_market_locked(lock_set, market.into_target_id(), current_ns)
+    lock_set.is_locked(market.into_target_id(), current_ns)
 }
 
 /// Get all locked market IDs.
 pub fn get_locked_market_ids(lock_set: &MarketLockSet, current_ns: u64) -> Vec<MarketId> {
-    get_locked_targets(lock_set, current_ns)
+    lock_set
+        .locked_targets(current_ns)
         .into_iter()
         .map(IntoMarketId::into_market_id)
         .collect()
@@ -185,8 +179,8 @@ mod tests {
         };
 
         let cap = to_primitive_cap_group(&record);
-        assert_eq!(cap.absolute_cap, 1000);
-        assert_eq!(cap.relative_cap, Wad::from(WAD / 2));
+        assert_eq!(cap.absolute_cap.map(|c| c.get()), Some(1000));
+        assert_eq!(cap.relative_cap, Some(Wad::from(WAD / 2)));
     }
 
     #[test]

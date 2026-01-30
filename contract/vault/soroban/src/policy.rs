@@ -18,21 +18,6 @@ pub use templar_curator_primitives::policy::{
     withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
 };
 
-/// Check if a market is locked.
-#[inline]
-pub fn is_market_locked(lock_set: &MarketLockSet, target_id: TargetId, current_ns: u64) -> bool {
-    lock_set.is_locked(target_id, current_ns)
-}
-
-/// Acquire a lock on a market.
-pub fn acquire_lock(
-    lock_set: &MarketLockSet,
-    lock: MarketLock,
-    current_ns: u64,
-) -> Result<MarketLockSet, MarketLock> {
-    lock_set.acquire(lock, current_ns)
-}
-
 /// Filter a list of targets to exclude locked markets.
 ///
 /// # Arguments
@@ -49,7 +34,7 @@ pub fn filter_unlocked_targets(
 ) -> Vec<TargetId> {
     targets
         .iter()
-        .filter(|t| !is_market_locked(lock_set, **t, current_ns))
+        .filter(|t| !lock_set.is_locked(**t, current_ns))
         .copied()
         .collect()
 }
@@ -75,7 +60,7 @@ pub fn build_allocation_plan_with_locks(
     let filtered: SupplyQueue = queue
         .entries
         .iter()
-        .filter(|e| !is_market_locked(lock_set, e.target_id, current_ns))
+        .filter(|e| !lock_set.is_locked(e.target_id, current_ns))
         .cloned()
         .collect::<Vec<_>>()
         .into();
@@ -100,7 +85,7 @@ pub fn build_withdrawal_plan_with_locks(
     let filtered_entries: Vec<WithdrawRouteEntry> = route
         .entries
         .iter()
-        .filter(|e| !is_market_locked(lock_set, e.target_id, current_ns))
+        .filter(|e| !lock_set.is_locked(e.target_id, current_ns))
         .cloned()
         .collect();
 
@@ -144,7 +129,7 @@ pub fn filter_allocation_plan(
     current_ns: u64,
 ) -> Vec<(TargetId, u128)> {
     plan.iter()
-        .filter(|(target_id, _)| !is_market_locked(lock_set, *target_id, current_ns))
+        .filter(|(target_id, _)| !lock_set.is_locked(*target_id, current_ns))
         .copied()
         .collect()
 }
@@ -158,7 +143,7 @@ mod tests {
     fn test_filter_unlocked_targets() {
         let mut set = MarketLockSet::new();
         let lock = MarketLock::new(2, 1000);
-        set = acquire_lock(&set, lock, 1000).unwrap();
+        set = set.acquire(lock, 1000).unwrap();
 
         let targets = vec![1, 2, 3, 4];
         let unlocked = filter_unlocked_targets(&set, &targets, 1500);
@@ -171,7 +156,7 @@ mod tests {
     fn test_filter_unlocked_after_expiry() {
         let mut set = MarketLockSet::new();
         let lock = MarketLock::new(2, 1000).with_expiry(2000); // expires at 2000
-        set = acquire_lock(&set, lock, 1000).unwrap();
+        set = set.acquire(lock, 1000).unwrap();
 
         let targets = vec![1, 2, 3];
 
@@ -195,7 +180,7 @@ mod tests {
 
         let mut set = MarketLockSet::new();
         let lock = MarketLock::new(2, 1000);
-        set = acquire_lock(&set, lock, 1000).unwrap();
+        set = set.acquire(lock, 1000).unwrap();
 
         let plan = build_allocation_plan_with_locks(&queue, &set, 1500);
 
@@ -219,7 +204,7 @@ mod tests {
 
         let mut set = MarketLockSet::new();
         let lock = MarketLock::new(1, 1000);
-        set = acquire_lock(&set, lock, 1000).unwrap();
+        set = set.acquire(lock, 1000).unwrap();
 
         let plan = build_withdrawal_plan_with_locks(&route, &set, 1500);
 
@@ -234,8 +219,8 @@ mod tests {
         let targets = vec![1, 2, 3, 4, 5];
 
         let mut set = MarketLockSet::new();
-        set = acquire_lock(&set, MarketLock::new(2, 1000), 1000).unwrap();
-        set = acquire_lock(&set, MarketLock::new(4, 1000), 1000).unwrap();
+        set = set.acquire(MarketLock::new(2, 1000), 1000).unwrap();
+        set = set.acquire(MarketLock::new(4, 1000), 1000).unwrap();
 
         let plan = build_refresh_plan_with_locks(&targets, &set, 1500);
 
@@ -257,8 +242,8 @@ mod tests {
     #[test]
     fn test_all_locked_returns_empty() {
         let mut set = MarketLockSet::new();
-        set = acquire_lock(&set, MarketLock::new(1, 1000), 1000).unwrap();
-        set = acquire_lock(&set, MarketLock::new(2, 1000), 1000).unwrap();
+        set = set.acquire(MarketLock::new(1, 1000), 1000).unwrap();
+        set = set.acquire(MarketLock::new(2, 1000), 1000).unwrap();
 
         let targets = vec![1, 2];
         let unlocked = filter_unlocked_targets(&set, &targets, 1500);
@@ -272,7 +257,7 @@ mod tests {
 
         let mut set = MarketLockSet::new();
         let lock = MarketLock::new(2, 1000);
-        set = acquire_lock(&set, lock, 1000).unwrap();
+        set = set.acquire(lock, 1000).unwrap();
 
         let filtered = super::filter_allocation_plan(&plan, &set, 1500);
 
@@ -300,8 +285,8 @@ mod tests {
         let plan = vec![(1, 100), (2, 200)];
 
         let mut set = MarketLockSet::new();
-        set = acquire_lock(&set, MarketLock::new(1, 1000), 1000).unwrap();
-        set = acquire_lock(&set, MarketLock::new(2, 1000), 1000).unwrap();
+        set = set.acquire(MarketLock::new(1, 1000), 1000).unwrap();
+        set = set.acquire(MarketLock::new(2, 1000), 1000).unwrap();
 
         let filtered = super::filter_allocation_plan(&plan, &set, 1500);
 
@@ -315,7 +300,7 @@ mod tests {
         let mut set = MarketLockSet::new();
         // Lock expires at 2000
         let lock = MarketLock::new(1, 1000).with_expiry(2000);
-        set = acquire_lock(&set, lock, 1000).unwrap();
+        set = set.acquire(lock, 1000).unwrap();
 
         // Before expiry - target 1 should be filtered
         let filtered_before = super::filter_allocation_plan(&plan, &set, 1500);

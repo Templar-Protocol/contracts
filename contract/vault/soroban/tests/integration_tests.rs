@@ -17,7 +17,7 @@ use templar_soroban_runtime::{
     storage::MemoryStorage,
     Storage, // Import the trait
 };
-use templar_curator_primitives::RecoveryContext;
+use templar_curator_primitives::{RecoveryContext, RecoveryProgress};
 use templar_vault_kernel::{
     Address, OpState, PayoutOutcome, PayoutState, WithdrawingState, MAX_PENDING,
 };
@@ -509,8 +509,10 @@ fn test_recover_payout_failure_restores_idle() {
         op_id
     };
 
+    let context = RecoveryContext::forced(0);
+    let progress = RecoveryProgress::new(0);
     let summary = vault
-        .recover(allocator, RecoveryContext::new(0), 0)
+        .recover(allocator, context, progress)
         .unwrap();
 
     assert!(summary.is_some());

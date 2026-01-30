@@ -569,4 +569,94 @@ mod tests {
             prop_assert!(r_lo_d.0 >= r_hi_d.0, "denom monotonicity violated: {} < {}", r_lo_d.0, r_hi_d.0);
         }
     }
+
+    // =========================================================================
+    // Unit tests for basic Number operations and operators
+    // =========================================================================
+
+    #[test]
+    fn number_constants() {
+        assert!(Number::ZERO.is_zero());
+        assert!(Number::ONE.is_one());
+        assert!(Number::zero().is_zero());
+        assert!(Number::one().is_one());
+    }
+
+    #[test]
+    fn number_from_u128_into_u128() {
+        let val: u128 = 123456789;
+        let n = Number::from(val);
+        let back: u128 = n.into();
+        assert_eq!(back, val);
+    }
+
+    #[test]
+    fn number_div_by_u128() {
+        let n = Number::from(100u128);
+        let result = n / 10u128;
+        assert_eq!(u128::from(result), 10);
+    }
+
+    #[test]
+    fn number_div_by_u256() {
+        let n = Number::from(100u128);
+        let result = n / U256::from(5u128);
+        assert_eq!(u128::from(result), 20);
+    }
+
+    #[test]
+    fn number_div_by_number() {
+        let a = Number::from(100u128);
+        let b = Number::from(4u128);
+        let result = a / b;
+        assert_eq!(u128::from(result), 25);
+    }
+
+    #[test]
+    fn number_add() {
+        let a = Number::from(50u128);
+        let b = Number::from(30u128);
+        let result = a + b;
+        assert_eq!(u128::from(result), 80);
+    }
+
+    #[test]
+    fn number_sub() {
+        let a = Number::from(100u128);
+        let b = Number::from(40u128);
+        let result = a - b;
+        assert_eq!(u128::from(result), 60);
+    }
+
+    #[test]
+    fn number_from_into_u256() {
+        let u = U256::from(999u128);
+        let n: Number = u.into();
+        let back: U256 = n.into();
+        assert_eq!(back, u);
+    }
+
+    #[test]
+    fn as_u128_saturating_large_value() {
+        // Create a Number that exceeds u128::MAX
+        let large = Number(U256::from(u128::MAX) + U256::from(1u128));
+        assert_eq!(large.as_u128_saturating(), u128::MAX);
+    }
+
+    #[test]
+    fn number_is_zero_is_one() {
+        let zero = Number::from(0u128);
+        let one = Number::from(1u128);
+        let two = Number::from(2u128);
+
+        assert!(zero.is_zero());
+        assert!(!zero.is_one());
+
+        assert!(!one.is_zero());
+        assert!(one.is_one());
+
+        assert!(!two.is_zero());
+        assert!(!two.is_one());
+    }
+
 }

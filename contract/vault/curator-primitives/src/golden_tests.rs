@@ -14,7 +14,8 @@ use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use crate::policy::withdraw_route::{build_withdraw_route, WithdrawRoute, WithdrawRouteEntry};
 use templar_vault_kernel::Wad;
 use crate::recovery::{
-    compute_recovery_stats, compute_settlement_shares, determine_recovery_action,
+    compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
+    RecoveryProgress,
 };
 use templar_vault_kernel::{
     AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
@@ -352,7 +353,9 @@ fn golden_recovery_allocating_state() {
         ],
     });
 
-    let action = determine_recovery_action(&state).expect("expected action");
+    let ctx = RecoveryContext::new(1_000_000_000_000);
+    let progress = RecoveryProgress::new(0);
+    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
     match action {
         KernelAction::AbortAllocating { op_id, restore_idle } => {
@@ -381,7 +384,9 @@ fn golden_recovery_withdrawing_state() {
         escrow_shares: 1_000_000_000_000,
     });
 
-    let action = determine_recovery_action(&state).expect("expected action");
+    let ctx = RecoveryContext::new(1_000_000_000_000);
+    let progress = RecoveryProgress::new(0);
+    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
     match action {
         KernelAction::AbortWithdrawing { op_id, refund_shares } => {
@@ -403,7 +408,9 @@ fn golden_recovery_payout_state() {
         burn_shares: 400_000_000_000,
     });
 
-    let action = determine_recovery_action(&state).expect("expected action");
+    let ctx = RecoveryContext::new(1_000_000_000_000);
+    let progress = RecoveryProgress::new(0);
+    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
     match action {
         KernelAction::SettlePayout { op_id, outcome } => {
@@ -544,7 +551,9 @@ fn golden_refresh_after_allocation() {
     });
 
     // Check recovery from stuck refresh
-    let action = determine_recovery_action(&state).expect("expected action");
+    let ctx = RecoveryContext::new(1_000_000_000_000);
+    let progress = RecoveryProgress::new(0);
+    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
     match action {
         KernelAction::AbortRefreshing { op_id } => {

@@ -108,7 +108,7 @@ pub struct WithdrawalRequestStatus {
 /// Aggregate status of the entire withdrawal queue.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QueueStatus {
     /// Number of pending withdrawal requests.
     pub length: u32,
@@ -116,16 +116,6 @@ pub struct QueueStatus {
     pub total_expected_assets: u128,
     /// Total escrowed shares across all pending requests.
     pub total_escrow_shares: u128,
-}
-
-impl Default for QueueStatus {
-    fn default() -> Self {
-        Self {
-            length: 0,
-            total_expected_assets: 0,
-            total_escrow_shares: 0,
-        }
-    }
 }
 
 // ============================================================================
@@ -709,7 +699,6 @@ impl WithdrawQueue {
     ///
     /// # Returns
     /// Iterator yielding `(id, &withdrawal)` pairs in order.
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = (u64, &PendingWithdrawal)> {
         self.pending_withdrawals.iter().map(|(&k, v)| (k, v))
     }

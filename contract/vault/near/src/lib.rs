@@ -52,7 +52,9 @@ use templar_common::{
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
-use templar_curator_primitives::{determine_recovery_action, RecoveryContext};
+use templar_curator_primitives::{
+    determine_recovery_action, RecoveryContext, RecoveryProgress,
+};
 use templar_vault_kernel::{KernelAction, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
@@ -670,8 +672,10 @@ impl Contract {
         Self::assert_allocator_or_sentinel();
 
         let kernel_state = to_kernel_op_state(&self.op_state);
-        let context = RecoveryContext::forced(env::block_timestamp());
-        let Some(action) = determine_recovery_action(&kernel_state, &context) else {
+        let now = env::block_timestamp();
+        let context = RecoveryContext::forced(now);
+        let progress = RecoveryProgress::new(now);
+        let Some(action) = determine_recovery_action(&kernel_state, &context, &progress) else {
             return PromiseOrValue::Value(());
         };
 
@@ -991,10 +995,25 @@ impl Contract {
     /// the vault's `supply_queue`. It does not reserve capacity and may become stale
     /// immediately after it is read.
     pub fn get_max_single_market_deposit(&self) -> U128 {
-        let max_room = self
-            .supply_queue
-            .iter()
-            .fold(0u128, |acc, m| acc.max(self.room_of(*m)));
+        let base_total_assets = self.total_assets_for_caps();
+        let max_room = self.supply_queue.iter().fold(0u128, |acc, market_id| {
+            let Some(rec) = self.market_record_by_id(*market_id) else {
+                return acc;
+            };
+
+            let cap_room = rec.cfg.cap.0.saturating_sub(rec.principal);
+            if cap_room == 0 {
+                return acc;
+            }
+
+            let room = if let Some(cap_group) = rec.cfg.cap_group_id.as_ref() {
+                self.max_single_market_room_in_group(cap_group, cap_room, base_total_assets)
+            } else {
+                cap_room
+            };
+
+            acc.max(room)
+        });
         U128(max_room)
     }
 
@@ -1205,6 +1224,33 @@ impl Contract {
 
     fn cap_group_room_remaining(&self, cap_group: &CapGroupId) -> u128 {
         self.cap_group_room_remaining_at(cap_group, self.total_assets_for_caps())
+    }
+
+    fn max_single_market_room_in_group(
+        &self,
+        cap_group: &CapGroupId,
+        cap_room: u128,
+        base_total_assets: u128,
+    ) -> u128 {
+        let mut low = 0u128;
+        let mut high = cap_room;
+
+        while low < high {
+            let diff = high.saturating_sub(low);
+            let mid = low.saturating_add(diff.saturating_add(1) / 2);
+
+            let total_assets = base_total_assets.saturating_add(mid);
+            let group_room = self.cap_group_room_remaining_at(cap_group, total_assets);
+            let room = cap_room.min(group_room);
+
+            if mid <= room {
+                low = mid;
+            } else {
+                high = mid.saturating_sub(1);
+            }
+        }
+
+        low
     }
 
     fn max_allocatable_room_at(&self, total_assets: u128) -> u128 {

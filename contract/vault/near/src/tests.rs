@@ -716,7 +716,7 @@ fn sentinel_can_execute_rebalance_withdrawal() {
     case(100u128, 200u128, 500u128, 40u128),  // 40%
     case(123u128, 0u128, 456u128, 0u128),     // no collection => no burn
     case(100u128, 1u128, 3u128, 33u128),      // floor on rounding
-    case(50u128, 10u128, 0u128, 500u128)      // denom clamp to 1
+    case(50u128, 10u128, 0u128, 50u128)       // zero request => full burn
 )]
 fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, expect: u128) {
     let vault_id = mk(0);

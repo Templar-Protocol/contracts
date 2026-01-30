@@ -1,4 +1,4 @@
-use templar_soroban_vault::{effects::MockInterpreter, EffectContext, EffectInterpreter};
+use templar_soroban_runtime::{effects::MockInterpreter, EffectContext, EffectInterpreter};
 use templar_vault_kernel::{
     effects::KernelEffect,
     state::op_state::{OpState, RefreshingState},

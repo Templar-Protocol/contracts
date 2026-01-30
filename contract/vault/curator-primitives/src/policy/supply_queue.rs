@@ -249,6 +249,7 @@ impl SupplyQueue {
     }
 }
 
+
 impl From<Vec<SupplyQueueEntry>> for SupplyQueue {
     fn from(entries: Vec<SupplyQueueEntry>) -> Self {
         Self {

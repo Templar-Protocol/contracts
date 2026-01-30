@@ -258,6 +258,7 @@ impl From<Vec<MarketLock>> for MarketLockSet {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
