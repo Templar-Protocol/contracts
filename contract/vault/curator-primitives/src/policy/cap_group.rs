@@ -21,7 +21,10 @@ use derive_more::{Display, From, Into};
 use templar_vault_kernel::Wad;
 
 /// Identifier for a cap group.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
 #[display("{_0}")]
@@ -41,15 +44,20 @@ impl From<&str> for CapGroupId {
 }
 
 /// A cap group defines maximum allocation limits for a set of markets.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
     /// Zero means no absolute cap.
+    // FIXME: use Option
     pub absolute_cap: u128,
     /// Relative cap as a WAD fraction of total vault assets (1e24 = 100%).
     /// Zero means no relative cap.
+    // FIXME: use Option
     pub relative_cap: Wad,
 }
 
@@ -90,6 +98,98 @@ impl CapGroup {
     pub fn is_unlimited(&self) -> bool {
         self.absolute_cap == 0 && self.relative_cap.is_zero()
     }
+
+    /// Compute the effective cap for a cap group given total vault assets.
+    ///
+    /// Returns `u128::MAX` if the cap group is unlimited.
+    pub fn effective_cap(&self, total_assets: u128) -> u128 {
+        if self.is_unlimited() {
+            return u128::MAX;
+        }
+
+        let absolute = if self.absolute_cap > 0 {
+            self.absolute_cap
+        } else {
+            u128::MAX
+        };
+
+        let relative = if !self.relative_cap.is_zero() {
+            self.relative_cap
+                .apply_floored(templar_vault_kernel::Number::from(total_assets))
+                .as_u128_saturating()
+        } else {
+            u128::MAX
+        };
+
+        absolute.min(relative)
+    }
+
+    /// Check if an allocation is allowed under cap group constraints.
+    pub fn can_allocate(
+        &self,
+        current_principal: u128,
+        amount: u128,
+        total_assets: u128,
+    ) -> bool {
+        if self.is_unlimited() {
+            return true;
+        }
+
+        let effective_cap = self.effective_cap(total_assets);
+        let new_principal = current_principal.saturating_add(amount);
+
+        new_principal <= effective_cap
+    }
+
+    /// Enforce cap group constraints on an allocation.
+    pub fn enforce(
+        &self,
+        current_principal: u128,
+        amount: u128,
+        total_assets: u128,
+    ) -> Result<(), CapGroupError> {
+        if self.is_unlimited() {
+            return Ok(());
+        }
+
+        let new_principal = current_principal.saturating_add(amount);
+
+        if self.absolute_cap > 0 && new_principal > self.absolute_cap {
+            return Err(CapGroupError::ExceedsAbsoluteCap {
+                requested: amount,
+                current_principal,
+                absolute_cap: self.absolute_cap,
+            });
+        }
+
+        if !self.relative_cap.is_zero() {
+            let effective_cap = self
+                .relative_cap
+                .apply_floored(templar_vault_kernel::Number::from(total_assets))
+                .as_u128_saturating();
+
+            if new_principal > effective_cap {
+                return Err(CapGroupError::ExceedsRelativeCap {
+                    requested: amount,
+                    current_principal,
+                    effective_cap,
+                    total_assets,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Compute the maximum additional amount that can be allocated to a cap group.
+    pub fn available_capacity(&self, current_principal: u128, total_assets: u128) -> u128 {
+        if self.is_unlimited() {
+            return u128::MAX;
+        }
+
+        let effective_cap = self.effective_cap(total_assets);
+        effective_cap.saturating_sub(current_principal)
+    }
 }
 
 impl Default for CapGroup {
@@ -99,7 +199,10 @@ impl Default for CapGroup {
 }
 
 /// Record tracking the state of a cap group.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct CapGroupRecord {
@@ -118,6 +221,22 @@ impl CapGroupRecord {
     /// Create a record with initial principal.
     pub fn with_principal(cap: CapGroup, principal: u128) -> Self {
         Self { cap, principal }
+    }
+
+    /// Apply an allocation to a cap group record.
+    pub fn apply_allocation(&self, amount: u128) -> Self {
+        Self {
+            cap: self.cap.clone(),
+            principal: self.principal.saturating_add(amount),
+        }
+    }
+
+    /// Remove allocation from a cap group record.
+    pub fn remove_allocation(&self, amount: u128) -> Self {
+        Self {
+            cap: self.cap.clone(),
+            principal: self.principal.saturating_sub(amount),
+        }
     }
 }
 
@@ -155,25 +274,7 @@ pub enum CapGroupError {
 ///
 /// Returns `u128::MAX` if the cap group is unlimited.
 pub fn compute_effective_cap(cap: &CapGroup, total_assets: u128) -> u128 {
-    if cap.is_unlimited() {
-        return u128::MAX;
-    }
-
-    let absolute = if cap.absolute_cap > 0 {
-        cap.absolute_cap
-    } else {
-        u128::MAX
-    };
-
-    let relative = if !cap.relative_cap.is_zero() {
-        cap.relative_cap
-            .apply_floored(templar_vault_kernel::Number::from(total_assets))
-            .as_u128_saturating()
-    } else {
-        u128::MAX
-    };
-
-    absolute.min(relative)
+    cap.effective_cap(total_assets)
 }
 
 /// Check if an allocation is allowed under cap group constraints.
@@ -192,14 +293,7 @@ pub fn can_allocate_to_group(
     amount: u128,
     total_assets: u128,
 ) -> bool {
-    if cap.is_unlimited() {
-        return true;
-    }
-
-    let effective_cap = compute_effective_cap(cap, total_assets);
-    let new_principal = current_principal.saturating_add(amount);
-
-    new_principal <= effective_cap
+    cap.can_allocate(current_principal, amount, total_assets)
 }
 
 /// Enforce cap group constraints on an allocation.
@@ -218,39 +312,7 @@ pub fn enforce_cap_group(
     amount: u128,
     total_assets: u128,
 ) -> Result<(), CapGroupError> {
-    if cap.is_unlimited() {
-        return Ok(());
-    }
-
-    let new_principal = current_principal.saturating_add(amount);
-
-    // Check absolute cap
-    if cap.absolute_cap > 0 && new_principal > cap.absolute_cap {
-        return Err(CapGroupError::ExceedsAbsoluteCap {
-            requested: amount,
-            current_principal,
-            absolute_cap: cap.absolute_cap,
-        });
-    }
-
-    // Check relative cap
-    if !cap.relative_cap.is_zero() {
-        let effective_cap = cap
-            .relative_cap
-            .apply_floored(templar_vault_kernel::Number::from(total_assets))
-            .as_u128_saturating();
-
-        if new_principal > effective_cap {
-            return Err(CapGroupError::ExceedsRelativeCap {
-                requested: amount,
-                current_principal,
-                effective_cap,
-                total_assets,
-            });
-        }
-    }
-
-    Ok(())
+    cap.enforce(current_principal, amount, total_assets)
 }
 
 /// Compute the maximum additional amount that can be allocated to a cap group.
@@ -267,12 +329,7 @@ pub fn compute_available_capacity(
     current_principal: u128,
     total_assets: u128,
 ) -> u128 {
-    if cap.is_unlimited() {
-        return u128::MAX;
-    }
-
-    let effective_cap = compute_effective_cap(cap, total_assets);
-    effective_cap.saturating_sub(current_principal)
+    cap.available_capacity(current_principal, total_assets)
 }
 
 /// Validate a list of allocations against their cap groups.
@@ -297,20 +354,14 @@ pub fn validate_allocations(
 ///
 /// This is a pure function that returns a new record with updated principal.
 pub fn apply_allocation(record: &CapGroupRecord, amount: u128) -> CapGroupRecord {
-    CapGroupRecord {
-        cap: record.cap.clone(),
-        principal: record.principal.saturating_add(amount),
-    }
+    record.apply_allocation(amount)
 }
 
 /// Remove allocation from a cap group record.
 ///
 /// This is a pure function that returns a new record with reduced principal.
 pub fn remove_allocation(record: &CapGroupRecord, amount: u128) -> CapGroupRecord {
-    CapGroupRecord {
-        cap: record.cap.clone(),
-        principal: record.principal.saturating_sub(amount),
-    }
+    record.remove_allocation(amount)
 }
 
 #[cfg(test)]
@@ -439,5 +490,25 @@ mod tests {
         // Invalid - second exceeds cap
         let invalid = vec![(cap1, 500), (cap2, 600)];
         assert!(validate_allocations(&invalid, 2000).is_err());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn prop_available_capacity_matches_effective_cap(
+            absolute in 0u128..=1_000_000_000_000u128,
+            relative in 0u128..=WAD,
+            current in 0u128..=1_000_000_000_000u128,
+            total in 0u128..=1_000_000_000_000u128,
+        ) {
+            let cap = CapGroup::new(absolute, relative);
+            let effective = compute_effective_cap(&cap, total);
+            let available = compute_available_capacity(&cap, current, total);
+
+            if cap.is_unlimited() {
+                prop_assert_eq!(available, u128::MAX);
+            } else {
+                prop_assert_eq!(available, effective.saturating_sub(current));
+            }
+        }
     }
 }

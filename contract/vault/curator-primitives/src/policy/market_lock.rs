@@ -7,7 +7,10 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 
 /// A lock on a specific market/target.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MarketLock {
@@ -29,6 +32,21 @@ impl MarketLock {
             op_id: None,
             locked_at_ns,
             expires_at_ns: 0,
+        }
+    }
+
+    /// Create a new lock with optional operation id and expiry.
+    pub fn with_options(
+        target_id: TargetId,
+        locked_at_ns: u64,
+        op_id: Option<u64>,
+        expires_at_ns: Option<u64>,
+    ) -> Self {
+        Self {
+            target_id,
+            op_id,
+            locked_at_ns,
+            expires_at_ns: expires_at_ns.unwrap_or(0),
         }
     }
 
@@ -59,7 +77,10 @@ impl MarketLock {
 }
 
 /// A set of market locks.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct MarketLockSet {
@@ -73,6 +94,10 @@ impl MarketLockSet {
         Self { locks: Vec::new() }
     }
 
+    fn active_iter(&self, current_ns: u64) -> impl Iterator<Item = &MarketLock> + '_ {
+        self.locks.iter().filter(move |l| !l.is_expired(current_ns))
+    }
+
     /// Returns true if there are no active locks.
     pub fn is_empty(&self) -> bool {
         self.locks.is_empty()
@@ -81,6 +106,87 @@ impl MarketLockSet {
     /// Returns the number of active locks.
     pub fn len(&self) -> usize {
         self.locks.len()
+    }
+
+    /// Returns true if the target is locked at the given timestamp.
+    pub fn is_locked(&self, target_id: TargetId, current_ns: u64) -> bool {
+        self.active_iter(current_ns)
+            .any(|lock| lock.target_id == target_id)
+    }
+
+    /// Returns true if the target is locked by a specific operation.
+    pub fn is_locked_by_op(&self, target_id: TargetId, op_id: u64) -> bool {
+        self.locks
+            .iter()
+            .any(|lock| lock.target_id == target_id && lock.op_id == Some(op_id))
+    }
+
+    /// Acquire a lock, returning an updated lock set or the existing lock on conflict.
+    pub fn acquire(&self, lock: MarketLock, current_ns: u64) -> Result<Self, MarketLock> {
+        if let Some(existing) = self
+            .active_iter(current_ns)
+            .find(|l| l.target_id == lock.target_id)
+        {
+            return Err(existing.clone());
+        }
+
+        let mut new_set = self.clone();
+        new_set
+            .locks
+            .retain(|l| l.target_id != lock.target_id || !l.is_expired(current_ns));
+        new_set.locks.push(lock);
+        Ok(new_set)
+    }
+
+    /// Release a lock by target id.
+    pub fn release(&self, target_id: TargetId) -> Self {
+        let mut new_set = self.clone();
+        new_set.locks.retain(|l| l.target_id != target_id);
+        new_set
+    }
+
+    /// Release a lock held by a specific operation.
+    pub fn release_by_op(&self, target_id: TargetId, op_id: u64) -> Self {
+        let mut new_set = self.clone();
+        new_set
+            .locks
+            .retain(|l| l.target_id != target_id || l.op_id != Some(op_id));
+        new_set
+    }
+
+    /// Release all locks held by a specific operation.
+    pub fn release_all_by_op(&self, op_id: u64) -> Self {
+        let mut new_set = self.clone();
+        new_set.locks.retain(|l| l.op_id != Some(op_id));
+        new_set
+    }
+
+    /// Clear all locks (emergency reset).
+    pub fn clear(&self) -> Self {
+        Self::new()
+    }
+
+    /// Clean up expired locks.
+    pub fn cleanup_expired(&self, current_ns: u64) -> Self {
+        let mut new_set = self.clone();
+        new_set.locks.retain(|l| !l.is_expired(current_ns));
+        new_set
+    }
+
+    /// Get all currently locked target IDs.
+    pub fn locked_targets(&self, current_ns: u64) -> Vec<TargetId> {
+        self.active_iter(current_ns)
+            .map(|l| l.target_id)
+            .collect()
+    }
+
+    /// Check if any of the targets in a list are locked.
+    pub fn find_locked_targets(&self, targets: &[TargetId], current_ns: u64) -> Vec<TargetId> {
+        targets
+            .iter()
+            .copied()
+            .filter(|t| self.is_locked(*t, current_ns))
+            .collect()
     }
 }
 
@@ -100,10 +206,7 @@ impl From<Vec<MarketLock>> for MarketLockSet {
 /// # Returns
 /// `true` if the market is locked, `false` otherwise.
 pub fn is_market_locked(lock_set: &MarketLockSet, target_id: TargetId, current_ns: u64) -> bool {
-    lock_set
-        .locks
-        .iter()
-        .any(|lock| lock.target_id == target_id && !lock.is_expired(current_ns))
+    lock_set.is_locked(target_id, current_ns)
 }
 
 /// Check if a market is locked by a specific operation.
@@ -116,10 +219,7 @@ pub fn is_market_locked(lock_set: &MarketLockSet, target_id: TargetId, current_n
 /// # Returns
 /// `true` if the market is locked by the specified operation.
 pub fn is_locked_by_op(lock_set: &MarketLockSet, target_id: TargetId, op_id: u64) -> bool {
-    lock_set
-        .locks
-        .iter()
-        .any(|lock| lock.target_id == target_id && lock.op_id == Some(op_id))
+    lock_set.is_locked_by_op(target_id, op_id)
 }
 
 /// Acquire a lock on a market.
@@ -136,26 +236,7 @@ pub fn acquire_lock(
     lock: MarketLock,
     current_ns: u64,
 ) -> Result<MarketLockSet, MarketLock> {
-    // Check if already locked (and not expired)
-    if let Some(existing) = lock_set
-        .locks
-        .iter()
-        .find(|l| l.target_id == lock.target_id && !l.is_expired(current_ns))
-    {
-        return Err(existing.clone());
-    }
-
-    let mut new_set = lock_set.clone();
-
-    // Remove any expired locks for this target
-    new_set
-        .locks
-        .retain(|l| l.target_id != lock.target_id || !l.is_expired(current_ns));
-
-    // Add the new lock
-    new_set.locks.push(lock);
-
-    Ok(new_set)
+    lock_set.acquire(lock, current_ns)
 }
 
 /// Release a lock on a market.
@@ -167,9 +248,7 @@ pub fn acquire_lock(
 /// # Returns
 /// Updated lock set with the lock removed.
 pub fn release_lock(lock_set: &MarketLockSet, target_id: TargetId) -> MarketLockSet {
-    let mut new_set = lock_set.clone();
-    new_set.locks.retain(|l| l.target_id != target_id);
-    new_set
+    lock_set.release(target_id)
 }
 
 /// Release a lock held by a specific operation.
@@ -186,11 +265,7 @@ pub fn release_lock_by_op(
     target_id: TargetId,
     op_id: u64,
 ) -> MarketLockSet {
-    let mut new_set = lock_set.clone();
-    new_set
-        .locks
-        .retain(|l| l.target_id != target_id || l.op_id != Some(op_id));
-    new_set
+    lock_set.release_by_op(target_id, op_id)
 }
 
 /// Release all locks held by a specific operation.
@@ -202,9 +277,7 @@ pub fn release_lock_by_op(
 /// # Returns
 /// Updated lock set with all locks from the operation removed.
 pub fn release_all_by_op(lock_set: &MarketLockSet, op_id: u64) -> MarketLockSet {
-    let mut new_set = lock_set.clone();
-    new_set.locks.retain(|l| l.op_id != Some(op_id));
-    new_set
+    lock_set.release_all_by_op(op_id)
 }
 
 /// Clear all locks (emergency reset).
@@ -214,8 +287,8 @@ pub fn release_all_by_op(lock_set: &MarketLockSet, op_id: u64) -> MarketLockSet 
 ///
 /// # Returns
 /// Empty lock set.
-pub fn clear_all_locks(_lock_set: &MarketLockSet) -> MarketLockSet {
-    MarketLockSet::new()
+pub fn clear_all_locks(lock_set: &MarketLockSet) -> MarketLockSet {
+    lock_set.clear()
 }
 
 /// Clean up expired locks.
@@ -227,9 +300,7 @@ pub fn clear_all_locks(_lock_set: &MarketLockSet) -> MarketLockSet {
 /// # Returns
 /// Lock set with expired locks removed.
 pub fn cleanup_expired_locks(lock_set: &MarketLockSet, current_ns: u64) -> MarketLockSet {
-    let mut new_set = lock_set.clone();
-    new_set.locks.retain(|l| !l.is_expired(current_ns));
-    new_set
+    lock_set.cleanup_expired(current_ns)
 }
 
 /// Get all currently locked target IDs.
@@ -241,12 +312,7 @@ pub fn cleanup_expired_locks(lock_set: &MarketLockSet, current_ns: u64) -> Marke
 /// # Returns
 /// List of target IDs that are currently locked.
 pub fn get_locked_targets(lock_set: &MarketLockSet, current_ns: u64) -> Vec<TargetId> {
-    lock_set
-        .locks
-        .iter()
-        .filter(|l| !l.is_expired(current_ns))
-        .map(|l| l.target_id)
-        .collect()
+    lock_set.locked_targets(current_ns)
 }
 
 /// Check if any of the targets in a list are locked.
@@ -263,11 +329,7 @@ pub fn find_locked_targets(
     targets: &[TargetId],
     current_ns: u64,
 ) -> Vec<TargetId> {
-    targets
-        .iter()
-        .filter(|t| is_market_locked(lock_set, **t, current_ns))
-        .copied()
-        .collect()
+    lock_set.find_locked_targets(targets, current_ns)
 }
 
 #[cfg(test)]

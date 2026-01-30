@@ -4,16 +4,21 @@
 //! to maintain accurate AUM calculations. This is used during the
 //! Refreshing state of the vault operation state machine.
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeSet, vec::Vec};
 use templar_vault_kernel::TargetId;
 
 /// A plan for refreshing market principal data.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct RefreshPlan {
     /// Ordered list of target IDs to refresh.
     pub targets: Vec<TargetId>,
+
+    // FIXME: copied across market lock - could we reuse with generic helper??
     /// Last refresh timestamp (nanoseconds), if known.
     pub last_refresh_ns: Option<u64>,
     /// Minimum interval between refreshes (nanoseconds).
@@ -23,11 +28,7 @@ pub struct RefreshPlan {
 impl RefreshPlan {
     /// Create a new empty refresh plan.
     pub fn new() -> Self {
-        Self {
-            targets: Vec::new(),
-            last_refresh_ns: None,
-            cooldown_ns: 0,
-        }
+        Self::default()
     }
 
     /// Create a refresh plan from a list of targets.
@@ -56,6 +57,67 @@ impl RefreshPlan {
     /// Returns the number of targets to refresh.
     pub fn len(&self) -> usize {
         self.targets.len()
+    }
+
+    /// Validate a refresh plan.
+    ///
+    /// Checks:
+    /// - Plan is not empty
+    /// - No duplicate targets
+    pub fn validate(&self) -> Result<(), RefreshPlanError> {
+        if self.is_empty() {
+            return Err(RefreshPlanError::EmptyPlan);
+        }
+
+        let mut seen = BTreeSet::new();
+        for target_id in &self.targets {
+            if !seen.insert(*target_id) {
+                return Err(RefreshPlanError::DuplicateTarget {
+                    target_id: *target_id,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a refresh is allowed based on cooldown.
+    pub fn check_cooldown(&self, current_ns: u64) -> Result<(), RefreshPlanError> {
+        if self.cooldown_ns == 0 {
+            return Ok(());
+        }
+
+        if let Some(last_refresh) = self.last_refresh_ns {
+            let elapsed = current_ns.saturating_sub(last_refresh);
+            if elapsed < self.cooldown_ns {
+                return Err(RefreshPlanError::OnCooldown {
+                    last_refresh_ns: last_refresh,
+                    cooldown_ns: self.cooldown_ns,
+                    current_ns,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Compute the "total" of a refresh plan.
+    pub fn total(&self) -> usize {
+        self.len()
+    }
+
+    /// Record completion time for a refresh plan.
+    pub fn record_completion(&self, timestamp_ns: u64) -> Self {
+        Self {
+            targets: self.targets.clone(),
+            last_refresh_ns: Some(timestamp_ns),
+            cooldown_ns: self.cooldown_ns,
+        }
+    }
+
+    /// Convert a refresh plan to a list of target IDs.
+    pub fn to_target_list(&self) -> Vec<TargetId> {
+        self.targets.clone()
     }
 }
 
@@ -100,22 +162,7 @@ pub enum RefreshPlanError {
 /// # Returns
 /// `Ok(())` if valid, or the first error found.
 pub fn validate_refresh_plan(plan: &RefreshPlan) -> Result<(), RefreshPlanError> {
-    if plan.is_empty() {
-        return Err(RefreshPlanError::EmptyPlan);
-    }
-
-    // Check for duplicates
-    let mut seen: Vec<TargetId> = Vec::new();
-    for target_id in &plan.targets {
-        if seen.contains(target_id) {
-            return Err(RefreshPlanError::DuplicateTarget {
-                target_id: *target_id,
-            });
-        }
-        seen.push(*target_id);
-    }
-
-    Ok(())
+    plan.validate()
 }
 
 /// Check if a refresh is allowed based on cooldown.
@@ -127,22 +174,7 @@ pub fn validate_refresh_plan(plan: &RefreshPlan) -> Result<(), RefreshPlanError>
 /// # Returns
 /// `Ok(())` if refresh is allowed, or `Err` if still on cooldown.
 pub fn check_refresh_cooldown(plan: &RefreshPlan, current_ns: u64) -> Result<(), RefreshPlanError> {
-    if plan.cooldown_ns == 0 {
-        return Ok(());
-    }
-
-    if let Some(last_refresh) = plan.last_refresh_ns {
-        let elapsed = current_ns.saturating_sub(last_refresh);
-        if elapsed < plan.cooldown_ns {
-            return Err(RefreshPlanError::OnCooldown {
-                last_refresh_ns: last_refresh,
-                cooldown_ns: plan.cooldown_ns,
-                current_ns,
-            });
-        }
-    }
-
-    Ok(())
+    plan.check_cooldown(current_ns)
 }
 
 /// Build a refresh plan from a list of enabled markets.
@@ -216,7 +248,7 @@ pub fn build_targeted_refresh_plan(
 /// # Returns
 /// Number of targets in the plan.
 pub fn compute_refresh_plan_total(plan: &RefreshPlan) -> usize {
-    plan.len()
+    plan.total()
 }
 
 /// Update refresh plan with new last refresh timestamp.
@@ -228,18 +260,14 @@ pub fn compute_refresh_plan_total(plan: &RefreshPlan) -> usize {
 /// # Returns
 /// Updated refresh plan with new last_refresh_ns.
 pub fn record_refresh_completion(plan: &RefreshPlan, timestamp_ns: u64) -> RefreshPlan {
-    RefreshPlan {
-        targets: plan.targets.clone(),
-        last_refresh_ns: Some(timestamp_ns),
-        cooldown_ns: plan.cooldown_ns,
-    }
+    plan.record_completion(timestamp_ns)
 }
 
 /// Convert a refresh plan to a list of target IDs.
 ///
 /// This is useful for passing to the refresh state machine.
 pub fn to_target_list(plan: &RefreshPlan) -> Vec<TargetId> {
-    plan.targets.clone()
+    plan.to_target_list()
 }
 
 /// Filter targets that need refresh based on staleness.

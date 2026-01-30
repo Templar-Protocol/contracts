@@ -18,8 +18,8 @@
 
 use alloc::string::String;
 use templar_vault_kernel::{
-    AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
-    WithdrawingState,
+    AllocatingState, EscrowSettlement, KernelAction, OpState, PayoutOutcome, PayoutState,
+    RefreshingState, WithdrawingState,
 };
 
 /// Context for determining recovery actions.
@@ -83,7 +83,10 @@ pub enum RecoveryError {
 }
 
 /// Outcome of a recovery operation.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryOutcome {
@@ -249,31 +252,26 @@ pub fn handle_payout_failure(
 /// * `collected_amount` - Actually collected amount
 ///
 /// # Returns
-/// Tuple of (shares_to_burn, shares_to_refund).
+/// Escrow settlement with burn/refund amounts.
 pub fn compute_settlement_shares(
     escrow_shares: u128,
     expected_amount: u128,
     collected_amount: u128,
-) -> (u128, u128) {
+) -> EscrowSettlement {
     if expected_amount == 0 || escrow_shares == 0 {
-        return (0, escrow_shares);
+        return EscrowSettlement::refund_all(escrow_shares);
     }
 
     if collected_amount >= expected_amount {
-        // Full withdrawal - burn all escrow shares
-        return (escrow_shares, 0);
+        return EscrowSettlement::burn_all(escrow_shares);
     }
 
-    // Partial withdrawal - burn proportionally
-    // burn = escrow_shares * collected / expected
     let burn = escrow_shares
         .saturating_mul(collected_amount)
         .checked_div(expected_amount)
         .unwrap_or(0);
 
-    let refund = escrow_shares.saturating_sub(burn);
-
-    (burn, refund)
+    EscrowSettlement::partial(burn, escrow_shares.saturating_sub(burn))
 }
 
 /// Compute a success payout outcome from escrow and collected amounts.
@@ -285,8 +283,10 @@ pub fn compute_payout_success_outcome(
     expected_amount: u128,
     collected_amount: u128,
 ) -> PayoutOutcome {
-    let (burn_shares, refund_shares) =
-        compute_settlement_shares(escrow_shares, expected_amount, collected_amount);
+    let EscrowSettlement {
+        to_burn: burn_shares,
+        refund: refund_shares,
+    } = compute_settlement_shares(escrow_shares, expected_amount, collected_amount);
 
     PayoutOutcome::Success {
         burn_shares,
@@ -410,7 +410,10 @@ mod tests {
         let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
         match action {
-            KernelAction::AbortAllocating { op_id, restore_idle } => {
+            KernelAction::AbortAllocating {
+                op_id,
+                restore_idle,
+            } => {
                 assert_eq!(op_id, 1);
                 assert_eq!(restore_idle, 500);
             }
@@ -434,7 +437,10 @@ mod tests {
         let action = determine_recovery_action(&state, &ctx).expect("expected action");
 
         match action {
-            KernelAction::AbortWithdrawing { op_id, refund_shares } => {
+            KernelAction::AbortWithdrawing {
+                op_id,
+                refund_shares,
+            } => {
                 assert_eq!(op_id, 2);
                 assert_eq!(refund_shares, 1000);
             }
@@ -495,25 +501,25 @@ mod tests {
 
     #[test]
     fn test_compute_settlement_shares_full_collection() {
-        let (burn, refund) = compute_settlement_shares(1000, 500, 500);
-        assert_eq!(burn, 1000);
-        assert_eq!(refund, 0);
+        let settlement = compute_settlement_shares(1000, 500, 500);
+        assert_eq!(settlement.to_burn, 1000);
+        assert_eq!(settlement.refund, 0);
     }
 
     #[test]
     fn test_compute_settlement_shares_partial_collection() {
-        let (burn, refund) = compute_settlement_shares(1000, 500, 250);
+        let settlement = compute_settlement_shares(1000, 500, 250);
         // burn = 1000 * 250 / 500 = 500
-        assert_eq!(burn, 500);
-        assert_eq!(refund, 500);
+        assert_eq!(settlement.to_burn, 500);
+        assert_eq!(settlement.refund, 500);
     }
 
     #[test]
     fn test_compute_settlement_shares_over_collection() {
         // Collected more than expected (edge case)
-        let (burn, refund) = compute_settlement_shares(1000, 500, 600);
-        assert_eq!(burn, 1000);
-        assert_eq!(refund, 0);
+        let settlement = compute_settlement_shares(1000, 500, 600);
+        assert_eq!(settlement.to_burn, 1000);
+        assert_eq!(settlement.refund, 0);
     }
 
     #[test]
@@ -548,16 +554,16 @@ mod tests {
 
     #[test]
     fn test_compute_settlement_shares_zero_expected() {
-        let (burn, refund) = compute_settlement_shares(1000, 0, 0);
-        assert_eq!(burn, 0);
-        assert_eq!(refund, 1000);
+        let settlement = compute_settlement_shares(1000, 0, 0);
+        assert_eq!(settlement.to_burn, 0);
+        assert_eq!(settlement.refund, 1000);
     }
 
     #[test]
     fn test_compute_settlement_shares_zero_escrow() {
-        let (burn, refund) = compute_settlement_shares(0, 500, 250);
-        assert_eq!(burn, 0);
-        assert_eq!(refund, 0);
+        let settlement = compute_settlement_shares(0, 500, 250);
+        assert_eq!(settlement.to_burn, 0);
+        assert_eq!(settlement.refund, 0);
     }
 
     #[test]
@@ -574,7 +580,10 @@ mod tests {
         assert!(outcome.success);
         assert_eq!(outcome.message, Some(String::from("Market unavailable")));
         match outcome.action {
-            KernelAction::AbortAllocating { op_id, restore_idle } => {
+            KernelAction::AbortAllocating {
+                op_id,
+                restore_idle,
+            } => {
                 assert_eq!(op_id, 1);
                 assert_eq!(restore_idle, 500);
             }
@@ -598,7 +607,10 @@ mod tests {
 
         assert!(outcome.success);
         match outcome.action {
-            KernelAction::AbortWithdrawing { op_id, refund_shares } => {
+            KernelAction::AbortWithdrawing {
+                op_id,
+                refund_shares,
+            } => {
                 assert_eq!(op_id, 2);
                 assert_eq!(refund_shares, 1000);
             }

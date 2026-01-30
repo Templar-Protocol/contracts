@@ -448,30 +448,30 @@ fn golden_recovery_payout_state() {
 #[test]
 fn golden_settlement_shares_full() {
     // Full withdrawal: collected == expected
-    let (burn, refund) =
+    let settlement =
         compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 500_000_000_000);
-    assert_eq!(burn, 1_000_000_000_000); // All shares burned
-    assert_eq!(refund, 0); // Nothing refunded
+    assert_eq!(settlement.to_burn, 1_000_000_000_000); // All shares burned
+    assert_eq!(settlement.refund, 0); // Nothing refunded
 }
 
 #[test]
 fn golden_settlement_shares_partial() {
     // Partial withdrawal: collected 60% of expected
-    let (burn, refund) =
+    let settlement =
         compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 300_000_000_000);
 
     // burn = 1_000_000_000_000 * 300 / 500 = 600_000_000_000
-    assert_eq!(burn, 600_000_000_000);
-    assert_eq!(refund, 400_000_000_000);
+    assert_eq!(settlement.to_burn, 600_000_000_000);
+    assert_eq!(settlement.refund, 400_000_000_000);
 }
 
 #[test]
 fn golden_settlement_shares_over_collection() {
     // Over-collection: collected > expected (edge case)
-    let (burn, refund) =
+    let settlement =
         compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 600_000_000_000);
-    assert_eq!(burn, 1_000_000_000_000); // All shares burned
-    assert_eq!(refund, 0); // Nothing refunded
+    assert_eq!(settlement.to_burn, 1_000_000_000_000); // All shares burned
+    assert_eq!(settlement.refund, 0); // Nothing refunded
 }
 
 #[test]
@@ -481,12 +481,12 @@ fn golden_settlement_shares_large_values() {
     let expected = u128::MAX / 4;
     let collected = expected / 2;
 
-    let (burn, refund) = compute_settlement_shares(escrow, expected, collected);
+    let settlement = compute_settlement_shares(escrow, expected, collected);
 
     // burn = escrow * collected / expected = (MAX/2) * (MAX/8) / (MAX/4) = MAX/4
     // With saturating arithmetic, this should be safe
-    assert!(burn <= escrow);
-    assert_eq!(burn + refund, escrow);
+    assert!(settlement.to_burn <= escrow);
+    assert_eq!(settlement.to_burn + settlement.refund, escrow);
 }
 
 // ============================================================================
