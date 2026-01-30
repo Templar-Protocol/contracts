@@ -9,8 +9,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::fee::Fees;
-use crate::math::wad::Wad;
+use crate::fee::FeesSpec;
 use crate::state::op_state::OpState;
 use crate::state::queue::WithdrawQueue;
 use crate::types::TimestampNs;
@@ -84,12 +83,20 @@ impl Default for FeeAccrualAnchor {
 /// Static configuration for a vault.
 ///
 /// These settings can typically only be changed through governance.
+///
+/// # Fee Recipients
+///
+/// Fee recipients are 32-byte addresses. Executors are responsible for mapping
+/// chain-native account identifiers (e.g., NEAR AccountId, Soroban Address) to
+/// this canonical 32-byte format, typically using a SHA256 hash.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VaultConfig {
     /// Fee configuration (performance, management, growth cap).
-    pub fees: Fees<Wad>,
+    ///
+    /// Uses spec-compliant `FeesSpec` with 32-byte address recipients.
+    pub fees: FeesSpec,
     /// Minimum withdrawal amount in base asset units.
     pub min_withdrawal_assets: u128,
     /// Maximum number of pending withdrawals allowed in the queue.
@@ -338,20 +345,10 @@ mod tests {
 
     #[test]
     fn test_vault_config_max_pending_valid() {
-        use crate::fee::Fee;
+        use crate::fee::FeesSpec;
 
         let config = VaultConfig {
-            fees: Fees {
-                performance: Fee {
-                    fee: Wad::from(0),
-                    recipient: alloc::string::String::new(),
-                },
-                management: Fee {
-                    fee: Wad::from(0),
-                    recipient: alloc::string::String::new(),
-                },
-                max_total_assets_growth_rate: None,
-            },
+            fees: FeesSpec::zero(),
             min_withdrawal_assets: 1000,
             max_pending_withdrawals: 1024,
             paused: false,

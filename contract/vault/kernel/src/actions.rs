@@ -635,10 +635,8 @@ fn enforce_restrictions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::String;
     use crate::effects::KernelEvent;
-    use crate::fee::{Fee, Fees};
-    use crate::math::wad::Wad;
+    use crate::fee::FeesSpec;
     use crate::state::op_state::WithdrawingState;
     use crate::state::queue::DEFAULT_COOLDOWN_NS;
 
@@ -648,17 +646,7 @@ mod tests {
 
     fn test_config() -> VaultConfig {
         VaultConfig {
-            fees: Fees {
-                performance: Fee {
-                    fee: Wad::ZERO,
-                    recipient: String::new(),
-                },
-                management: Fee {
-                    fee: Wad::ZERO,
-                    recipient: String::new(),
-                },
-                max_total_assets_growth_rate: None,
-            },
+            fees: FeesSpec::zero(),
             min_withdrawal_assets: 0,
             max_pending_withdrawals: 10,
             paused: false,
@@ -823,5 +811,1694 @@ mod tests {
             result,
             Err(KernelError::Restricted(Restrictions::BlackList(_)))
         ));
+    }
+
+    // =========================================================================
+    // Deposit action tests
+    // =========================================================================
+
+    #[test]
+    fn deposit_success() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::Deposit {
+                owner: addr(1),
+                receiver: addr(2),
+                assets_in: 500,
+                min_shares_out: 0,
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        // With virtual_assets/shares = 0, ratio is 1:1 after adjustments
+        assert_eq!(result.state.total_assets, 1_500);
+        assert_eq!(result.state.idle_assets, 1_500);
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::MintShares { .. })
+        ));
+        assert!(matches!(
+            result.effects.get(1),
+            Some(KernelEffect::EmitEvent {
+                event: KernelEvent::DepositProcessed { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn deposit_zero_assets_fails_slippage() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::Deposit {
+                owner: addr(1),
+                receiver: addr(2),
+                assets_in: 0,
+                min_shares_out: 1,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::Slippage { min: 1, actual: 0 })
+        ));
+    }
+
+    #[test]
+    fn deposit_slippage_check_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::Deposit {
+                owner: addr(1),
+                receiver: addr(2),
+                assets_in: 100,
+                min_shares_out: 1_000_000, // Way more than we can get
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(result, Err(KernelError::Slippage { .. })));
+    }
+
+    #[test]
+    fn deposit_not_idle_fails() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 0,
+            remaining: 500,
+            plan: vec![(0, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::Deposit {
+                owner: addr(1),
+                receiver: addr(2),
+                assets_in: 100,
+                min_shares_out: 0,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("deposit requires Idle"))
+        ));
+    }
+
+    // =========================================================================
+    // RequestWithdraw action tests
+    // =========================================================================
+
+    #[test]
+    fn request_withdraw_zero_shares_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RequestWithdraw {
+                owner: addr(1),
+                receiver: addr(2),
+                shares: 0,
+                min_assets_out: 1,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::Slippage { min: 1, actual: 0 })
+        ));
+    }
+
+    #[test]
+    fn request_withdraw_slippage_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RequestWithdraw {
+                owner: addr(1),
+                receiver: addr(2),
+                shares: 10,
+                min_assets_out: 1_000_000, // Way more than we can get
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(result, Err(KernelError::Slippage { .. })));
+    }
+
+    #[test]
+    fn request_withdraw_min_withdrawal_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let mut config = test_config();
+        config.min_withdrawal_assets = 1_000;
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RequestWithdraw {
+                owner: addr(1),
+                receiver: addr(2),
+                shares: 10,
+                min_assets_out: 0,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(result, Err(KernelError::MinWithdrawal { .. })));
+    }
+
+    #[test]
+    fn request_withdraw_not_idle_fails() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 0,
+            remaining: 500,
+            plan: vec![(0, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RequestWithdraw {
+                owner: addr(1),
+                receiver: addr(2),
+                shares: 100,
+                min_assets_out: 0,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("request_withdraw requires Idle"))
+        ));
+    }
+
+    #[test]
+    fn request_withdraw_queue_full_fails() {
+        let mut state = VaultState::with_initial(10_000, 10_000, 10_000, 0, 0);
+        let mut config = test_config();
+        config.max_pending_withdrawals = 2;
+
+        // Fill the queue
+        state
+            .withdraw_queue
+            .enqueue(addr(1), addr(1), 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+        state
+            .withdraw_queue
+            .enqueue(addr(2), addr(2), 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RequestWithdraw {
+                owner: addr(3),
+                receiver: addr(3),
+                shares: 100,
+                min_assets_out: 0,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(result, Err(KernelError::QueueFull)));
+    }
+
+    // =========================================================================
+    // ExecuteWithdraw action tests
+    // =========================================================================
+
+    #[test]
+    fn execute_withdraw_empty_queue_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::ExecuteWithdraw { now_ns: DEFAULT_COOLDOWN_NS + 1 },
+        );
+
+        assert!(matches!(result, Err(KernelError::EmptyQueue)));
+    }
+
+    #[test]
+    fn execute_withdraw_cooldown_fails() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        state
+            .withdraw_queue
+            .enqueue(addr(1), addr(2), 100, 100, 1_000_000, config.max_pending_withdrawals)
+            .unwrap();
+
+        // Not enough time passed
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::ExecuteWithdraw { now_ns: 1_000_000 },
+        );
+
+        assert!(matches!(result, Err(KernelError::Cooldown { .. })));
+    }
+
+    #[test]
+    fn execute_withdraw_wrong_state_fails() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 0,
+            remaining: 500,
+            plan: vec![(0, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::ExecuteWithdraw { now_ns: 0 },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "execute_withdraw requires Idle or Withdrawing"
+            ))
+        ));
+    }
+
+    #[test]
+    fn execute_withdraw_queue_head_mismatch_fails() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+        let owner = addr(5);
+        let receiver = addr(6);
+
+        // Queue has different owner than op_state
+        state
+            .withdraw_queue
+            .enqueue(addr(99), addr(99), 200, 200, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 7,
+            index: 0,
+            remaining: 200,
+            collected: 0,
+            receiver,
+            owner,
+            escrow_shares: 200,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::ExecuteWithdraw { now_ns: 0 },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("withdrawal queue head mismatch"))
+        ));
+    }
+
+    // =========================================================================
+    // BeginAllocating action tests
+    // =========================================================================
+
+    #[test]
+    fn begin_allocating_success() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::BeginAllocating {
+                op_id: 1,
+                plan: vec![(1, 500)],
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(result.state.op_state.as_allocating().is_some());
+    }
+
+    // =========================================================================
+    // FinishAllocating action tests
+    // =========================================================================
+
+    #[test]
+    fn finish_allocating_success() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 1,
+            remaining: 0,
+            plan: vec![(1, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::FinishAllocating { op_id: 1, now_ns: 0 },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+    }
+
+    #[test]
+    fn finish_allocating_with_pending_withdrawal() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let owner = addr(10);
+        let receiver = addr(11);
+        let config = test_config();
+
+        // Add a pending withdrawal that's past cooldown
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 5,
+            index: 1,
+            remaining: 0,
+            plan: vec![(1, 500)],
+        });
+
+        // now_ns is past cooldown (DEFAULT_COOLDOWN_NS + request time of 0)
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::FinishAllocating {
+                op_id: 5,
+                now_ns: DEFAULT_COOLDOWN_NS + 1,
+            },
+        )
+        .unwrap();
+
+        // Should transition to Withdrawing instead of Idle
+        assert!(result.state.op_state.as_withdrawing().is_some());
+    }
+
+    #[test]
+    fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let owner = addr(10);
+        let receiver = addr(11);
+        let config = test_config();
+
+        // Add a pending withdrawal that's NOT past cooldown
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, DEFAULT_COOLDOWN_NS, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 6,
+            index: 1,
+            remaining: 0,
+            plan: vec![(1, 500)],
+        });
+
+        // now_ns is not past cooldown
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::FinishAllocating {
+                op_id: 6,
+                now_ns: DEFAULT_COOLDOWN_NS,
+            },
+        )
+        .unwrap();
+
+        // Should transition to Idle since withdrawal is not ready
+        assert!(result.state.is_idle());
+    }
+
+    #[test]
+    fn execute_withdraw_withdrawing_empty_queue() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+
+        // State is Withdrawing but queue is empty (shouldn't happen in practice)
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 8,
+            index: 0,
+            remaining: 100,
+            collected: 0,
+            owner: addr(1),
+            receiver: addr(2),
+            escrow_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::ExecuteWithdraw { now_ns: 0 },
+        );
+
+        assert!(matches!(result, Err(KernelError::EmptyQueue)));
+    }
+
+    // =========================================================================
+    // BeginRefreshing action tests
+    // =========================================================================
+
+    #[test]
+    fn begin_refreshing_success() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::BeginRefreshing {
+                op_id: 1,
+                plan: vec![1],
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(result.state.op_state.as_refreshing().is_some());
+    }
+
+    // =========================================================================
+    // FinishRefreshing action tests
+    // =========================================================================
+
+    #[test]
+    fn finish_refreshing_success() {
+        use crate::state::op_state::RefreshingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Refreshing(RefreshingState {
+            op_id: 2,
+            index: 1,
+            plan: vec![1],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::FinishRefreshing { op_id: 2, now_ns: 0 },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+    }
+
+    // =========================================================================
+    // SyncExternalAssets action tests
+    // =========================================================================
+
+    #[test]
+    fn sync_external_assets_allocating() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 3,
+            index: 0,
+            remaining: 500,
+            plan: vec![(1, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 700,
+                op_id: 3,
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.state.external_assets, 700);
+        assert_eq!(result.state.total_assets, 1_200); // idle(500) + external(700)
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::EmitEvent {
+                event: KernelEvent::ExternalAssetsSynced { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn sync_external_assets_withdrawing() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 4,
+            index: 0,
+            remaining: 100,
+            collected: 0,
+            owner: addr(1),
+            receiver: addr(2),
+            escrow_shares: 100,
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 400,
+                op_id: 4,
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.state.external_assets, 400);
+        assert_eq!(result.state.total_assets, 900);
+    }
+
+    #[test]
+    fn sync_external_assets_refreshing() {
+        use crate::state::op_state::RefreshingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Refreshing(RefreshingState {
+            op_id: 5,
+            index: 0,
+            plan: vec![1],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 600,
+                op_id: 5,
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.state.external_assets, 600);
+    }
+
+    #[test]
+    fn sync_external_assets_idle_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 500,
+                op_id: 1,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("sync_external_assets requires active op"))
+        ));
+    }
+
+    #[test]
+    fn sync_external_assets_op_id_mismatch_fails() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 10,
+            index: 0,
+            remaining: 500,
+            plan: vec![(1, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 500,
+                op_id: 99, // Wrong op_id
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::OpIdMismatch {
+                expected: 10,
+                actual: 99
+            })
+        ));
+    }
+
+    #[test]
+    fn sync_external_assets_payout_fails() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 6,
+            owner: addr(1),
+            receiver: addr(2),
+            amount: 50,
+            escrow_shares: 100,
+            burn_shares: 50,
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 500,
+                op_id: 6,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "sync_external_assets requires Allocating/Withdrawing/Refreshing"
+            ))
+        ));
+    }
+
+    // =========================================================================
+    // AbortRefreshing action tests
+    // =========================================================================
+
+    #[test]
+    fn abort_refreshing_success() {
+        use crate::state::op_state::RefreshingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Refreshing(RefreshingState {
+            op_id: 7,
+            index: 0,
+            plan: vec![1],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortRefreshing { op_id: 7 },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert!(result.effects.is_empty());
+    }
+
+    #[test]
+    fn abort_refreshing_wrong_state_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortRefreshing { op_id: 1 },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("abort_refreshing requires active op"))
+        ));
+    }
+
+    #[test]
+    fn abort_refreshing_op_id_mismatch_fails() {
+        use crate::state::op_state::RefreshingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Refreshing(RefreshingState {
+            op_id: 10,
+            index: 0,
+            plan: vec![1],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortRefreshing { op_id: 99 },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::OpIdMismatch {
+                expected: 10,
+                actual: 99
+            })
+        ));
+    }
+
+    #[test]
+    fn abort_refreshing_wrong_op_type_fails() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 10,
+            index: 0,
+            remaining: 500,
+            plan: vec![(1, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortRefreshing { op_id: 10 },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("abort_refreshing requires Refreshing"))
+        ));
+    }
+
+    // =========================================================================
+    // AbortAllocating action tests
+    // =========================================================================
+
+    #[test]
+    fn abort_allocating_success() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 300, 500, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 8,
+            index: 0,
+            remaining: 200,
+            plan: vec![(1, 200)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortAllocating {
+                op_id: 8,
+                restore_idle: 200,
+            },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert_eq!(result.state.idle_assets, 500); // 300 + 200 restored
+        assert_eq!(result.state.total_assets, 1000); // 500 idle + 500 external
+    }
+
+    #[test]
+    fn abort_allocating_wrong_state_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortAllocating {
+                op_id: 1,
+                restore_idle: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("abort_allocating requires Allocating"))
+        ));
+    }
+
+    #[test]
+    fn abort_allocating_op_id_mismatch_fails() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 10,
+            index: 0,
+            remaining: 500,
+            plan: vec![(1, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortAllocating {
+                op_id: 99,
+                restore_idle: 500,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::OpIdMismatch {
+                expected: 10,
+                actual: 99
+            })
+        ));
+    }
+
+    #[test]
+    fn abort_allocating_restore_mismatch_fails() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 10,
+            index: 0,
+            remaining: 500,
+            plan: vec![(1, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortAllocating {
+                op_id: 10,
+                restore_idle: 999, // Wrong amount
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "abort_allocating restore_idle mismatch"
+            ))
+        ));
+    }
+
+    // =========================================================================
+    // AbortWithdrawing action tests
+    // =========================================================================
+
+    #[test]
+    fn abort_withdrawing_success() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 9,
+            index: 0,
+            remaining: 100,
+            collected: 0,
+            owner,
+            receiver,
+            escrow_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortWithdrawing {
+                op_id: 9,
+                refund_shares: 100,
+            },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert_eq!(result.state.withdraw_queue.len(), 0);
+    }
+
+    #[test]
+    fn abort_withdrawing_wrong_state_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortWithdrawing {
+                op_id: 1,
+                refund_shares: 100,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "abort_withdrawing requires Withdrawing"
+            ))
+        ));
+    }
+
+    #[test]
+    fn abort_withdrawing_op_id_mismatch_fails() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 10,
+            index: 0,
+            remaining: 100,
+            collected: 0,
+            owner,
+            receiver,
+            escrow_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortWithdrawing {
+                op_id: 99,
+                refund_shares: 100,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::OpIdMismatch {
+                expected: 10,
+                actual: 99
+            })
+        ));
+    }
+
+    #[test]
+    fn abort_withdrawing_refund_mismatch_fails() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 10,
+            index: 0,
+            remaining: 100,
+            collected: 0,
+            owner,
+            receiver,
+            escrow_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortWithdrawing {
+                op_id: 10,
+                refund_shares: 999,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "abort_withdrawing refund_shares mismatch"
+            ))
+        ));
+    }
+
+    #[test]
+    fn abort_withdrawing_queue_head_mismatch_fails() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+
+        // Queue has different user
+        state
+            .withdraw_queue
+            .enqueue(addr(99), addr(99), 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 10,
+            index: 0,
+            remaining: 100,
+            collected: 0,
+            owner: addr(1),
+            receiver: addr(2),
+            escrow_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortWithdrawing {
+                op_id: 10,
+                refund_shares: 100,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("withdrawal queue head mismatch"))
+        ));
+    }
+
+    #[test]
+    fn abort_withdrawing_empty_queue_fails() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 10,
+            index: 0,
+            remaining: 100,
+            collected: 0,
+            owner: addr(1),
+            receiver: addr(2),
+            escrow_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::AbortWithdrawing {
+                op_id: 10,
+                refund_shares: 100,
+            },
+        );
+
+        assert!(matches!(result, Err(KernelError::EmptyQueue)));
+    }
+
+    // =========================================================================
+    // SettlePayout action tests
+    // =========================================================================
+
+    #[test]
+    fn settle_payout_success_burn_only() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 11,
+            owner,
+            receiver,
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 11,
+                outcome: PayoutOutcome::Success {
+                    burn_shares: 100,
+                    refund_shares: 0,
+                },
+            },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert_eq!(result.state.total_shares, 900); // 1000 - 100 burned
+        assert_eq!(result.state.withdraw_queue.len(), 0);
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::BurnShares { shares: 100, .. })
+        ));
+    }
+
+    #[test]
+    fn settle_payout_success_partial_refund() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 12,
+            owner,
+            receiver,
+            amount: 50,
+            escrow_shares: 100,
+            burn_shares: 50,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 12,
+                outcome: PayoutOutcome::Success {
+                    burn_shares: 50,
+                    refund_shares: 50,
+                },
+            },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert_eq!(result.state.total_shares, 950);
+        assert_eq!(result.effects.len(), 2); // BurnShares + TransferShares
+    }
+
+    #[test]
+    fn settle_payout_failure() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 400, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 13,
+            owner,
+            receiver,
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 13,
+                outcome: PayoutOutcome::Failure {
+                    restore_idle: 100,
+                    refund_shares: 100,
+                },
+            },
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert_eq!(result.state.idle_assets, 500); // 400 + 100 restored
+        assert_eq!(result.state.total_shares, 1_000); // Not changed
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::TransferShares { .. })
+        ));
+    }
+
+    #[test]
+    fn settle_payout_wrong_state_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 1,
+                outcome: PayoutOutcome::Success {
+                    burn_shares: 100,
+                    refund_shares: 0,
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("settle_payout requires Payout"))
+        ));
+    }
+
+    #[test]
+    fn settle_payout_op_id_mismatch_fails() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 20,
+            owner,
+            receiver,
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 99,
+                outcome: PayoutOutcome::Success {
+                    burn_shares: 100,
+                    refund_shares: 0,
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::OpIdMismatch {
+                expected: 20,
+                actual: 99
+            })
+        ));
+    }
+
+    #[test]
+    fn settle_payout_empty_queue_fails() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 20,
+            owner: addr(1),
+            receiver: addr(2),
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 20,
+                outcome: PayoutOutcome::Success {
+                    burn_shares: 100,
+                    refund_shares: 0,
+                },
+            },
+        );
+
+        assert!(matches!(result, Err(KernelError::EmptyQueue)));
+    }
+
+    #[test]
+    fn settle_payout_queue_head_mismatch_fails() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+
+        state
+            .withdraw_queue
+            .enqueue(addr(99), addr(99), 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 20,
+            owner: addr(1),
+            receiver: addr(2),
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 20,
+                outcome: PayoutOutcome::Success {
+                    burn_shares: 100,
+                    refund_shares: 0,
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("withdrawal queue head mismatch"))
+        ));
+    }
+
+    #[test]
+    fn settle_payout_success_settlement_mismatch_fails() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 20,
+            owner,
+            receiver,
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 20,
+                outcome: PayoutOutcome::Success {
+                    burn_shares: 50,
+                    refund_shares: 10, // 50 + 10 != 100 escrow
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "payout success settlement mismatch"
+            ))
+        ));
+    }
+
+    #[test]
+    fn settle_payout_failure_settlement_mismatch_fails() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 20,
+            owner,
+            receiver,
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 20,
+                outcome: PayoutOutcome::Failure {
+                    restore_idle: 100,
+                    refund_shares: 50, // Should be 100
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "payout failure settlement mismatch"
+            ))
+        ));
+    }
+
+    // =========================================================================
+    // Pause action tests
+    // =========================================================================
+
+    #[test]
+    fn pause_action() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::Pause { paused: true },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::EmitEvent {
+                event: KernelEvent::PauseUpdated { paused: true }
+            })
+        ));
+    }
+
+    // =========================================================================
+    // RefreshFees action tests
+    // =========================================================================
+
+    #[test]
+    fn refresh_fees_action() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns: 12345 },
+        )
+        .unwrap();
+
+        assert_eq!(result.state.fee_anchor.total_assets, 1_000);
+        assert_eq!(result.state.fee_anchor.timestamp_ns, 12345);
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::EmitEvent {
+                event: KernelEvent::FeesRefreshed { now_ns: 12345, .. }
+            })
+        ));
+    }
+
+    // =========================================================================
+    // Helper function tests
+    // =========================================================================
+
+    #[test]
+    fn effective_totals_adds_virtual() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let mut config = test_config();
+        config.virtual_shares = 100;
+        config.virtual_assets = 200;
+
+        let (supply, assets) = effective_totals(&state, &config);
+        assert_eq!(supply, 1_000 + 100 + 1); // shares + virtual + 1
+        assert_eq!(assets, 1_000 + 200 + 1); // assets + virtual + 1
+    }
+
+    #[test]
+    fn convert_to_shares_works() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        // With 1:1 ratio (plus virtual adjustments)
+        let shares = convert_to_shares(&state, &config, 500);
+        // shares = 500 * (1001) / (1001) = 500
+        assert_eq!(shares, 500);
+    }
+
+    #[test]
+    fn convert_to_assets_works() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let assets = convert_to_assets(&state, &config, 500);
+        assert_eq!(assets, 500);
+    }
+
+    #[test]
+    fn kernel_result_new() {
+        let state = VaultState::new();
+        let effects = vec![KernelEffect::EmitEvent {
+            event: KernelEvent::PauseUpdated { paused: false },
+        }];
+
+        let result = KernelResult::new(state.clone(), effects.clone());
+        assert_eq!(result.state, state);
+        assert_eq!(result.effects, effects);
     }
 }
