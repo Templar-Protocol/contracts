@@ -44,7 +44,10 @@ pub use contract::{
     AllocationResult, ContractConfig, CuratorVault, DepositResult, RefreshResult,
     WithdrawRequestResult,
 };
-pub use effects::{EffectContext, EffectInterpreter, EffectResult, EffectSummary, MockInterpreter};
+pub use effects::{
+    EffectContext, EffectInterpreter, EffectResult, EffectSummary, MockInterpreter,
+    MockSep41Token, Sep41Operation, Sep41Token, SorobanEffectInterpreter,
+};
 pub use error::RuntimeError;
 pub use market::{
     AttemptId, Bytes, CrossChainMarketAdapter, Env, MarketAdapter, MarketRef,
