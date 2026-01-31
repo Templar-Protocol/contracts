@@ -157,27 +157,14 @@ impl MarketScanner {
     /// Returns an error if the market version is not supported or doesn't support
     /// required features.
     #[tracing::instrument(skip(self), level = "debug")]
-    pub async fn check_market_compatibility(
-        &self,
-        requires_partial_liquidation: bool,
-    ) -> LiquidatorResult<()> {
+    pub async fn check_market_compatibility(&self) -> LiquidatorResult<()> {
         use crate::rpc::get_contract_version;
 
         let Some(version_string) = get_contract_version(&self.client, &self.market).await else {
-            // No NEP-330 metadata - can't verify version
-            if requires_partial_liquidation {
-                tracing::info!(
-                    market = %self.market,
-                    "Contract missing NEP-330 metadata, cannot verify partial liquidation support"
-                );
-                return Err(LiquidatorError::StrategyError(
-                    "Contract missing version metadata, cannot verify partial liquidation support"
-                        .to_string(),
-                ));
-            }
+            // No NEP-330 metadata - assume compatible and let market contract reject if incompatible
             tracing::debug!(
                 market = %self.market,
-                "Contract missing NEP-330 metadata, assuming basic compatibility"
+                "Contract missing NEP-330 metadata, assuming compatibility"
             );
             return Ok(());
         };
@@ -215,23 +202,6 @@ impl MarketScanner {
             )));
         }
 
-        // Check partial liquidation support if required
-        if requires_partial_liquidation {
-            let supports_partial = (major, minor, patch) >= Self::MIN_PARTIAL_LIQUIDATION_VERSION;
-            if !supports_partial {
-                let (min_major, min_minor, min_patch) = Self::MIN_PARTIAL_LIQUIDATION_VERSION;
-                tracing::info!(
-                    market = %self.market,
-                    version = %version_string,
-                    min_version = %format!("{min_major}.{min_minor}.{min_patch}"),
-                    "Skipping market - does not support partial liquidation"
-                );
-                return Err(LiquidatorError::StrategyError(format!(
-                    "Market version {version_string} does not support partial liquidation (requires {min_major}.{min_minor}.{min_patch}+)"
-                )));
-            }
-        }
-
         tracing::debug!(
             market = %self.market,
             version = %version_string,
@@ -247,20 +217,7 @@ impl MarketScanner {
     /// Returns an error if the market version is not supported.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn test_market_compatibility(&self) -> LiquidatorResult<()> {
-        self.check_market_compatibility(false).await
-    }
-
-    /// Checks if the market supports partial liquidation based on its version.
-    ///
-    /// Markets with version >= 1.1.0 support partial liquidation.
-    /// Older markets only support full liquidation of all liquidatable collateral.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the market supports partial liquidation, `false` otherwise.
-    #[tracing::instrument(skip(self), level = "debug")]
-    pub async fn supports_partial_liquidation(&self) -> bool {
-        self.check_market_compatibility(true).await.is_ok()
+        self.check_market_compatibility().await
     }
 
     /// Gets the market version via NEP-330 contract metadata.
