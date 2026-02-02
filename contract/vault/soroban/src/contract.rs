@@ -318,42 +318,17 @@ where
             return Err(RuntimeError::contract_error("vault is paused"));
         }
 
-        if assets == 0 {
-            return Err(RuntimeError::contract_error("deposit amount is zero"));
-        }
-
-        let state = self.state_mut();
-
-        // Calculate shares using simple 1:1 ratio for initial deposits
-        // or proportional for subsequent deposits
-        let shares = if state.total_shares == 0 {
-            assets // 1:1 for first deposit
-        } else {
-            // shares = assets * total_shares / total_assets
-            assets
-                .checked_mul(state.total_shares)
-                .and_then(|n| n.checked_div(state.total_assets))
-                .ok_or_else(|| RuntimeError::contract_error("overflow in share calculation"))?
-        };
-
-        if shares < min_shares_out {
-            return Err(RuntimeError::contract_error("slippage exceeded"));
-        }
-
-        // Update state
-        state.total_assets = state.total_assets.saturating_add(assets);
-        state.total_shares = state.total_shares.saturating_add(shares);
-        state.idle_assets = state.idle_assets.saturating_add(assets);
-
-        // Create and execute effects
-        let ctx = self.effect_context(now_ns);
-        let effect = templar_vault_kernel::effects::KernelEffect::MintShares {
-            owner: receiver,
-            shares,
-        };
-        self.interpreter.execute_effect(&effect, &ctx)?;
-
-        self.save_state()?;
+        let summary = self.apply_kernel_action(
+            KernelAction::Deposit {
+                owner: caller,
+                receiver,
+                assets_in: assets,
+                min_shares_out,
+                now_ns,
+            },
+            now_ns,
+        )?;
+        let shares = summary.shares_minted;
 
         Ok(DepositResult {
             shares_minted: shares,

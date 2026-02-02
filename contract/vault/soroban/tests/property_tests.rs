@@ -555,11 +555,13 @@ proptest! {
         vault.deposit(user, user, amount, 0, 100).unwrap();
 
         let effects = &vault.interpreter.effects;
-        prop_assert_eq!(effects.len(), 1);
-        let is_mint = match &effects[0] {
-            templar_vault_kernel::effects::KernelEffect::MintShares { shares, .. } => *shares == amount,
-            _ => false,
-        };
+        let is_mint = effects.iter().any(|effect| {
+            matches!(
+                effect,
+                templar_vault_kernel::effects::KernelEffect::MintShares { shares, .. }
+                    if *shares == amount
+            )
+        });
         prop_assert!(is_mint, "Expected MintShares effect with correct amount");
     }
 

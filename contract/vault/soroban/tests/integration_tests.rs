@@ -657,11 +657,13 @@ fn test_deposit_emits_mint_effect() {
 
     // Check that MintShares effect was recorded
     let effects = &vault.interpreter.effects;
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(
-        effects[0],
-        templar_vault_kernel::effects::KernelEffect::MintShares { shares: 1000, .. }
-    ));
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            templar_vault_kernel::effects::KernelEffect::MintShares { shares: 1000, .. }
+        )),
+        "expected mint effect for 1000 shares"
+    );
 }
 
 // ============================================================================
