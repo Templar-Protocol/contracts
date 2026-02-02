@@ -8,7 +8,11 @@
 // to keep curator-primitives chain-agnostic and dependency-light.
 
 use crate::convert::{IntoMarketId, IntoTargetId};
-use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, MarketId};
+use near_sdk::{env, near};
+use std::ops::{Deref, DerefMut};
+use templar_common::vault::{
+    CapGroupRecord as CommonCapGroupRecord, Event, MarketId,
+};
 
 // Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
@@ -16,17 +20,140 @@ pub use templar_curator_primitives::policy::{
         CapGroup, CapGroupError, CapGroupId as PrimitiveCapGroupId,
         CapGroupRecord as PrimitiveCapGroupRecord,
     },
-    market_lock::{
-        MarketLock, MarketLockSet,
-    },
-    supply_queue::{
-        SupplyQueue, SupplyQueueEntry, SupplyQueueError,
-    },
+    market_lock::{MarketLock, MarketLockSet},
+    refresh_plan::{RefreshPlan as PrimitiveRefreshPlan, RefreshPlanError},
+    supply_queue::{SupplyQueue as PrimitiveSupplyQueue, SupplyQueueEntry, SupplyQueueError},
     withdraw_route::{
-        build_withdraw_route, build_withdraw_route_with_liquidity, WithdrawRoute,
-        WithdrawRouteEntry, WithdrawRouteError,
+        build_withdraw_route, build_withdraw_route_with_liquidity,
+        WithdrawRoute as PrimitiveWithdrawRoute, WithdrawRouteEntry, WithdrawRouteError,
     },
 };
+
+/// NEAR wrapper for the curator supply queue (preserves Vec<MarketId> layout).
+#[near(serializers = [borsh, serde])]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SupplyQueue(pub Vec<MarketId>);
+
+impl Deref for SupplyQueue {
+    type Target = Vec<MarketId>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for SupplyQueue {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<Vec<MarketId>> for SupplyQueue {
+    fn from(markets: Vec<MarketId>) -> Self {
+        Self(markets)
+    }
+}
+
+impl From<SupplyQueue> for Vec<MarketId> {
+    fn from(queue: SupplyQueue) -> Self {
+        queue.0
+    }
+}
+
+/// NEAR wrapper for the curator withdraw route (preserves Vec<MarketId> layout).
+#[near(serializers = [borsh, serde])]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WithdrawRoute(pub Vec<MarketId>);
+
+impl Deref for WithdrawRoute {
+    type Target = Vec<MarketId>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for WithdrawRoute {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<Vec<MarketId>> for WithdrawRoute {
+    fn from(markets: Vec<MarketId>) -> Self {
+        Self(markets)
+    }
+}
+
+impl From<WithdrawRoute> for Vec<MarketId> {
+    fn from(route: WithdrawRoute) -> Self {
+        route.0
+    }
+}
+
+/// NEAR wrapper for market execution locks (backed by curator MarketLockSet).
+#[near(serializers = [borsh, serde])]
+#[derive(Clone, Debug, Default)]
+pub struct MarketExecutionLock {
+    inner: MarketLockSet,
+}
+
+impl MarketExecutionLock {
+    pub fn lock(&mut self, market: MarketId) {
+        let now = env::block_timestamp();
+        let lock = MarketLock::new(market.into_target_id(), now);
+        let Ok(new_set) = self.inner.acquire(lock, now) else {
+            env::panic_str("Market is locked");
+        };
+
+        Event::LockChange {
+            is_locked: true,
+            market,
+        }
+        .emit();
+
+        self.inner = new_set;
+    }
+
+    pub fn unlock(&mut self, market: MarketId) {
+        Event::LockChange {
+            is_locked: false,
+            market,
+        }
+        .emit();
+        self.inner = self.inner.release(market.into_target_id());
+    }
+
+    pub fn clear(&mut self) {
+        self.inner = self.inner.clear();
+    }
+
+    pub fn is_locked(&self, market: MarketId) -> bool {
+        self.inner
+            .is_locked(market.into_target_id(), env::block_timestamp())
+    }
+
+    pub fn is_locked_all(&self) -> bool {
+        self.inner.active_count(env::block_timestamp()) > 0
+    }
+
+    pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {
+        let mut set = MarketLockSet::new();
+        for market in markets {
+            let lock = MarketLock::new(market.into_target_id(), locked_at_ns);
+            let Ok(new_set) = set.acquire(lock, locked_at_ns) else {
+                env::panic_str("Market is locked");
+            };
+            set = new_set;
+        }
+        Self { inner: set }
+    }
+
+    #[must_use]
+    pub fn inner(&self) -> &MarketLockSet {
+        &self.inner
+    }
+}
 
 /// Convert a common CapGroupRecord to a curator-primitives CapGroup for use with pure functions.
 ///
@@ -162,6 +289,23 @@ pub fn get_locked_market_ids(lock_set: &MarketLockSet, current_ns: u64) -> Vec<M
         .into_iter()
         .map(IntoMarketId::into_market_id)
         .collect()
+}
+
+/// Build a curator refresh plan from NEAR market IDs and cooldown state.
+pub fn build_refresh_plan_from_market_ids(
+    markets: &[MarketId],
+    cooldown_ns: u64,
+    last_refresh_ns: u64,
+) -> Result<PrimitiveRefreshPlan, RefreshPlanError> {
+    let targets = markets
+        .iter()
+        .map(IntoTargetId::into_target_id)
+        .collect::<Vec<_>>();
+    let plan = PrimitiveRefreshPlan::new(targets)
+        .with_cooldown(cooldown_ns)
+        .with_last_refresh(last_refresh_ns);
+    plan.validate()?;
+    Ok(plan)
 }
 
 #[cfg(test)]

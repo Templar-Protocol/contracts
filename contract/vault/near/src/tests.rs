@@ -912,7 +912,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
     let before_principal = 1_000u128;
     let market_id =
         c.insert_market_for_tests(mk(8008), MarketConfiguration::default(), before_principal);
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let need = 150u128;
     let collected_start = 0u128;
@@ -996,7 +996,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
     let before_principal = 1_000u128;
     let market_id =
         c.insert_market_for_tests(mk(8009), MarketConfiguration::default(), before_principal);
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let need = 120u128;
 
@@ -1056,7 +1056,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
     let before_principal = 1_000u128;
     let market_id =
         c.insert_market_for_tests(mk(8010), MarketConfiguration::default(), before_principal);
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     c.idle_balance = 1_150; // simulate deposit arriving after before_balance snapshot
 
@@ -1116,7 +1116,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         MarketConfiguration::default(),
         before_principal,
     );
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let need = 120u128;
     let inflow = 200u128;
@@ -1188,7 +1188,7 @@ fn withdraw_balance_read_failure_stops_operation() {
         MarketConfiguration::default(),
         before_principal,
     );
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let owner = mk(5);
     let receiver = mk(13);
@@ -3802,7 +3802,7 @@ fn after_exec_withdraw_read_none_to_payout(
     let (market_id, record) = c.markets.clone().into_iter().next().unwrap();
     let _market_account = record.account.clone();
     let principal = 100u128;
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let op_id = 42;
     let index = 0;
@@ -3911,7 +3911,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         MarketConfiguration::default(),
         before,
     );
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let initial_idle = c.idle_balance;
 
@@ -3976,7 +3976,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
 
     let market_account = mk(8);
     let market_id = c.insert_market_for_tests(market_account, MarketConfiguration::default(), 10);
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let real_op = 5u64;
     let real_idx = 0u32;
@@ -4032,7 +4032,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
 
     let market_account = mk(8);
     let market_id = must_market_id(&c, &market_account);
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
     let owner = mk(1);
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
@@ -4178,7 +4178,7 @@ fn resolve_market_helpers_supply_and_withdraw() {
     // Withdraw resolver uses withdraw_route only
     let m1 = MarketId(1001);
     let m2 = MarketId(1002);
-    c.withdraw_route = vec![m1, m2];
+    c.withdraw_route = vec![m1, m2].into();
     assert_eq!(c.withdraw_route.get(0).copied(), Some(m1));
     assert_eq!(c.withdraw_route.get(1).copied(), Some(m2));
     assert_eq!(c.withdraw_route.get(2).copied(), None);
@@ -4256,7 +4256,7 @@ fn after_create_withdraw_req_success_returns_promise(
 ) {
     let market_account = mk(50);
     let market_id = must_market_id(&c, &market_account);
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 21,
@@ -4315,7 +4315,7 @@ fn after_exec_withdraw_req_returns_promise(
 ) {
     let market_account = mk(60);
     let market_id = must_market_id(&c, &market_account);
-    c.withdraw_route = vec![market_id];
+    c.withdraw_route = vec![market_id].into();
 
     let op_id = 33;
     c.op_state = OpState::Withdrawing(WithdrawingState {
@@ -4351,7 +4351,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     let m2_account = mk(71);
     let m1 = must_market_id(&c, &m1_account);
     let m2 = must_market_id(&c, &m2_account);
-    c.withdraw_route = vec![m1, m2];
+    c.withdraw_route = vec![m1, m2].into();
     let record_principal = 10u128;
 
     let op_id = 0;
@@ -4576,7 +4576,7 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
     );
 
     let market = MarketId(999);
-    c.withdraw_route = vec![market];
+    c.withdraw_route = vec![market].into();
     c.market_execution_lock.lock(market);
 
     c.idle_balance = 123;
@@ -4716,7 +4716,7 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
     );
 
     // Simulate an in-flight withdrawing state
-    c.withdraw_route = vec![MarketId(1001)];
+    c.withdraw_route = vec![MarketId(1001)].into();
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 42,
         index: 0,
@@ -4875,7 +4875,7 @@ fn sentinel_can_unbrick_withdrawing_state() {
         },
     );
 
-    c.withdraw_route = vec![MarketId(1901)];
+    c.withdraw_route = vec![MarketId(1901)].into();
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 77,
         index: 0,
@@ -5205,11 +5205,11 @@ fn migrate_pending_withdrawals_preserves_fifo_and_tail() {
         cap_groups: c.cap_groups,
         next_market_id: c.next_market_id,
         governance_timelocks: c.governance_timelocks,
-        supply_queue: c.supply_queue,
+        supply_queue: c.supply_queue.clone().into(),
         pending_withdrawals: pending,
         next_withdraw_to_execute: 5,
-        market_execution_lock: c.market_execution_lock,
-        withdraw_route: c.withdraw_route,
+        market_execution_lock: templar_common::vault::Locker::default(),
+        withdraw_route: c.withdraw_route.clone().into(),
         abdicator: c.abdicator,
         gate: c.gate,
     };
@@ -5260,11 +5260,11 @@ fn migrate_empty_queue_sets_tail_to_head() {
         cap_groups: c.cap_groups,
         next_market_id: c.next_market_id,
         governance_timelocks: c.governance_timelocks,
-        supply_queue: c.supply_queue,
+        supply_queue: c.supply_queue.clone().into(),
         pending_withdrawals: pending,
         next_withdraw_to_execute: 7,
-        market_execution_lock: c.market_execution_lock,
-        withdraw_route: c.withdraw_route,
+        market_execution_lock: templar_common::vault::Locker::default(),
+        withdraw_route: c.withdraw_route.clone().into(),
         abdicator: c.abdicator,
         gate: c.gate,
     };
@@ -5404,7 +5404,7 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
     );
     assert_eq!(
         c.withdraw_route,
-        vec![market_id],
+        vec![market_id].into(),
         "route must be set from input"
     );
 

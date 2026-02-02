@@ -6,6 +6,7 @@ use crate::{
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
     kernel_effects::{apply_kernel_effects, KernelEffectContext},
+    policy::{MarketExecutionLock, SupplyQueue, WithdrawRoute},
     storage_management::{
         require_attached_at_least, require_attached_for_pending_withdrawal, yocto_for_ft_account,
     },
@@ -44,7 +45,7 @@ use templar_common::{
             MAX_PERFORMANCE_FEE_WAD,
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
-        FeeAccrualAnchor, Fees, IdleBalanceDelta, Locker, MarketConfiguration, MarketId, OpState,
+        FeeAccrualAnchor, Fees, IdleBalanceDelta, MarketConfiguration, MarketId, OpState,
         PayoutState, PendingValue, PendingWithdrawal, QueueAction, QueueStatus, RealAssetsReport,
         Reason, RefreshingState, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase,
         WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
@@ -166,7 +167,7 @@ struct OldContract {
     supply_queue: Vec<MarketId>,
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
     next_withdraw_to_execute: u64,
-    market_execution_lock: Locker,
+    market_execution_lock: templar_common::vault::Locker,
     withdraw_route: Vec<MarketId>,
     abdicator: Abdicator,
     gate: Gate,
@@ -240,7 +241,7 @@ pub struct Contract {
     governance_timelocks: Timelocks,
 
     /// Ordered list of market IDs for deposit allocation
-    supply_queue: Vec<MarketId>,
+    supply_queue: SupplyQueue,
 
     /// Pending withdrawals queue (kernel canonical storage)
     withdraw_queue: templar_vault_kernel::WithdrawQueue,
@@ -248,10 +249,10 @@ pub struct Contract {
     address_book: BTreeMap<Address, AccountId>,
 
     // indices of markets with created requests (per withdrawing op)
-    market_execution_lock: Locker,
+    market_execution_lock: MarketExecutionLock,
 
     // Keeper-provided withdraw route for the current Withdrawing op
-    withdraw_route: Vec<MarketId>,
+    withdraw_route: WithdrawRoute,
 
     abdicator: Abdicator,
     gate: Gate,
@@ -308,7 +309,7 @@ impl Contract {
             cap_groups: BTreeMap::new(),
             governance_timelocks: initial_timelock_ns.0.into(),
             next_market_id: 0,
-            supply_queue: Vec::new(),
+            supply_queue: SupplyQueue::default(),
             virtual_shares: 1,
             virtual_assets: 1,
             idle_balance: 0,
@@ -325,8 +326,8 @@ impl Contract {
             idle_resync_inflight_op_id: 0,
             withdraw_queue: templar_vault_kernel::WithdrawQueue::new(),
             address_book: BTreeMap::new(),
-            market_execution_lock: Locker::default(),
-            withdraw_route: Vec::new(),
+            market_execution_lock: MarketExecutionLock::default(),
+            withdraw_route: WithdrawRoute::default(),
             abdicator: Abdicator::new(),
             gate: Gate::new(restrictions),
         };
@@ -651,13 +652,18 @@ impl Contract {
         plan.sort_unstable();
         plan.dedup();
 
-        require!(!plan.is_empty(), "No markets to refresh");
-
         let now = env::block_timestamp();
-        require!(
-            now.saturating_sub(idle.last_refresh_ns) >= idle.refresh_cooldown_ns,
-            "Refresh throttled"
-        );
+        let refresh_plan = crate::policy::build_refresh_plan_from_market_ids(
+            &plan,
+            idle.refresh_cooldown_ns,
+            idle.last_refresh_ns,
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Invalid refresh plan: {err:?}"))
+        });
+        refresh_plan.check_cooldown(now).unwrap_or_else(|err| {
+            panic_with_message(&format!("Refresh throttled: {err:?}"))
+        });
         idle.last_refresh_ns = now;
 
         let op_id = idle.next_op_id;
@@ -670,7 +676,7 @@ impl Contract {
         }
         .emit();
 
-        let kernel_plan = plan.iter().map(IntoTargetId::into_target_id).collect();
+        let kernel_plan = refresh_plan.to_target_list();
         let kernel_state = idle.kernel_state_mirror();
         let kernel_config = idle.kernel_config_mirror();
         let self_addr = account_id_to_address(&env::current_account_id());
@@ -2136,7 +2142,7 @@ impl Contract {
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
         let cov = self.compute_idle_coverage(amount);
 
-        self.withdraw_route = route;
+        self.withdraw_route = route.into();
 
         let request = templar_vault_kernel::transitions::WithdrawalRequest {
             op_id,
@@ -2314,7 +2320,8 @@ impl Contract {
         .emit();
     }
 
-    fn park_head_for_retry(&mut self, failed_route: Vec<MarketId>) {
+    fn park_head_for_retry(&mut self, failed_route: WithdrawRoute) {
+        let failed_route: Vec<MarketId> = failed_route.into();
         Event::WithdrawQueueUpdate {
             action: QueueAction::Parked,
             id: self.withdraw_queue.next_withdraw_to_execute.into(),
@@ -2381,6 +2388,19 @@ impl Contract {
 
 impl OldContract {
     fn into_current(self) -> Contract {
+        let legacy_locks = {
+            use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
+            let mut bytes = Vec::new();
+            self.market_execution_lock
+                .serialize(&mut bytes)
+                .unwrap_or_else(|_| panic_with_message("Failed to serialize legacy Locker"));
+            Vec::<MarketId>::try_from_slice(&bytes)
+                .unwrap_or_else(|_| panic_with_message("Failed to decode legacy Locker"))
+        };
+
+        let market_execution_lock =
+            MarketExecutionLock::from_markets(legacy_locks, env::block_timestamp());
+
         let mut address_book = BTreeMap::new();
         let mut pending_withdrawals = BTreeMap::new();
         let mut max_id = 0u64;
@@ -2452,11 +2472,11 @@ impl OldContract {
             cap_groups: self.cap_groups,
             next_market_id: self.next_market_id,
             governance_timelocks: self.governance_timelocks,
-            supply_queue: self.supply_queue,
+            supply_queue: self.supply_queue.into(),
             withdraw_queue,
             address_book,
-            market_execution_lock: self.market_execution_lock,
-            withdraw_route: self.withdraw_route,
+            market_execution_lock,
+            withdraw_route: self.withdraw_route.into(),
             abdicator: self.abdicator,
             gate: self.gate,
         }
