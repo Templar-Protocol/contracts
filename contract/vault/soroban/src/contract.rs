@@ -18,7 +18,8 @@ use templar_curator_primitives::{
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh,
     withdrawal_collected, withdrawal_step_callback, Address, FeesSpec, KernelAction, OpState,
-    PayoutOutcome, TargetId, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    PayoutOutcome, Restrictions, TargetId, VaultConfig, VaultState, MAX_PENDING,
+    MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::{compute_full_withdrawal, compute_partial_withdrawal};
@@ -165,6 +166,8 @@ where
     state: Option<VaultState>,
     /// Policy state (locks, caps, supply queue).
     policy_state: PolicyState,
+    /// Optional kernel restrictions (pause/allowlist/denylist).
+    restrictions: Option<Restrictions>,
     /// Whether the vault is paused.
     paused: bool,
 }
@@ -197,6 +200,7 @@ where
             cross_chain,
             state: None,
             policy_state: PolicyState::new(),
+            restrictions: None,
             paused: false,
         }
     }
@@ -271,8 +275,9 @@ where
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
         let config = self.kernel_config();
+        let restrictions = self.restrictions.as_ref();
         let state = self.state().clone();
-        let result = apply_action(state, &config, None, &self.config.admin, action)
+        let result = apply_action(state, &config, restrictions, &self.config.admin, action)
             .map_err(RuntimeError::transition_error)?;
 
         let ctx = self.effect_context(now_ns);
@@ -528,6 +533,25 @@ where
         self.auth.authorize(ActionKind::Pause, caller, None)?;
 
         self.paused = paused;
+        Ok(())
+    }
+
+    /// Set kernel restrictions for the vault.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The caller's address (must be admin)
+    /// * `restrictions` - Optional restrictions policy
+    pub fn set_restrictions(
+        &mut self,
+        caller: Address,
+        restrictions: Option<Restrictions>,
+    ) -> Result<(), RuntimeError> {
+        // Authorize
+        self.auth
+            .authorize(ActionKind::SetRestrictions, caller, None)?;
+
+        self.restrictions = restrictions;
         Ok(())
     }
 
@@ -931,6 +955,13 @@ where
     #[must_use]
     pub fn policy_state(&self) -> &PolicyState {
         &self.policy_state
+    }
+
+    /// Get the current kernel restrictions.
+    #[inline]
+    #[must_use]
+    pub fn restrictions(&self) -> Option<&Restrictions> {
+        self.restrictions.as_ref()
     }
 
     /// Get a mutable reference to the current policy state.

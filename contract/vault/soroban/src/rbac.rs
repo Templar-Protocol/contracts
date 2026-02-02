@@ -196,7 +196,7 @@ impl RbacAuth {
             | ActionKind::RefreshFees => Some(Role::Allocator),
 
             // Admin-only actions
-            ActionKind::ManualReconcile => Some(Role::Admin),
+            ActionKind::ManualReconcile | ActionKind::SetRestrictions => Some(Role::Admin),
         }
     }
 

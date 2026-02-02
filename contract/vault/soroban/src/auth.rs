@@ -24,6 +24,8 @@ pub enum ActionKind {
     ExecuteWithdraw,
     /// Pause/unpause the vault.
     Pause,
+    /// Set kernel restrictions (pause/allowlist/denylist).
+    SetRestrictions,
     /// Begin allocation operation.
     BeginAllocating,
     /// Finish allocation operation.
@@ -364,6 +366,15 @@ impl<'a> SorobanAuth<'a> {
                 }
             }
 
+            // Admin-only actions
+            ActionKind::SetRestrictions => {
+                if self.is_admin(caller) {
+                    Ok(())
+                } else {
+                    Err(AuthError::MissingRole(String::from("admin")))
+                }
+            }
+
             // Allocator actions
             ActionKind::BeginAllocating
             | ActionKind::FinishAllocating
@@ -426,6 +437,7 @@ mod tests {
         assert!(ActionKind::ExecuteWithdraw.is_user_facing());
 
         assert!(!ActionKind::Pause.is_user_facing());
+        assert!(!ActionKind::SetRestrictions.is_user_facing());
         assert!(!ActionKind::BeginAllocating.is_user_facing());
         assert!(!ActionKind::FinishAllocating.is_user_facing());
         assert!(!ActionKind::ManualReconcile.is_user_facing());
@@ -437,6 +449,7 @@ mod tests {
         assert!(!ActionKind::RequestWithdraw.is_privileged());
 
         assert!(ActionKind::Pause.is_privileged());
+        assert!(ActionKind::SetRestrictions.is_privileged());
         assert!(ActionKind::BeginAllocating.is_privileged());
         assert!(ActionKind::AbortAllocating.is_privileged());
         assert!(ActionKind::ManualReconcile.is_privileged());

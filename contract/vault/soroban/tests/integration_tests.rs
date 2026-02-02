@@ -608,6 +608,26 @@ fn test_rbac_user_cannot_pause() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_restrictions_blacklist_blocks_deposit() {
+    use std::collections::BTreeSet;
+    use templar_vault_kernel::Restrictions;
+
+    let mut vault = create_rbac_vault();
+    let admin = admin_addr();
+    let user = user_addr();
+
+    let mut blacklist = BTreeSet::new();
+    blacklist.insert(user);
+
+    vault
+        .set_restrictions(admin, Some(Restrictions::BlackList(blacklist)))
+        .unwrap();
+
+    let result = vault.deposit(user, user, 1000, 0, 100);
+    assert!(result.is_err());
+}
+
 // ============================================================================
 // State Persistence Tests
 // ============================================================================
