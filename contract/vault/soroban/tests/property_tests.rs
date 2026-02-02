@@ -316,7 +316,7 @@ proptest! {
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
         prop_assert!(vault.state().op_state.is_allocating());
 
-        vault.sync_external_assets(allocator, external_assets, op_id).unwrap();
+        vault.sync_external_assets(allocator, external_assets, op_id, 1000).unwrap();
         vault.finish_allocating(allocator, op_id).unwrap();
 
         prop_assert!(vault.state().op_state.is_idle());
@@ -343,7 +343,7 @@ proptest! {
         let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
         prop_assert!(vault.state().op_state.is_refreshing());
 
-        vault.sync_external_assets(allocator, external_assets, op_id).unwrap();
+        vault.sync_external_assets(allocator, external_assets, op_id, 1000).unwrap();
         vault.finish_refreshing(allocator, op_id).unwrap();
 
         prop_assert!(vault.state().op_state.is_idle());
@@ -646,7 +646,7 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
-        vault.sync_external_assets(allocator, new_external, op_id).unwrap();
+        vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
 
         prop_assert_eq!(vault.state().external_assets, new_external);
         vault.finish_allocating(allocator, op_id).unwrap();
@@ -669,7 +669,7 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
-        vault.sync_external_assets(allocator, initial_external, op_id).unwrap();
+        vault.sync_external_assets(allocator, initial_external, op_id, 1000).unwrap();
         vault.finish_allocating(allocator, op_id).unwrap();
 
         let total_before = vault.state().total_assets;
@@ -677,7 +677,7 @@ proptest! {
         // Refresh with growth
         let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
         let new_external = initial_external.saturating_add(growth);
-        vault.sync_external_assets(allocator, new_external, op_id).unwrap();
+        vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
         vault.finish_refreshing(allocator, op_id).unwrap();
 
         let total_after = vault.state().total_assets;

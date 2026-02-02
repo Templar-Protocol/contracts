@@ -579,47 +579,25 @@ where
     /// * `caller` - The caller's address (must be allocator)
     /// * `new_external_assets` - Updated external assets value
     /// * `op_id` - Operation ID to verify correlation
+    /// * `now_ns` - Current timestamp in nanoseconds
     pub fn sync_external_assets(
         &mut self,
         caller: Address,
         new_external_assets: u128,
         op_id: u64,
+        now_ns: u64,
     ) -> Result<(), RuntimeError> {
         // Authorize
         self.auth
             .authorize(ActionKind::SyncExternalAssets, caller, None)?;
 
-        let state = self.state_mut();
-
-        // Verify we're in an operation that expects sync
-        let current_op_id = match &state.op_state {
-            OpState::Allocating(s) => s.op_id,
-            OpState::Refreshing(s) => s.op_id,
-            _ => {
-                return Err(RuntimeError::contract_error(
-                    "not in allocating or refreshing state",
-                ))
-            }
+        let action = KernelAction::SyncExternalAssets {
+            new_external_assets,
+            op_id,
+            now_ns,
         };
+        let _summary = self.apply_kernel_action(action, now_ns)?;
 
-        if current_op_id != op_id {
-            return Err(RuntimeError::contract_error("op_id mismatch"));
-        }
-
-        // Update external assets
-        let old_external = state.external_assets;
-        state.external_assets = new_external_assets;
-
-        // Adjust total_assets based on the change
-        if new_external_assets > old_external {
-            let increase = new_external_assets - old_external;
-            state.total_assets = state.total_assets.saturating_add(increase);
-        } else {
-            let decrease = old_external - new_external_assets;
-            state.total_assets = state.total_assets.saturating_sub(decrease);
-        }
-
-        self.save_state()?;
         Ok(())
     }
 
@@ -1626,7 +1604,7 @@ mod tests {
 
         let op_id = vault.begin_allocating(caller, vec![(0, 500)], 1000).unwrap();
 
-        vault.sync_external_assets(caller, 1000, op_id).unwrap();
+        vault.sync_external_assets(caller, 1000, op_id, 1000).unwrap();
 
         assert_eq!(vault.state().external_assets, 1000);
     }

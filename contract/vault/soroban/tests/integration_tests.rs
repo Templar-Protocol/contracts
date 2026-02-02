@@ -284,7 +284,7 @@ fn test_allocation_flow_basic() {
     assert_eq!(op_id, 0);
 
     // Sync external assets (simulating market supply completion)
-    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id, 1000).unwrap();
 
     assert_eq!(vault.state().external_assets, 5000);
 
@@ -358,7 +358,7 @@ fn test_refresh_flow_basic() {
     assert!(vault.state().op_state.is_refreshing());
 
     // Sync external assets (simulating market read completion)
-    vault.sync_external_assets(allocator, 6000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 6000, op_id, 1000).unwrap();
 
     // Finish refresh
     let result = vault.finish_refreshing(allocator, op_id).unwrap();
@@ -578,7 +578,7 @@ fn test_rbac_admin_can_do_everything() {
     let op_id = vault.begin_allocating(admin, vec![(0, 5000)], 1000).unwrap();
 
     // Sync external assets
-    vault.sync_external_assets(admin, 5000, op_id).unwrap();
+    vault.sync_external_assets(admin, 5000, op_id, 1000).unwrap();
 
     // Finish allocation
     vault.finish_allocating(admin, op_id).unwrap();
@@ -634,7 +634,7 @@ fn test_state_persists_after_allocation() {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
-    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id, 1000).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     // Verify storage was updated
@@ -685,14 +685,14 @@ fn test_full_flow_deposit_allocate_refresh() {
     let op_id = vault
         .begin_allocating(allocator, vec![(0, 5000), (1, 3000)], 1000)
         .unwrap();
-    vault.sync_external_assets(allocator, 8000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 8000, op_id, 1000).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     assert_eq!(vault.state().external_assets, 8000);
 
     // 3. Refresh markets
     let op_id = vault.begin_refreshing(allocator, vec![0, 1], 1000).unwrap();
-    vault.sync_external_assets(allocator, 9000, op_id).unwrap(); // markets grew
+    vault.sync_external_assets(allocator, 9000, op_id, 1000).unwrap(); // markets grew
     vault.finish_refreshing(allocator, op_id).unwrap();
 
     // Total assets should now be 10000 + 1000 (growth from 8000 to 9000)
@@ -828,7 +828,7 @@ fn test_withdraw_flow_with_allocation() {
 
     // 2. Allocate some to markets
     let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
-    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id, 1000).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     // 3. Now request withdrawal (from idle state)
@@ -853,13 +853,13 @@ fn test_full_flow_deposit_allocate_refresh_withdraw() {
 
     // 2. Allocate to markets
     let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
-    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id, 1000).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
     assert_eq!(vault.state().external_assets, 5000);
 
     // 3. Refresh - markets grew
     let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
-    vault.sync_external_assets(allocator, 6000, op_id).unwrap(); // 20% growth
+    vault.sync_external_assets(allocator, 6000, op_id, 1000).unwrap(); // 20% growth
     vault.finish_refreshing(allocator, op_id).unwrap();
     assert_eq!(vault.state().external_assets, 6000);
 
@@ -938,12 +938,12 @@ fn test_share_dilution_after_yield() {
     let op_id = vault
         .begin_allocating(allocator, vec![(0, 500)], 1000)
         .unwrap();
-    vault.sync_external_assets(allocator, 500, op_id).unwrap();
+    vault.sync_external_assets(allocator, 500, op_id, 1000).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     // Market grows - 20% yield (500 -> 600)
     let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
-    vault.sync_external_assets(allocator, 600, op_id).unwrap();
+    vault.sync_external_assets(allocator, 600, op_id, 1000).unwrap();
     vault.finish_refreshing(allocator, op_id).unwrap();
 
     // After refresh: external_assets = 600, total_assets is adjusted by the yield
@@ -973,7 +973,7 @@ fn test_allocation_multiple_markets() {
         .unwrap();
 
     // Sync total external
-    vault.sync_external_assets(allocator, 6000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 6000, op_id, 1000).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     assert_eq!(vault.state().external_assets, 6000);
@@ -988,12 +988,12 @@ fn test_refresh_multiple_markets() {
     // Setup
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     let op_id = vault.begin_allocating(allocator, vec![(0, 5000)], 1000).unwrap();
-    vault.sync_external_assets(allocator, 5000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 5000, op_id, 1000).unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
     // Refresh multiple markets
     let op_id = vault.begin_refreshing(allocator, vec![0, 1, 2], 1000).unwrap();
-    vault.sync_external_assets(allocator, 6000, op_id).unwrap();
+    vault.sync_external_assets(allocator, 6000, op_id, 1000).unwrap();
     vault.finish_refreshing(allocator, op_id).unwrap();
 
     assert_eq!(vault.state().external_assets, 6000);
