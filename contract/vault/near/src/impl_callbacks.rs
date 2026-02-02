@@ -6,6 +6,7 @@ use std::fmt::Display;
 use crate::{
     governance::Gate,
     near,
+    convert::to_kernel_op_state,
     op_guard::{AllocatingSpec, OpGuard, PayoutSpec, RefreshingSpec, WithdrawingSpec},
     Contract, ContractExt, Error, Nep141Controller, RealAssetsReport,
 };
@@ -22,7 +23,7 @@ use templar_common::{
     panic_with_message,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, AllocationPlan, AllocationPositionIssueKind, Event, IdleBalanceDelta,
+        AllocatingState, AllocationPositionIssueKind, Event, IdleBalanceDelta,
         MarketId, OpState, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
         WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
         FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
@@ -198,27 +199,24 @@ impl Contract {
         }
         .emit();
 
-        let plan: AllocationPlan = allocating
-            .state()
-            .plan
-            .iter()
-            .filter(|m| m.0 != market_id)
-            .cloned()
-            .collect();
-
         allocating.set_market_principal(market_id, new_principal);
-
-        let mut allocating = allocating.replace_state(AllocatingState {
+        drop(allocating);
+        let kernel_state = to_kernel_op_state(&self.op_state);
+        let result = templar_vault_kernel::transitions::allocation_step_callback(
+            kernel_state,
+            true,
+            accepted_event,
             op_id,
-            index: market_index.saturating_add(1),
-            remaining: remaining_next,
-            plan,
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Kernel allocation step failed: {err:?}"))
         });
+        self.apply_kernel_op_state(&result.new_state);
 
         if remaining_next == 0 {
-            return allocating.stop_and_exit(None::<&String>);
+            return self.stop_and_exit(None::<&String>);
         }
-        allocating.step_allocation()
+        self.step_allocation()
     }
 
     #[private]
@@ -450,8 +448,27 @@ impl Contract {
         );
 
         // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
-        let (_, remaining_next, collected_next) =
+        let (payout_delta, remaining_next, collected_next) =
             determine_payout_delta(remaining_next, collected_next, extra);
+
+        let desired_index = match principal_delta.cmp(&inflow) {
+            Ordering::Less | Ordering::Equal if principal_delta > 0 => ctx.index.saturating_add(1),
+            _ => ctx.index,
+        };
+
+        let kernel_state = to_kernel_op_state(&self.op_state);
+        let result = templar_vault_kernel::transitions::withdrawal_step_callback(
+            kernel_state,
+            op_id,
+            payout_delta,
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Kernel withdrawal step failed: {err:?}"))
+        });
+        self.apply_kernel_op_state(&result.new_state);
+        if let OpState::Withdrawing(state) = &mut self.op_state {
+            state.index = desired_index;
+        }
 
         if remaining_next == 0 {
             return self.pay_or_else(
@@ -486,25 +503,7 @@ impl Contract {
             );
         }
 
-        let next_state = state_on_delta_inflow(
-            principal_delta,
-            inflow,
-            op_id,
-            ctx.index,
-            remaining_next,
-            collected_next,
-            ctx,
-        );
-
-        let OpState::Withdrawing(next_state) = next_state else {
-            return self.stop_and_exit(Some(&Error::NotWithdrawing));
-        };
-
-        let withdrawing = unwrap_or_return!(or_stop::<WithdrawingSpec>(self, op_id));
-
-        let mut withdrawing = withdrawing.replace_state(next_state);
-
-        withdrawing.pay_or_signal_next_withdraw()
+        self.pay_or_signal_next_withdraw()
     }
 
     #[private]
@@ -826,25 +825,40 @@ impl Contract {
             refreshing.set_market_principal(market_id, total);
         }
 
-        let mut next_state = refreshing.state().clone();
-        next_state.index = next_state.index.saturating_add(1);
+        drop(refreshing);
 
-        if next_state.index as usize >= next_state.plan.len() {
-            let report = refreshing.build_real_assets_report();
+        let kernel_state = to_kernel_op_state(&self.op_state);
+        let result = templar_vault_kernel::transitions::refresh_step_callback(kernel_state, op_id)
+            .unwrap_or_else(|err| {
+                panic_with_message(&format!("Kernel refresh step failed: {err:?}"))
+            });
+        self.apply_kernel_op_state(&result.new_state);
+
+        let (next_index, next_plan) = match &self.op_state {
+            OpState::Refreshing(state) => (state.index, state.plan.clone()),
+            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
+        };
+
+        if next_index as usize >= next_plan.len() {
+            let report = self.build_real_assets_report();
             Event::RefreshCompleted {
                 op_id: op_id.into(),
-                markets: next_state.plan,
+                markets: next_plan,
                 total_assets: report.total_assets,
                 refreshed_at: report.refreshed_at,
             }
             .emit();
-            let _idle = refreshing.into_idle();
+
+            let kernel_state = to_kernel_op_state(&self.op_state);
+            let result = templar_vault_kernel::transitions::complete_refresh(kernel_state, op_id)
+                .unwrap_or_else(|err| {
+                    panic_with_message(&format!("Kernel complete refresh failed: {err:?}"))
+                });
+            self.apply_kernel_op_state(&result.new_state);
             return PromiseOrValue::Value(report);
         }
 
-        let mut refreshing = refreshing.replace_state(next_state);
-
-        refreshing.refresh_step(op_id)
+        self.refresh_step(op_id)
     }
 
     #[private]
@@ -1298,36 +1312,4 @@ pub fn determine_payout_delta(
     let remaining_next = remaining_total.saturating_sub(payout_delta);
     let collected_next = collected_total.saturating_add(payout_delta);
     (payout_delta, remaining_next, collected_next)
-}
-
-pub fn state_on_delta_inflow(
-    principal_delta: u128,
-    inflow: u128,
-    op_id: u64,
-    route_index: u32,
-    remaining_next: u128,
-    collected_next: u128,
-    ctx: WithdrawingState,
-) -> OpState {
-    let state = match principal_delta.cmp(&inflow) {
-        Ordering::Less | Ordering::Equal if principal_delta > 0 => WithdrawingState {
-            op_id,
-            index: route_index.saturating_add(1),
-            remaining: remaining_next,
-            receiver: ctx.receiver,
-            collected: collected_next,
-            owner: ctx.owner,
-            escrow_shares: ctx.escrow_shares,
-        },
-        _ => WithdrawingState {
-            op_id,
-            index: route_index,
-            remaining: remaining_next,
-            receiver: ctx.receiver,
-            collected: collected_next,
-            owner: ctx.owner,
-            escrow_shares: ctx.escrow_shares,
-        },
-    };
-    OpState::Withdrawing(state)
 }

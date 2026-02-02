@@ -2,7 +2,7 @@
 
 use crate::{
     aum::AUM,
-    convert::{account_id_to_address, to_kernel_op_state},
+    convert::{account_id_to_address, to_kernel_op_state, IntoTargetId},
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
     kernel_effects::{apply_kernel_effects, KernelEffectContext},
@@ -57,7 +57,7 @@ use templar_curator_primitives::{
     determine_recovery_action, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
-use templar_vault_kernel::{Address, KernelAction, PayoutOutcome};
+use templar_vault_kernel::{Address, KernelAction, OpState as KernelOpState, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 
@@ -670,13 +670,30 @@ impl Contract {
         }
         .emit();
 
-        let mut refreshing = idle.start_refreshing(RefreshingState {
-            op_id,
-            index: 0,
-            plan,
+        let kernel_plan = plan.iter().map(IntoTargetId::into_target_id).collect();
+        let kernel_state = idle.kernel_state_mirror();
+        let kernel_config = idle.kernel_config_mirror();
+        let self_addr = account_id_to_address(&env::current_account_id());
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_addr,
+            KernelAction::BeginRefreshing {
+                op_id,
+                plan: kernel_plan,
+                now_ns: now,
+            },
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Kernel begin refresh failed: {err:?}"))
         });
 
-        refreshing.refresh_step(op_id)
+        idle.apply_kernel_op_state(&result.state.op_state);
+        idle.next_op_id = result.state.next_op_id;
+
+        idle.refresh_step(op_id)
     }
 
     /// Permissionless and throttled.
@@ -1211,6 +1228,83 @@ impl Contract {
         self.address_book.get(address).cloned().unwrap_or_else(|| {
             panic_with_message("Missing address mapping for withdrawal queue")
         })
+    }
+
+    fn resolve_account_fallback(&mut self, address: &Address) -> AccountId {
+        if let Some(account) = self.address_book.get(address) {
+            return account.clone();
+        }
+
+        let fallback = match &self.op_state {
+            OpState::Withdrawing(state) => {
+                if account_id_to_address(&state.owner) == *address {
+                    Some(state.owner.clone())
+                } else if account_id_to_address(&state.receiver) == *address {
+                    Some(state.receiver.clone())
+                } else {
+                    None
+                }
+            }
+            OpState::Payout(state) => {
+                if account_id_to_address(&state.owner) == *address {
+                    Some(state.owner.clone())
+                } else if account_id_to_address(&state.receiver) == *address {
+                    Some(state.receiver.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(account) = fallback {
+            self.address_book.insert(*address, account.clone());
+            return account;
+        }
+
+        panic_with_message("Missing address mapping for withdrawal queue");
+    }
+
+    fn apply_kernel_op_state(&mut self, state: &KernelOpState) {
+        self.op_state = match state {
+            KernelOpState::Idle => OpState::Idle,
+            KernelOpState::Allocating(s) => OpState::Allocating(AllocatingState {
+                op_id: s.op_id,
+                index: s.index,
+                remaining: s.remaining,
+                plan: s
+                    .plan
+                    .iter()
+                    .map(|(target, amount)| (MarketId::from(*target), *amount))
+                    .collect(),
+            }),
+            KernelOpState::Withdrawing(s) => OpState::Withdrawing(WithdrawingState {
+                op_id: s.op_id,
+                index: s.index,
+                remaining: s.remaining,
+                collected: s.collected,
+                receiver: self.resolve_account_fallback(&s.receiver),
+                owner: self.resolve_account_fallback(&s.owner),
+                escrow_shares: s.escrow_shares,
+            }),
+            KernelOpState::Refreshing(s) => OpState::Refreshing(RefreshingState {
+                op_id: s.op_id,
+                index: s.index,
+                plan: s
+                    .plan
+                    .iter()
+                    .map(|target| MarketId::from(*target))
+                    .collect(),
+            }),
+            KernelOpState::Payout(s) => OpState::Payout(PayoutState {
+                op_id: s.op_id,
+                receiver: self.resolve_account_fallback(&s.receiver),
+                amount: s.amount,
+                owner: self.resolve_account_fallback(&s.owner),
+                escrow_shares: s.escrow_shares,
+                burn_shares: s.burn_shares,
+            }),
+        };
     }
 
     pub fn build_real_assets_report(&self) -> RealAssetsReport {
@@ -1855,23 +1949,42 @@ impl Contract {
             return PromiseOrValue::Value(());
         }
 
-        let mut idle = crate::op_guard::IdleGuard::new(self);
+        self.ensure_idle();
 
         require!(
-            amount <= idle.idle_balance,
+            amount <= self.idle_balance,
             "Policy violation: reserve amount must be <= idle_balance"
         );
-        idle.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
+        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
 
-        let op_id = idle.next_op_id;
-        idle.next_op_id += 1;
+        let op_id = self.next_op_id;
+        self.next_op_id = self.next_op_id.saturating_add(1);
 
-        let mut allocating = idle.start_allocation(AllocatingState {
-            op_id,
-            index: 0,
-            remaining: amount,
-            plan,
+        let kernel_plan = plan
+            .iter()
+            .map(|(market, amount)| (market.into_target_id(), *amount))
+            .collect();
+        let kernel_state = self.kernel_state_mirror();
+        let kernel_config = self.kernel_config_mirror();
+        let self_addr = account_id_to_address(&env::current_account_id());
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_addr,
+            KernelAction::BeginAllocating {
+                op_id,
+                plan: kernel_plan,
+                now_ns: env::block_timestamp(),
+            },
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Kernel begin allocation failed: {err:?}"))
         });
+
+        self.apply_kernel_op_state(&result.state.op_state);
+        self.next_op_id = result.state.next_op_id;
 
         Event::AllocationStarted {
             op_id: op_id.into(),
@@ -1879,7 +1992,7 @@ impl Contract {
         }
         .emit();
 
-        allocating.step_allocation()
+        self.step_allocation()
     }
 
     /// build a supply `transfer_call` and chain `after_supply_1_check`
@@ -1974,12 +2087,17 @@ impl Contract {
                 }
                 .emit();
 
-                self.op_state = OpState::Allocating(AllocatingState {
+                let kernel_state = to_kernel_op_state(&self.op_state);
+                let result = templar_vault_kernel::transitions::allocation_step_callback(
+                    kernel_state,
+                    true,
+                    0,
                     op_id,
-                    index: index + 1,
-                    remaining,
-                    plan: plan.into_iter().filter(|m| m.0 != market_id).collect(),
+                )
+                .unwrap_or_else(|err| {
+                    panic_with_message(&format!("Kernel allocation step failed: {err:?}"))
                 });
+                self.apply_kernel_op_state(&result.new_state);
                 return self.step_allocation();
             }
 
@@ -2010,26 +2128,43 @@ impl Contract {
             "Duplicate market in withdraw route"
         );
 
-        let mut idle = crate::op_guard::IdleGuard::new(self);
+        self.ensure_idle();
 
-        let op_id = idle.next_op_id;
-        idle.next_op_id += 1;
+        let op_id = self.next_op_id;
+        self.next_op_id = self.next_op_id.saturating_add(1);
 
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
-        let cov = idle.compute_idle_coverage(amount);
+        let cov = self.compute_idle_coverage(amount);
 
-        idle.withdraw_route = route;
-        let mut withdrawing = idle.start_withdrawal(WithdrawingState {
+        self.withdraw_route = route;
+
+        let request = templar_vault_kernel::transitions::WithdrawalRequest {
             op_id,
-            index: Default::default(),
-            remaining: cov.remaining_unmet,
-            receiver: receiver.clone(),
-            collected: cov.collected_from_idle,
-            owner: owner.clone(),
+            amount,
+            receiver: account_id_to_address(receiver),
+            owner: account_id_to_address(owner),
             escrow_shares,
-        });
+        };
+        let kernel_state = to_kernel_op_state(&self.op_state);
+        let mut result =
+            templar_vault_kernel::transitions::start_withdrawal(kernel_state, request)
+                .unwrap_or_else(|err| {
+                    panic_with_message(&format!("Kernel start withdrawal failed: {err:?}"))
+                });
 
-        withdrawing.pay_or_signal_next_withdraw()
+        if cov.collected_from_idle > 0 {
+            result = templar_vault_kernel::transitions::withdrawal_step_callback(
+                result.new_state,
+                op_id,
+                cov.collected_from_idle,
+            )
+            .unwrap_or_else(|err| {
+                panic_with_message(&format!("Kernel idle withdraw step failed: {err:?}"))
+            });
+        }
+
+        self.apply_kernel_op_state(&result.new_state);
+        self.pay_or_signal_next_withdraw()
     }
 
     fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
