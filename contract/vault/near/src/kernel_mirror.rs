@@ -4,16 +4,13 @@
 //! state without mutating storage. This is intended for parity checks and
 //! incremental migration toward kernel-driven execution.
 
-use std::collections::BTreeMap;
-
 use near_sdk_contract_tools::ft::Nep141Controller;
 use templar_vault_kernel::fee::FeesSpec;
-use templar_vault_kernel::state::queue::{PendingWithdrawal as KernelPendingWithdrawal, WithdrawQueue};
 use templar_vault_kernel::state::vault::{
     FeeAccrualAnchor as KernelFeeAccrualAnchor, VaultConfig, VaultState, MAX_PENDING,
 };
 
-use crate::convert::{account_id_to_address, to_kernel_op_state};
+use crate::convert::to_kernel_op_state;
 use crate::Contract;
 
 impl Contract {
@@ -31,7 +28,7 @@ impl Contract {
         );
 
         let op_state = to_kernel_op_state(&self.op_state);
-        let withdraw_queue = kernel_withdraw_queue_mirror(self);
+        let withdraw_queue = self.withdraw_queue.clone();
 
         VaultState {
             total_assets,
@@ -71,32 +68,14 @@ impl Contract {
     }
 }
 
-fn kernel_withdraw_queue_mirror(contract: &Contract) -> WithdrawQueue {
-    let mut pending = BTreeMap::new();
-    for (id, entry) in contract.pending_withdrawals.iter() {
-        let kernel_entry = KernelPendingWithdrawal::new(
-            account_id_to_address(&entry.owner),
-            account_id_to_address(&entry.receiver),
-            entry.escrow_shares,
-            entry.expected_assets,
-            entry.requested_at,
-        );
-        pending.insert(*id, kernel_entry);
-    }
-
-    WithdrawQueue::with_state(
-        pending,
-        contract.next_withdraw_to_execute,
-        contract.queue_tail(),
-    )
-}
+// Note: withdraw queue is stored in kernel format, so no conversion is needed.
 
 #[cfg(test)]
 mod tests {
     use crate::convert::account_id_to_address;
     use crate::test_utils::{mk, new_test_contract, set_block_ts};
     use near_sdk::json_types::{U128, U64};
-    use templar_common::vault::{MarketConfiguration, PendingWithdrawal};
+    use templar_common::vault::MarketConfiguration;
     use templar_vault_kernel::actions::apply_action;
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::state::queue::PendingWithdrawal as KernelPendingWithdrawal;
@@ -125,26 +104,30 @@ mod tests {
         let cfg = make_market_config(10_000);
         let _ = c.insert_market_for_tests(market, cfg, 500);
 
-        c.next_withdraw_to_execute = 3;
-        c.pending_withdrawals.insert(
+        let owner_a = mk(1);
+        let receiver_a = mk(2);
+        let owner_b = mk(3);
+        let receiver_b = mk(4);
+
+        let owner_a_addr = account_id_to_address(&owner_a);
+        let receiver_a_addr = account_id_to_address(&receiver_a);
+        let owner_b_addr = account_id_to_address(&owner_b);
+        let receiver_b_addr = account_id_to_address(&receiver_b);
+
+        c.address_book.insert(owner_a_addr, owner_a.clone());
+        c.address_book.insert(receiver_a_addr, receiver_a.clone());
+        c.address_book.insert(owner_b_addr, owner_b.clone());
+        c.address_book.insert(receiver_b_addr, receiver_b.clone());
+
+        c.withdraw_queue.next_withdraw_to_execute = 3;
+        c.withdraw_queue.next_pending_withdrawal_id = 5;
+        c.withdraw_queue.pending_withdrawals.insert(
             3,
-            PendingWithdrawal {
-                owner: mk(1),
-                receiver: mk(2),
-                escrow_shares: 250,
-                expected_assets: 400,
-                requested_at: 77,
-            },
+            KernelPendingWithdrawal::new(owner_a_addr, receiver_a_addr, 250, 400, 77),
         );
-        c.pending_withdrawals.insert(
+        c.withdraw_queue.pending_withdrawals.insert(
             4,
-            PendingWithdrawal {
-                owner: mk(3),
-                receiver: mk(4),
-                escrow_shares: 300,
-                expected_assets: 600,
-                requested_at: 88,
-            },
+            KernelPendingWithdrawal::new(owner_b_addr, receiver_b_addr, 300, 600, 88),
         );
 
         let kernel = c.kernel_state_mirror();
@@ -163,14 +146,14 @@ mod tests {
         assert!(kernel.withdraw_queue.check_invariants());
         assert_eq!(
             kernel.withdraw_queue.next_withdraw_to_execute,
-            c.next_withdraw_to_execute
+            c.withdraw_queue.next_withdraw_to_execute
         );
         assert_eq!(kernel.withdraw_queue.next_pending_withdrawal_id, c.queue_tail());
         assert_eq!(kernel.withdraw_queue.pending_withdrawals.len(), 2);
 
         let pending = kernel.withdraw_queue.pending_withdrawals.get(&3).unwrap();
-        assert_eq!(pending.owner, account_id_to_address(&mk(1)));
-        assert_eq!(pending.receiver, account_id_to_address(&mk(2)));
+        assert_eq!(pending.owner, owner_a_addr);
+        assert_eq!(pending.receiver, receiver_a_addr);
         assert_eq!(pending.escrow_shares, 250);
         assert_eq!(pending.expected_assets, 400);
         assert_eq!(pending.requested_at_ns, 77);

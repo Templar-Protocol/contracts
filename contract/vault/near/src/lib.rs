@@ -15,7 +15,7 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, serde_json,
     store::IterableMap,
-    AccountId, BorshStorageKey, Gas, IntoStorageKey, NearToken, PanicOnDefault, Promise,
+    AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, Promise,
     PromiseOrValue,
 };
 use near_sdk_contract_tools::{
@@ -56,7 +56,7 @@ use templar_curator_primitives::{
     determine_recovery_action, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
-use templar_vault_kernel::{KernelAction, PayoutOutcome};
+use templar_vault_kernel::{Address, KernelAction, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 
@@ -137,6 +137,40 @@ impl MarketRecord {
     }
 }
 
+#[near(serializers = [borsh])]
+/// Legacy contract state (pre-kernel withdraw queue).
+///
+/// Used only for state migration to the kernel-backed `WithdrawQueue`.
+struct OldContract {
+    underlying_asset: FungibleAsset<BorrowAsset>,
+    aum: AUM,
+    fees: Fees<Wad>,
+    skim_recipient: AccountId,
+    fee_anchor: FeeAccrualAnchor,
+    idle_balance: u128,
+    op_state: OpState,
+    next_op_id: u64,
+    last_refresh_ns: u64,
+    refresh_cooldown_ns: u64,
+    idle_resync_last_ns: u64,
+    idle_resync_cooldown_ns: u64,
+    idle_resync_inflight_op_id: u64,
+    virtual_shares: u128,
+    virtual_assets: u128,
+    markets: BTreeMap<MarketId, MarketRecord>,
+    market_ids: BTreeMap<AccountId, MarketId>,
+    cap_groups: BTreeMap<CapGroupId, CapGroupRecord>,
+    next_market_id: u32,
+    governance_timelocks: Timelocks,
+    supply_queue: Vec<MarketId>,
+    pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
+    next_withdraw_to_execute: u64,
+    market_execution_lock: Locker,
+    withdraw_route: Vec<MarketId>,
+    abdicator: Abdicator,
+    gate: Gate,
+}
+
 #[derive(PanicOnDefault, FungibleToken, Owner, Rbac)]
 #[fungible_token(force_unregister_hook = "Self")]
 #[rbac(roles = "Role", crate = "crate")]
@@ -207,9 +241,10 @@ pub struct Contract {
     /// Ordered list of market IDs for deposit allocation
     supply_queue: Vec<MarketId>,
 
-    /// Pending withdrawals queue
-    pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
-    next_withdraw_to_execute: u64,
+    /// Pending withdrawals queue (kernel canonical storage)
+    withdraw_queue: templar_vault_kernel::WithdrawQueue,
+    /// Reverse lookup for kernel Address -> AccountId (queue actors)
+    address_book: BTreeMap<Address, AccountId>,
 
     // indices of markets with created requests (per withdrawing op)
     market_execution_lock: Locker,
@@ -287,14 +322,8 @@ impl Contract {
                 .map(|v| v.0)
                 .unwrap_or(120_000_000_000),
             idle_resync_inflight_op_id: 0,
-            pending_withdrawals: IterableMap::new(
-                [
-                    b'v'.into_storage_key().as_slice(),
-                    StorageKey::PendingWithdrawals.into_storage_key().as_slice(),
-                ]
-                .concat(),
-            ),
-            next_withdraw_to_execute: 0,
+            withdraw_queue: templar_vault_kernel::WithdrawQueue::new(),
+            address_book: BTreeMap::new(),
             market_execution_lock: Locker::default(),
             withdraw_route: Vec::new(),
             abdicator: Abdicator::new(),
@@ -314,6 +343,13 @@ impl Contract {
         });
 
         contract
+    }
+
+    #[init(ignore_state)]
+    #[must_use]
+    pub fn migrate() -> Self {
+        let old: OldContract = env::state_read().expect("No contract state to migrate");
+        old.into_current()
     }
 
     /// Burns the necessary shares to withdraw `amount` of underlying to `receiver`.
@@ -382,29 +418,24 @@ impl Contract {
 
         self.internal_accrue_fee();
 
-        while let Some(id) = self.peek_next_pending_withdrawal_id() {
-            let pending = self
-                .pending_withdrawals
-                .get(&id)
-                .unwrap_or_else(|| panic_with_message("pending vanished unexpectedly"));
+        while let Some((id, pending)) = self.withdraw_queue.head() {
+            let owner = self.resolve_account(&pending.owner);
+            let receiver = self.resolve_account(&pending.receiver);
 
             Event::WithdrawProgress {
                 phase: WithdrawProgressPhase::ExecutionStarted,
                 op_id: None,
                 id: Some(id.into()),
                 market: None,
-                owner: Some(pending.owner.clone()),
-                receiver: Some(pending.receiver.clone()),
+                owner: Some(owner.clone()),
+                receiver: Some(receiver.clone()),
                 escrow_shares: Some(U128(pending.escrow_shares)),
                 expected_assets: Some(U128(pending.expected_assets)),
-                requested_at: Some(pending.requested_at.into()),
+                requested_at: Some(pending.requested_at_ns.into()),
             }
             .emit();
 
             let expected_assets = pending.expected_assets;
-            let _escrow_shares = pending.escrow_shares;
-            let owner = pending.owner.clone();
-            let receiver = pending.receiver.clone();
 
             // Skip dust request to avoid wedging the queue.
             if expected_assets == 0 {
@@ -491,7 +522,7 @@ impl Contract {
 
     /// Allocator/Curator/Sentinel/Owner only. Executes an existing market-side supply withdrawal
     /// request for `market` and credits any returned underlying to the vault's `idle_balance`,
-    /// without touching the user withdrawal queue (`pending_withdrawals`) or the payout state
+    /// without touching the user withdrawal queue (`withdraw_queue`) or the payout state
     /// machine.
     ///
     /// This is intended as a pure rebalance operation:
@@ -695,7 +726,7 @@ impl Contract {
             }
             KernelAction::AbortWithdrawing { op_id, .. } => {
                 if matches!(self.op_state, OpState::Withdrawing(ref s) if s.op_id == op_id) {
-                    let id = self.next_withdraw_to_execute;
+                    let id = self.withdraw_queue.next_withdraw_to_execute;
                     Event::UnbrickInvoked {
                         phase: UnbrickPhase::Withdrawing,
                         op_id: Some(op_id.into()),
@@ -718,7 +749,7 @@ impl Contract {
                     return PromiseOrValue::Value(());
                 }
 
-                let id = self.next_withdraw_to_execute;
+                let id = self.withdraw_queue.next_withdraw_to_execute;
                 Event::UnbrickInvoked {
                     phase: UnbrickPhase::Payout,
                     op_id: Some(op_id.into()),
@@ -1094,25 +1125,24 @@ impl Contract {
     pub fn get_current_withdraw_request_id(&self) -> Option<U64> {
         match &self.op_state {
             OpState::Withdrawing(_) | OpState::Payout(_) => {
-                Some(self.next_withdraw_to_execute.into())
+                Some(self.withdraw_queue.next_withdraw_to_execute.into())
             }
             _ => None,
         }
     }
 
     pub fn queue_tail(&self) -> u64 {
-        self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
+        self.withdraw_queue.next_pending_withdrawal_id
     }
 
     pub fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
-        let tail = self.queue_tail();
-        if self.next_withdraw_to_execute < tail {
+        if let Some((id, _)) = self.withdraw_queue.head() {
             Event::WithdrawQueueStatus {
                 status: QueueStatus::NextFound,
-                id: Some(self.next_withdraw_to_execute.into()),
+                id: Some(id.into()),
             }
             .emit();
-            Some(self.next_withdraw_to_execute)
+            Some(id)
         } else {
             Event::WithdrawQueueStatus {
                 status: QueueStatus::Empty,
@@ -1121,6 +1151,20 @@ impl Contract {
             .emit();
             None
         }
+    }
+
+    fn record_account(&mut self, account: &AccountId) -> Address {
+        let address = account_id_to_address(account);
+        self.address_book
+            .entry(address)
+            .or_insert_with(|| account.clone());
+        address
+    }
+
+    fn resolve_account(&self, address: &Address) -> AccountId {
+        self.address_book.get(address).cloned().unwrap_or_else(|| {
+            panic_with_message("Missing address mapping for withdrawal queue")
+        })
     }
 
     pub fn build_real_assets_report(&self) -> RealAssetsReport {
@@ -1437,6 +1481,37 @@ impl Contract {
         id
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_pending_withdrawal_for_tests(
+        &mut self,
+        id: u64,
+        entry: PendingWithdrawal,
+    ) {
+        let owner_addr = self.record_account(&entry.owner);
+        let receiver_addr = self.record_account(&entry.receiver);
+
+        self.withdraw_queue.pending_withdrawals.insert(
+            id,
+            templar_vault_kernel::PendingWithdrawal::new(
+                owner_addr,
+                receiver_addr,
+                entry.escrow_shares,
+                entry.expected_assets,
+                entry.requested_at,
+            ),
+        );
+
+        let next_id = id.saturating_add(1);
+        if self.withdraw_queue.next_pending_withdrawal_id < next_id {
+            self.withdraw_queue.next_pending_withdrawal_id = next_id;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_withdrawals_len(&self) -> usize {
+        self.withdraw_queue.pending_withdrawals.len()
+    }
+
     fn enqueue_pending_withdrawal(
         &mut self,
         owner: &AccountId,
@@ -1444,19 +1519,21 @@ impl Contract {
         escrow_shares: u128,
         expected_assets: u128,
     ) {
-        let id = self.queue_tail();
         let requested_at = env::block_timestamp();
+        let owner_addr = self.record_account(owner);
+        let receiver_addr = self.record_account(receiver);
 
-        self.pending_withdrawals.insert(
-            id,
-            PendingWithdrawal {
-                owner: owner.clone(),
-                receiver: receiver.clone(),
+        let id = self
+            .withdraw_queue
+            .enqueue(
+                owner_addr,
+                receiver_addr,
                 escrow_shares,
                 expected_assets,
                 requested_at,
-            },
-        );
+                templar_vault_kernel::MAX_PENDING as u32,
+            )
+            .unwrap_or_else(|_| panic_with_message("pending withdrawal queue full"));
 
         Event::WithdrawalQueued {
             id: id.into(),
@@ -1961,7 +2038,7 @@ impl Contract {
             Event::WithdrawProgress {
                 phase: WithdrawProgressPhase::CoveredByIdle,
                 op_id: Some(op_id.into()),
-                id: Some(self.next_withdraw_to_execute.into()),
+                id: Some(self.withdraw_queue.next_withdraw_to_execute.into()),
                 market: None,
                 owner: None,
                 receiver: None,
@@ -1983,7 +2060,7 @@ impl Contract {
             Event::WithdrawProgress {
                 phase: WithdrawProgressPhase::ExecutionRequired,
                 op_id: Some(op_id.into()),
-                id: Some(self.next_withdraw_to_execute.into()),
+                id: Some(self.withdraw_queue.next_withdraw_to_execute.into()),
                 market: Some(market),
                 owner: None,
                 receiver: None,
@@ -2079,10 +2156,10 @@ impl Contract {
     }
 
     fn pop_head(&mut self) {
-        let id = self.next_withdraw_to_execute;
-        let removed = self.pending_withdrawals.remove(&id);
-        require!(removed.is_some(), "queue corrupt: head missing");
-        self.next_withdraw_to_execute = id.saturating_add(1);
+        let removed = self.withdraw_queue.dequeue();
+        let Some((id, _)) = removed else {
+            panic_with_message("queue corrupt: head missing");
+        };
         Event::WithdrawQueueUpdate {
             action: QueueAction::Dequeued,
             id: id.into(),
@@ -2093,12 +2170,12 @@ impl Contract {
     fn park_head_for_retry(&mut self, failed_route: Vec<MarketId>) {
         Event::WithdrawQueueUpdate {
             action: QueueAction::Parked,
-            id: self.next_withdraw_to_execute.into(),
+            id: self.withdraw_queue.next_withdraw_to_execute.into(),
         }
         .emit();
 
         Event::WithdrawParkedDetail {
-            id: self.next_withdraw_to_execute.into(),
+            id: self.withdraw_queue.next_withdraw_to_execute.into(),
             failed_route,
             reason: Reason::RouteExhaustedNoFunds,
         }
@@ -2152,6 +2229,90 @@ impl Contract {
                         .refresh_01_settle(market_id, op_id, index, U128(before)),
                 ),
         )
+    }
+}
+
+impl OldContract {
+    fn into_current(self) -> Contract {
+        let mut address_book = BTreeMap::new();
+        let mut pending_withdrawals = BTreeMap::new();
+        let mut max_id = 0u64;
+
+        for (id, entry) in self.pending_withdrawals.iter() {
+            let owner_addr = account_id_to_address(&entry.owner);
+            address_book
+                .entry(owner_addr)
+                .or_insert_with(|| entry.owner.clone());
+            let receiver_addr = account_id_to_address(&entry.receiver);
+            address_book
+                .entry(receiver_addr)
+                .or_insert_with(|| entry.receiver.clone());
+
+            pending_withdrawals.insert(
+                *id,
+                templar_vault_kernel::PendingWithdrawal::new(
+                    owner_addr,
+                    receiver_addr,
+                    entry.escrow_shares,
+                    entry.expected_assets,
+                    entry.requested_at,
+                ),
+            );
+
+            max_id = max_id.max(*id);
+        }
+
+        let next_pending_withdrawal_id = if pending_withdrawals.is_empty() {
+            self.next_withdraw_to_execute
+        } else {
+            max_id
+                .saturating_add(1)
+                .max(self.next_withdraw_to_execute)
+        };
+
+        let withdraw_queue = templar_vault_kernel::WithdrawQueue::with_state(
+            pending_withdrawals,
+            self.next_withdraw_to_execute,
+            next_pending_withdrawal_id,
+        );
+
+        if !withdraw_queue.pending_withdrawals.is_empty()
+            && !withdraw_queue
+                .pending_withdrawals
+                .contains_key(&withdraw_queue.next_withdraw_to_execute)
+        {
+            panic_with_message("withdraw queue head missing during migration");
+        }
+
+        Contract {
+            underlying_asset: self.underlying_asset,
+            aum: self.aum,
+            fees: self.fees,
+            skim_recipient: self.skim_recipient,
+            fee_anchor: self.fee_anchor,
+            idle_balance: self.idle_balance,
+            op_state: self.op_state,
+            next_op_id: self.next_op_id,
+            last_refresh_ns: self.last_refresh_ns,
+            refresh_cooldown_ns: self.refresh_cooldown_ns,
+            idle_resync_last_ns: self.idle_resync_last_ns,
+            idle_resync_cooldown_ns: self.idle_resync_cooldown_ns,
+            idle_resync_inflight_op_id: self.idle_resync_inflight_op_id,
+            virtual_shares: self.virtual_shares,
+            virtual_assets: self.virtual_assets,
+            markets: self.markets,
+            market_ids: self.market_ids,
+            cap_groups: self.cap_groups,
+            next_market_id: self.next_market_id,
+            governance_timelocks: self.governance_timelocks,
+            supply_queue: self.supply_queue,
+            withdraw_queue,
+            address_book,
+            market_execution_lock: self.market_execution_lock,
+            withdraw_route: self.withdraw_route,
+            abdicator: self.abdicator,
+            gate: self.gate,
+        }
     }
 }
 

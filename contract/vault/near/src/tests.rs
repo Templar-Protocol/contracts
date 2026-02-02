@@ -8,11 +8,12 @@ use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::test_utils::*;
-use crate::Contract;
+use crate::{Contract, OldContract, StorageKey};
 use crate::Number;
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
 use near_sdk::serde_json;
+use near_sdk::store::IterableMap;
 use near_sdk::test_utils::accounts;
 use near_sdk::NearToken;
 use near_sdk::PromiseOrValue;
@@ -476,7 +477,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
         escrow_shares: 100,
         burn_shares: 40,
     });
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         0,
         PendingWithdrawal {
             receiver: mk(9),
@@ -1191,7 +1192,7 @@ fn withdraw_balance_read_failure_stops_operation() {
 
     let owner = mk(5);
     let receiver = mk(13);
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         0,
         PendingWithdrawal {
             owner: owner.clone(),
@@ -1201,7 +1202,7 @@ fn withdraw_balance_read_failure_stops_operation() {
             requested_at: 0,
         },
     );
-    c.next_withdraw_to_execute = 0;
+    c.withdraw_queue.next_withdraw_to_execute = 0;
 
     let op_id = 9;
     c.op_state = OpState::Withdrawing(WithdrawingState {
@@ -1227,7 +1228,7 @@ fn withdraw_balance_read_failure_stops_operation() {
     assert!(matches!(c.op_state, OpState::Idle));
     assert!(c.withdraw_route.is_empty(), "route must be cleared on stop");
     assert_eq!(
-        c.pending_withdrawals.len(),
+        c.pending_withdrawals_len(),
         0,
         "pending withdrawal should be dequeued"
     );
@@ -3924,7 +3925,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         escrow_shares: 0,
     });
 
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         0,
         PendingWithdrawal {
             receiver: mk(9),
@@ -3990,7 +3991,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         escrow_shares: 0,
     });
 
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         real_idx as u64,
         PendingWithdrawal {
             receiver: mk(9),
@@ -4047,7 +4048,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
         owner: owner.clone(),
         escrow_shares: 10,
     });
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         c.queue_tail(),
         PendingWithdrawal {
             owner: owner.clone(),
@@ -4491,7 +4492,7 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
     c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         c.queue_tail(),
         PendingWithdrawal {
             owner: owner.clone(),
@@ -4552,8 +4553,8 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
 
     // Simulate that op_id=2 is the *current* payout.
     let head: u64 = 1;
-    c.next_withdraw_to_execute = head;
-    c.pending_withdrawals.insert(
+    c.withdraw_queue.next_withdraw_to_execute = head;
+    c.insert_pending_withdrawal_for_tests(
         head,
         PendingWithdrawal {
             owner: owner.clone(),
@@ -4563,7 +4564,7 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
             requested_at: 0,
         },
     );
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         head.saturating_add(1),
         PendingWithdrawal {
             owner: owner.clone(),
@@ -4592,8 +4593,8 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
     let owner_before = c.balance_of(&owner);
     let idle_before = c.idle_balance;
-    let head_before = c.next_withdraw_to_execute;
-    let len_before = c.pending_withdrawals.len();
+    let head_before = c.withdraw_queue.next_withdraw_to_execute;
+    let len_before = c.pending_withdrawals_len();
     let route_before = c.withdraw_route.clone();
     let locked_before = c.market_execution_lock.is_locked(market);
 
@@ -4621,11 +4622,11 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
     );
     assert_eq!(c.idle_balance, idle_before, "idle_balance must not resync");
     assert_eq!(
-        c.next_withdraw_to_execute, head_before,
+        c.withdraw_queue.next_withdraw_to_execute, head_before,
         "queue head must not advance"
     );
     assert_eq!(
-        c.pending_withdrawals.len(),
+        c.pending_withdrawals_len(),
         len_before,
         "queue must not dequeue"
     );
@@ -4657,7 +4658,7 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
         burn_shares: 0,
     });
 
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         c.queue_tail(),
         PendingWithdrawal {
             owner: owner.clone(),
@@ -4703,7 +4704,7 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
     // Enqueue a pending withdrawal at the head
     let id_before = c.queue_tail();
     let receiver = mk(9);
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         id_before,
         PendingWithdrawal {
             owner: owner.clone(),
@@ -4729,7 +4730,7 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
     let supply_before = c.total_supply();
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
     let owner_before = c.balance_of(&owner);
-    let len_before = c.pending_withdrawals.len();
+    let len_before = c.pending_withdrawals_len();
 
     let res = c.unbrick();
     match res {
@@ -4758,12 +4759,12 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
         "owner should receive escrow refund"
     );
     assert_eq!(
-        c.pending_withdrawals.len(),
+        c.pending_withdrawals_len(),
         len_before.saturating_sub(1),
         "queue should dequeue the in-flight request"
     );
     assert_eq!(
-        c.next_withdraw_to_execute,
+        c.withdraw_queue.next_withdraw_to_execute,
         id_before.saturating_add(1),
         "head should advance by one"
     );
@@ -4826,8 +4827,8 @@ fn unbrick_noop_when_not_withdrawing() {
     c.op_state = OpState::Idle;
 
     // Capture baseline
-    let len_before = c.pending_withdrawals.len();
-    let head_before = c.next_withdraw_to_execute;
+    let len_before = c.pending_withdrawals_len();
+    let head_before = c.withdraw_queue.next_withdraw_to_execute;
     let supply_before = c.total_supply();
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
     let owner_before = c.balance_of(&owner);
@@ -4840,8 +4841,8 @@ fn unbrick_noop_when_not_withdrawing() {
 
     // No changes expected when not Withdrawing
     assert!(matches!(c.op_state, OpState::Idle));
-    assert_eq!(c.pending_withdrawals.len(), len_before);
-    assert_eq!(c.next_withdraw_to_execute, head_before);
+    assert_eq!(c.pending_withdrawals_len(), len_before);
+    assert_eq!(c.withdraw_queue.next_withdraw_to_execute, head_before);
     assert_eq!(c.total_supply(), supply_before);
     assert_eq!(
         c.balance_of(&near_sdk::env::current_account_id()),
@@ -4863,7 +4864,7 @@ fn sentinel_can_unbrick_withdrawing_state() {
 
     let id_before = c.queue_tail();
     let receiver = mk(19);
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         id_before,
         PendingWithdrawal {
             owner: owner.clone(),
@@ -4885,7 +4886,7 @@ fn sentinel_can_unbrick_withdrawing_state() {
         escrow_shares: escrow,
     });
 
-    let len_before = c.pending_withdrawals.len();
+    let len_before = c.pending_withdrawals_len();
     let sentinel = c.get_configuration().sentinel;
     setup_env(&vault_id, &sentinel, vec![]);
 
@@ -4898,7 +4899,7 @@ fn sentinel_can_unbrick_withdrawing_state() {
     assert!(matches!(c.op_state, OpState::Idle));
     assert!(c.withdraw_route.is_empty());
     assert_eq!(
-        c.pending_withdrawals.len(),
+        c.pending_withdrawals_len(),
         len_before.saturating_sub(1),
         "Sentinel unbrick should dequeue head"
     );
@@ -5061,9 +5062,9 @@ fn peek_next_pending_withdrawal_id_empty_returns_none() {
     setup_env(&vault_id, &vault_id, vec![]);
     let c = new_test_contract(&vault_id);
 
-    assert_eq!(c.pending_withdrawals.len(), 0, "queue should start empty");
+    assert_eq!(c.pending_withdrawals_len(), 0, "queue should start empty");
 
-    let head_before = c.next_withdraw_to_execute;
+    let head_before = c.withdraw_queue.next_withdraw_to_execute;
     let tail_before = c.queue_tail();
     assert_eq!(
         head_before, tail_before,
@@ -5077,11 +5078,11 @@ fn peek_next_pending_withdrawal_id_empty_returns_none() {
     let got2 = c.peek_next_pending_withdrawal_id();
     assert!(got2.is_none(), "expected None on repeated peek");
     assert_eq!(
-        c.next_withdraw_to_execute, head_before,
+        c.withdraw_queue.next_withdraw_to_execute, head_before,
         "peek must not mutate the head"
     );
     assert_eq!(
-        c.pending_withdrawals.len(),
+        c.pending_withdrawals_len(),
         0,
         "peek must not change the queue length"
     );
@@ -5094,10 +5095,10 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     let mut c = new_test_contract(&vault_id);
 
     // Enqueue two pending withdrawals at tail positions
-    let head_before = c.next_withdraw_to_execute;
+    let head_before = c.withdraw_queue.next_withdraw_to_execute;
 
     let id1 = c.queue_tail();
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         id1,
         PendingWithdrawal {
             owner: mk(1),
@@ -5109,7 +5110,7 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     );
 
     let id2 = c.queue_tail();
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         id2,
         PendingWithdrawal {
             owner: mk(2),
@@ -5135,11 +5136,11 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
 
     // Ensure peek does not mutate any state
     assert_eq!(
-        c.next_withdraw_to_execute, head_before,
+        c.withdraw_queue.next_withdraw_to_execute, head_before,
         "head must be unchanged by peek"
     );
     assert_eq!(
-        c.pending_withdrawals.len(),
+        c.pending_withdrawals_len(),
         2,
         "peek must not modify queue length"
     );
@@ -5150,6 +5151,134 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
 }
 
 #[test]
+fn migrate_pending_withdrawals_preserves_fifo_and_tail() {
+    let vault_id = mk(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let c = new_test_contract(&vault_id);
+
+    let mut pending = IterableMap::new(StorageKey::PendingWithdrawals);
+    let owner_a = mk(11);
+    let receiver_a = mk(12);
+    let owner_b = mk(13);
+    let receiver_b = mk(14);
+
+    pending.insert(
+        5,
+        PendingWithdrawal {
+            owner: owner_a.clone(),
+            receiver: receiver_a.clone(),
+            escrow_shares: 10,
+            expected_assets: 100,
+            requested_at: 777,
+        },
+    );
+    pending.insert(
+        8,
+        PendingWithdrawal {
+            owner: owner_b.clone(),
+            receiver: receiver_b.clone(),
+            escrow_shares: 20,
+            expected_assets: 200,
+            requested_at: 888,
+        },
+    );
+    pending.flush();
+
+    let old = OldContract {
+        underlying_asset: c.underlying_asset,
+        aum: c.aum,
+        fees: c.fees,
+        skim_recipient: c.skim_recipient,
+        fee_anchor: c.fee_anchor,
+        idle_balance: c.idle_balance,
+        op_state: c.op_state,
+        next_op_id: c.next_op_id,
+        last_refresh_ns: c.last_refresh_ns,
+        refresh_cooldown_ns: c.refresh_cooldown_ns,
+        idle_resync_last_ns: c.idle_resync_last_ns,
+        idle_resync_cooldown_ns: c.idle_resync_cooldown_ns,
+        idle_resync_inflight_op_id: c.idle_resync_inflight_op_id,
+        virtual_shares: c.virtual_shares,
+        virtual_assets: c.virtual_assets,
+        markets: c.markets,
+        market_ids: c.market_ids,
+        cap_groups: c.cap_groups,
+        next_market_id: c.next_market_id,
+        governance_timelocks: c.governance_timelocks,
+        supply_queue: c.supply_queue,
+        pending_withdrawals: pending,
+        next_withdraw_to_execute: 5,
+        market_execution_lock: c.market_execution_lock,
+        withdraw_route: c.withdraw_route,
+        abdicator: c.abdicator,
+        gate: c.gate,
+    };
+
+    env::state_write(&old);
+    let migrated = Contract::migrate();
+
+    assert_eq!(migrated.pending_withdrawals_len(), 2);
+    assert_eq!(migrated.withdraw_queue.next_withdraw_to_execute, 5);
+    assert_eq!(migrated.withdraw_queue.next_pending_withdrawal_id, 9);
+
+    let (head_id, head) = migrated.withdraw_queue.head().expect("head exists");
+    assert_eq!(head_id, 5);
+    assert_eq!(migrated.resolve_account(&head.owner), owner_a);
+    assert_eq!(migrated.resolve_account(&head.receiver), receiver_a);
+
+    let tail = migrated.withdraw_queue.pending_withdrawals.get(&8).unwrap();
+    assert_eq!(migrated.resolve_account(&tail.owner), owner_b);
+    assert_eq!(migrated.resolve_account(&tail.receiver), receiver_b);
+}
+
+#[test]
+fn migrate_empty_queue_sets_tail_to_head() {
+    let vault_id = mk(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let c = new_test_contract(&vault_id);
+
+    let mut pending = IterableMap::new(StorageKey::PendingWithdrawals);
+    pending.flush();
+    let old = OldContract {
+        underlying_asset: c.underlying_asset,
+        aum: c.aum,
+        fees: c.fees,
+        skim_recipient: c.skim_recipient,
+        fee_anchor: c.fee_anchor,
+        idle_balance: c.idle_balance,
+        op_state: c.op_state,
+        next_op_id: c.next_op_id,
+        last_refresh_ns: c.last_refresh_ns,
+        refresh_cooldown_ns: c.refresh_cooldown_ns,
+        idle_resync_last_ns: c.idle_resync_last_ns,
+        idle_resync_cooldown_ns: c.idle_resync_cooldown_ns,
+        idle_resync_inflight_op_id: c.idle_resync_inflight_op_id,
+        virtual_shares: c.virtual_shares,
+        virtual_assets: c.virtual_assets,
+        markets: c.markets,
+        market_ids: c.market_ids,
+        cap_groups: c.cap_groups,
+        next_market_id: c.next_market_id,
+        governance_timelocks: c.governance_timelocks,
+        supply_queue: c.supply_queue,
+        pending_withdrawals: pending,
+        next_withdraw_to_execute: 7,
+        market_execution_lock: c.market_execution_lock,
+        withdraw_route: c.withdraw_route,
+        abdicator: c.abdicator,
+        gate: c.gate,
+    };
+
+    env::state_write(&old);
+    let migrated = Contract::migrate();
+
+    assert_eq!(migrated.pending_withdrawals_len(), 0);
+    assert_eq!(migrated.withdraw_queue.next_withdraw_to_execute, 7);
+    assert_eq!(migrated.withdraw_queue.next_pending_withdrawal_id, 7);
+    assert!(migrated.withdraw_queue.head().is_none());
+}
+
+#[test]
 fn execute_withdrawal_empty_queue_noop() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
@@ -5157,7 +5286,7 @@ fn execute_withdrawal_empty_queue_noop() {
     setup_env(&vault_id, &owner, vec![]);
 
     assert!(matches!(c.op_state, OpState::Idle));
-    assert_eq!(c.pending_withdrawals.len(), 0, "queue should be empty");
+    assert_eq!(c.pending_withdrawals_len(), 0, "queue should be empty");
 
     let res = c.execute_withdrawal(vec![]);
     match res {
@@ -5223,7 +5352,7 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
 
     // Enqueue a dust head (expected_assets = 0)
     let head_before = c.queue_tail();
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         head_before,
         PendingWithdrawal {
             owner: owner_id.clone(),
@@ -5239,7 +5368,7 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
     let escrow: u128 = 5;
     let expected: u128 = 60;
     let id1 = c.queue_tail();
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         id1,
         PendingWithdrawal {
             owner: owner_id.clone(),
@@ -5260,11 +5389,11 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
 
     // Dust head must be removed and head advanced to the second request
     assert_eq!(
-        c.next_withdraw_to_execute, id1,
+        c.withdraw_queue.next_withdraw_to_execute, id1,
         "head should advance past dust"
     );
     assert_eq!(
-        c.pending_withdrawals.len(),
+        c.pending_withdrawals_len(),
         1,
         "one item should remain in queue"
     );
@@ -5304,7 +5433,7 @@ fn execute_withdrawal_only_dust_drains_queue() {
 
     // Two dust entries
     let id0 = c.queue_tail();
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         id0,
         PendingWithdrawal {
             owner: owner.clone(),
@@ -5315,7 +5444,7 @@ fn execute_withdrawal_only_dust_drains_queue() {
         },
     );
     let id1 = c.queue_tail();
-    c.pending_withdrawals.insert(
+    c.insert_pending_withdrawal_for_tests(
         id1,
         PendingWithdrawal {
             owner,
@@ -5333,9 +5462,9 @@ fn execute_withdrawal_only_dust_drains_queue() {
     }
 
     assert!(matches!(c.op_state, OpState::Idle), "must remain Idle");
-    assert_eq!(c.pending_withdrawals.len(), 0, "queue should be empty");
+    assert_eq!(c.pending_withdrawals_len(), 0, "queue should be empty");
     assert_eq!(
-        c.next_withdraw_to_execute,
+        c.withdraw_queue.next_withdraw_to_execute,
         id1.saturating_add(1),
         "head should advance by two"
     );
