@@ -1,0 +1,104 @@
+set dotenv-load := true
+
+root := justfile_directory() + "/../../.."
+default_wasm := root + "/target/wasm32-unknown-unknown/release/templar_soroban_runtime.wasm"
+default_friendbot := "https://friendbot.stellar.org"
+
+# Build the Soroban vault WASM.
+build:
+	@cargo build --release --target wasm32-unknown-unknown --manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
+
+# Print the default WASM path.
+wasm-path:
+	@echo "{{default_wasm}}"
+
+# Configure Soroban testnet network settings (run once).
+network-init:
+	@network="${SOROBAN_NETWORK:-testnet}"; \
+	rpc="${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}"; \
+	passphrase="${SOROBAN_NETWORK_PASSPHRASE:-}"; \
+	if ! command -v soroban >/dev/null 2>&1; then echo "soroban CLI not found"; exit 1; fi; \
+	args="--global $network --rpc-url $rpc"; \
+	if [ -n "$passphrase" ]; then args="$args --network-passphrase \"$passphrase\""; fi; \
+	echo "Configuring network $network (rpc=$rpc)"; \
+	eval soroban config network add $args
+
+# Generate a new identity and print its address.
+keys-init name=templar:
+	@name="${SOROBAN_IDENTITY:-{{name}}}"; \
+	if ! command -v soroban >/dev/null 2>&1; then echo "soroban CLI not found"; exit 1; fi; \
+	echo "Generating identity $name"; \
+	soroban config identity generate --global "$name"; \
+	echo "Address:"; \
+	soroban config identity address "$name"
+
+# Fund an identity on testnet via Friendbot.
+keys-fund name=templar:
+	@name="${SOROBAN_IDENTITY:-{{name}}}"; \
+	friendbot="${SOROBAN_FRIENDBOT_URL:-{{default_friendbot}}}"; \
+	if ! command -v soroban >/dev/null 2>&1; then echo "soroban CLI not found"; exit 1; fi; \
+	addr="$(soroban config identity address "$name")"; \
+	echo "Funding $addr via $friendbot"; \
+	curl -sS "$friendbot/?addr=$addr"
+
+# Deploy the contract to the configured network.
+deploy:
+	@wasm="${SOROBAN_WASM:-{{default_wasm}}}"; \
+	network="${SOROBAN_NETWORK:-testnet}"; \
+	source="${SOROBAN_SOURCE:-identity}"; \
+	rpc="${SOROBAN_RPC_URL:-}"; \
+	if [ ! -f "$wasm" ]; then echo "Missing WASM at $wasm (run: just build)"; exit 1; fi; \
+	rpc_args=""; \
+	if [ -n "$rpc" ]; then rpc_args="--rpc-url $rpc"; fi; \
+	echo "Deploying $wasm to $network (source=$source)"; \
+	soroban contract deploy --wasm "$wasm" --network "$network" --source "$source" $rpc_args
+
+# Invoke an arbitrary contract function.
+invoke *args:
+	@contract_id="${SOROBAN_CONTRACT_ID:?Set SOROBAN_CONTRACT_ID}"; \
+	network="${SOROBAN_NETWORK:-testnet}"; \
+	source="${SOROBAN_SOURCE:-identity}"; \
+	rpc="${SOROBAN_RPC_URL:-}"; \
+	rpc_args=""; \
+	if [ -n "$rpc" ]; then rpc_args="--rpc-url $rpc"; fi; \
+	soroban contract invoke --id "$contract_id" --network "$network" --source "$source" $rpc_args -- {{args}}
+
+# Initialize the vault contract.
+init:
+	@just invoke initialize \
+		--admin "${SOROBAN_ADMIN:?Set SOROBAN_ADMIN}" \
+		--asset_token "${SOROBAN_ASSET_TOKEN:?Set SOROBAN_ASSET_TOKEN}" \
+		--share_token "${SOROBAN_SHARE_TOKEN:?Set SOROBAN_SHARE_TOKEN}"
+
+# Deposit assets into the vault (owner must authorize).
+deposit owner receiver assets min_shares_out=0:
+	@just invoke deposit \
+		--owner "{{owner}}" \
+		--receiver "{{receiver}}" \
+		--assets "{{assets}}" \
+		--min_shares_out "{{min_shares_out}}"
+
+# Request a withdrawal (owner must authorize).
+request-withdraw owner receiver shares min_assets_out=0:
+	@just invoke request_withdraw \
+		--owner "{{owner}}" \
+		--receiver "{{receiver}}" \
+		--shares "{{shares}}" \
+		--min_assets_out "{{min_assets_out}}"
+
+# Pause/unpause (admin only).
+pause:
+	@just invoke set_paused --caller "${SOROBAN_ADMIN:?Set SOROBAN_ADMIN}" --paused true
+
+unpause:
+	@just invoke set_paused --caller "${SOROBAN_ADMIN:?Set SOROBAN_ADMIN}" --paused false
+
+# Read-only helpers.
+admin:
+	@just invoke admin
+
+asset-token:
+	@just invoke asset_token
+
+share-token:
+	@just invoke share_token
