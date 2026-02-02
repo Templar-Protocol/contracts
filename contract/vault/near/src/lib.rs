@@ -5,6 +5,7 @@ use crate::{
     convert::{account_id_to_address, to_kernel_op_state},
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
+    kernel_effects::{apply_kernel_effects, KernelEffectContext},
     storage_management::{
         require_attached_at_least, require_attached_for_pending_withdrawal, yocto_for_ft_account,
     },
@@ -21,7 +22,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{
     ft::{
         nep141::GAS_FOR_FT_TRANSFER_CALL, nep145::Nep145ForceUnregister, ContractMetadata,
-        FungibleToken, Nep141Controller, Nep141Mint, Nep141Transfer, Nep145 as _, Nep145Controller,
+        FungibleToken, Nep141Controller, Nep141Mint, Nep145 as _, Nep145Controller,
         Nep148Controller, StorageBalanceBounds,
     },
     Owner, Rbac,
@@ -390,22 +391,67 @@ impl Contract {
 
         self.internal_accrue_fee();
 
-        // Compute assets after fee accrual for accurate conversion
-        let assets = self.convert_to_assets(U128(shares)).0;
-        require!(assets > 0, "Dust redeem would yield 0 assets");
+        let now = env::block_timestamp();
+        let expected_assets = self.convert_to_assets(U128(shares)).0;
+        require!(expected_assets > 0, "Dust redeem would yield 0 assets");
 
-        Gate::bypass_transfer(
-            self,
-            &Nep141Transfer::new(shares, &sender, env::current_account_id()),
-        );
+        let kernel_state = self.kernel_state_mirror();
+        let kernel_config = self.kernel_config_mirror();
+        let owner_addr = account_id_to_address(&sender);
+        let receiver_addr = account_id_to_address(&receiver);
+        let self_addr = account_id_to_address(&env::current_account_id());
+        let request_id = self.withdraw_queue.next_pending_withdrawal_id;
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_addr,
+            KernelAction::RequestWithdraw {
+                owner: owner_addr,
+                receiver: receiver_addr,
+                shares,
+                min_assets_out: expected_assets,
+                now_ns: now,
+            },
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Kernel request_withdraw failed: {err:?}"))
+        });
+
+        self.address_book
+            .entry(owner_addr)
+            .or_insert_with(|| sender.clone());
+        self.address_book
+            .entry(receiver_addr)
+            .or_insert_with(|| receiver.clone());
+
+        let mut ctx = KernelEffectContext::default();
+        ctx.insert(owner_addr, sender.clone());
+        ctx.insert(receiver_addr, receiver.clone());
+        ctx.insert(Address::default(), env::current_account_id());
+
+        apply_kernel_effects(self, &result.effects, &ctx).unwrap_or_else(|_| {
+            panic_with_message("Failed to apply kernel withdraw effects")
+        });
+
+        self.withdraw_queue = result.state.withdraw_queue;
 
         Event::RedeemRequested {
             shares: U128(shares),
-            estimated_assets: U128(assets),
+            estimated_assets: U128(expected_assets),
         }
         .emit();
 
-        self.enqueue_pending_withdrawal(&sender, &receiver, shares, assets);
+        Event::WithdrawalQueued {
+            id: request_id.into(),
+            owner: sender,
+            receiver,
+            escrow_shares: U128(shares),
+            expected_assets: U128(expected_assets),
+            requested_at: now.into(),
+        }
+        .emit();
         PromiseOrValue::Value(())
     }
 
@@ -1510,40 +1556,6 @@ impl Contract {
     #[cfg(test)]
     pub(crate) fn pending_withdrawals_len(&self) -> usize {
         self.withdraw_queue.pending_withdrawals.len()
-    }
-
-    fn enqueue_pending_withdrawal(
-        &mut self,
-        owner: &AccountId,
-        receiver: &AccountId,
-        escrow_shares: u128,
-        expected_assets: u128,
-    ) {
-        let requested_at = env::block_timestamp();
-        let owner_addr = self.record_account(owner);
-        let receiver_addr = self.record_account(receiver);
-
-        let id = self
-            .withdraw_queue
-            .enqueue(
-                owner_addr,
-                receiver_addr,
-                escrow_shares,
-                expected_assets,
-                requested_at,
-                templar_vault_kernel::MAX_PENDING as u32,
-            )
-            .unwrap_or_else(|_| panic_with_message("pending withdrawal queue full"));
-
-        Event::WithdrawalQueued {
-            id: id.into(),
-            owner: owner.clone(),
-            receiver: receiver.clone(),
-            escrow_shares: U128(escrow_shares),
-            expected_assets: U128(expected_assets),
-            requested_at: requested_at.into(),
-        }
-        .emit();
     }
 
     /// Computes fee-aware effective totals for conversions, mimicking `MetaMorpho`:
