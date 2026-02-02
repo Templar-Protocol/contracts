@@ -8,10 +8,12 @@ use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
 use near_sdk_contract_tools::ft::Nep141Transfer;
 use std::collections::VecDeque;
+use templar_curator_primitives::governance as shared_gov;
 use templar_common::{
     panic_with_message,
-    vault::{PendingValue, Restrictions},
+    vault::Restrictions,
 };
+use templar_curator_primitives::governance::PendingValue;
 
 #[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +51,21 @@ pub enum TimelockedAction {
     },
     /// Mark a `market` for removal (timestamp is still stored on the config).
     MarketRemoval { market: AccountId },
+}
+
+fn to_shared_restrictions(
+    restrictions: &Option<Restrictions>,
+) -> Option<shared_gov::Restrictions<AccountId>> {
+    match restrictions {
+        None => None,
+        Some(Restrictions::Paused) => Some(shared_gov::Restrictions::Paused),
+        Some(Restrictions::BlackList(list)) => {
+            Some(shared_gov::Restrictions::BlackList(list.iter().cloned().collect()))
+        }
+        Some(Restrictions::WhiteList(list)) => {
+            Some(shared_gov::Restrictions::WhiteList(list.iter().cloned().collect()))
+        }
+    }
 }
 
 #[near(serializers = [borsh])]
@@ -93,25 +110,22 @@ impl Timelocks {
     }
 
     pub fn pending_len(&self) -> usize {
-        self.pending_actions.len()
+        shared_gov::queue_len(&self.pending_actions)
     }
 
     pub fn has_pending(&self) -> bool {
-        !self.pending_actions.is_empty()
+        shared_gov::queue_has_pending(&self.pending_actions)
     }
 
     pub fn pending_actions(&self) -> Vec<PendingValue<TimelockedAction>> {
-        self.pending_actions.iter().cloned().collect()
+        shared_gov::queue_pending_values(&self.pending_actions)
     }
 
     fn seek_pending_timelock(
         &self,
         find_fn: impl Fn(&TimelockedAction) -> bool,
     ) -> Option<(usize, &PendingValue<TimelockedAction>)> {
-        self.pending_actions
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| find_fn(&entry.value))
+        shared_gov::queue_seek(&self.pending_actions, find_fn)
     }
 }
 
@@ -729,26 +743,30 @@ impl Contract {
                 Self::require_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_guardian");
 
-                Self::with_members_of(&Role::Guardian, |members| {
+                let has_guardian = Self::with_members_of(&Role::Guardian, |members| {
                     require!(
                         members.len() < 2,
                         "Invariant violation: Cannot have more than one Guardian"
                     );
                     !members.is_empty()
-                })
+                });
+
+                shared_gov::guardian_change_decision(has_guardian).requires_timelock()
             }
             // Submit a timelocked governance change if there is already a sentinel
             TimelockedAction::SentinelChange { .. } => {
                 Self::require_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_sentinel");
 
-                Self::with_members_of(&Role::Sentinel, |members| {
+                let has_sentinel = Self::with_members_of(&Role::Sentinel, |members| {
                     require!(
                         members.len() < 2,
                         "Invariant violation: Cannot have more than one Sentinel"
                     );
                     !members.is_empty()
-                })
+                });
+
+                shared_gov::sentinel_change_decision(has_sentinel).requires_timelock()
             }
             // Submit a timelocked governance change if the selected timelock is to be smaller than the current value
             TimelockedAction::TimelockConfigChange {
@@ -771,12 +789,21 @@ impl Contract {
                     }
                 };
 
-                require!(new != current, "Already set to this value");
-                require!(
-                    (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&new),
-                    "Timelock out of bounds"
-                );
-                new < current
+                let decision = match shared_gov::timelock_config_decision(
+                    current,
+                    new,
+                    MIN_TIMELOCK_NS,
+                    MAX_TIMELOCK_NS,
+                ) {
+                    Ok(decision) => decision,
+                    Err(shared_gov::TimelockConfigError::NoChange) => {
+                        panic_with_message("Already set to this value")
+                    }
+                    Err(shared_gov::TimelockConfigError::OutOfBounds) => {
+                        panic_with_message("Timelock out of bounds")
+                    }
+                };
+                decision.requires_timelock()
             }
             TimelockedAction::FeesChange { fees } => {
                 Self::require_owner();
@@ -789,55 +816,40 @@ impl Contract {
                     "Fee change already pending"
                 );
 
-                let performance_fee = Wad::from(fees.performance.fee.0);
-                let management_fee = Wad::from(fees.management.fee.0);
-
-                require!(
-                    performance_fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
-                    "performance fee too high"
-                );
-                require!(
-                    management_fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
-                    "management fee too high"
-                );
-
-                let performance_fee_changed = performance_fee != self.fees.performance.fee;
-                let management_fee_changed = management_fee != self.fees.management.fee;
-                let performance_recipient_changed =
-                    fees.performance.recipient != self.fees.performance.recipient;
-                let management_recipient_changed =
-                    fees.management.recipient != self.fees.management.recipient;
-                let max_total_assets_growth_rate =
+                let proposed_performance_fee = Wad::from(fees.performance.fee.0);
+                let proposed_management_fee = Wad::from(fees.management.fee.0);
+                let proposed_max_rate =
                     fees.max_total_assets_growth_rate.map(|r| Wad::from(r.0));
-                let max_rate_changed =
-                    max_total_assets_growth_rate != self.fees.max_total_assets_growth_rate;
 
-                require!(
-                    performance_fee_changed
-                        || management_fee_changed
-                        || performance_recipient_changed
-                        || management_recipient_changed
-                        || max_rate_changed,
-                    "No fee changes"
+                let current = shared_gov::FeeConfig::new(
+                    self.fees.performance.fee,
+                    self.fees.management.fee,
+                    &self.fees.performance.recipient,
+                    &self.fees.management.recipient,
+                    self.fees.max_total_assets_growth_rate,
+                );
+                let proposed = shared_gov::FeeConfig::new(
+                    proposed_performance_fee,
+                    proposed_management_fee,
+                    &fees.performance.recipient,
+                    &fees.management.recipient,
+                    proposed_max_rate,
                 );
 
-                let fee_increase = performance_fee > self.fees.performance.fee
-                    || management_fee > self.fees.management.fee;
-                let recipient_changed =
-                    performance_recipient_changed || management_recipient_changed;
-
-                // Relaxing (increasing) the max-rate limiter behaves like a fee increase.
-                let max_rate_relaxed = match (
-                    self.fees.max_total_assets_growth_rate,
-                    max_total_assets_growth_rate,
-                ) {
-                    (None, None) => false,
-                    (None, Some(_)) => false,
-                    (Some(_), None) => true,
-                    (Some(old), Some(new)) => new > old,
+                let decision = match shared_gov::evaluate_fee_change(&current, &proposed) {
+                    Ok(decision) => decision,
+                    Err(shared_gov::FeeChangeError::PerformanceFeeTooHigh) => {
+                        panic_with_message("performance fee too high")
+                    }
+                    Err(shared_gov::FeeChangeError::ManagementFeeTooHigh) => {
+                        panic_with_message("management fee too high")
+                    }
+                    Err(shared_gov::FeeChangeError::NoChange) => {
+                        panic_with_message("No fee changes")
+                    }
                 };
 
-                fee_increase || recipient_changed || max_rate_relaxed
+                decision.timelocked
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 Abdicator::require_not_abdicated(&self.abdicator, "set_restrictions");
@@ -846,7 +858,9 @@ impl Contract {
                     "No restriction changes"
                 );
 
-                let is_relaxing = self.determine_relaxed(restrictions);
+                let current = to_shared_restrictions(&self.gate.restrictions);
+                let proposed = to_shared_restrictions(restrictions);
+                let is_relaxing = shared_gov::determine_relaxed(&current, &proposed);
 
                 if is_relaxing {
                     Self::assert_guardian_or_owner();
@@ -891,8 +905,16 @@ impl Contract {
                         cfg.removable_at == 0,
                         "Market removal pending, cannot change cap"
                     );
-                    require!(new_cap != &cfg.cap, "New cap is same as current");
-                    new_cap > &cfg.cap
+                    let decision = match shared_gov::cap_change_decision(
+                        Some(cfg.cap.0),
+                        new_cap.0,
+                    ) {
+                        Ok(decision) => decision,
+                        Err(shared_gov::CapChangeError::NoChange) => {
+                            panic_with_message("New cap is same as current")
+                        }
+                    };
+                    decision.requires_timelock()
                 } else {
                     true
                 }
@@ -913,12 +935,15 @@ impl Contract {
                     "Cap group change already pending"
                 );
 
-                if let Some(record) = self.cap_groups.get(cap_group) {
-                    require!(new_cap != &record.cap, "New cap is same as current");
-                    new_cap > &record.cap
-                } else {
-                    true
-                }
+                let current = self.cap_groups.get(cap_group).map(|record| record.cap.0);
+                let decision =
+                    match shared_gov::cap_change_decision(current, new_cap.0) {
+                        Ok(decision) => decision,
+                        Err(shared_gov::CapChangeError::NoChange) => {
+                            panic_with_message("New cap is same as current")
+                        }
+                    };
+                decision.requires_timelock()
             }
             TimelockedAction::CapGroupRelativeCapChange {
                 cap_group,
@@ -929,7 +954,6 @@ impl Contract {
                 self.ensure_idle();
 
                 let new_wad = Wad::from(new_relative_cap.0);
-                require!(new_wad <= Wad::one(), "relative cap too high");
 
                 require!(
                     self.governance_timelocks
@@ -942,15 +966,17 @@ impl Contract {
                     "Cap group relative cap change already pending"
                 );
 
-                if let Some(record) = self.cap_groups.get(cap_group) {
-                    require!(
-                        new_wad != record.relative_cap,
-                        "New relative cap is same as current"
-                    );
-                    new_wad > record.relative_cap
-                } else {
-                    true
-                }
+                let current = self.cap_groups.get(cap_group).map(|record| record.relative_cap);
+                let decision = match shared_gov::relative_cap_change_decision(current, new_wad) {
+                    Ok(decision) => decision,
+                    Err(shared_gov::RelativeCapChangeError::RelativeCapTooHigh) => {
+                        panic_with_message("relative cap too high")
+                    }
+                    Err(shared_gov::RelativeCapChangeError::NoChange) => {
+                        panic_with_message("New relative cap is same as current")
+                    }
+                };
+                decision.requires_timelock()
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 Self::assert_curator_or_owner();
@@ -959,10 +985,13 @@ impl Contract {
 
                 let rec = self.market_record_by_id_or_panic(*market);
 
-                require!(
-                    rec.cfg.cap_group_id != *cap_group,
-                    "Market already assigned to this cap group"
-                );
+                let changed = rec.cfg.cap_group_id != *cap_group;
+                let decision = match shared_gov::membership_change_decision(changed) {
+                    Ok(decision) => decision,
+                    Err(shared_gov::MembershipChangeError::NoChange) => {
+                        panic_with_message("Market already assigned to this cap group")
+                    }
+                };
 
                 require!(
                     self.governance_timelocks
@@ -975,7 +1004,7 @@ impl Contract {
                     "Cap group membership change already pending"
                 );
 
-                true
+                decision.requires_timelock()
             }
             // Submit a timelocked governance change to remove a market
             TimelockedAction::MarketRemoval { market } => {
@@ -1012,32 +1041,9 @@ impl Contract {
                         .is_none(),
                     "Cap change pending for this market"
                 );
-                r.principal > 0
+                shared_gov::market_removal_decision(r.principal).requires_timelock()
             }
         }
-    }
-
-    fn determine_relaxed(&self, restrictions: &Option<Restrictions>) -> bool {
-        let is_relaxing = match (&self.gate.restrictions, restrictions) {
-            (None, None) => false,
-            (None, Some(_)) => false,
-            (Some(_), None) => true,
-            (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
-            (Some(Restrictions::Paused), Some(_)) => true,
-            (Some(Restrictions::BlackList(old)), Some(Restrictions::BlackList(new))) => {
-                old.difference(new).next().is_some()
-            }
-            (Some(Restrictions::WhiteList(old)), Some(Restrictions::WhiteList(new))) => {
-                new.difference(old).next().is_some()
-            }
-            (Some(Restrictions::BlackList(old)), Some(Restrictions::WhiteList(new))) => {
-                old.intersection(new).next().is_some()
-            }
-            (Some(Restrictions::WhiteList(_)), Some(Restrictions::Paused))
-            | (Some(Restrictions::BlackList(_)), Some(Restrictions::Paused)) => false,
-            (Some(Restrictions::WhiteList(_)), Some(Restrictions::BlackList(_))) => true,
-        };
-        is_relaxing
     }
 
     fn apply_immediately(&mut self, action: &TimelockedAction) {
@@ -1314,9 +1320,9 @@ impl Contract {
                     removable_at: rec.cfg.removable_at.into(),
                 }
                 .emit();
-            }
         }
     }
+}
 
     /// Schedule a new timelocked governance action.
     ///
@@ -1354,14 +1360,14 @@ impl Contract {
             "Change already pending for this action and arguments"
         );
 
-        let valid_at_ns = env::block_timestamp().saturating_add(cur);
-
-        self.governance_timelocks
-            .pending_actions
-            .push_back(PendingValue {
-                value: action.clone(),
-                valid_at_ns,
-            });
+        let now_ns = env::block_timestamp();
+        let valid_at_ns = now_ns.saturating_add(cur);
+        shared_gov::queue_schedule(
+            &mut self.governance_timelocks.pending_actions,
+            action.clone(),
+            now_ns,
+            cur,
+        );
 
         if let TimelockedAction::CapGroupChange { cap_group, new_cap } = action {
             Event::CapGroupRaiseSubmitted {
@@ -1415,7 +1421,10 @@ impl Contract {
         find_fn: impl Fn(&TimelockedAction) -> bool,
     ) -> Option<TimelockedAction> {
         let (i, entry) = self.governance_timelocks.seek_pending_timelock(find_fn)?;
-        entry.verify();
+        require!(
+            entry.is_mature(env::block_timestamp()),
+            "Timelock not elapsed yet"
+        );
         let action = entry.value.clone();
         self.governance_timelocks.pending_actions.remove(i);
         Some(action)
