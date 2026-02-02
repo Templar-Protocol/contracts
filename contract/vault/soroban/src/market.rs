@@ -11,99 +11,13 @@
 //!    Use kernel types (`MarketRef`) for testing and chain-agnostic logic.
 
 use alloc::vec::Vec;
-use derive_more::{From, Into};
+use soroban_sdk::{Address, Bytes, Env};
 use templar_vault_kernel::{AssetId, TargetId};
 
 use crate::error::RuntimeError;
 
 // ---------------------------------------------------------------------------
-// Soroban mock types (placeholder for soroban-sdk types)
-// ---------------------------------------------------------------------------
-
-/// Mock Soroban environment (placeholder for `soroban_sdk::Env`).
-///
-/// In a real Soroban contract, this would be `soroban_sdk::Env`.
-/// We use a mock here so the crate can be built without soroban-sdk.
-#[derive(Clone, Debug)]
-pub struct Env {
-    /// Ledger timestamp in nanoseconds.
-    pub ledger_timestamp_ns: u64,
-    /// Contract address (32 bytes).
-    pub current_contract: SorobanAddress,
-}
-
-impl Env {
-    /// Create a new mock environment.
-    #[inline]
-    #[must_use]
-    pub const fn new(ledger_timestamp_ns: u64, current_contract: SorobanAddress) -> Self {
-        Self {
-            ledger_timestamp_ns,
-            current_contract,
-        }
-    }
-
-    /// Create a mock environment for testing.
-    #[inline]
-    #[must_use]
-    pub fn mock() -> Self {
-        Self {
-            ledger_timestamp_ns: 1_000_000_000_000,
-            current_contract: SorobanAddress([0u8; 32]),
-        }
-    }
-}
-
-impl Default for Env {
-    fn default() -> Self {
-        Self::mock()
-    }
-}
-
-/// Mock Soroban address (placeholder for `soroban_sdk::Address`).
-///
-/// In a real Soroban contract, this would be `soroban_sdk::Address`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, From, Into)]
-pub struct SorobanAddress(pub [u8; 32]);
-
-impl SorobanAddress {
-    /// Create from raw bytes.
-    #[inline]
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Return the raw bytes.
-    #[inline]
-    #[must_use]
-    pub const fn as_bytes(&self) -> [u8; 32] {
-        self.0
-    }
-}
-
-/// Mock Soroban bytes (placeholder for `soroban_sdk::Bytes`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, From, Into)]
-pub struct Bytes(pub Vec<u8>);
-
-impl Bytes {
-    /// Create from a Vec.
-    #[inline]
-    #[must_use]
-    pub fn from_vec(v: Vec<u8>) -> Self {
-        Self(v)
-    }
-
-    /// Return as a slice.
-    #[inline]
-    #[must_use]
-    pub fn as_slice(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Soroban-style market adapters (as specified in the task)
+// Soroban-style market adapters
 // ---------------------------------------------------------------------------
 
 /// Local Soroban market adapter trait.
@@ -115,7 +29,7 @@ impl Bytes {
 ///
 /// ```ignore
 /// impl SorobanMarketAdapter for BlendMarketAdapter {
-///     fn supply(&self, env: &Env, asset: SorobanAddress, amount: i128) -> Result<(), RuntimeError> {
+///     fn supply(&self, env: &Env, asset: &Address, amount: i128) -> Result<(), RuntimeError> {
 ///         // Call blend market contract
 ///         blend_client.supply(&env, asset, amount);
 ///         Ok(())
@@ -131,7 +45,7 @@ pub trait SorobanMarketAdapter {
     /// * `env` - The Soroban environment.
     /// * `asset` - The asset contract address.
     /// * `amount` - The amount to supply (i128 for SEP-41 compatibility).
-    fn supply(&self, env: &Env, asset: SorobanAddress, amount: i128) -> Result<(), RuntimeError>;
+    fn supply(&self, env: &Env, asset: &Address, amount: i128) -> Result<(), RuntimeError>;
 
     /// Withdraw assets from the target market.
     ///
@@ -140,7 +54,7 @@ pub trait SorobanMarketAdapter {
     /// * `env` - The Soroban environment.
     /// * `asset` - The asset contract address.
     /// * `amount` - The amount to withdraw (i128 for SEP-41 compatibility).
-    fn withdraw(&self, env: &Env, asset: SorobanAddress, amount: i128) -> Result<(), RuntimeError>;
+    fn withdraw(&self, env: &Env, asset: &Address, amount: i128) -> Result<(), RuntimeError>;
 
     /// Read total assets for a market (principal + interest).
     ///
@@ -152,7 +66,7 @@ pub trait SorobanMarketAdapter {
     /// # Returns
     ///
     /// The total assets held in this market position (i128 for SEP-41 compatibility).
-    fn total_assets(&self, env: &Env, asset: SorobanAddress) -> Result<i128, RuntimeError>;
+    fn total_assets(&self, env: &Env, asset: &Address) -> Result<i128, RuntimeError>;
 }
 
 /// Settlement receipt for a cross-chain allocation attempt.
@@ -243,7 +157,7 @@ pub trait SorobanCrossChainMarketAdapter {
     /// # Returns
     ///
     /// The total assets held in this cross-chain market position.
-    fn total_assets(&self, env: &Env, asset: SorobanAddress) -> Result<i128, RuntimeError>;
+    fn total_assets(&self, env: &Env, asset: &Address) -> Result<i128, RuntimeError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,20 +230,20 @@ pub trait CrossChainMarketAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Mock implementations for testing
+// Test implementations for use with soroban-sdk testutils
 // ---------------------------------------------------------------------------
 
-/// Mock implementation of `SorobanMarketAdapter` for testing.
+/// Test implementation of `SorobanMarketAdapter` for use with SDK testutils.
 #[derive(Clone, Debug, Default)]
-pub struct MockSorobanMarketAdapter {
+pub struct TestMarketAdapter {
     /// Total assets to return.
     pub mock_total_assets: i128,
     /// Whether operations should fail.
     pub should_fail: bool,
 }
 
-impl MockSorobanMarketAdapter {
-    /// Create a new mock adapter with specified total assets.
+impl TestMarketAdapter {
+    /// Create a new test adapter with specified total assets.
     #[inline]
     #[must_use]
     pub const fn new(mock_total_assets: i128) -> Self {
@@ -339,7 +253,7 @@ impl MockSorobanMarketAdapter {
         }
     }
 
-    /// Create a failing mock adapter.
+    /// Create a failing test adapter.
     #[inline]
     #[must_use]
     pub const fn failing() -> Self {
@@ -350,42 +264,32 @@ impl MockSorobanMarketAdapter {
     }
 }
 
-impl SorobanMarketAdapter for MockSorobanMarketAdapter {
-    fn supply(
-        &self,
-        _env: &Env,
-        _asset: SorobanAddress,
-        _amount: i128,
-    ) -> Result<(), RuntimeError> {
+impl SorobanMarketAdapter for TestMarketAdapter {
+    fn supply(&self, _env: &Env, _asset: &Address, _amount: i128) -> Result<(), RuntimeError> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock supply failed"));
+            return Err(RuntimeError::effect_failed("test supply failed"));
         }
         Ok(())
     }
 
-    fn withdraw(
-        &self,
-        _env: &Env,
-        _asset: SorobanAddress,
-        _amount: i128,
-    ) -> Result<(), RuntimeError> {
+    fn withdraw(&self, _env: &Env, _asset: &Address, _amount: i128) -> Result<(), RuntimeError> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock withdraw failed"));
+            return Err(RuntimeError::effect_failed("test withdraw failed"));
         }
         Ok(())
     }
 
-    fn total_assets(&self, _env: &Env, _asset: SorobanAddress) -> Result<i128, RuntimeError> {
+    fn total_assets(&self, _env: &Env, _asset: &Address) -> Result<i128, RuntimeError> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock total_assets failed"));
+            return Err(RuntimeError::effect_failed("test total_assets failed"));
         }
         Ok(self.mock_total_assets)
     }
 }
 
-/// Mock implementation of `SorobanCrossChainMarketAdapter` for testing.
+/// Test implementation of `SorobanCrossChainMarketAdapter` for use with SDK testutils.
 #[derive(Clone, Debug, Default)]
-pub struct MockSorobanCrossChainAdapter {
+pub struct TestCrossChainAdapter {
     /// Next attempt ID to return.
     pub next_attempt_id: u64,
     /// Settlement receipt to return.
@@ -396,8 +300,8 @@ pub struct MockSorobanCrossChainAdapter {
     pub should_fail: bool,
 }
 
-impl MockSorobanCrossChainAdapter {
-    /// Create a new mock adapter.
+impl TestCrossChainAdapter {
+    /// Create a new test adapter.
     #[inline]
     #[must_use]
     pub const fn new() -> Self {
@@ -417,10 +321,10 @@ impl MockSorobanCrossChainAdapter {
     }
 }
 
-impl SorobanCrossChainMarketAdapter for MockSorobanCrossChainAdapter {
+impl SorobanCrossChainMarketAdapter for TestCrossChainAdapter {
     fn submit_intent(&self, _env: &Env, _plan_bytes: Bytes) -> Result<u64, RuntimeError> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock submit_intent failed"));
+            return Err(RuntimeError::effect_failed("test submit_intent failed"));
         }
         Ok(self.next_attempt_id)
     }
@@ -432,7 +336,7 @@ impl SorobanCrossChainMarketAdapter for MockSorobanCrossChainAdapter {
         attempt_id: u64,
     ) -> Result<SettlementReceipt, RuntimeError> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock settle failed"));
+            return Err(RuntimeError::effect_failed("test settle failed"));
         }
         Ok(self
             .settlement_receipt
@@ -444,9 +348,9 @@ impl SorobanCrossChainMarketAdapter for MockSorobanCrossChainAdapter {
             )))
     }
 
-    fn total_assets(&self, _env: &Env, _asset: SorobanAddress) -> Result<i128, RuntimeError> {
+    fn total_assets(&self, _env: &Env, _asset: &Address) -> Result<i128, RuntimeError> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock total_assets failed"));
+            return Err(RuntimeError::effect_failed("test total_assets failed"));
         }
         Ok(self.mock_total_assets)
     }
@@ -455,26 +359,7 @@ impl SorobanCrossChainMarketAdapter for MockSorobanCrossChainAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_soroban_address_from_bytes() {
-        let bytes = [1u8; 32];
-        let addr = SorobanAddress::from_bytes(bytes);
-        assert_eq!(addr.as_bytes(), bytes);
-    }
-
-    #[test]
-    fn test_env_mock() {
-        let env = Env::mock();
-        assert_eq!(env.ledger_timestamp_ns, 1_000_000_000_000);
-    }
-
-    #[test]
-    fn test_bytes_from_vec() {
-        let v = alloc::vec![1, 2, 3];
-        let bytes = Bytes::from_vec(v.clone());
-        assert_eq!(bytes.as_slice(), &[1, 2, 3]);
-    }
+    use soroban_sdk::testutils::Address as _;
 
     #[test]
     fn test_settlement_receipt_new() {
@@ -493,54 +378,54 @@ mod tests {
     }
 
     #[test]
-    fn test_mock_soroban_market_adapter_success() {
-        let adapter = MockSorobanMarketAdapter::new(1000);
-        let env = Env::mock();
-        let asset = SorobanAddress::default();
+    fn test_test_market_adapter_success() {
+        let adapter = TestMarketAdapter::new(1000);
+        let env = Env::default();
+        let asset = Address::generate(&env);
 
-        assert!(adapter.supply(&env, asset, 100).is_ok());
-        assert!(adapter.withdraw(&env, asset, 50).is_ok());
-        assert_eq!(adapter.total_assets(&env, asset).unwrap(), 1000);
+        assert!(adapter.supply(&env, &asset, 100).is_ok());
+        assert!(adapter.withdraw(&env, &asset, 50).is_ok());
+        assert_eq!(adapter.total_assets(&env, &asset).unwrap(), 1000);
     }
 
     #[test]
-    fn test_mock_soroban_market_adapter_failure() {
-        let adapter = MockSorobanMarketAdapter::failing();
-        let env = Env::mock();
-        let asset = SorobanAddress::default();
+    fn test_test_market_adapter_failure() {
+        let adapter = TestMarketAdapter::failing();
+        let env = Env::default();
+        let asset = Address::generate(&env);
 
-        assert!(adapter.supply(&env, asset, 100).is_err());
-        assert!(adapter.withdraw(&env, asset, 50).is_err());
-        assert!(adapter.total_assets(&env, asset).is_err());
+        assert!(adapter.supply(&env, &asset, 100).is_err());
+        assert!(adapter.withdraw(&env, &asset, 50).is_err());
+        assert!(adapter.total_assets(&env, &asset).is_err());
     }
 
     #[test]
-    fn test_mock_cross_chain_adapter_submit_intent() {
-        let adapter = MockSorobanCrossChainAdapter::new();
-        let env = Env::mock();
-        let plan = Bytes::default();
+    fn test_cross_chain_adapter_submit_intent() {
+        let adapter = TestCrossChainAdapter::new();
+        let env = Env::default();
+        let plan = Bytes::new(&env);
 
         let attempt_id = adapter.submit_intent(&env, plan).unwrap();
         assert_eq!(attempt_id, 1);
     }
 
     #[test]
-    fn test_mock_cross_chain_adapter_settle() {
+    fn test_cross_chain_adapter_settle() {
         let receipt = SettlementReceipt::new(10, 20, 5000);
-        let adapter = MockSorobanCrossChainAdapter::new().with_settlement(receipt.clone());
-        let env = Env::mock();
+        let adapter = TestCrossChainAdapter::new().with_settlement(receipt.clone());
+        let env = Env::default();
 
         let result = adapter.settle(&env, 10, 20).unwrap();
         assert_eq!(result, receipt);
     }
 
     #[test]
-    fn test_mock_cross_chain_adapter_total_assets() {
-        let mut adapter = MockSorobanCrossChainAdapter::new();
+    fn test_cross_chain_adapter_total_assets() {
+        let mut adapter = TestCrossChainAdapter::new();
         adapter.mock_total_assets = 2500;
-        let env = Env::mock();
-        let asset = SorobanAddress::default();
+        let env = Env::default();
+        let asset = Address::generate(&env);
 
-        assert_eq!(adapter.total_assets(&env, asset).unwrap(), 2500);
+        assert_eq!(adapter.total_assets(&env, &asset).unwrap(), 2500);
     }
 }

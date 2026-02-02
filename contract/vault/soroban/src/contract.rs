@@ -3,8 +3,15 @@
 //! This module provides the contract entrypoints that map to kernel actions.
 //! Each entrypoint performs authorization, dispatches to kernel transitions,
 //! and executes the returned effects.
+//!
+//! ## Soroban Contract
+//!
+//! The [`SorobanVaultContract`] at the bottom of this module provides the
+//! Soroban-native contract interface with `#[contract]` and `#[contractimpl]`
+//! macros for deployment on the Stellar network.
 
 use alloc::vec::Vec;
+use soroban_sdk::{contract, contractimpl, contracttype, Address as SdkAddress, Env, Vec as SdkVec};
 use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
 };
@@ -1056,6 +1063,419 @@ fn merge_summaries(mut base: EffectSummary, other: EffectSummary) -> EffectSumma
         .saturating_add(other.assets_transferred);
     base.events_emitted = base.events_emitted.saturating_add(other.events_emitted);
     base
+}
+
+// ---------------------------------------------------------------------------
+// Soroban Contract Definition
+// ---------------------------------------------------------------------------
+
+/// Storage keys for the Soroban vault contract.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub enum VaultDataKey {
+    /// Admin address.
+    Admin,
+    /// Underlying asset token address.
+    AssetToken,
+    /// Share token address.
+    ShareToken,
+    /// Whether the contract is initialized.
+    Initialized,
+    /// Whether the vault is paused.
+    Paused,
+}
+
+/// Soroban vault contract.
+///
+/// This is the deployable contract that uses Soroban SDK's `#[contract]` macro.
+/// It provides the on-chain interface for vault operations.
+#[contract]
+pub struct SorobanVaultContract;
+
+#[contractimpl]
+impl SorobanVaultContract {
+    /// Initialize the vault contract.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `admin` - Administrator address
+    /// * `asset_token` - Address of the underlying asset token
+    /// * `share_token` - Address of the share token
+    ///
+    /// # Panics
+    ///
+    /// Panics if the contract is already initialized.
+    pub fn initialize(
+        env: Env,
+        admin: SdkAddress,
+        asset_token: SdkAddress,
+        share_token: SdkAddress,
+    ) {
+        // Check not already initialized
+        if env
+            .storage()
+            .instance()
+            .has(&VaultDataKey::Initialized)
+        {
+            panic!("already initialized");
+        }
+
+        // Store configuration
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::AssetToken, &asset_token);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::ShareToken, &share_token);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::Initialized, &true);
+
+        // Initialize vault state in persistent storage
+        use crate::storage::{SorobanStorage, SorobanVaultState};
+        let storage = SorobanStorage::new(&env);
+        storage.save_vault_state(&SorobanVaultState::default());
+        storage.set_version(1);
+    }
+
+    /// Deposit assets into the vault.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `owner` - The depositor's address
+    /// * `receiver` - The address to receive shares
+    /// * `assets` - Amount of assets to deposit
+    /// * `min_shares_out` - Minimum shares expected (slippage protection)
+    ///
+    /// # Returns
+    ///
+    /// The number of shares minted.
+    pub fn deposit(
+        env: Env,
+        owner: SdkAddress,
+        receiver: SdkAddress,
+        assets: i128,
+        min_shares_out: i128,
+    ) -> i128 {
+        // Require authorization from owner
+        owner.require_auth();
+
+        // Check not paused
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&VaultDataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            panic!("vault is paused");
+        }
+
+        if assets <= 0 {
+            panic!("deposit amount must be positive");
+        }
+
+        // Load vault state
+        use crate::storage::{SorobanStorage, SorobanVaultState};
+        let storage = SorobanStorage::new(&env);
+        let mut state = storage.load_vault_state().unwrap_or_default();
+
+        // Calculate shares
+        let shares = if state.total_shares == 0 {
+            assets // 1:1 for first deposit
+        } else {
+            assets
+                .checked_mul(state.total_shares)
+                .and_then(|n| n.checked_div(state.total_assets))
+                .expect("share calculation overflow")
+        };
+
+        if shares < min_shares_out {
+            panic!("slippage exceeded");
+        }
+
+        // Update state
+        state.total_assets = state.total_assets.saturating_add(assets);
+        state.total_shares = state.total_shares.saturating_add(shares);
+        state.idle_assets = state.idle_assets.saturating_add(assets);
+
+        // Save state
+        storage.save_vault_state(&state);
+
+        // Transfer assets from owner to vault
+        let asset_token: SdkAddress = env
+            .storage()
+            .instance()
+            .get(&VaultDataKey::AssetToken)
+            .expect("asset token not set");
+        let token_client = soroban_sdk::token::Client::new(&env, &asset_token);
+        token_client.transfer(&owner, &env.current_contract_address(), &assets);
+
+        // Mint shares to receiver
+        let share_token: SdkAddress = env
+            .storage()
+            .instance()
+            .get(&VaultDataKey::ShareToken)
+            .expect("share token not set");
+        let share_client = soroban_sdk::token::StellarAssetClient::new(&env, &share_token);
+        share_client.mint(&receiver, &shares);
+
+        // Emit deposit event
+        use crate::effects::DepositEvent;
+        DepositEvent {
+            owner: owner.clone(),
+            receiver,
+            assets_in: assets,
+            shares_out: shares,
+        }
+        .publish(&env);
+
+        shares
+    }
+
+    /// Request a withdrawal from the vault.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `owner` - The share owner's address
+    /// * `receiver` - The address to receive assets
+    /// * `shares` - Amount of shares to redeem
+    /// * `min_assets_out` - Minimum assets expected (slippage protection)
+    ///
+    /// # Returns
+    ///
+    /// The withdrawal request ID.
+    pub fn request_withdraw(
+        env: Env,
+        owner: SdkAddress,
+        receiver: SdkAddress,
+        shares: i128,
+        min_assets_out: i128,
+    ) -> u64 {
+        // Require authorization from owner
+        owner.require_auth();
+
+        if shares <= 0 {
+            panic!("shares must be positive");
+        }
+
+        // Load vault state
+        use crate::storage::{SorobanStorage, SorobanVaultState};
+        let storage = SorobanStorage::new(&env);
+        let state = storage.load_vault_state().expect("vault not initialized");
+
+        if state.total_shares == 0 {
+            panic!("no shares in vault");
+        }
+
+        // Calculate expected assets
+        let expected_assets = shares
+            .checked_mul(state.total_assets)
+            .and_then(|n| n.checked_div(state.total_shares))
+            .expect("asset calculation overflow");
+
+        if expected_assets < min_assets_out {
+            panic!("slippage exceeded");
+        }
+
+        // Generate request ID (simplified - in production use proper sequencing)
+        let request_id = state.next_op_id;
+
+        // Emit withdrawal request event
+        use crate::effects::WithdrawRequestEvent;
+        WithdrawRequestEvent {
+            id: request_id,
+            owner: owner.clone(),
+            receiver,
+            shares,
+            expected_assets,
+        }
+        .publish(&env);
+
+        request_id
+    }
+
+    /// Pause or unpause the vault.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `caller` - The caller (must be admin)
+    /// * `paused` - Whether to pause (true) or unpause (false)
+    pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) {
+        // Require authorization
+        caller.require_auth();
+
+        // Check caller is admin
+        let admin: SdkAddress = env
+            .storage()
+            .instance()
+            .get(&VaultDataKey::Admin)
+            .expect("admin not set");
+        if caller != admin {
+            panic!("caller is not admin");
+        }
+
+        // Update paused state
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::Paused, &paused);
+
+        // Emit event
+        use crate::effects::PauseUpdatedEvent;
+        PauseUpdatedEvent { paused }.publish(&env);
+    }
+
+    /// Get the admin address.
+    pub fn admin(env: Env) -> SdkAddress {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::Admin)
+            .expect("admin not set")
+    }
+
+    /// Get the asset token address.
+    pub fn asset_token(env: Env) -> SdkAddress {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::AssetToken)
+            .expect("asset token not set")
+    }
+
+    /// Get the share token address.
+    pub fn share_token(env: Env) -> SdkAddress {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::ShareToken)
+            .expect("share token not set")
+    }
+
+    /// Check if the vault is paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Get total assets under management.
+    pub fn total_assets(env: Env) -> i128 {
+        use crate::storage::SorobanStorage;
+        let storage = SorobanStorage::new(&env);
+        storage
+            .load_vault_state()
+            .map(|s| s.total_assets)
+            .unwrap_or(0)
+    }
+
+    /// Get total shares in circulation.
+    pub fn total_shares(env: Env) -> i128 {
+        use crate::storage::SorobanStorage;
+        let storage = SorobanStorage::new(&env);
+        storage
+            .load_vault_state()
+            .map(|s| s.total_shares)
+            .unwrap_or(0)
+    }
+
+    /// Get idle assets (not deployed to markets).
+    pub fn idle_assets(env: Env) -> i128 {
+        use crate::storage::SorobanStorage;
+        let storage = SorobanStorage::new(&env);
+        storage
+            .load_vault_state()
+            .map(|s| s.idle_assets)
+            .unwrap_or(0)
+    }
+
+    /// Get external assets (deployed to markets).
+    pub fn external_assets(env: Env) -> i128 {
+        use crate::storage::SorobanStorage;
+        let storage = SorobanStorage::new(&env);
+        storage
+            .load_vault_state()
+            .map(|s| s.external_assets)
+            .unwrap_or(0)
+    }
+
+    /// Calculate shares for a given deposit amount.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `assets` - Amount of assets to deposit
+    ///
+    /// # Returns
+    ///
+    /// The number of shares that would be minted.
+    pub fn preview_deposit(env: Env, assets: i128) -> i128 {
+        use crate::storage::SorobanStorage;
+        let storage = SorobanStorage::new(&env);
+        let state = match storage.load_vault_state() {
+            Some(s) => s,
+            None => return assets, // 1:1 for empty vault
+        };
+
+        if state.total_shares == 0 {
+            assets // 1:1 for first deposit
+        } else {
+            assets
+                .checked_mul(state.total_shares)
+                .and_then(|n| n.checked_div(state.total_assets))
+                .unwrap_or(0)
+        }
+    }
+
+    /// Calculate assets for a given withdrawal amount.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `shares` - Amount of shares to redeem
+    ///
+    /// # Returns
+    ///
+    /// The number of assets that would be returned.
+    pub fn preview_withdraw(env: Env, shares: i128) -> i128 {
+        use crate::storage::SorobanStorage;
+        let storage = SorobanStorage::new(&env);
+        let state = match storage.load_vault_state() {
+            Some(s) => s,
+            None => return 0,
+        };
+
+        if state.total_shares == 0 {
+            0
+        } else {
+            shares
+                .checked_mul(state.total_assets)
+                .and_then(|n| n.checked_div(state.total_shares))
+                .unwrap_or(0)
+        }
+    }
+
+    /// Extend the TTL of contract storage.
+    ///
+    /// Call periodically to prevent state expiry.
+    pub fn extend_ttl(env: Env) {
+        // Extend instance storage
+        env.storage()
+            .instance()
+            .extend_ttl(50_000, 100_000);
+
+        // Extend persistent storage (vault state)
+        use crate::storage::SorobanStorage;
+        let storage = SorobanStorage::new(&env);
+        storage.extend_ttl(50_000, 100_000);
+    }
 }
 
 #[cfg(test)]

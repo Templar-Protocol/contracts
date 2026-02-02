@@ -39,27 +39,36 @@ pub mod reconciliation;
 pub mod storage;
 
 // Re-exports for convenience
-pub use auth::{ActionKind, AuthAdapter, AuthError};
+pub use auth::{ActionKind, AuthAdapter, AuthError, SorobanAuth};
 pub use contract::{
     AllocationResult, ContractConfig, CuratorVault, DepositResult, RefreshResult,
-    WithdrawRequestResult,
+    SorobanVaultContract, VaultDataKey, WithdrawRequestResult,
 };
 pub use effects::{
-    EffectContext, EffectInterpreter, EffectResult, EffectSummary, MockInterpreter,
-    MockSep41Token, Sep41Operation, Sep41Token, SorobanEffectInterpreter,
+    AddressMap, AllocDoneEvent, AllocStartEvent, AllocStepFailEvent, DepositEvent,
+    EffectContext, EffectInterpreter, EffectResult, EffectSummary, ExtAssetsSyncEvent,
+    FeesRefreshEvent, MockInterpreter, PauseUpdatedEvent, PayoutEvent, RefreshDoneEvent,
+    RefreshStartEvent, SdkTokenAdapter, Sep41Operation, Sep41Token, SorobanEffectInterpreter,
+    TestSep41Token, WithdrawCollectedEvent, WithdrawRequestEvent, WithdrawStartEvent,
+    WithdrawStoppedEvent,
 };
 pub use error::RuntimeError;
 pub use market::{
-    AttemptId, Bytes, CrossChainMarketAdapter, Env, MarketAdapter, MarketRef,
-    MockSorobanCrossChainAdapter, MockSorobanMarketAdapter, SettlementReceipt, SorobanAddress,
-    SorobanCrossChainMarketAdapter, SorobanMarketAdapter,
+    AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt,
+    SorobanCrossChainMarketAdapter, SorobanMarketAdapter, TestCrossChainAdapter, TestMarketAdapter,
 };
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 pub use reconciliation::{
     build_refresh_plan, reconcile_external_assets, resync_external_assets, ReconciliationEvent,
     ReconciliationRecord, ResyncRequest, ResyncResult,
 };
-pub use storage::{MemoryStorage, Storage, StorageVersion, VersionedState};
+pub use storage::{
+    MemoryStorage, SorobanStorage, SorobanStorageKey, SorobanVaultState, Storage, StorageVersion,
+    VersionedState,
+};
+
+// Re-export soroban-sdk types for convenience
+pub use soroban_sdk::{Address, Bytes, Env};
 
 // Policy re-exports for convenience
 pub use policy::{

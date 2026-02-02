@@ -22,11 +22,12 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use templar_vault_kernel::{AssetId, TargetId, TimestampNs};
+use soroban_sdk::{Address as SdkAddress, Env};
+use templar_vault_kernel::{Address as KernelAddress, AssetId, TargetId, TimestampNs};
 
 use crate::auth::{ActionKind, AuthAdapter, AuthError};
 use crate::error::RuntimeError;
-use crate::market::{Env, MarketAdapter, MarketRef, SorobanAddress, SorobanMarketAdapter};
+use crate::market::{MarketAdapter, MarketRef, SorobanMarketAdapter};
 
 // ---------------------------------------------------------------------------
 // Audit Events
@@ -41,8 +42,8 @@ pub enum ReconciliationEvent {
     Started {
         /// Operation ID.
         op_id: u64,
-        /// Caller address.
-        caller: SorobanAddress,
+        /// Caller address (kernel format for auth).
+        caller: KernelAddress,
         /// Timestamp when reconciliation started (nanoseconds).
         timestamp_ns: TimestampNs,
         /// Number of markets to refresh.
@@ -94,7 +95,7 @@ impl ReconciliationEvent {
     #[must_use]
     pub const fn started(
         op_id: u64,
-        caller: SorobanAddress,
+        caller: KernelAddress,
         timestamp_ns: TimestampNs,
         market_count: u32,
     ) -> Self {
@@ -209,14 +210,14 @@ impl ReconciliationRecord {
 /// Request parameters for the `resync_external_assets` entrypoint.
 #[derive(Clone, Debug)]
 pub struct ResyncRequest {
-    /// Caller address (must be authorized for ManualReconcile).
-    pub caller: SorobanAddress,
+    /// Caller address (kernel format for auth).
+    pub caller: KernelAddress,
     /// Operation ID for the refresh flow.
     pub op_id: u64,
     /// List of market target IDs to refresh.
     pub market_ids: Vec<TargetId>,
-    /// Asset contract address.
-    pub asset: SorobanAddress,
+    /// Asset contract address (SDK format for market adapter calls).
+    pub asset: SdkAddress,
     /// Current external assets value (for delta calculation).
     pub current_external_assets: u128,
 }
@@ -226,10 +227,10 @@ impl ResyncRequest {
     #[inline]
     #[must_use]
     pub fn new(
-        caller: SorobanAddress,
+        caller: KernelAddress,
         op_id: u64,
         market_ids: Vec<TargetId>,
-        asset: SorobanAddress,
+        asset: SdkAddress,
         current_external_assets: u128,
     ) -> Self {
         Self {
@@ -323,12 +324,12 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
     market_adapter: &M,
     request: ResyncRequest,
 ) -> Result<ResyncResult, RuntimeError> {
-    let timestamp_ns = env.ledger_timestamp_ns;
+    let timestamp_ns = env.ledger().timestamp() * 1_000_000_000;
     let market_count = request.market_ids.len() as u32;
     let mut events = Vec::new();
 
     // 1. Authorize caller
-    auth.authorize(ActionKind::ManualReconcile, request.caller.as_bytes(), None)
+    auth.authorize(ActionKind::ManualReconcile, request.caller, None)
         .map_err(|e| match e {
             AuthError::NotAuthorized { .. } => {
                 RuntimeError::unauthorized("caller not authorized for ManualReconcile")
@@ -352,7 +353,7 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
     let mut total_principals: i128 = 0;
     for &market_id in &request.market_ids {
         let principal = market_adapter
-            .total_assets(env, request.asset)
+            .total_assets(env, &request.asset)
             .map_err(|e| {
                 events.push(ReconciliationEvent::failed(
                     request.op_id,
@@ -468,9 +469,10 @@ pub fn build_refresh_plan(asset_id: AssetId, markets: &[TargetId]) -> Vec<Market
 mod tests {
     use super::*;
     use crate::auth::PermissiveAuth;
-    use crate::market::MockSorobanMarketAdapter;
+    use crate::market::TestMarketAdapter;
     use alloc::vec;
     use core::cell::Cell;
+    use soroban_sdk::testutils::Address as _;
 
     struct MockAdapter {
         total: Cell<u128>,
@@ -539,7 +541,7 @@ mod tests {
 
     #[test]
     fn reconciliation_event_started() {
-        let caller = SorobanAddress::from_bytes([1u8; 32]);
+        let caller: KernelAddress = [1u8; 32];
         let event = ReconciliationEvent::started(1, caller, 1000, 5);
 
         assert_eq!(event.op_id(), 1);
@@ -643,23 +645,21 @@ mod tests {
 
     #[test]
     fn resync_external_assets_success() {
-        let env = Env::mock();
+        let env = Env::default();
         let auth = PermissiveAuth;
-        let adapter = MockSorobanMarketAdapter::new(1000);
+        let adapter = TestMarketAdapter::new(1000);
 
         let request = ResyncRequest::new(
-            SorobanAddress::from_bytes([1u8; 32]),
+            [1u8; 32],
             42,
             vec![1, 2, 3],
-            SorobanAddress::from_bytes([2u8; 32]),
+            SdkAddress::generate(&env),
             2500, // current external assets
         );
 
         let result = resync_external_assets(&env, &auth, &adapter, request).unwrap();
 
         // Should have 3 markets * 1000 = 3000 total
-        // But MockSorobanMarketAdapter returns the same value for all calls
-        // So we get 1000 * 3 = 3000
         assert_eq!(result.record.op_id, 42);
         assert_eq!(result.record.markets_refreshed, 3);
         assert_eq!(result.record.new_external_assets, 3000);
@@ -699,15 +699,15 @@ mod tests {
 
     #[test]
     fn resync_external_assets_negative_delta() {
-        let env = Env::mock();
+        let env = Env::default();
         let auth = PermissiveAuth;
-        let adapter = MockSorobanMarketAdapter::new(500);
+        let adapter = TestMarketAdapter::new(500);
 
         let request = ResyncRequest::new(
-            SorobanAddress::from_bytes([1u8; 32]),
+            [1u8; 32],
             100,
             vec![1, 2],
-            SorobanAddress::from_bytes([2u8; 32]),
+            SdkAddress::generate(&env),
             2000, // current external assets (higher than new)
         );
 
@@ -722,15 +722,15 @@ mod tests {
 
     #[test]
     fn resync_external_assets_empty_markets() {
-        let env = Env::mock();
+        let env = Env::default();
         let auth = PermissiveAuth;
-        let adapter = MockSorobanMarketAdapter::new(1000);
+        let adapter = TestMarketAdapter::new(1000);
 
         let request = ResyncRequest::new(
-            SorobanAddress::from_bytes([1u8; 32]),
+            [1u8; 32],
             50,
             vec![], // no markets
-            SorobanAddress::from_bytes([2u8; 32]),
+            SdkAddress::generate(&env),
             1000,
         );
 
@@ -746,11 +746,12 @@ mod tests {
 
     #[test]
     fn resync_request_new() {
-        let caller = SorobanAddress::from_bytes([1u8; 32]);
-        let asset = SorobanAddress::from_bytes([2u8; 32]);
+        let env = Env::default();
+        let caller: KernelAddress = [1u8; 32];
+        let asset = SdkAddress::generate(&env);
         let markets = vec![1, 2, 3];
 
-        let request = ResyncRequest::new(caller, 42, markets.clone(), asset, 1000);
+        let request = ResyncRequest::new(caller, 42, markets.clone(), asset.clone(), 1000);
 
         assert_eq!(request.caller, caller);
         assert_eq!(request.op_id, 42);
@@ -764,7 +765,7 @@ mod tests {
         let record = ReconciliationRecord::new(1, 2, 3000);
         let events = vec![ReconciliationEvent::started(
             1,
-            SorobanAddress::default(),
+            [0u8; 32], // kernel address default
             0,
             2,
         )];

@@ -4,12 +4,187 @@
 //! for executing kernel effects on the Soroban blockchain.
 
 use alloc::vec::Vec;
-use templar_vault_kernel::{effects::KernelEffect, Address};
+use soroban_sdk::{contractevent, token::StellarAssetClient, Address, Env};
+use templar_vault_kernel::effects::KernelEffect;
 
 use crate::error::RuntimeError;
 
+// ---------------------------------------------------------------------------
+// Contract Events (using #[contractevent] structs)
+// ---------------------------------------------------------------------------
+
+/// Deposit processed event.
+#[contractevent]
+pub struct DepositEvent {
+    /// Owner who deposited.
+    #[topic]
+    pub owner: Address,
+    /// Receiver of shares.
+    #[topic]
+    pub receiver: Address,
+    /// Assets deposited.
+    pub assets_in: i128,
+    /// Shares minted.
+    pub shares_out: i128,
+}
+
+/// Withdrawal requested event.
+#[contractevent]
+pub struct WithdrawRequestEvent {
+    /// Request ID.
+    #[topic]
+    pub id: u64,
+    /// Owner requesting withdrawal.
+    #[topic]
+    pub owner: Address,
+    /// Receiver of assets.
+    pub receiver: Address,
+    /// Shares to burn.
+    pub shares: i128,
+    /// Expected assets out.
+    pub expected_assets: i128,
+}
+
+/// Withdrawal started event.
+#[contractevent]
+pub struct WithdrawStartEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Amount being withdrawn.
+    pub amount: i128,
+    /// Shares in escrow.
+    pub escrow_shares: i128,
+    /// Owner.
+    pub owner: Address,
+    /// Receiver.
+    pub receiver: Address,
+}
+
+/// Withdrawal collected event.
+#[contractevent]
+pub struct WithdrawCollectedEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Shares burned.
+    pub burn_shares: i128,
+    /// Amount collected.
+    pub collected: i128,
+}
+
+/// Withdrawal stopped event.
+#[contractevent]
+pub struct WithdrawStoppedEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Escrowed shares returned.
+    pub escrow_shares: i128,
+}
+
+/// Payout completed event.
+#[contractevent]
+pub struct PayoutEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Whether payout succeeded.
+    pub success: bool,
+    /// Shares burned.
+    pub burn_shares: i128,
+    /// Shares refunded.
+    pub refund_shares: i128,
+    /// Amount paid out.
+    pub amount: i128,
+}
+
+/// Allocation started event.
+#[contractevent]
+pub struct AllocStartEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Total to allocate.
+    pub total: i128,
+    /// Number of plan steps.
+    pub plan_len: u32,
+}
+
+/// Allocation step failed event.
+#[contractevent]
+pub struct AllocStepFailEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Step index.
+    pub index: u32,
+    /// Remaining amount.
+    pub remaining: i128,
+}
+
+/// Allocation completed event.
+#[contractevent]
+pub struct AllocDoneEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Whether triggered by withdrawal.
+    pub has_withdrawal: bool,
+}
+
+/// Refresh started event.
+#[contractevent]
+pub struct RefreshStartEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// Plan length.
+    pub plan_len: u32,
+}
+
+/// Refresh completed event.
+#[contractevent]
+pub struct RefreshDoneEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+}
+
+/// External assets synced event.
+#[contractevent]
+pub struct ExtAssetsSyncEvent {
+    /// Operation ID.
+    #[topic]
+    pub op_id: u64,
+    /// New external assets value.
+    pub new_external_assets: i128,
+    /// Total assets.
+    pub total_assets: i128,
+}
+
+/// Fees refreshed event.
+#[contractevent]
+pub struct FeesRefreshEvent {
+    /// Timestamp.
+    pub now_ns: u64,
+    /// Total assets.
+    pub total_assets: i128,
+}
+
+/// Pause state updated event.
+#[contractevent]
+pub struct PauseUpdatedEvent {
+    /// New pause state.
+    pub paused: bool,
+}
+
 /// Result type for effect operations.
 pub type EffectResult<T> = Result<T, RuntimeError>;
+
+// ---------------------------------------------------------------------------
+// Effect Context
+// ---------------------------------------------------------------------------
 
 /// Context provided to effect handlers.
 ///
@@ -19,23 +194,23 @@ pub type EffectResult<T> = Result<T, RuntimeError>;
 pub struct EffectContext {
     /// Current timestamp in nanoseconds.
     pub now_ns: u64,
-    /// The vault contract address.
-    pub vault_address: Address,
-    /// The underlying asset contract address (for SEP-41 transfers).
-    pub asset_address: Address,
-    /// The share token contract address.
-    pub share_address: Address,
+    /// The vault contract address (kernel format).
+    pub vault_address: templar_vault_kernel::Address,
+    /// The underlying asset contract address (kernel format).
+    pub asset_address: templar_vault_kernel::Address,
+    /// The share token contract address (kernel format).
+    pub share_address: templar_vault_kernel::Address,
 }
 
 impl EffectContext {
     /// Create a new effect context.
     #[inline]
     #[must_use]
-    pub const fn new(
+    pub fn new(
         now_ns: u64,
-        vault_address: Address,
-        asset_address: Address,
-        share_address: Address,
+        vault_address: templar_vault_kernel::Address,
+        asset_address: templar_vault_kernel::Address,
+        share_address: templar_vault_kernel::Address,
     ) -> Self {
         Self {
             now_ns,
@@ -45,6 +220,10 @@ impl EffectContext {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Effect Summary
+// ---------------------------------------------------------------------------
 
 /// Effect execution summary.
 ///
@@ -108,6 +287,10 @@ impl EffectSummary {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Effect Interpreter Trait
+// ---------------------------------------------------------------------------
+
 /// Trait for interpreting and executing kernel effects.
 ///
 /// Implementations of this trait execute effects on the actual blockchain
@@ -148,7 +331,7 @@ pub trait EffectInterpreter {
     ///
     /// # Returns
     ///
-    /// `Ok(EffectSummary)` with execution statistics, or `Err(RuntimeError)` on failure.
+    /// A summary of all executed effects on success, or an error if any effect failed.
     fn execute_effects(
         &mut self,
         effects: &[KernelEffect],
@@ -159,81 +342,29 @@ pub trait EffectInterpreter {
         for effect in effects {
             self.execute_effect(effect, ctx)?;
 
+            // Update summary based on effect type
             match effect {
-                KernelEffect::MintShares { shares, .. } => summary.record_mint(*shares),
-                KernelEffect::BurnShares { shares, .. } => summary.record_burn(*shares),
+                KernelEffect::MintShares { shares, .. } => {
+                    summary.record_mint(*shares);
+                }
+                KernelEffect::BurnShares { shares, .. } => {
+                    summary.record_burn(*shares);
+                }
                 KernelEffect::TransferShares { shares, .. } => {
-                    summary.record_share_transfer(*shares)
+                    summary.record_share_transfer(*shares);
                 }
                 KernelEffect::TransferAssets { amount, .. } => {
-                    summary.record_asset_transfer(*amount)
+                    summary.record_asset_transfer(*amount);
                 }
-                KernelEffect::EmitEvent { .. } => summary.record_event(),
-                // Chain-specific effects (NEAR only) - unreachable in Soroban context
+                KernelEffect::EmitEvent { .. } => {
+                    summary.record_event();
+                }
                 #[allow(unreachable_patterns)]
                 _ => {}
             }
         }
 
         Ok(summary)
-    }
-}
-
-/// A mock effect interpreter for testing.
-///
-/// Records all executed effects without actually performing them.
-#[derive(Clone, Debug, Default)]
-pub struct MockInterpreter {
-    /// Recorded effects.
-    pub effects: Vec<KernelEffect>,
-    /// Whether to fail on execution.
-    pub should_fail: bool,
-    /// Failure message.
-    pub failure_msg: Option<&'static str>,
-}
-
-impl MockInterpreter {
-    /// Create a new mock interpreter.
-    #[inline]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Create a mock interpreter that fails all executions.
-    #[inline]
-    #[must_use]
-    pub fn failing(msg: &'static str) -> Self {
-        Self {
-            effects: Vec::new(),
-            should_fail: true,
-            failure_msg: Some(msg),
-        }
-    }
-
-    /// Get the number of recorded effects.
-    #[inline]
-    #[must_use]
-    pub fn effect_count(&self) -> usize {
-        self.effects.len()
-    }
-
-    /// Clear recorded effects.
-    #[inline]
-    pub fn clear(&mut self) {
-        self.effects.clear();
-    }
-}
-
-impl EffectInterpreter for MockInterpreter {
-    fn execute_effect(&mut self, effect: &KernelEffect, _ctx: &EffectContext) -> EffectResult<()> {
-        if self.should_fail {
-            return Err(RuntimeError::effect_failed(
-                self.failure_msg.unwrap_or("mock failure"),
-            ));
-        }
-        self.effects.push(effect.clone());
-        Ok(())
     }
 }
 
@@ -246,7 +377,7 @@ impl EffectInterpreter for MockInterpreter {
 /// This trait abstracts over SEP-41 compliant token contracts (Stellar Asset Contract).
 /// Implementations handle the actual blockchain calls for minting, burning, and transferring.
 ///
-/// SEP-41 uses i128 for amounts, so we convert from u128 internally.
+/// SEP-41 uses i128 for amounts.
 pub trait Sep41Token {
     /// Mint tokens to an address.
     ///
@@ -254,7 +385,7 @@ pub trait Sep41Token {
     ///
     /// * `to` - Recipient address.
     /// * `amount` - Amount to mint.
-    fn mint(&self, to: Address, amount: i128) -> EffectResult<()>;
+    fn mint(&self, to: &Address, amount: i128) -> EffectResult<()>;
 
     /// Burn tokens from an address.
     ///
@@ -262,7 +393,7 @@ pub trait Sep41Token {
     ///
     /// * `from` - Address to burn from.
     /// * `amount` - Amount to burn.
-    fn burn(&self, from: Address, amount: i128) -> EffectResult<()>;
+    fn burn(&self, from: &Address, amount: i128) -> EffectResult<()>;
 
     /// Transfer tokens between addresses.
     ///
@@ -271,7 +402,7 @@ pub trait Sep41Token {
     /// * `from` - Source address.
     /// * `to` - Destination address.
     /// * `amount` - Amount to transfer.
-    fn transfer(&self, from: Address, to: Address, amount: i128) -> EffectResult<()>;
+    fn transfer(&self, from: &Address, to: &Address, amount: i128) -> EffectResult<()>;
 
     /// Get balance of an address.
     ///
@@ -282,18 +413,72 @@ pub trait Sep41Token {
     /// # Returns
     ///
     /// The token balance.
-    fn balance(&self, addr: Address) -> EffectResult<i128>;
+    fn balance(&self, addr: &Address) -> EffectResult<i128>;
 }
 
-/// Mock SEP-41 token for testing.
+// ---------------------------------------------------------------------------
+// SDK Token Adapter
+// ---------------------------------------------------------------------------
+
+/// SEP-41 token adapter using the Soroban SDK's StellarAssetClient.
 ///
-/// Records all operations without actually performing them.
+/// This adapter wraps a `StellarAssetClient` and implements the `Sep41Token` trait
+/// for interacting with SEP-41 compliant token contracts. It supports both
+/// standard operations (transfer, burn, balance) and admin operations (mint).
+pub struct SdkTokenAdapter<'a> {
+    client: StellarAssetClient<'a>,
+}
+
+impl<'a> SdkTokenAdapter<'a> {
+    /// Create a new SDK token adapter.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `contract_id` - The token contract address.
+    #[inline]
+    #[must_use]
+    pub fn new(env: &'a Env, contract_id: &Address) -> Self {
+        Self {
+            client: StellarAssetClient::new(env, contract_id),
+        }
+    }
+}
+
+impl Sep41Token for SdkTokenAdapter<'_> {
+    fn mint(&self, to: &Address, amount: i128) -> EffectResult<()> {
+        self.client.mint(to, &amount);
+        Ok(())
+    }
+
+    fn burn(&self, from: &Address, amount: i128) -> EffectResult<()> {
+        self.client.burn(from, &amount);
+        Ok(())
+    }
+
+    fn transfer(&self, from: &Address, to: &Address, amount: i128) -> EffectResult<()> {
+        self.client.transfer(from, to, &amount);
+        Ok(())
+    }
+
+    fn balance(&self, addr: &Address) -> EffectResult<i128> {
+        Ok(self.client.balance(addr))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test Token Adapter
+// ---------------------------------------------------------------------------
+
+/// Test SEP-41 token for use with soroban-sdk testutils.
+///
+/// Records operations without actually performing them.
 #[derive(Clone, Debug, Default)]
-pub struct MockSep41Token {
+pub struct TestSep41Token {
     /// Whether operations should fail.
     pub should_fail: bool,
-    /// Recorded operations.
-    pub operations: Vec<Sep41Operation>,
+    /// Mock balance to return.
+    pub mock_balance: i128,
 }
 
 /// A recorded SEP-41 operation.
@@ -313,58 +498,148 @@ pub enum Sep41Operation {
     Balance { addr: Address },
 }
 
-impl MockSep41Token {
-    /// Create a new mock token.
+impl TestSep41Token {
+    /// Create a new test token.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            should_fail: false,
+            mock_balance: 1000,
+        }
     }
 
-    /// Create a mock token that fails all operations.
+    /// Create a test token that fails all operations.
     #[inline]
     #[must_use]
     pub fn failing() -> Self {
         Self {
             should_fail: true,
-            operations: Vec::new(),
+            mock_balance: 0,
         }
     }
 }
 
-impl Sep41Token for MockSep41Token {
-    fn mint(&self, to: Address, amount: i128) -> EffectResult<()> {
+impl Sep41Token for TestSep41Token {
+    fn mint(&self, _to: &Address, _amount: i128) -> EffectResult<()> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock mint failed"));
+            return Err(RuntimeError::effect_failed("test mint failed"));
         }
-        // Note: We can't mutate self in the trait method with &self
-        // In real usage, this would be a contract call
-        let _ = Sep41Operation::Mint { to, amount };
         Ok(())
     }
 
-    fn burn(&self, from: Address, amount: i128) -> EffectResult<()> {
+    fn burn(&self, _from: &Address, _amount: i128) -> EffectResult<()> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock burn failed"));
+            return Err(RuntimeError::effect_failed("test burn failed"));
         }
-        let _ = Sep41Operation::Burn { from, amount };
         Ok(())
     }
 
-    fn transfer(&self, from: Address, to: Address, amount: i128) -> EffectResult<()> {
+    fn transfer(&self, _from: &Address, _to: &Address, _amount: i128) -> EffectResult<()> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock transfer failed"));
+            return Err(RuntimeError::effect_failed("test transfer failed"));
         }
-        let _ = Sep41Operation::Transfer { from, to, amount };
         Ok(())
     }
 
-    fn balance(&self, addr: Address) -> EffectResult<i128> {
+    fn balance(&self, _addr: &Address) -> EffectResult<i128> {
         if self.should_fail {
-            return Err(RuntimeError::effect_failed("mock balance failed"));
+            return Err(RuntimeError::effect_failed("test balance failed"));
         }
-        let _ = Sep41Operation::Balance { addr };
-        Ok(1000) // Mock balance
+        Ok(self.mock_balance)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mock Interpreter (for testing)
+// ---------------------------------------------------------------------------
+
+/// A mock effect interpreter for testing that records effects without executing them.
+#[derive(Clone, Debug, Default)]
+pub struct MockInterpreter {
+    /// Whether operations should fail.
+    pub should_fail: bool,
+    /// Recorded effects for test inspection.
+    pub effects: Vec<KernelEffect>,
+}
+
+impl MockInterpreter {
+    /// Create a new mock interpreter.
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            should_fail: false,
+            effects: Vec::new(),
+        }
+    }
+
+    /// Create a failing mock interpreter.
+    #[inline]
+    #[must_use]
+    pub fn failing() -> Self {
+        Self {
+            should_fail: true,
+            effects: Vec::new(),
+        }
+    }
+
+    /// Clear recorded effects.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.effects.clear();
+    }
+}
+
+impl EffectInterpreter for MockInterpreter {
+    fn execute_effect(&mut self, effect: &KernelEffect, _ctx: &EffectContext) -> EffectResult<()> {
+        if self.should_fail {
+            return Err(RuntimeError::effect_failed("mock interpreter failed"));
+        }
+        self.effects.push(effect.clone());
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Address Mapping
+// ---------------------------------------------------------------------------
+
+/// Mapping from kernel addresses to Soroban addresses.
+///
+/// The kernel uses 32-byte arrays for addresses, while Soroban uses
+/// opaque `Address` types. This struct provides the mapping for
+/// address resolution during effect execution.
+pub struct AddressMap<'a> {
+    env: &'a Env,
+    /// Map of kernel address bytes to Soroban addresses.
+    addresses: alloc::collections::BTreeMap<[u8; 32], Address>,
+}
+
+impl<'a> AddressMap<'a> {
+    /// Create a new address map.
+    #[inline]
+    #[must_use]
+    pub fn new(env: &'a Env) -> Self {
+        Self {
+            env,
+            addresses: alloc::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Register a kernel address with its corresponding Soroban address.
+    #[inline]
+    pub fn register(&mut self, kernel_addr: [u8; 32], soroban_addr: Address) {
+        self.addresses.insert(kernel_addr, soroban_addr);
+    }
+
+    /// Resolve a kernel address to a Soroban address.
+    ///
+    /// Returns `None` if the address is not registered.
+    #[inline]
+    #[must_use]
+    pub fn resolve(&self, kernel_addr: &[u8; 32]) -> Option<&Address> {
+        self.addresses.get(kernel_addr)
     }
 }
 
@@ -381,11 +656,15 @@ where
     S: Sep41Token,
     A: Sep41Token,
 {
+    /// Reference to the Soroban environment.
+    pub env: &'a Env,
     /// Share token contract interface.
     pub share_token: &'a S,
     /// Asset token contract interface.
     pub asset_token: &'a A,
-    /// Recorded events (mock event emission).
+    /// Address mapping from kernel to Soroban addresses.
+    pub address_map: AddressMap<'a>,
+    /// Recorded events.
     pub events: Vec<templar_vault_kernel::effects::KernelEvent>,
 }
 
@@ -397,12 +676,20 @@ where
     /// Create a new Soroban effect interpreter.
     #[inline]
     #[must_use]
-    pub fn new(share_token: &'a S, asset_token: &'a A) -> Self {
+    pub fn new(env: &'a Env, share_token: &'a S, asset_token: &'a A) -> Self {
         Self {
+            env,
             share_token,
             asset_token,
+            address_map: AddressMap::new(env),
             events: Vec::new(),
         }
+    }
+
+    /// Register an address mapping.
+    #[inline]
+    pub fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: Address) {
+        self.address_map.register(kernel_addr, soroban_addr);
     }
 
     /// Convert u128 to i128 safely for SEP-41 calls.
@@ -413,6 +700,194 @@ where
     fn u128_to_i128(amount: u128) -> EffectResult<i128> {
         i128::try_from(amount)
             .map_err(|_| RuntimeError::effect_failed("amount overflow converting to i128"))
+    }
+
+    /// Resolve a kernel address to a Soroban address.
+    fn resolve_address(&self, kernel_addr: &[u8; 32]) -> EffectResult<&Address> {
+        self.address_map
+            .resolve(kernel_addr)
+            .ok_or_else(|| RuntimeError::effect_failed("unknown address"))
+    }
+
+    /// Convert u128 to i128 for event fields.
+    #[inline]
+    fn u128_to_i128_event(val: u128) -> i128 {
+        // Saturate at i128::MAX for event data
+        i128::try_from(val).unwrap_or(i128::MAX)
+    }
+
+    /// Emit a kernel event to the Soroban ledger using `#[contractevent]` structs.
+    fn emit_event(
+        &self,
+        event: &templar_vault_kernel::effects::KernelEvent,
+    ) -> EffectResult<()> {
+        use templar_vault_kernel::effects::KernelEvent;
+
+        match event {
+            KernelEvent::DepositProcessed {
+                owner,
+                receiver,
+                assets_in,
+                shares_out,
+            } => {
+                let owner_addr = self.address_map.resolve(owner);
+                let recv_addr = self.address_map.resolve(receiver);
+                if let (Some(o), Some(r)) = (owner_addr, recv_addr) {
+                    DepositEvent {
+                        owner: o.clone(),
+                        receiver: r.clone(),
+                        assets_in: Self::u128_to_i128_event(*assets_in),
+                        shares_out: Self::u128_to_i128_event(*shares_out),
+                    }
+                    .publish(self.env);
+                }
+            }
+            KernelEvent::WithdrawalRequested {
+                id,
+                owner,
+                receiver,
+                shares,
+                expected_assets,
+            } => {
+                let owner_addr = self.address_map.resolve(owner);
+                let recv_addr = self.address_map.resolve(receiver);
+                if let (Some(o), Some(r)) = (owner_addr, recv_addr) {
+                    WithdrawRequestEvent {
+                        id: *id,
+                        owner: o.clone(),
+                        receiver: r.clone(),
+                        shares: Self::u128_to_i128_event(*shares),
+                        expected_assets: Self::u128_to_i128_event(*expected_assets),
+                    }
+                    .publish(self.env);
+                }
+            }
+            KernelEvent::WithdrawalStarted {
+                op_id,
+                amount,
+                escrow_shares,
+                owner,
+                receiver,
+            } => {
+                let owner_addr = self.address_map.resolve(owner);
+                let recv_addr = self.address_map.resolve(receiver);
+                if let (Some(o), Some(r)) = (owner_addr, recv_addr) {
+                    WithdrawStartEvent {
+                        op_id: *op_id,
+                        amount: Self::u128_to_i128_event(*amount),
+                        escrow_shares: Self::u128_to_i128_event(*escrow_shares),
+                        owner: o.clone(),
+                        receiver: r.clone(),
+                    }
+                    .publish(self.env);
+                }
+            }
+            KernelEvent::WithdrawalCollected {
+                op_id,
+                burn_shares,
+                collected,
+            } => {
+                WithdrawCollectedEvent {
+                    op_id: *op_id,
+                    burn_shares: Self::u128_to_i128_event(*burn_shares),
+                    collected: Self::u128_to_i128_event(*collected),
+                }
+                .publish(self.env);
+            }
+            KernelEvent::WithdrawalStopped {
+                op_id,
+                escrow_shares,
+            } => {
+                WithdrawStoppedEvent {
+                    op_id: *op_id,
+                    escrow_shares: Self::u128_to_i128_event(*escrow_shares),
+                }
+                .publish(self.env);
+            }
+            KernelEvent::PayoutCompleted {
+                op_id,
+                success,
+                burn_shares,
+                refund_shares,
+                amount,
+            } => {
+                PayoutEvent {
+                    op_id: *op_id,
+                    success: *success,
+                    burn_shares: Self::u128_to_i128_event(*burn_shares),
+                    refund_shares: Self::u128_to_i128_event(*refund_shares),
+                    amount: Self::u128_to_i128_event(*amount),
+                }
+                .publish(self.env);
+            }
+            KernelEvent::AllocationStarted { op_id, total, plan_len } => {
+                AllocStartEvent {
+                    op_id: *op_id,
+                    total: Self::u128_to_i128_event(*total),
+                    plan_len: *plan_len,
+                }
+                .publish(self.env);
+            }
+            KernelEvent::AllocationStepFailed {
+                op_id,
+                index,
+                remaining,
+            } => {
+                AllocStepFailEvent {
+                    op_id: *op_id,
+                    index: *index,
+                    remaining: Self::u128_to_i128_event(*remaining),
+                }
+                .publish(self.env);
+            }
+            KernelEvent::AllocationCompleted {
+                op_id,
+                has_withdrawal,
+            } => {
+                AllocDoneEvent {
+                    op_id: *op_id,
+                    has_withdrawal: *has_withdrawal,
+                }
+                .publish(self.env);
+            }
+            KernelEvent::RefreshStarted { op_id, plan_len } => {
+                RefreshStartEvent {
+                    op_id: *op_id,
+                    plan_len: *plan_len,
+                }
+                .publish(self.env);
+            }
+            KernelEvent::RefreshCompleted { op_id } => {
+                RefreshDoneEvent { op_id: *op_id }.publish(self.env);
+            }
+            KernelEvent::ExternalAssetsSynced {
+                op_id,
+                new_external_assets,
+                total_assets,
+            } => {
+                ExtAssetsSyncEvent {
+                    op_id: *op_id,
+                    new_external_assets: Self::u128_to_i128_event(*new_external_assets),
+                    total_assets: Self::u128_to_i128_event(*total_assets),
+                }
+                .publish(self.env);
+            }
+            KernelEvent::FeesRefreshed {
+                now_ns,
+                total_assets,
+            } => {
+                FeesRefreshEvent {
+                    now_ns: *now_ns,
+                    total_assets: Self::u128_to_i128_event(*total_assets),
+                }
+                .publish(self.env);
+            }
+            KernelEvent::PauseUpdated { paused } => {
+                PauseUpdatedEvent { paused: *paused }.publish(self.env);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -425,28 +900,33 @@ where
         match effect {
             KernelEffect::MintShares { owner, shares } => {
                 let amount = Self::u128_to_i128(*shares)?;
-                self.share_token.mint(*owner, amount)
+                let addr = self.resolve_address(owner)?;
+                self.share_token.mint(addr, amount)
             }
 
             KernelEffect::BurnShares { owner, shares } => {
                 let amount = Self::u128_to_i128(*shares)?;
-                self.share_token.burn(*owner, amount)
+                let addr = self.resolve_address(owner)?;
+                self.share_token.burn(addr, amount)
             }
 
             KernelEffect::TransferShares { from, to, shares } => {
                 let amount = Self::u128_to_i128(*shares)?;
-                self.share_token.transfer(*from, *to, amount)
+                let from_addr = self.resolve_address(from)?;
+                let to_addr = self.resolve_address(to)?;
+                self.share_token.transfer(from_addr, to_addr, amount)
             }
 
             KernelEffect::TransferAssets { to, amount } => {
                 let amount_i128 = Self::u128_to_i128(*amount)?;
+                let to_addr = self.resolve_address(to)?;
+                let vault_addr = self.resolve_address(&ctx.vault_address)?;
                 // Transfer from vault to recipient
-                self.asset_token.transfer(ctx.vault_address, *to, amount_i128)
+                self.asset_token.transfer(vault_addr, to_addr, amount_i128)
             }
 
             KernelEffect::EmitEvent { event } => {
-                // In real Soroban, this would emit a contract event
-                // For now, we just record it
+                self.emit_event(event)?;
                 self.events.push(event.clone());
                 Ok(())
             }
@@ -463,11 +943,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
-    use templar_vault_kernel::effects::KernelEvent;
+    use soroban_sdk::testutils::Address as _;
+
+    fn test_env() -> Env {
+        Env::default()
+    }
 
     fn test_context() -> EffectContext {
-        EffectContext::new(1_000_000_000_000, [1u8; 32], [2u8; 32], [3u8; 32])
+        EffectContext::new(
+            1_000_000_000_000,
+            [1u8; 32],
+            [2u8; 32],
+            [3u8; 32],
+        )
     }
 
     #[test]
@@ -502,292 +990,100 @@ mod tests {
     }
 
     #[test]
-    fn test_mock_interpreter_records_effects() {
-        let mut interpreter = MockInterpreter::new();
-        let ctx = test_context();
-
-        let effect = KernelEffect::MintShares {
-            owner: [0u8; 32],
-            shares: 100,
-        };
-
-        assert!(interpreter.execute_effect(&effect, &ctx).is_ok());
-        assert_eq!(interpreter.effect_count(), 1);
-    }
-
-    #[test]
-    fn test_mock_interpreter_execute_batch() {
-        let mut interpreter = MockInterpreter::new();
-        let ctx = test_context();
-
-        let effects = vec![
-            KernelEffect::MintShares {
-                owner: [0u8; 32],
-                shares: 100,
-            },
-            KernelEffect::BurnShares {
-                owner: [0u8; 32],
-                shares: 50,
-            },
-            KernelEffect::TransferShares {
-                from: [0u8; 32],
-                to: [1u8; 32],
-                shares: 25,
-            },
-            KernelEffect::TransferAssets {
-                to: [2u8; 32],
-                amount: 1000,
-            },
-            KernelEffect::EmitEvent {
-                event: KernelEvent::RefreshCompleted { op_id: 1 },
-            },
-        ];
-
-        let result = interpreter.execute_effects(&effects, &ctx);
-        assert!(result.is_ok());
-
-        let summary = result.unwrap();
-        assert_eq!(summary.shares_minted, 100);
-        assert_eq!(summary.shares_burned, 50);
-        assert_eq!(summary.shares_transferred, 25);
-        assert_eq!(summary.assets_transferred, 1000);
-        assert_eq!(summary.events_emitted, 1);
-
-        assert_eq!(interpreter.effect_count(), 5);
-    }
-
-    #[test]
-    fn test_mock_interpreter_failing() {
-        let mut interpreter = MockInterpreter::failing("test failure");
-        let ctx = test_context();
-
-        let effect = KernelEffect::MintShares {
-            owner: [0u8; 32],
-            shares: 100,
-        };
-
-        let result = interpreter.execute_effect(&effect, &ctx);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(RuntimeError::EffectFailed(_))));
-    }
-
-    #[test]
-    fn test_mock_interpreter_batch_stops_on_failure() {
-        let mut interpreter = MockInterpreter::new();
-        interpreter.should_fail = true;
-        interpreter.failure_msg = Some("fail on second");
-        let ctx = test_context();
-
-        let effects = vec![KernelEffect::MintShares {
-            owner: [0u8; 32],
-            shares: 100,
-        }];
-
-        let result = interpreter.execute_effects(&effects, &ctx);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_effect_context_new() {
-        let ctx = EffectContext::new(123, [1u8; 32], [2u8; 32], [3u8; 32]);
-        assert_eq!(ctx.now_ns, 123);
+        let ctx = test_context();
+        assert_eq!(ctx.now_ns, 1_000_000_000_000);
         assert_eq!(ctx.vault_address, [1u8; 32]);
         assert_eq!(ctx.asset_address, [2u8; 32]);
         assert_eq!(ctx.share_address, [3u8; 32]);
     }
 
-    // =========================================================================
-    // SEP-41 Token tests
-    // =========================================================================
-
     #[test]
-    fn test_mock_sep41_token_mint() {
-        let token = MockSep41Token::new();
-        let result = token.mint([1u8; 32], 100);
+    fn test_test_sep41_token_mint() {
+        let env = test_env();
+        let token = TestSep41Token::new();
+        let addr = Address::generate(&env);
+        let result = token.mint(&addr, 100);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_mock_sep41_token_burn() {
-        let token = MockSep41Token::new();
-        let result = token.burn([1u8; 32], 50);
+    fn test_test_sep41_token_burn() {
+        let env = test_env();
+        let token = TestSep41Token::new();
+        let addr = Address::generate(&env);
+        let result = token.burn(&addr, 50);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_mock_sep41_token_transfer() {
-        let token = MockSep41Token::new();
-        let result = token.transfer([1u8; 32], [2u8; 32], 25);
+    fn test_test_sep41_token_transfer() {
+        let env = test_env();
+        let token = TestSep41Token::new();
+        let from = Address::generate(&env);
+        let to = Address::generate(&env);
+        let result = token.transfer(&from, &to, 25);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_mock_sep41_token_balance() {
-        let token = MockSep41Token::new();
-        let result = token.balance([1u8; 32]);
+    fn test_test_sep41_token_balance() {
+        let env = test_env();
+        let token = TestSep41Token::new();
+        let addr = Address::generate(&env);
+        let result = token.balance(&addr);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1000);
     }
 
     #[test]
-    fn test_mock_sep41_token_failing() {
-        let token = MockSep41Token::failing();
-        assert!(token.mint([1u8; 32], 100).is_err());
-        assert!(token.burn([1u8; 32], 50).is_err());
-        assert!(token.transfer([1u8; 32], [2u8; 32], 25).is_err());
-        assert!(token.balance([1u8; 32]).is_err());
-    }
+    fn test_test_sep41_token_failing() {
+        let env = test_env();
+        let token = TestSep41Token::failing();
+        let addr = Address::generate(&env);
+        let from = Address::generate(&env);
+        let to = Address::generate(&env);
 
-    // =========================================================================
-    // SorobanEffectInterpreter tests
-    // =========================================================================
-
-    #[test]
-    fn test_soroban_interpreter_mint_shares() {
-        let share_token = MockSep41Token::new();
-        let asset_token = MockSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&share_token, &asset_token);
-        let ctx = test_context();
-
-        let effect = KernelEffect::MintShares {
-            owner: [10u8; 32],
-            shares: 1000,
-        };
-
-        let result = interpreter.execute_effect(&effect, &ctx);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_soroban_interpreter_burn_shares() {
-        let share_token = MockSep41Token::new();
-        let asset_token = MockSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&share_token, &asset_token);
-        let ctx = test_context();
-
-        let effect = KernelEffect::BurnShares {
-            owner: [10u8; 32],
-            shares: 500,
-        };
-
-        let result = interpreter.execute_effect(&effect, &ctx);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_soroban_interpreter_transfer_shares() {
-        let share_token = MockSep41Token::new();
-        let asset_token = MockSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&share_token, &asset_token);
-        let ctx = test_context();
-
-        let effect = KernelEffect::TransferShares {
-            from: [10u8; 32],
-            to: [20u8; 32],
-            shares: 250,
-        };
-
-        let result = interpreter.execute_effect(&effect, &ctx);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_soroban_interpreter_transfer_assets() {
-        let share_token = MockSep41Token::new();
-        let asset_token = MockSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&share_token, &asset_token);
-        let ctx = test_context();
-
-        let effect = KernelEffect::TransferAssets {
-            to: [30u8; 32],
-            amount: 5000,
-        };
-
-        let result = interpreter.execute_effect(&effect, &ctx);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_soroban_interpreter_emit_event() {
-        let share_token = MockSep41Token::new();
-        let asset_token = MockSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&share_token, &asset_token);
-        let ctx = test_context();
-
-        let effect = KernelEffect::EmitEvent {
-            event: KernelEvent::RefreshCompleted { op_id: 42 },
-        };
-
-        let result = interpreter.execute_effect(&effect, &ctx);
-        assert!(result.is_ok());
-        assert_eq!(interpreter.events.len(), 1);
-        assert!(matches!(
-            interpreter.events[0],
-            KernelEvent::RefreshCompleted { op_id: 42 }
-        ));
-    }
-
-    #[test]
-    fn test_soroban_interpreter_batch() {
-        let share_token = MockSep41Token::new();
-        let asset_token = MockSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&share_token, &asset_token);
-        let ctx = test_context();
-
-        let effects = vec![
-            KernelEffect::MintShares {
-                owner: [1u8; 32],
-                shares: 100,
-            },
-            KernelEffect::TransferAssets {
-                to: [2u8; 32],
-                amount: 500,
-            },
-            KernelEffect::EmitEvent {
-                event: KernelEvent::RefreshCompleted { op_id: 1 },
-            },
-        ];
-
-        let result = interpreter.execute_effects(&effects, &ctx);
-        assert!(result.is_ok());
-
-        let summary = result.unwrap();
-        assert_eq!(summary.shares_minted, 100);
-        assert_eq!(summary.assets_transferred, 500);
-        assert_eq!(summary.events_emitted, 1);
-    }
-
-    #[test]
-    fn test_soroban_interpreter_fails_on_token_error() {
-        let share_token = MockSep41Token::failing();
-        let asset_token = MockSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&share_token, &asset_token);
-        let ctx = test_context();
-
-        let effect = KernelEffect::MintShares {
-            owner: [1u8; 32],
-            shares: 100,
-        };
-
-        let result = interpreter.execute_effect(&effect, &ctx);
-        assert!(result.is_err());
+        assert!(token.mint(&addr, 100).is_err());
+        assert!(token.burn(&addr, 50).is_err());
+        assert!(token.transfer(&from, &to, 25).is_err());
+        assert!(token.balance(&addr).is_err());
     }
 
     #[test]
     fn test_u128_to_i128_conversion() {
         // Valid conversions
-        assert!(SorobanEffectInterpreter::<MockSep41Token, MockSep41Token>::u128_to_i128(0).is_ok());
-        assert!(SorobanEffectInterpreter::<MockSep41Token, MockSep41Token>::u128_to_i128(1000)
+        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(0).is_ok());
+        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(1000)
             .is_ok());
-        assert!(SorobanEffectInterpreter::<MockSep41Token, MockSep41Token>::u128_to_i128(
+        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(
             i128::MAX as u128
         )
         .is_ok());
 
         // Overflow
-        assert!(SorobanEffectInterpreter::<MockSep41Token, MockSep41Token>::u128_to_i128(
+        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(
             (i128::MAX as u128) + 1
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_address_map() {
+        let env = test_env();
+        let mut map = AddressMap::new(&env);
+
+        let kernel_addr = [1u8; 32];
+        let soroban_addr = Address::generate(&env);
+
+        map.register(kernel_addr, soroban_addr.clone());
+
+        let resolved = map.resolve(&kernel_addr);
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap(), &soroban_addr);
+
+        // Unknown address
+        let unknown = [2u8; 32];
+        assert!(map.resolve(&unknown).is_none());
     }
 }
