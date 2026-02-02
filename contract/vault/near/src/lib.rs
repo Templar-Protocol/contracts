@@ -2,7 +2,7 @@
 
 use crate::{
     aum::AUM,
-    convert::to_kernel_op_state,
+    convert::{account_id_to_address, to_kernel_op_state},
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
     storage_management::{
@@ -55,6 +55,7 @@ use templar_common::{
 use templar_curator_primitives::{
     determine_recovery_action, RecoveryContext, RecoveryProgress,
 };
+use templar_vault_kernel::actions::apply_action;
 use templar_vault_kernel::{KernelAction, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
@@ -1658,12 +1659,48 @@ impl Contract {
             .emit();
         }
 
+        self.apply_kernel_refresh_fees(now, cur_total_assets);
+    }
+
+    fn apply_kernel_refresh_fees(&mut self, now: u64, cur_total_assets: u128) {
+        let kernel_state = self.kernel_state_mirror();
+        let kernel_config = self.kernel_config_mirror();
+        let self_address = account_id_to_address(&env::current_account_id());
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_address,
+            KernelAction::RefreshFees { now_ns: now },
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Kernel refresh fees failed: {err:?}"))
+        });
+
         // Anchor updates to the *actual* AUM snapshot, so the max-rate limiter
         // only affects what can be charged as fees for the elapsed interval.
         self.fee_anchor = FeeAccrualAnchor {
             total_assets: cur_total_assets.into(),
-            timestamp_ns: now.into(),
+            timestamp_ns: result.state.fee_anchor.timestamp_ns.into(),
         };
+    }
+
+    fn apply_kernel_pause(&self, paused: bool) {
+        let kernel_state = self.kernel_state_mirror();
+        let kernel_config = self.kernel_config_mirror();
+        let self_address = account_id_to_address(&env::current_account_id());
+
+        let _ = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_address,
+            KernelAction::Pause { paused },
+        )
+        .unwrap_or_else(|err| {
+            panic_with_message(&format!("Kernel pause failed: {err:?}"))
+        });
     }
 
     /* ----- Auth ----- */

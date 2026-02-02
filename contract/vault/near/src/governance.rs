@@ -1216,6 +1216,7 @@ impl Contract {
                     restrictions: restrictions.clone(),
                 }
                 .emit();
+                self.apply_kernel_pause(matches!(restrictions, Some(Restrictions::Paused)));
             }
             TimelockedAction::CapChange { market, new_cap } => {
                 let market_id = self.ensure_market_record(market);
