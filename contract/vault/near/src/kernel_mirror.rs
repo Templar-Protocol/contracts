@@ -1,0 +1,278 @@
+//! Kernel mirror utilities for NEAR state.
+//!
+//! These helpers construct a `templar_vault_kernel` view of the NEAR contract
+//! state without mutating storage. This is intended for parity checks and
+//! incremental migration toward kernel-driven execution.
+
+use std::collections::BTreeMap;
+
+use near_sdk_contract_tools::ft::Nep141Controller;
+use templar_vault_kernel::fee::FeesSpec;
+use templar_vault_kernel::state::queue::{PendingWithdrawal as KernelPendingWithdrawal, WithdrawQueue};
+use templar_vault_kernel::state::vault::{
+    FeeAccrualAnchor as KernelFeeAccrualAnchor, VaultConfig, VaultState, MAX_PENDING,
+};
+
+use crate::convert::{account_id_to_address, to_kernel_op_state};
+use crate::Contract;
+
+impl Contract {
+    /// Build a kernel `VaultState` snapshot from NEAR storage fields.
+    #[must_use]
+    pub(crate) fn kernel_state_mirror(&self) -> VaultState {
+        let total_assets = self.get_total_assets().0;
+        let idle_assets = self.idle_balance;
+        let external_assets = total_assets.saturating_sub(idle_assets);
+        let total_shares = self.total_supply();
+
+        let fee_anchor = KernelFeeAccrualAnchor::new(
+            self.fee_anchor.total_assets.0,
+            self.fee_anchor.timestamp_ns.0,
+        );
+
+        let op_state = to_kernel_op_state(&self.op_state);
+        let withdraw_queue = kernel_withdraw_queue_mirror(self);
+
+        VaultState {
+            total_assets,
+            total_shares,
+            idle_assets,
+            external_assets,
+            fee_anchor,
+            op_state,
+            withdraw_queue,
+            next_op_id: self.next_op_id,
+        }
+    }
+
+    /// Build a kernel `VaultConfig` snapshot from NEAR configuration fields.
+    ///
+    /// Note: the kernel adds a `+1` offset to totals for divide-by-zero safety.
+    /// NEAR uses virtual offsets without an extra +1, so we subtract 1 here to
+    /// align conversion math for parity checks.
+    #[must_use]
+    pub(crate) fn kernel_config_mirror(&self) -> VaultConfig {
+        let virtual_shares = self.virtual_shares.saturating_sub(1);
+        let virtual_assets = self.virtual_assets.saturating_sub(1);
+
+        let paused = matches!(
+            self.gate.restrictions,
+            Some(templar_common::vault::Restrictions::Paused)
+        );
+
+        VaultConfig {
+            fees: FeesSpec::zero(),
+            min_withdrawal_assets: 0,
+            max_pending_withdrawals: MAX_PENDING as u32,
+            paused,
+            virtual_shares,
+            virtual_assets,
+        }
+    }
+}
+
+fn kernel_withdraw_queue_mirror(contract: &Contract) -> WithdrawQueue {
+    let mut pending = BTreeMap::new();
+    for (id, entry) in contract.pending_withdrawals.iter() {
+        let kernel_entry = KernelPendingWithdrawal::new(
+            account_id_to_address(&entry.owner),
+            account_id_to_address(&entry.receiver),
+            entry.escrow_shares,
+            entry.expected_assets,
+            entry.requested_at,
+        );
+        pending.insert(*id, kernel_entry);
+    }
+
+    WithdrawQueue::with_state(
+        pending,
+        contract.next_withdraw_to_execute,
+        contract.queue_tail(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::convert::account_id_to_address;
+    use crate::test_utils::{mk, new_test_contract, set_block_ts};
+    use near_sdk::json_types::{U128, U64};
+    use templar_common::vault::{MarketConfiguration, PendingWithdrawal};
+    use templar_vault_kernel::actions::apply_action;
+    use templar_vault_kernel::effects::KernelEffect;
+    use templar_vault_kernel::state::queue::PendingWithdrawal as KernelPendingWithdrawal;
+    use templar_vault_kernel::KernelAction;
+
+    fn make_market_config(cap: u128) -> MarketConfiguration {
+        MarketConfiguration {
+            cap: U128(cap),
+            cap_group_id: None,
+            enabled: true,
+            removable_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_kernel_state_mirror_invariants() {
+        let vault_id = mk(0);
+        let mut c = new_test_contract(&vault_id);
+
+        c.idle_balance = 1_000;
+        c.fee_anchor.total_assets = U128(1_500);
+        c.fee_anchor.timestamp_ns = U64(123);
+        c.next_op_id = 42;
+
+        let market = mk(9);
+        let cfg = make_market_config(10_000);
+        let _ = c.insert_market_for_tests(market, cfg, 500);
+
+        c.next_withdraw_to_execute = 3;
+        c.pending_withdrawals.insert(
+            3,
+            PendingWithdrawal {
+                owner: mk(1),
+                receiver: mk(2),
+                escrow_shares: 250,
+                expected_assets: 400,
+                requested_at: 77,
+            },
+        );
+        c.pending_withdrawals.insert(
+            4,
+            PendingWithdrawal {
+                owner: mk(3),
+                receiver: mk(4),
+                escrow_shares: 300,
+                expected_assets: 600,
+                requested_at: 88,
+            },
+        );
+
+        let kernel = c.kernel_state_mirror();
+
+        let total_assets = c.get_total_assets().0;
+        assert_eq!(kernel.total_assets, total_assets);
+        assert_eq!(kernel.idle_assets, c.idle_balance);
+        assert_eq!(
+            kernel.external_assets,
+            total_assets.saturating_sub(c.idle_balance)
+        );
+        assert_eq!(kernel.fee_anchor.total_assets, c.fee_anchor.total_assets.0);
+        assert_eq!(kernel.fee_anchor.timestamp_ns, c.fee_anchor.timestamp_ns.0);
+        assert_eq!(kernel.next_op_id, c.next_op_id);
+
+        assert!(kernel.withdraw_queue.check_invariants());
+        assert_eq!(
+            kernel.withdraw_queue.next_withdraw_to_execute,
+            c.next_withdraw_to_execute
+        );
+        assert_eq!(kernel.withdraw_queue.next_pending_withdrawal_id, c.queue_tail());
+        assert_eq!(kernel.withdraw_queue.pending_withdrawals.len(), 2);
+
+        let pending = kernel.withdraw_queue.pending_withdrawals.get(&3).unwrap();
+        assert_eq!(pending.owner, account_id_to_address(&mk(1)));
+        assert_eq!(pending.receiver, account_id_to_address(&mk(2)));
+        assert_eq!(pending.escrow_shares, 250);
+        assert_eq!(pending.expected_assets, 400);
+        assert_eq!(pending.requested_at_ns, 77);
+    }
+
+    #[test]
+    fn test_kernel_preview_deposit_matches_near() {
+        let vault_id = mk(0);
+        let mut c = new_test_contract(&vault_id);
+        set_block_ts(&vault_id, &vault_id, 1_000);
+
+        c.idle_balance = 2_000;
+        c.fee_anchor.total_assets = U128(2_000);
+        c.fee_anchor.timestamp_ns = U64(1_000);
+
+        let assets_in = 500u128;
+        let near_preview = c.preview_deposit(U128(assets_in)).0;
+
+        let kernel_state = c.kernel_state_mirror();
+        let kernel_config = c.kernel_config_mirror();
+
+        let owner = account_id_to_address(&mk(1));
+        let receiver = account_id_to_address(&mk(2));
+        let self_id = account_id_to_address(&vault_id);
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_id,
+            KernelAction::Deposit {
+                owner,
+                receiver,
+                assets_in,
+                min_shares_out: 0,
+                now_ns: 1_000,
+            },
+        )
+        .expect("kernel deposit");
+
+        let minted = result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::MintShares { shares, .. } => Some(*shares),
+                _ => None,
+            })
+            .expect("mint shares effect");
+
+        assert_eq!(minted, near_preview);
+    }
+
+    #[test]
+    fn test_kernel_request_withdraw_expected_assets_matches_near() {
+        let vault_id = mk(0);
+        let mut c = new_test_contract(&vault_id);
+        set_block_ts(&vault_id, &vault_id, 2_000);
+
+        c.idle_balance = 5_000;
+        c.fee_anchor.total_assets = U128(5_000);
+        c.fee_anchor.timestamp_ns = U64(2_000);
+
+        let shares = 250u128;
+        let near_expected = c.convert_to_assets(U128(shares)).0;
+
+        let kernel_state = c.kernel_state_mirror();
+        let kernel_config = c.kernel_config_mirror();
+
+        let owner = account_id_to_address(&mk(3));
+        let receiver = account_id_to_address(&mk(4));
+        let self_id = account_id_to_address(&vault_id);
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_id,
+            KernelAction::RequestWithdraw {
+                owner,
+                receiver,
+                shares,
+                min_assets_out: 0,
+                now_ns: 2_000,
+            },
+        )
+        .expect("kernel request withdraw");
+
+        let pending = result
+            .state
+            .withdraw_queue
+            .pending_withdrawals
+            .get(&0)
+            .expect("pending withdrawal");
+
+        let expected = KernelPendingWithdrawal {
+            owner,
+            receiver,
+            escrow_shares: shares,
+            expected_assets: near_expected,
+            requested_at_ns: 2_000,
+        };
+
+        assert_eq!(*pending, expected);
+    }
+}
