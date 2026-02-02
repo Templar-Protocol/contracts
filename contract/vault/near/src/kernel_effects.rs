@@ -93,9 +93,7 @@ mod tests {
     use super::*;
     use crate::convert::account_id_to_address;
     use crate::test_utils::{mk, new_test_contract};
-    use near_sdk::test_utils::accounts;
     use near_sdk_contract_tools::ft::Nep141 as _;
-    use near_sdk_contract_tools::ft::Nep145 as _;
 
     fn context_for(accounts: &[AccountId]) -> KernelEffectContext {
         let mut ctx = KernelEffectContext::default();
@@ -111,11 +109,8 @@ mod tests {
         let vault_id = mk(0);
         let mut c = new_test_contract(&vault_id);
 
-        let alice = accounts(1);
-        let bob = accounts(2);
-
-        c.storage_deposit(Some(alice.clone()), None);
-        c.storage_deposit(Some(bob.clone()), None);
+        let alice = mk(1);
+        let bob = mk(2);
 
         let ctx = context_for(&[alice.clone(), bob.clone()]);
 

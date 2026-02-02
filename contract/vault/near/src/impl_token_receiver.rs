@@ -1,7 +1,11 @@
+use crate::convert::account_id_to_address;
+use crate::kernel_effects::{apply_kernel_effects, KernelEffectContext};
 use crate::{Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
-use near_sdk_contract_tools::ft::{Nep141Controller as _, Nep141Mint};
+use templar_vault_kernel::actions::apply_action;
+use templar_vault_kernel::effects::KernelEffect;
+use templar_vault_kernel::KernelAction;
 use templar_common::vault::{require_at_least, DepositMsg, IdleBalanceDelta, SUPPLY_GAS};
 
 use near_sdk_contract_tools::mt::{Nep245Receiver, TokenId};
@@ -130,20 +134,54 @@ impl Contract {
             return deposit;
         }
 
-        let shares = self.preview_deposit(U128(accept)).0;
-        if shares == 0 {
+        let kernel_state = self.kernel_state_mirror();
+        let kernel_config = self.kernel_config_mirror();
+        let sender_address = account_id_to_address(&sender_id);
+        let self_address = account_id_to_address(&env::current_account_id());
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_address,
+            KernelAction::Deposit {
+                owner: sender_address,
+                receiver: sender_address,
+                assets_in: accept,
+                min_shares_out: 0,
+                now_ns: env::block_timestamp(),
+            },
+        )
+        .unwrap_or_else(|err| {
+            templar_common::panic_with_message(&format!(
+                "Kernel deposit failed: {err:?}"
+            ))
+        });
+
+        let shares_out = result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::MintShares { shares, .. } => Some(*shares),
+                _ => None,
+            })
+            .unwrap_or(0);
+
+        if shares_out == 0 {
             return deposit;
         }
 
-        let refund = deposit - accept;
+        let mut ctx = KernelEffectContext::default();
+        ctx.insert(sender_address, sender_id.clone());
 
-        self.mint(&Nep141Mint::new(shares, &sender_id))
-            .unwrap_or_else(|_| templar_common::panic_with_message("Failed to mint shares"));
+        apply_kernel_effects(self, &result.effects, &ctx).unwrap_or_else(|_| {
+            templar_common::panic_with_message("Failed to apply kernel deposit effects")
+        });
 
         self.update_idle_balance(IdleBalanceDelta::Increase(accept.into()));
-        self.fee_anchor.total_assets = self.fee_anchor.total_assets.0.saturating_add(accept).into();
+        self.fee_anchor.total_assets = U128(result.state.total_assets);
         self.fee_anchor.timestamp_ns = env::block_timestamp().into();
 
-        refund
+        deposit - accept
     }
 }
