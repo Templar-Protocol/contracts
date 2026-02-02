@@ -19,7 +19,7 @@ use templar_universal_account::{
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
-            Passkey, PasskeySignatureData,
+            PasskeySignatureData, VerifyKey,
         },
         with_raw_string::WithRawString,
         MessageWithSignature,
@@ -45,7 +45,7 @@ pub struct OldPasskey {
 }
 
 impl OldPasskey {
-    pub fn passkey(&self) -> Passkey {
+    pub fn passkey(&self) -> VerifyKey {
         self.message
             .0
             .parsed
@@ -59,7 +59,7 @@ impl OldPasskey {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct CreatePasskeyAccount {
-    pub key: Passkey,
+    pub key: VerifyKey,
     pub block_hash: CryptoHash,
 }
 
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn encoding_passkey() {
         let keypair = p256::SecretKey::random(&mut OsRng);
-        let pubkey = Passkey(keypair.public_key().into());
+        let pubkey = passkey::VerifyKey(keypair.public_key().into());
 
         let cr = CreateRequest::ExecuteArgs(
             ExecuteArgsMessage {

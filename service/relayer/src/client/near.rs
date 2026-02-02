@@ -32,7 +32,7 @@ use templar_common::{
     market::MarketConfiguration,
     oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier},
 };
-use templar_universal_account::{ExecuteArgs, KeyId, PayloadExecutionParameters};
+use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
 use crate::{cache::Cache, MarketData};
 
@@ -361,7 +361,7 @@ impl Near {
         &self,
         cache: &Cache,
         ua_account_id: AccountId,
-        args: ExecuteArgs<Box<[templar_universal_account::transaction::Transaction]>>,
+        args: &serde_json::Value,
         gas: u64,
     ) -> SignedTransaction {
         let signer = self.next_signer();
@@ -606,7 +606,29 @@ impl Near {
         ua_account_id: AccountId,
         key: KeyId,
     ) -> Result<Option<PayloadExecutionParameters>, ViewError> {
-        self.view(ua_account_id, "get_key", json!({ "key": key }))
-            .await
+        let view = self
+            .view::<Option<VersionedKeyParameters>>(
+                ua_account_id.clone(),
+                "get_key",
+                json!({ "key": key }),
+            )
+            .await?;
+
+        Ok(view.map(|v| match v {
+            VersionedKeyParameters::V1(p) => p,
+            VersionedKeyParameters::V0(p) => PayloadExecutionParameters::builder_empty()
+                .with_key_parameters(p)
+                .verifying_contract(ua_account_id)
+                .build(),
+        }))
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub enum VersionedKeyParameters {
+    #[serde(untagged)]
+    V1(PayloadExecutionParameters),
+    #[serde(untagged)]
+    V0(KeyParameters),
 }

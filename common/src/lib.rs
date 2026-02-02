@@ -14,6 +14,8 @@ pub mod registry;
 pub mod snapshot;
 pub mod supply;
 pub mod time_chunk;
+#[cfg(feature = "rpc")]
+pub mod utils;
 pub mod vault;
 pub mod withdrawal_queue;
 

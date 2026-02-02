@@ -95,7 +95,7 @@ impl Reporter {
         // Liquidatable section
         if has_red {
             writeln!(output, "🔴 LIQUIDATABLE ({} position(s))", report.red_count).unwrap();
-            output.push_str("Positions below liquidation MCR - URGENT\n");
+            output.push_str("Positions below liquidation MCR\n");
             if report.displayed_red_count < report.red_count {
                 writeln!(
                     output,
@@ -180,11 +180,11 @@ impl Reporter {
     }
 
     fn format_position(output: &mut String, position: &PositionAlert) {
-        let direction = if position.distance_from_mcr_pct >= Decimal::ZERO {
-            "↑"
-        } else {
-            "↓"
-        };
+        use crate::types::AlertZone;
+
+        // Red zone = below MCR, Yellow zone = above MCR
+        let is_below_mcr = position.zone == AlertZone::Red;
+        let direction = if is_below_mcr { "↓" } else { "↑" };
 
         // Convert Decimal to f64 for formatting
         #[allow(clippy::cast_precision_loss)]
@@ -194,18 +194,11 @@ impl Reporter {
             .parse()
             .unwrap_or(0.0);
         #[allow(clippy::cast_precision_loss)]
-        let distance_f64: f64 = if position.distance_from_mcr_pct >= Decimal::ZERO {
-            position
-                .distance_from_mcr_pct
-                .to_string()
-                .parse()
-                .unwrap_or(0.0)
-        } else {
-            (Decimal::ZERO - position.distance_from_mcr_pct)
-                .to_string()
-                .parse()
-                .unwrap_or(0.0)
-        };
+        let distance_f64: f64 = position
+            .distance_from_mcr_pct
+            .to_string()
+            .parse()
+            .unwrap_or(0.0);
 
         writeln!(output, "  {}", position.borrower).unwrap();
         writeln!(
@@ -215,11 +208,7 @@ impl Reporter {
             cr_f64 * 100.0,
             direction,
             distance_f64,
-            if position.distance_from_mcr_pct >= Decimal::ZERO {
-                "above"
-            } else {
-                "below"
-            }
+            if is_below_mcr { "below" } else { "above" }
         )
         .unwrap();
         // position_value_usd already contains the debt amount adjusted for decimals

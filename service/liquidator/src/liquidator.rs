@@ -113,6 +113,8 @@ pub enum LiquidatorError {
     StrategyError(String),
     #[error("Insufficient balance for liquidation")]
     InsufficientBalance,
+    #[error("Failed to update Pyth prices: {0}")]
+    PriceUpdateError(String),
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
@@ -153,6 +155,8 @@ pub struct Liquidator {
     max_loop_iterations: u32,
     /// Market version (major, minor, patch) - used for version-specific liquidation logic
     market_version: Option<(u32, u32, u32)>,
+    /// Enable automatic Pyth price updates before liquidations
+    auto_update_prices: bool,
 }
 
 impl Liquidator {
@@ -186,9 +190,17 @@ impl Liquidator {
         swap_provider: Option<crate::swap::SwapProviderImpl>,
         loop_liquidation: bool,
         max_loop_iterations: u32,
+        hermes_url: Option<String>,
+        auto_update_prices: bool,
+        signer_for_oracle: &Option<(AccountId, near_crypto::SecretKey)>,
     ) -> Self {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
-        let oracle_fetcher = oracle::OracleFetcher::new(client.clone());
+        let oracle_fetcher = oracle::OracleFetcher::new(
+            client.clone(),
+            hermes_url,
+            signer_for_oracle.as_ref().map(|(id, _)| id.clone()),
+            signer_for_oracle.as_ref().map(|(_, key)| key.clone()),
+        );
         let executor = executor::LiquidationExecutor::new(
             client.clone(),
             signer,
@@ -210,6 +222,7 @@ impl Liquidator {
             loop_liquidation,
             max_loop_iterations,
             market_version: None,
+            auto_update_prices,
         }
     }
 
@@ -228,21 +241,21 @@ impl Liquidator {
     pub async fn fetch_market_version(&mut self) {
         self.market_version = self.scanner.get_market_version().await;
         if let Some((major, minor, patch)) = self.market_version {
-            tracing::info!(
+            tracing::debug!(
                 market = %self.market,
                 version = %format!("{major}.{minor}.{patch}"),
                 "Fetched market version"
             );
         } else {
-            tracing::info!(
+            tracing::debug!(
                 market = %self.market,
                 "Market version unavailable (no NEP-330 metadata), assuming v1.0"
             );
         }
     }
 
-    /// Get formatted asset info for logging (decimals and symbols)
-    fn asset_info(&self) -> (i32, &'static str, i32, &'static str) {
+    /// Get formatted asset info for logging (decimals and asset IDs from configuration)
+    fn asset_info(&self) -> (i32, String, i32, String) {
         let borrow_decimals = self
             .market_config
             .price_oracle_configuration
@@ -251,14 +264,13 @@ impl Liquidator {
             .market_config
             .price_oracle_configuration
             .collateral_asset_decimals;
-        let borrow_symbol = format::asset_symbol(&self.market_config.borrow_asset.to_string());
-        let collateral_symbol =
-            format::asset_symbol(&self.market_config.collateral_asset.to_string());
+        let borrow_asset_id = self.market_config.borrow_asset.to_string();
+        let collateral_asset_id = self.market_config.collateral_asset.to_string();
         (
             borrow_decimals,
-            borrow_symbol,
+            borrow_asset_id,
             collateral_decimals,
-            collateral_symbol,
+            collateral_asset_id,
         )
     }
 
@@ -309,13 +321,13 @@ impl Liquidator {
 
             let Some(BorrowStatus::Liquidation(reason)) = status else {
                 if loop_iteration > 1 {
-                    let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
+                    let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
                     tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
                         iterations = loop_iteration - 1,
-                        total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, borrow_sym),
-                        total_received = %format::format_amount(total_collateral_received, coll_dec, coll_sym),
+                        total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, &borrow_asset),
+                        total_received = %format::format_amount(total_collateral_received, coll_dec, &coll_asset),
                         "Loop liquidation completed successfully - position now healthy"
                     );
                 }
@@ -328,7 +340,7 @@ impl Liquidator {
 
             // Log position is liquidatable with details
             if loop_iteration == 1 {
-                let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
+                let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
                 let price_pair = self
                     .market_config
                     .price_oracle_configuration
@@ -340,8 +352,8 @@ impl Liquidator {
                     reason = ?reason,
                     mcr_liquidation = %self.market_config.borrow_mcr_liquidation,
                     collateralization_ratio = ?collateralization_ratio,
-                    total_collateral = %format::format_amount(u128::from(position.collateral_asset_deposit), coll_dec, coll_sym),
-                    total_debt = %format::format_amount(u128::from(position.get_total_borrow_asset_liability()), borrow_dec, borrow_sym),
+                    total_collateral = %format::format_amount(u128::from(position.collateral_asset_deposit), coll_dec, &coll_asset),
+                    total_debt = %format::format_amount(u128::from(position.get_total_borrow_asset_liability()), borrow_dec, &borrow_asset),
                     "Position is liquidatable"
                 );
             }
@@ -357,13 +369,13 @@ impl Liquidator {
 
             // Safety check for max iterations
             if loop_iteration > max_iterations {
-                let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
+                let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
                 tracing::info!(
                     market = %self.market,
                     borrower = %borrow_account,
                     iterations = max_iterations,
-                    total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, borrow_sym),
-                    total_received = %format::format_amount(total_collateral_received, coll_dec, coll_sym),
+                    total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, &borrow_asset),
+                    total_received = %format::format_amount(total_collateral_received, coll_dec, &coll_asset),
                     "Loop liquidation stopped - max iterations reached"
                 );
                 return Ok(LiquidationOutcome::Liquidated);
@@ -396,11 +408,11 @@ impl Liquidator {
             // Early check: ensure we have at least the contract minimum
             let contract_minimum: u128 = self.market_config.borrow_range.minimum.into();
             if available_balance.0 < contract_minimum {
-                let (borrow_dec, borrow_sym, _, _) = self.asset_info();
-                tracing::warn!(
+                let (borrow_dec, borrow_asset, _, _) = self.asset_info();
+                tracing::info!(
                     borrower = %borrow_account,
-                    available_balance = %format::format_amount(available_balance.0, borrow_dec, borrow_sym),
-                    contract_minimum = %format::format_amount(contract_minimum, borrow_dec, borrow_sym),
+                    available_balance = %format::format_amount(available_balance.0, borrow_dec, &borrow_asset),
+                    contract_minimum = %format::format_amount(contract_minimum, borrow_dec, &borrow_asset),
                     "Insufficient inventory: below contract minimum borrow amount, skipping"
                 );
                 return Ok(LiquidationOutcome::NotLiquidatable);
@@ -434,24 +446,24 @@ impl Liquidator {
 
             if use_total_collateral {
                 // v1.0: Keep total collateral - contract validates against total
-                let (_, _, coll_dec, coll_sym) = self.asset_info();
+                let (_, _, coll_dec, coll_asset) = self.asset_info();
                 tracing::info!(
                     borrower = %borrow_account,
                     market = %self.market,
                     market_version = ?self.market_version,
-                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
+                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
                     "Using total collateral for v1.0 market"
                 );
             } else {
                 // v1.1+: Use liquidatable collateral - contract enforces limit
                 adjusted_position.collateral_asset_deposit = liquidatable_collateral;
-                let (_, _, coll_dec, coll_sym) = self.asset_info();
+                let (_, _, coll_dec, coll_asset) = self.asset_info();
                 tracing::info!(
                     borrower = %borrow_account,
                     market = %self.market,
                     market_version = ?self.market_version,
-                    liquidatable_collateral = %format::format_amount(liquidatable_collateral.into(), coll_dec, coll_sym),
-                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
+                    liquidatable_collateral = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
+                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
                     "Using liquidatable collateral for v1.1+ market"
                 );
             }
@@ -465,11 +477,11 @@ impl Liquidator {
                 )?
             else {
                 if loop_iteration > 1 {
-                    let (borrow_dec, borrow_sym, _, _) = self.asset_info();
+                    let (borrow_dec, borrow_asset, _, _) = self.asset_info();
                     tracing::warn!(
                         borrower = %borrow_account,
                         iteration = %format::format_iteration(loop_iteration, max_iterations),
-                        available_balance = %format::format_amount(available_balance.0, borrow_dec, borrow_sym),
+                        available_balance = %format::format_amount(available_balance.0, borrow_dec, &borrow_asset),
                         "Loop liquidation: insufficient balance to continue, stopping"
                     );
                     return Ok(LiquidationOutcome::Liquidated);
@@ -527,7 +539,7 @@ impl Liquidator {
             )?;
 
             // Log consolidated liquidation info with human-readable amounts
-            let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
+            let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
             let mode = if dry_run_mode { "[DRY RUN] " } else { "" };
 
             if is_profitable {
@@ -550,11 +562,11 @@ impl Liquidator {
                         mode = mode,
                         reason = ?reason,
                         iteration = %format::format_iteration(loop_iteration, max_iterations),
-                        collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
-                        collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, coll_sym),
-                        send = %format::format_amount(liquidation_amount.0, borrow_dec, borrow_sym),
-                        receive = %format::format_amount(collateral_amount.0, coll_dec, coll_sym),
-                        profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, borrow_sym),
+                        collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
+                        collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
+                        send = %format::format_amount(liquidation_amount.0, borrow_dec, &borrow_asset),
+                        receive = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
+                        profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, &borrow_asset),
                         "Liquidatable position"
                     );
                 } else {
@@ -563,18 +575,18 @@ impl Liquidator {
                         borrower = %borrow_account,
                         mode = mode,
                         reason = ?reason,
-                        collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
-                        collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, coll_sym),
-                        send = %format::format_amount(liquidation_amount.0, borrow_dec, borrow_sym),
-                        receive = %format::format_amount(collateral_amount.0, coll_dec, coll_sym),
-                        profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, borrow_sym),
+                        collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
+                        collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
+                        send = %format::format_amount(liquidation_amount.0, borrow_dec, &borrow_asset),
+                        receive = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
+                        profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, &borrow_asset),
                         "Liquidatable position"
                     );
                 }
             }
 
             if !is_profitable {
-                let (borrow_dec, borrow_sym, coll_dec, coll_sym) = self.asset_info();
+                let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
                 let mode = if dry_run_mode { "[DRY RUN] " } else { "" };
 
                 // Calculate actual loss (revenue - cost, will be negative)
@@ -595,17 +607,17 @@ impl Liquidator {
                     market = %self.market,
                     borrower = %borrow_account,
                     mode = mode,
-                    collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, coll_sym),
-                    collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, coll_sym),
-                    collateral_requested = %format::format_amount(collateral_amount.0, coll_dec, coll_sym),
-                    send = %format::format_amount(liquidation_amount.0, borrow_dec, borrow_sym),
-                    gas_cost = %format::format_amount(gas_cost.0, borrow_dec, borrow_sym),
-                    total_cost = %format::format_amount(total_cost, borrow_dec, borrow_sym),
-                    receive_value_no_spread = %format::format_amount(expected_collateral_value.0, borrow_dec, borrow_sym),
-                    receive_value_with_spread = %format::format_amount(collateral_value_with_spread, borrow_dec, borrow_sym),
-                    min_revenue_required = %format::format_amount(min_revenue_required, borrow_dec, borrow_sym),
+                    collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
+                    collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
+                    collateral_requested = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
+                    send = %format::format_amount(liquidation_amount.0, borrow_dec, &borrow_asset),
+                    gas_cost = %format::format_amount(gas_cost.0, borrow_dec, &borrow_asset),
+                    total_cost = %format::format_amount(total_cost, borrow_dec, &borrow_asset),
+                    receive_value_no_spread = %format::format_amount(expected_collateral_value.0, borrow_dec, &borrow_asset),
+                    receive_value_with_spread = %format::format_amount(collateral_value_with_spread, borrow_dec, &borrow_asset),
+                    min_revenue_required = %format::format_amount(min_revenue_required, borrow_dec, &borrow_asset),
                     spread = %format!("{:.1}%", spread_pct),
-                    loss = %format::format_profit(loss, total_cost, borrow_dec, borrow_sym),
+                    loss = %format::format_profit(loss, total_cost, borrow_dec, &borrow_asset),
                     "Position not profitable, skipping"
                 );
 
@@ -660,30 +672,89 @@ impl Liquidator {
         tracing::info!(
             strategy = %self.strategy.strategy_name(),
             percentage = max_percentage,
+            auto_update_prices = self.auto_update_prices,
             "Starting liquidation run"
         );
 
+        let oracle_account = self
+            .market_config
+            .price_oracle_configuration
+            .account_id
+            .clone();
+        let price_ids = [
+            self.market_config
+                .price_oracle_configuration
+                .borrow_asset_price_id,
+            self.market_config
+                .price_oracle_configuration
+                .collateral_asset_price_id,
+        ];
+        let price_max_age = self
+            .market_config
+            .price_oracle_configuration
+            .price_maximum_age_s;
+
         // Fetch oracle prices
-        let oracle_response = self
+        let mut oracle_response = self
             .oracle_fetcher
-            .get_oracle_prices(
-                self.market_config
-                    .price_oracle_configuration
-                    .account_id
-                    .clone(),
-                &[
-                    self.market_config
-                        .price_oracle_configuration
-                        .borrow_asset_price_id,
-                    self.market_config
-                        .price_oracle_configuration
-                        .collateral_asset_price_id,
-                ],
-                self.market_config
-                    .price_oracle_configuration
-                    .price_maximum_age_s,
-            )
+            .get_oracle_prices(oracle_account.clone(), &price_ids, price_max_age)
             .await?;
+
+        // Check if any prices are missing or stale
+        let now = if let Ok(duration) =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        {
+            duration.as_secs().try_into().unwrap_or(i64::MAX)
+        } else {
+            tracing::error!("System time is before UNIX epoch");
+            return Err(LiquidatorError::PriceUpdateError(
+                "System time error".to_string(),
+            ));
+        };
+
+        let has_stale_prices = oracle_response.is_empty()
+            || price_ids.iter().any(|price_id| {
+                oracle_response
+                    .get(price_id)
+                    .and_then(|opt| opt.as_ref())
+                    .is_none_or(|price| (now - price.publish_time) > i64::from(price_max_age))
+            });
+
+        // If prices are missing/stale and auto-update is enabled, try to update them
+        if has_stale_prices && self.auto_update_prices {
+            tracing::warn!(
+                price_ids = ?price_ids,
+                max_age_s = price_max_age,
+                "Oracle prices are missing or stale, attempting to update from Pyth Hermes (AUTO_UPDATE_PRICES=true)"
+            );
+
+            match self
+                .oracle_fetcher
+                .update_pyth_prices(&oracle_account, &price_ids)
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!("Successfully updated Pyth prices, re-fetching");
+                    oracle_response = self
+                        .oracle_fetcher
+                        .get_oracle_prices(oracle_account.clone(), &price_ids, price_max_age)
+                        .await?;
+                }
+                Ok(false) => {
+                    tracing::warn!("Price update was skipped (no signer or already fresh)");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to update Pyth prices");
+                }
+            }
+        } else if has_stale_prices {
+            tracing::warn!(
+                auto_update_prices = self.auto_update_prices,
+                price_ids = ?price_ids,
+                max_age_s = price_max_age,
+                "Oracle prices are missing or stale. Enable AUTO_UPDATE_PRICES=true to automatically update prices before liquidations."
+            );
+        }
 
         if oracle_response.is_empty() {
             return Ok(());

@@ -11,6 +11,7 @@ use super::{
     MessageWithValidSignature, Payload,
 };
 
+pub mod eip191;
 pub mod raw;
 pub mod sep53;
 

@@ -22,6 +22,7 @@ COPY fuzz ./fuzz
 COPY mock ./mock
 COPY service ./service
 COPY test-utils ./test-utils
+COPY tools ./tools
 COPY universal-account ./universal-account
 
 # Build the liquidator binary in release mode

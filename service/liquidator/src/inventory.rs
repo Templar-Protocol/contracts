@@ -271,7 +271,7 @@ impl InventoryManager {
 
         self.last_full_refresh = Some(Instant::now());
 
-        // Show all borrow assets with non-zero balance
+        // Show all borrow assets with non-zero balance (full asset IDs)
         let available_assets: Vec<String> = self
             .inventory
             .iter()
@@ -279,29 +279,7 @@ impl InventoryManager {
                 if u128::from(entry.balance) == 0 {
                     return None;
                 }
-
-                // Extract readable name from asset string
-                let asset_str = asset.to_string();
-                let readable_name = if let Some(stripped) = asset_str.strip_prefix("nep141:") {
-                    // For nep141, show just the contract name
-                    stripped.split('.').next().unwrap_or(stripped).to_string()
-                } else if let Some(stripped) = asset_str.strip_prefix("nep245:") {
-                    // For nep245, show contract and token parts
-                    let parts: Vec<&str> = stripped.split(':').collect();
-                    if parts.len() >= 2 {
-                        // Show the token_id part (usually contains readable info)
-                        parts[1].split('-').next().unwrap_or("unknown").to_string()
-                    } else {
-                        "unknown".to_string()
-                    }
-                } else {
-                    asset_str
-                        .split(':')
-                        .next_back()
-                        .unwrap_or("unknown")
-                        .to_string()
-                };
-                Some(readable_name)
+                Some(asset.to_string())
             })
             .collect();
 

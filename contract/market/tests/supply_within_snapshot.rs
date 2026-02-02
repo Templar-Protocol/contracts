@@ -165,7 +165,7 @@ async fn partial_snapshot_no_earnings(#[future(awt)] worker: Worker<Sandbox>) {
     let snapshot_supply_start = c.get_finalized_snapshots_len().await;
     while c.get_finalized_snapshots_len().await <= funds_activate_at {
         // Interest rate is high enough that this all goes to interest.
-        c.repay(&borrow_user, 10).await;
+        c.repay(&borrow_user, None, 10).await;
         c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
             .await;
         c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default))

@@ -113,7 +113,9 @@ mod tests {
     use near_crypto::{InMemorySigner, KeyType, SecretKey};
     use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryResponse};
     use near_primitives::hash::CryptoHash;
+    use near_sdk::AccountId;
     use std::collections::HashMap;
+    use std::env;
     use std::str::FromStr;
     use tokio::time::{self, Duration};
     use wiremock::{
@@ -301,5 +303,41 @@ mod tests {
                 + static_calls.load(std::sync::atomic::Ordering::SeqCst)
                 >= 1
         );
+    }
+
+    #[test]
+    fn registries_env_is_space_delimited() {
+        let sk = SecretKey::from_random(KeyType::ED25519);
+        let original_regs = env::var("REGISTRIES_ACCOUNT_IDS").ok();
+        let original_signer = env::var("SIGNER_ACCOUNT_ID").ok();
+        let original_key = env::var("SIGNER_KEY").ok();
+
+        env::set_var("REGISTRIES_ACCOUNT_IDS", "one.testnet two.testnet");
+        env::set_var("SIGNER_ACCOUNT_ID", "signer.testnet");
+        env::set_var("SIGNER_KEY", sk.to_string());
+
+        let args = Args::parse_from(["accumulator"]);
+        let expected: Vec<AccountId> = vec![
+            "one.testnet".parse().unwrap(),
+            "two.testnet".parse().unwrap(),
+        ];
+
+        assert_eq!(args.registries, expected);
+
+        if let Some(val) = original_regs {
+            env::set_var("REGISTRIES_ACCOUNT_IDS", val);
+        } else {
+            env::remove_var("REGISTRIES_ACCOUNT_IDS");
+        }
+        if let Some(val) = original_signer {
+            env::set_var("SIGNER_ACCOUNT_ID", val);
+        } else {
+            env::remove_var("SIGNER_ACCOUNT_ID");
+        }
+        if let Some(val) = original_key {
+            env::set_var("SIGNER_KEY", val);
+        } else {
+            env::remove_var("SIGNER_KEY");
+        }
     }
 }

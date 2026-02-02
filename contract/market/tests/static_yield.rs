@@ -38,7 +38,7 @@ async fn static_yield_success(#[future(awt)] worker: Worker<Sandbox>) {
 
     c.borrow(&borrow_user, 1_000_000).await;
     tokio::time::sleep(Duration::from_secs(10)).await;
-    c.repay(&borrow_user, 1_200_000).await;
+    c.repay(&borrow_user, None, 1_200_000).await;
 
     let record_after_repay = c
         .get_static_yield(protocol_yield_user.id())
@@ -131,7 +131,7 @@ async fn static_yield_fail_storage_unregistered(#[future(awt)] worker: Worker<Sa
 
     c.borrow(&borrow_user, 1_000_000).await;
     tokio::time::sleep(Duration::from_secs(10)).await;
-    c.repay(&borrow_user, 1_200_000).await;
+    c.repay(&borrow_user, None, 1_200_000).await;
 
     c.accumulate_static_yield(&protocol_yield_user, None, None)
         .await;

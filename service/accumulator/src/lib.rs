@@ -14,8 +14,9 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{serde_json::json, AccountId};
+use rpc::{get_contract_version, is_v1_0_0};
 use templar_common::market::MarketConfiguration;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 pub mod rpc;
 
@@ -29,7 +30,7 @@ const NONCE_STATE_TTL: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
     /// Registries to run accumulator for
-    #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS")]
+    #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS", value_delimiter = ' ')]
     pub registries: Vec<AccountId>,
     /// Signer key to use for signing transactions
     #[arg(short = 'k', long, env = "SIGNER_KEY")]
@@ -53,7 +54,12 @@ pub struct Args {
     #[arg(long, default_value_t = 86_400, env = "STATIC_INTERVAL")]
     pub static_interval: u64,
     /// Registry refresh interval in seconds
-    #[arg(short, long, default_value_t = 3600, env = "REGISTRY_REFRESH_INTERVAL")]
+    #[arg(
+        short = 'R',
+        long,
+        default_value_t = 3600,
+        env = "REGISTRY_REFRESH_INTERVAL"
+    )]
     pub registry_refresh_interval: u64,
     /// Concurrency for accumulation tasks
     #[arg(short, long, default_value_t = 4, env = "CONCURRENCY")]
@@ -226,8 +232,25 @@ impl Accumulator {
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
+    pub async fn supports_static_yield(&self) -> anyhow::Result<bool> {
+        let Some(version) = get_contract_version(&self.client, &self.market).await else {
+            return Ok(false);
+        };
+
+        Ok(!is_v1_0_0(&version))
+    }
+
     #[instrument(skip(self), level = "info")]
     pub async fn run_static_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
+        if !self.supports_static_yield().await? {
+            debug!(
+                "{} market does not support static yield accumulation",
+                self.market
+            );
+            return Ok(());
+        }
+
         let static_accounts = self.get_static_accounts().await?;
 
         if static_accounts.is_empty() {
@@ -267,6 +290,7 @@ impl Accumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::ContractSourceMetadata;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
     use futures::future;
@@ -656,6 +680,46 @@ mod tests {
         );
         // We expect only one access key call for nonce fetching given two concurrent accumulations, we generate nonces locally after that.
         assert_eq!(access_key_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn run_static_accumulations_skip_for_v1_0_0_market() {
+        let server = MockServer::start().await;
+        let accumulator = build_accumulator(&server, "market.testnet");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &Request| match parse_method(req).as_str() {
+                "query" => {
+                    let (params, id) = parse_query_request(req);
+                    assert_eq!(
+                        params.get("method_name").and_then(JsonValue::as_str),
+                        Some("contract_source_metadata")
+                    );
+                    calls_clone.fetch_add(1, Ordering::SeqCst);
+
+                    let metadata = ContractSourceMetadata {
+                        version: "1.0.0".to_string(),
+                        link: None,
+                        standards: None,
+                    };
+                    let payload = call_result_response(serialize_and_encode(&metadata));
+                    ResponseTemplate::new(200)
+                        .set_body_json(rpc_success_response(&json!(payload), &id))
+                }
+                other => panic!("Unexpected rpc method {other}"),
+            })
+            .mount(&server)
+            .await;
+
+        accumulator
+            .run_static_accumulations(/*concurrency=*/ 2)
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

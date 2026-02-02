@@ -169,7 +169,7 @@ async fn test_happy(
 
     // Step 4: Repay borrow
 
-    c.repay(&borrow_user, 1100).await;
+    c.repay(&borrow_user, None, 1100).await;
 
     // Ensure borrow is paid off.
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();

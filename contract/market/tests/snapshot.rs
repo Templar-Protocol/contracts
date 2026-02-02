@@ -136,7 +136,7 @@ async fn snapshot_reflects_repayment_changes(#[future(awt)] worker: Worker<Sandb
     let snapshots_after_borrow = c.get_finalized_snapshots_len().await;
 
     // Repay half
-    c.repay(&borrow_user, 250_000).await;
+    c.repay(&borrow_user, None, 250_000).await;
 
     // Wait and trigger second snapshot (after partial repayment)
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -239,7 +239,7 @@ async fn snapshot_with_full_repayment(#[future(awt)] worker: Worker<Sandbox>) {
     eprintln!("Total liability before repayment: {total_liability:?}");
 
     // Repay everything (including any accrued interest)
-    c.repay(&borrow_user, total_liability).await;
+    c.repay(&borrow_user, None, total_liability).await;
 
     // Create snapshot after full repayment
     tokio::time::sleep(Duration::from_secs(1)).await;

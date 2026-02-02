@@ -21,6 +21,10 @@ impl ContractController for UniversalAccountController {
 }
 
 impl UniversalAccountController {
+    pub const fn wasm_0_2_0() -> &'static [u8] {
+        include_bytes!("wasm/uac_0_2_0.wasm")
+    }
+
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 

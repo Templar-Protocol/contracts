@@ -114,8 +114,15 @@ impl Analyzer {
         }
 
         // Calculate distance from MCR as percentage
-        let distance_from_mcr_pct =
-            ((cr - mcr_liquidation) / mcr_liquidation) * Decimal::from(100u32);
+        // For red zone (below MCR), calculate how far below
+        // For yellow zone (above MCR), calculate how far above
+        let distance_from_mcr_pct = if zone == AlertZone::Red {
+            // CR is below MCR, so calculate (MCR - CR) to avoid underflow
+            ((mcr_liquidation - cr) / mcr_liquidation) * Decimal::from(100u32)
+        } else {
+            // CR is at or above MCR
+            ((cr - mcr_liquidation) / mcr_liquidation) * Decimal::from(100u32)
+        };
 
         Ok(Some(PositionAlert {
             borrower: borrower.clone(),
@@ -209,6 +216,27 @@ mod tests {
         // Check it's approximately 4.54 (allowing for decimal precision)
         let distance_f64: f64 = distance.to_string().parse().unwrap_or(0.0);
         assert!((distance_f64 - 4.545).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_distance_calculation_below_mcr() {
+        let mcr = Decimal::from(133u32);
+        let cr = Decimal::from(119u32);
+
+        // When CR < MCR (Red zone), distance should be calculated as (MCR - CR)
+        // to avoid underflow
+        // Distance = ((MCR - CR) / MCR) * 100
+        // = ((133 - 119) / 133) * 100
+        // = (14 / 133) * 100
+        // ≈ 10.53%
+        let distance = ((mcr - cr) / mcr) * Decimal::from(100u32);
+
+        // Check it's approximately 10.53 (allowing for decimal precision)
+        let distance_f64: f64 = distance.to_string().parse().unwrap_or(0.0);
+        assert!((distance_f64 - 10.526).abs() < 0.1);
+
+        // This test would have caught the overflow bug where we tried to do (CR - MCR)
+        // when CR < MCR, which would underflow with unsigned integers
     }
 
     #[test]

@@ -60,6 +60,7 @@ async fn compounding_yield(
                 let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
                 c.repay(
                     &borrow_user,
+                    None,
                     u128::from(position.get_total_borrow_asset_liability()) * 120 / 100,
                 )
                 .await;

@@ -392,6 +392,52 @@ pub async fn list_deployments(
     Ok(all_deployments)
 }
 
+/// Contract source metadata as defined by NEP-330
+#[derive(Debug, Clone)]
+#[near(serializers = [json])]
+pub struct ContractSourceMetadata {
+    /// Contract version (semver format)
+    pub version: String,
+    /// Link to source code repository
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// Standards implemented by the contract
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standards: Option<Vec<Standard>>,
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [json])]
+pub struct Standard {
+    pub standard: String,
+    pub version: String,
+}
+
+pub fn is_v1_0_0(version: &str) -> bool {
+    version == "1.0.0"
+}
+
+/// Get contract source metadata (NEP-330)
+///
+/// Returns `None` if the contract doesn't implement NEP-330 or the call fails.
+pub async fn get_contract_version(
+    client: &JsonRpcClient,
+    contract_id: &AccountId,
+) -> Option<String> {
+    let result: Result<ContractSourceMetadata, RpcError> = view(
+        client,
+        contract_id.clone(),
+        "contract_source_metadata",
+        near_sdk::serde_json::json!({}),
+    )
+    .await;
+
+    match result {
+        Ok(metadata) => Some(metadata.version),
+        Err(_) => None,
+    }
+}
+
 /// List all deployments from multiple registry contracts concurrently.
 ///
 /// # Arguments
@@ -614,5 +660,64 @@ mod tests {
                 AccountId::from_str("mb2.testnet").unwrap()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn get_contract_version_returns_version() {
+        let server = MockServer::start().await;
+        let client = JsonRpcClient::connect(server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(|req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("method_name").and_then(JsonValue::as_str),
+                    Some("contract_source_metadata")
+                );
+
+                let metadata = ContractSourceMetadata {
+                    version: "2.1.3".to_string(),
+                    link: None,
+                    standards: None,
+                };
+                let payload =
+                    call_result_response(near_sdk::serde_json::to_vec(&metadata).unwrap());
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let version =
+            get_contract_version(&client, &AccountId::from_str("market.testnet").unwrap()).await;
+
+        assert_eq!(version.as_deref(), Some("2.1.3"));
+    }
+
+    #[tokio::test]
+    async fn get_contract_version_returns_none_on_error() {
+        let server = MockServer::start().await;
+        let client = JsonRpcClient::connect(server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(|req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("method_name").and_then(JsonValue::as_str),
+                    Some("contract_source_metadata")
+                );
+
+                // Return invalid JSON payload to force a deserialize error
+                let payload = call_result_response(vec![0_u8]);
+                ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let version =
+            get_contract_version(&client, &AccountId::from_str("market.testnet").unwrap()).await;
+
+        assert!(version.is_none());
     }
 }
