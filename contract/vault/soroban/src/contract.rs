@@ -1270,15 +1270,16 @@ where
             anchor.timestamp_ns,
             now_ns,
         );
-        let management_shares_u128 = management_shares.as_u128_saturating();
         if !management_shares.is_zero() {
+            let management_shares_u128 = u128::from(management_shares);
             effects.push(KernelEffect::MintShares {
                 owner: self.config.fees.management.recipient,
                 shares: management_shares_u128,
             });
-            next_state.total_shares =
-                next_state.total_shares.saturating_add(management_shares_u128);
-            total_supply = next_state.total_shares;
+            total_supply = total_supply
+                .checked_add(management_shares_u128)
+                .ok_or_else(|| RuntimeError::contract_error("management fee overflow"))?;
+            next_state.total_shares = total_supply;
         }
 
         let profit = fee_total_assets.saturating_sub(anchor.total_assets);
@@ -1293,15 +1294,16 @@ where
             Number::from(cur_total_assets),
             Number::from(total_supply),
         );
-        let performance_shares_u128 = performance_shares.as_u128_saturating();
-
         if !performance_shares.is_zero() {
+            let performance_shares_u128 = u128::from(performance_shares);
             effects.push(KernelEffect::MintShares {
                 owner: self.config.fees.performance.recipient,
                 shares: performance_shares_u128,
             });
-            next_state.total_shares =
-                next_state.total_shares.saturating_add(performance_shares_u128);
+            total_supply = total_supply
+                .checked_add(performance_shares_u128)
+                .ok_or_else(|| RuntimeError::contract_error("performance fee overflow"))?;
+            next_state.total_shares = total_supply;
         }
 
         next_state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
