@@ -42,6 +42,8 @@ use crate::storage::{SorobanStorage, Storage, VersionedState};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
 const YEAR_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
+const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
+const TTL_EXTEND_TO_LEDGERS: u32 = 100_000;
 
 fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     let strkey = addr.to_string();
@@ -1473,10 +1475,19 @@ type ContractVault<'a> = CuratorVault<
     NoopCrossChainAdapter,
 >;
 
+fn extend_storage_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    let storage = SorobanStorage::new(env);
+    storage.extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+}
+
 fn with_contract_vault<T>(
     env: &Env,
     f: impl FnOnce(&mut ContractVault<'_>) -> Result<T, RuntimeError>,
 ) -> Result<T, RuntimeError> {
+    extend_storage_ttl(env);
     let admin: SdkAddress = env
         .storage()
         .instance()
@@ -1960,15 +1971,7 @@ impl SorobanVaultContract {
     ///
     /// Call periodically to prevent state expiry.
     pub fn extend_ttl(env: Env) {
-        // Extend instance storage
-        env.storage()
-            .instance()
-            .extend_ttl(50_000, 100_000);
-
-        // Extend persistent storage (vault state)
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        storage.extend_ttl(50_000, 100_000);
+        extend_storage_ttl(&env);
     }
 }
 
