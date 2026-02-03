@@ -503,9 +503,8 @@ impl Liquidator {
                     gas_cost,
                 );
 
-            let theoretical_amount_for_profit = U128(
-                (liquidation_amount.0 * 10_000) / (10_000 + SAFETY_BUFFER_BPS)
-            );
+            let theoretical_amount_for_profit =
+                U128((liquidation_amount.0 * 10_000) / (10_000 + SAFETY_BUFFER_BPS));
 
             let is_profitable = self.strategy.should_liquidate(
                 theoretical_amount_for_profit,

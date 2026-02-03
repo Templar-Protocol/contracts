@@ -10,7 +10,6 @@ use templar_common::utils::Network;
 
 use crate::{service::ServiceConfig, CollateralStrategy};
 
-
 /// Validator function for `partial_percentage` range
 fn validate_percentage(s: &str) -> Result<u8, String> {
     let value: u8 = s
@@ -383,7 +382,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Cannot specify both --partial-percentage and --fixed-liquidation-amount-usd")]
+    #[should_panic(
+        expected = "Cannot specify both --partial-percentage and --fixed-liquidation-amount-usd"
+    )]
     fn test_create_strategy_mutual_exclusivity() {
         let mut args = create_test_args();
         args.partial_percentage = Some(50);

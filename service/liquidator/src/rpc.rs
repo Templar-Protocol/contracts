@@ -298,9 +298,10 @@ pub async fn send_tx(
 
                 match status {
                     Ok(result) => break result,
-                    Err(e) if matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) => {
-                        // Continue polling
-                        continue;
+                    Err(e)
+                        if matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) =>
+                    {
+                        // Continue polling on timeout
                     }
                     Err(e) => return Err(e.into()),
                 }

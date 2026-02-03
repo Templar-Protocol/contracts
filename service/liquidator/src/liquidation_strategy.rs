@@ -139,7 +139,6 @@ pub trait LiquidationStrategy: Send + Sync + std::fmt::Debug {
     fn max_liquidation_percentage(&self) -> u8 {
         100
     }
-
 }
 
 /// Partial liquidation strategy.
@@ -272,8 +271,8 @@ impl LiquidationStrategy for PercentageLiquidationStrategy {
             return Ok(None);
         };
 
-        let final_amount = theoretical_amount
-            .saturating_add((theoretical_amount * SAFETY_BUFFER_BPS) / 10_000);
+        let final_amount =
+            theoretical_amount.saturating_add((theoretical_amount * SAFETY_BUFFER_BPS) / 10_000);
 
         if final_amount > available_u128 {
             if market_version == Some((1, 0, 0)) {
@@ -333,7 +332,6 @@ impl LiquidationStrategy for PercentageLiquidationStrategy {
         self.target_percentage
     }
 }
-
 
 /// Convert USD amount to raw token units.
 ///
