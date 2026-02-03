@@ -10,8 +10,11 @@
 //! Soroban-native contract interface with `#[contract]` and `#[contractimpl]`
 //! macros for deployment on the Stellar network.
 
+use alloc::vec;
 use alloc::vec::Vec;
-use soroban_sdk::{contract, contractimpl, contracttype, Address as SdkAddress, Env, Vec as SdkVec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, Address as SdkAddress, Bytes, Env,
+};
 use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
 };
@@ -25,7 +28,7 @@ use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::{compute_full_withdrawal, compute_partial_withdrawal};
 
 use crate::auth::{ActionKind, AuthAdapter};
-use crate::effects::{EffectContext, EffectInterpreter, EffectSummary};
+use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectSummary};
 use crate::error::RuntimeError;
 use crate::market::{CrossChainMarketAdapter, MarketAdapter, MarketRef};
 use crate::policy::{build_refresh_plan_with_locks, filter_allocation_plan};
@@ -37,6 +40,8 @@ use crate::storage::{Storage, VersionedState};
 pub struct ContractConfig {
     /// Administrator address.
     pub admin: Address,
+    /// Vault contract address.
+    pub vault_address: Address,
     /// Guardian addresses (can pause).
     pub guardians: Vec<Address>,
     /// Allocator addresses (can manage allocations).
@@ -59,6 +64,7 @@ impl ContractConfig {
     #[must_use]
     pub fn new(
         admin: Address,
+        vault_address: Address,
         guardians: Vec<Address>,
         allocators: Vec<Address>,
         asset_address: Address,
@@ -66,6 +72,7 @@ impl ContractConfig {
     ) -> Self {
         Self {
             admin,
+            vault_address,
             guardians,
             allocators,
             asset_address,
@@ -179,7 +186,7 @@ pub struct CuratorVault<S, A, E, M, C>
 where
     S: Storage,
     A: AuthAdapter,
-    E: EffectInterpreter,
+    E: EffectInterpreter + AddressRegistrar,
     M: MarketAdapter,
     C: CrossChainMarketAdapter,
 {
@@ -209,7 +216,7 @@ impl<S, A, E, M, C> CuratorVault<S, A, E, M, C>
 where
     S: Storage,
     A: AuthAdapter,
-    E: EffectInterpreter,
+    E: EffectInterpreter + AddressRegistrar,
     M: MarketAdapter,
     C: CrossChainMarketAdapter,
 {
@@ -248,7 +255,14 @@ where
                 self.state = Some(VaultState::default());
             }
         }
+        self.paused = self.storage.load_paused()?;
         Ok(())
+    }
+
+    /// Register a kernel address mapping for effect execution.
+    pub fn register_address(&mut self, kernel_addr: Address, soroban_addr: SdkAddress) {
+        self.interpreter
+            .register_address(kernel_addr, soroban_addr);
     }
 
     /// Save vault state to storage.
@@ -285,10 +299,38 @@ where
     fn effect_context(&self, now_ns: u64) -> EffectContext {
         EffectContext::new(
             now_ns,
-            self.config.admin, // vault address = admin for now
+            self.config.vault_address,
             self.config.asset_address,
             self.config.share_address,
         )
+    }
+
+    fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
+        let strkey = addr.to_string();
+        let mut raw = vec![0u8; strkey.len() as usize];
+        strkey.copy_into_slice(&mut raw);
+        let bytes = Bytes::from_slice(env, &raw);
+        env.crypto().sha256(&bytes).to_bytes().to_array()
+    }
+
+    fn ensure_vault_mapped(&mut self, env: &Env) -> Result<(), RuntimeError> {
+        let vault_sdk = env.current_contract_address();
+        let vault_kernel = Self::kernel_address_from_sdk(env, &vault_sdk);
+        if vault_kernel != self.config.vault_address {
+            return Err(RuntimeError::contract_error(
+                "vault address mismatch for effect mapping",
+            ));
+        }
+        self.interpreter
+            .register_address(vault_kernel, vault_sdk);
+        Ok(())
+    }
+
+    fn register_sdk_address(&mut self, env: &Env, addr: &SdkAddress) -> Address {
+        let kernel_addr = Self::kernel_address_from_sdk(env, addr);
+        self.interpreter
+            .register_address(kernel_addr, addr.clone());
+        kernel_addr
     }
 
     fn kernel_config(&self) -> VaultConfig {
@@ -310,10 +352,11 @@ where
         let config = self.kernel_config();
         let restrictions = self.restrictions.as_ref();
         let state = self.state().clone();
-        let result = apply_action(state, &config, restrictions, &self.config.admin, action)
+        let result = apply_action(state, &config, restrictions, &self.config.vault_address, action)
             .map_err(RuntimeError::transition_error)?;
 
         let ctx = self.effect_context(now_ns);
+        self.ensure_effect_addresses_mapped(&result.effects, &ctx)?;
         let summary = self
             .interpreter
             .execute_effects(&result.effects, &ctx)?;
@@ -322,6 +365,43 @@ where
         self.save_state()?;
 
         Ok(summary)
+    }
+
+    fn ensure_effect_addresses_mapped(
+        &self,
+        effects: &[KernelEffect],
+        ctx: &EffectContext,
+    ) -> Result<(), RuntimeError> {
+        for effect in effects {
+            match effect {
+                KernelEffect::MintShares { owner, .. }
+                | KernelEffect::BurnShares { owner, .. } => {
+                    self.require_mapped(owner)?;
+                }
+                KernelEffect::TransferShares { from, to, .. } => {
+                    self.require_mapped(from)?;
+                    self.require_mapped(to)?;
+                }
+                KernelEffect::TransferAssets { to, .. } => {
+                    self.require_mapped(&ctx.vault_address)?;
+                    self.require_mapped(to)?;
+                }
+                KernelEffect::TransferAssetsFrom { from, to, .. } => {
+                    self.require_mapped(from)?;
+                    self.require_mapped(to)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn require_mapped(&self, addr: &Address) -> Result<(), RuntimeError> {
+        if self.interpreter.has_address(addr) {
+            Ok(())
+        } else {
+            Err(RuntimeError::effect_failed("missing address mapping"))
+        }
     }
 
     // =========================================================================
@@ -352,7 +432,7 @@ where
         // Authorize
         self.auth.authorize(ActionKind::Deposit, caller, None)?;
 
-        if self.auth.is_paused() {
+        if self.paused {
             return Err(RuntimeError::contract_error("vault is paused"));
         }
 
@@ -373,6 +453,22 @@ where
             total_shares: self.state().total_shares,
             total_assets: self.state().total_assets,
         })
+    }
+
+    /// Deposit using Soroban addresses, registering mappings automatically.
+    pub fn deposit_soroban(
+        &mut self,
+        env: &Env,
+        caller: SdkAddress,
+        receiver: SdkAddress,
+        assets: u128,
+        min_shares_out: u128,
+        now_ns: u64,
+    ) -> Result<DepositResult, RuntimeError> {
+        self.ensure_vault_mapped(env)?;
+        let caller_kernel = self.register_sdk_address(env, &caller);
+        let receiver_kernel = self.register_sdk_address(env, &receiver);
+        self.deposit(caller_kernel, receiver_kernel, assets, min_shares_out, now_ns)
     }
 
     /// Request a withdrawal from the vault.
@@ -423,6 +519,28 @@ where
         })
     }
 
+    /// Request withdrawal using Soroban addresses, registering mappings automatically.
+    pub fn request_withdraw_soroban(
+        &mut self,
+        env: &Env,
+        caller: SdkAddress,
+        receiver: SdkAddress,
+        shares: u128,
+        min_assets_out: u128,
+        now_ns: u64,
+    ) -> Result<WithdrawRequestResult, RuntimeError> {
+        self.ensure_vault_mapped(env)?;
+        let caller_kernel = self.register_sdk_address(env, &caller);
+        let receiver_kernel = self.register_sdk_address(env, &receiver);
+        self.request_withdraw(
+            caller_kernel,
+            receiver_kernel,
+            shares,
+            min_assets_out,
+            now_ns,
+        )
+    }
+
     /// Execute a pending withdrawal.
     ///
     /// This processes the next pending withdrawal in the queue.
@@ -460,6 +578,18 @@ where
         }
 
         Ok(summary)
+    }
+
+    /// Execute withdrawal using a Soroban address, registering mappings automatically.
+    pub fn execute_withdraw_soroban(
+        &mut self,
+        env: &Env,
+        caller: SdkAddress,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.ensure_vault_mapped(env)?;
+        let caller_kernel = self.register_sdk_address(env, &caller);
+        self.execute_withdraw(caller_kernel, now_ns)
     }
 
     fn complete_withdrawal_from_idle(&mut self, now_ns: u64) -> Result<EffectSummary, RuntimeError> {
@@ -566,6 +696,7 @@ where
         self.auth.authorize(ActionKind::Pause, caller, None)?;
 
         self.paused = paused;
+        self.storage.save_paused(paused)?;
         Ok(())
     }
 
@@ -1161,11 +1292,13 @@ impl SorobanVaultContract {
             .instance()
             .set(&VaultDataKey::Initialized, &true);
 
-        // Initialize vault state in persistent storage
-        use crate::storage::{SorobanStorage, SorobanVaultState};
-        let storage = SorobanStorage::new(&env);
-        storage.save_vault_state(&SorobanVaultState::default());
-        storage.set_version(1);
+        // Initialize vault state in persistent storage using current version.
+        use crate::storage::SorobanStorage;
+        let mut storage = SorobanStorage::new(&env);
+        let versioned = VersionedState::new(VaultState::default());
+        storage
+            .save_state(&versioned)
+            .unwrap_or_else(|e| panic!("failed to initialize storage: {:?}", e));
     }
 
     /// Deposit assets into the vault.
@@ -1206,7 +1339,7 @@ impl SorobanVaultContract {
         }
 
         // Load vault state
-        use crate::storage::{SorobanStorage, SorobanVaultState};
+        use crate::storage::SorobanStorage;
         let storage = SorobanStorage::new(&env);
         let mut state = storage.load_vault_state().unwrap_or_default();
 
@@ -1291,7 +1424,7 @@ impl SorobanVaultContract {
         }
 
         // Load vault state
-        use crate::storage::{SorobanStorage, SorobanVaultState};
+        use crate::storage::SorobanStorage;
         let storage = SorobanStorage::new(&env);
         let state = storage.load_vault_state().expect("vault not initialized");
 
@@ -1604,6 +1737,7 @@ mod tests {
     fn test_config() -> ContractConfig {
         ContractConfig::new(
             [1u8; 32],
+            [9u8; 32],
             vec![[2u8; 32]],
             vec![[3u8; 32]],
             [4u8; 32],
