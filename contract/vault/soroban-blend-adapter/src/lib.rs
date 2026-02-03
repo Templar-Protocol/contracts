@@ -105,6 +105,28 @@ impl BlendAdapterContract {
         token.transfer(&adapter, &vault, &amount);
     }
 
+    pub fn rescue(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: i128,
+        receiver: Address,
+    ) {
+        // Move unexpected assets held by the adapter to a receiver.
+        caller.require_auth();
+        let vault = get_vault(&env);
+        if caller != vault {
+            panic!("caller is not vault");
+        }
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+
+        let adapter = env.current_contract_address();
+        let token = soroban_sdk::token::Client::new(&env, &asset);
+        token.transfer(&adapter, &receiver, &amount);
+    }
+
     pub fn total_assets(env: Env, asset: Address) -> i128 {
         let pool = get_pool(&env);
         let client = PoolClient::new(&env, &pool);
