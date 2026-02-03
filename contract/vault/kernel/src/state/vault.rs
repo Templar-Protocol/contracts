@@ -187,6 +187,11 @@ impl VaultState {
         external_assets: u128,
         timestamp_ns: TimestampNs,
     ) -> Self {
+        debug_assert_eq!(
+            total_assets,
+            idle_assets.saturating_add(external_assets),
+            "total_assets invariant violated: total != idle + external",
+        );
         Self {
             total_assets,
             total_shares,

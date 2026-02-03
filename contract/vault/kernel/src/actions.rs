@@ -1816,7 +1816,7 @@ mod tests {
     fn abort_allocating_success() {
         use crate::state::op_state::AllocatingState;
 
-        let mut state = VaultState::with_initial(1_000, 1_000, 300, 500, 0);
+        let mut state = VaultState::with_initial(800, 1_000, 300, 500, 0);
         state.op_state = OpState::Allocating(AllocatingState {
             op_id: 8,
             index: 0,
@@ -2258,7 +2258,7 @@ mod tests {
     fn settle_payout_failure() {
         use crate::state::op_state::PayoutState;
 
-        let mut state = VaultState::with_initial(1_000, 1_000, 400, 500, 0);
+        let mut state = VaultState::with_initial(900, 1_000, 400, 500, 0);
         let config = test_config();
         let owner = addr(1);
         let receiver = addr(2);

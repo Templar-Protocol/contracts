@@ -40,31 +40,19 @@ impl BlendAdapterContract {
     }
 
     pub fn set_pool(env: Env, caller: Address, pool: Address) {
-        caller.require_auth();
-        let admin = get_admin(&env);
-        if caller != admin {
-            panic!("caller is not admin");
-        }
+        require_admin(&env, &caller);
         env.storage().instance().set(&DataKey::Pool, &pool);
     }
 
     pub fn set_vault(env: Env, caller: Address, vault: Address) {
-        caller.require_auth();
-        let admin = get_admin(&env);
-        if caller != admin {
-            panic!("caller is not admin");
-        }
+        require_admin(&env, &caller);
         env.storage().instance().set(&DataKey::Vault, &vault);
     }
 
     pub fn supply(env: Env, caller: Address, asset: Address, amount: i128) {
         // Adapter owns the Blend position. The vault should transfer assets to
         // the adapter before calling this method.
-        caller.require_auth();
-        let vault = get_vault(&env);
-        if caller != vault {
-            panic!("caller is not vault");
-        }
+        require_vault(&env, &caller);
         if amount <= 0 {
             panic!("amount must be positive");
         }
@@ -86,14 +74,11 @@ impl BlendAdapterContract {
 
     pub fn withdraw(env: Env, caller: Address, asset: Address, amount: i128) {
         // Adapter owns the Blend position and transfers withdrawn assets back to the vault.
-        caller.require_auth();
-        let vault = get_vault(&env);
-        if caller != vault {
-            panic!("caller is not vault");
-        }
+        require_vault(&env, &caller);
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        let vault = get_vault(&env);
 
         with_reentrancy_guard(&env, || {
             let pool = get_pool(&env);
@@ -121,11 +106,7 @@ impl BlendAdapterContract {
         receiver: Address,
     ) {
         // Move unexpected assets held by the adapter to a receiver.
-        caller.require_auth();
-        let vault = get_vault(&env);
-        if caller != vault {
-            panic!("caller is not vault");
-        }
+        require_vault(&env, &caller);
         if amount <= 0 {
             panic!("amount must be positive");
         }
@@ -163,25 +144,36 @@ impl BlendAdapterContract {
     }
 }
 
+fn get_address(env: &Env, key: DataKey, label: &str) -> Address {
+    env.storage().instance().get(&key).expect(label)
+}
+
 fn get_admin(env: &Env) -> Address {
-    env.storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .expect("admin not set")
+    get_address(env, DataKey::Admin, "admin not set")
 }
 
 fn get_vault(env: &Env) -> Address {
-    env.storage()
-        .instance()
-        .get(&DataKey::Vault)
-        .expect("vault not set")
+    get_address(env, DataKey::Vault, "vault not set")
 }
 
 fn get_pool(env: &Env) -> Address {
-    env.storage()
-        .instance()
-        .get(&DataKey::Pool)
-        .expect("pool not set")
+    get_address(env, DataKey::Pool, "pool not set")
+}
+
+fn require_admin(env: &Env, caller: &Address) {
+    caller.require_auth();
+    let admin = get_admin(env);
+    if caller != &admin {
+        panic!("caller is not admin");
+    }
+}
+
+fn require_vault(env: &Env, caller: &Address) {
+    caller.require_auth();
+    let vault = get_vault(env);
+    if caller != &vault {
+        panic!("caller is not vault");
+    }
 }
 
 fn with_reentrancy_guard<T>(env: &Env, f: impl FnOnce() -> T) -> T {

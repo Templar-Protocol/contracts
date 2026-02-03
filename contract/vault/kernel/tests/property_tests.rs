@@ -167,8 +167,12 @@ proptest! {
         delta in 1u128..=1000u128,
     ) {
         let total = idle.saturating_add(external).saturating_add(delta);
-        let mut state = VaultState::with_initial(total, 0, idle, external, 0);
-        state.total_assets = total; // Mismatched intentionally
+        let mut state = VaultState::new();
+        state.total_assets = total;
+        state.total_shares = 0;
+        state.idle_assets = idle;
+        state.external_assets = external;
+        state.fee_anchor = FeeAccrualAnchor::new(total, 0);
         prop_assert!(!state.check_invariant(), "should detect invariant violation");
     }
 
