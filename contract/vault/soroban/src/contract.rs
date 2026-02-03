@@ -2237,25 +2237,25 @@ mod tests {
             Number::from(u128::from(YEAR_NS)),
             Number::from(u128::from(YEAR_NS)),
         );
-        let mgmt_expected = compute_fee_shares_from_assets(
+        let mgmt_expected: u128 = compute_fee_shares_from_assets(
             mgmt_fee_assets,
             Number::from(1_500u128),
             Number::from(1_000u128),
         )
-        .as_u128_saturating();
+        .into();
 
-        let total_supply_after_mgmt = 1_000u128.saturating_add(mgmt_expected);
+        let total_supply_after_mgmt: u128 = 1_000u128 + mgmt_expected;
         let profit = 1_500u128.saturating_sub(1_000u128);
         let perf_fee_assets = fees
             .performance
             .fee_wad
             .apply_floored(Number::from(profit));
-        let perf_expected = compute_fee_shares_from_assets(
+        let perf_expected: u128 = compute_fee_shares_from_assets(
             perf_fee_assets,
             Number::from(1_500u128),
             Number::from(total_supply_after_mgmt),
         )
-        .as_u128_saturating();
+        .into();
 
         let minted = vault.refresh_fees([1u8; 32], YEAR_NS).unwrap();
 
