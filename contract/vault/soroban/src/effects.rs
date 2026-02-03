@@ -748,17 +748,15 @@ where
                 assets_in,
                 shares_out,
             } => {
-                let owner_addr = self.address_map.resolve(owner);
-                let recv_addr = self.address_map.resolve(receiver);
-                if let (Some(o), Some(r)) = (owner_addr, recv_addr) {
-                    DepositEvent {
-                        owner: o.clone(),
-                        receiver: r.clone(),
-                        assets_in: Self::u128_to_i128_event(*assets_in),
-                        shares_out: Self::u128_to_i128_event(*shares_out),
-                    }
-                    .publish(self.env);
+                let owner_addr = self.resolve_address(owner)?;
+                let recv_addr = self.resolve_address(receiver)?;
+                DepositEvent {
+                    owner: owner_addr.clone(),
+                    receiver: recv_addr.clone(),
+                    assets_in: Self::u128_to_i128_event(*assets_in),
+                    shares_out: Self::u128_to_i128_event(*shares_out),
                 }
+                .publish(self.env);
             }
             KernelEvent::WithdrawalRequested {
                 id,
@@ -767,18 +765,16 @@ where
                 shares,
                 expected_assets,
             } => {
-                let owner_addr = self.address_map.resolve(owner);
-                let recv_addr = self.address_map.resolve(receiver);
-                if let (Some(o), Some(r)) = (owner_addr, recv_addr) {
-                    WithdrawRequestEvent {
-                        id: *id,
-                        owner: o.clone(),
-                        receiver: r.clone(),
-                        shares: Self::u128_to_i128_event(*shares),
-                        expected_assets: Self::u128_to_i128_event(*expected_assets),
-                    }
-                    .publish(self.env);
+                let owner_addr = self.resolve_address(owner)?;
+                let recv_addr = self.resolve_address(receiver)?;
+                WithdrawRequestEvent {
+                    id: *id,
+                    owner: owner_addr.clone(),
+                    receiver: recv_addr.clone(),
+                    shares: Self::u128_to_i128_event(*shares),
+                    expected_assets: Self::u128_to_i128_event(*expected_assets),
                 }
+                .publish(self.env);
             }
             KernelEvent::WithdrawalStarted {
                 op_id,
@@ -787,18 +783,16 @@ where
                 owner,
                 receiver,
             } => {
-                let owner_addr = self.address_map.resolve(owner);
-                let recv_addr = self.address_map.resolve(receiver);
-                if let (Some(o), Some(r)) = (owner_addr, recv_addr) {
-                    WithdrawStartEvent {
-                        op_id: *op_id,
-                        amount: Self::u128_to_i128_event(*amount),
-                        escrow_shares: Self::u128_to_i128_event(*escrow_shares),
-                        owner: o.clone(),
-                        receiver: r.clone(),
-                    }
-                    .publish(self.env);
+                let owner_addr = self.resolve_address(owner)?;
+                let recv_addr = self.resolve_address(receiver)?;
+                WithdrawStartEvent {
+                    op_id: *op_id,
+                    amount: Self::u128_to_i128_event(*amount),
+                    escrow_shares: Self::u128_to_i128_event(*escrow_shares),
+                    owner: owner_addr.clone(),
+                    receiver: recv_addr.clone(),
                 }
+                .publish(self.env);
             }
             KernelEvent::WithdrawalCollected {
                 op_id,
@@ -1124,5 +1118,28 @@ mod tests {
         // Unknown address
         let unknown = [2u8; 32];
         assert!(map.resolve(&unknown).is_none());
+    }
+
+    #[test]
+    fn test_emit_event_requires_address_mapping() {
+        use templar_vault_kernel::effects::KernelEvent;
+
+        let env = test_env();
+        let share = TestSep41Token::new();
+        let asset = TestSep41Token::new();
+        let mut interpreter = SorobanEffectInterpreter::new(&env, &share, &asset);
+        let ctx = test_context();
+
+        let effect = KernelEffect::EmitEvent {
+            event: KernelEvent::DepositProcessed {
+                owner: [1u8; 32],
+                receiver: [2u8; 32],
+                assets_in: 1,
+                shares_out: 1,
+            },
+        };
+
+        let err = interpreter.execute_effect(&effect, &ctx).unwrap_err();
+        assert!(matches!(err, RuntimeError::EffectFailed(_)));
     }
 }
