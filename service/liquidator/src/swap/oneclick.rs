@@ -362,17 +362,21 @@ impl OneClickSwap {
         let deadline_str = deadline.to_rfc3339();
 
         // Determine deposit and recipient types based on asset types
-        // - If from_asset is NEP-245 (Intents): deposit_type = "INTENTS"
+        // - If from_asset is NEP-245 from intents.near: deposit_type = "INTENTS"
         // - If from_asset is direct NEP-141 on NEAR: deposit_type = "ORIGIN_CHAIN"
-        let deposit_type = if from_asset.clone().into_nep245().is_some() {
+        let deposit_type = if from_asset.clone().into_nep245().is_some()
+            && from_asset.contract_id() == "intents.near"
+        {
             "INTENTS"
         } else {
             "ORIGIN_CHAIN"
         };
 
-        // - If to_asset is NEP-245 (Intents): recipient_type = "INTENTS" (wrapped output)
+        // - If to_asset is NEP-245 from intents.near: recipient_type = "INTENTS" (wrapped output)
         // - If to_asset is direct NEP-141 on NEAR: recipient_type = "DESTINATION_CHAIN" (unwrapped output)
-        let recipient_type = if to_asset.clone().into_nep245().is_some() {
+        let recipient_type = if to_asset.clone().into_nep245().is_some()
+            && to_asset.contract_id() == "intents.near"
+        {
             "INTENTS"
         } else {
             "DESTINATION_CHAIN"
