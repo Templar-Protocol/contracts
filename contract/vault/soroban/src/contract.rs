@@ -19,12 +19,13 @@ use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::{
-    apply_action, complete_allocation, complete_refresh, preview_deposit_shares,
-    preview_withdraw_assets, start_allocation, start_refresh, withdrawal_collected,
-    withdrawal_step_callback, Address, FeesSpec, KernelAction, OpState, PayoutOutcome,
-    Restrictions, TargetId, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    apply_action, complete_allocation, complete_refresh, compute_fee_shares_from_assets,
+    mul_div_floor, preview_deposit_shares, preview_withdraw_assets, start_allocation,
+    start_refresh, withdrawal_collected, withdrawal_step_callback, Address, FeeAccrualAnchor,
+    FeesSpec, KernelAction, Number, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
+    VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
-use templar_vault_kernel::effects::KernelEffect;
+use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
 use templar_vault_kernel::state::queue::{compute_full_withdrawal, compute_partial_withdrawal};
 
 use crate::auth::{ActionKind, AuthAdapter};
@@ -40,6 +41,7 @@ use crate::rbac::{RbacAuth, RbacConfig};
 use crate::storage::{SorobanStorage, Storage, VersionedState};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
+const YEAR_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
 
 fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     let strkey = addr.to_string();
@@ -428,6 +430,73 @@ where
             virtual_shares: 0,
             virtual_assets: 0,
         }
+    }
+
+    fn total_assets_for_fee_accrual(
+        &self,
+        cur_total_assets: u128,
+        anchor: &FeeAccrualAnchor,
+        now_ns: u64,
+    ) -> Result<u128, RuntimeError> {
+        let Some(max_rate) = self.config.fees.max_total_assets_growth_rate else {
+            return Ok(cur_total_assets);
+        };
+
+        let anchor_assets = anchor.total_assets;
+        if cur_total_assets <= anchor_assets || anchor_assets == 0 || now_ns < anchor.timestamp_ns {
+            return Ok(cur_total_assets);
+        }
+
+        let elapsed_ns = now_ns - anchor.timestamp_ns;
+        if elapsed_ns == 0 {
+            return Ok(anchor_assets);
+        }
+
+        let annual_max_increase = max_rate.apply_floored(Number::from(anchor_assets));
+        let max_increase = mul_div_floor(
+            annual_max_increase,
+            Number::from(u128::from(elapsed_ns)),
+            Number::from(u128::from(YEAR_NS)),
+        )
+        .as_u128_saturating();
+
+        let max_total_assets = anchor_assets
+            .checked_add(max_increase)
+            .ok_or_else(|| RuntimeError::contract_error("fee accrual overflow"))?;
+        Ok(cur_total_assets.min(max_total_assets))
+    }
+
+    fn compute_management_fee_shares(
+        &self,
+        fee_assets_base: u128,
+        cur_total_assets: u128,
+        total_supply: u128,
+        last_timestamp_ns: u64,
+        now_ns: u64,
+    ) -> Number {
+        if self.config.fees.management.fee_wad.is_zero()
+            || total_supply == 0
+            || now_ns <= last_timestamp_ns
+        {
+            return Number::zero();
+        }
+        let elapsed_ns = now_ns - last_timestamp_ns;
+        let annual_fee_assets = self
+            .config
+            .fees
+            .management
+            .fee_wad
+            .apply_floored(Number::from(fee_assets_base));
+        let fee_assets = mul_div_floor(
+            annual_fee_assets,
+            Number::from(u128::from(elapsed_ns)),
+            Number::from(u128::from(YEAR_NS)),
+        );
+        compute_fee_shares_from_assets(
+            fee_assets,
+            Number::from(cur_total_assets),
+            Number::from(total_supply),
+        )
     }
 
     fn apply_kernel_action(
@@ -1175,25 +1244,83 @@ where
     ///
     /// * `caller` - The caller's address
     /// * `now_ns` - Current timestamp in nanoseconds
+    ///
+    /// # Returns
+    ///
+    /// Total shares minted for fees.
     pub fn refresh_fees(&mut self, caller: Address, now_ns: u64) -> Result<u128, RuntimeError> {
         // Authorize
         self.auth.authorize(ActionKind::RefreshFees, caller, None)?;
 
-        let state = self.state_mut();
+        let state = self.state().clone();
+        let anchor = state.fee_anchor;
+        let cur_total_assets = state.total_assets;
+        let mut total_supply = state.total_shares;
 
-        // Calculate accrued fees based on time elapsed
-        let elapsed_ns = now_ns.saturating_sub(state.fee_anchor.timestamp_ns);
+        let fee_total_assets =
+            self.total_assets_for_fee_accrual(cur_total_assets, &anchor, now_ns)?;
 
-        // For now, return 0 fees - actual implementation would compute based on fee config
-        let _fees_accrued = 0u128;
-        let _elapsed = elapsed_ns; // suppress warning
+        let mut next_state = state.clone();
+        let mut effects = Vec::new();
 
-        // Update anchor
-        state.fee_anchor.timestamp_ns = now_ns;
+        let management_shares = self.compute_management_fee_shares(
+            fee_total_assets,
+            cur_total_assets,
+            total_supply,
+            anchor.timestamp_ns,
+            now_ns,
+        );
+        let management_shares_u128 = management_shares.as_u128_saturating();
+        if !management_shares.is_zero() {
+            effects.push(KernelEffect::MintShares {
+                owner: self.config.fees.management.recipient,
+                shares: management_shares_u128,
+            });
+            next_state.total_shares =
+                next_state.total_shares.saturating_add(management_shares_u128);
+            total_supply = next_state.total_shares;
+        }
 
+        let profit = fee_total_assets.saturating_sub(anchor.total_assets);
+        let fee_assets = self
+            .config
+            .fees
+            .performance
+            .fee_wad
+            .apply_floored(Number::from(profit));
+        let performance_shares = compute_fee_shares_from_assets(
+            fee_assets,
+            Number::from(cur_total_assets),
+            Number::from(total_supply),
+        );
+        let performance_shares_u128 = performance_shares.as_u128_saturating();
+
+        if !performance_shares.is_zero() {
+            effects.push(KernelEffect::MintShares {
+                owner: self.config.fees.performance.recipient,
+                shares: performance_shares_u128,
+            });
+            next_state.total_shares =
+                next_state.total_shares.saturating_add(performance_shares_u128);
+        }
+
+        next_state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
+
+        effects.push(KernelEffect::EmitEvent {
+            event: KernelEvent::FeesRefreshed {
+                now_ns,
+                total_assets: cur_total_assets,
+            },
+        });
+
+        let ctx = self.effect_context(now_ns);
+        self.ensure_effect_addresses_mapped(&effects, &ctx)?;
+        let summary = self.interpreter.execute_effects(&effects, &ctx)?;
+
+        self.state = Some(next_state);
         self.save_state()?;
 
-        Ok(0)
+        Ok(summary.shares_minted)
     }
 
     // =========================================================================
@@ -2075,6 +2202,76 @@ mod tests {
             })
             .unwrap();
         });
+    }
+
+    #[test]
+    fn test_refresh_fees_mints_shares() {
+        use templar_vault_kernel::fee::FeeSlot;
+        use templar_vault_kernel::math::wad::Wad;
+
+        let mut vault = create_test_vault();
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, [9u8; 32]),
+            FeeSlot::new(Wad::one() / 10, [8u8; 32]),
+            None,
+        );
+        vault.config.fees = fees;
+
+        {
+            let state = vault.state_mut();
+            state.total_assets = 1_500;
+            state.total_shares = 1_000;
+            state.idle_assets = 1_500;
+            state.external_assets = 0;
+            state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+        }
+
+        let annual_fee_assets = fees
+            .management
+            .fee_wad
+            .apply_floored(Number::from(1_500u128));
+        let mgmt_fee_assets = mul_div_floor(
+            annual_fee_assets,
+            Number::from(u128::from(YEAR_NS)),
+            Number::from(u128::from(YEAR_NS)),
+        );
+        let mgmt_expected = compute_fee_shares_from_assets(
+            mgmt_fee_assets,
+            Number::from(1_500u128),
+            Number::from(1_000u128),
+        )
+        .as_u128_saturating();
+
+        let total_supply_after_mgmt = 1_000u128.saturating_add(mgmt_expected);
+        let profit = 1_500u128.saturating_sub(1_000u128);
+        let perf_fee_assets = fees
+            .performance
+            .fee_wad
+            .apply_floored(Number::from(profit));
+        let perf_expected = compute_fee_shares_from_assets(
+            perf_fee_assets,
+            Number::from(1_500u128),
+            Number::from(total_supply_after_mgmt),
+        )
+        .as_u128_saturating();
+
+        let minted = vault.refresh_fees([1u8; 32], YEAR_NS).unwrap();
+
+        assert_eq!(minted, mgmt_expected + perf_expected);
+        assert_eq!(
+            vault.state().total_shares,
+            total_supply_after_mgmt + perf_expected
+        );
+        assert_eq!(vault.state().fee_anchor.total_assets, 1_500);
+        assert_eq!(vault.state().fee_anchor.timestamp_ns, YEAR_NS);
+
+        let mint_effects = vault
+            .interpreter
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, KernelEffect::MintShares { .. }))
+            .count();
+        assert_eq!(mint_effects, 2);
     }
 
     // =========================================================================
