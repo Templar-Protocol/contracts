@@ -68,7 +68,11 @@ init:
 	@just invoke initialize \
 		--admin "${SOROBAN_ADMIN:?Set SOROBAN_ADMIN}" \
 		--asset_token "${SOROBAN_ASSET_TOKEN:?Set SOROBAN_ASSET_TOKEN}" \
-		--share_token "${SOROBAN_SHARE_TOKEN:?Set SOROBAN_SHARE_TOKEN}"
+		--share_token "${SOROBAN_SHARE_TOKEN:?Set SOROBAN_SHARE_TOKEN}"; \
+	if [ -n "${BLEND_ADAPTER_ID:-}" ] || [ -n "${BLEND_POOL_ID:-}" ] || [ -n "${BLEND_FACTORY_ID:-}" ]; then \
+		echo "Configuring Blend adapter settings"; \
+		just blend-config; \
+	fi
 
 # Deposit assets into the vault (owner must authorize).
 deposit owner receiver assets min_shares_out=0:
@@ -93,6 +97,25 @@ pause:
 unpause:
 	@just invoke set_paused --caller "${SOROBAN_ADMIN:?Set SOROBAN_ADMIN}" --paused false
 
+# Configure Blend adapter + pool/factory (admin only).
+blend-config:
+	@admin="${SOROBAN_ADMIN:?Set SOROBAN_ADMIN}"; \
+	adapter="${BLEND_ADAPTER_ID:-}"; \
+	pool="${BLEND_POOL_ID:-}"; \
+	factory="${BLEND_FACTORY_ID:-}"; \
+	if [ -n "$adapter" ]; then \
+		just invoke set_blend_adapter --caller "$admin" --adapter "$adapter"; \
+	fi; \
+	if [ -n "$pool" ]; then \
+		just invoke set_blend_pool --caller "$admin" --pool "$pool"; \
+	fi; \
+	if [ -n "$factory" ]; then \
+		just invoke set_blend_factory --caller "$admin" --factory "$factory"; \
+	fi; \
+	if [ -z "$adapter" ] && [ -z "$pool" ] && [ -z "$factory" ]; then \
+		echo "No BLEND_* variables set"; \
+	fi
+
 # Read-only helpers.
 admin:
 	@just invoke admin
@@ -102,3 +125,12 @@ asset-token:
 
 share-token:
 	@just invoke share_token
+
+blend-adapter:
+	@just invoke blend_adapter
+
+blend-pool:
+	@just invoke blend_pool
+
+blend-factory:
+	@just invoke blend_factory

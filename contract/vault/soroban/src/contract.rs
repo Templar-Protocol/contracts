@@ -45,6 +45,12 @@ pub struct ContractConfig {
     pub asset_address: Address,
     /// Share token contract address.
     pub share_address: Address,
+    /// Blend adapter contract address (optional).
+    pub blend_adapter: Option<Address>,
+    /// Blend pool contract address (optional).
+    pub blend_pool: Option<Address>,
+    /// Blend factory contract address (optional).
+    pub blend_factory: Option<Address>,
 }
 
 impl ContractConfig {
@@ -64,7 +70,34 @@ impl ContractConfig {
             allocators,
             asset_address,
             share_address,
+            blend_adapter: None,
+            blend_pool: None,
+            blend_factory: None,
         }
+    }
+
+    /// Attach a Blend adapter contract address.
+    #[inline]
+    #[must_use]
+    pub fn with_blend_adapter(mut self, adapter: Address) -> Self {
+        self.blend_adapter = Some(adapter);
+        self
+    }
+
+    /// Attach a Blend pool contract address.
+    #[inline]
+    #[must_use]
+    pub fn with_blend_pool(mut self, pool: Address) -> Self {
+        self.blend_pool = Some(pool);
+        self
+    }
+
+    /// Attach a Blend factory contract address.
+    #[inline]
+    #[must_use]
+    pub fn with_blend_factory(mut self, factory: Address) -> Self {
+        self.blend_factory = Some(factory);
+        self
     }
 
     /// Check if the given address is the admin.
@@ -1063,6 +1096,12 @@ pub enum VaultDataKey {
     AssetToken,
     /// Share token address.
     ShareToken,
+    /// Blend adapter contract address.
+    BlendAdapter,
+    /// Blend pool contract address.
+    BlendPool,
+    /// Blend factory contract address.
+    BlendFactory,
     /// Whether the contract is initialized.
     Initialized,
     /// Whether the vault is paused.
@@ -1295,18 +1334,7 @@ impl SorobanVaultContract {
     /// * `caller` - The caller (must be admin)
     /// * `paused` - Whether to pause (true) or unpause (false)
     pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) {
-        // Require authorization
-        caller.require_auth();
-
-        // Check caller is admin
-        let admin: SdkAddress = env
-            .storage()
-            .instance()
-            .get(&VaultDataKey::Admin)
-            .expect("admin not set");
-        if caller != admin {
-            panic!("caller is not admin");
-        }
+        require_admin(&env, &caller);
 
         // Update paused state
         env.storage()
@@ -1316,6 +1344,30 @@ impl SorobanVaultContract {
         // Emit event
         use crate::effects::PauseUpdatedEvent;
         PauseUpdatedEvent { paused }.publish(&env);
+    }
+
+    /// Set the Blend adapter contract address (admin only).
+    pub fn set_blend_adapter(env: Env, caller: SdkAddress, adapter: SdkAddress) {
+        require_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::BlendAdapter, &adapter);
+    }
+
+    /// Set the Blend pool contract address (admin only).
+    pub fn set_blend_pool(env: Env, caller: SdkAddress, pool: SdkAddress) {
+        require_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::BlendPool, &pool);
+    }
+
+    /// Set the Blend factory contract address (admin only).
+    pub fn set_blend_factory(env: Env, caller: SdkAddress, factory: SdkAddress) {
+        require_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::BlendFactory, &factory);
     }
 
     /// Get the admin address.
@@ -1340,6 +1392,30 @@ impl SorobanVaultContract {
             .instance()
             .get(&VaultDataKey::ShareToken)
             .expect("share token not set")
+    }
+
+    /// Get the Blend adapter contract address.
+    pub fn blend_adapter(env: Env) -> SdkAddress {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::BlendAdapter)
+            .expect("blend adapter not set")
+    }
+
+    /// Get the Blend pool contract address.
+    pub fn blend_pool(env: Env) -> SdkAddress {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::BlendPool)
+            .expect("blend pool not set")
+    }
+
+    /// Get the Blend factory contract address.
+    pub fn blend_factory(env: Env) -> SdkAddress {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::BlendFactory)
+            .expect("blend factory not set")
     }
 
     /// Check if the vault is paused.
@@ -1459,6 +1535,18 @@ impl SorobanVaultContract {
         use crate::storage::SorobanStorage;
         let storage = SorobanStorage::new(&env);
         storage.extend_ttl(50_000, 100_000);
+    }
+}
+
+fn require_admin(env: &Env, caller: &SdkAddress) {
+    caller.require_auth();
+    let admin: SdkAddress = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::Admin)
+        .expect("admin not set");
+    if caller != &admin {
+        panic!("caller is not admin");
     }
 }
 

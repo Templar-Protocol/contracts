@@ -7,9 +7,10 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use soroban_sdk::{testutils::Address as _, Env};
 use templar_soroban_runtime::{
     auth::PermissiveAuth,
-    contract::{ContractConfig, CuratorVault},
+    contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     effects::MockInterpreter,
     error::RuntimeError,
     market::{AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt},
@@ -146,6 +147,38 @@ fn allocator_addr() -> Address {
 
 fn user_addr() -> Address {
     [10u8; 32]
+}
+
+#[test]
+fn soroban_contract_blend_config_roundtrip() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let admin = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+    let adapter = soroban_sdk::Address::generate(&env);
+    let pool = soroban_sdk::Address::generate(&env);
+    let factory = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), admin.clone(), asset, share);
+    });
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::set_blend_adapter(env.clone(), admin.clone(), adapter.clone());
+    });
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::set_blend_pool(env.clone(), admin.clone(), pool.clone());
+    });
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::set_blend_factory(env.clone(), admin, factory.clone());
+    });
+    env.as_contract(&contract_id, || {
+        assert_eq!(SorobanVaultContract::blend_adapter(env.clone()), adapter);
+        assert_eq!(SorobanVaultContract::blend_pool(env.clone()), pool);
+        assert_eq!(SorobanVaultContract::blend_factory(env.clone()), factory);
+    });
 }
 
 type TestVault = CuratorVault<
