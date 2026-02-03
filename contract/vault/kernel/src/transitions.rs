@@ -158,7 +158,7 @@ pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64)
         return Err(TransitionError::EmptyAllocationPlan);
     }
 
-    let total: u128 = plan.iter().map(|(_, amt)| amt).sum();
+    let total: u128 = plan.iter().map(|(_, amt)| amt).copied().fold(0u128, |a, b| a.saturating_add(b));
 
     let plan_len = plan.len() as u32;
     let new_state = OpState::Allocating(AllocatingState {
@@ -230,7 +230,7 @@ pub fn allocation_step_callback(
     }
 
     let new_remaining = alloc.remaining.saturating_sub(amount_allocated);
-    let new_index = alloc.index + 1;
+    let new_index = alloc.index.saturating_add(1);
 
     let new_state = OpState::Allocating(AllocatingState {
         op_id: alloc.op_id,
@@ -408,7 +408,7 @@ pub fn withdrawal_step_callback(
 
     let new_collected = withdraw.collected.saturating_add(amount_collected);
     let new_remaining = withdraw.remaining.saturating_sub(amount_collected);
-    let new_index = withdraw.index + 1;
+    let new_index = withdraw.index.saturating_add(1);
 
     let new_state = OpState::Withdrawing(WithdrawingState {
         op_id: withdraw.op_id,
@@ -595,7 +595,7 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
         });
     }
 
-    let new_index = refresh.index + 1;
+    let new_index = refresh.index.saturating_add(1);
 
     let new_state = OpState::Refreshing(RefreshingState {
         op_id: refresh.op_id,
