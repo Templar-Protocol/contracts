@@ -70,8 +70,7 @@ pub struct SorobanVaultState {
 
 impl SorobanVaultState {
     /// Convert from kernel VaultState.
-    #[must_use]
-    pub fn from_kernel(state: &VaultState) -> Self {
+    pub fn from_kernel(state: &VaultState) -> Result<Self, RuntimeError> {
         use templar_vault_kernel::OpState;
 
         let (op_state_kind, op_state_id) = match &state.op_state {
@@ -82,28 +81,30 @@ impl SorobanVaultState {
             OpState::Payout(s) => (4, s.op_id),
         };
 
-        Self {
-            total_assets: i128::try_from(state.total_assets).expect("total_assets exceeds i128"),
-            total_shares: i128::try_from(state.total_shares).expect("total_shares exceeds i128"),
-            idle_assets: i128::try_from(state.idle_assets).expect("idle_assets exceeds i128"),
+        Ok(Self {
+            total_assets: i128::try_from(state.total_assets)
+                .map_err(|_| RuntimeError::storage_error("total_assets exceeds i128"))?,
+            total_shares: i128::try_from(state.total_shares)
+                .map_err(|_| RuntimeError::storage_error("total_shares exceeds i128"))?,
+            idle_assets: i128::try_from(state.idle_assets)
+                .map_err(|_| RuntimeError::storage_error("idle_assets exceeds i128"))?,
             external_assets: i128::try_from(state.external_assets)
-                .expect("external_assets exceeds i128"),
+                .map_err(|_| RuntimeError::storage_error("external_assets exceeds i128"))?,
             fee_anchor_ns: state.fee_anchor.timestamp_ns,
             fee_anchor_assets: i128::try_from(state.fee_anchor.total_assets)
-                .expect("fee_anchor_assets exceeds i128"),
+                .map_err(|_| RuntimeError::storage_error("fee_anchor_assets exceeds i128"))?,
             op_state_kind,
             op_state_id,
             withdraw_queue_len: state.withdraw_queue.len() as u32,
             next_op_id: state.next_op_id,
-        }
+        })
     }
 
     /// Convert to kernel VaultState.
     ///
     /// Note: This creates a base VaultState without op_state/queue details.
     /// Full op_state and withdraw queue must be loaded separately.
-    #[must_use]
-    pub fn to_kernel(&self) -> VaultState {
+    pub fn to_kernel(&self) -> Result<VaultState, RuntimeError> {
         use templar_vault_kernel::{
             FeeAccrualAnchor, OpState, WithdrawQueue,
         };
@@ -111,20 +112,24 @@ impl SorobanVaultState {
         let op_state = OpState::Idle;
         let withdraw_queue = WithdrawQueue::new();
 
-        VaultState {
-            total_assets: u128::try_from(self.total_assets).expect("total_assets is negative"),
-            total_shares: u128::try_from(self.total_shares).expect("total_shares is negative"),
-            idle_assets: u128::try_from(self.idle_assets).expect("idle_assets is negative"),
+        Ok(VaultState {
+            total_assets: u128::try_from(self.total_assets)
+                .map_err(|_| RuntimeError::storage_error("total_assets is negative"))?,
+            total_shares: u128::try_from(self.total_shares)
+                .map_err(|_| RuntimeError::storage_error("total_shares is negative"))?,
+            idle_assets: u128::try_from(self.idle_assets)
+                .map_err(|_| RuntimeError::storage_error("idle_assets is negative"))?,
             external_assets: u128::try_from(self.external_assets)
-                .expect("external_assets is negative"),
+                .map_err(|_| RuntimeError::storage_error("external_assets is negative"))?,
             fee_anchor: FeeAccrualAnchor::new(
-                u128::try_from(self.fee_anchor_assets).expect("fee_anchor_assets is negative"),
+                u128::try_from(self.fee_anchor_assets)
+                    .map_err(|_| RuntimeError::storage_error("fee_anchor_assets is negative"))?,
                 self.fee_anchor_ns,
             ),
             op_state,
             withdraw_queue,
             next_op_id: self.next_op_id,
-        }
+        })
     }
 
 }
@@ -319,7 +324,7 @@ impl Storage for SorobanStorage<'_> {
                 }
 
                 let version = self.get_version().unwrap_or(1);
-                let mut state = soroban_state.to_kernel();
+                let mut state = soroban_state.to_kernel()?;
                 state.op_state = op_state.unwrap_or(OpState::Idle);
                 state.withdraw_queue = withdraw_queue.unwrap_or_else(WithdrawQueue::new);
                 Ok(Some(VersionedState {
@@ -332,7 +337,7 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
-        let soroban_state = SorobanVaultState::from_kernel(&state.state);
+        let soroban_state = SorobanVaultState::from_kernel(&state.state)?;
         self.save_vault_state(&soroban_state);
         let op_state =
             borsh_serialize(&state.state.op_state, "op_state serialize failed")?;
@@ -749,7 +754,7 @@ mod tests {
         kernel_state.external_assets = 700;
         kernel_state.next_op_id = 42;
 
-        let soroban_state = SorobanVaultState::from_kernel(&kernel_state);
+        let soroban_state = SorobanVaultState::from_kernel(&kernel_state).unwrap();
         assert_eq!(soroban_state.total_assets, 1000);
         assert_eq!(soroban_state.total_shares, 500);
         assert_eq!(soroban_state.idle_assets, 300);
@@ -767,8 +772,8 @@ mod tests {
         kernel_state.external_assets = 4000;
         kernel_state.next_op_id = 100;
 
-        let soroban_state = SorobanVaultState::from_kernel(&kernel_state);
-        let restored = soroban_state.to_kernel();
+        let soroban_state = SorobanVaultState::from_kernel(&kernel_state).unwrap();
+        let restored = soroban_state.to_kernel().unwrap();
 
         assert_eq!(restored.total_assets, kernel_state.total_assets);
         assert_eq!(restored.total_shares, kernel_state.total_shares);
