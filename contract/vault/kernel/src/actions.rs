@@ -186,6 +186,20 @@ fn convert_to_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> 
     ))
 }
 
+/// Preview the shares minted for a deposit of `assets` using kernel conversions.
+#[inline]
+#[must_use]
+pub fn preview_deposit_shares(state: &VaultState, config: &VaultConfig, assets: u128) -> u128 {
+    convert_to_shares(state, config, assets)
+}
+
+/// Preview the assets redeemed for `shares` using kernel conversions.
+#[inline]
+#[must_use]
+pub fn preview_withdraw_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
+    convert_to_assets(state, config, shares)
+}
+
 /// Apply a kernel action to state, returning updated state and effects.
 pub fn apply_action(
     mut state: VaultState,

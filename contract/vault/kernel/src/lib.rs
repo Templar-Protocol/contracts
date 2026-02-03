@@ -18,7 +18,10 @@ pub mod transitions;
 pub mod types;
 
 // Re-exports for convenience
-pub use actions::{apply_action, KernelAction, KernelResult, PayoutOutcome};
+pub use actions::{
+    apply_action, preview_deposit_shares, preview_withdraw_assets, KernelAction, KernelResult,
+    PayoutOutcome,
+};
 pub use fee::{Fee, FeeSlot, Fees, FeesSpec};
 pub use math::number::Number;
 pub use math::wad::{

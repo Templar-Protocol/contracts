@@ -1750,7 +1750,7 @@ impl SorobanVaultContract {
             .load_state()
             .unwrap_or_else(|e| panic!("preview_deposit failed to load state: {:?}", e))
             .map(|versioned| versioned.state)
-            .unwrap_or_else(VaultState::default);
+            .unwrap_or_default();
         let config = VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
@@ -1784,7 +1784,7 @@ impl SorobanVaultContract {
             .load_state()
             .unwrap_or_else(|e| panic!("preview_withdraw failed to load state: {:?}", e))
             .map(|versioned| versioned.state)
-            .unwrap_or_else(VaultState::default);
+            .unwrap_or_default();
         let config = VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
@@ -1832,7 +1832,6 @@ mod tests {
     use crate::effects::MockInterpreter;
     use crate::storage::MemoryStorage;
     use alloc::vec;
-    use soroban_sdk::testutils::Address as _;
 
     struct MockMarket;
 
@@ -2040,6 +2039,7 @@ mod tests {
 
     #[test]
     fn test_loads_fees_spec_from_storage() {
+        use soroban_sdk::testutils::Address as _;
         use templar_vault_kernel::fee::FeeSlot;
         use templar_vault_kernel::math::wad::Wad;
 

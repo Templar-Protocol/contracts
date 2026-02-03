@@ -20,8 +20,8 @@ use templar_soroban_runtime::{
 };
 use templar_curator_primitives::{RecoveryContext, RecoveryProgress};
 use templar_vault_kernel::{
-    Address, AllocatingState, OpState, PayoutOutcome, PayoutState, VaultState, WithdrawingState,
-    MAX_PENDING,
+    apply_action, Address, AllocatingState, FeesSpec, KernelAction, OpState, PayoutOutcome,
+    PayoutState, VaultConfig, VaultState, WithdrawingState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 
@@ -180,6 +180,149 @@ fn soroban_contract_blend_config_roundtrip() {
         assert_eq!(SorobanVaultContract::blend_adapter(env.clone()), adapter);
         assert_eq!(SorobanVaultContract::blend_pool(env.clone()), pool);
         assert_eq!(SorobanVaultContract::blend_factory(env.clone()), factory);
+    });
+}
+
+fn preview_kernel_config(paused: bool) -> VaultConfig {
+    VaultConfig {
+        fees: FeesSpec::zero(),
+        min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+        max_pending_withdrawals: MAX_PENDING as u32,
+        paused,
+        virtual_shares: 0,
+        virtual_assets: 0,
+    }
+}
+
+fn mint_shares_from_deposit(state: VaultState, assets_in: u128) -> u128 {
+    let owner = [1u8; 32];
+    let receiver = [2u8; 32];
+    let self_id = [9u8; 32];
+    let config = preview_kernel_config(false);
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_id,
+        KernelAction::Deposit {
+            owner,
+            receiver,
+            assets_in,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    )
+    .expect("kernel deposit");
+    result
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            templar_vault_kernel::effects::KernelEffect::MintShares { shares, .. } => {
+                Some(*shares)
+            }
+            _ => None,
+        })
+        .expect("mint shares effect")
+}
+
+fn expected_assets_from_withdraw(state: VaultState, shares: u128) -> u128 {
+    let owner = [1u8; 32];
+    let receiver = [2u8; 32];
+    let self_id = [9u8; 32];
+    let config = preview_kernel_config(false);
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_id,
+        KernelAction::RequestWithdraw {
+            owner,
+            receiver,
+            shares,
+            min_assets_out: 0,
+            now_ns: 1,
+        },
+    )
+    .expect("kernel request_withdraw");
+    result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("withdraw queue head")
+        .1
+        .expected_assets
+}
+
+#[test]
+fn soroban_contract_preview_deposit_matches_kernel() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let admin = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+    });
+
+    let assets_in = 500u128;
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let empty_state = VaultState::default();
+        let versioned = VersionedState::new(empty_state.clone());
+        storage.save_state(&versioned).unwrap();
+
+        let preview = SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128);
+        let minted = mint_shares_from_deposit(empty_state, assets_in);
+        assert_eq!(preview as u128, minted);
+    });
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = VaultState::default();
+        state.total_assets = 10_000;
+        state.total_shares = 8_000;
+        state.idle_assets = 10_000;
+        let versioned = VersionedState::new(state.clone());
+        storage.save_state(&versioned).unwrap();
+
+        let preview = SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128);
+        let minted = mint_shares_from_deposit(state, assets_in);
+        assert_eq!(preview as u128, minted);
+    });
+}
+
+#[test]
+fn soroban_contract_preview_withdraw_matches_kernel() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let admin = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+    });
+
+    let shares_in = 800u128;
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = VaultState::default();
+        state.total_assets = 20_000;
+        state.total_shares = 12_000;
+        state.idle_assets = 20_000;
+        let versioned = VersionedState::new(state.clone());
+        storage.save_state(&versioned).unwrap();
+
+        let preview = SorobanVaultContract::preview_withdraw(env.clone(), shares_in as i128);
+        let expected_assets = expected_assets_from_withdraw(state, shares_in);
+        assert_eq!(preview as u128, expected_assets);
     });
 }
 
