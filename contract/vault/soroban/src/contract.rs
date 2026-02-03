@@ -19,10 +19,10 @@ use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::{
-    apply_action, complete_allocation, complete_refresh, start_allocation, start_refresh,
-    withdrawal_collected, withdrawal_step_callback, Address, FeesSpec, KernelAction, OpState,
-    PayoutOutcome, Restrictions, TargetId, VaultConfig, VaultState, MAX_PENDING,
-    MIN_WITHDRAWAL_ASSETS,
+    apply_action, complete_allocation, complete_refresh, preview_deposit_shares,
+    preview_withdraw_assets, start_allocation, start_refresh, withdrawal_collected,
+    withdrawal_step_callback, Address, FeesSpec, KernelAction, OpState, PayoutOutcome,
+    Restrictions, TargetId, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::{compute_full_withdrawal, compute_partial_withdrawal};
@@ -91,6 +91,31 @@ impl CrossChainMarketAdapter for NoopCrossChainAdapter {
     }
 }
 
+fn serialize_fees_spec(fees: &FeesSpec) -> Result<Vec<u8>, RuntimeError> {
+    borsh::to_vec(fees).map_err(|_| RuntimeError::storage_error("fees serialize failed"))
+}
+
+fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
+    <FeesSpec as borsh::BorshDeserialize>::try_from_slice(bytes)
+        .map_err(|_| RuntimeError::storage_error("fees deserialize failed"))
+}
+
+fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
+    let stored: Option<Vec<u8>> = env.storage().instance().get(&VaultDataKey::FeesSpec);
+    match stored {
+        Some(bytes) => deserialize_fees_spec(&bytes),
+        None => Ok(FeesSpec::zero()),
+    }
+}
+
+fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
+    let bytes = serialize_fees_spec(fees)?;
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::FeesSpec, &bytes);
+    Ok(())
+}
+
 /// Contract configuration set at initialization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContractConfig {
@@ -106,6 +131,8 @@ pub struct ContractConfig {
     pub asset_address: Address,
     /// Share token contract address.
     pub share_address: Address,
+    /// Fee configuration.
+    pub fees: FeesSpec,
     /// Blend adapter contract address (optional).
     pub blend_adapter: Option<Address>,
     /// Blend pool contract address (optional).
@@ -133,6 +160,7 @@ impl ContractConfig {
             allocators,
             asset_address,
             share_address,
+            fees: FeesSpec::zero(),
             blend_adapter: None,
             blend_pool: None,
             blend_factory: None,
@@ -160,6 +188,14 @@ impl ContractConfig {
     #[must_use]
     pub fn with_blend_factory(mut self, factory: Address) -> Self {
         self.blend_factory = Some(factory);
+        self
+    }
+
+    /// Attach a fees configuration.
+    #[inline]
+    #[must_use]
+    pub fn with_fees(mut self, fees: FeesSpec) -> Self {
+        self.fees = fees;
         self
     }
 
@@ -385,7 +421,7 @@ where
 
     fn kernel_config(&self) -> VaultConfig {
         VaultConfig {
-            fees: FeesSpec::zero(),
+            fees: self.config.fees,
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: self.paused,
@@ -1277,6 +1313,8 @@ pub enum VaultDataKey {
     AssetToken,
     /// Share token address.
     ShareToken,
+    /// Fee configuration (borsh-encoded).
+    FeesSpec,
     /// Blend adapter contract address.
     BlendAdapter,
     /// Blend pool contract address.
@@ -1349,6 +1387,9 @@ fn with_contract_vault<T>(
         config = config.with_blend_factory(kernel_address_from_sdk(env, &factory));
     }
 
+    let fees = load_fees_spec(env)?;
+    config = config.with_fees(fees);
+
     let storage = SorobanStorage::new(env);
     let paused = storage.is_paused();
     let mut rbac_config = RbacConfig::with_admin(admin_kernel);
@@ -1417,6 +1458,8 @@ impl SorobanVaultContract {
         env.storage()
             .instance()
             .set(&VaultDataKey::Initialized, &true);
+        store_fees_spec(&env, &FeesSpec::zero())
+            .unwrap_or_else(|e| panic!("failed to initialize fees: {:?}", e));
 
         // Initialize vault state in persistent storage using current version.
         let mut storage = SorobanStorage::new(&env);
@@ -1697,21 +1740,27 @@ impl SorobanVaultContract {
     ///
     /// The number of shares that would be minted.
     pub fn preview_deposit(env: Env, assets: i128) -> i128 {
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        let state = match storage.load_vault_state() {
-            Some(s) => s,
-            None => return assets, // 1:1 for empty vault
-        };
-
-        if state.total_shares == 0 {
-            assets // 1:1 for first deposit
-        } else {
-            assets
-                .checked_mul(state.total_shares)
-                .and_then(|n| n.checked_div(state.total_assets))
-                .unwrap_or(0)
+        if assets <= 0 {
+            return 0;
         }
+        let assets_u128 = u128::try_from(assets).expect("assets exceeds u128");
+
+        let storage = SorobanStorage::new(&env);
+        let state = storage
+            .load_state()
+            .unwrap_or_else(|e| panic!("preview_deposit failed to load state: {:?}", e))
+            .map(|versioned| versioned.state)
+            .unwrap_or_else(VaultState::default);
+        let config = VaultConfig {
+            fees: FeesSpec::zero(),
+            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            max_pending_withdrawals: MAX_PENDING as u32,
+            paused: storage.is_paused(),
+            virtual_shares: 0,
+            virtual_assets: 0,
+        };
+        let shares = preview_deposit_shares(&state, &config, assets_u128);
+        i128::try_from(shares).expect("preview shares exceeds i128")
     }
 
     /// Calculate assets for a given withdrawal amount.
@@ -1725,21 +1774,27 @@ impl SorobanVaultContract {
     ///
     /// The number of assets that would be returned.
     pub fn preview_withdraw(env: Env, shares: i128) -> i128 {
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        let state = match storage.load_vault_state() {
-            Some(s) => s,
-            None => return 0,
-        };
-
-        if state.total_shares == 0 {
-            0
-        } else {
-            shares
-                .checked_mul(state.total_assets)
-                .and_then(|n| n.checked_div(state.total_shares))
-                .unwrap_or(0)
+        if shares <= 0 {
+            return 0;
         }
+        let shares_u128 = u128::try_from(shares).expect("shares exceeds u128");
+
+        let storage = SorobanStorage::new(&env);
+        let state = storage
+            .load_state()
+            .unwrap_or_else(|e| panic!("preview_withdraw failed to load state: {:?}", e))
+            .map(|versioned| versioned.state)
+            .unwrap_or_else(VaultState::default);
+        let config = VaultConfig {
+            fees: FeesSpec::zero(),
+            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            max_pending_withdrawals: MAX_PENDING as u32,
+            paused: storage.is_paused(),
+            virtual_shares: 0,
+            virtual_assets: 0,
+        };
+        let assets = preview_withdraw_assets(&state, &config, shares_u128);
+        i128::try_from(assets).expect("preview assets exceeds i128")
     }
 
     /// Extend the TTL of contract storage.
@@ -1777,6 +1832,7 @@ mod tests {
     use crate::effects::MockInterpreter;
     use crate::storage::MemoryStorage;
     use alloc::vec;
+    use soroban_sdk::testutils::Address as _;
 
     struct MockMarket;
 
@@ -1980,6 +2036,45 @@ mod tests {
         assert!(config.is_privileged(&[1u8; 32])); // admin
         assert!(config.is_privileged(&[3u8; 32])); // allocator
         assert!(!config.is_privileged(&[2u8; 32])); // guardian only
+    }
+
+    #[test]
+    fn test_loads_fees_spec_from_storage() {
+        use templar_vault_kernel::fee::FeeSlot;
+        use templar_vault_kernel::math::wad::Wad;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let admin = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+        });
+
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, [1u8; 32]),
+            FeeSlot::new(Wad::one() / 20, [2u8; 32]),
+            None,
+        );
+
+        env.as_contract(&contract_id, || {
+            let bytes = borsh::to_vec(&fees).expect("fees serialize");
+            env.storage()
+                .instance()
+                .set(&VaultDataKey::FeesSpec, &bytes);
+        });
+
+        env.as_contract(&contract_id, || {
+            with_contract_vault(&env, |vault| {
+                assert_eq!(vault.config.fees, fees);
+                Ok(())
+            })
+            .unwrap();
+        });
     }
 
     // =========================================================================
