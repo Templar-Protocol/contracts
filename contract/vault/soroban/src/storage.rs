@@ -10,6 +10,9 @@ use templar_vault_kernel::VaultState;
 
 use crate::error::RuntimeError;
 
+const DEFAULT_TTL_THRESHOLD: u32 = 50_000;
+const DEFAULT_TTL_EXTEND_TO: u32 = 100_000;
+
 // ---------------------------------------------------------------------------
 // Soroban Storage Keys
 // ---------------------------------------------------------------------------
@@ -261,10 +264,11 @@ impl<'a> SorobanStorage<'a> {
             .has(&SorobanStorageKey::VaultState)
     }
 
-    /// Extend the TTL of persistent storage entries.
+    /// Extend the TTL of storage entries.
     ///
     /// Call this periodically to prevent state from expiring.
     pub fn extend_ttl(&self, threshold: u32, extend_to: u32) {
+        self.env.storage().instance().extend_ttl(threshold, extend_to);
         self.env.storage().persistent().extend_ttl(
             &SorobanStorageKey::VaultState,
             threshold,
@@ -285,6 +289,10 @@ impl<'a> SorobanStorage<'a> {
             threshold,
             extend_to,
         );
+    }
+
+    fn extend_default_ttl(&self) {
+        self.extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
     }
 }
 
@@ -348,6 +356,7 @@ impl Storage for SorobanStorage<'_> {
         self.save_op_state(&op_state);
         self.save_withdraw_queue(&withdraw_queue);
         self.set_version(state.version.number());
+        self.extend_default_ttl();
         Ok(())
     }
 
@@ -367,6 +376,7 @@ impl Storage for SorobanStorage<'_> {
 
     fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError> {
         self.set_paused(paused);
+        self.extend_default_ttl();
         Ok(())
     }
 }
