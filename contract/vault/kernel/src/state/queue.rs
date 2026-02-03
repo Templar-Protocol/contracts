@@ -243,6 +243,7 @@ where
 /// - If actual >= expected: burn all shares (full redemption).
 /// - If actual < expected: burn proportional shares, refund the rest.
 /// - If actual == 0: refund all shares (cancellation).
+#[inline]
 #[must_use]
 pub fn compute_settlement(
     escrow_shares: u128,
@@ -266,9 +267,10 @@ pub fn compute_settlement(
         return EscrowSettlement::burn_all(escrow_shares);
     }
 
-    // Partial redemption - burn proportional shares, refund the rest
-    // shares_to_burn = escrow_shares * actual_assets / expected_assets (floored)
-    let shares_to_burn = Number::mul_div_floor(
+    // Partial redemption - burn proportional shares, refund the rest.
+    // Use ceil to avoid zero-burn partials (assets out without burning shares).
+    // shares_to_burn = ceil(escrow_shares * actual_assets / expected_assets)
+    let shares_to_burn = Number::mul_div_ceil(
         Number::from(escrow_shares),
         Number::from(actual_assets),
         Number::from(expected_assets),
@@ -292,6 +294,7 @@ pub fn compute_settlement(
 ///
 /// # Returns
 /// `EscrowSettlement` based on price ratio.
+#[inline]
 #[must_use]
 pub fn compute_settlement_by_price(
     escrow_shares: u128,
@@ -460,6 +463,8 @@ pub use crate::state::vault::MAX_PENDING;
 /// - `next_withdraw_to_execute <= next_pending_withdrawal_id`
 /// - If `pending_withdrawals.len() > 0`, then `pending_withdrawals` contains `next_withdraw_to_execute`
 /// - FIFO withdrawal ordering; no skipping head
+/// - `cached_total_escrow == sum(pending_withdrawals.values().map(|w| w.escrow_shares))`
+/// - `cached_total_expected == sum(pending_withdrawals.values().map(|w| w.expected_assets))`
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -470,6 +475,12 @@ pub struct WithdrawQueue {
     pub next_withdraw_to_execute: u64,
     /// Next ID to allocate for new withdrawals (monotonic, never decremented).
     pub next_pending_withdrawal_id: u64,
+    /// Cached total of escrow shares across all pending withdrawals.
+    /// Maintained incrementally on enqueue/dequeue for O(1) lookups.
+    cached_total_escrow: u128,
+    /// Cached total of expected assets across all pending withdrawals.
+    /// Maintained incrementally on enqueue/dequeue for O(1) lookups.
+    cached_total_expected: u128,
 }
 
 impl Default for WithdrawQueue {
@@ -487,21 +498,34 @@ impl WithdrawQueue {
             pending_withdrawals: BTreeMap::new(),
             next_withdraw_to_execute: 0,
             next_pending_withdrawal_id: 0,
+            cached_total_escrow: 0,
+            cached_total_expected: 0,
         }
     }
 
     /// Create a queue with initial state (for testing or recovery).
-    #[inline]
     #[must_use]
     pub fn with_state(
         pending_withdrawals: BTreeMap<u64, PendingWithdrawal>,
         next_withdraw_to_execute: u64,
         next_pending_withdrawal_id: u64,
     ) -> Self {
+        // Compute cached totals from the provided withdrawals
+        let (cached_total_escrow, cached_total_expected) =
+            pending_withdrawals
+                .values()
+                .fold((0u128, 0u128), |(esc, exp), w| {
+                    (
+                        esc.saturating_add(w.escrow_shares),
+                        exp.saturating_add(w.expected_assets),
+                    )
+                });
         Self {
             pending_withdrawals,
             next_withdraw_to_execute,
             next_pending_withdrawal_id,
+            cached_total_escrow,
+            cached_total_expected,
         }
     }
 
@@ -574,6 +598,10 @@ impl WithdrawQueue {
         self.pending_withdrawals.insert(id, withdrawal);
         self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
 
+        // Update cached totals
+        self.cached_total_escrow = self.cached_total_escrow.saturating_add(escrow_shares);
+        self.cached_total_expected = self.cached_total_expected.saturating_add(expected_assets);
+
         Ok(id)
     }
 
@@ -600,6 +628,15 @@ impl WithdrawQueue {
         }
 
         let id = self.next_pending_withdrawal_id;
+
+        // Update cached totals before moving withdrawal
+        self.cached_total_escrow = self
+            .cached_total_escrow
+            .saturating_add(withdrawal.escrow_shares);
+        self.cached_total_expected = self
+            .cached_total_expected
+            .saturating_add(withdrawal.expected_assets);
+
         self.pending_withdrawals.insert(id, withdrawal);
         self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
 
@@ -644,6 +681,14 @@ impl WithdrawQueue {
 
         let head_id = self.next_withdraw_to_execute;
         let withdrawal = self.pending_withdrawals.remove(&head_id)?;
+
+        // Update cached totals
+        self.cached_total_escrow = self
+            .cached_total_escrow
+            .saturating_sub(withdrawal.escrow_shares);
+        self.cached_total_expected = self
+            .cached_total_expected
+            .saturating_sub(withdrawal.expected_assets);
 
         // Advance to the next ID in the queue
         self.next_withdraw_to_execute = self
@@ -708,6 +753,7 @@ impl WithdrawQueue {
     /// Validates:
     /// - `next_withdraw_to_execute <= next_pending_withdrawal_id`
     /// - If non-empty, head ID exists in the map
+    /// - Cached totals match computed totals
     ///
     /// # Returns
     /// `true` if all invariants hold.
@@ -724,6 +770,24 @@ impl WithdrawQueue {
                 .pending_withdrawals
                 .contains_key(&self.next_withdraw_to_execute)
         {
+            return false;
+        }
+
+        // Verify cached totals match computed totals
+        let (computed_escrow, computed_expected) =
+            self.pending_withdrawals
+                .values()
+                .fold((0u128, 0u128), |(esc, exp), w| {
+                    (
+                        esc.saturating_add(w.escrow_shares),
+                        exp.saturating_add(w.expected_assets),
+                    )
+                });
+
+        if self.cached_total_escrow != computed_escrow {
+            return false;
+        }
+        if self.cached_total_expected != computed_expected {
             return false;
         }
 
@@ -757,33 +821,38 @@ impl WithdrawQueue {
     ///
     /// # Returns
     /// `QueueStatus` with totals.
+    #[inline]
     #[must_use]
     pub fn status(&self) -> QueueStatus {
-        compute_queue_status(self.pending_withdrawals.values())
+        QueueStatus {
+            length: self.pending_withdrawals.len() as u32,
+            total_expected_assets: self.cached_total_expected,
+            total_escrow_shares: self.cached_total_escrow,
+        }
     }
 
     /// Get total escrowed shares across all pending withdrawals.
     ///
+    /// Returns cached value in O(1) time.
+    ///
     /// # Returns
     /// Total escrow shares.
+    #[inline]
     #[must_use]
     pub fn total_escrow_shares(&self) -> u128 {
-        self.pending_withdrawals
-            .values()
-            .map(|w| w.escrow_shares)
-            .fold(0u128, |acc, x| acc.saturating_add(x))
+        self.cached_total_escrow
     }
 
     /// Get total expected assets across all pending withdrawals.
     ///
+    /// Returns cached value in O(1) time.
+    ///
     /// # Returns
     /// Total expected assets.
+    #[inline]
     #[must_use]
     pub fn total_expected_assets(&self) -> u128 {
-        self.pending_withdrawals
-            .values()
-            .map(|w| w.expected_assets)
-            .fold(0u128, |acc, x| acc.saturating_add(x))
+        self.cached_total_expected
     }
 }
 
@@ -1625,13 +1694,7 @@ mod tests {
         let mut pending = BTreeMap::new();
         pending.insert(
             5,
-            PendingWithdrawal::new(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-            ),
+            PendingWithdrawal::new(owner_addr(1), owner_addr(1), 100, 1000, 1_000_000_000_000),
         );
 
         let queue = WithdrawQueue::with_state(
@@ -1695,13 +1758,7 @@ mod tests {
         let mut queue = WithdrawQueue::new();
         let max_pending = 100u32;
 
-        let w = PendingWithdrawal::new(
-            owner_addr(1),
-            owner_addr(2),
-            100,
-            1000,
-            1_000_000_000_000,
-        );
+        let w = PendingWithdrawal::new(owner_addr(1), owner_addr(2), 100, 1000, 1_000_000_000_000);
 
         let id = queue.enqueue_withdrawal(w.clone(), max_pending).unwrap();
         assert_eq!(id, 0);

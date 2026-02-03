@@ -123,9 +123,7 @@ fn arb_escrow_entry() -> impl Strategy<Value = EscrowEntry> {
         0u64..u64::MAX,           // created_at
         0u128..=u64::MAX as u128, // expected_assets
     )
-        .prop_map(|(shares, ts, expected)| {
-            EscrowEntry::new(owner_addr(1), shares, ts, expected)
-        })
+        .prop_map(|(shares, ts, expected)| EscrowEntry::new(owner_addr(1), shares, ts, expected))
 }
 
 /// Generate a vault state with valid invariants

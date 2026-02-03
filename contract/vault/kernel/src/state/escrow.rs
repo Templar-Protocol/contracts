@@ -488,8 +488,7 @@ mod tests {
 
     #[test]
     fn test_find_by_owner() {
-        let entries: Vec<EscrowEntry> =
-            vec![make_entry(1, 100, 1000), make_entry(2, 200, 2000)];
+        let entries: Vec<EscrowEntry> = vec![make_entry(1, 100, 1000), make_entry(2, 200, 2000)];
 
         let found = find_by_owner(&entries, &owner_addr(2));
         assert!(found.is_some());

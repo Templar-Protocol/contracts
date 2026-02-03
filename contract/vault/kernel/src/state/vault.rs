@@ -247,8 +247,8 @@ impl Default for VaultState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::collections::BTreeMap;
     use crate::state::queue::{PendingWithdrawal, WithdrawQueue};
+    use alloc::collections::BTreeMap;
 
     #[test]
     fn test_fee_anchor_new() {

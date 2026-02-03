@@ -4,9 +4,9 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod actions;
 pub mod effects;
 pub mod error;
-pub mod actions;
 pub mod fee;
 pub mod guardrails;
 #[cfg(kani)]
@@ -18,8 +18,8 @@ pub mod transitions;
 pub mod types;
 
 // Re-exports for convenience
-pub use fee::{Fee, FeeSlot, Fees, FeesSpec};
 pub use actions::{apply_action, KernelAction, KernelResult, PayoutOutcome};
+pub use fee::{Fee, FeeSlot, Fees, FeesSpec};
 pub use math::number::Number;
 pub use math::wad::{
     compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor, mul_wad_floor,

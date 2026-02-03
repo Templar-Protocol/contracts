@@ -87,6 +87,10 @@ pub enum TransitionError {
     #[display("collection overflow: collected {collected}, remaining {remaining}")]
     CollectionOverflow { collected: u128, remaining: u128 },
 
+    /// Attempted to allocate more than remaining.
+    #[display("allocation overflow: allocated {allocated}, remaining {remaining}")]
+    AllocationOverflow { allocated: u128, remaining: u128 },
+
     /// Burn shares exceed escrow shares.
     #[display("burn {burn} exceeds escrow {escrow}")]
     BurnExceedsEscrow { burn: u128, escrow: u128 },
@@ -158,7 +162,11 @@ pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64)
         return Err(TransitionError::EmptyAllocationPlan);
     }
 
-    let total: u128 = plan.iter().map(|(_, amt)| amt).copied().fold(0u128, |a, b| a.saturating_add(b));
+    let total: u128 = plan
+        .iter()
+        .map(|(_, amt)| amt)
+        .copied()
+        .fold(0u128, |a, b| a.saturating_add(b));
 
     let plan_len = plan.len() as u32;
     let new_state = OpState::Allocating(AllocatingState {
@@ -215,6 +223,14 @@ pub fn allocation_step_callback(
         });
     }
 
+    let plan_len = alloc.plan.len() as u32;
+    if alloc.index >= plan_len {
+        return Err(TransitionError::InvalidIndex {
+            index: alloc.index,
+            max: plan_len.saturating_sub(1),
+        });
+    }
+
     if !success {
         // On failure, return to Idle
         return Ok(TransitionResult::with_effects(
@@ -227,6 +243,13 @@ pub fn allocation_step_callback(
                 },
             }],
         ));
+    }
+
+    if amount_allocated > alloc.remaining {
+        return Err(TransitionError::AllocationOverflow {
+            allocated: amount_allocated,
+            remaining: alloc.remaining,
+        });
     }
 
     let new_remaining = alloc.remaining.saturating_sub(amount_allocated);
@@ -406,6 +429,13 @@ pub fn withdrawal_step_callback(
         });
     }
 
+    if amount_collected > withdraw.remaining {
+        return Err(TransitionError::CollectionOverflow {
+            collected: amount_collected,
+            remaining: withdraw.remaining,
+        });
+    }
+
     let new_collected = withdraw.collected.saturating_add(amount_collected);
     let new_remaining = withdraw.remaining.saturating_sub(amount_collected);
     let new_index = withdraw.index.saturating_add(1);
@@ -562,10 +592,7 @@ pub fn start_refresh(state: OpState, plan: Vec<TargetId>, op_id: u64) -> Transit
     Ok(TransitionResult::with_effects(
         new_state,
         vec![KernelEffect::EmitEvent {
-            event: KernelEvent::RefreshStarted {
-                op_id,
-                plan_len,
-            },
+            event: KernelEvent::RefreshStarted { op_id, plan_len },
         }],
     ))
 }
@@ -592,6 +619,14 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
         return Err(TransitionError::OpIdMismatch {
             expected: refresh.op_id,
             actual: op_id,
+        });
+    }
+
+    let plan_len = refresh.plan.len() as u32;
+    if refresh.index >= plan_len {
+        return Err(TransitionError::InvalidIndex {
+            index: refresh.index,
+            max: plan_len.saturating_sub(1),
         });
     }
 
@@ -672,6 +707,7 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
     let mut effects = vec![];
 
     let owner_address = payout.owner;
+    let escrow_address = [0u8; 32];
 
     let mut burn_shares = 0u128;
     let mut refund_shares = 0u128;
@@ -682,7 +718,7 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
         if payout.burn_shares > 0 {
             burn_shares = payout.burn_shares;
             effects.push(KernelEffect::BurnShares {
-                owner: owner_address,
+                owner: escrow_address,
                 shares: payout.burn_shares,
             });
         }
@@ -690,7 +726,6 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
         // Refund any remaining escrow shares
         refund_shares = payout.escrow_shares.saturating_sub(payout.burn_shares);
         if refund_shares > 0 {
-            let escrow_address = [0u8; 32];
             effects.push(KernelEffect::TransferShares {
                 from: escrow_address,
                 to: owner_address,
@@ -703,7 +738,6 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
         // On failure, refund all escrow shares
         if payout.escrow_shares > 0 {
             refund_shares = payout.escrow_shares;
-            let escrow_address = [0u8; 32];
             effects.push(KernelEffect::TransferShares {
                 from: escrow_address,
                 to: owner_address,
@@ -806,6 +840,20 @@ mod tests {
         let alloc = result.new_state.as_allocating().unwrap();
         assert_eq!(alloc.index, 1);
         assert_eq!(alloc.remaining, 500);
+    }
+
+    #[test]
+    fn test_allocation_step_callback_invalid_index() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 1,
+            remaining: 500,
+            plan: vec![(0, 500)],
+        });
+
+        let result = allocation_step_callback(state, true, 100, 1);
+
+        assert!(matches!(result, Err(TransitionError::InvalidIndex { .. })));
     }
 
     #[test]
@@ -1067,6 +1115,19 @@ mod tests {
     }
 
     #[test]
+    fn test_refresh_step_callback_invalid_index() {
+        let state = OpState::Refreshing(RefreshingState {
+            op_id: 1,
+            index: 1,
+            plan: vec![0],
+        });
+
+        let result = refresh_step_callback(state, 1);
+
+        assert!(matches!(result, Err(TransitionError::InvalidIndex { .. })));
+    }
+
+    #[test]
     fn test_complete_refresh_to_idle() {
         let state = OpState::Refreshing(RefreshingState {
             op_id: 1,
@@ -1099,10 +1160,16 @@ mod tests {
         assert!(result.new_state.is_idle());
 
         // Should have BurnShares effect
-        assert!(result
+        let (burn_owner, burn_shares) = result
             .effects
             .iter()
-            .any(|e| matches!(e, KernelEffect::BurnShares { shares: 400, .. })));
+            .find_map(|e| match e {
+                KernelEffect::BurnShares { owner, shares } => Some((*owner, *shares)),
+                _ => None,
+            })
+            .expect("missing BurnShares effect");
+        assert_eq!(burn_owner, [0u8; 32]);
+        assert_eq!(burn_shares, 400);
 
         // Should have TransferShares effect for refund (500 - 400 = 100)
         assert!(result
@@ -1515,14 +1582,30 @@ mod proptests {
         ) {
             let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
 
-            let step1 = withdrawal_step_callback(result.new_state, request.op_id, collected1).unwrap();
+            prop_assume!(request.amount > 0);
+            let remaining1 = request.amount;
+            let mut bounded1 = collected1 % remaining1;
+            if bounded1 == 0 {
+                bounded1 = 1;
+            }
+
+            let step1 =
+                withdrawal_step_callback(result.new_state, request.op_id, bounded1).unwrap();
             let w1 = step1.new_state.as_withdrawing().unwrap();
-            prop_assert_eq!(w1.collected, collected1);
+            prop_assert_eq!(w1.collected, bounded1);
             prop_assert_eq!(w1.index, 1);
 
-            let step2 = withdrawal_step_callback(step1.new_state, request.op_id, collected2).unwrap();
+            let remaining2 = remaining1.saturating_sub(bounded1);
+            prop_assume!(remaining2 > 0);
+            let mut bounded2 = collected2 % remaining2;
+            if bounded2 == 0 {
+                bounded2 = 1;
+            }
+
+            let step2 =
+                withdrawal_step_callback(step1.new_state, request.op_id, bounded2).unwrap();
             let w2 = step2.new_state.as_withdrawing().unwrap();
-            prop_assert_eq!(w2.collected, collected1.saturating_add(collected2));
+            prop_assert_eq!(w2.collected, bounded1.saturating_add(bounded2));
             prop_assert_eq!(w2.index, 2);
         }
 
@@ -1694,7 +1777,11 @@ mod proptests {
 
         assert!(matches!(
             event,
-            KernelEvent::AllocationStarted { op_id: 7, total: 300, plan_len: 2 }
+            KernelEvent::AllocationStarted {
+                op_id: 7,
+                total: 300,
+                plan_len: 2
+            }
         ));
     }
 
@@ -1711,7 +1798,10 @@ mod proptests {
         let event = extract_event(&result.effects).expect("event");
         assert!(matches!(
             event,
-            KernelEvent::AllocationCompleted { op_id: 9, has_withdrawal: false }
+            KernelEvent::AllocationCompleted {
+                op_id: 9,
+                has_withdrawal: false
+            }
         ));
     }
 
@@ -1728,7 +1818,12 @@ mod proptests {
         let event = extract_event(&result.effects).expect("event");
         assert!(matches!(
             event,
-            KernelEvent::WithdrawalStarted { op_id: 3, amount: 500, escrow_shares: 250, .. }
+            KernelEvent::WithdrawalStarted {
+                op_id: 3,
+                amount: 500,
+                escrow_shares: 250,
+                ..
+            }
         ));
 
         let state = OpState::Withdrawing(WithdrawingState {
@@ -1744,7 +1839,11 @@ mod proptests {
         let event = extract_event(&result.effects).expect("event");
         assert!(matches!(
             event,
-            KernelEvent::WithdrawalCollected { op_id: 3, burn_shares: 200, collected: 500 }
+            KernelEvent::WithdrawalCollected {
+                op_id: 3,
+                burn_shares: 200,
+                collected: 500
+            }
         ));
     }
 
@@ -1754,7 +1853,10 @@ mod proptests {
         let event = extract_event(&result.effects).expect("event");
         assert!(matches!(
             event,
-            KernelEvent::RefreshStarted { op_id: 11, plan_len: 2 }
+            KernelEvent::RefreshStarted {
+                op_id: 11,
+                plan_len: 2
+            }
         ));
 
         let state = OpState::Refreshing(RefreshingState {
@@ -1778,7 +1880,13 @@ mod proptests {
         let event = extract_event(&result.effects).expect("event");
         assert!(matches!(
             event,
-            KernelEvent::PayoutCompleted { op_id: 22, success: true, burn_shares: 50, refund_shares: 0, amount: 100 }
+            KernelEvent::PayoutCompleted {
+                op_id: 22,
+                success: true,
+                burn_shares: 50,
+                refund_shares: 0,
+                amount: 100
+            }
         ));
     }
 }

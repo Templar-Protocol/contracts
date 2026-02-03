@@ -392,8 +392,13 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
         new_external_assets,
     ));
 
-    // 6. Calculate delta
-    let delta = (new_external_assets as i128) - (request.current_external_assets as i128);
+    // 6. Calculate delta (safe: both values are u128 that passed non-negative check,
+    //    and the difference of two non-negative values fits in i128)
+    let new_i128 = i128::try_from(new_external_assets)
+        .map_err(|_| RuntimeError::invalid_state("new_external_assets exceeds i128"))?;
+    let old_i128 = i128::try_from(request.current_external_assets)
+        .map_err(|_| RuntimeError::invalid_state("current_external_assets exceeds i128"))?;
+    let delta = new_i128.saturating_sub(old_i128);
 
     // 7. Emit Completed event
     events.push(ReconciliationEvent::completed(

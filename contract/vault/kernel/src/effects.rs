@@ -17,15 +17,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, IsVariant)]
 pub enum KernelEffect {
     /// Mint new share tokens to an owner.
-    MintShares {
-        owner: Address,
-        shares: u128,
-    },
+    MintShares { owner: Address, shares: u128 },
     /// Burn share tokens from an owner.
-    BurnShares {
-        owner: Address,
-        shares: u128,
-    },
+    BurnShares { owner: Address, shares: u128 },
     /// Transfer shares between addresses.
     TransferShares {
         from: Address,
@@ -33,7 +27,10 @@ pub enum KernelEffect {
         shares: u128,
     },
     /// Transfer underlying assets to a recipient.
-    TransferAssets {
+    TransferAssets { to: Address, amount: u128 },
+    /// Transfer underlying assets between two addresses.
+    TransferAssetsFrom {
+        from: Address,
         to: Address,
         amount: u128,
     },
@@ -48,14 +45,9 @@ pub enum KernelEffect {
     },
     /// Charge storage costs to a payer (NEAR only).
     #[cfg(feature = "near")]
-    ChargeStorage {
-        payer: Address,
-        bytes: u64,
-    },
+    ChargeStorage { payer: Address, bytes: u64 },
     /// Emit an event for indexers and clients.
-    EmitEvent {
-        event: KernelEvent,
-    },
+    EmitEvent { event: KernelEvent },
 }
 
 /// Callback identifiers for async cross-contract calls.
@@ -91,10 +83,7 @@ pub enum KernelEvent {
         remaining: u128,
     },
     /// Allocation completed (either returns to Idle or proceeds to withdrawal).
-    AllocationCompleted {
-        op_id: u64,
-        has_withdrawal: bool,
-    },
+    AllocationCompleted { op_id: u64, has_withdrawal: bool },
     /// Withdrawal operation started.
     WithdrawalStarted {
         op_id: u64,
@@ -110,19 +99,11 @@ pub enum KernelEvent {
         collected: u128,
     },
     /// Withdrawal stopped and escrow refunded.
-    WithdrawalStopped {
-        op_id: u64,
-        escrow_shares: u128,
-    },
+    WithdrawalStopped { op_id: u64, escrow_shares: u128 },
     /// Refresh operation started.
-    RefreshStarted {
-        op_id: u64,
-        plan_len: u32,
-    },
+    RefreshStarted { op_id: u64, plan_len: u32 },
     /// Refresh operation completed.
-    RefreshCompleted {
-        op_id: u64,
-    },
+    RefreshCompleted { op_id: u64 },
     /// Payout completed (success or failure).
     PayoutCompleted {
         op_id: u64,
@@ -153,14 +134,9 @@ pub enum KernelEvent {
         total_assets: u128,
     },
     /// Fees refreshed for the vault.
-    FeesRefreshed {
-        now_ns: u64,
-        total_assets: u128,
-    },
+    FeesRefreshed { now_ns: u64, total_assets: u128 },
     /// Pause state updated.
-    PauseUpdated {
-        paused: bool,
-    },
+    PauseUpdated { paused: bool },
 }
 
 impl From<KernelEvent> for KernelEffect {

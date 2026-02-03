@@ -353,7 +353,8 @@ pub trait EffectInterpreter {
                 KernelEffect::TransferShares { shares, .. } => {
                     summary.record_share_transfer(*shares);
                 }
-                KernelEffect::TransferAssets { amount, .. } => {
+                KernelEffect::TransferAssets { amount, .. }
+                | KernelEffect::TransferAssetsFrom { amount, .. } => {
                     summary.record_asset_transfer(*amount);
                 }
                 KernelEffect::EmitEvent { .. } => {
@@ -366,6 +367,15 @@ pub trait EffectInterpreter {
 
         Ok(summary)
     }
+}
+
+/// Address mapping support for effect interpreters.
+pub trait AddressRegistrar {
+    /// Register a kernel address with its corresponding Soroban address.
+    fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: Address);
+
+    /// Return true if the kernel address is registered.
+    fn has_address(&self, kernel_addr: &[u8; 32]) -> bool;
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +608,14 @@ impl EffectInterpreter for MockInterpreter {
         }
         self.effects.push(effect.clone());
         Ok(())
+    }
+}
+
+impl AddressRegistrar for MockInterpreter {
+    fn register_address(&mut self, _kernel_addr: [u8; 32], _soroban_addr: Address) {}
+
+    fn has_address(&self, _kernel_addr: &[u8; 32]) -> bool {
+        true
     }
 }
 
@@ -891,6 +909,20 @@ where
     }
 }
 
+impl<S, A> AddressRegistrar for SorobanEffectInterpreter<'_, S, A>
+where
+    S: Sep41Token,
+    A: Sep41Token,
+{
+    fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: Address) {
+        self.address_map.register(kernel_addr, soroban_addr);
+    }
+
+    fn has_address(&self, kernel_addr: &[u8; 32]) -> bool {
+        self.address_map.resolve(kernel_addr).is_some()
+    }
+}
+
 impl<S, A> EffectInterpreter for SorobanEffectInterpreter<'_, S, A>
 where
     S: Sep41Token,
@@ -923,6 +955,13 @@ where
                 let vault_addr = self.resolve_address(&ctx.vault_address)?;
                 // Transfer from vault to recipient
                 self.asset_token.transfer(vault_addr, to_addr, amount_i128)
+            }
+
+            KernelEffect::TransferAssetsFrom { from, to, amount } => {
+                let amount_i128 = Self::u128_to_i128(*amount)?;
+                let from_addr = self.resolve_address(from)?;
+                let to_addr = self.resolve_address(to)?;
+                self.asset_token.transfer(from_addr, to_addr, amount_i128)
             }
 
             KernelEffect::EmitEvent { event } => {

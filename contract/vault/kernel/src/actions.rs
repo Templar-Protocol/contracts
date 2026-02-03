@@ -8,18 +8,18 @@ extern crate alloc;
 use crate::effects::KernelEffect;
 use crate::error::KernelError;
 use crate::math::number::Number;
-use alloc::vec;
-use alloc::vec::Vec;
 use crate::math::wad::mul_div_floor;
 use crate::restrictions::Restrictions;
+use crate::state::op_state::{OpState, TargetId};
 use crate::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::transitions::{
     complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
-    stop_withdrawal, withdrawal_step_callback, WithdrawalRequest,
+    stop_withdrawal, WithdrawalRequest,
 };
 use crate::types::{Address, TimestampNs};
-use crate::state::op_state::{OpState, TargetId};
+use alloc::vec;
+use alloc::vec::Vec;
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "serde")]
@@ -227,6 +227,11 @@ pub fn apply_action(
             state.total_shares = state.total_shares.saturating_add(shares_out);
 
             let effects = vec![
+                KernelEffect::TransferAssetsFrom {
+                    from: owner,
+                    to: *self_id,
+                    amount: assets_in,
+                },
                 KernelEffect::MintShares {
                     owner: receiver,
                     shares: shares_out,
@@ -278,7 +283,14 @@ pub fn apply_action(
 
             let id = state
                 .withdraw_queue
-                .enqueue(owner, receiver, shares, expected_assets, now_ns, config.max_pending_withdrawals)
+                .enqueue(
+                    owner,
+                    receiver,
+                    shares,
+                    expected_assets,
+                    now_ns,
+                    config.max_pending_withdrawals,
+                )
                 .map_err(|_| KernelError::QueueFull)?;
 
             let effects = vec![
@@ -327,50 +339,22 @@ pub fn apply_action(
                     escrow_shares: pending.escrow_shares,
                 };
 
-                let result =
-                    start_withdrawal(state.op_state.clone(), request).map_err(KernelError::Transition)?;
+                let result = start_withdrawal(state.op_state.clone(), request)
+                    .map_err(KernelError::Transition)?;
                 state.op_state = result.new_state;
 
                 Ok(KernelResult::new(state, result.effects))
             }
-            OpState::Withdrawing(_) => {
-                let Some((_, pending_ref)) = state.withdraw_queue.head() else {
-                    return Err(KernelError::EmptyQueue);
-                };
-                let withdraw = match &state.op_state {
-                    OpState::Withdrawing(s) => s,
-                    _ => {
-                        return Err(KernelError::InvalidState(
-                            "execute_withdraw requires Withdrawing",
-                        ))
-                    }
-                };
-
-                if pending_ref.owner != withdraw.owner
-                    || pending_ref.receiver != withdraw.receiver
-                    || pending_ref.escrow_shares != withdraw.escrow_shares
-                {
-                    return Err(KernelError::InvalidState(
-                        "withdrawal queue head mismatch",
-                    ));
-                }
-
-                enforce_restrictions(config, restrictions, self_id, &withdraw.owner)?;
-                enforce_restrictions(config, restrictions, self_id, &withdraw.receiver)?;
-
-                let result =
-                    withdrawal_step_callback(state.op_state.clone(), withdraw.op_id, 0)
-                        .map_err(KernelError::Transition)?;
-                state.op_state = result.new_state;
-                Ok(KernelResult::new(state, result.effects))
-            }
+            OpState::Withdrawing(_) => Err(KernelError::InvalidState(
+                "execute_withdraw requires Idle (use withdrawal callbacks to advance)",
+            )),
             _ => Err(KernelError::InvalidState(
                 "execute_withdraw requires Idle or Withdrawing",
             )),
         },
         KernelAction::BeginAllocating { op_id, plan, .. } => {
-            let result =
-                start_allocation(state.op_state.clone(), plan, op_id).map_err(KernelError::Transition)?;
+            let result = start_allocation(state.op_state.clone(), plan, op_id)
+                .map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
@@ -397,8 +381,8 @@ pub fn apply_action(
             Ok(KernelResult::new(state, result.effects))
         }
         KernelAction::BeginRefreshing { op_id, plan, .. } => {
-            let result =
-                start_refresh(state.op_state.clone(), plan, op_id).map_err(KernelError::Transition)?;
+            let result = start_refresh(state.op_state.clone(), plan, op_id)
+                .map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
@@ -414,7 +398,9 @@ pub fn apply_action(
             ..
         } => {
             let Some(active_op_id) = state.op_state.op_id() else {
-                return Err(KernelError::InvalidState("sync_external_assets requires active op"));
+                return Err(KernelError::InvalidState(
+                    "sync_external_assets requires active op",
+                ));
             };
 
             if active_op_id != op_id {
@@ -449,10 +435,9 @@ pub fn apply_action(
             ))
         }
         KernelAction::AbortRefreshing { op_id } => {
-            let current_op_id = state
-                .op_state
-                .op_id()
-                .ok_or(KernelError::InvalidState("abort_refreshing requires active op"))?;
+            let current_op_id = state.op_state.op_id().ok_or(KernelError::InvalidState(
+                "abort_refreshing requires active op",
+            ))?;
             if current_op_id != op_id {
                 return Err(KernelError::OpIdMismatch {
                     expected: current_op_id,
@@ -469,7 +454,10 @@ pub fn apply_action(
             state.op_state = OpState::Idle;
             Ok(KernelResult::new(state, vec![]))
         }
-        KernelAction::AbortAllocating { op_id, restore_idle } => {
+        KernelAction::AbortAllocating {
+            op_id,
+            restore_idle,
+        } => {
             let alloc = match &state.op_state {
                 OpState::Allocating(s) => s,
                 _ => {
@@ -528,9 +516,7 @@ pub fn apply_action(
                 || pending.receiver != withdraw.receiver
                 || pending.escrow_shares != withdraw.escrow_shares
             {
-                return Err(KernelError::InvalidState(
-                    "withdrawal queue head mismatch",
-                ));
+                return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
             }
 
             let result =
@@ -542,11 +528,7 @@ pub fn apply_action(
         KernelAction::SettlePayout { op_id, outcome } => {
             let payout = match &state.op_state {
                 OpState::Payout(s) => s,
-                _ => {
-                    return Err(KernelError::InvalidState(
-                        "settle_payout requires Payout",
-                    ))
-                }
+                _ => return Err(KernelError::InvalidState("settle_payout requires Payout")),
             };
 
             if payout.op_id != op_id {
@@ -563,9 +545,7 @@ pub fn apply_action(
                 || pending.receiver != payout.receiver
                 || pending.escrow_shares != payout.escrow_shares
             {
-                return Err(KernelError::InvalidState(
-                    "withdrawal queue head mismatch",
-                ));
+                return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
             }
 
             let escrow_address = [0u8; 32];
@@ -584,7 +564,7 @@ pub fn apply_action(
 
                     if burn_shares > 0 {
                         effects.push(KernelEffect::BurnShares {
-                            owner: payout.owner,
+                            owner: escrow_address,
                             shares: burn_shares,
                         });
                         state.total_shares = state.total_shares.saturating_sub(burn_shares);
@@ -784,14 +764,14 @@ mod tests {
             None,
             &addr(0xFF),
             KernelAction::ExecuteWithdraw { now_ns: 0 },
-        )
-        .unwrap();
+        );
 
-        let withdraw = result.state.op_state.as_withdrawing().unwrap();
-        assert_eq!(withdraw.op_id, 7);
-        assert_eq!(withdraw.index, 1);
-        assert_eq!(withdraw.collected, 0);
-        assert_eq!(withdraw.remaining, 200);
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+            ))
+        ));
     }
 
     #[test]
@@ -879,14 +859,48 @@ mod tests {
         assert_eq!(result.state.idle_assets, 1_500);
         assert!(matches!(
             result.effects.first(),
-            Some(KernelEffect::MintShares { .. })
+            Some(KernelEffect::TransferAssetsFrom { .. })
         ));
         assert!(matches!(
             result.effects.get(1),
+            Some(KernelEffect::MintShares { .. })
+        ));
+        assert!(matches!(
+            result.effects.get(2),
             Some(KernelEffect::EmitEvent {
                 event: KernelEvent::DepositProcessed { .. }
             })
         ));
+    }
+
+    #[test]
+    fn deposit_emits_transfer_assets_from_owner() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+        let self_id = addr(0xAB);
+        let owner = addr(1);
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_id,
+            KernelAction::Deposit {
+                owner,
+                receiver: addr(2),
+                assets_in: 250,
+                min_shares_out: 0,
+                now_ns: 0,
+            },
+        )
+        .unwrap();
+
+        let transfer = result.effects.iter().find_map(|effect| match effect {
+            KernelEffect::TransferAssetsFrom { from, to, amount } => Some((*from, *to, *amount)),
+            _ => None,
+        });
+
+        assert_eq!(transfer, Some((owner, self_id, 250)));
     }
 
     #[test]
@@ -1085,11 +1099,25 @@ mod tests {
         // Fill the queue
         state
             .withdraw_queue
-            .enqueue(addr(1), addr(1), 100, 100, 0, config.max_pending_withdrawals)
+            .enqueue(
+                addr(1),
+                addr(1),
+                100,
+                100,
+                0,
+                config.max_pending_withdrawals,
+            )
             .unwrap();
         state
             .withdraw_queue
-            .enqueue(addr(2), addr(2), 100, 100, 0, config.max_pending_withdrawals)
+            .enqueue(
+                addr(2),
+                addr(2),
+                100,
+                100,
+                0,
+                config.max_pending_withdrawals,
+            )
             .unwrap();
 
         let result = apply_action(
@@ -1123,7 +1151,9 @@ mod tests {
             &config,
             None,
             &addr(0xFF),
-            KernelAction::ExecuteWithdraw { now_ns: DEFAULT_COOLDOWN_NS + 1 },
+            KernelAction::ExecuteWithdraw {
+                now_ns: DEFAULT_COOLDOWN_NS + 1,
+            },
         );
 
         assert!(matches!(result, Err(KernelError::EmptyQueue)));
@@ -1136,7 +1166,14 @@ mod tests {
 
         state
             .withdraw_queue
-            .enqueue(addr(1), addr(2), 100, 100, 1_000_000, config.max_pending_withdrawals)
+            .enqueue(
+                addr(1),
+                addr(2),
+                100,
+                100,
+                1_000_000,
+                config.max_pending_withdrawals,
+            )
             .unwrap();
 
         // Not enough time passed
@@ -1190,7 +1227,14 @@ mod tests {
         // Queue has different owner than op_state
         state
             .withdraw_queue
-            .enqueue(addr(99), addr(99), 200, 200, 0, config.max_pending_withdrawals)
+            .enqueue(
+                addr(99),
+                addr(99),
+                200,
+                200,
+                0,
+                config.max_pending_withdrawals,
+            )
             .unwrap();
 
         state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -1213,7 +1257,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(KernelError::InvalidState("withdrawal queue head mismatch"))
+            Err(KernelError::InvalidState(
+                "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+            ))
         ));
     }
 
@@ -1264,7 +1310,10 @@ mod tests {
             &config,
             None,
             &addr(0xFF),
-            KernelAction::FinishAllocating { op_id: 1, now_ns: 0 },
+            KernelAction::FinishAllocating {
+                op_id: 1,
+                now_ns: 0,
+            },
         )
         .unwrap();
 
@@ -1322,7 +1371,14 @@ mod tests {
         // Add a pending withdrawal that's NOT past cooldown
         state
             .withdraw_queue
-            .enqueue(owner, receiver, 100, 100, DEFAULT_COOLDOWN_NS, config.max_pending_withdrawals)
+            .enqueue(
+                owner,
+                receiver,
+                100,
+                100,
+                DEFAULT_COOLDOWN_NS,
+                config.max_pending_withdrawals,
+            )
             .unwrap();
 
         state.op_state = OpState::Allocating(AllocatingState {
@@ -1373,7 +1429,12 @@ mod tests {
             KernelAction::ExecuteWithdraw { now_ns: 0 },
         );
 
-        assert!(matches!(result, Err(KernelError::EmptyQueue)));
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+            ))
+        ));
     }
 
     // =========================================================================
@@ -1422,7 +1483,10 @@ mod tests {
             &config,
             None,
             &addr(0xFF),
-            KernelAction::FinishRefreshing { op_id: 2, now_ns: 0 },
+            KernelAction::FinishRefreshing {
+                op_id: 2,
+                now_ns: 0,
+            },
         )
         .unwrap();
 
@@ -1547,7 +1611,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(KernelError::InvalidState("sync_external_assets requires active op"))
+            Err(KernelError::InvalidState(
+                "sync_external_assets requires active op"
+            ))
         ));
     }
 
@@ -1664,7 +1730,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(KernelError::InvalidState("abort_refreshing requires active op"))
+            Err(KernelError::InvalidState(
+                "abort_refreshing requires active op"
+            ))
         ));
     }
 
@@ -1720,7 +1788,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(KernelError::InvalidState("abort_refreshing requires Refreshing"))
+            Err(KernelError::InvalidState(
+                "abort_refreshing requires Refreshing"
+            ))
         ));
     }
 
@@ -1776,7 +1846,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(KernelError::InvalidState("abort_allocating requires Allocating"))
+            Err(KernelError::InvalidState(
+                "abort_allocating requires Allocating"
+            ))
         ));
     }
 
@@ -2002,7 +2074,14 @@ mod tests {
         // Queue has different user
         state
             .withdraw_queue
-            .enqueue(addr(99), addr(99), 100, 100, 0, config.max_pending_withdrawals)
+            .enqueue(
+                addr(99),
+                addr(99),
+                100,
+                100,
+                0,
+                config.max_pending_withdrawals,
+            )
             .unwrap();
 
         state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -2106,10 +2185,16 @@ mod tests {
         assert!(result.state.is_idle());
         assert_eq!(result.state.total_shares, 900); // 1000 - 100 burned
         assert_eq!(result.state.withdraw_queue.len(), 0);
-        assert!(matches!(
-            result.effects.first(),
-            Some(KernelEffect::BurnShares { shares: 100, .. })
-        ));
+        let (burn_owner, burn_shares) = result
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                KernelEffect::BurnShares { owner, shares } => Some((*owner, *shares)),
+                _ => None,
+            })
+            .expect("missing BurnShares effect");
+        assert_eq!(burn_owner, [0u8; 32]);
+        assert_eq!(burn_shares, 100);
     }
 
     #[test]
@@ -2315,7 +2400,14 @@ mod tests {
 
         state
             .withdraw_queue
-            .enqueue(addr(99), addr(99), 100, 100, 0, config.max_pending_withdrawals)
+            .enqueue(
+                addr(99),
+                addr(99),
+                100,
+                100,
+                0,
+                config.max_pending_withdrawals,
+            )
             .unwrap();
 
         state.op_state = OpState::Payout(PayoutState {

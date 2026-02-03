@@ -3,6 +3,7 @@
 //! This module provides versioned storage wrappers for persisting vault state
 //! to the Soroban ledger. It handles schema migrations and forward compatibility.
 
+use alloc::vec::Vec;
 use derive_more::{From, Into};
 use soroban_sdk::{contracttype, Env};
 use templar_vault_kernel::VaultState;
@@ -22,6 +23,10 @@ use crate::error::RuntimeError;
 pub enum SorobanStorageKey {
     /// Main vault state stored as serialized fields.
     VaultState,
+    /// Persisted op_state payload.
+    OpState,
+    /// Persisted withdrawal queue.
+    WithdrawQueue,
     /// Storage version number.
     Version,
     /// Contract configuration.
@@ -78,12 +83,14 @@ impl SorobanVaultState {
         };
 
         Self {
-            total_assets: state.total_assets as i128,
-            total_shares: state.total_shares as i128,
-            idle_assets: state.idle_assets as i128,
-            external_assets: state.external_assets as i128,
+            total_assets: i128::try_from(state.total_assets).expect("total_assets exceeds i128"),
+            total_shares: i128::try_from(state.total_shares).expect("total_shares exceeds i128"),
+            idle_assets: i128::try_from(state.idle_assets).expect("idle_assets exceeds i128"),
+            external_assets: i128::try_from(state.external_assets)
+                .expect("external_assets exceeds i128"),
             fee_anchor_ns: state.fee_anchor.timestamp_ns,
-            fee_anchor_assets: state.fee_anchor.total_assets as i128,
+            fee_anchor_assets: i128::try_from(state.fee_anchor.total_assets)
+                .expect("fee_anchor_assets exceeds i128"),
             op_state_kind,
             op_state_id,
             withdraw_queue_len: state.withdraw_queue.len() as u32,
@@ -93,62 +100,51 @@ impl SorobanVaultState {
 
     /// Convert to kernel VaultState.
     ///
-    /// Note: This creates a minimal VaultState for Idle state only.
-    /// Non-idle states should be reconstructed from full persistent storage.
+    /// Note: This creates a base VaultState without op_state/queue details.
+    /// Full op_state and withdraw queue must be loaded separately.
     #[must_use]
     pub fn to_kernel(&self) -> VaultState {
-        use alloc::vec::Vec;
         use templar_vault_kernel::{
-            AllocatingState, FeeAccrualAnchor, OpState, PayoutState, RefreshingState,
-            WithdrawQueue, WithdrawingState,
+            FeeAccrualAnchor, OpState, WithdrawQueue,
         };
 
-        let op_state = match self.op_state_kind {
-            1 => OpState::Allocating(AllocatingState {
-                op_id: self.op_state_id,
-                index: 0,
-                remaining: 0,
-                plan: Vec::new(),
-            }),
-            2 => OpState::Withdrawing(WithdrawingState {
-                op_id: self.op_state_id,
-                index: 0,
-                remaining: 0,
-                collected: 0,
-                receiver: [0u8; 32],
-                owner: [0u8; 32],
-                escrow_shares: 0,
-            }),
-            3 => OpState::Refreshing(RefreshingState {
-                op_id: self.op_state_id,
-                index: 0,
-                plan: Vec::new(),
-            }),
-            4 => OpState::Payout(PayoutState {
-                op_id: self.op_state_id,
-                receiver: [0u8; 32],
-                amount: 0,
-                owner: [0u8; 32],
-                escrow_shares: 0,
-                burn_shares: 0,
-            }),
-            _ => OpState::Idle,
-        };
+        let op_state = OpState::Idle;
+        let withdraw_queue = WithdrawQueue::new();
 
         VaultState {
-            total_assets: self.total_assets as u128,
-            total_shares: self.total_shares as u128,
-            idle_assets: self.idle_assets as u128,
-            external_assets: self.external_assets as u128,
+            total_assets: u128::try_from(self.total_assets).expect("total_assets is negative"),
+            total_shares: u128::try_from(self.total_shares).expect("total_shares is negative"),
+            idle_assets: u128::try_from(self.idle_assets).expect("idle_assets is negative"),
+            external_assets: u128::try_from(self.external_assets)
+                .expect("external_assets is negative"),
             fee_anchor: FeeAccrualAnchor::new(
-                self.fee_anchor_assets as u128,
+                u128::try_from(self.fee_anchor_assets).expect("fee_anchor_assets is negative"),
                 self.fee_anchor_ns,
             ),
             op_state,
-            withdraw_queue: WithdrawQueue::new(),
+            withdraw_queue,
             next_op_id: self.next_op_id,
         }
     }
+
+}
+
+// ---------------------------------------------------------------------------
+// Borsh helpers for full op_state + queue persistence
+// ---------------------------------------------------------------------------
+
+fn borsh_serialize<T: borsh::BorshSerialize>(
+    value: &T,
+    msg: &'static str,
+) -> Result<Vec<u8>, RuntimeError> {
+    borsh::to_vec(value).map_err(|_| RuntimeError::storage_error(msg))
+}
+
+fn borsh_deserialize<T: borsh::BorshDeserialize>(
+    bytes: &[u8],
+    msg: &'static str,
+) -> Result<T, RuntimeError> {
+    T::try_from_slice(bytes).map_err(|_| RuntimeError::storage_error(msg))
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +181,38 @@ impl<'a> SorobanStorage<'a> {
             .storage()
             .persistent()
             .set(&SorobanStorageKey::VaultState, state);
+    }
+
+    /// Load the op_state from persistent storage.
+    pub fn load_op_state(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get(&SorobanStorageKey::OpState)
+    }
+
+    /// Save the op_state to persistent storage.
+    pub fn save_op_state(&self, state: &Vec<u8>) {
+        self.env
+            .storage()
+            .persistent()
+            .set(&SorobanStorageKey::OpState, state);
+    }
+
+    /// Load the withdrawal queue from persistent storage.
+    pub fn load_withdraw_queue(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get(&SorobanStorageKey::WithdrawQueue)
+    }
+
+    /// Save the withdrawal queue to persistent storage.
+    pub fn save_withdraw_queue(&self, queue: &Vec<u8>) {
+        self.env
+            .storage()
+            .persistent()
+            .set(&SorobanStorageKey::WithdrawQueue, queue);
     }
 
     /// Get the storage version.
@@ -238,6 +266,16 @@ impl<'a> SorobanStorage<'a> {
             extend_to,
         );
         self.env.storage().persistent().extend_ttl(
+            &SorobanStorageKey::OpState,
+            threshold,
+            extend_to,
+        );
+        self.env.storage().persistent().extend_ttl(
+            &SorobanStorageKey::WithdrawQueue,
+            threshold,
+            extend_to,
+        );
+        self.env.storage().persistent().extend_ttl(
             &SorobanStorageKey::Version,
             threshold,
             extend_to,
@@ -249,10 +287,44 @@ impl Storage for SorobanStorage<'_> {
     fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
         match self.load_vault_state() {
             Some(soroban_state) => {
+                use templar_vault_kernel::{OpState, WithdrawQueue};
+
+                let op_state = match self.load_op_state() {
+                    Some(stored) => Some(borsh_deserialize::<OpState>(
+                        &stored,
+                        "op_state deserialize failed",
+                    )?),
+                    None => None,
+                };
+                let withdraw_queue = match self.load_withdraw_queue() {
+                    Some(stored) => Some(borsh_deserialize::<WithdrawQueue>(
+                        &stored,
+                        "withdraw queue deserialize failed",
+                    )?),
+                    None => None,
+                };
+
+                if op_state.is_none()
+                    && (soroban_state.op_state_kind != 0 || soroban_state.op_state_id != 0)
+                {
+                    return Err(RuntimeError::storage_error(
+                        "op_state missing for non-idle state",
+                    ));
+                }
+
+                if withdraw_queue.is_none() && soroban_state.withdraw_queue_len != 0 {
+                    return Err(RuntimeError::storage_error(
+                        "withdraw queue missing for pending withdrawals",
+                    ));
+                }
+
                 let version = self.get_version().unwrap_or(1);
+                let mut state = soroban_state.to_kernel();
+                state.op_state = op_state.unwrap_or(OpState::Idle);
+                state.withdraw_queue = withdraw_queue.unwrap_or_else(WithdrawQueue::new);
                 Ok(Some(VersionedState {
                     version: StorageVersion::new(version),
-                    state: soroban_state.to_kernel(),
+                    state,
                 }))
             }
             None => Ok(None),
@@ -262,6 +334,14 @@ impl Storage for SorobanStorage<'_> {
     fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
         let soroban_state = SorobanVaultState::from_kernel(&state.state);
         self.save_vault_state(&soroban_state);
+        let op_state =
+            borsh_serialize(&state.state.op_state, "op_state serialize failed")?;
+        let withdraw_queue = borsh_serialize(
+            &state.state.withdraw_queue,
+            "withdraw queue serialize failed",
+        )?;
+        self.save_op_state(&op_state);
+        self.save_withdraw_queue(&withdraw_queue);
         self.set_version(state.version.number());
         Ok(())
     }
@@ -275,6 +355,15 @@ impl Storage for SorobanStorage<'_> {
             .map(StorageVersion::new)
             .ok_or_else(|| RuntimeError::storage_error("version not initialized"))
     }
+
+    fn load_paused(&self) -> Result<bool, RuntimeError> {
+        Ok(self.is_paused())
+    }
+
+    fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError> {
+        self.set_paused(paused);
+        Ok(())
+    }
 }
 
 /// Storage version identifier.
@@ -285,8 +374,11 @@ impl StorageVersion {
     /// Initial storage version.
     pub const V1: Self = Self(1);
 
+    /// OpState + withdraw queue persistence.
+    pub const V2: Self = Self(2);
+
     /// Current storage version.
-    pub const CURRENT: Self = Self::V1;
+    pub const CURRENT: Self = Self::V2;
 
     /// Create a new storage version.
     #[inline]
@@ -399,6 +491,12 @@ pub trait Storage {
 
     /// Get the storage version.
     fn get_version(&self) -> Result<StorageVersion, RuntimeError>;
+
+    /// Load the paused flag for the vault.
+    fn load_paused(&self) -> Result<bool, RuntimeError>;
+
+    /// Persist the paused flag for the vault.
+    fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError>;
 }
 
 /// In-memory storage implementation for testing.
@@ -406,6 +504,7 @@ pub trait Storage {
 pub struct MemoryStorage {
     state: Option<VersionedState>,
     initialized: bool,
+    paused: bool,
 }
 
 impl MemoryStorage {
@@ -423,6 +522,7 @@ impl MemoryStorage {
         Self {
             state: Some(state),
             initialized: true,
+            paused: false,
         }
     }
 
@@ -462,6 +562,15 @@ impl Storage for MemoryStorage {
             .map(|s| s.version)
             .ok_or_else(|| RuntimeError::storage_error("state not initialized"))
     }
+
+    fn load_paused(&self) -> Result<bool, RuntimeError> {
+        Ok(self.paused)
+    }
+
+    fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError> {
+        self.paused = paused;
+        Ok(())
+    }
 }
 
 /// Migration helper for upgrading storage versions.
@@ -494,7 +603,7 @@ impl Migrator {
         let mut current = state;
 
         // Apply migrations sequentially
-        // Currently only V1, so no migrations needed
+        // V1 -> V2 adds op_state + withdraw queue persistence.
         // Future migrations would be added here:
         // if current.version == StorageVersion::V1 {
         //     current = migrate_v1_to_v2(current)?;
@@ -516,13 +625,16 @@ mod tests {
         assert!(v1.is_compatible());
 
         let current = StorageVersion::CURRENT;
-        assert_eq!(current, v1);
+        assert_eq!(current, StorageVersion::V2);
     }
 
     #[test]
     fn test_storage_version_compatibility() {
         let old = StorageVersion::new(1);
         assert!(old.is_compatible());
+
+        let v2 = StorageVersion::new(2);
+        assert!(v2.is_compatible());
 
         // Future version would not be compatible
         let future = StorageVersion::new(999);
@@ -543,8 +655,8 @@ mod tests {
         let state = VaultState::default();
         let versioned = VersionedState::with_version(StorageVersion::V1, state);
 
-        // V1 is current, so no migration needed
-        assert!(!versioned.needs_migration());
+        // V1 is older than current, so migration needed
+        assert!(versioned.needs_migration());
     }
 
     #[test]
@@ -668,15 +780,19 @@ mod tests {
     #[test]
     fn test_soroban_storage_key_variants() {
         let key1 = SorobanStorageKey::VaultState;
-        let key2 = SorobanStorageKey::Version;
-        let key3 = SorobanStorageKey::Config;
-        let key4 = SorobanStorageKey::Paused;
+        let key2 = SorobanStorageKey::OpState;
+        let key3 = SorobanStorageKey::WithdrawQueue;
+        let key4 = SorobanStorageKey::Version;
+        let key5 = SorobanStorageKey::Config;
+        let key6 = SorobanStorageKey::Paused;
 
         // Keys should be distinct
         assert!(matches!(key1, SorobanStorageKey::VaultState));
-        assert!(matches!(key2, SorobanStorageKey::Version));
-        assert!(matches!(key3, SorobanStorageKey::Config));
-        assert!(matches!(key4, SorobanStorageKey::Paused));
+        assert!(matches!(key2, SorobanStorageKey::OpState));
+        assert!(matches!(key3, SorobanStorageKey::WithdrawQueue));
+        assert!(matches!(key4, SorobanStorageKey::Version));
+        assert!(matches!(key5, SorobanStorageKey::Config));
+        assert!(matches!(key6, SorobanStorageKey::Paused));
     }
 
     // Helper to create a registered contract for storage tests
@@ -754,6 +870,73 @@ mod tests {
             // Unset paused
             storage.set_paused(false);
             assert!(!storage.is_paused());
+        });
+    }
+
+    #[test]
+    fn test_soroban_storage_rejects_missing_op_state_or_queue() {
+        let env = Env::default();
+        let contract_id = env.register(test_contract::TestContract, ());
+
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+
+            let state = SorobanVaultState {
+                op_state_kind: 2,
+                op_state_id: 7,
+                withdraw_queue_len: 1,
+                ..SorobanVaultState::default()
+            };
+            storage.save_vault_state(&state);
+            storage.set_version(1);
+
+            let result = storage.load_state();
+            assert!(matches!(result, Err(RuntimeError::StorageError(_))));
+        });
+    }
+
+    #[test]
+    fn test_soroban_storage_roundtrip_op_state_and_queue() {
+        use alloc::collections::BTreeMap;
+        use templar_vault_kernel::state::queue::{PendingWithdrawal, WithdrawQueue};
+        use templar_vault_kernel::{OpState, WithdrawingState};
+
+        let env = Env::default();
+        let contract_id = env.register(test_contract::TestContract, ());
+
+        env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = VaultState::default();
+
+            let owner = [1u8; 32];
+            let receiver = [2u8; 32];
+            state.op_state = OpState::Withdrawing(WithdrawingState {
+                op_id: 7,
+                index: 1,
+                remaining: 500,
+                collected: 200,
+                receiver,
+                owner,
+                escrow_shares: 700,
+            });
+
+            let mut pending = BTreeMap::new();
+            pending.insert(
+                3,
+                PendingWithdrawal::new(owner, receiver, 700, 800, 123),
+            );
+            state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
+            state.total_assets = 1000;
+            state.total_shares = 900;
+            state.idle_assets = 100;
+            state.external_assets = 900;
+            state.next_op_id = 8;
+
+            let versioned = VersionedState::new(state.clone());
+            storage.save_state(&versioned).unwrap();
+
+            let loaded = storage.load_state().unwrap().unwrap();
+            assert_eq!(loaded.state, state);
         });
     }
 

@@ -28,12 +28,68 @@ use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::{compute_full_withdrawal, compute_partial_withdrawal};
 
 use crate::auth::{ActionKind, AuthAdapter};
-use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectSummary};
+use crate::effects::{
+    AddressRegistrar, EffectContext, EffectInterpreter, EffectSummary, SdkTokenAdapter,
+    SorobanEffectInterpreter,
+};
 use crate::error::RuntimeError;
 use crate::market::{CrossChainMarketAdapter, MarketAdapter, MarketRef};
 use crate::policy::{build_refresh_plan_with_locks, filter_allocation_plan};
 use crate::reconciliation::{reconcile_external_assets, ReconciliationRecord};
-use crate::storage::{Storage, VersionedState};
+use crate::rbac::{RbacAuth, RbacConfig};
+use crate::storage::{SorobanStorage, Storage, VersionedState};
+
+const ESCROW_ADDRESS: Address = [0u8; 32];
+
+fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
+    let strkey = addr.to_string();
+    let mut raw = vec![0u8; strkey.len() as usize];
+    strkey.copy_into_slice(&mut raw);
+    let bytes = Bytes::from_slice(env, &raw);
+    env.crypto().sha256(&bytes).to_bytes().to_array()
+}
+
+fn ledger_timestamp_ns(env: &Env) -> u64 {
+    env.ledger().timestamp().saturating_mul(1_000_000_000)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NoopMarketAdapter;
+
+impl MarketAdapter for NoopMarketAdapter {
+    fn supply(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
+        Err(RuntimeError::contract_error("market adapter not configured"))
+    }
+
+    fn withdraw(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
+        Err(RuntimeError::contract_error("market adapter not configured"))
+    }
+
+    fn total_assets(&self, _market: MarketRef) -> Result<u128, RuntimeError> {
+        Err(RuntimeError::contract_error("market adapter not configured"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NoopCrossChainAdapter;
+
+impl CrossChainMarketAdapter for NoopCrossChainAdapter {
+    fn submit_intent(&mut self, _plan_bytes: Vec<u8>) -> Result<crate::market::AttemptId, RuntimeError> {
+        Err(RuntimeError::contract_error("cross-chain adapter not configured"))
+    }
+
+    fn settle(
+        &mut self,
+        _op_id: u64,
+        _attempt_id: crate::market::AttemptId,
+    ) -> Result<crate::market::SettlementReceipt, RuntimeError> {
+        Err(RuntimeError::contract_error("cross-chain adapter not configured"))
+    }
+
+    fn total_assets(&self, _market: MarketRef) -> Result<u128, RuntimeError> {
+        Err(RuntimeError::contract_error("cross-chain adapter not configured"))
+    }
+}
 
 /// Contract configuration set at initialization.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -305,29 +361,23 @@ where
         )
     }
 
-    fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
-        let strkey = addr.to_string();
-        let mut raw = vec![0u8; strkey.len() as usize];
-        strkey.copy_into_slice(&mut raw);
-        let bytes = Bytes::from_slice(env, &raw);
-        env.crypto().sha256(&bytes).to_bytes().to_array()
-    }
-
     fn ensure_vault_mapped(&mut self, env: &Env) -> Result<(), RuntimeError> {
         let vault_sdk = env.current_contract_address();
-        let vault_kernel = Self::kernel_address_from_sdk(env, &vault_sdk);
+        let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
         if vault_kernel != self.config.vault_address {
             return Err(RuntimeError::contract_error(
                 "vault address mismatch for effect mapping",
             ));
         }
         self.interpreter
-            .register_address(vault_kernel, vault_sdk);
+            .register_address(vault_kernel, vault_sdk.clone());
+        self.interpreter
+            .register_address(ESCROW_ADDRESS, vault_sdk);
         Ok(())
     }
 
     fn register_sdk_address(&mut self, env: &Env, addr: &SdkAddress) -> Address {
-        let kernel_addr = Self::kernel_address_from_sdk(env, addr);
+        let kernel_addr = kernel_address_from_sdk(env, addr);
         self.interpreter
             .register_address(kernel_addr, addr.clone());
         kernel_addr
@@ -1246,6 +1296,82 @@ pub enum VaultDataKey {
 #[contract]
 pub struct SorobanVaultContract;
 
+type ContractVault<'a> = CuratorVault<
+    SorobanStorage<'a>,
+    RbacAuth,
+    SorobanEffectInterpreter<'a, SdkTokenAdapter<'a>, SdkTokenAdapter<'a>>,
+    NoopMarketAdapter,
+    NoopCrossChainAdapter,
+>;
+
+fn with_contract_vault<T>(
+    env: &Env,
+    f: impl FnOnce(&mut ContractVault<'_>) -> Result<T, RuntimeError>,
+) -> Result<T, RuntimeError> {
+    let admin: SdkAddress = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::Admin)
+        .ok_or_else(|| RuntimeError::storage_error("admin not set"))?;
+    let asset_token: SdkAddress = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::AssetToken)
+        .ok_or_else(|| RuntimeError::storage_error("asset token not set"))?;
+    let share_token: SdkAddress = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::ShareToken)
+        .ok_or_else(|| RuntimeError::storage_error("share token not set"))?;
+
+    let vault_sdk = env.current_contract_address();
+    let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
+    let admin_kernel = kernel_address_from_sdk(env, &admin);
+    let asset_kernel = kernel_address_from_sdk(env, &asset_token);
+    let share_kernel = kernel_address_from_sdk(env, &share_token);
+
+    let mut config = ContractConfig::new(
+        admin_kernel,
+        vault_kernel,
+        Vec::new(),
+        Vec::new(),
+        asset_kernel,
+        share_kernel,
+    );
+
+    if let Some(adapter) = env.storage().instance().get(&VaultDataKey::BlendAdapter) {
+        config = config.with_blend_adapter(kernel_address_from_sdk(env, &adapter));
+    }
+    if let Some(pool) = env.storage().instance().get(&VaultDataKey::BlendPool) {
+        config = config.with_blend_pool(kernel_address_from_sdk(env, &pool));
+    }
+    if let Some(factory) = env.storage().instance().get(&VaultDataKey::BlendFactory) {
+        config = config.with_blend_factory(kernel_address_from_sdk(env, &factory));
+    }
+
+    let storage = SorobanStorage::new(env);
+    let paused = storage.is_paused();
+    let mut rbac_config = RbacConfig::with_admin(admin_kernel);
+    rbac_config.set_paused(paused);
+    let auth = RbacAuth::new(rbac_config);
+
+    let share_adapter = SdkTokenAdapter::new(env, &share_token);
+    let asset_adapter = SdkTokenAdapter::new(env, &asset_token);
+    let interpreter = SorobanEffectInterpreter::new(env, &share_adapter, &asset_adapter);
+
+    let mut vault = CuratorVault::new(
+        config,
+        storage,
+        auth,
+        interpreter,
+        NoopMarketAdapter,
+        NoopCrossChainAdapter,
+    );
+    vault.load_state()?;
+
+    f(&mut vault)
+}
+
 #[contractimpl]
 impl SorobanVaultContract {
     /// Initialize the vault contract.
@@ -1293,12 +1419,14 @@ impl SorobanVaultContract {
             .set(&VaultDataKey::Initialized, &true);
 
         // Initialize vault state in persistent storage using current version.
-        use crate::storage::SorobanStorage;
         let mut storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(VaultState::default());
         storage
             .save_state(&versioned)
             .unwrap_or_else(|e| panic!("failed to initialize storage: {:?}", e));
+        storage.save_paused(false).unwrap_or_else(|e| {
+            panic!("failed to initialize paused state: {:?}", e);
+        });
     }
 
     /// Deposit assets into the vault.
@@ -1324,76 +1452,31 @@ impl SorobanVaultContract {
         // Require authorization from owner
         owner.require_auth();
 
-        // Check not paused
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&VaultDataKey::Paused)
-            .unwrap_or(false);
-        if paused {
-            panic!("vault is paused");
-        }
-
         if assets <= 0 {
             panic!("deposit amount must be positive");
         }
 
-        // Load vault state
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        let mut state = storage.load_vault_state().unwrap_or_default();
-
-        // Calculate shares
-        let shares = if state.total_shares == 0 {
-            assets // 1:1 for first deposit
+        let assets_u128 = u128::try_from(assets).expect("deposit amount exceeds u128");
+        let min_shares_u128 = if min_shares_out < 0 {
+            panic!("min_shares_out must be non-negative");
         } else {
-            assets
-                .checked_mul(state.total_shares)
-                .and_then(|n| n.checked_div(state.total_assets))
-                .expect("share calculation overflow")
+            u128::try_from(min_shares_out).expect("min_shares_out exceeds u128")
         };
+        let now_ns = ledger_timestamp_ns(&env);
 
-        if shares < min_shares_out {
-            panic!("slippage exceeded");
-        }
+        let result = with_contract_vault(&env, |vault| {
+            vault.deposit_soroban(
+                &env,
+                owner.clone(),
+                receiver.clone(),
+                assets_u128,
+                min_shares_u128,
+                now_ns,
+            )
+        })
+        .unwrap_or_else(|e| panic!("deposit failed: {:?}", e));
 
-        // Update state
-        state.total_assets = state.total_assets.saturating_add(assets);
-        state.total_shares = state.total_shares.saturating_add(shares);
-        state.idle_assets = state.idle_assets.saturating_add(assets);
-
-        // Save state
-        storage.save_vault_state(&state);
-
-        // Transfer assets from owner to vault
-        let asset_token: SdkAddress = env
-            .storage()
-            .instance()
-            .get(&VaultDataKey::AssetToken)
-            .expect("asset token not set");
-        let token_client = soroban_sdk::token::Client::new(&env, &asset_token);
-        token_client.transfer(&owner, &env.current_contract_address(), &assets);
-
-        // Mint shares to receiver
-        let share_token: SdkAddress = env
-            .storage()
-            .instance()
-            .get(&VaultDataKey::ShareToken)
-            .expect("share token not set");
-        let share_client = soroban_sdk::token::StellarAssetClient::new(&env, &share_token);
-        share_client.mint(&receiver, &shares);
-
-        // Emit deposit event
-        use crate::effects::DepositEvent;
-        DepositEvent {
-            owner: owner.clone(),
-            receiver,
-            assets_in: assets,
-            shares_out: shares,
-        }
-        .publish(&env);
-
-        shares
+        i128::try_from(result.shares_minted).expect("shares minted exceeds i128")
     }
 
     /// Request a withdrawal from the vault.
@@ -1422,41 +1505,27 @@ impl SorobanVaultContract {
         if shares <= 0 {
             panic!("shares must be positive");
         }
+        let shares_u128 = u128::try_from(shares).expect("shares exceeds u128");
+        let min_assets_u128 = if min_assets_out < 0 {
+            panic!("min_assets_out must be non-negative");
+        } else {
+            u128::try_from(min_assets_out).expect("min_assets_out exceeds u128")
+        };
+        let now_ns = ledger_timestamp_ns(&env);
 
-        // Load vault state
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        let state = storage.load_vault_state().expect("vault not initialized");
+        let result = with_contract_vault(&env, |vault| {
+            vault.request_withdraw_soroban(
+                &env,
+                owner.clone(),
+                receiver.clone(),
+                shares_u128,
+                min_assets_u128,
+                now_ns,
+            )
+        })
+        .unwrap_or_else(|e| panic!("request_withdraw failed: {:?}", e));
 
-        if state.total_shares == 0 {
-            panic!("no shares in vault");
-        }
-
-        // Calculate expected assets
-        let expected_assets = shares
-            .checked_mul(state.total_assets)
-            .and_then(|n| n.checked_div(state.total_shares))
-            .expect("asset calculation overflow");
-
-        if expected_assets < min_assets_out {
-            panic!("slippage exceeded");
-        }
-
-        // Generate request ID (simplified - in production use proper sequencing)
-        let request_id = state.next_op_id;
-
-        // Emit withdrawal request event
-        use crate::effects::WithdrawRequestEvent;
-        WithdrawRequestEvent {
-            id: request_id,
-            owner: owner.clone(),
-            receiver,
-            shares,
-            expected_assets,
-        }
-        .publish(&env);
-
-        request_id
+        result.request_id
     }
 
     /// Pause or unpause the vault.
@@ -1467,9 +1536,13 @@ impl SorobanVaultContract {
     /// * `caller` - The caller (must be admin)
     /// * `paused` - Whether to pause (true) or unpause (false)
     pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) {
-        require_admin(&env, &caller);
+        caller.require_auth();
+        let caller_kernel = kernel_address_from_sdk(&env, &caller);
 
-        // Update paused state
+        with_contract_vault(&env, |vault| vault.pause(caller_kernel, paused))
+            .unwrap_or_else(|e| panic!("pause failed: {:?}", e));
+
+        // Keep legacy paused flag in sync.
         env.storage()
             .instance()
             .set(&VaultDataKey::Paused, &paused);
@@ -1553,10 +1626,8 @@ impl SorobanVaultContract {
 
     /// Check if the vault is paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::Paused)
-            .unwrap_or(false)
+        let storage = SorobanStorage::new(&env);
+        storage.is_paused()
     }
 
     /// Get total assets under management.

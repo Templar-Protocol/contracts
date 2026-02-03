@@ -45,12 +45,12 @@ pub use contract::{
     SorobanVaultContract, VaultDataKey, WithdrawRequestResult,
 };
 pub use effects::{
-    AddressMap, AllocDoneEvent, AllocStartEvent, AllocStepFailEvent, DepositEvent,
-    EffectContext, EffectInterpreter, EffectResult, EffectSummary, ExtAssetsSyncEvent,
-    FeesRefreshEvent, MockInterpreter, PauseUpdatedEvent, PayoutEvent, RefreshDoneEvent,
-    RefreshStartEvent, SdkTokenAdapter, Sep41Operation, Sep41Token, SorobanEffectInterpreter,
-    TestSep41Token, WithdrawCollectedEvent, WithdrawRequestEvent, WithdrawStartEvent,
-    WithdrawStoppedEvent,
+    AddressMap, AddressRegistrar, AllocDoneEvent, AllocStartEvent, AllocStepFailEvent,
+    DepositEvent, EffectContext, EffectInterpreter, EffectResult, EffectSummary,
+    ExtAssetsSyncEvent, FeesRefreshEvent, MockInterpreter, PauseUpdatedEvent, PayoutEvent,
+    RefreshDoneEvent, RefreshStartEvent, SdkTokenAdapter, Sep41Operation, Sep41Token,
+    SorobanEffectInterpreter, TestSep41Token, WithdrawCollectedEvent, WithdrawRequestEvent,
+    WithdrawStartEvent, WithdrawStoppedEvent,
 };
 pub use error::RuntimeError;
 pub use market::{

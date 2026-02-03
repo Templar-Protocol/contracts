@@ -121,6 +121,7 @@ impl CrossChainMarketAdapter for PropTestCrossChainAdapter {
 fn prop_test_config() -> ContractConfig {
     ContractConfig::new(
         [1u8; 32],       // admin
+        [9u8; 32],       // vault_address
         vec![[2u8; 32]], // guardians
         vec![[3u8; 32]], // allocators
         [4u8; 32],       // asset_address
