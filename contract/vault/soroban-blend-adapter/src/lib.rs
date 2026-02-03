@@ -16,6 +16,7 @@ enum DataKey {
     Admin,
     Vault,
     Pool,
+    ReentrancyLock,
     Initialized,
 }
 
@@ -32,6 +33,9 @@ impl BlendAdapterContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage().instance().set(&DataKey::Pool, &pool);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyLock, &false);
         env.storage().instance().set(&DataKey::Initialized, &true);
     }
 
@@ -65,17 +69,19 @@ impl BlendAdapterContract {
             panic!("amount must be positive");
         }
 
-        let pool = get_pool(&env);
-        let client = PoolClient::new(&env, &pool);
-        let adapter = env.current_contract_address();
-        let request = Request {
-            request_type: REQUEST_SUPPLY,
-            address: asset,
-            amount,
-        };
-        let mut requests = Vec::new(&env);
-        requests.push_back(request);
-        client.submit(&adapter, &adapter, &adapter, &requests);
+        with_reentrancy_guard(&env, || {
+            let pool = get_pool(&env);
+            let client = PoolClient::new(&env, &pool);
+            let adapter = env.current_contract_address();
+            let request = Request {
+                request_type: REQUEST_SUPPLY,
+                address: asset,
+                amount,
+            };
+            let mut requests = Vec::new(&env);
+            requests.push_back(request);
+            client.submit(&adapter, &adapter, &adapter, &requests);
+        });
     }
 
     pub fn withdraw(env: Env, caller: Address, asset: Address, amount: i128) {
@@ -89,20 +95,22 @@ impl BlendAdapterContract {
             panic!("amount must be positive");
         }
 
-        let pool = get_pool(&env);
-        let client = PoolClient::new(&env, &pool);
-        let adapter = env.current_contract_address();
-        let request = Request {
-            request_type: REQUEST_WITHDRAW,
-            address: asset.clone(),
-            amount,
-        };
-        let mut requests = Vec::new(&env);
-        requests.push_back(request);
-        client.submit(&adapter, &adapter, &adapter, &requests);
+        with_reentrancy_guard(&env, || {
+            let pool = get_pool(&env);
+            let client = PoolClient::new(&env, &pool);
+            let adapter = env.current_contract_address();
+            let request = Request {
+                request_type: REQUEST_WITHDRAW,
+                address: asset.clone(),
+                amount,
+            };
+            let mut requests = Vec::new(&env);
+            requests.push_back(request);
+            client.submit(&adapter, &adapter, &adapter, &requests);
 
-        let token = soroban_sdk::token::Client::new(&env, &asset);
-        token.transfer(&adapter, &vault, &amount);
+            let token = soroban_sdk::token::Client::new(&env, &asset);
+            token.transfer(&adapter, &vault, &amount);
+        });
     }
 
     pub fn rescue(
@@ -122,9 +130,11 @@ impl BlendAdapterContract {
             panic!("amount must be positive");
         }
 
-        let adapter = env.current_contract_address();
-        let token = soroban_sdk::token::Client::new(&env, &asset);
-        token.transfer(&adapter, &receiver, &amount);
+        with_reentrancy_guard(&env, || {
+            let adapter = env.current_contract_address();
+            let token = soroban_sdk::token::Client::new(&env, &asset);
+            token.transfer(&adapter, &receiver, &amount);
+        });
     }
 
     pub fn total_assets(env: Env, asset: Address) -> i128 {
@@ -174,6 +184,25 @@ fn get_pool(env: &Env) -> Address {
         .expect("pool not set")
 }
 
+fn with_reentrancy_guard<T>(env: &Env, f: impl FnOnce() -> T) -> T {
+    let locked: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::ReentrancyLock)
+        .unwrap_or(false);
+    if locked {
+        panic!("reentrancy");
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::ReentrancyLock, &true);
+    let result = f();
+    env.storage()
+        .instance()
+        .set(&DataKey::ReentrancyLock, &false);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +227,29 @@ mod tests {
             assert_eq!(BlendAdapterContract::admin(env.clone()), admin);
             assert_eq!(BlendAdapterContract::vault(env.clone()), vault);
             assert_eq!(BlendAdapterContract::pool(env.clone()), pool);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "reentrancy")]
+    fn reentrancy_guard_blocks_nested() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+        let pool = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, BlendAdapterContract);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::initialize(
+                env.clone(),
+                admin.clone(),
+                vault.clone(),
+                pool.clone(),
+            );
+            with_reentrancy_guard(&env, || {
+                with_reentrancy_guard(&env, || {});
+            });
         });
     }
 }

@@ -1450,6 +1450,8 @@ pub enum VaultDataKey {
     BlendPool,
     /// Blend factory contract address.
     BlendFactory,
+    /// Reentrancy guard flag.
+    ReentrancyLock,
     /// Whether the contract is initialized.
     Initialized,
     /// Whether the vault is paused.
@@ -1542,6 +1544,25 @@ fn with_contract_vault<T>(
     f(&mut vault)
 }
 
+fn with_reentrancy_guard<T>(env: &Env, f: impl FnOnce() -> T) -> T {
+    let locked: bool = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::ReentrancyLock)
+        .unwrap_or(false);
+    if locked {
+        panic!("reentrancy");
+    }
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::ReentrancyLock, &true);
+    let result = f();
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::ReentrancyLock, &false);
+    result
+}
+
 #[contractimpl]
 impl SorobanVaultContract {
     /// Initialize the vault contract.
@@ -1584,6 +1605,9 @@ impl SorobanVaultContract {
         env.storage()
             .instance()
             .set(&VaultDataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::ReentrancyLock, &false);
         env.storage()
             .instance()
             .set(&VaultDataKey::Initialized, &true);
@@ -1636,19 +1660,21 @@ impl SorobanVaultContract {
         };
         let now_ns = ledger_timestamp_ns(&env);
 
-        let result = with_contract_vault(&env, |vault| {
-            vault.deposit_soroban(
-                &env,
-                owner.clone(),
-                receiver.clone(),
-                assets_u128,
-                min_shares_u128,
-                now_ns,
-            )
-        })
-        .unwrap_or_else(|e| panic!("deposit failed: {:?}", e));
+        with_reentrancy_guard(&env, || {
+            let result = with_contract_vault(&env, |vault| {
+                vault.deposit_soroban(
+                    &env,
+                    owner.clone(),
+                    receiver.clone(),
+                    assets_u128,
+                    min_shares_u128,
+                    now_ns,
+                )
+            })
+            .unwrap_or_else(|e| panic!("deposit failed: {:?}", e));
 
-        i128::try_from(result.shares_minted).expect("shares minted exceeds i128")
+            i128::try_from(result.shares_minted).expect("shares minted exceeds i128")
+        })
     }
 
     /// Request a withdrawal from the vault.
@@ -1685,19 +1711,21 @@ impl SorobanVaultContract {
         };
         let now_ns = ledger_timestamp_ns(&env);
 
-        let result = with_contract_vault(&env, |vault| {
-            vault.request_withdraw_soroban(
-                &env,
-                owner.clone(),
-                receiver.clone(),
-                shares_u128,
-                min_assets_u128,
-                now_ns,
-            )
-        })
-        .unwrap_or_else(|e| panic!("request_withdraw failed: {:?}", e));
+        with_reentrancy_guard(&env, || {
+            let result = with_contract_vault(&env, |vault| {
+                vault.request_withdraw_soroban(
+                    &env,
+                    owner.clone(),
+                    receiver.clone(),
+                    shares_u128,
+                    min_assets_u128,
+                    now_ns,
+                )
+            })
+            .unwrap_or_else(|e| panic!("request_withdraw failed: {:?}", e));
 
-        result.request_id
+            result.request_id
+        })
     }
 
     /// Execute a pending withdrawal.
@@ -1710,10 +1738,12 @@ impl SorobanVaultContract {
         caller.require_auth();
         let now_ns = ledger_timestamp_ns(&env);
 
-        with_contract_vault(&env, |vault| {
-            vault.execute_withdraw_soroban(&env, caller.clone(), now_ns)
-        })
-        .unwrap_or_else(|e| panic!("execute_withdraw failed: {:?}", e));
+        with_reentrancy_guard(&env, || {
+            with_contract_vault(&env, |vault| {
+                vault.execute_withdraw_soroban(&env, caller.clone(), now_ns)
+            })
+            .unwrap_or_else(|e| panic!("execute_withdraw failed: {:?}", e));
+        });
     }
 
     /// Pause or unpause the vault.
@@ -2164,6 +2194,46 @@ mod tests {
         assert!(config.is_privileged(&[1u8; 32])); // admin
         assert!(config.is_privileged(&[3u8; 32])); // allocator
         assert!(!config.is_privileged(&[2u8; 32])); // guardian only
+    }
+
+    #[test]
+    #[should_panic(expected = "reentrancy")]
+    fn test_reentrancy_guard_blocks_nested() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let admin = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+            with_reentrancy_guard(&env, || {
+                with_reentrancy_guard(&env, || {});
+            });
+        });
+    }
+
+    #[test]
+    fn test_reentrancy_guard_resets_between_calls() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let admin = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+            with_reentrancy_guard(&env, || {});
+            with_reentrancy_guard(&env, || {});
+        });
     }
 
     #[test]
