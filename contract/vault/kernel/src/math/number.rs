@@ -174,9 +174,17 @@ impl Number {
 
     #[inline]
     pub(crate) fn as_u256_trunc(q: U512) -> U256 {
-        let mut b64 = [0u8; 64];
-        q.write_as_little_endian(&mut b64);
-        U256::from_little_endian(&b64[..32])
+        let U512(ref limbs) = q;
+        U256([limbs[0], limbs[1], limbs[2], limbs[3]])
+    }
+
+    #[inline]
+    pub(crate) fn as_u128_if_fits(value: U256) -> Option<u128> {
+        let U256(ref limbs) = value;
+        if limbs[2] != 0 || limbs[3] != 0 {
+            return None;
+        }
+        Some((u128::from(limbs[1]) << 64) | u128::from(limbs[0]))
     }
 
     #[inline]
@@ -194,9 +202,34 @@ impl Number {
     #[inline]
     #[must_use]
     pub fn mul_div_floor(x: Number, y: Number, denom: Number) -> Number {
+        // Fast path: zero inputs
+        if x.is_zero() || y.is_zero() {
+            return Number::zero();
+        }
         if denom.is_zero() {
             return Number::zero();
         }
+        // Fast path: denom == 1 (identity division)
+        if denom.is_one() {
+            return Number(x.0.saturating_mul(y.0));
+        }
+        // Fast path: cancellation when one factor equals denom
+        if x.0 == denom.0 {
+            return y;
+        }
+        if y.0 == denom.0 {
+            return x;
+        }
+        if let (Some(x128), Some(y128), Some(denom128)) = (
+            Self::as_u128_if_fits(x.0),
+            Self::as_u128_if_fits(y.0),
+            Self::as_u128_if_fits(denom.0),
+        ) {
+            if let Some(prod) = x128.checked_mul(y128) {
+                return Number::from(prod / denom128);
+            }
+        }
+        // General path: use U512 for overflow-safe multiplication
         let prod = x.0.full_mul(y.0);
         let q = prod / U512::from(denom.0);
         Number(Self::as_u256_trunc(q))
@@ -206,9 +239,40 @@ impl Number {
     #[inline]
     #[must_use]
     pub fn mul_div_ceil(x: Number, y: Number, denom: Number) -> Number {
+        // Fast path: zero inputs
+        if x.is_zero() || y.is_zero() {
+            return Number::zero();
+        }
         if denom.is_zero() {
             return Number::zero();
         }
+        // Fast path: denom == 1 (identity division, ceil == floor)
+        if denom.is_one() {
+            return Number(x.0.saturating_mul(y.0));
+        }
+        // Fast path: cancellation when one factor equals denom (exact division)
+        if x.0 == denom.0 {
+            return y;
+        }
+        if y.0 == denom.0 {
+            return x;
+        }
+        if let (Some(x128), Some(y128), Some(denom128)) = (
+            Self::as_u128_if_fits(x.0),
+            Self::as_u128_if_fits(y.0),
+            Self::as_u128_if_fits(denom.0),
+        ) {
+            if let Some(prod) = x128.checked_mul(y128) {
+                let q = prod / denom128;
+                let r = prod % denom128;
+                return if r == 0 {
+                    Number::from(q)
+                } else {
+                    Number::from(q + 1)
+                };
+            }
+        }
+        // General path: use U512 for overflow-safe multiplication
         let prod = x.0.full_mul(y.0);
         let d = U512::from(denom.0);
         let q = prod / d;
@@ -658,5 +722,4 @@ mod tests {
         assert!(!two.is_zero());
         assert!(!two.is_one());
     }
-
 }

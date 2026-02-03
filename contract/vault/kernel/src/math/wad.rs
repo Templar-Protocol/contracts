@@ -151,6 +151,14 @@ impl Wad {
         if amount.is_zero() || self.0.is_zero() {
             return Number::zero();
         }
+        if let (Some(amount128), Some(wad128)) = (
+            Number::as_u128_if_fits(amount.0),
+            Number::as_u128_if_fits(self.0 .0),
+        ) {
+            if let Some(prod) = amount128.checked_mul(wad128) {
+                return Number::from(prod / Self::SCALE);
+            }
+        }
         let prod = amount.0.full_mul(self.0 .0);
         let q = prod / U512::from(Self::SCALE);
         Number(Number::as_u256_trunc(q))
