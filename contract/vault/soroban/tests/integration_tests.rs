@@ -15,12 +15,13 @@ use templar_soroban_runtime::{
     error::RuntimeError,
     market::{AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt},
     rbac::{RbacAuth, RbacConfig, Role},
-    storage::MemoryStorage,
+    storage::{MemoryStorage, SorobanStorage, VersionedState},
     Storage, // Import the trait
 };
 use templar_curator_primitives::{RecoveryContext, RecoveryProgress};
 use templar_vault_kernel::{
-    Address, OpState, PayoutOutcome, PayoutState, WithdrawingState, MAX_PENDING,
+    Address, AllocatingState, OpState, PayoutOutcome, PayoutState, VaultState, WithdrawingState,
+    MAX_PENDING,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 
@@ -179,6 +180,61 @@ fn soroban_contract_blend_config_roundtrip() {
         assert_eq!(SorobanVaultContract::blend_adapter(env.clone()), adapter);
         assert_eq!(SorobanVaultContract::blend_pool(env.clone()), pool);
         assert_eq!(SorobanVaultContract::blend_factory(env.clone()), factory);
+    });
+}
+
+#[test]
+#[should_panic(expected = "execute_withdraw failed")]
+fn soroban_contract_execute_withdraw_queue_empty_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let admin = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+    let user = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+    });
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::execute_withdraw(env.clone(), user);
+    });
+}
+
+#[test]
+#[should_panic(expected = "execute_withdraw failed")]
+fn soroban_contract_execute_withdraw_non_idle_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let admin = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+    let user = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+    });
+
+    env.as_contract(&contract_id, || {
+        let mut state = VaultState::default();
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 0,
+            remaining: 0,
+            plan: Vec::new(),
+        });
+        let mut storage = SorobanStorage::new(&env);
+        let versioned = VersionedState::new(state);
+        storage.save_state(&versioned).unwrap();
+    });
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::execute_withdraw(env.clone(), user);
     });
 }
 

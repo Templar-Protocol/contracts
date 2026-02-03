@@ -1528,6 +1528,22 @@ impl SorobanVaultContract {
         result.request_id
     }
 
+    /// Execute a pending withdrawal.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `caller` - The caller's address
+    pub fn execute_withdraw(env: Env, caller: SdkAddress) {
+        caller.require_auth();
+        let now_ns = ledger_timestamp_ns(&env);
+
+        with_contract_vault(&env, |vault| {
+            vault.execute_withdraw_soroban(&env, caller.clone(), now_ns)
+        })
+        .unwrap_or_else(|e| panic!("execute_withdraw failed: {:?}", e));
+    }
+
     /// Pause or unpause the vault.
     ///
     /// # Arguments
