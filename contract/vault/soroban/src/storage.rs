@@ -1153,6 +1153,8 @@ mod tests {
 
             let loaded = storage.load_state().unwrap().unwrap();
             assert_eq!(loaded.version, StorageVersion::CURRENT);
+            assert!(loaded.state.op_state.is_idle());
+            assert!(loaded.state.withdraw_queue.is_empty());
             assert_eq!(
                 Storage::get_version(&storage).unwrap(),
                 StorageVersion::CURRENT
