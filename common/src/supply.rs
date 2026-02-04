@@ -355,29 +355,17 @@ impl<'a> SupplyPositionGuard<'a> {
 
         let market_credit = self.market.borrow_asset_virtual_credit;
         let my_virtual = self.position.borrow_asset_deposit.active_virtual;
-        let market_virtual = self.market.borrow_asset_deposited_active_virtual;
 
         // Claim virtual to real
-        if !market_credit.is_zero() && !my_virtual.is_zero() && !market_virtual.is_zero() {
-            near_sdk::log!("credit: {market_credit}, my_virtual: {my_virtual}, market_virtual: {market_virtual}");
+        let convertible = my_virtual.min(market_credit);
+        if !convertible.is_zero() {
+            self.market.borrow_asset_virtual_credit -= convertible;
 
-            // let claimable = if market_credit >= market_virtual {
-            //     my_virtual
-            // } else if
+            self.position.borrow_asset_deposit.active_virtual -= convertible;
+            self.market.borrow_asset_deposited_active_virtual -= convertible;
 
-            let claimable = (Decimal::from(market_credit) * u128::from(my_virtual) / u128::from(market_virtual) )
-            .to_u128_floor()
-            .map_or_else(|| {
-                crate::panic_with_message("Invariant violation: guaranteed position.active_virtual <= market.active_virtual");
-            }, BorrowAssetAmount::new).min(my_virtual);
-
-            self.market.borrow_asset_virtual_credit -= claimable;
-
-            self.position.borrow_asset_deposit.active_virtual -= claimable;
-            self.market.borrow_asset_deposited_active_virtual -= claimable;
-
-            self.position.borrow_asset_deposit.active_real += claimable;
-            self.market.borrow_asset_deposited_active_real += claimable;
+            self.position.borrow_asset_deposit.active_real += convertible;
+            self.market.borrow_asset_deposited_active_real += convertible;
         }
 
         YieldAccumulationProof(())
