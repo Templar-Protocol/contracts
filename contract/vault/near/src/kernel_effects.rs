@@ -1,7 +1,7 @@
 //! NEAR interpreter for kernel effects.
 //!
 //! This is intentionally minimal: it focuses on share/accounting effects and
-//! leaves chain-specific external calls as stubs until kernel-driven execution
+//! fails fast on unsupported chain-specific calls until kernel-driven execution
 //! is fully integrated.
 
 use std::collections::BTreeMap;
@@ -21,6 +21,7 @@ pub enum KernelEffectError {
     MintFailed,
     BurnFailed,
     TransferFailed,
+    UnsupportedEffect(&'static str),
 }
 
 /// Address resolution context for kernel effects.
@@ -79,8 +80,28 @@ pub(crate) fn apply_kernel_effects(
                 // Kernel events are emitted by kernel transitions. NEAR already
                 // emits its own events; explicit mapping will come later.
             }
+            KernelEffect::TransferAssetsFrom { .. } => {
+                // Assets are transferred via ft_on_transfer before kernel execution.
+            }
+            KernelEffect::TransferAssets { .. } => {
+                return Err(KernelEffectError::UnsupportedEffect(
+                    "transfer assets not implemented",
+                ));
+            }
+            KernelEffect::ExternalCall { .. } => {
+                return Err(KernelEffectError::UnsupportedEffect(
+                    "external call not implemented",
+                ));
+            }
+            KernelEffect::ChargeStorage { .. } => {
+                return Err(KernelEffectError::UnsupportedEffect(
+                    "charge storage not implemented",
+                ));
+            }
             _ => {
-                // Stub for kernel-driven external calls / storage charging.
+                return Err(KernelEffectError::UnsupportedEffect(
+                    "unhandled kernel effect",
+                ));
             }
         }
     }
@@ -135,5 +156,22 @@ mod tests {
         assert_eq!(c.ft_total_supply().0, 900);
         assert_eq!(c.ft_balance_of(alice.clone()).0, 600);
         assert_eq!(c.ft_balance_of(bob.clone()).0, 300);
+    }
+
+    #[test]
+    fn test_apply_kernel_effects_rejects_unsupported() {
+        let vault_id = mk(0);
+        let mut c = new_test_contract(&vault_id);
+
+        let alice = mk(1);
+        let ctx = context_for(&[alice.clone()]);
+
+        let effects = vec![KernelEffect::TransferAssets {
+            to: account_id_to_address(&alice),
+            amount: 10,
+        }];
+
+        let err = apply_kernel_effects(&mut c, &effects, &ctx).expect_err("unsupported effect");
+        assert!(matches!(err, KernelEffectError::UnsupportedEffect(_)));
     }
 }
