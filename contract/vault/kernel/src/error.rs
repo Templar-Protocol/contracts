@@ -50,4 +50,8 @@ pub enum KernelError {
     /// Action blocked by access restrictions.
     #[display("restricted: {_0:?}")]
     Restricted(Restrictions),
+
+    /// Invalid configuration value.
+    #[display("invalid config: {_0}")]
+    InvalidConfig(&'static str),
 }

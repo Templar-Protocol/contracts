@@ -208,6 +208,12 @@ pub fn apply_action(
     self_id: &Address,
     action: KernelAction,
 ) -> Result<KernelResult, KernelError> {
+    if !config.is_max_pending_valid() {
+        return Err(KernelError::InvalidConfig(
+            "max_pending_withdrawals exceeds MAX_PENDING",
+        ));
+    }
+
     match action {
         KernelAction::Deposit {
             owner,
@@ -681,7 +687,7 @@ mod tests {
     use crate::effects::KernelEvent;
     use crate::fee::FeesSpec;
     use crate::state::op_state::WithdrawingState;
-    use crate::state::queue::DEFAULT_COOLDOWN_NS;
+    use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING};
 
     fn addr(tag: u8) -> Address {
         [tag; 32]
@@ -696,6 +702,28 @@ mod tests {
             virtual_shares: 0,
             virtual_assets: 0,
         }
+    }
+
+    #[test]
+    fn invalid_max_pending_rejected() {
+        let state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let mut config = test_config();
+        config.max_pending_withdrawals = (MAX_PENDING as u32).saturating_add(1);
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::Pause { paused: false },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidConfig(
+                "max_pending_withdrawals exceeds MAX_PENDING"
+            ))
+        ));
     }
 
     #[test]

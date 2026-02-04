@@ -113,6 +113,7 @@ pub struct VaultConfig {
 
 impl VaultConfig {
     /// Check if the max pending withdrawals setting is within bounds.
+    /// Enforced by `apply_action` to avoid silent clamping.
     #[inline]
     #[must_use]
     pub fn is_max_pending_valid(&self) -> bool {
