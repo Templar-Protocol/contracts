@@ -43,14 +43,22 @@ use crate::rbac::{RbacAuth, RbacConfig};
 use crate::storage::{SorobanStorage, Storage, VersionedState};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
+const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 const YEAR_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
 const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
 const TTL_EXTEND_TO_LEDGERS: u32 = 100_000;
 
+/// Deterministic one-way mapping from Soroban address to kernel Address.
+///
+/// Uses a domain prefix so hashes do not collide with other chains' mappings.
 fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     let strkey = addr.to_string();
-    let mut raw = vec![0u8; strkey.len() as usize];
-    strkey.copy_into_slice(&mut raw);
+    let strkey_bytes = strkey.to_bytes();
+    let mut strkey_vec = vec![0u8; strkey_bytes.len() as usize];
+    strkey_bytes.copy_into_slice(&mut strkey_vec);
+    let mut raw = Vec::with_capacity(KERNEL_ADDRESS_DOMAIN.len() + strkey_vec.len());
+    raw.extend_from_slice(KERNEL_ADDRESS_DOMAIN);
+    raw.extend_from_slice(&strkey_vec);
     let bytes = Bytes::from_slice(env, &raw);
     env.crypto().sha256(&bytes).to_bytes().to_array()
 }
@@ -2100,6 +2108,35 @@ mod tests {
         );
         vault.load_state().unwrap();
         vault
+    }
+
+    #[test]
+    fn test_kernel_address_from_sdk_is_domain_separated() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        let addr = SdkAddress::generate(&env);
+        let derived = kernel_address_from_sdk(&env, &addr);
+
+        let strkey = addr.to_string();
+        let strkey_bytes = strkey.to_bytes();
+        let mut strkey_vec = vec![0u8; strkey_bytes.len() as usize];
+        strkey_bytes.copy_into_slice(&mut strkey_vec);
+        let raw_bytes = Bytes::from_slice(&env, &strkey_vec);
+        let raw_hash = env.crypto().sha256(&raw_bytes).to_bytes().to_array();
+
+        let mut prefixed =
+            Vec::with_capacity(KERNEL_ADDRESS_DOMAIN.len() + strkey_vec.len());
+        prefixed.extend_from_slice(KERNEL_ADDRESS_DOMAIN);
+        prefixed.extend_from_slice(&strkey_vec);
+        let expected = env
+            .crypto()
+            .sha256(&Bytes::from_slice(&env, &prefixed))
+            .to_bytes()
+            .to_array();
+
+        assert_eq!(derived, expected);
+        assert_ne!(derived, raw_hash);
     }
 
     #[test]
