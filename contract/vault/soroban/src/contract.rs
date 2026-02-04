@@ -582,17 +582,6 @@ where
 
     /// Deposit assets into the vault.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address
-    /// * `receiver` - The address to receive shares
-    /// * `assets` - Amount of assets to deposit
-    /// * `min_shares_out` - Minimum shares expected (slippage protection)
-    /// * `now_ns` - Current timestamp in nanoseconds
-    ///
-    /// # Returns
-    ///
-    /// `Ok(DepositResult)` on success
     pub fn deposit(
         &mut self,
         caller: Address,
@@ -648,13 +637,6 @@ where
     /// This queues a withdrawal request. The actual withdrawal will be processed
     /// when `execute_withdraw` is called.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (owner of shares)
-    /// * `receiver` - The address to receive assets
-    /// * `shares` - Amount of shares to redeem
-    /// * `min_assets_out` - Minimum assets expected (slippage protection)
-    /// * `now_ns` - Current timestamp in nanoseconds
     pub fn request_withdraw(
         &mut self,
         caller: Address,
@@ -717,10 +699,6 @@ where
     ///
     /// This processes the next pending withdrawal in the queue.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address
-    /// * `now_ns` - Current timestamp in nanoseconds
     pub fn execute_withdraw(
         &mut self,
         caller: Address,
@@ -862,10 +840,6 @@ where
 
     /// Pause or unpause the vault.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be guardian or admin)
-    /// * `paused` - Whether to pause (true) or unpause (false)
     pub fn pause(&mut self, caller: Address, paused: bool) -> Result<(), RuntimeError> {
         // Authorize
         self.auth.authorize(ActionKind::Pause, caller, None)?;
@@ -877,10 +851,6 @@ where
 
     /// Set kernel restrictions for the vault.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be admin)
-    /// * `restrictions` - Optional restrictions policy
     pub fn set_restrictions(
         &mut self,
         caller: Address,
@@ -903,11 +873,6 @@ where
     ///
     /// Filters the plan to exclude locked markets before starting.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `plan` - Allocation plan: list of (target_id, amount) pairs
-    /// * `current_ns` - Current timestamp in nanoseconds (for lock expiry checks)
     pub fn begin_allocating(
         &mut self,
         caller: Address,
@@ -938,12 +903,6 @@ where
 
     /// Sync external assets during an operation.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `new_external_assets` - Updated external assets value
-    /// * `op_id` - Operation ID to verify correlation
-    /// * `now_ns` - Current timestamp in nanoseconds
     pub fn sync_external_assets(
         &mut self,
         caller: Address,
@@ -967,10 +926,6 @@ where
 
     /// Finish an allocation operation.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `op_id` - Operation ID to verify correlation
     pub fn finish_allocating(
         &mut self,
         caller: Address,
@@ -1003,11 +958,6 @@ where
     ///
     /// Filters the plan to exclude locked markets before starting.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `plan` - List of target IDs to refresh
-    /// * `current_ns` - Current timestamp in nanoseconds (for lock expiry checks)
     pub fn begin_refreshing(
         &mut self,
         caller: Address,
@@ -1038,10 +988,6 @@ where
 
     /// Finish a refresh operation.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `op_id` - Operation ID to verify correlation
     pub fn finish_refreshing(
         &mut self,
         caller: Address,
@@ -1074,11 +1020,6 @@ where
 
     /// Abort an allocation operation.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `op_id` - Operation ID to verify correlation
-    /// * `restore_idle` - Amount of idle assets to restore
     pub fn abort_allocating(
         &mut self,
         caller: Address,
@@ -1098,10 +1039,6 @@ where
 
     /// Abort a refresh operation.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `op_id` - Operation ID to verify correlation
     pub fn abort_refreshing(&mut self, caller: Address, op_id: u64) -> Result<(), RuntimeError> {
         // Authorize
         self.auth
@@ -1113,11 +1050,6 @@ where
 
     /// Abort a withdrawal operation.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `op_id` - Operation ID to verify correlation
-    /// * `refund_shares` - Shares to refund to the owner
     pub fn abort_withdrawing(
         &mut self,
         caller: Address,
@@ -1136,11 +1068,6 @@ where
 
     /// Settle a payout operation.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `op_id` - Operation ID to verify correlation
-    /// * `outcome` - Payout outcome (success or failure)
     pub fn settle_payout(
         &mut self,
         caller: Address,
@@ -1181,11 +1108,6 @@ where
     /// This is a privileged entrypoint that runs a full refresh cycle in one call:
     /// BeginRefreshing -> read principals -> SyncExternalAssets -> FinishRefreshing
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be admin or guardian)
-    /// * `markets` - Market references to reconcile
-    /// * `now_ns` - Current timestamp
     pub fn manual_reconcile(
         &mut self,
         caller: Address,
@@ -1265,14 +1187,6 @@ where
 
     /// Refresh fees based on elapsed time.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address
-    /// * `now_ns` - Current timestamp in nanoseconds
-    ///
-    /// # Returns
-    ///
-    /// Total shares minted for fees.
     pub fn refresh_fees(&mut self, caller: Address, now_ns: u64) -> Result<u128, RuntimeError> {
         // Authorize
         self.auth.authorize(ActionKind::RefreshFees, caller, None)?;
@@ -1376,12 +1290,6 @@ where
 
     /// Acquire a market lock.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `target_id` - Market to lock
-    /// * `expiry_ns` - Lock expiry timestamp in nanoseconds
-    /// * `current_ns` - Current timestamp
     pub fn acquire_market_lock(
         &mut self,
         caller: Address,
@@ -1407,10 +1315,6 @@ where
 
     /// Release a market lock.
     ///
-    /// # Arguments
-    ///
-    /// * `caller` - The caller's address (must be allocator)
-    /// * `target_id` - Market to unlock
     pub fn release_market_lock(
         &mut self,
         caller: Address,
@@ -1428,14 +1332,6 @@ where
 
     /// Check if a market is currently locked.
     ///
-    /// # Arguments
-    ///
-    /// * `target_id` - Market to check
-    /// * `current_ns` - Current timestamp
-    ///
-    /// # Returns
-    ///
-    /// `true` if the market is locked, `false` otherwise.
     #[must_use]
     pub fn is_market_locked(&self, target_id: TargetId, current_ns: u64) -> bool {
         self.policy_state.locks.is_locked(target_id, current_ns)
@@ -1602,13 +1498,6 @@ fn with_reentrancy_guard<T>(
 impl SorobanVaultContract {
     /// Initialize the vault contract.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment
-    /// * `admin` - Administrator address
-    /// * `asset_token` - Address of the underlying asset token
-    /// * `share_token` - Address of the share token
-    ///
     /// # Errors
     ///
     /// Returns an error if the contract is already initialized or storage fails.
@@ -1657,17 +1546,6 @@ impl SorobanVaultContract {
 
     /// Deposit assets into the vault.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment
-    /// * `owner` - The depositor's address
-    /// * `receiver` - The address to receive shares
-    /// * `assets` - Amount of assets to deposit
-    /// * `min_shares_out` - Minimum shares expected (slippage protection)
-    ///
-    /// # Returns
-    ///
-    /// The number of shares minted.
     pub fn deposit(
         env: Env,
         owner: SdkAddress,
@@ -1712,17 +1590,6 @@ impl SorobanVaultContract {
 
     /// Request a withdrawal from the vault.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment
-    /// * `owner` - The share owner's address
-    /// * `receiver` - The address to receive assets
-    /// * `shares` - Amount of shares to redeem
-    /// * `min_assets_out` - Minimum assets expected (slippage protection)
-    ///
-    /// # Returns
-    ///
-    /// The withdrawal request ID.
     pub fn request_withdraw(
         env: Env,
         owner: SdkAddress,
@@ -1764,10 +1631,6 @@ impl SorobanVaultContract {
 
     /// Execute a pending withdrawal.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment
-    /// * `caller` - The caller's address
     pub fn execute_withdraw(env: Env, caller: SdkAddress) -> Result<(), ContractError> {
         caller.require_auth();
         let now_ns = ledger_timestamp_ns(&env);
@@ -1784,11 +1647,6 @@ impl SorobanVaultContract {
 
     /// Pause or unpause the vault.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment
-    /// * `caller` - The caller (must be admin)
-    /// * `paused` - Whether to pause (true) or unpause (false)
     pub fn set_paused(
         env: Env,
         caller: SdkAddress,
@@ -1942,14 +1800,6 @@ impl SorobanVaultContract {
 
     /// Calculate shares for a given deposit amount.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment
-    /// * `assets` - Amount of assets to deposit
-    ///
-    /// # Returns
-    ///
-    /// The number of shares that would be minted.
     pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
         if assets <= 0 {
             return Ok(0);
@@ -1979,14 +1829,6 @@ impl SorobanVaultContract {
 
     /// Calculate assets for a given withdrawal amount.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment
-    /// * `shares` - Amount of shares to redeem
-    ///
-    /// # Returns
-    ///
-    /// The number of assets that would be returned.
     pub fn preview_withdraw(env: Env, shares: i128) -> Result<i128, ContractError> {
         if shares <= 0 {
             return Ok(0);

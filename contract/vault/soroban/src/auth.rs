@@ -117,31 +117,9 @@ pub type AuthResult<T> = Result<T, AuthError>;
 /// Curator vaults use RBAC checks while strategy vaults use Merkle proof
 /// verification against a globally updatable root.
 ///
-/// # Example
-///
-/// ```ignore
-/// impl AuthAdapter for RbacAdapter {
-///     fn authorize(&self, action: ActionKind, caller: Address, proof: Option<&[u8]>) -> AuthResult<()> {
-///         match action {
-///             ActionKind::Pause => self.require_role(caller, Role::Guardian),
-///             ActionKind::BeginAllocating => self.require_role(caller, Role::Allocator),
-///             _ => Ok(()),
-///         }
-///     }
-/// }
-/// ```
 pub trait AuthAdapter {
     /// Authorize an action for a caller.
     ///
-    /// # Arguments
-    ///
-    /// * `action` - The kind of action being attempted.
-    /// * `caller` - The address of the caller.
-    /// * `proof` - Optional proof data (e.g., Merkle proof for strategy vaults).
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if authorized, `Err(AuthError)` otherwise.
     fn authorize(
         &self,
         action: ActionKind,
@@ -317,11 +295,6 @@ impl<'a> SorobanAuth<'a> {
     /// 1. Calls `require_auth()` on the caller to verify their signature
     /// 2. Checks role-based permissions
     /// 3. Checks if the vault is paused
-    ///
-    /// # Arguments
-    ///
-    /// * `action` - The kind of action being attempted.
-    /// * `caller` - The Soroban address of the caller.
     ///
     /// # Errors
     ///

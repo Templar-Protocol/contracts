@@ -25,47 +25,17 @@ use crate::error::RuntimeError;
 /// This is the Soroban-native interface using `Env` and `Address` types.
 /// Executors implement this trait for each supported local Soroban market.
 ///
-/// # Example
-///
-/// ```ignore
-/// impl SorobanMarketAdapter for BlendMarketAdapter {
-///     fn supply(&self, env: &Env, asset: &Address, amount: i128) -> Result<(), RuntimeError> {
-///         // Call blend market contract
-///         blend_client.supply(&env, asset, amount);
-///         Ok(())
-///     }
-///     // ...
-/// }
-/// ```
 pub trait SorobanMarketAdapter {
     /// Supply assets into the target market.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `asset` - The asset contract address.
-    /// * `amount` - The amount to supply (i128 for SEP-41 compatibility).
     fn supply(&self, env: &Env, asset: &Address, amount: i128) -> Result<(), RuntimeError>;
 
     /// Withdraw assets from the target market.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `asset` - The asset contract address.
-    /// * `amount` - The amount to withdraw (i128 for SEP-41 compatibility).
     fn withdraw(&self, env: &Env, asset: &Address, amount: i128) -> Result<(), RuntimeError>;
 
     /// Read total assets for a market (principal + interest).
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `asset` - The asset contract address.
-    ///
-    /// # Returns
-    ///
-    /// The total assets held in this market position (i128 for SEP-41 compatibility).
     fn total_assets(&self, env: &Env, asset: &Address) -> Result<i128, RuntimeError>;
 }
 
@@ -104,42 +74,13 @@ impl SettlementReceipt {
 /// 2. Wait for off-chain settlement (HOT relayer processes the intent).
 /// 3. Call `settle` with the operation and attempt IDs to finalize.
 ///
-/// # Example
-///
-/// ```ignore
-/// impl SorobanCrossChainMarketAdapter for TemplarIntentAdapter {
-///     fn submit_intent(&self, env: &Env, plan_bytes: Bytes) -> Result<u64, RuntimeError> {
-///         // Store intent in outbox, return attempt ID
-///         let attempt_id = self.outbox.push_intent(env, plan_bytes);
-///         Ok(attempt_id)
-///     }
-///     // ...
-/// }
-/// ```
 pub trait SorobanCrossChainMarketAdapter {
     /// Submit a cross-chain allocation intent.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `plan_bytes` - Serialized allocation plan.
-    ///
-    /// # Returns
-    ///
-    /// An opaque attempt ID used for settlement tracking.
     fn submit_intent(&self, env: &Env, plan_bytes: Bytes) -> Result<u64, RuntimeError>;
 
     /// Settle a completed cross-chain attempt.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `op_id` - The kernel operation ID.
-    /// * `attempt_id` - The attempt ID from `submit_intent`.
-    ///
-    /// # Returns
-    ///
-    /// A settlement receipt with the new external assets value.
     fn settle(
         &self,
         env: &Env,
@@ -149,14 +90,6 @@ pub trait SorobanCrossChainMarketAdapter {
 
     /// Read total assets for a cross-chain market position.
     ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `asset` - The asset contract address.
-    ///
-    /// # Returns
-    ///
-    /// The total assets held in this cross-chain market position.
     fn total_assets(&self, env: &Env, asset: &Address) -> Result<i128, RuntimeError>;
 }
 

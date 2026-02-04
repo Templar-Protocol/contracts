@@ -20,13 +20,6 @@ pub use templar_curator_primitives::policy::{
 
 /// Filter a list of targets to exclude locked markets.
 ///
-/// # Arguments
-/// * `lock_set` - The set of active locks
-/// * `targets` - List of targets to filter
-/// * `current_ns` - Current timestamp for expiry checking
-///
-/// # Returns
-/// List of targets that are NOT locked.
 pub fn filter_unlocked_targets(
     lock_set: &MarketLockSet,
     targets: &[TargetId],
@@ -44,13 +37,6 @@ pub fn filter_unlocked_targets(
 /// Takes a supply queue and filters out any entries for locked markets,
 /// then converts to an allocation plan.
 ///
-/// # Arguments
-/// * `queue` - The supply queue
-/// * `lock_set` - The set of active locks
-/// * `current_ns` - Current timestamp
-///
-/// # Returns
-/// Allocation plan as (TargetId, amount) pairs.
 pub fn build_allocation_plan_with_locks(
     queue: &SupplyQueue,
     lock_set: &MarketLockSet,
@@ -70,13 +56,6 @@ pub fn build_allocation_plan_with_locks(
 
 /// Build a withdrawal plan excluding locked markets.
 ///
-/// # Arguments
-/// * `route` - The withdrawal route
-/// * `lock_set` - The set of active locks
-/// * `current_ns` - Current timestamp
-///
-/// # Returns
-/// Withdrawal plan excluding locked markets.
 pub fn build_withdrawal_plan_with_locks(
     route: &WithdrawRoute,
     lock_set: &MarketLockSet,
@@ -96,13 +75,6 @@ pub fn build_withdrawal_plan_with_locks(
 
 /// Build a refresh plan excluding locked markets.
 ///
-/// # Arguments
-/// * `targets` - Target IDs to potentially refresh
-/// * `lock_set` - The set of active locks
-/// * `current_ns` - Current timestamp
-///
-/// # Returns
-/// List of unlocked targets to refresh.
 pub fn build_refresh_plan_with_locks(
     targets: &[TargetId],
     lock_set: &MarketLockSet,
@@ -116,13 +88,6 @@ pub fn build_refresh_plan_with_locks(
 /// This takes a raw plan (as passed to `begin_allocating`) and removes
 /// any entries targeting locked markets.
 ///
-/// # Arguments
-/// * `plan` - Allocation plan as (TargetId, amount) pairs
-/// * `lock_set` - The set of active locks
-/// * `current_ns` - Current timestamp for expiry checking
-///
-/// # Returns
-/// Filtered plan with locked targets removed.
 pub fn filter_allocation_plan(
     plan: &[(TargetId, u128)],
     lock_set: &MarketLockSet,
