@@ -743,9 +743,9 @@ where
 
     /// Convert u128 to i128 for event fields.
     #[inline]
-    fn u128_to_i128_event(val: u128) -> i128 {
-        // Saturate at i128::MAX for event data
-        i128::try_from(val).unwrap_or(i128::MAX)
+    fn u128_to_i128_event(val: u128) -> EffectResult<i128> {
+        i128::try_from(val)
+            .map_err(|_| RuntimeError::effect_failed("event amount overflow converting to i128"))
     }
 
     /// Emit a kernel event to the Soroban ledger using `#[contractevent]` structs.
@@ -767,8 +767,8 @@ where
                 DepositEvent {
                     owner: owner_addr.clone(),
                     receiver: recv_addr.clone(),
-                    assets_in: Self::u128_to_i128_event(*assets_in),
-                    shares_out: Self::u128_to_i128_event(*shares_out),
+                    assets_in: Self::u128_to_i128_event(*assets_in)?,
+                    shares_out: Self::u128_to_i128_event(*shares_out)?,
                 }
                 .publish(self.env);
             }
@@ -785,8 +785,8 @@ where
                     id: *id,
                     owner: owner_addr.clone(),
                     receiver: recv_addr.clone(),
-                    shares: Self::u128_to_i128_event(*shares),
-                    expected_assets: Self::u128_to_i128_event(*expected_assets),
+                    shares: Self::u128_to_i128_event(*shares)?,
+                    expected_assets: Self::u128_to_i128_event(*expected_assets)?,
                 }
                 .publish(self.env);
             }
@@ -801,8 +801,8 @@ where
                 let recv_addr = self.resolve_address(receiver)?;
                 WithdrawStartEvent {
                     op_id: *op_id,
-                    amount: Self::u128_to_i128_event(*amount),
-                    escrow_shares: Self::u128_to_i128_event(*escrow_shares),
+                    amount: Self::u128_to_i128_event(*amount)?,
+                    escrow_shares: Self::u128_to_i128_event(*escrow_shares)?,
                     owner: owner_addr.clone(),
                     receiver: recv_addr.clone(),
                 }
@@ -815,8 +815,8 @@ where
             } => {
                 WithdrawCollectedEvent {
                     op_id: *op_id,
-                    burn_shares: Self::u128_to_i128_event(*burn_shares),
-                    collected: Self::u128_to_i128_event(*collected),
+                    burn_shares: Self::u128_to_i128_event(*burn_shares)?,
+                    collected: Self::u128_to_i128_event(*collected)?,
                 }
                 .publish(self.env);
             }
@@ -826,7 +826,7 @@ where
             } => {
                 WithdrawStoppedEvent {
                     op_id: *op_id,
-                    escrow_shares: Self::u128_to_i128_event(*escrow_shares),
+                    escrow_shares: Self::u128_to_i128_event(*escrow_shares)?,
                 }
                 .publish(self.env);
             }
@@ -840,16 +840,16 @@ where
                 PayoutEvent {
                     op_id: *op_id,
                     success: *success,
-                    burn_shares: Self::u128_to_i128_event(*burn_shares),
-                    refund_shares: Self::u128_to_i128_event(*refund_shares),
-                    amount: Self::u128_to_i128_event(*amount),
+                    burn_shares: Self::u128_to_i128_event(*burn_shares)?,
+                    refund_shares: Self::u128_to_i128_event(*refund_shares)?,
+                    amount: Self::u128_to_i128_event(*amount)?,
                 }
                 .publish(self.env);
             }
             KernelEvent::AllocationStarted { op_id, total, plan_len } => {
                 AllocStartEvent {
                     op_id: *op_id,
-                    total: Self::u128_to_i128_event(*total),
+                    total: Self::u128_to_i128_event(*total)?,
                     plan_len: *plan_len,
                 }
                 .publish(self.env);
@@ -862,7 +862,7 @@ where
                 AllocStepFailEvent {
                     op_id: *op_id,
                     index: *index,
-                    remaining: Self::u128_to_i128_event(*remaining),
+                    remaining: Self::u128_to_i128_event(*remaining)?,
                 }
                 .publish(self.env);
             }
@@ -893,8 +893,8 @@ where
             } => {
                 ExtAssetsSyncEvent {
                     op_id: *op_id,
-                    new_external_assets: Self::u128_to_i128_event(*new_external_assets),
-                    total_assets: Self::u128_to_i128_event(*total_assets),
+                    new_external_assets: Self::u128_to_i128_event(*new_external_assets)?,
+                    total_assets: Self::u128_to_i128_event(*total_assets)?,
                 }
                 .publish(self.env);
             }
@@ -904,7 +904,7 @@ where
             } => {
                 FeesRefreshEvent {
                     now_ns: *now_ns,
-                    total_assets: Self::u128_to_i128_event(*total_assets),
+                    total_assets: Self::u128_to_i128_event(*total_assets)?,
                 }
                 .publish(self.env);
             }
