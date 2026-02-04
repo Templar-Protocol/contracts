@@ -48,27 +48,13 @@ use templar_vault_kernel::{
         start_refresh, start_withdrawal, stop_withdrawal, withdrawal_collected,
         withdrawal_step_callback, TransitionError, WithdrawalRequest,
     },
-    types::{Address, EscrowSettlement},
+    types::EscrowSettlement,
 };
+use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
 // ============================================================================
 // Arbitrary Strategies
 // ============================================================================
-
-fn addr_with_tag(tag: u8, index: u64) -> Address {
-    let mut addr = [0u8; 32];
-    addr[0] = tag;
-    addr[1..9].copy_from_slice(&index.to_le_bytes());
-    addr
-}
-
-fn owner_addr(index: u64) -> Address {
-    addr_with_tag(0x11, index)
-}
-
-fn receiver_addr(index: u64) -> Address {
-    addr_with_tag(0x22, index)
-}
 
 /// Generate a valid allocation plan
 fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<(u32, u128)>> {

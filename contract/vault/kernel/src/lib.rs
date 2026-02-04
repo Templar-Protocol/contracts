@@ -14,6 +14,8 @@ pub mod kani;
 pub mod math;
 pub mod restrictions;
 pub mod state;
+#[doc(hidden)]
+pub mod test_utils;
 pub mod transitions;
 pub mod types;
 

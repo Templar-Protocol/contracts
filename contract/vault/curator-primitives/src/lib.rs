@@ -25,6 +25,8 @@ pub mod governance;
 
 #[cfg(test)]
 mod golden_tests;
+#[cfg(test)]
+mod test_utils;
 
 // Re-exports for convenience
 pub use policy::{

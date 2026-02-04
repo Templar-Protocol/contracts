@@ -12,6 +12,7 @@ use crate::policy::cap_group::CapGroup;
 use crate::policy::refresh_plan::build_refresh_plan;
 use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use crate::policy::withdraw_route::{build_withdraw_route, WithdrawRoute, WithdrawRouteEntry};
+use crate::test_utils::{owner_addr, receiver_addr};
 use templar_vault_kernel::Wad;
 use crate::recovery::{
     compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
@@ -24,21 +25,6 @@ use templar_vault_kernel::{
 
 // WAD constant matching templar-vault-kernel
 const WAD: u128 = 1_000_000_000_000_000_000_000_000;
-
-fn addr_with_tag(tag: u8, index: u64) -> [u8; 32] {
-    let mut addr = [0u8; 32];
-    addr[0] = tag;
-    addr[1..9].copy_from_slice(&index.to_le_bytes());
-    addr
-}
-
-fn owner_addr(index: u64) -> [u8; 32] {
-    addr_with_tag(0x11, index)
-}
-
-fn receiver_addr(index: u64) -> [u8; 32] {
-    addr_with_tag(0x22, index)
-}
 
 /// Snapshot representing a typical NEAR curator vault state.
 /// This represents a vault with:

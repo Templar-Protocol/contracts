@@ -766,21 +766,7 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn addr_with_tag(tag: u8, index: u64) -> Address {
-        let mut addr = [0u8; 32];
-        addr[0] = tag;
-        addr[1..9].copy_from_slice(&index.to_le_bytes());
-        addr
-    }
-
-    fn owner_addr(index: u64) -> Address {
-        addr_with_tag(0x11, index)
-    }
-
-    fn receiver_addr(index: u64) -> Address {
-        addr_with_tag(0x22, index)
-    }
+    use crate::test_utils::{owner_addr, receiver_addr};
 
     // -------------------------------------------------------------------------
     // Allocation Tests
@@ -1330,21 +1316,7 @@ mod proptests {
     use alloc::vec;
     use alloc::vec::Vec;
     use proptest::prelude::*;
-
-    fn addr_with_tag(tag: u8, index: u64) -> Address {
-        let mut addr = [0u8; 32];
-        addr[0] = tag;
-        addr[1..9].copy_from_slice(&index.to_le_bytes());
-        addr
-    }
-
-    fn owner_addr(index: u64) -> Address {
-        addr_with_tag(0x11, index)
-    }
-
-    fn receiver_addr(index: u64) -> Address {
-        addr_with_tag(0x22, index)
-    }
+    use crate::test_utils::{owner_addr, receiver_addr};
 
     /// Strategy for generating an allocation plan
     fn arb_plan(max_len: usize) -> impl Strategy<Value = Vec<(TargetId, u128)>> {

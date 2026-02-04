@@ -1823,21 +1823,7 @@ mod proptests {
     use super::*;
     use alloc::vec::Vec;
     use proptest::prelude::*;
-
-    fn addr_with_tag(tag: u8, index: u64) -> Address {
-        let mut addr = [0u8; 32];
-        addr[0] = tag;
-        addr[1..9].copy_from_slice(&index.to_le_bytes());
-        addr
-    }
-
-    fn owner_addr(index: u64) -> Address {
-        addr_with_tag(0x11, index)
-    }
-
-    fn receiver_addr(index: u64) -> Address {
-        addr_with_tag(0x22, index)
-    }
+    use crate::test_utils::{owner_addr, receiver_addr};
 
     /// Strategy for generating a PendingWithdrawal
     fn arb_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {

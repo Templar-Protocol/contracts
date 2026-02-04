@@ -45,21 +45,7 @@ mod test_equivalents {
             vault::MAX_PENDING,
         },
     };
-
-    fn addr_with_tag(tag: u8, index: u64) -> [u8; 32] {
-        let mut addr = [0u8; 32];
-        addr[0] = tag;
-        addr[1..9].copy_from_slice(&index.to_le_bytes());
-        addr
-    }
-
-    fn owner_addr(index: u64) -> [u8; 32] {
-        addr_with_tag(0x11, index)
-    }
-
-    fn receiver_addr(index: u64) -> [u8; 32] {
-        addr_with_tag(0x22, index)
-    }
+    use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
     /// Test: Queue length never exceeds MAX_PENDING
     #[test]
@@ -306,21 +292,7 @@ mod kani_proofs {
         WithdrawalRequest, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MAX_QUEUE_LENGTH,
         MIN_WITHDRAWAL_ASSETS,
     };
-
-    fn addr_with_tag(tag: u8, index: u64) -> [u8; 32] {
-        let mut addr = [0u8; 32];
-        addr[0] = tag;
-        addr[1..9].copy_from_slice(&index.to_le_bytes());
-        addr
-    }
-
-    fn owner_addr(index: u64) -> [u8; 32] {
-        addr_with_tag(0x11, index)
-    }
-
-    fn receiver_addr(index: u64) -> [u8; 32] {
-        addr_with_tag(0x22, index)
-    }
+    use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
     fn pending_withdrawal(index: u64, shares: u128, expected: u128, ts: u64) -> PendingWithdrawal {
         PendingWithdrawal::new(owner_addr(index), receiver_addr(index), shares, expected, ts)
