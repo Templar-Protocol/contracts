@@ -79,15 +79,8 @@ pub struct SorobanVaultState {
 impl SorobanVaultState {
     /// Convert from kernel VaultState.
     pub fn from_kernel(state: &VaultState) -> Result<Self, RuntimeError> {
-        use templar_vault_kernel::OpState;
-
-        let (op_state_kind, op_state_id) = match &state.op_state {
-            OpState::Idle => (0, 0),
-            OpState::Allocating(s) => (1, s.op_id),
-            OpState::Withdrawing(s) => (2, s.op_id),
-            OpState::Refreshing(s) => (3, s.op_id),
-            OpState::Payout(s) => (4, s.op_id),
-        };
+        let op_state_kind = state.op_state.kind_code();
+        let op_state_id = state.op_state.op_id().unwrap_or(0);
 
         Ok(Self {
             total_assets: i128::try_from(state.total_assets)

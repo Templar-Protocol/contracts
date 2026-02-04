@@ -99,13 +99,7 @@ pub enum TransitionError {
 impl TransitionError {
     /// Get the name of an OpState variant as a static string.
     pub(crate) fn state_name(state: &OpState) -> &'static str {
-        match state {
-            OpState::Idle => "Idle",
-            OpState::Allocating(_) => "Allocating",
-            OpState::Withdrawing(_) => "Withdrawing",
-            OpState::Refreshing(_) => "Refreshing",
-            OpState::Payout(_) => "Payout",
-        }
+        state.kind_name()
     }
 }
 

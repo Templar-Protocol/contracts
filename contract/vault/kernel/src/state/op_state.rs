@@ -211,6 +211,32 @@ impl From<IdleState> for OpState {
 // --- Accessor methods ---
 
 impl OpState {
+    /// Returns a numeric code for the current op state.
+    #[inline]
+    #[must_use]
+    pub const fn kind_code(&self) -> u32 {
+        match self {
+            OpState::Idle => 0,
+            OpState::Allocating(_) => 1,
+            OpState::Withdrawing(_) => 2,
+            OpState::Refreshing(_) => 3,
+            OpState::Payout(_) => 4,
+        }
+    }
+
+    /// Returns a human-readable name for the current op state.
+    #[inline]
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            OpState::Idle => "Idle",
+            OpState::Allocating(_) => "Allocating",
+            OpState::Withdrawing(_) => "Withdrawing",
+            OpState::Refreshing(_) => "Refreshing",
+            OpState::Payout(_) => "Payout",
+        }
+    }
+
     /// Returns a reference to the idle state if this is `Idle`, otherwise `None`.
     #[inline]
     #[must_use]
