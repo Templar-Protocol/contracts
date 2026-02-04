@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use crate::effects::KernelEffect;
+use crate::effects::{KernelEffect, KernelEvent};
 use crate::error::KernelError;
 use crate::math::number::Number;
 use crate::math::wad::mul_div_floor;
@@ -541,7 +541,7 @@ pub fn apply_action(
         }
         KernelAction::SettlePayout { op_id, outcome } => {
             let payout = match &state.op_state {
-                OpState::Payout(s) => s,
+                OpState::Payout(s) => s.clone(),
                 _ => return Err(KernelError::InvalidState("settle_payout requires Payout")),
             };
 
@@ -565,57 +565,69 @@ pub fn apply_action(
             let escrow_address = [0u8; 32];
             let mut effects = Vec::new();
 
-            match outcome {
+            let (burn_shares, refund_shares, amount, success) = match outcome {
                 PayoutOutcome::Success {
-                    burn_shares,
-                    refund_shares,
+                    burn_shares: burn_amount,
+                    refund_shares: refund_amount,
                 } => {
-                    if burn_shares.saturating_add(refund_shares) != payout.escrow_shares {
+                    if burn_amount.saturating_add(refund_amount) != payout.escrow_shares {
                         return Err(KernelError::InvalidState(
                             "payout success settlement mismatch",
                         ));
                     }
 
-                    if burn_shares > 0 {
+                    if burn_amount > 0 {
                         effects.push(KernelEffect::BurnShares {
                             owner: escrow_address,
-                            shares: burn_shares,
+                            shares: burn_amount,
                         });
-                        state.total_shares = state.total_shares.saturating_sub(burn_shares);
+                        state.total_shares = state.total_shares.saturating_sub(burn_amount);
                     }
-                    if refund_shares > 0 {
+                    if refund_amount > 0 {
                         effects.push(KernelEffect::TransferShares {
                             from: escrow_address,
                             to: payout.owner,
-                            shares: refund_shares,
+                            shares: refund_amount,
                         });
                     }
 
                     state.op_state = OpState::Idle;
+                    (burn_amount, refund_amount, payout.amount, true)
                 }
                 PayoutOutcome::Failure {
                     restore_idle,
-                    refund_shares,
+                    refund_shares: refund_amount,
                 } => {
-                    if refund_shares != payout.escrow_shares {
+                    if refund_amount != payout.escrow_shares {
                         return Err(KernelError::InvalidState(
                             "payout failure settlement mismatch",
                         ));
                     }
 
-                    if refund_shares > 0 {
+                    if refund_amount > 0 {
                         effects.push(KernelEffect::TransferShares {
                             from: escrow_address,
                             to: payout.owner,
-                            shares: refund_shares,
+                            shares: refund_amount,
                         });
                     }
 
                     state.idle_assets = state.idle_assets.saturating_add(restore_idle);
                     state.total_assets = state.idle_assets.saturating_add(state.external_assets);
                     state.op_state = OpState::Idle;
+                    (0, refund_amount, 0, false)
                 }
-            }
+            };
+
+            effects.push(KernelEffect::EmitEvent {
+                event: KernelEvent::PayoutCompleted {
+                    op_id,
+                    success,
+                    burn_shares,
+                    refund_shares,
+                    amount,
+                },
+            });
 
             state.withdraw_queue.dequeue();
             Ok(KernelResult::new(state, effects))
@@ -2209,6 +2221,24 @@ mod tests {
             .expect("missing BurnShares effect");
         assert_eq!(burn_owner, [0u8; 32]);
         assert_eq!(burn_shares, 100);
+        let event = result
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                KernelEffect::EmitEvent {
+                    event:
+                        KernelEvent::PayoutCompleted {
+                            op_id,
+                            success,
+                            burn_shares,
+                            refund_shares,
+                            amount,
+                        },
+                } => Some((*op_id, *success, *burn_shares, *refund_shares, *amount)),
+                _ => None,
+            })
+            .expect("missing PayoutCompleted event");
+        assert_eq!(event, (11, true, 100, 0, 100));
     }
 
     #[test]
@@ -2251,7 +2281,25 @@ mod tests {
 
         assert!(result.state.is_idle());
         assert_eq!(result.state.total_shares, 950);
-        assert_eq!(result.effects.len(), 2); // BurnShares + TransferShares
+        assert_eq!(result.effects.len(), 3); // BurnShares + TransferShares + PayoutCompleted
+        let event = result
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                KernelEffect::EmitEvent {
+                    event:
+                        KernelEvent::PayoutCompleted {
+                            op_id,
+                            success,
+                            burn_shares,
+                            refund_shares,
+                            amount,
+                        },
+                } => Some((*op_id, *success, *burn_shares, *refund_shares, *amount)),
+                _ => None,
+            })
+            .expect("missing PayoutCompleted event");
+        assert_eq!(event, (12, true, 50, 50, 50));
     }
 
     #[test]
@@ -2299,6 +2347,24 @@ mod tests {
             result.effects.first(),
             Some(KernelEffect::TransferShares { .. })
         ));
+        let event = result
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                KernelEffect::EmitEvent {
+                    event:
+                        KernelEvent::PayoutCompleted {
+                            op_id,
+                            success,
+                            burn_shares,
+                            refund_shares,
+                            amount,
+                        },
+                } => Some((*op_id, *success, *burn_shares, *refund_shares, *amount)),
+                _ => None,
+            })
+            .expect("missing PayoutCompleted event");
+        assert_eq!(event, (13, false, 0, 100, 0));
     }
 
     #[test]
