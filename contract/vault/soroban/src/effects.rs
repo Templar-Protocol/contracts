@@ -642,6 +642,10 @@ impl AddressRegistrar for MockInterpreter {
 /// The kernel uses 32-byte arrays for addresses, while Soroban uses
 /// opaque `Address` types. This struct provides the mapping for
 /// address resolution during effect execution.
+///
+/// Note: the map is expected to stay small (vault + escrow + a few
+/// participant addresses per call). If this ever grows large, consider
+/// a fixed-capacity array or Vec-based linear scan to reduce overhead.
 pub struct AddressMap<'a> {
     env: &'a Env,
     /// Map of kernel address bytes to Soroban addresses.
