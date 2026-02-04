@@ -8,7 +8,7 @@ use derive_more::Display;
 #[derive(Clone, Debug, PartialEq, Eq, Display)]
 pub enum KernelError {
     /// Action not allowed in the current state.
-    #[display("invalid state: {_0}")]
+    #[display("{_0}")]
     InvalidState(&'static str),
 
     /// Operation ID mismatch between expected and actual.
