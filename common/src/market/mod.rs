@@ -5,6 +5,7 @@ use near_sdk::{near, AccountId};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
+    incoming_deposit::IncomingDeposit,
     number::Decimal,
 };
 mod configuration;
@@ -25,8 +26,9 @@ pub mod error {
 #[near(serializers = [borsh, json])]
 pub struct BorrowAssetMetrics {
     pub available: BorrowAssetAmount,
-    pub deposited_active: BorrowAssetAmount,
-    pub deposited_incoming: HashMap<u32, BorrowAssetAmount>,
+    pub deposited_active_real: BorrowAssetAmount,
+    pub deposited_active_virtual: BorrowAssetAmount,
+    pub deposited_incoming: Vec<IncomingDeposit>,
     pub borrowed: BorrowAssetAmount,
 }
 
