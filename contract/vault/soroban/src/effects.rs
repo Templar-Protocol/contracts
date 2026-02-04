@@ -285,6 +285,20 @@ impl EffectSummary {
     pub fn record_event(&mut self) {
         self.events_emitted = self.events_emitted.saturating_add(1);
     }
+
+    /// Merge another summary into this one.
+    #[inline]
+    pub fn merge(&mut self, other: EffectSummary) {
+        self.shares_minted = self.shares_minted.saturating_add(other.shares_minted);
+        self.shares_burned = self.shares_burned.saturating_add(other.shares_burned);
+        self.shares_transferred = self
+            .shares_transferred
+            .saturating_add(other.shares_transferred);
+        self.assets_transferred = self
+            .assets_transferred
+            .saturating_add(other.assets_transferred);
+        self.events_emitted = self.events_emitted.saturating_add(other.events_emitted);
+    }
 }
 
 // ---------------------------------------------------------------------------

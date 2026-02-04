@@ -722,7 +722,7 @@ where
                 KernelAction::ExecuteWithdraw { now_ns },
                 now_ns,
             )?;
-            summary = merge_summaries(summary, step_summary);
+            summary.merge(step_summary);
         } else if !self.state().op_state.is_withdrawing() {
             return Err(RuntimeError::contract_error(
                 "vault not in idle or withdrawing state for withdrawal",
@@ -731,7 +731,7 @@ where
 
         if self.state().op_state.is_withdrawing() {
             let settle_summary = self.complete_withdrawal_from_idle(now_ns)?;
-            summary = merge_summaries(summary, settle_summary);
+            summary.merge(settle_summary);
         }
 
         Ok(summary)
@@ -821,7 +821,7 @@ where
         let transfer_summary = self
             .interpreter
             .execute_effects(&transfer_effects, &ctx)?;
-        summary = merge_summaries(summary, transfer_summary);
+        summary.merge(transfer_summary);
 
         let state = self.state_mut();
         state.idle_assets = state.idle_assets.saturating_sub(assets_out);
@@ -837,7 +837,7 @@ where
             },
             now_ns,
         )?;
-        summary = merge_summaries(summary, settle_summary);
+        summary.merge(settle_summary);
 
         Ok(summary)
     }
@@ -1415,19 +1415,6 @@ where
     pub fn is_market_locked(&self, target_id: TargetId, current_ns: u64) -> bool {
         self.policy_state.locks.is_locked(target_id, current_ns)
     }
-}
-
-fn merge_summaries(mut base: EffectSummary, other: EffectSummary) -> EffectSummary {
-    base.shares_minted = base.shares_minted.saturating_add(other.shares_minted);
-    base.shares_burned = base.shares_burned.saturating_add(other.shares_burned);
-    base.shares_transferred = base
-        .shares_transferred
-        .saturating_add(other.shares_transferred);
-    base.assets_transferred = base
-        .assets_transferred
-        .saturating_add(other.assets_transferred);
-    base.events_emitted = base.events_emitted.saturating_add(other.events_emitted);
-    base
 }
 
 // ---------------------------------------------------------------------------
