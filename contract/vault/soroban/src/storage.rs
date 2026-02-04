@@ -404,10 +404,18 @@ impl Storage for SorobanStorage<'_> {
                 let mut state = soroban_state.to_kernel()?;
                 state.op_state = op_state.unwrap_or(OpState::Idle);
                 state.withdraw_queue = withdraw_queue.unwrap_or_else(WithdrawQueue::new);
-                Ok(Some(VersionedState {
+                let mut versioned = VersionedState {
                     version: StorageVersion::new(version),
                     state,
-                }))
+                };
+
+                if versioned.needs_migration() {
+                    versioned = Migrator::migrate(versioned)?;
+                    let mut storage = SorobanStorage::new(self.env);
+                    Storage::save_state(&mut storage, &versioned)?;
+                }
+
+                Ok(Some(versioned))
             }
             None => Ok(None),
         }
@@ -1129,6 +1137,26 @@ mod tests {
             assert!(Storage::is_initialized(&storage));
             let loaded = storage.load_state().unwrap().unwrap();
             assert_eq!(loaded.version, StorageVersion::CURRENT);
+        });
+    }
+
+    #[test]
+    fn test_soroban_storage_migrates_v1_state() {
+        let env = Env::default();
+        let contract_id = env.register(test_contract::TestContract, ());
+
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+            let state = SorobanVaultState::default();
+            storage.save_vault_state(&state);
+            storage.set_version(1);
+
+            let loaded = storage.load_state().unwrap().unwrap();
+            assert_eq!(loaded.version, StorageVersion::CURRENT);
+            assert_eq!(
+                Storage::get_version(&storage).unwrap(),
+                StorageVersion::CURRENT
+            );
         });
     }
 }
