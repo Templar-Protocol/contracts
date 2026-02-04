@@ -514,7 +514,6 @@ impl Liquidator {
 
             // Log consolidated liquidation info with human-readable amounts
             let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
-            let mode = if dry_run_mode { "[DRY RUN] " } else { "" };
 
             if is_profitable {
                 // Calculate signed profit for display (can be negative if unprofitable)
@@ -528,12 +527,17 @@ impl Liquidator {
                         -(i128::try_from(loss).unwrap_or(i128::MAX))
                     };
 
+                let message = if dry_run_mode {
+                    "[DRY RUN] Liquidatable position"
+                } else {
+                    "Liquidatable position"
+                };
+
                 // Only show iteration if loop is enabled (for partial/fixed strategies)
                 if loop_enabled {
                     tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
-                        mode = mode,
                         reason = ?reason,
                         iteration = %format::format_iteration(loop_iteration, max_iterations),
                         collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
@@ -541,27 +545,25 @@ impl Liquidator {
                         send = %format::format_amount(liquidation_amount.0, borrow_dec, &borrow_asset),
                         receive = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
                         profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, &borrow_asset),
-                        "Liquidatable position"
+                        "{}", message
                     );
                 } else {
                     tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
-                        mode = mode,
                         reason = ?reason,
                         collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
                         collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
                         send = %format::format_amount(liquidation_amount.0, borrow_dec, &borrow_asset),
                         receive = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
                         profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, &borrow_asset),
-                        "Liquidatable position"
+                        "{}", message
                     );
                 }
             }
 
             if !is_profitable {
                 let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
-                let mode = if dry_run_mode { "[DRY RUN] " } else { "" };
 
                 // Calculate actual loss (revenue - cost, will be negative)
                 let total_cost = liquidation_amount.0 + gas_cost.0;
@@ -577,10 +579,15 @@ impl Liquidator {
                 let min_revenue_required = (total_cost * profit_margin_multiplier) / 10_000;
                 let spread_pct = spread.to_f64_lossy() * 100.0;
 
+                let message = if dry_run_mode {
+                    "[DRY RUN] Position not profitable, skipping"
+                } else {
+                    "Position not profitable, skipping"
+                };
+
                 tracing::info!(
                     market = %self.market,
                     borrower = %borrow_account,
-                    mode = mode,
                     collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
                     collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
                     collateral_requested = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
@@ -592,7 +599,7 @@ impl Liquidator {
                     min_revenue_required = %format::format_amount(min_revenue_required, borrow_dec, &borrow_asset),
                     spread = %format!("{:.1}%", spread_pct),
                     loss = %format::format_profit(loss, total_cost, borrow_dec, &borrow_asset),
-                    "Position not profitable, skipping"
+                    "{}", message
                 );
 
                 if loop_iteration > 1 {
