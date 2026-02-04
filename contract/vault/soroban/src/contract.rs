@@ -1033,6 +1033,10 @@ where
             .authorize(ActionKind::FinishRefreshing, caller, None)?;
 
         let state = self.state_mut();
+        let markets_refreshed = match &state.op_state {
+            OpState::Refreshing(refresh) => refresh.plan.len() as u32,
+            _ => 0,
+        };
 
         // Call kernel transition
         let result = complete_refresh(state.op_state.clone(), op_id)
@@ -1044,7 +1048,7 @@ where
 
         Ok(RefreshResult {
             op_id,
-            markets_refreshed: 0, // Would be tracked during refresh
+            markets_refreshed,
             new_external_assets: external_assets,
         })
     }
@@ -2173,6 +2177,33 @@ mod tests {
 
         assert_eq!(op_id, 0);
         assert!(vault.state().op_state.is_refreshing());
+    }
+
+    #[test]
+    fn test_finish_refreshing_reports_markets_refreshed() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        vault
+            .acquire_market_lock(caller, 2, 5000, 1000)
+            .expect("should acquire lock");
+
+        let op_id = vault
+            .begin_refreshing(caller, vec![0, 1, 2], 1500)
+            .expect("should start refresh");
+
+        let expected = vault
+            .state()
+            .op_state
+            .as_refreshing()
+            .expect("refreshing state")
+            .plan
+            .len() as u32;
+
+        let result = vault.finish_refreshing(caller, op_id).unwrap();
+
+        assert_eq!(result.markets_refreshed, expected);
+        assert!(vault.state().op_state.is_idle());
     }
 
     #[test]
