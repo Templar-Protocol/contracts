@@ -249,18 +249,9 @@ impl<'a> SupplyPositionGuard<'a> {
         // Calling market.snapshot() performs the market accounting
     }
 
-    fn remove_active(&mut self, amount: BorrowAssetAmount) {
-        let amount_virtual = if amount >= self.position.borrow_asset_deposit.active_virtual {
-            self.position.borrow_asset_deposit.active_virtual
-        } else {
-            amount
-        };
-        let amount_real = amount - amount_virtual;
-
-        self.position.borrow_asset_deposit.active_virtual -= amount_virtual;
-        self.market.borrow_asset_deposited_active_virtual -= amount_virtual;
-        self.position.borrow_asset_deposit.active_real -= amount_real;
-        self.market.borrow_asset_deposited_active_real -= amount_real;
+    fn remove_active_real(&mut self, amount: BorrowAssetAmount) {
+        self.position.borrow_asset_deposit.active_real -= amount;
+        self.market.borrow_asset_deposited_active_real -= amount;
     }
 
     fn add_incoming(
@@ -385,6 +376,9 @@ impl<'a> SupplyPositionGuard<'a> {
         YieldAccumulationProof(())
     }
 
+    /// This will only withdraw from the "real" balance; "virtual" balances
+    /// must be converted to "real" by running accumulations (after sufficient
+    /// fees have been paid by borrowers).
     pub fn record_withdrawal_initial(
         &mut self,
         _proof: YieldAccumulationProof,
@@ -396,7 +390,7 @@ impl<'a> SupplyPositionGuard<'a> {
         //
 
         let my_incoming = self.position.total_incoming_real();
-        let my_active = self.position.get_deposit().active();
+        let my_active = self.position.get_deposit().active_real;
         let entitled_to_withdraw = my_incoming + my_active;
 
         if entitled_to_withdraw.is_zero() {
@@ -404,7 +398,7 @@ impl<'a> SupplyPositionGuard<'a> {
         }
 
         let requested_amount = requested_amount.min(entitled_to_withdraw);
-        let available_to_me = self.market.active_supply() + my_incoming;
+        let available_to_me = self.market.borrow_asset_deposited_active_real + my_incoming;
         let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
 
         if can_withdraw_now.is_zero() {
@@ -427,7 +421,7 @@ impl<'a> SupplyPositionGuard<'a> {
         );
 
         if !amount_to_remove.is_zero() {
-            self.remove_active(amount_to_remove);
+            self.remove_active_real(amount_to_remove);
         }
 
         // The only way to withdraw from a position is if it already has a deposit.
@@ -488,7 +482,6 @@ impl<'a> SupplyPositionGuard<'a> {
             .emit();
         } else {
             self.market.borrow_asset_balance += withdrawal.amount_to_account;
-            // TODO: Is this correct? Do we need to separate real & virtual for failed withdrawals too?
             self.add_incoming(amount, 0.into(), self.market.finalized_snapshots.len() + 1);
         }
     }
