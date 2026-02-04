@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
 
 use blend_contract_sdk::pool::{Client as PoolClient, Request};
 
@@ -20,14 +20,30 @@ enum DataKey {
     Initialized,
 }
 
+#[contracterror]
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AdapterError {
+    Unauthorized = 1,
+    AlreadyInitialized = 2,
+    InvalidInput = 3,
+    MissingConfig = 4,
+    Reentrancy = 5,
+}
+
 #[contract]
 pub struct BlendAdapterContract;
 
 #[contractimpl]
 impl BlendAdapterContract {
-    pub fn initialize(env: Env, admin: Address, vault: Address, pool: Address) {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        vault: Address,
+        pool: Address,
+    ) -> Result<(), AdapterError> {
         if env.storage().instance().has(&DataKey::Initialized) {
-            panic!("already initialized");
+            return Err(AdapterError::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -37,28 +53,36 @@ impl BlendAdapterContract {
             .instance()
             .set(&DataKey::ReentrancyLock, &false);
         env.storage().instance().set(&DataKey::Initialized, &true);
+        Ok(())
     }
 
-    pub fn set_pool(env: Env, caller: Address, pool: Address) {
-        require_admin(&env, &caller);
+    pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
+        require_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Pool, &pool);
+        Ok(())
     }
 
-    pub fn set_vault(env: Env, caller: Address, vault: Address) {
-        require_admin(&env, &caller);
+    pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), AdapterError> {
+        require_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Vault, &vault);
+        Ok(())
     }
 
-    pub fn supply(env: Env, caller: Address, asset: Address, amount: i128) {
+    pub fn supply(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), AdapterError> {
         // Adapter owns the Blend position. The vault should transfer assets to
         // the adapter before calling this method.
-        require_vault(&env, &caller);
+        require_vault(&env, &caller)?;
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(AdapterError::InvalidInput);
         }
 
         with_reentrancy_guard(&env, || {
-            let pool = get_pool(&env);
+            let pool = get_pool(&env)?;
             let client = PoolClient::new(&env, &pool);
             let adapter = env.current_contract_address();
             let request = Request {
@@ -69,19 +93,25 @@ impl BlendAdapterContract {
             let mut requests = Vec::new(&env);
             requests.push_back(request);
             client.submit(&adapter, &adapter, &adapter, &requests);
-        });
+            Ok(())
+        })
     }
 
-    pub fn withdraw(env: Env, caller: Address, asset: Address, amount: i128) {
+    pub fn withdraw(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), AdapterError> {
         // Adapter owns the Blend position and transfers withdrawn assets back to the vault.
-        require_vault(&env, &caller);
+        require_vault(&env, &caller)?;
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(AdapterError::InvalidInput);
         }
-        let vault = get_vault(&env);
+        let vault = get_vault(&env)?;
 
         with_reentrancy_guard(&env, || {
-            let pool = get_pool(&env);
+            let pool = get_pool(&env)?;
             let client = PoolClient::new(&env, &pool);
             let adapter = env.current_contract_address();
             let request = Request {
@@ -95,7 +125,8 @@ impl BlendAdapterContract {
 
             let token = soroban_sdk::token::Client::new(&env, &asset);
             token.transfer(&adapter, &vault, &amount);
-        });
+            Ok(())
+        })
     }
 
     pub fn rescue(
@@ -104,86 +135,95 @@ impl BlendAdapterContract {
         asset: Address,
         amount: i128,
         receiver: Address,
-    ) {
+    ) -> Result<(), AdapterError> {
         // Move unexpected assets held by the adapter to a receiver.
-        require_vault(&env, &caller);
+        require_vault(&env, &caller)?;
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(AdapterError::InvalidInput);
         }
 
         with_reentrancy_guard(&env, || {
             let adapter = env.current_contract_address();
             let token = soroban_sdk::token::Client::new(&env, &asset);
             token.transfer(&adapter, &receiver, &amount);
-        });
+            Ok(())
+        })
     }
 
-    pub fn total_assets(env: Env, asset: Address) -> i128 {
-        let pool = get_pool(&env);
+    pub fn total_assets(env: Env, asset: Address) -> Result<i128, AdapterError> {
+        let pool = get_pool(&env)?;
         let client = PoolClient::new(&env, &pool);
         let reserve = client.get_reserve(&asset);
         let positions = client.get_positions(&env.current_contract_address());
         let index = reserve.config.index;
         let b_tokens = positions.supply.get(index).unwrap_or(0);
-        b_tokens
+        Ok(b_tokens
             .checked_mul(reserve.data.b_rate)
             .and_then(|value| value.checked_div(SCALAR_12))
-            .unwrap_or(0)
+            .unwrap_or(0))
     }
 
-    pub fn admin(env: Env) -> Address {
+    pub fn admin(env: Env) -> Result<Address, AdapterError> {
         get_admin(&env)
     }
 
-    pub fn vault(env: Env) -> Address {
+    pub fn vault(env: Env) -> Result<Address, AdapterError> {
         get_vault(&env)
     }
 
-    pub fn pool(env: Env) -> Address {
+    pub fn pool(env: Env) -> Result<Address, AdapterError> {
         get_pool(&env)
     }
 }
 
-fn get_address(env: &Env, key: DataKey, label: &str) -> Address {
-    env.storage().instance().get(&key).expect(label)
+fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {
+    env.storage()
+        .instance()
+        .get(&key)
+        .ok_or(AdapterError::MissingConfig)
 }
 
-fn get_admin(env: &Env) -> Address {
-    get_address(env, DataKey::Admin, "admin not set")
+fn get_admin(env: &Env) -> Result<Address, AdapterError> {
+    get_address(env, DataKey::Admin)
 }
 
-fn get_vault(env: &Env) -> Address {
-    get_address(env, DataKey::Vault, "vault not set")
+fn get_vault(env: &Env) -> Result<Address, AdapterError> {
+    get_address(env, DataKey::Vault)
 }
 
-fn get_pool(env: &Env) -> Address {
-    get_address(env, DataKey::Pool, "pool not set")
+fn get_pool(env: &Env) -> Result<Address, AdapterError> {
+    get_address(env, DataKey::Pool)
 }
 
-fn require_admin(env: &Env, caller: &Address) {
+fn require_admin(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     caller.require_auth();
-    let admin = get_admin(env);
+    let admin = get_admin(env)?;
     if caller != &admin {
-        panic!("caller is not admin");
+        return Err(AdapterError::Unauthorized);
     }
+    Ok(())
 }
 
-fn require_vault(env: &Env, caller: &Address) {
+fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     caller.require_auth();
-    let vault = get_vault(env);
+    let vault = get_vault(env)?;
     if caller != &vault {
-        panic!("caller is not vault");
+        return Err(AdapterError::Unauthorized);
     }
+    Ok(())
 }
 
-fn with_reentrancy_guard<T>(env: &Env, f: impl FnOnce() -> T) -> T {
+fn with_reentrancy_guard<T>(
+    env: &Env,
+    f: impl FnOnce() -> Result<T, AdapterError>,
+) -> Result<T, AdapterError> {
     let locked: bool = env
         .storage()
         .instance()
         .get(&DataKey::ReentrancyLock)
         .unwrap_or(false);
     if locked {
-        panic!("reentrancy");
+        return Err(AdapterError::Reentrancy);
     }
     env.storage()
         .instance()
@@ -215,15 +255,15 @@ mod tests {
                 admin.clone(),
                 vault.clone(),
                 pool.clone(),
-            );
-            assert_eq!(BlendAdapterContract::admin(env.clone()), admin);
-            assert_eq!(BlendAdapterContract::vault(env.clone()), vault);
-            assert_eq!(BlendAdapterContract::pool(env.clone()), pool);
+            )
+            .unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
+            assert_eq!(BlendAdapterContract::vault(env.clone()).unwrap(), vault);
+            assert_eq!(BlendAdapterContract::pool(env.clone()).unwrap(), pool);
         });
     }
 
     #[test]
-    #[should_panic(expected = "reentrancy")]
     fn reentrancy_guard_blocks_nested() {
         let env = Env::default();
         env.mock_all_auths();
@@ -238,10 +278,12 @@ mod tests {
                 admin.clone(),
                 vault.clone(),
                 pool.clone(),
-            );
-            with_reentrancy_guard(&env, || {
-                with_reentrancy_guard(&env, || {});
+            )
+            .unwrap();
+            let result = with_reentrancy_guard(&env, || {
+                with_reentrancy_guard(&env, || Ok(()))
             });
+            assert_eq!(result, Err(AdapterError::Reentrancy));
         });
     }
 }

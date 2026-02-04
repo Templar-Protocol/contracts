@@ -1,6 +1,25 @@
 //! Runtime error types.
 
 use alloc::string::String;
+use soroban_sdk::contracterror;
+
+/// Contract-facing error codes for Soroban entrypoints.
+#[contracterror]
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ContractError {
+    Unauthorized = 1,
+    InvalidState = 2,
+    InvalidInput = 3,
+    InsufficientBalance = 4,
+    StorageError = 5,
+    EffectFailed = 6,
+    KernelError = 7,
+    Reentrancy = 8,
+    AlreadyInitialized = 9,
+    MissingConfig = 10,
+    ConversionOverflow = 11,
+}
 
 /// Errors that can occur during runtime execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +38,20 @@ pub enum RuntimeError {
     InvalidInput(String),
     /// Kernel transition error.
     KernelError(String),
+}
+
+impl From<RuntimeError> for ContractError {
+    fn from(err: RuntimeError) -> Self {
+        match err {
+            RuntimeError::Unauthorized(_) => ContractError::Unauthorized,
+            RuntimeError::InsufficientBalance { .. } => ContractError::InsufficientBalance,
+            RuntimeError::InvalidState(_) => ContractError::InvalidState,
+            RuntimeError::StorageError(_) => ContractError::StorageError,
+            RuntimeError::EffectFailed(_) => ContractError::EffectFailed,
+            RuntimeError::InvalidInput(_) => ContractError::InvalidInput,
+            RuntimeError::KernelError(_) => ContractError::KernelError,
+        }
+    }
 }
 
 impl RuntimeError {

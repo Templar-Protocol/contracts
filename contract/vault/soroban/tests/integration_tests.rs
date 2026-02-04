@@ -165,21 +165,28 @@ fn soroban_contract_blend_config_roundtrip() {
     let factory = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin.clone(), asset, share);
+        SorobanVaultContract::initialize(env.clone(), admin.clone(), asset, share).unwrap();
     });
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::set_blend_adapter(env.clone(), admin.clone(), adapter.clone());
+        SorobanVaultContract::set_blend_adapter(env.clone(), admin.clone(), adapter.clone())
+            .unwrap();
     });
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::set_blend_pool(env.clone(), admin.clone(), pool.clone());
+        SorobanVaultContract::set_blend_pool(env.clone(), admin.clone(), pool.clone()).unwrap();
     });
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::set_blend_factory(env.clone(), admin, factory.clone());
+        SorobanVaultContract::set_blend_factory(env.clone(), admin, factory.clone()).unwrap();
     });
     env.as_contract(&contract_id, || {
-        assert_eq!(SorobanVaultContract::blend_adapter(env.clone()), adapter);
-        assert_eq!(SorobanVaultContract::blend_pool(env.clone()), pool);
-        assert_eq!(SorobanVaultContract::blend_factory(env.clone()), factory);
+        assert_eq!(
+            SorobanVaultContract::blend_adapter(env.clone()).unwrap(),
+            adapter
+        );
+        assert_eq!(SorobanVaultContract::blend_pool(env.clone()).unwrap(), pool);
+        assert_eq!(
+            SorobanVaultContract::blend_factory(env.clone()).unwrap(),
+            factory
+        );
     });
 }
 
@@ -264,7 +271,7 @@ fn soroban_contract_preview_deposit_matches_kernel() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
     });
 
     let assets_in = 500u128;
@@ -275,7 +282,8 @@ fn soroban_contract_preview_deposit_matches_kernel() {
         let versioned = VersionedState::new(empty_state.clone());
         storage.save_state(&versioned).unwrap();
 
-        let preview = SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128);
+        let preview =
+            SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(empty_state, assets_in);
         assert_eq!(preview as u128, minted);
     });
@@ -289,7 +297,8 @@ fn soroban_contract_preview_deposit_matches_kernel() {
         let versioned = VersionedState::new(state.clone());
         storage.save_state(&versioned).unwrap();
 
-        let preview = SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128);
+        let preview =
+            SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(state, assets_in);
         assert_eq!(preview as u128, minted);
     });
@@ -306,7 +315,7 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
     });
 
     let shares_in = 800u128;
@@ -320,15 +329,15 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
         let versioned = VersionedState::new(state.clone());
         storage.save_state(&versioned).unwrap();
 
-        let preview = SorobanVaultContract::preview_withdraw(env.clone(), shares_in as i128);
+        let preview =
+            SorobanVaultContract::preview_withdraw(env.clone(), shares_in as i128).unwrap();
         let expected_assets = expected_assets_from_withdraw(state, shares_in);
         assert_eq!(preview as u128, expected_assets);
     });
 }
 
 #[test]
-#[should_panic(expected = "execute_withdraw failed")]
-fn soroban_contract_execute_withdraw_queue_empty_panics() {
+fn soroban_contract_execute_withdraw_queue_empty_errors() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -339,17 +348,17 @@ fn soroban_contract_execute_withdraw_queue_empty_panics() {
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
     });
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        assert!(result.is_err());
     });
 }
 
 #[test]
-#[should_panic(expected = "execute_withdraw failed")]
-fn soroban_contract_execute_withdraw_non_idle_panics() {
+fn soroban_contract_execute_withdraw_non_idle_errors() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -360,7 +369,7 @@ fn soroban_contract_execute_withdraw_non_idle_panics() {
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -377,7 +386,8 @@ fn soroban_contract_execute_withdraw_non_idle_panics() {
     });
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        assert!(result.is_err());
     });
 }
 

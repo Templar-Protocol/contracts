@@ -52,7 +52,7 @@ pub use effects::{
     SorobanEffectInterpreter, TestSep41Token, WithdrawCollectedEvent, WithdrawRequestEvent,
     WithdrawStartEvent, WithdrawStoppedEvent,
 };
-pub use error::RuntimeError;
+pub use error::{ContractError, RuntimeError};
 pub use market::{
     AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt,
     SorobanCrossChainMarketAdapter, SorobanMarketAdapter, TestCrossChainAdapter, TestMarketAdapter,

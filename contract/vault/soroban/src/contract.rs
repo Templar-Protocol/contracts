@@ -33,7 +33,7 @@ use crate::effects::{
     AddressRegistrar, EffectContext, EffectInterpreter, EffectSummary, SdkTokenAdapter,
     SorobanEffectInterpreter,
 };
-use crate::error::RuntimeError;
+use crate::error::{ContractError, RuntimeError};
 use crate::market::{CrossChainMarketAdapter, MarketAdapter, MarketRef};
 use crate::policy::{build_refresh_plan_with_locks, filter_allocation_plan};
 use crate::reconciliation::{reconcile_external_assets, ReconciliationRecord};
@@ -1542,14 +1542,17 @@ fn with_contract_vault<T>(
     f(&mut vault)
 }
 
-fn with_reentrancy_guard<T>(env: &Env, f: impl FnOnce() -> T) -> T {
+fn with_reentrancy_guard<T>(
+    env: &Env,
+    f: impl FnOnce() -> Result<T, ContractError>,
+) -> Result<T, ContractError> {
     let locked: bool = env
         .storage()
         .instance()
         .get(&VaultDataKey::ReentrancyLock)
         .unwrap_or(false);
     if locked {
-        panic!("reentrancy");
+        return Err(ContractError::Reentrancy);
     }
     env.storage()
         .instance()
@@ -1572,22 +1575,22 @@ impl SorobanVaultContract {
     /// * `asset_token` - Address of the underlying asset token
     /// * `share_token` - Address of the share token
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the contract is already initialized.
+    /// Returns an error if the contract is already initialized or storage fails.
     pub fn initialize(
         env: Env,
         admin: SdkAddress,
         asset_token: SdkAddress,
         share_token: SdkAddress,
-    ) {
+    ) -> Result<(), ContractError> {
         // Check not already initialized
         if env
             .storage()
             .instance()
             .has(&VaultDataKey::Initialized)
         {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
 
         // Store configuration
@@ -1609,18 +1612,16 @@ impl SorobanVaultContract {
         env.storage()
             .instance()
             .set(&VaultDataKey::Initialized, &true);
-        store_fees_spec(&env, &FeesSpec::zero())
-            .unwrap_or_else(|e| panic!("failed to initialize fees: {:?}", e));
+        store_fees_spec(&env, &FeesSpec::zero()).map_err(ContractError::from)?;
 
         // Initialize vault state in persistent storage using current version.
         let mut storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(VaultState::default());
         storage
             .save_state(&versioned)
-            .unwrap_or_else(|e| panic!("failed to initialize storage: {:?}", e));
-        storage.save_paused(false).unwrap_or_else(|e| {
-            panic!("failed to initialize paused state: {:?}", e);
-        });
+            .map_err(ContractError::from)?;
+        storage.save_paused(false).map_err(ContractError::from)?;
+        Ok(())
     }
 
     /// Deposit assets into the vault.
@@ -1642,19 +1643,20 @@ impl SorobanVaultContract {
         receiver: SdkAddress,
         assets: i128,
         min_shares_out: i128,
-    ) -> i128 {
+    ) -> Result<i128, ContractError> {
         // Require authorization from owner
         owner.require_auth();
 
         if assets <= 0 {
-            panic!("deposit amount must be positive");
+            return Err(ContractError::InvalidInput);
         }
 
-        let assets_u128 = u128::try_from(assets).expect("deposit amount exceeds u128");
+        let assets_u128 =
+            u128::try_from(assets).map_err(|_| ContractError::ConversionOverflow)?;
         let min_shares_u128 = if min_shares_out < 0 {
-            panic!("min_shares_out must be non-negative");
+            return Err(ContractError::InvalidInput);
         } else {
-            u128::try_from(min_shares_out).expect("min_shares_out exceeds u128")
+            u128::try_from(min_shares_out).map_err(|_| ContractError::ConversionOverflow)?
         };
         let now_ns = ledger_timestamp_ns(&env);
 
@@ -1669,9 +1671,11 @@ impl SorobanVaultContract {
                     now_ns,
                 )
             })
-            .unwrap_or_else(|e| panic!("deposit failed: {:?}", e));
+            .map_err(ContractError::from)?;
 
-            i128::try_from(result.shares_minted).expect("shares minted exceeds i128")
+            let shares = i128::try_from(result.shares_minted)
+                .map_err(|_| ContractError::ConversionOverflow)?;
+            Ok(shares)
         })
     }
 
@@ -1694,18 +1698,19 @@ impl SorobanVaultContract {
         receiver: SdkAddress,
         shares: i128,
         min_assets_out: i128,
-    ) -> u64 {
+    ) -> Result<u64, ContractError> {
         // Require authorization from owner
         owner.require_auth();
 
         if shares <= 0 {
-            panic!("shares must be positive");
+            return Err(ContractError::InvalidInput);
         }
-        let shares_u128 = u128::try_from(shares).expect("shares exceeds u128");
+        let shares_u128 =
+            u128::try_from(shares).map_err(|_| ContractError::ConversionOverflow)?;
         let min_assets_u128 = if min_assets_out < 0 {
-            panic!("min_assets_out must be non-negative");
+            return Err(ContractError::InvalidInput);
         } else {
-            u128::try_from(min_assets_out).expect("min_assets_out exceeds u128")
+            u128::try_from(min_assets_out).map_err(|_| ContractError::ConversionOverflow)?
         };
         let now_ns = ledger_timestamp_ns(&env);
 
@@ -1720,9 +1725,9 @@ impl SorobanVaultContract {
                     now_ns,
                 )
             })
-            .unwrap_or_else(|e| panic!("request_withdraw failed: {:?}", e));
+            .map_err(ContractError::from)?;
 
-            result.request_id
+            Ok(result.request_id)
         })
     }
 
@@ -1732,7 +1737,7 @@ impl SorobanVaultContract {
     ///
     /// * `env` - The Soroban environment
     /// * `caller` - The caller's address
-    pub fn execute_withdraw(env: Env, caller: SdkAddress) {
+    pub fn execute_withdraw(env: Env, caller: SdkAddress) -> Result<(), ContractError> {
         caller.require_auth();
         let now_ns = ledger_timestamp_ns(&env);
 
@@ -1740,8 +1745,10 @@ impl SorobanVaultContract {
             with_contract_vault(&env, |vault| {
                 vault.execute_withdraw_soroban(&env, caller.clone(), now_ns)
             })
-            .unwrap_or_else(|e| panic!("execute_withdraw failed: {:?}", e));
-        });
+            .map_err(ContractError::from)?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Pause or unpause the vault.
@@ -1751,12 +1758,16 @@ impl SorobanVaultContract {
     /// * `env` - The Soroban environment
     /// * `caller` - The caller (must be admin)
     /// * `paused` - Whether to pause (true) or unpause (false)
-    pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) {
+    pub fn set_paused(
+        env: Env,
+        caller: SdkAddress,
+        paused: bool,
+    ) -> Result<(), ContractError> {
         caller.require_auth();
         let caller_kernel = kernel_address_from_sdk(&env, &caller);
 
         with_contract_vault(&env, |vault| vault.pause(caller_kernel, paused))
-            .unwrap_or_else(|e| panic!("pause failed: {:?}", e));
+            .map_err(ContractError::from)?;
 
         // Keep legacy paused flag in sync.
         env.storage()
@@ -1766,78 +1777,94 @@ impl SorobanVaultContract {
         // Emit event
         use crate::effects::PauseUpdatedEvent;
         PauseUpdatedEvent { paused }.publish(&env);
+        Ok(())
     }
 
     /// Set the Blend adapter contract address (admin only).
-    pub fn set_blend_adapter(env: Env, caller: SdkAddress, adapter: SdkAddress) {
-        require_admin(&env, &caller);
+    pub fn set_blend_adapter(
+        env: Env,
+        caller: SdkAddress,
+        adapter: SdkAddress,
+    ) -> Result<(), ContractError> {
+        require_admin(&env, &caller)?;
         env.storage()
             .instance()
             .set(&VaultDataKey::BlendAdapter, &adapter);
+        Ok(())
     }
 
     /// Set the Blend pool contract address (admin only).
-    pub fn set_blend_pool(env: Env, caller: SdkAddress, pool: SdkAddress) {
-        require_admin(&env, &caller);
+    pub fn set_blend_pool(
+        env: Env,
+        caller: SdkAddress,
+        pool: SdkAddress,
+    ) -> Result<(), ContractError> {
+        require_admin(&env, &caller)?;
         env.storage()
             .instance()
             .set(&VaultDataKey::BlendPool, &pool);
+        Ok(())
     }
 
     /// Set the Blend factory contract address (admin only).
-    pub fn set_blend_factory(env: Env, caller: SdkAddress, factory: SdkAddress) {
-        require_admin(&env, &caller);
+    pub fn set_blend_factory(
+        env: Env,
+        caller: SdkAddress,
+        factory: SdkAddress,
+    ) -> Result<(), ContractError> {
+        require_admin(&env, &caller)?;
         env.storage()
             .instance()
             .set(&VaultDataKey::BlendFactory, &factory);
+        Ok(())
     }
 
     /// Get the admin address.
-    pub fn admin(env: Env) -> SdkAddress {
+    pub fn admin(env: Env) -> Result<SdkAddress, ContractError> {
         env.storage()
             .instance()
             .get(&VaultDataKey::Admin)
-            .expect("admin not set")
+            .ok_or(ContractError::MissingConfig)
     }
 
     /// Get the asset token address.
-    pub fn asset_token(env: Env) -> SdkAddress {
+    pub fn asset_token(env: Env) -> Result<SdkAddress, ContractError> {
         env.storage()
             .instance()
             .get(&VaultDataKey::AssetToken)
-            .expect("asset token not set")
+            .ok_or(ContractError::MissingConfig)
     }
 
     /// Get the share token address.
-    pub fn share_token(env: Env) -> SdkAddress {
+    pub fn share_token(env: Env) -> Result<SdkAddress, ContractError> {
         env.storage()
             .instance()
             .get(&VaultDataKey::ShareToken)
-            .expect("share token not set")
+            .ok_or(ContractError::MissingConfig)
     }
 
     /// Get the Blend adapter contract address.
-    pub fn blend_adapter(env: Env) -> SdkAddress {
+    pub fn blend_adapter(env: Env) -> Result<SdkAddress, ContractError> {
         env.storage()
             .instance()
             .get(&VaultDataKey::BlendAdapter)
-            .expect("blend adapter not set")
+            .ok_or(ContractError::MissingConfig)
     }
 
     /// Get the Blend pool contract address.
-    pub fn blend_pool(env: Env) -> SdkAddress {
+    pub fn blend_pool(env: Env) -> Result<SdkAddress, ContractError> {
         env.storage()
             .instance()
             .get(&VaultDataKey::BlendPool)
-            .expect("blend pool not set")
+            .ok_or(ContractError::MissingConfig)
     }
 
     /// Get the Blend factory contract address.
-    pub fn blend_factory(env: Env) -> SdkAddress {
+    pub fn blend_factory(env: Env) -> Result<SdkAddress, ContractError> {
         env.storage()
             .instance()
             .get(&VaultDataKey::BlendFactory)
-            .expect("blend factory not set")
+            .ok_or(ContractError::MissingConfig)
     }
 
     /// Check if the vault is paused.
@@ -1896,16 +1923,17 @@ impl SorobanVaultContract {
     /// # Returns
     ///
     /// The number of shares that would be minted.
-    pub fn preview_deposit(env: Env, assets: i128) -> i128 {
+    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
         if assets <= 0 {
-            return 0;
+            return Ok(0);
         }
-        let assets_u128 = u128::try_from(assets).expect("assets exceeds u128");
+        let assets_u128 =
+            u128::try_from(assets).map_err(|_| ContractError::ConversionOverflow)?;
 
         let storage = SorobanStorage::new(&env);
         let state = storage
             .load_state()
-            .unwrap_or_else(|e| panic!("preview_deposit failed to load state: {:?}", e))
+            .map_err(ContractError::from)?
             .map(|versioned| versioned.state)
             .unwrap_or_default();
         let config = VaultConfig {
@@ -1917,7 +1945,9 @@ impl SorobanVaultContract {
             virtual_assets: 0,
         };
         let shares = preview_deposit_shares(&state, &config, assets_u128);
-        i128::try_from(shares).expect("preview shares exceeds i128")
+        let shares_i128 =
+            i128::try_from(shares).map_err(|_| ContractError::ConversionOverflow)?;
+        Ok(shares_i128)
     }
 
     /// Calculate assets for a given withdrawal amount.
@@ -1930,16 +1960,17 @@ impl SorobanVaultContract {
     /// # Returns
     ///
     /// The number of assets that would be returned.
-    pub fn preview_withdraw(env: Env, shares: i128) -> i128 {
+    pub fn preview_withdraw(env: Env, shares: i128) -> Result<i128, ContractError> {
         if shares <= 0 {
-            return 0;
+            return Ok(0);
         }
-        let shares_u128 = u128::try_from(shares).expect("shares exceeds u128");
+        let shares_u128 =
+            u128::try_from(shares).map_err(|_| ContractError::ConversionOverflow)?;
 
         let storage = SorobanStorage::new(&env);
         let state = storage
             .load_state()
-            .unwrap_or_else(|e| panic!("preview_withdraw failed to load state: {:?}", e))
+            .map_err(ContractError::from)?
             .map(|versioned| versioned.state)
             .unwrap_or_default();
         let config = VaultConfig {
@@ -1951,7 +1982,9 @@ impl SorobanVaultContract {
             virtual_assets: 0,
         };
         let assets = preview_withdraw_assets(&state, &config, shares_u128);
-        i128::try_from(assets).expect("preview assets exceeds i128")
+        let assets_i128 =
+            i128::try_from(assets).map_err(|_| ContractError::ConversionOverflow)?;
+        Ok(assets_i128)
     }
 
     /// Extend the TTL of contract storage.
@@ -1962,16 +1995,17 @@ impl SorobanVaultContract {
     }
 }
 
-fn require_admin(env: &Env, caller: &SdkAddress) {
+fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
     caller.require_auth();
     let admin: SdkAddress = env
         .storage()
         .instance()
         .get(&VaultDataKey::Admin)
-        .expect("admin not set");
+        .ok_or(ContractError::MissingConfig)?;
     if caller != &admin {
-        panic!("caller is not admin");
+        return Err(ContractError::Unauthorized);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2187,7 +2221,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "reentrancy")]
     fn test_reentrancy_guard_blocks_nested() {
         use soroban_sdk::testutils::Address as _;
 
@@ -2200,10 +2233,11 @@ mod tests {
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), admin, asset, share);
-            with_reentrancy_guard(&env, || {
-                with_reentrancy_guard(&env, || {});
+            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+            let result = with_reentrancy_guard(&env, || {
+                with_reentrancy_guard(&env, || Ok(()))
             });
+            assert_eq!(result, Err(ContractError::Reentrancy));
         });
     }
 
@@ -2220,9 +2254,9 @@ mod tests {
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), admin, asset, share);
-            with_reentrancy_guard(&env, || {});
-            with_reentrancy_guard(&env, || {});
+            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+            with_reentrancy_guard(&env, || Ok(())).unwrap();
+            with_reentrancy_guard(&env, || Ok(())).unwrap();
         });
     }
 
@@ -2241,7 +2275,7 @@ mod tests {
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), admin, asset, share);
+            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
         });
 
         let fees = FeesSpec::new(
