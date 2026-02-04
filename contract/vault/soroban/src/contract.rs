@@ -2239,7 +2239,7 @@ mod tests {
         let receiver = [2u8; 32];
 
         let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
-        let request_time: u64 = 100;
+        let request_time: u64 = 200;
         let exec_time = request_time
             .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
             .saturating_add(1);

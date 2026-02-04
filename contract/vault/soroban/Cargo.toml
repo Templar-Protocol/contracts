@@ -18,7 +18,7 @@ testutils = ["soroban-sdk/testutils"]
 templar-vault-kernel = { path = "../kernel", features = ["borsh"] }
 
 # Curator primitives for policy and recovery
-templar-curator-primitives = { path = "../curator-primitives" }
+templar-curator-primitives = { path = "../curator-primitives", features = ["borsh"] }
 derive_more.workspace = true
 borsh = { version = "1.5", default-features = false, features = ["derive"] }
 

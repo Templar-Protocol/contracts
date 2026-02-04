@@ -6,7 +6,8 @@
 use alloc::vec::Vec;
 use derive_more::{From, Into};
 use soroban_sdk::{contracttype, Env};
-use templar_vault_kernel::VaultState;
+use templar_curator_primitives::PolicyState;
+use templar_vault_kernel::{Restrictions, VaultState};
 
 use crate::error::RuntimeError;
 
@@ -30,6 +31,10 @@ pub enum SorobanStorageKey {
     OpState,
     /// Persisted withdrawal queue.
     WithdrawQueue,
+    /// Policy state (locks, caps, supply queue).
+    PolicyState,
+    /// Kernel restrictions (pause/allowlist/denylist).
+    Restrictions,
     /// Storage version number.
     Version,
     /// Contract configuration.
@@ -223,6 +228,46 @@ impl<'a> SorobanStorage<'a> {
             .set(&SorobanStorageKey::WithdrawQueue, queue);
     }
 
+    /// Load the policy state from persistent storage.
+    pub fn load_policy_state(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get(&SorobanStorageKey::PolicyState)
+    }
+
+    /// Save the policy state to persistent storage.
+    pub fn save_policy_state(&self, state: &Vec<u8>) {
+        self.env
+            .storage()
+            .persistent()
+            .set(&SorobanStorageKey::PolicyState, state);
+    }
+
+    /// Load restrictions from persistent storage.
+    pub fn load_restrictions(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get(&SorobanStorageKey::Restrictions)
+    }
+
+    /// Save restrictions to persistent storage.
+    pub fn save_restrictions(&self, restrictions: &Vec<u8>) {
+        self.env
+            .storage()
+            .persistent()
+            .set(&SorobanStorageKey::Restrictions, restrictions);
+    }
+
+    /// Clear restrictions from persistent storage.
+    pub fn clear_restrictions(&self) {
+        self.env
+            .storage()
+            .persistent()
+            .remove(&SorobanStorageKey::Restrictions);
+    }
+
     /// Get the storage version.
     pub fn get_version(&self) -> Option<u32> {
         self.env
@@ -284,6 +329,30 @@ impl<'a> SorobanStorage<'a> {
             threshold,
             extend_to,
         );
+        if self
+            .env
+            .storage()
+            .persistent()
+            .has(&SorobanStorageKey::PolicyState)
+        {
+            self.env.storage().persistent().extend_ttl(
+                &SorobanStorageKey::PolicyState,
+                threshold,
+                extend_to,
+            );
+        }
+        if self
+            .env
+            .storage()
+            .persistent()
+            .has(&SorobanStorageKey::Restrictions)
+        {
+            self.env.storage().persistent().extend_ttl(
+                &SorobanStorageKey::Restrictions,
+                threshold,
+                extend_to,
+            );
+        }
         self.env.storage().persistent().extend_ttl(
             &SorobanStorageKey::Version,
             threshold,
@@ -376,6 +445,47 @@ impl Storage for SorobanStorage<'_> {
 
     fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError> {
         self.set_paused(paused);
+        self.extend_default_ttl();
+        Ok(())
+    }
+
+    fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
+        match SorobanStorage::load_policy_state(self) {
+            Some(stored) => Ok(Some(borsh_deserialize::<PolicyState>(
+                &stored,
+                "policy_state deserialize failed",
+            )?)),
+            None => Ok(None),
+        }
+    }
+
+    fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
+        let bytes = borsh_serialize(state, "policy_state serialize failed")?;
+        SorobanStorage::save_policy_state(self, &bytes);
+        self.extend_default_ttl();
+        Ok(())
+    }
+
+    fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
+        match SorobanStorage::load_restrictions(self) {
+            Some(stored) => Ok(Some(borsh_deserialize::<Restrictions>(
+                &stored,
+                "restrictions deserialize failed",
+            )?)),
+            None => Ok(None),
+        }
+    }
+
+    fn save_restrictions(
+        &mut self,
+        restrictions: &Option<Restrictions>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(restrictions) = restrictions {
+            let bytes = borsh_serialize(restrictions, "restrictions serialize failed")?;
+            SorobanStorage::save_restrictions(self, &bytes);
+        } else {
+            SorobanStorage::clear_restrictions(self);
+        }
         self.extend_default_ttl();
         Ok(())
     }
@@ -512,6 +622,19 @@ pub trait Storage {
 
     /// Persist the paused flag for the vault.
     fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError>;
+
+    /// Load the policy state for the vault.
+    fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError>;
+
+    /// Persist the policy state for the vault.
+    fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError>;
+
+    /// Load kernel restrictions for the vault.
+    fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError>;
+
+    /// Persist kernel restrictions for the vault.
+    fn save_restrictions(&mut self, restrictions: &Option<Restrictions>)
+        -> Result<(), RuntimeError>;
 }
 
 /// In-memory storage implementation for testing.
@@ -520,6 +643,8 @@ pub struct MemoryStorage {
     state: Option<VersionedState>,
     initialized: bool,
     paused: bool,
+    policy_state: Option<PolicyState>,
+    restrictions: Option<Restrictions>,
 }
 
 impl MemoryStorage {
@@ -538,6 +663,8 @@ impl MemoryStorage {
             state: Some(state),
             initialized: true,
             paused: false,
+            policy_state: None,
+            restrictions: None,
         }
     }
 
@@ -553,6 +680,8 @@ impl MemoryStorage {
     pub fn clear(&mut self) {
         self.state = None;
         self.initialized = false;
+        self.policy_state = None;
+        self.restrictions = None;
     }
 }
 
@@ -584,6 +713,27 @@ impl Storage for MemoryStorage {
 
     fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError> {
         self.paused = paused;
+        Ok(())
+    }
+
+    fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
+        Ok(self.policy_state.clone())
+    }
+
+    fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
+        self.policy_state = Some(state.clone());
+        Ok(())
+    }
+
+    fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
+        Ok(self.restrictions.clone())
+    }
+
+    fn save_restrictions(
+        &mut self,
+        restrictions: &Option<Restrictions>,
+    ) -> Result<(), RuntimeError> {
+        self.restrictions = restrictions.clone();
         Ok(())
     }
 }
@@ -797,17 +947,21 @@ mod tests {
         let key1 = SorobanStorageKey::VaultState;
         let key2 = SorobanStorageKey::OpState;
         let key3 = SorobanStorageKey::WithdrawQueue;
-        let key4 = SorobanStorageKey::Version;
-        let key5 = SorobanStorageKey::Config;
-        let key6 = SorobanStorageKey::Paused;
+        let key4 = SorobanStorageKey::PolicyState;
+        let key5 = SorobanStorageKey::Restrictions;
+        let key6 = SorobanStorageKey::Version;
+        let key7 = SorobanStorageKey::Config;
+        let key8 = SorobanStorageKey::Paused;
 
         // Keys should be distinct
         assert!(matches!(key1, SorobanStorageKey::VaultState));
         assert!(matches!(key2, SorobanStorageKey::OpState));
         assert!(matches!(key3, SorobanStorageKey::WithdrawQueue));
-        assert!(matches!(key4, SorobanStorageKey::Version));
-        assert!(matches!(key5, SorobanStorageKey::Config));
-        assert!(matches!(key6, SorobanStorageKey::Paused));
+        assert!(matches!(key4, SorobanStorageKey::PolicyState));
+        assert!(matches!(key5, SorobanStorageKey::Restrictions));
+        assert!(matches!(key6, SorobanStorageKey::Version));
+        assert!(matches!(key7, SorobanStorageKey::Config));
+        assert!(matches!(key8, SorobanStorageKey::Paused));
     }
 
     // Helper to create a registered contract for storage tests
