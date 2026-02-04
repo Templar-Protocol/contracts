@@ -6,5 +6,6 @@ use crate::asset::BorrowAssetAmount;
 #[near(serializers = [json, borsh])]
 pub struct IncomingDeposit {
     pub activate_at_snapshot_index: u32,
-    pub amount: BorrowAssetAmount,
+    pub amount_real: BorrowAssetAmount,
+    pub amount_virtual: BorrowAssetAmount,
 }

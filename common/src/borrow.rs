@@ -824,7 +824,7 @@ mod tests {
         };
 
         let mut market = Market::new(b"m", configuration.clone());
-        market.borrow_asset_deposited_active += BorrowAssetAmount::new(100_000_000_000);
+        market.borrow_asset_deposited_active_real += BorrowAssetAmount::new(100_000_000_000);
         market.borrow_asset_balance += BorrowAssetAmount::new(100_000_000_000);
         let snapshot_proof = market.snapshot();
 

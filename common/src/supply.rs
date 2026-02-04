@@ -29,7 +29,7 @@ impl Deposit {
     pub fn total(&self) -> BorrowAssetAmount {
         let mut total = self.active + self.outgoing;
         for incoming in &self.incoming {
-            total += incoming.amount;
+            total += incoming.amount_real + incoming.amount_virtual;
         }
         total
     }
@@ -56,12 +56,12 @@ impl SupplyPosition {
         &self.borrow_asset_deposit
     }
 
-    pub fn total_incoming(&self) -> BorrowAssetAmount {
+    pub fn total_incoming_real(&self) -> BorrowAssetAmount {
         self.borrow_asset_deposit
             .incoming
             .iter()
             .fold(BorrowAssetAmount::zero(), |total_incoming, incoming| {
-                total_incoming + incoming.amount
+                total_incoming + incoming.amount_real
             })
     }
 
@@ -163,10 +163,11 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
                 .filter(|incoming| incoming.activate_at_snapshot_index as usize == i)
             {
                 next_incoming += 1;
-                amount += u128::from(incoming.amount);
+                amount += u128::from(incoming.amount_real + incoming.amount_virtual);
             }
 
-            if !snapshot.borrow_asset_deposited_active.is_zero() {
+            let snapshot_active_supply = snapshot.active_supply();
+            if !snapshot_active_supply.is_zero() {
                 let snapshot_duration_ms = snapshot.end_timestamp_ms.0 - prev_end_timestamp_ms;
                 let interest_paid_by_borrowers = Decimal::from(snapshot.borrow_asset_borrowed)
                     * snapshot.interest_rate
@@ -175,7 +176,7 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
                 let other_yield = Decimal::from(snapshot.yield_distribution);
                 accumulated +=
                     (interest_paid_by_borrowers + other_yield) * amount * weight_numerator
-                        / u128::from(snapshot.borrow_asset_deposited_active)
+                        / u128::from(snapshot_active_supply)
                         / weight_denominator;
             }
 
@@ -235,25 +236,32 @@ impl<'a> SupplyPositionGuard<'a> {
         while let Some(deposit) =
             incoming.next_if(|d| d.activate_at_snapshot_index <= through_snapshot_index)
         {
-            self.position.borrow_asset_deposit.active += deposit.amount;
+            self.position.borrow_asset_deposit.active +=
+                deposit.amount_real + deposit.amount_virtual;
         }
         self.position.borrow_asset_deposit.incoming = incoming.collect();
 
         // Calling market.snapshot() performs the market accounting
     }
 
-    fn remove_active(&mut self, amount: BorrowAssetAmount) {
-        self.position.borrow_asset_deposit.active -= amount;
-        self.market.borrow_asset_deposited_active -= amount;
-    }
+    // fn remove_active(&mut self, amount: BorrowAssetAmount) {
+    //     self.position.borrow_asset_deposit.active -= amount;
+    //     self.market.borrow_asset_deposited_active -= amount;
+    // }
 
-    fn add_incoming(&mut self, amount: BorrowAssetAmount, activate_at_snapshot_index: u32) {
+    fn add_incoming(
+        &mut self,
+        amount_real: BorrowAssetAmount,
+        amount_virtual: BorrowAssetAmount,
+        activate_at_snapshot_index: u32,
+    ) {
         let incoming = &mut self.position.borrow_asset_deposit.incoming;
         if let Some(deposit) = incoming
             .last_mut()
             .filter(|i| i.activate_at_snapshot_index == activate_at_snapshot_index)
         {
-            deposit.amount += amount;
+            deposit.amount_real += amount_real;
+            deposit.amount_virtual += amount_virtual;
         } else {
             const MAX_INCOMING: usize = 4;
             require!(
@@ -262,7 +270,8 @@ impl<'a> SupplyPositionGuard<'a> {
             );
             incoming.push(IncomingDeposit {
                 activate_at_snapshot_index,
-                amount,
+                amount_real,
+                amount_virtual,
             });
         }
 
@@ -272,22 +281,45 @@ impl<'a> SupplyPositionGuard<'a> {
             .iter_mut()
             .find(|incoming| incoming.activate_at_snapshot_index == activate_at_snapshot_index)
         {
-            incoming.amount += amount;
+            incoming.amount_real += amount_real;
+            incoming.amount_virtual += amount_virtual;
         } else {
             self.market
                 .borrow_asset_deposited_incoming
                 .push(IncomingDeposit {
                     activate_at_snapshot_index,
-                    amount,
+                    amount_real,
+                    amount_virtual,
                 });
         }
     }
 
     /// Returns the amount successfully removed from incoming.
-    fn remove_incoming(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
+    fn remove_incoming_real(&mut self, amount: BorrowAssetAmount) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
+        for newest in self.position.borrow_asset_deposit.incoming.iter_mut().rev() {
+            let Some(market_incoming) = self
+                .market
+                .incoming_at_mut(newest.activate_at_snapshot_index)
+            else {
+                crate::panic_with_message("Invariant violation: Market incoming entry should exist if position incoming entry exists");
+            };
+            if total + newest.amount_real >= amount {
+                total = amount;
+                newest.amount_real = total + newest.amount_real - amount;
+                break;
+            }
+            total += newest.amount_real;
+            newest.amount_real = 0.into();
+        }
+
+        self.position
+            .borrow_asset_deposit
+            .incoming
+            .retain(|i| !i.amount_real.is_zero() || !i.amount_virtual.is_zero());
+
         while let Some(newest) = self.position.borrow_asset_deposit.incoming.pop() {
-            total += newest.amount;
+            total += newest.amount_real;
 
             let Some(market_incoming) = self
                 .market
@@ -299,7 +331,7 @@ impl<'a> SupplyPositionGuard<'a> {
             else {
                 crate::panic_with_message("Invariant violation: Market incoming entry should exist if position incoming entry exists");
             };
-            market_incoming.amount = market_incoming.amount.unwrap_sub(newest.amount, "Invariant violation: Market incoming >= position incoming should hold for all snapshot indices");
+            market_incoming.amount_real = market_incoming.amount_real.unwrap_sub(newest.amount_real, "Invariant violation: Market incoming >= position incoming should hold for all snapshot indices");
 
             #[allow(clippy::comparison_chain)]
             if total == amount {
@@ -347,7 +379,7 @@ impl<'a> SupplyPositionGuard<'a> {
         // Check liquidity & eligibility
         //
 
-        let my_incoming = self.position.total_incoming();
+        let my_incoming = self.position.total_incoming_real();
         let my_active = self.position.get_deposit().active;
         let entitled_to_withdraw = my_incoming + my_active;
 
@@ -356,8 +388,8 @@ impl<'a> SupplyPositionGuard<'a> {
         }
 
         let requested_amount = requested_amount.min(entitled_to_withdraw);
-        let market_incoming = self.market.total_incoming();
-        let available_to_me = self.market.borrow_asset_balance - market_incoming + my_incoming;
+        let market_incoming = self.market.total_incoming_real();
+        let available_to_me = self.market.active_supply() - market_incoming + my_incoming;
         let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
 
         if can_withdraw_now.is_zero() {
@@ -467,10 +499,6 @@ impl<'a> SupplyPositionGuard<'a> {
             }
             .emit();
         }
-    }
-
-    pub fn record_yield_withdrawal(&mut self, amount: BorrowAssetAmount) {
-        self.0.position.borrow_asset_yield.remove(amount);
     }
 
     /// Converts an amount of borrow asset from the yield record to the
