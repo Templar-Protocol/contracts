@@ -1495,11 +1495,20 @@ fn extend_storage_ttl(env: &Env) {
     storage.extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
 }
 
+fn migrate_legacy_paused(env: &Env) {
+    if let Some(paused) = env.storage().instance().get(&VaultDataKey::Paused) {
+        let storage = SorobanStorage::new(env);
+        storage.set_paused(paused);
+        env.storage().instance().remove(&VaultDataKey::Paused);
+    }
+}
+
 fn with_contract_vault<T>(
     env: &Env,
     f: impl FnOnce(&mut ContractVault<'_>) -> Result<T, RuntimeError>,
 ) -> Result<T, RuntimeError> {
     extend_storage_ttl(env);
+    migrate_legacy_paused(env);
     let admin: SdkAddress = env
         .storage()
         .instance()
@@ -1628,9 +1637,6 @@ impl SorobanVaultContract {
         env.storage()
             .instance()
             .set(&VaultDataKey::ShareToken, &share_token);
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::Paused, &false);
         env.storage()
             .instance()
             .set(&VaultDataKey::ReentrancyLock, &false);
@@ -1793,11 +1799,7 @@ impl SorobanVaultContract {
 
         with_contract_vault(&env, |vault| vault.pause(caller_kernel, paused))
             .map_err(ContractError::from)?;
-
-        // Keep legacy paused flag in sync.
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::Paused, &paused);
+        env.storage().instance().remove(&VaultDataKey::Paused);
 
         // Emit event
         use crate::effects::PauseUpdatedEvent;
