@@ -26,7 +26,9 @@ use templar_vault_kernel::{
     VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
-use templar_vault_kernel::state::queue::{compute_full_withdrawal, compute_partial_withdrawal};
+use templar_vault_kernel::state::queue::{
+    can_partially_satisfy, compute_full_withdrawal, compute_partial_withdrawal,
+};
 
 use crate::auth::{ActionKind, AuthAdapter};
 use crate::effects::{
@@ -352,6 +354,11 @@ where
             }
         }
         self.paused = self.storage.load_paused()?;
+        self.policy_state = self
+            .storage
+            .load_policy_state()?
+            .unwrap_or_else(PolicyState::new);
+        self.restrictions = self.storage.load_restrictions()?;
         Ok(())
     }
 
@@ -783,6 +790,9 @@ where
             compute_full_withdrawal(pending, available_assets)
                 .ok_or_else(|| RuntimeError::contract_error("withdrawal not satisfiable"))?
         } else {
+            if !can_partially_satisfy(pending, available_assets) {
+                return Ok(EffectSummary::new());
+            }
             compute_partial_withdrawal(pending, available_assets)
         };
 
@@ -873,6 +883,7 @@ where
             .authorize(ActionKind::SetRestrictions, caller, None)?;
 
         self.restrictions = restrictions;
+        self.storage.save_restrictions(&self.restrictions)?;
         Ok(())
     }
 
@@ -1381,6 +1392,7 @@ where
             self.policy_state.locks.acquire(lock, current_ns).map_err(|e| {
                 RuntimeError::contract_error(alloc::format!("failed to acquire lock: {:?}", e))
             })?;
+        self.storage.save_policy_state(&self.policy_state)?;
 
         Ok(())
     }
@@ -1401,6 +1413,7 @@ where
             .authorize(ActionKind::BeginAllocating, caller, None)?;
 
         self.policy_state.locks = self.policy_state.locks.release(target_id);
+        self.storage.save_policy_state(&self.policy_state)?;
 
         Ok(())
     }
@@ -2219,6 +2232,57 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_withdraw_respects_min_withdrawal_assets() {
+        let mut vault = create_test_vault();
+        let allocator = [3u8; 32];
+        let owner = [1u8; 32];
+        let receiver = [2u8; 32];
+
+        let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
+        let request_time: u64 = 100;
+        let exec_time = request_time
+            .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+            .saturating_add(1);
+
+        vault
+            .deposit(owner, receiver, deposit_amount, 0, request_time)
+            .unwrap();
+
+        vault
+            .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
+            .unwrap();
+
+        let (head_id, head_escrow_before, head_expected_before) = {
+            let (id, head) = vault
+                .state()
+                .withdraw_queue
+                .head()
+                .expect("withdrawal queued");
+            (id, head.escrow_shares, head.expected_assets)
+        };
+
+        {
+            let state = vault.state_mut();
+            state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+        }
+
+        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+
+        assert_eq!(summary.assets_transferred, 0);
+        assert_eq!(summary.shares_burned, 0);
+        assert!(vault.state().op_state.is_withdrawing());
+        let (head_id_after, head_after) = vault
+            .state()
+            .withdraw_queue
+            .head()
+            .expect("withdrawal still queued");
+        assert_eq!(head_id_after, head_id);
+        assert_eq!(head_after.escrow_shares, head_escrow_before);
+        assert_eq!(head_after.expected_assets, head_expected_before);
+    }
+
+    #[test]
     fn test_abort_allocating() {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
@@ -2518,5 +2582,52 @@ mod tests {
         assert!(vault.policy_state().markets.is_empty());
         assert!(vault.policy_state().principals.is_empty());
         assert!(vault.policy_state().cap_groups.is_empty());
+    }
+
+    #[test]
+    fn test_load_state_restores_policy_and_restrictions() {
+        use crate::policy::MarketLock;
+        use std::collections::BTreeSet;
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let admin = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            let versioned = VersionedState::new(VaultState::default());
+            storage.save_state(&versioned).unwrap();
+            storage.save_paused(false).unwrap();
+
+            let mut policy_state = PolicyState::new();
+            let lock = MarketLock::new(1, 10).with_expiry(20);
+            policy_state.locks = policy_state.locks.acquire(lock, 10).unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let mut blacklist = BTreeSet::new();
+            blacklist.insert([9u8; 32]);
+            let restrictions = Restrictions::BlackList(blacklist);
+            Storage::save_restrictions(&mut storage, &Some(restrictions.clone())).unwrap();
+
+            let mut vault = CuratorVault::new(
+                test_config(),
+                storage,
+                PermissiveAuth,
+                MockInterpreter::new(),
+                MockMarket,
+                MockCrossChain,
+            );
+            vault.load_state().unwrap();
+
+            assert!(vault.is_market_locked(1, 10));
+            assert_eq!(vault.restrictions(), Some(&restrictions));
+        });
     }
 }
