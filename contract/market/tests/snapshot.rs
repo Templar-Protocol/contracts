@@ -55,7 +55,7 @@ async fn snapshot_captures_borrow_and_collateral_state(#[future(awt)] worker: Wo
 
     check(
         states!(
-            { active += 2_000_000 },
+            { active_real += 2_000_000 },
             { collateral += 1_000_000 },
             { borrowed += 500_000 },
             { collateral += 1 },
@@ -101,7 +101,7 @@ async fn multiple_snapshots_show_progression(#[future(awt)] worker: Worker<Sandb
 
     check(
         states!(
-            { active = 3_000_000 },
+            { active_real = 3_000_000 },
             { collateral += 1_000_000 },
             { borrowed += 400_000 },
             { borrowed += 200_000 },
@@ -203,7 +203,10 @@ async fn snapshot_handles_zero_operations(#[future(awt)] worker: Worker<Sandbox>
 
     let snapshots = c.list_finalized_snapshots(None, None).await;
 
-    check(states!({ active = 1_000_000 }, { active += 1 }), snapshots);
+    check(
+        states!({ active_real = 1_000_000 }, { active_real += 1 }),
+        snapshots,
+    );
 }
 
 #[rstest]
@@ -311,7 +314,7 @@ async fn snapshot_field_validation(#[future(awt)] worker: Worker<Sandbox>) {
 
     check(
         states!(
-            { active = 1_500_000 },
+            { active_real = 1_500_000 },
             { collateral += 1 },
             { collateral += 800_000 },
             { collateral += 1 },
@@ -381,8 +384,8 @@ async fn many_users_different_snapshots(#[future(awt)] worker: Worker<Sandbox>) 
 
     check(
         states!(
-            { active += 2_000_000 },
-            { active += 1_500_000 },
+            { active_real += 2_000_000 },
+            { active_real += 1_500_000 },
             { collateral += 400_000 },
             { collateral += 350_000 },
             { collateral += 300_000 },
@@ -456,7 +459,7 @@ async fn many_users_same_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
 
     check(
         states!(
-            { active += 2_000_000 + 1_500_000 },
+            { active_real += 2_000_000 + 1_500_000 },
             { collateral += 400_000 + 350_000 + 300_000 + 250_000 + 200_000 },
             { borrowed += 150_000 + 120_000 + 100_000 + 80_000 + 60_000 },
         ),
@@ -507,16 +510,19 @@ async fn incoming(#[future(awt)] worker: Worker<Sandbox>) {
     let snapshot_after_after = &snapshots[incoming_activates_at as usize + 2];
 
     assert!(snapshot_before_before
-        .borrow_asset_deposited_active
+        .borrow_asset_deposited_active_real
         .is_zero());
-    assert!(snapshot_before.borrow_asset_deposited_active.is_zero());
-    assert_eq!(snapshot_at.borrow_asset_deposited_active, 2_000_000.into());
+    assert!(snapshot_before.borrow_asset_deposited_active_real.is_zero());
     assert_eq!(
-        snapshot_after.borrow_asset_deposited_active,
+        snapshot_at.borrow_asset_deposited_active_real,
+        2_000_000.into()
+    );
+    assert_eq!(
+        snapshot_after.borrow_asset_deposited_active_real,
         2_000_000.into(),
     );
     assert_eq!(
-        snapshot_after_after.borrow_asset_deposited_active,
+        snapshot_after_after.borrow_asset_deposited_active_real,
         2_000_000.into(),
     );
 }

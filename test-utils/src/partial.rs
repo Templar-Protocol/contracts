@@ -4,7 +4,8 @@ use templar_common::snapshot::Snapshot;
 
 #[derive(Debug, Clone, Default)]
 pub struct PartialSnapshot {
-    pub active: u128,
+    pub active_real: u128,
+    pub active_virtual: u128,
     pub collateral: u128,
     pub borrowed: u128,
 }
@@ -22,9 +23,14 @@ impl PartialSnapshot {
         }
 
         test(
-            "borrow_asset_deposited_active",
-            self.active,
-            u128::from(snapshot.borrow_asset_deposited_active),
+            "borrow_asset_deposited_active_real",
+            self.active_real,
+            u128::from(snapshot.borrow_asset_deposited_active_real),
+        )?;
+        test(
+            "borrow_asset_deposited_active_virtual",
+            self.active_virtual,
+            u128::from(snapshot.borrow_asset_deposited_active_virtual),
         )?;
         test(
             "collateral_asset_deposited",

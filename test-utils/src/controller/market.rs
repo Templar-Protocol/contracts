@@ -114,8 +114,12 @@ impl MarketController {
             eprintln!("\t{i}: {}", snapshot.time_chunk.0 .0);
             eprintln!("\t\tTimestamp:\t{}", snapshot.end_timestamp_ms.0);
             eprintln!(
-                "\t\tDeposited (active):\t{}",
-                snapshot.borrow_asset_deposited_active,
+                "\t\tActive supply (real):\t{}",
+                snapshot.borrow_asset_deposited_active_real,
+            );
+            eprintln!(
+                "\t\tActive supply (virtual):\t{}",
+                snapshot.borrow_asset_deposited_active_virtual,
             );
             eprintln!("\t\tBorrowed:\t{}", snapshot.borrow_asset_borrowed);
             eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);

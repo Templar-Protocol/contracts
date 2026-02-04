@@ -52,6 +52,7 @@ impl<T: AssetClass> Accumulator<T> {
             next_snapshot_index,
         }: AccumulationRecord<T>,
     ) {
+        near_sdk::log!("accumulate({amount}, {fraction}, {next_snapshot_index})");
         require!(
             next_snapshot_index >= self.next_snapshot_index,
             "Invariant violation: Asset accumulations cannot occur retroactively.",

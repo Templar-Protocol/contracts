@@ -428,6 +428,47 @@ impl Market {
 
         Ok(())
     }
+
+    /// # Errors
+    ///
+    /// - If the account does not earn static yield.
+    pub fn withdraw_static_yield_initial(
+        &mut self,
+        account_id: &AccountId,
+        amount: Option<BorrowAssetAmount>,
+    ) -> Result<BorrowAssetAmount, UnknownAccount> {
+        let mut yield_record = self.static_yield.get(account_id).ok_or(UnknownAccount)?;
+
+        let yield_total = yield_record.get_total();
+        let amount = amount.map_or(yield_total, |a| a.min(yield_total));
+
+        yield_record.remove(amount);
+
+        self.static_yield.insert(account_id, &yield_record);
+        self.borrow_asset_balance -= amount;
+
+        Ok(amount)
+    }
+
+    pub fn withdraw_static_yield_final(
+        &mut self,
+        account_id: &AccountId,
+        amount: BorrowAssetAmount,
+        succeeded: bool,
+    ) {
+        if succeeded {
+            return;
+        }
+
+        let mut yield_record = self.static_yield.get(account_id).unwrap_or_else(|| {
+            crate::panic_with_message(
+                "Invariant violation: static yield entry must exist during callback",
+            )
+        });
+        yield_record.add_once(amount);
+        self.static_yield.insert(account_id, &yield_record);
+        self.borrow_asset_balance += amount;
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

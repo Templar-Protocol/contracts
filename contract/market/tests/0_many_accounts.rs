@@ -89,7 +89,7 @@ async fn many_accounts(#[future(awt)] worker: Worker<Sandbox>) {
                             .await
                             .unwrap()
                             .get_deposit()
-                            .active,
+                            .active_real,
                         100_000.into(),
                     );
                     tokio::time::sleep(Duration::from_secs(5)).await;

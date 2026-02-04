@@ -401,15 +401,8 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
     ) {
-        if matches!(env::promise_result(0), PromiseResult::Failed) {
-            let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
-                templar_common::panic_with_message(
-                    "Invariant violation: static yield entry must exist during callback",
-                )
-            });
-            yield_record.add_once(amount);
-            self.static_yield.insert(&account_id, &yield_record);
-            self.borrow_asset_balance += amount;
-        }
+        let succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        self.market
+            .withdraw_static_yield_final(&account_id, amount, succeeded);
     }
 }

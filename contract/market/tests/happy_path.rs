@@ -88,7 +88,8 @@ async fn test_happy(
     let snapshots = c.list_finalized_snapshots(None, None).await;
     assert_eq!(snapshots.len(), 1);
     assert!(snapshots[0].yield_distribution.is_zero());
-    assert!(snapshots[0].borrow_asset_deposited_active.is_zero());
+    assert!(snapshots[0].borrow_asset_deposited_active_real.is_zero());
+    assert!(snapshots[0].borrow_asset_deposited_active_virtual.is_zero());
     assert!(snapshots[0].borrow_asset_borrowed.is_zero());
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
@@ -97,7 +98,7 @@ async fn test_happy(
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.total_incoming()),
+        u128::from(supply_position.total_incoming_real()),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -117,7 +118,7 @@ async fn test_happy(
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        u128::from(supply_position.get_deposit().active),
+        u128::from(supply_position.get_deposit().active()),
         1100,
         "Supply position should match amount of tokens supplied to contract",
     );

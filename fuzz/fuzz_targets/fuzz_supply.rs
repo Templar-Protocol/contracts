@@ -27,7 +27,8 @@ fuzz_target!(|data: (u32, u128, u128, u128, u32, u32, u128)| {
     let _ = position.can_be_removed();
     // Fuzz deposit structure
     let mut deposit = Deposit {
-        active: BorrowAssetAmount::new(active_amount),
+        active_real: BorrowAssetAmount::new(active_amount),
+        active_virtual: 0.into(),
         incoming: vec![],
         outgoing: BorrowAssetAmount::zero(),
     };
@@ -36,14 +37,16 @@ fuzz_target!(|data: (u32, u128, u128, u128, u32, u32, u128)| {
     if incoming_amount_1 > 0 && activate_at_1 > snapshot_index {
         deposit.incoming.push(IncomingDeposit {
             activate_at_snapshot_index: activate_at_1,
-            amount: BorrowAssetAmount::new(incoming_amount_1),
+            amount_real: BorrowAssetAmount::new(incoming_amount_1),
+            amount_virtual: 0.into(),
         });
     }
 
     if incoming_amount_2 > 0 && activate_at_2 > snapshot_index && activate_at_2 != activate_at_1 {
         deposit.incoming.push(IncomingDeposit {
             activate_at_snapshot_index: activate_at_2,
-            amount: BorrowAssetAmount::new(incoming_amount_2),
+            amount_real: BorrowAssetAmount::new(incoming_amount_2),
+            amount_virtual: 0.into(),
         });
     }
 
@@ -61,7 +64,7 @@ fuzz_target!(|data: (u32, u128, u128, u128, u32, u32, u128)| {
     position.borrow_asset_yield = yield_acc;
 
     // Test total_incoming
-    let _ = position.total_incoming();
+    let _ = position.total_incoming_real();
 
     // Test exists and can_be_removed after modifications
     let _ = position.exists();
@@ -81,10 +84,12 @@ fuzz_target!(|data: (u32, u128, u128, u128, u32, u32, u128)| {
 
     // Test deposit with max values
     let max_deposit = Deposit {
-        active: BorrowAssetAmount::new(u128::MAX / 3),
+        active_real: BorrowAssetAmount::new(u128::MAX / 3),
+        active_virtual: 0.into(),
         incoming: vec![IncomingDeposit {
             activate_at_snapshot_index: u32::MAX - 1,
-            amount: BorrowAssetAmount::new(u128::MAX / 3),
+            amount_real: BorrowAssetAmount::new(u128::MAX / 3),
+            amount_virtual: 0.into(),
         }],
         outgoing: BorrowAssetAmount::new(u128::MAX / 3),
     };

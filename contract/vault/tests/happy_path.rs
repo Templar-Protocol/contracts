@@ -125,7 +125,13 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     harvest(&c, &vault).await;
 
     assert_eq!(
-        u128::from(c.get_supply_position(v).await.unwrap().get_deposit().active),
+        u128::from(
+            c.get_supply_position(v)
+                .await
+                .unwrap()
+                .get_deposit()
+                .active(),
+        ),
         amount.0,
         "Supply position should match amount of tokens supplied to contract",
     );

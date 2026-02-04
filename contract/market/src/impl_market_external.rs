@@ -354,16 +354,10 @@ impl MarketExternalInterface for Contract {
 
     fn withdraw_static_yield(&mut self, amount: Option<BorrowAssetAmount>) -> Promise {
         let predecessor = env::predecessor_account_id();
-        let Some(mut yield_record) = self.static_yield.get(&predecessor) else {
-            templar_common::panic_with_message("Yield record does not exist");
-        };
-
-        let amount = amount.unwrap_or_else(|| yield_record.get_total());
-
-        yield_record.remove(amount);
-
-        self.static_yield.insert(&predecessor, &yield_record);
-        self.borrow_asset_balance -= amount;
+        let amount = self
+            .market
+            .withdraw_static_yield_initial(&predecessor, amount)
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
         self.configuration
             .borrow_asset

@@ -249,11 +249,6 @@ impl<'a> SupplyPositionGuard<'a> {
         // Calling market.snapshot() performs the market accounting
     }
 
-    fn remove_active_real(&mut self, amount: BorrowAssetAmount) {
-        self.position.borrow_asset_deposit.active_real -= amount;
-        self.market.borrow_asset_deposited_active_real -= amount;
-    }
-
     fn add_incoming(
         &mut self,
         amount_real: BorrowAssetAmount,
@@ -358,12 +353,24 @@ impl<'a> SupplyPositionGuard<'a> {
     pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
         self.accumulate_yield_partial(u32::MAX);
 
+        let market_credit = self.market.borrow_asset_virtual_credit;
+        let my_virtual = self.position.borrow_asset_deposit.active_virtual;
+        let market_virtual = self.market.borrow_asset_deposited_active_virtual;
+
         // Claim virtual to real
-        let claimable = Ord::min(
-            self.position.borrow_asset_deposit.active_virtual,
-            self.market.borrow_asset_virtual_credit,
-        );
-        if !claimable.is_zero() {
+        if !market_credit.is_zero() && !my_virtual.is_zero() && !market_virtual.is_zero() {
+            near_sdk::log!("credit: {market_credit}, my_virtual: {my_virtual}, market_virtual: {market_virtual}");
+
+            // let claimable = if market_credit >= market_virtual {
+            //     my_virtual
+            // } else if
+
+            let claimable = (Decimal::from(market_credit) * u128::from(my_virtual) / u128::from(market_virtual) )
+            .to_u128_floor()
+            .map_or_else(|| {
+                crate::panic_with_message("Invariant violation: guaranteed position.active_virtual <= market.active_virtual");
+            }, BorrowAssetAmount::new).min(my_virtual);
+
             self.market.borrow_asset_virtual_credit -= claimable;
 
             self.position.borrow_asset_deposit.active_virtual -= claimable;
@@ -398,7 +405,8 @@ impl<'a> SupplyPositionGuard<'a> {
         }
 
         let requested_amount = requested_amount.min(entitled_to_withdraw);
-        let available_to_me = self.market.borrow_asset_deposited_active_real + my_incoming;
+        let available_to_me =
+            self.market.borrow_asset_deposited_active_real - self.market.borrowed() + my_incoming;
         let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
 
         if can_withdraw_now.is_zero() {
@@ -421,7 +429,8 @@ impl<'a> SupplyPositionGuard<'a> {
         );
 
         if !amount_to_remove.is_zero() {
-            self.remove_active_real(amount_to_remove);
+            self.position.borrow_asset_deposit.active_real -= amount_to_remove;
+            self.market.borrow_asset_deposited_active_real -= amount_to_remove;
         }
 
         // The only way to withdraw from a position is if it already has a deposit.

@@ -417,7 +417,16 @@ impl<'a> BorrowPositionGuard<'a> {
         );
         self.position.interest.remove(to_interest);
 
-        self.market.borrow_asset_virtual_credit += to_fees + to_interest;
+        let weight_numerator = self.market.configuration.yield_weights.supply.get();
+        let weight_denominator = self.market.configuration.yield_weights.total_weight().get();
+        self.market.borrow_asset_virtual_credit +=
+            (Decimal::from(to_fees + to_interest) * weight_numerator / weight_denominator)
+                .to_u128_floor()
+                .unwrap_or_else(|| {
+                    crate::panic_with_message(
+                        "Invariant violation: guaranteed supply weight <= total weight",
+                    )
+                });
 
         let to_principal = {
             let minimum_amount = u128::from(self.market.configuration.borrow_range.minimum);
