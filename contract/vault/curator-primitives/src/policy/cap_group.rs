@@ -1,22 +1,4 @@
 //! Cap group enforcement for market allocation limits.
-//!
-//! Cap groups allow curators to define maximum allocation caps for groups of markets,
-//! preventing over-concentration in correlated assets or strategies.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use templar_curator_primitives::policy::cap_group::*;
-//!
-//! // Create a cap group with 1000 absolute cap and 50% relative cap
-//! let group = CapGroup::new()
-//!     .with_absolute(1000)
-//!     .with_relative(Wad::from_percent(50));
-//!
-//! // Check if we can allocate 200 more (current principal is 300)
-//! let can_alloc = group.can_allocate(300, 200, 2000);
-//! assert!(can_alloc);
-//! ```
 
 use alloc::string::String;
 use core::num::NonZeroU128;
@@ -24,7 +6,6 @@ use derive_more::{Display, From, Into};
 use templar_vault_kernel::Wad;
 use typed_builder::TypedBuilder;
 
-/// Identifier for a cap group.
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
@@ -35,7 +16,6 @@ use typed_builder::TypedBuilder;
 pub struct CapGroupId(pub String);
 
 impl CapGroupId {
-    /// Create a new cap group ID from a string.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
@@ -69,13 +49,11 @@ pub struct CapGroup {
 }
 
 impl CapGroup {
-    /// Create a new unlimited cap group (no restrictions).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a cap group with only an absolute cap.
     #[must_use]
     pub fn absolute_only(cap: u128) -> Self {
         Self {
@@ -84,7 +62,6 @@ impl CapGroup {
         }
     }
 
-    /// Create a cap group with only a relative cap (WAD value).
     #[must_use]
     pub fn relative_only(relative_cap: Wad) -> Self {
         let relative = if relative_cap.is_zero() {
@@ -98,21 +75,18 @@ impl CapGroup {
         }
     }
 
-    /// Builder method: set absolute cap.
     #[must_use]
     pub fn with_absolute(mut self, cap: u128) -> Self {
         self.absolute_cap = NonZeroU128::new(cap);
         self
     }
 
-    /// Builder method: set relative cap.
     #[must_use]
     pub fn with_relative(mut self, cap: Wad) -> Self {
         self.relative_cap = if cap.is_zero() { None } else { Some(cap) };
         self
     }
 
-    /// Returns true if this cap group has no restrictions.
     #[must_use]
     pub fn is_unlimited(&self) -> bool {
         self.absolute_cap.is_none() && self.relative_cap.is_none()

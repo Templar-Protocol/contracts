@@ -39,7 +39,6 @@ pub struct RecoveryContext {
 }
 
 impl RecoveryContext {
-    /// Create a new recovery context with no stuck delay.
     pub fn new(current_ns: u64) -> Self {
         Self {
             current_ns,
@@ -48,7 +47,6 @@ impl RecoveryContext {
         }
     }
 
-    /// Create a context with a stuck threshold.
     pub fn with_stuck_threshold(current_ns: u64, stuck_threshold_ns: u64) -> Self {
         Self {
             current_ns,
@@ -57,7 +55,6 @@ impl RecoveryContext {
         }
     }
 
-    /// Create a context that forces recovery.
     pub fn forced(current_ns: u64) -> Self {
         Self {
             current_ns,
@@ -84,8 +81,6 @@ pub struct RecoveryProgress {
 }
 
 impl RecoveryProgress {
-    /// Create a progress record with only a start time.
-    /// Sets `last_progress_ns` equal to `started_at_ns`.
     pub const fn new(started_at_ns: u64) -> Self {
         Self {
             started_at_ns,
@@ -93,7 +88,6 @@ impl RecoveryProgress {
         }
     }
 
-    /// Create a progress record with an explicit last-progress timestamp.
     pub const fn with_last_progress(started_at_ns: u64, last_progress_ns: u64) -> Self {
         Self {
             started_at_ns,
@@ -110,16 +104,12 @@ impl RecoveryProgress {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryOutcome {
-    /// The action that was taken.
     pub action: KernelAction,
-    /// Whether recovery was successful.
     pub success: bool,
-    /// Optional message describing the outcome.
     pub message: Option<String>,
 }
 
 impl RecoveryOutcome {
-    /// Create a successful recovery outcome.
     pub fn success(action: KernelAction) -> Self {
         Self {
             action,
@@ -128,7 +118,6 @@ impl RecoveryOutcome {
         }
     }
 
-    /// Create a successful outcome with a message.
     pub fn success_with_message(action: KernelAction, message: impl Into<String>) -> Self {
         Self {
             action,
@@ -137,7 +126,6 @@ impl RecoveryOutcome {
         }
     }
 
-    /// Create a failed recovery outcome.
     pub fn failure(action: KernelAction, message: impl Into<String>) -> Self {
         Self {
             action,
@@ -148,14 +136,6 @@ impl RecoveryOutcome {
 }
 
 /// Determine the appropriate recovery action for the current state.
-///
-/// # Arguments
-/// * `state` - The current operation state
-/// * `context` - Recovery context with timestamps and settings
-/// * `progress` - Operation start/last-progress timestamps
-///
-/// # Returns
-/// The recovery action to take, if any.
 pub fn determine_recovery_action(
     state: &OpState,
     context: &RecoveryContext,
@@ -179,13 +159,6 @@ pub fn determine_recovery_action(
 }
 
 /// Handle a failed allocation operation.
-///
-/// # Arguments
-/// * `state` - The allocating state
-/// * `failure_reason` - Description of why the allocation failed
-///
-/// # Returns
-/// Recovery outcome with the abort action.
 pub fn handle_allocation_failure(
     state: &AllocatingState,
     failure_reason: impl Into<String>,
@@ -194,13 +167,6 @@ pub fn handle_allocation_failure(
 }
 
 /// Handle a failed withdrawal operation.
-///
-/// # Arguments
-/// * `state` - The withdrawing state
-/// * `failure_reason` - Description of why the withdrawal failed
-///
-/// # Returns
-/// Recovery outcome with escrow refund.
 pub fn handle_withdrawal_failure(
     state: &WithdrawingState,
     failure_reason: impl Into<String>,
@@ -209,13 +175,6 @@ pub fn handle_withdrawal_failure(
 }
 
 /// Handle a failed refresh operation.
-///
-/// # Arguments
-/// * `state` - The refreshing state
-/// * `failure_reason` - Description of why the refresh failed
-///
-/// # Returns
-/// Recovery outcome with completed/remaining target info.
 pub fn handle_refresh_failure(
     state: &RefreshingState,
     failure_reason: impl Into<String>,
@@ -224,13 +183,6 @@ pub fn handle_refresh_failure(
 }
 
 /// Handle a failed payout operation.
-///
-/// # Arguments
-/// * `state` - The payout state
-/// * `failure_reason` - Description of why the payout failed
-///
-/// # Returns
-/// Recovery outcome with full escrow refund.
 pub fn handle_payout_failure(
     state: &PayoutState,
     restore_idle: u128,
@@ -254,14 +206,6 @@ pub fn handle_payout_failure_default(
 ///
 /// If the full withdrawal amount was collected, burn all escrow shares.
 /// If partial, compute proportionally.
-///
-/// # Arguments
-/// * `escrow_shares` - Total shares in escrow
-/// * `expected_amount` - Expected withdrawal amount
-/// * `collected_amount` - Actually collected amount
-///
-/// # Returns
-/// Escrow settlement with burn/refund amounts.
 pub fn compute_settlement_shares(
     escrow_shares: u128,
     expected_amount: u128,
@@ -328,12 +272,6 @@ pub struct RecoveryStats {
 }
 
 /// Compute recovery statistics from the current state.
-///
-/// # Arguments
-/// * `state` - The current operation state
-///
-/// # Returns
-/// Recovery statistics for the state.
 pub fn compute_recovery_stats(state: &OpState) -> RecoveryStats {
     match state {
         OpState::Idle => RecoveryStats::default(),

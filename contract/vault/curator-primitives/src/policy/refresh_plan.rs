@@ -1,20 +1,4 @@
 //! Refresh plan for updating market principal data.
-//!
-//! Refresh plans define which markets need their principal data updated
-//! to maintain accurate AUM calculations. This is used during the
-//! Refreshing state of the vault operation state machine.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use templar_curator_primitives::policy::refresh_plan::*;
-//!
-//! let plan = RefreshPlan::new(vec![1, 2, 3])
-//!     .with_cooldown(1000);
-//!
-//! assert!(plan.validate().is_ok());
-//! assert!(plan.is_ready(500)); // First refresh always allowed
-//! ```
 
 use alloc::{collections::BTreeSet, vec::Vec};
 use templar_vault_kernel::TargetId;
@@ -36,7 +20,6 @@ pub struct RefreshPlan {
 }
 
 impl RefreshPlan {
-    /// Create a new refresh plan from a list of targets.
     #[must_use]
     pub fn new(targets: Vec<TargetId>) -> Self {
         Self {
@@ -45,39 +28,33 @@ impl RefreshPlan {
         }
     }
 
-    /// Create an empty refresh plan.
     #[must_use]
     pub fn empty() -> Self {
         Self::default()
     }
 
-    /// Builder method: set cooldown interval.
     #[must_use]
     pub fn with_cooldown(mut self, cooldown_ns: u64) -> Self {
         self.cooldown = Cooldown::new(cooldown_ns);
         self
     }
 
-    /// Builder method: set last refresh time (for resuming).
     #[must_use]
     pub fn with_last_refresh(mut self, last_refresh_ns: u64) -> Self {
         self.cooldown = self.cooldown.record(last_refresh_ns);
         self
     }
 
-    /// Returns true if the plan is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.targets.is_empty()
     }
 
-    /// Returns the number of targets to refresh.
     #[must_use]
     pub fn len(&self) -> usize {
         self.targets.len()
     }
 
-    /// Check if a refresh is ready (cooldown has elapsed).
     #[must_use]
     pub fn is_ready(&self, current_ns: u64) -> bool {
         self.cooldown.is_ready(current_ns)
@@ -124,19 +101,16 @@ impl RefreshPlan {
         }
     }
 
-    /// Convert to a list of target IDs.
     #[must_use]
     pub fn to_target_list(&self) -> Vec<TargetId> {
         self.targets.clone()
     }
 
-    /// Get the cooldown interval in nanoseconds.
     #[must_use]
     pub fn cooldown_ns(&self) -> u64 {
         self.cooldown.interval_ns
     }
 
-    /// Get the last refresh timestamp, if any.
     #[must_use]
     pub fn last_refresh_ns(&self) -> Option<u64> {
         self.cooldown.last_event_ns

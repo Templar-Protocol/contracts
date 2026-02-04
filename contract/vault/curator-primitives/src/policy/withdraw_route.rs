@@ -1,30 +1,4 @@
 //! Withdraw route planning for collecting assets from markets.
-//!
-//! Withdraw routes define the order and amounts to collect from markets
-//! when satisfying withdrawal requests. This allows curators to optimize
-//! liquidity collection and minimize market impact.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use templar_curator_primitives::policy::withdraw_route::*;
-//!
-//! // Using the fluent API
-//! let entry = WithdrawRouteEntry::new(1, 500)
-//!     .with_liquidity(400);
-//!
-//! // Or using TypedBuilder
-//! let entry = WithdrawRouteEntry::builder()
-//!     .target_id(1)
-//!     .max_amount(500)
-//!     .available_liquidity(Some(400))
-//!     .build();
-//!
-//! let route = WithdrawRoute::new(1000)
-//!     .with_entry(entry);
-//!
-//! assert!(route.validate().is_err()); // Not enough to cover target
-//! ```
 
 use alloc::{collections::BTreeSet, vec::Vec};
 use templar_vault_kernel::TargetId;
@@ -36,17 +10,13 @@ use typed_builder::TypedBuilder;
 #[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct WithdrawRouteEntry {
-    /// Target market/strategy ID to withdraw from.
     pub target_id: TargetId,
-    /// Maximum amount to withdraw from this target.
     pub max_amount: u128,
-    /// Available liquidity at this target (if known).
     #[builder(default)]
     pub available_liquidity: Option<u128>,
 }
 
 impl WithdrawRouteEntry {
-    /// Create a new withdraw route entry.
     #[must_use]
     pub fn new(target_id: TargetId, max_amount: u128) -> Self {
         Self {
@@ -56,7 +26,6 @@ impl WithdrawRouteEntry {
         }
     }
 
-    /// Fluent method: set available liquidity.
     #[must_use]
     pub fn with_liquidity(mut self, available_liquidity: u128) -> Self {
         self.available_liquidity = Some(available_liquidity);
@@ -75,14 +44,11 @@ impl From<(TargetId, u128)> for WithdrawRouteEntry {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct WithdrawRoute {
-    /// Ordered list of targets to withdraw from.
     pub entries: Vec<WithdrawRouteEntry>,
-    /// Total amount needed for the withdrawal.
     pub target_amount: u128,
 }
 
 impl WithdrawRoute {
-    /// Create a new empty withdraw route.
     #[must_use]
     pub fn new(target_amount: u128) -> Self {
         Self {
@@ -91,7 +57,6 @@ impl WithdrawRoute {
         }
     }
 
-    /// Create a withdraw route from entries.
     #[must_use]
     pub fn from_entries(entries: Vec<WithdrawRouteEntry>, target_amount: u128) -> Self {
         Self {
@@ -100,33 +65,28 @@ impl WithdrawRoute {
         }
     }
 
-    /// Builder method: add an entry.
     #[must_use]
     pub fn with_entry(mut self, entry: WithdrawRouteEntry) -> Self {
         self.entries.push(entry);
         self
     }
 
-    /// Builder method: add multiple entries.
     #[must_use]
     pub fn with_entries(mut self, entries: impl IntoIterator<Item = WithdrawRouteEntry>) -> Self {
         self.entries.extend(entries);
         self
     }
 
-    /// Returns true if the route is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Returns the number of entries in the route.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Compute the total maximum amount available in the route.
     #[must_use]
     pub fn total(&self) -> u128 {
         self.entries
@@ -134,9 +94,6 @@ impl WithdrawRoute {
             .fold(0u128, |acc, e| acc.saturating_add(e.max_amount))
     }
 
-    /// Compute the total available liquidity in the route.
-    ///
-    /// Only includes entries where liquidity is known.
     #[must_use]
     pub fn available_liquidity(&self) -> u128 {
         self.entries
@@ -145,7 +102,6 @@ impl WithdrawRoute {
             .fold(0u128, |acc, l| acc.saturating_add(l))
     }
 
-    /// Check if the route can satisfy the target amount.
     #[must_use]
     pub fn can_satisfy(&self) -> bool {
         self.total() >= self.target_amount

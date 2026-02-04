@@ -11,19 +11,15 @@ use super::cap_group::{CapGroupId, CapGroupRecord};
 use super::market_lock::MarketLockSet;
 use super::supply_queue::SupplyQueue;
 
-/// Market configuration for policy decisions.
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MarketConfig {
-    /// Whether this market is enabled for allocation/withdrawals.
     pub enabled: bool,
-    /// Optional cap group this market belongs to.
     pub cap_group_id: Option<CapGroupId>,
 }
 
 impl MarketConfig {
-    /// Create a new market config.
     pub fn new(enabled: bool, cap_group_id: Option<CapGroupId>) -> Self {
         Self {
             enabled,
@@ -46,30 +42,22 @@ impl Default for MarketConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct PolicyState {
-    /// Per-market configuration.
     pub markets: BTreeMap<TargetId, MarketConfig>,
-    /// Per-market principal (external assets) tracking.
     pub principals: BTreeMap<TargetId, u128>,
-    /// Cap group records (cap config + principal).
     pub cap_groups: BTreeMap<CapGroupId, CapGroupRecord>,
-    /// Supply queue for pending allocations.
     pub supply_queue: SupplyQueue,
-    /// Market locks for concurrent operation safety.
     pub locks: MarketLockSet,
 }
 
 impl PolicyState {
-    /// Create an empty policy state.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Set market configuration.
     pub fn set_market_config(&mut self, target_id: TargetId, config: MarketConfig) {
         self.markets.insert(target_id, config);
     }
 
-    /// Set the principal for a market.
     pub fn set_principal(&mut self, target_id: TargetId, principal: u128) {
         self.principals.insert(target_id, principal);
     }

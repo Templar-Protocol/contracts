@@ -9,12 +9,6 @@
 //! - [`policy`]: Cap groups, supply queues, withdraw routes, refresh plans, and market locks
 //! - [`recovery`]: Recovery action determination and state machine recovery logic
 //!
-//! # Design Principles
-//!
-//! 1. **Chain-agnostic**: All types work without any chain SDK dependencies
-//! 2. **Pure functions**: No side effects, no storage access
-//! 3. **Defensive math**: All calculations use saturating arithmetic to prevent overflow
-
 #![no_std]
 
 extern crate alloc;

@@ -9,19 +9,6 @@
 /// A cooldown enforces a minimum interval between operations. It tracks
 /// when the last operation occurred and the required interval before
 /// the next operation is allowed.
-///
-/// # Example
-///
-/// ```ignore
-/// use templar_curator_primitives::policy::cooldown::Cooldown;
-///
-/// let cooldown = Cooldown::new(1000); // 1000ns interval
-/// assert!(cooldown.is_ready(500)); // First operation always ready
-///
-/// let cooldown = cooldown.record(500);
-/// assert!(!cooldown.is_ready(1000)); // Only 500ns elapsed
-/// assert!(cooldown.is_ready(1500)); // 1000ns elapsed, ready
-/// ```
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
@@ -37,9 +24,6 @@ pub struct Cooldown {
 }
 
 impl Cooldown {
-    /// Create a new cooldown with the given interval.
-    ///
-    /// An interval of 0 means no cooldown is enforced.
     #[must_use]
     pub fn new(interval_ns: u64) -> Self {
         Self {
@@ -48,7 +32,6 @@ impl Cooldown {
         }
     }
 
-    /// Create a cooldown with no rate limit.
     #[must_use]
     pub fn unlimited() -> Self {
         Self {
@@ -57,7 +40,6 @@ impl Cooldown {
         }
     }
 
-    /// Create a cooldown with a known last event time.
     #[must_use]
     pub fn with_last_event(interval_ns: u64, last_event_ns: u64) -> Self {
         Self {
@@ -66,7 +48,6 @@ impl Cooldown {
         }
     }
 
-    /// Returns true if there is no cooldown interval configured.
     #[must_use]
     pub fn is_unlimited(&self) -> bool {
         self.interval_ns == 0
@@ -106,9 +87,6 @@ impl Cooldown {
         }
     }
 
-    /// Record an operation at the given timestamp.
-    ///
-    /// Returns a new cooldown with the updated last event time.
     #[must_use]
     pub fn record(&self, timestamp_ns: u64) -> Self {
         Self {
@@ -117,10 +95,6 @@ impl Cooldown {
         }
     }
 
-    /// Compute when the cooldown will be ready.
-    ///
-    /// Returns `None` if already ready or no cooldown is configured.
-    /// Returns `Some(timestamp)` indicating when the cooldown expires.
     #[must_use]
     pub fn ready_at(&self) -> Option<u64> {
         if self.is_unlimited() {
@@ -131,9 +105,6 @@ impl Cooldown {
             .map(|last| last.saturating_add(self.interval_ns))
     }
 
-    /// Compute remaining time until ready.
-    ///
-    /// Returns 0 if already ready.
     #[must_use]
     pub fn remaining(&self, current_ns: u64) -> u64 {
         if self.is_ready(current_ns) {

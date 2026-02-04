@@ -1,21 +1,4 @@
 //! Market locks for preventing concurrent operations on the same market.
-//!
-//! Market locks ensure that only one operation can be in progress for a given
-//! market at a time, preventing race conditions in allocation and withdrawal flows.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use templar_curator_primitives::policy::market_lock::*;
-//!
-//! let lock_set = MarketLockSet::new();
-//! let lock = MarketLock::new(1, 1000)
-//!     .with_op_id(42)
-//!     .with_expiry(2000);
-//!
-//! let lock_set = lock_set.acquire(lock, 1000).unwrap();
-//! assert!(lock_set.is_locked(1, 1000));
-//! ```
 
 use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
@@ -30,12 +13,9 @@ use typed_builder::TypedBuilder;
 #[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct MarketLock {
-    /// The target ID that is locked.
     pub target_id: TargetId,
-    /// Optional operation ID that holds the lock.
     #[builder(default, setter(strip_option))]
     pub op_id: Option<u64>,
-    /// Timestamp when the lock was acquired (nanoseconds).
     pub locked_at_ns: u64,
     /// Optional expiry timestamp (nanoseconds). `None` means no expiry.
     #[builder(default, setter(strip_option))]
@@ -43,7 +23,6 @@ pub struct MarketLock {
 }
 
 impl MarketLock {
-    /// Create a new market lock.
     #[must_use]
     pub fn new(target_id: TargetId, locked_at_ns: u64) -> Self {
         Self {
@@ -54,14 +33,12 @@ impl MarketLock {
         }
     }
 
-    /// Fluent method: set operation ID.
     #[must_use]
     pub fn with_op_id(mut self, op_id: u64) -> Self {
         self.op_id = Some(op_id);
         self
     }
 
-    /// Fluent method: set expiry timestamp.
     #[must_use]
     pub fn with_expiry(mut self, expires_at_ns: u64) -> Self {
         self.expires_at_ns = Some(expires_at_ns);
@@ -76,7 +53,6 @@ impl MarketLock {
         self
     }
 
-    /// Check if the lock has expired.
     #[must_use]
     pub fn is_expired(&self, current_ns: u64) -> bool {
         match self.expires_at_ns {
@@ -85,16 +61,11 @@ impl MarketLock {
         }
     }
 
-    /// Check if the lock is active (not expired).
     #[must_use]
     pub fn is_active(&self, current_ns: u64) -> bool {
         !self.is_expired(current_ns)
     }
 
-    /// Get remaining time until expiry.
-    ///
-    /// Returns `None` if there's no expiry set.
-    /// Returns `Some(0)` if already expired.
     #[must_use]
     pub fn remaining(&self, current_ns: u64) -> Option<u64> {
         self.expires_at_ns.map(|expiry| expiry.saturating_sub(current_ns))
@@ -109,12 +80,10 @@ impl MarketLock {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct MarketLockSet {
-    /// All locks (including potentially expired ones).
     pub locks: Vec<MarketLock>,
 }
 
 impl MarketLockSet {
-    /// Create a new empty lock set.
     #[must_use]
     pub fn new() -> Self {
         Self { locks: Vec::new() }
@@ -125,42 +94,32 @@ impl MarketLockSet {
         self.locks.iter().filter(move |l| l.is_active(current_ns))
     }
 
-    /// Returns true if there are no locks at all (including expired).
-    ///
-    /// Use [`active_count`](Self::active_count) to check for active locks only.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.locks.is_empty()
     }
 
-    /// Returns the total number of locks (including expired).
-    ///
-    /// Use [`active_count`](Self::active_count) for active locks only.
     #[must_use]
     pub fn len(&self) -> usize {
         self.locks.len()
     }
 
-    /// Returns the number of active (non-expired) locks.
     #[must_use]
     pub fn active_count(&self, current_ns: u64) -> usize {
         self.active_iter(current_ns).count()
     }
 
-    /// Returns true if there are no active locks.
     #[must_use]
     pub fn is_all_expired(&self, current_ns: u64) -> bool {
         self.active_count(current_ns) == 0
     }
 
-    /// Returns true if the target is locked at the given timestamp.
     #[must_use]
     pub fn is_locked(&self, target_id: TargetId, current_ns: u64) -> bool {
         self.active_iter(current_ns)
             .any(|lock| lock.target_id == target_id)
     }
 
-    /// Returns true if the target is locked by a specific operation.
     #[must_use]
     pub fn is_locked_by_op(&self, target_id: TargetId, op_id: u64) -> bool {
         self.locks
@@ -168,7 +127,6 @@ impl MarketLockSet {
             .any(|lock| lock.target_id == target_id && lock.op_id == Some(op_id))
     }
 
-    /// Get the lock for a target if it exists and is active.
     #[must_use]
     pub fn get_lock(&self, target_id: TargetId, current_ns: u64) -> Option<&MarketLock> {
         self.active_iter(current_ns)
@@ -193,7 +151,6 @@ impl MarketLockSet {
         Ok(new_set)
     }
 
-    /// Release a lock by target id.
     #[must_use]
     pub fn release(&self, target_id: TargetId) -> Self {
         let mut new_set = self.clone();

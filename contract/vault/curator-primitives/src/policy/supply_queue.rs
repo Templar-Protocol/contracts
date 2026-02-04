@@ -1,31 +1,4 @@
 //! Supply queue for managing pending allocation requests.
-//!
-//! The supply queue holds pending supply requests that will be processed
-//! during the next allocation cycle. This allows batching of deposits
-//! and efficient allocation planning.
-//!
-//! # Example
-//!
-//! ```ignore
-//! use templar_curator_primitives::policy::supply_queue::*;
-//!
-//! // Using the fluent API
-//! let entry = SupplyQueueEntry::new(1, 100)
-//!     .with_priority(10)
-//!     .with_timestamp(1000);
-//!
-//! // Or using TypedBuilder
-//! let entry = SupplyQueueEntry::builder()
-//!     .target_id(1)
-//!     .amount(100)
-//!     .priority(10)
-//!     .queued_at_ns(1000)
-//!     .build();
-//!
-//! let queue = SupplyQueue::new();
-//! let queue = queue.enqueue(entry).unwrap();
-//! assert_eq!(queue.total(), 100);
-//! ```
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -38,20 +11,15 @@ use typed_builder::TypedBuilder;
 #[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct SupplyQueueEntry {
-    /// Target market/strategy ID to allocate to.
     pub target_id: TargetId,
-    /// Amount to allocate in underlying asset units.
     pub amount: u128,
-    /// Priority (higher = process first). Default is 0.
     #[builder(default)]
     pub priority: u8,
-    /// Timestamp when this entry was queued (nanoseconds).
     #[builder(default)]
     pub queued_at_ns: u64,
 }
 
 impl SupplyQueueEntry {
-    /// Create a new supply queue entry with default priority and timestamp.
     #[must_use]
     pub fn new(target_id: TargetId, amount: u128) -> Self {
         Self {
@@ -62,14 +30,12 @@ impl SupplyQueueEntry {
         }
     }
 
-    /// Fluent method: set priority.
     #[must_use]
     pub fn with_priority(mut self, priority: u8) -> Self {
         self.priority = priority;
         self
     }
 
-    /// Fluent method: set timestamp.
     #[must_use]
     pub fn with_timestamp(mut self, queued_at_ns: u64) -> Self {
         self.queued_at_ns = queued_at_ns;
@@ -88,14 +54,11 @@ impl From<(TargetId, u128)> for SupplyQueueEntry {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct SupplyQueue {
-    /// The queue of pending supply requests.
     pub entries: VecDeque<SupplyQueueEntry>,
-    /// Maximum queue length (0 = unlimited).
     pub max_length: usize,
 }
 
 impl SupplyQueue {
-    /// Create a new empty supply queue.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -104,7 +67,6 @@ impl SupplyQueue {
         }
     }
 
-    /// Create a new supply queue with a maximum length.
     #[must_use]
     pub fn with_max_length(max_length: usize) -> Self {
         Self {
@@ -113,19 +75,16 @@ impl SupplyQueue {
         }
     }
 
-    /// Returns true if the queue is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Returns the number of entries in the queue.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Returns true if the queue is at maximum capacity.
     #[must_use]
     pub fn is_full(&self) -> bool {
         self.max_length > 0 && self.entries.len() >= self.max_length
@@ -160,7 +119,6 @@ impl SupplyQueue {
         Ok(new_queue)
     }
 
-    /// Remove and return the next entry from the supply queue.
     pub fn dequeue(&self) -> Result<(Self, SupplyQueueEntry), SupplyQueueError> {
         if self.is_empty() {
             return Err(SupplyQueueError::QueueEmpty);
@@ -175,13 +133,11 @@ impl SupplyQueue {
         Ok((new_queue, entry))
     }
 
-    /// Peek at the next entry without removing it.
     #[must_use]
     pub fn peek(&self) -> Option<&SupplyQueueEntry> {
         self.entries.front()
     }
 
-    /// Compute the total amount in the supply queue.
     #[must_use]
     pub fn total(&self) -> u128 {
         self.entries
@@ -189,7 +145,6 @@ impl SupplyQueue {
             .fold(0u128, |acc, e| acc.saturating_add(e.amount))
     }
 
-    /// Compute totals per target in the supply queue.
     #[must_use]
     pub fn totals_by_target(&self) -> Vec<(TargetId, u128)> {
         let mut totals: Vec<(TargetId, u128)> = Vec::new();
