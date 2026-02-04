@@ -77,6 +77,9 @@ Fee semantics: if the resync increases idle (i.e. a donation was discovered), th
 - src/impl_token_receiver.rs
   - NEP-141 token receiver for deposits. Mints shares on correct token; fully refunds on wrong token (see test execute_supply_wrong_token_refunds_full).
   - Updates idle_balance on deposit; allocation remains separate/async.
+- src/convert.rs
+  - Type conversions between executor/common and kernel types (MarketId/TargetId, OpState).
+  - Deterministic one-way AccountId -> Address mapping (SHA-256 with domain prefix). Kernel events use Address; executor context must be used when AccountId is required.
 - src/wad.rs
   - Fixed-point math utilities: mul_div_floor/mul_div_ceil, WAD constants, and compute_fee_shares.
 - src/aux.rs
