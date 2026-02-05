@@ -30,12 +30,6 @@
 //!    +--------+
 //! ```
 //!
-//! # Design Notes
-//!
-//! - `Address` is the canonical 32-byte account identifier used across chains.
-//! - `TargetId` represents a market/strategy index within the vault.
-//!   This is chain-agnostic (just a u32 index).
-
 use alloc::vec::Vec;
 
 #[cfg(feature = "borsh")]
@@ -46,11 +40,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::Address;
 
-/// Target identifier for allocation destinations (markets, strategies).
-///
-/// This is a simple index into the vault's target list, making it
-/// chain-agnostic while preserving the ability to reference specific
-/// allocation targets.
 pub type TargetId = u32;
 
 /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
@@ -68,13 +57,9 @@ pub struct IdleState;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocatingState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
     pub op_id: u64,
-    /// Zero-based position within the allocation plan/queue currently being processed.
     pub index: u32,
-    /// Amount of underlying (in asset units) still to allocate during this operation.
     pub remaining: u128,
-    /// Plan for allocation: list of (target_id, amount) pairs.
     pub plan: Vec<(TargetId, u128)>,
 }
 
@@ -88,21 +73,12 @@ pub struct AllocatingState {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawingState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
     pub op_id: u64,
-    /// Zero-based position within the withdraw queue currently being processed.
     pub index: u32,
-    /// Remaining assets that must still be collected to satisfy the request.
     pub remaining: u128,
-    /// Assets already collected and held as idle_balance pending payout.
     pub collected: u128,
-    /// Account that should receive the assets during payout.
     pub receiver: Address,
-    /// The owner whose shares are being redeemed.
     pub owner: Address,
-    /// Shares locked in escrow for this request.
-    /// - Refunded on stop/failure.
-    /// - On payout success, a portion is burned (see burn_shares) and any remainder is refunded.
     pub escrow_shares: u128,
 }
 
@@ -115,11 +91,8 @@ pub struct WithdrawingState {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefreshingState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
     pub op_id: u64,
-    /// Zero-based position within the refresh plan currently being processed.
     pub index: u32,
-    /// Targets to refresh.
     pub plan: Vec<TargetId>,
 }
 
@@ -136,17 +109,11 @@ pub struct RefreshingState {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayoutState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
     pub op_id: u64,
-    /// Receiver of the asset payout.
     pub receiver: Address,
-    /// Amount of assets to transfer out from idle_balance.
     pub amount: u128,
-    /// The owner whose shares were escrowed for this payout.
     pub owner: Address,
-    /// Total shares currently held in escrow for this operation.
     pub escrow_shares: u128,
-    /// Portion of `escrow_shares` that will be burned on successful payout.
     pub burn_shares: u128,
 }
 

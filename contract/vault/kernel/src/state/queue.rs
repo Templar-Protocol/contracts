@@ -41,20 +41,14 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingWithdrawal {
-    /// Owner of the shares being redeemed.
     pub owner: Address,
-    /// Receiver of the assets (may differ from owner).
     pub receiver: Address,
-    /// Shares held in escrow awaiting redemption.
     pub escrow_shares: u128,
-    /// Expected assets at time of request (for slippage checking).
     pub expected_assets: u128,
-    /// Timestamp (nanoseconds) when the request was made.
     pub requested_at_ns: TimestampNs,
 }
 
 impl PendingWithdrawal {
-    /// Create a new pending withdrawal request.
     #[inline]
     #[must_use]
     pub fn new(
@@ -73,7 +67,6 @@ impl PendingWithdrawal {
         }
     }
 
-    /// Check if this withdrawal has passed the cooldown period.
     #[inline]
     #[must_use]
     pub fn is_past_cooldown(&self, now_ns: TimestampNs, cooldown_ns: u64) -> bool {
@@ -86,9 +79,7 @@ impl PendingWithdrawal {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalResult {
-    /// Assets actually transferred to the receiver.
     pub assets_out: u128,
-    /// Settlement describing how escrowed shares are handled.
     pub settlement: EscrowSettlement,
 }
 
@@ -97,11 +88,8 @@ pub struct WithdrawalResult {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawalRequestStatus {
-    /// Position in the queue (0 = head).
     pub index: u32,
-    /// Sum of expected assets of requests ahead in the queue.
     pub depth_assets: u128,
-    /// The withdrawal request details.
     pub withdrawal: PendingWithdrawal,
 }
 
@@ -110,11 +98,8 @@ pub struct WithdrawalRequestStatus {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QueueStatus {
-    /// Number of pending withdrawal requests.
     pub length: u32,
-    /// Total expected assets across all pending requests.
     pub total_expected_assets: u128,
-    /// Total escrowed shares across all pending requests.
     pub total_escrow_shares: u128,
 }
 
@@ -122,30 +107,18 @@ pub struct QueueStatus {
 // Pure Functions - Validation
 // ============================================================================
 
-/// Check if a withdrawal amount meets the minimum threshold.
-///
-/// Returns `true` if the assets are at or above `MIN_WITHDRAWAL_ASSETS`.
 #[inline]
 #[must_use]
 pub fn is_valid_withdrawal_amount(assets: u128) -> bool {
     assets >= MIN_WITHDRAWAL_ASSETS
 }
 
-/// Check if the queue can accept a new withdrawal request.
-///
-/// Returns `true` if the current length is below `MAX_QUEUE_LENGTH`.
 #[inline]
 #[must_use]
 pub fn can_enqueue(current_length: u32) -> bool {
     current_length < MAX_QUEUE_LENGTH
 }
 
-/// Check if a withdrawal request has passed its cooldown period.
-///
-/// # Arguments
-/// * `requested_at_ns` - When the withdrawal was requested (nanoseconds).
-/// * `now_ns` - Current timestamp (nanoseconds).
-/// * `cooldown_ns` - Required cooldown period (nanoseconds).
 #[inline]
 #[must_use]
 pub fn is_past_cooldown(

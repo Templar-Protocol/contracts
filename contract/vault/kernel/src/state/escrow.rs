@@ -26,18 +26,13 @@ pub use crate::types::EscrowSettlement;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EscrowEntry {
-    /// Actor whose shares are escrowed.
     pub owner: Address,
-    /// Number of shares held in escrow.
     pub shares: u128,
-    /// Timestamp when escrow was created.
     pub created_at_ns: TimestampNs,
-    /// Expected assets at time of escrow creation (for slippage protection).
     pub expected_assets: u128,
 }
 
 impl EscrowEntry {
-    /// Create a new escrow entry.
     #[inline]
     #[must_use]
     pub fn new(
@@ -54,7 +49,6 @@ impl EscrowEntry {
         }
     }
 
-    /// Check if this escrow entry is empty (zero shares).
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -67,11 +61,8 @@ impl EscrowEntry {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettlementResult {
-    /// Shares actually burned from escrow.
     pub burned: u128,
-    /// Shares refunded to the owner.
     pub refunded: u128,
-    /// Remaining shares in escrow (should be 0 if fully settled).
     pub remaining: u128,
 }
 
@@ -80,11 +71,8 @@ pub struct SettlementResult {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EscrowStats {
-    /// Total number of escrow entries.
     pub count: u32,
-    /// Total shares held in escrow.
     pub total_shares: u128,
-    /// Total expected assets across all escrows.
     pub total_expected_assets: u128,
 }
 
@@ -93,15 +81,6 @@ pub struct EscrowStats {
 // ============================================================================
 
 /// Apply an escrow settlement to an escrow entry.
-///
-/// Validates that the settlement does not exceed available escrowed shares.
-///
-/// # Arguments
-/// * `entry` - The escrow entry to settle.
-/// * `settlement` - The settlement to apply.
-///
-/// # Returns
-/// `Some(SettlementResult)` if valid, `None` if settlement exceeds escrow.
 #[must_use]
 pub fn apply_settlement(
     entry: &EscrowEntry,
@@ -123,12 +102,6 @@ pub fn apply_settlement(
 }
 
 /// Compute a full settlement that burns all escrowed shares.
-///
-/// # Arguments
-/// * `entry` - The escrow entry to fully settle.
-///
-/// # Returns
-/// `EscrowSettlement` that burns all shares.
 #[inline]
 #[must_use]
 pub fn settle_full_burn(entry: &EscrowEntry) -> EscrowSettlement {
@@ -136,12 +109,6 @@ pub fn settle_full_burn(entry: &EscrowEntry) -> EscrowSettlement {
 }
 
 /// Compute a full settlement that refunds all escrowed shares.
-///
-/// # Arguments
-/// * `entry` - The escrow entry to fully refund.
-///
-/// # Returns
-/// `EscrowSettlement` that refunds all shares.
 #[inline]
 #[must_use]
 pub fn settle_full_refund(entry: &EscrowEntry) -> EscrowSettlement {
@@ -149,13 +116,6 @@ pub fn settle_full_refund(entry: &EscrowEntry) -> EscrowSettlement {
 }
 
 /// Compute a proportional settlement based on actual vs expected assets.
-///
-/// # Arguments
-/// * `entry` - The escrow entry to settle.
-/// * `actual_assets` - Assets actually available for withdrawal.
-///
-/// # Returns
-/// `EscrowSettlement` with proportional burn and refund.
 #[must_use]
 pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSettlement {
     if entry.shares == 0 {
@@ -191,13 +151,6 @@ pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSe
 // ============================================================================
 
 /// Validate that an escrow entry has sufficient shares for a settlement.
-///
-/// # Arguments
-/// * `entry` - The escrow entry to validate against.
-/// * `settlement` - The settlement to validate.
-///
-/// # Returns
-/// `true` if the settlement can be applied.
 #[inline]
 #[must_use]
 pub fn can_apply_settlement(entry: &EscrowEntry, settlement: &EscrowSettlement) -> bool {
@@ -206,14 +159,6 @@ pub fn can_apply_settlement(entry: &EscrowEntry, settlement: &EscrowSettlement) 
 }
 
 /// Check if an escrow entry is stale (past its expected settlement time).
-///
-/// # Arguments
-/// * `entry` - The escrow entry to check.
-/// * `now_ns` - Current timestamp in nanoseconds.
-/// * `max_age_ns` - Maximum age before an escrow is considered stale.
-///
-/// # Returns
-/// `true` if the escrow is older than `max_age_ns`.
 #[inline]
 #[must_use]
 pub fn is_stale(entry: &EscrowEntry, now_ns: TimestampNs, max_age_ns: u64) -> bool {
@@ -225,12 +170,6 @@ pub fn is_stale(entry: &EscrowEntry, now_ns: TimestampNs, max_age_ns: u64) -> bo
 // ============================================================================
 
 /// Compute aggregate escrow statistics from an iterator of entries.
-///
-/// # Arguments
-/// * `entries` - Iterator over escrow entries.
-///
-/// # Returns
-/// `EscrowStats` with totals.
 #[must_use]
 pub fn compute_escrow_stats<'a, I>(entries: I) -> EscrowStats
 where
@@ -250,13 +189,6 @@ where
 }
 
 /// Find an escrow entry by owner.
-///
-/// # Arguments
-/// * `entries` - Iterator over escrow entries.
-/// * `owner` - The owner to search for.
-///
-/// # Returns
-/// `Some(&EscrowEntry)` if found, `None` otherwise.
 #[must_use]
 pub fn find_by_owner<'a, I>(entries: I, owner: &Address) -> Option<&'a EscrowEntry>
 where
@@ -266,12 +198,6 @@ where
 }
 
 /// Calculate total shares that would be burned across multiple settlements.
-///
-/// # Arguments
-/// * `settlements` - Iterator over settlements.
-///
-/// # Returns
-/// Total shares to burn.
 #[must_use]
 pub fn total_burn<'a, I>(settlements: I) -> u128
 where
@@ -284,12 +210,6 @@ where
 }
 
 /// Calculate total shares that would be refunded across multiple settlements.
-///
-/// # Arguments
-/// * `settlements` - Iterator over settlements.
-///
-/// # Returns
-/// Total shares to refund.
 #[must_use]
 pub fn total_refund<'a, I>(settlements: I) -> u128
 where

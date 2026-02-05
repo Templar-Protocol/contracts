@@ -35,14 +35,11 @@ pub const MAX_PENDING: usize = 1024;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeeAccrualAnchor {
-    /// Total assets at last fee accrual.
     pub total_assets: u128,
-    /// Timestamp (nanoseconds) of last fee accrual.
     pub timestamp_ns: TimestampNs,
 }
 
 impl FeeAccrualAnchor {
-    /// Create a new fee anchor at the given timestamp with the given total assets.
     #[inline]
     #[must_use]
     pub const fn new(total_assets: u128, timestamp_ns: TimestampNs) -> Self {
@@ -52,7 +49,6 @@ impl FeeAccrualAnchor {
         }
     }
 
-    /// Create a fee anchor at time zero with zero assets.
     #[inline]
     #[must_use]
     pub const fn zero() -> Self {
@@ -62,7 +58,6 @@ impl FeeAccrualAnchor {
         }
     }
 
-    /// Update the anchor to a new point in time.
     #[inline]
     pub fn update(&mut self, total_assets: u128, timestamp_ns: TimestampNs) {
         self.total_assets = total_assets;
@@ -93,27 +88,15 @@ impl Default for FeeAccrualAnchor {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VaultConfig {
-    /// Fee configuration (performance, management, growth cap).
-    ///
-    /// Uses spec-compliant `FeesSpec` with 32-byte address recipients.
     pub fees: FeesSpec,
-    /// Minimum withdrawal amount in base asset units.
     pub min_withdrawal_assets: u128,
-    /// Maximum number of pending withdrawals allowed in the queue.
     pub max_pending_withdrawals: u32,
-    /// Whether the vault is paused (deposits/withdrawals disabled).
     pub paused: bool,
-    /// Virtual shares for initial price anchoring.
-    /// Added to total_shares when computing share price.
     pub virtual_shares: u128,
-    /// Virtual assets for initial price anchoring.
-    /// Added to total_assets when computing share price.
     pub virtual_assets: u128,
 }
 
 impl VaultConfig {
-    /// Check if the max pending withdrawals setting is within bounds.
-    /// Enforced by `apply_action` to avoid silent clamping.
     #[inline]
     #[must_use]
     pub fn is_max_pending_valid(&self) -> bool {
@@ -142,27 +125,17 @@ impl VaultConfig {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VaultState {
-    /// Total assets under management (idle + external).
     pub total_assets: u128,
-    /// Total vault shares in circulation.
     pub total_shares: u128,
-    /// Assets held idle in the vault (not deployed to markets).
     pub idle_assets: u128,
-    /// Assets deployed to external markets/strategies.
     pub external_assets: u128,
-    /// Anchor for fee accrual calculations.
     pub fee_anchor: FeeAccrualAnchor,
-    /// Current operation state machine state.
     pub op_state: OpState,
-    /// Pending withdrawal queue owned by the kernel.
     pub withdraw_queue: WithdrawQueue,
-    /// Next operation ID to allocate.
-    /// Monotonically increasing, never decremented.
     pub next_op_id: u64,
 }
 
 impl VaultState {
-    /// Create a new vault state initialized to zero/idle.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -178,7 +151,6 @@ impl VaultState {
         }
     }
 
-    /// Create a vault state with initial values.
     #[inline]
     #[must_use]
     pub fn with_initial(
