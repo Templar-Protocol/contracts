@@ -5,6 +5,7 @@ use soroban_sdk::{contractevent, token::StellarAssetClient, Address, Env};
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::AddressBook;
 
+use crate::convert::u128_to_i128_effect;
 use crate::error::RuntimeError;
 
 // ---------------------------------------------------------------------------
@@ -683,28 +684,11 @@ where
         self.address_map.register(kernel_addr, soroban_addr);
     }
 
-    /// Convert u128 to i128 safely for SEP-41 calls.
-    ///
-    /// SEP-41 uses i128 for amounts. This conversion fails if the value
-    /// exceeds i128::MAX.
-    #[inline]
-    fn u128_to_i128(amount: u128) -> EffectResult<i128> {
-        i128::try_from(amount)
-            .map_err(|_| RuntimeError::effect_failed("amount overflow converting to i128"))
-    }
-
     /// Resolve a kernel address to a Soroban address.
     fn resolve_address(&self, kernel_addr: &[u8; 32]) -> EffectResult<&Address> {
         self.address_map
             .resolve(kernel_addr)
             .ok_or_else(|| RuntimeError::effect_failed("unknown address"))
-    }
-
-    /// Convert u128 to i128 for event fields.
-    #[inline]
-    fn u128_to_i128_event(val: u128) -> EffectResult<i128> {
-        i128::try_from(val)
-            .map_err(|_| RuntimeError::effect_failed("event amount overflow converting to i128"))
     }
 
     /// Emit a kernel event to the Soroban ledger using `#[contractevent]` structs.
@@ -726,8 +710,14 @@ where
                 DepositEvent {
                     owner: owner_addr.clone(),
                     receiver: recv_addr.clone(),
-                    assets_in: Self::u128_to_i128_event(*assets_in)?,
-                    shares_out: Self::u128_to_i128_event(*shares_out)?,
+                    assets_in: u128_to_i128_effect(
+                        *assets_in,
+                        "event amount overflow converting to i128",
+                    )?,
+                    shares_out: u128_to_i128_effect(
+                        *shares_out,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
@@ -744,8 +734,14 @@ where
                     id: *id,
                     owner: owner_addr.clone(),
                     receiver: recv_addr.clone(),
-                    shares: Self::u128_to_i128_event(*shares)?,
-                    expected_assets: Self::u128_to_i128_event(*expected_assets)?,
+                    shares: u128_to_i128_effect(
+                        *shares,
+                        "event amount overflow converting to i128",
+                    )?,
+                    expected_assets: u128_to_i128_effect(
+                        *expected_assets,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
@@ -760,8 +756,14 @@ where
                 let recv_addr = self.resolve_address(receiver)?;
                 WithdrawStartEvent {
                     op_id: *op_id,
-                    amount: Self::u128_to_i128_event(*amount)?,
-                    escrow_shares: Self::u128_to_i128_event(*escrow_shares)?,
+                    amount: u128_to_i128_effect(
+                        *amount,
+                        "event amount overflow converting to i128",
+                    )?,
+                    escrow_shares: u128_to_i128_effect(
+                        *escrow_shares,
+                        "event amount overflow converting to i128",
+                    )?,
                     owner: owner_addr.clone(),
                     receiver: recv_addr.clone(),
                 }
@@ -774,8 +776,14 @@ where
             } => {
                 WithdrawCollectedEvent {
                     op_id: *op_id,
-                    burn_shares: Self::u128_to_i128_event(*burn_shares)?,
-                    collected: Self::u128_to_i128_event(*collected)?,
+                    burn_shares: u128_to_i128_effect(
+                        *burn_shares,
+                        "event amount overflow converting to i128",
+                    )?,
+                    collected: u128_to_i128_effect(
+                        *collected,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
@@ -785,7 +793,10 @@ where
             } => {
                 WithdrawStoppedEvent {
                     op_id: *op_id,
-                    escrow_shares: Self::u128_to_i128_event(*escrow_shares)?,
+                    escrow_shares: u128_to_i128_effect(
+                        *escrow_shares,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
@@ -799,16 +810,28 @@ where
                 PayoutEvent {
                     op_id: *op_id,
                     success: *success,
-                    burn_shares: Self::u128_to_i128_event(*burn_shares)?,
-                    refund_shares: Self::u128_to_i128_event(*refund_shares)?,
-                    amount: Self::u128_to_i128_event(*amount)?,
+                    burn_shares: u128_to_i128_effect(
+                        *burn_shares,
+                        "event amount overflow converting to i128",
+                    )?,
+                    refund_shares: u128_to_i128_effect(
+                        *refund_shares,
+                        "event amount overflow converting to i128",
+                    )?,
+                    amount: u128_to_i128_effect(
+                        *amount,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
             KernelEvent::AllocationStarted { op_id, total, plan_len } => {
                 AllocStartEvent {
                     op_id: *op_id,
-                    total: Self::u128_to_i128_event(*total)?,
+                    total: u128_to_i128_effect(
+                        *total,
+                        "event amount overflow converting to i128",
+                    )?,
                     plan_len: *plan_len,
                 }
                 .publish(self.env);
@@ -821,7 +844,10 @@ where
                 AllocStepFailEvent {
                     op_id: *op_id,
                     index: *index,
-                    remaining: Self::u128_to_i128_event(*remaining)?,
+                    remaining: u128_to_i128_effect(
+                        *remaining,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
@@ -852,8 +878,14 @@ where
             } => {
                 ExtAssetsSyncEvent {
                     op_id: *op_id,
-                    new_external_assets: Self::u128_to_i128_event(*new_external_assets)?,
-                    total_assets: Self::u128_to_i128_event(*total_assets)?,
+                    new_external_assets: u128_to_i128_effect(
+                        *new_external_assets,
+                        "event amount overflow converting to i128",
+                    )?,
+                    total_assets: u128_to_i128_effect(
+                        *total_assets,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
@@ -863,7 +895,10 @@ where
             } => {
                 FeesRefreshEvent {
                     now_ns: *now_ns,
-                    total_assets: Self::u128_to_i128_event(*total_assets)?,
+                    total_assets: u128_to_i128_effect(
+                        *total_assets,
+                        "event amount overflow converting to i128",
+                    )?,
                 }
                 .publish(self.env);
             }
@@ -898,26 +933,30 @@ where
     fn execute_effect(&mut self, effect: &KernelEffect, ctx: &EffectContext) -> EffectResult<()> {
         match effect {
             KernelEffect::MintShares { owner, shares } => {
-                let amount = Self::u128_to_i128(*shares)?;
+                let amount =
+                    u128_to_i128_effect(*shares, "amount overflow converting to i128")?;
                 let addr = self.resolve_address(owner)?;
                 self.share_token.mint(addr, amount)
             }
 
             KernelEffect::BurnShares { owner, shares } => {
-                let amount = Self::u128_to_i128(*shares)?;
+                let amount =
+                    u128_to_i128_effect(*shares, "amount overflow converting to i128")?;
                 let addr = self.resolve_address(owner)?;
                 self.share_token.burn(addr, amount)
             }
 
             KernelEffect::TransferShares { from, to, shares } => {
-                let amount = Self::u128_to_i128(*shares)?;
+                let amount =
+                    u128_to_i128_effect(*shares, "amount overflow converting to i128")?;
                 let from_addr = self.resolve_address(from)?;
                 let to_addr = self.resolve_address(to)?;
                 self.share_token.transfer(from_addr, to_addr, amount)
             }
 
             KernelEffect::TransferAssets { to, amount } => {
-                let amount_i128 = Self::u128_to_i128(*amount)?;
+                let amount_i128 =
+                    u128_to_i128_effect(*amount, "amount overflow converting to i128")?;
                 let to_addr = self.resolve_address(to)?;
                 let vault_addr = self.resolve_address(&ctx.vault_address)?;
                 // Transfer from vault to recipient
@@ -925,7 +964,8 @@ where
             }
 
             KernelEffect::TransferAssetsFrom { from, to, amount } => {
-                let amount_i128 = Self::u128_to_i128(*amount)?;
+                let amount_i128 =
+                    u128_to_i128_effect(*amount, "amount overflow converting to i128")?;
                 let from_addr = self.resolve_address(from)?;
                 let to_addr = self.resolve_address(to)?;
                 self.asset_token.transfer(from_addr, to_addr, amount_i128)
@@ -1059,19 +1099,19 @@ mod tests {
     #[test]
     fn test_u128_to_i128_conversion() {
         // Valid conversions
-        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(0).is_ok());
-        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(1000)
+        assert!(u128_to_i128_effect(0, "amount overflow converting to i128").is_ok());
+        assert!(u128_to_i128_effect(1000, "amount overflow converting to i128").is_ok());
+        assert!(u128_to_i128_effect(i128::MAX as u128, "amount overflow converting to i128")
             .is_ok());
-        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(
-            i128::MAX as u128
-        )
-        .is_ok());
 
         // Overflow
-        assert!(SorobanEffectInterpreter::<TestSep41Token, TestSep41Token>::u128_to_i128(
-            (i128::MAX as u128) + 1
-        )
-        .is_err());
+        assert!(
+            u128_to_i128_effect(
+                (i128::MAX as u128) + 1,
+                "amount overflow converting to i128"
+            )
+            .is_err()
+        );
     }
 
     #[test]

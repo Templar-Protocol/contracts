@@ -9,6 +9,7 @@ use soroban_sdk::{contracttype, Env};
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::{Restrictions, VaultState};
 
+use crate::convert::{i128_to_u128_storage, u128_to_i128_storage};
 use crate::error::RuntimeError;
 
 const DEFAULT_TTL_THRESHOLD: u32 = 50_000;
@@ -83,17 +84,27 @@ impl SorobanVaultState {
         let op_state_id = state.op_state.op_id().unwrap_or(0);
 
         Ok(Self {
-            total_assets: i128::try_from(state.total_assets)
-                .map_err(|_| RuntimeError::storage_error("total_assets exceeds i128"))?,
-            total_shares: i128::try_from(state.total_shares)
-                .map_err(|_| RuntimeError::storage_error("total_shares exceeds i128"))?,
-            idle_assets: i128::try_from(state.idle_assets)
-                .map_err(|_| RuntimeError::storage_error("idle_assets exceeds i128"))?,
-            external_assets: i128::try_from(state.external_assets)
-                .map_err(|_| RuntimeError::storage_error("external_assets exceeds i128"))?,
+            total_assets: u128_to_i128_storage(
+                state.total_assets,
+                "total_assets exceeds i128",
+            )?,
+            total_shares: u128_to_i128_storage(
+                state.total_shares,
+                "total_shares exceeds i128",
+            )?,
+            idle_assets: u128_to_i128_storage(
+                state.idle_assets,
+                "idle_assets exceeds i128",
+            )?,
+            external_assets: u128_to_i128_storage(
+                state.external_assets,
+                "external_assets exceeds i128",
+            )?,
             fee_anchor_ns: state.fee_anchor.timestamp_ns,
-            fee_anchor_assets: i128::try_from(state.fee_anchor.total_assets)
-                .map_err(|_| RuntimeError::storage_error("fee_anchor_assets exceeds i128"))?,
+            fee_anchor_assets: u128_to_i128_storage(
+                state.fee_anchor.total_assets,
+                "fee_anchor_assets exceeds i128",
+            )?,
             op_state_kind,
             op_state_id,
             withdraw_queue_len: state.withdraw_queue.len() as u32,
@@ -114,17 +125,27 @@ impl SorobanVaultState {
         let withdraw_queue = WithdrawQueue::new();
 
         Ok(VaultState {
-            total_assets: u128::try_from(self.total_assets)
-                .map_err(|_| RuntimeError::storage_error("total_assets is negative"))?,
-            total_shares: u128::try_from(self.total_shares)
-                .map_err(|_| RuntimeError::storage_error("total_shares is negative"))?,
-            idle_assets: u128::try_from(self.idle_assets)
-                .map_err(|_| RuntimeError::storage_error("idle_assets is negative"))?,
-            external_assets: u128::try_from(self.external_assets)
-                .map_err(|_| RuntimeError::storage_error("external_assets is negative"))?,
+            total_assets: i128_to_u128_storage(
+                self.total_assets,
+                "total_assets is negative",
+            )?,
+            total_shares: i128_to_u128_storage(
+                self.total_shares,
+                "total_shares is negative",
+            )?,
+            idle_assets: i128_to_u128_storage(
+                self.idle_assets,
+                "idle_assets is negative",
+            )?,
+            external_assets: i128_to_u128_storage(
+                self.external_assets,
+                "external_assets is negative",
+            )?,
             fee_anchor: FeeAccrualAnchor::new(
-                u128::try_from(self.fee_anchor_assets)
-                    .map_err(|_| RuntimeError::storage_error("fee_anchor_assets is negative"))?,
+                i128_to_u128_storage(
+                    self.fee_anchor_assets,
+                    "fee_anchor_assets is negative",
+                )?,
                 self.fee_anchor_ns,
             ),
             op_state,

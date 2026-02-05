@@ -29,6 +29,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod auth;
+pub(crate) mod convert;
 pub mod contract;
 pub mod effects;
 pub mod error;
