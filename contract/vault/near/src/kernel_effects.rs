@@ -6,10 +6,13 @@
 
 use std::collections::BTreeMap;
 
-use near_sdk::{AccountId, AccountIdRef};
+use near_sdk::{
+    json_types::{U128, U64},
+    near, AccountId, AccountIdRef,
+};
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Controller, Nep141Mint, Nep141Transfer};
 
-use templar_vault_kernel::effects::KernelEffect;
+use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
 use templar_vault_kernel::types::Address;
 
 use crate::governance::Gate;
@@ -22,6 +25,83 @@ pub enum KernelEffectError {
     BurnFailed,
     TransferFailed,
     UnsupportedEffect(&'static str),
+}
+
+#[near(event_json(standard = "templar-vault-kernel"))]
+pub enum KernelEventLog {
+    #[event_version("1.0.0")]
+    AllocationStarted {
+        op_id: U64,
+        total: U128,
+        plan_len: u32,
+    },
+    #[event_version("1.0.0")]
+    AllocationStepFailed {
+        op_id: U64,
+        index: u32,
+        remaining: U128,
+    },
+    #[event_version("1.0.0")]
+    AllocationCompleted {
+        op_id: U64,
+        has_withdrawal: bool,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalStarted {
+        op_id: U64,
+        amount: U128,
+        escrow_shares: U128,
+        owner: AccountId,
+        receiver: AccountId,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalCollected {
+        op_id: U64,
+        burn_shares: U128,
+        collected: U128,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalStopped {
+        op_id: U64,
+        escrow_shares: U128,
+    },
+    #[event_version("1.0.0")]
+    RefreshStarted { op_id: U64, plan_len: u32 },
+    #[event_version("1.0.0")]
+    RefreshCompleted { op_id: U64 },
+    #[event_version("1.0.0")]
+    PayoutCompleted {
+        op_id: U64,
+        success: bool,
+        burn_shares: U128,
+        refund_shares: U128,
+        amount: U128,
+    },
+    #[event_version("1.0.0")]
+    DepositProcessed {
+        owner: AccountId,
+        receiver: AccountId,
+        assets_in: U128,
+        shares_out: U128,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalRequested {
+        id: U64,
+        owner: AccountId,
+        receiver: AccountId,
+        shares: U128,
+        expected_assets: U128,
+    },
+    #[event_version("1.0.0")]
+    ExternalAssetsSynced {
+        op_id: U64,
+        new_external_assets: U128,
+        total_assets: U128,
+    },
+    #[event_version("1.0.0")]
+    FeesRefreshed { now_ns: U64, total_assets: U128 },
+    #[event_version("1.0.0")]
+    PauseUpdated { paused: bool },
 }
 
 /// Address resolution context for kernel effects.
@@ -45,6 +125,159 @@ impl KernelEffectContext {
             .get(address)
             .ok_or(KernelEffectError::MissingAccount(*address))
     }
+}
+
+fn emit_kernel_event(
+    event: &KernelEvent,
+    ctx: &KernelEffectContext,
+) -> Result<(), KernelEffectError> {
+    match event {
+        KernelEvent::AllocationStarted {
+            op_id,
+            total,
+            plan_len,
+        } => KernelEventLog::AllocationStarted {
+            op_id: U64(*op_id),
+            total: U128(*total),
+            plan_len: *plan_len,
+        }
+        .emit(),
+        KernelEvent::AllocationStepFailed {
+            op_id,
+            index,
+            remaining,
+        } => KernelEventLog::AllocationStepFailed {
+            op_id: U64(*op_id),
+            index: *index,
+            remaining: U128(*remaining),
+        }
+        .emit(),
+        KernelEvent::AllocationCompleted {
+            op_id,
+            has_withdrawal,
+        } => KernelEventLog::AllocationCompleted {
+            op_id: U64(*op_id),
+            has_withdrawal: *has_withdrawal,
+        }
+        .emit(),
+        KernelEvent::WithdrawalStarted {
+            op_id,
+            amount,
+            escrow_shares,
+            owner,
+            receiver,
+        } => {
+            let owner = ctx.resolve(owner)?.clone();
+            let receiver = ctx.resolve(receiver)?.clone();
+            KernelEventLog::WithdrawalStarted {
+                op_id: U64(*op_id),
+                amount: U128(*amount),
+                escrow_shares: U128(*escrow_shares),
+                owner,
+                receiver,
+            }
+            .emit()
+        }
+        KernelEvent::WithdrawalCollected {
+            op_id,
+            burn_shares,
+            collected,
+        } => KernelEventLog::WithdrawalCollected {
+            op_id: U64(*op_id),
+            burn_shares: U128(*burn_shares),
+            collected: U128(*collected),
+        }
+        .emit(),
+        KernelEvent::WithdrawalStopped {
+            op_id,
+            escrow_shares,
+        } => KernelEventLog::WithdrawalStopped {
+            op_id: U64(*op_id),
+            escrow_shares: U128(*escrow_shares),
+        }
+        .emit(),
+        KernelEvent::RefreshStarted { op_id, plan_len } => {
+            KernelEventLog::RefreshStarted {
+                op_id: U64(*op_id),
+                plan_len: *plan_len,
+            }
+            .emit()
+        }
+        KernelEvent::RefreshCompleted { op_id } => {
+            KernelEventLog::RefreshCompleted { op_id: U64(*op_id) }.emit()
+        }
+        KernelEvent::PayoutCompleted {
+            op_id,
+            success,
+            burn_shares,
+            refund_shares,
+            amount,
+        } => KernelEventLog::PayoutCompleted {
+            op_id: U64(*op_id),
+            success: *success,
+            burn_shares: U128(*burn_shares),
+            refund_shares: U128(*refund_shares),
+            amount: U128(*amount),
+        }
+        .emit(),
+        KernelEvent::DepositProcessed {
+            owner,
+            receiver,
+            assets_in,
+            shares_out,
+        } => {
+            let owner = ctx.resolve(owner)?.clone();
+            let receiver = ctx.resolve(receiver)?.clone();
+            KernelEventLog::DepositProcessed {
+                owner,
+                receiver,
+                assets_in: U128(*assets_in),
+                shares_out: U128(*shares_out),
+            }
+            .emit()
+        }
+        KernelEvent::WithdrawalRequested {
+            id,
+            owner,
+            receiver,
+            shares,
+            expected_assets,
+        } => {
+            let owner = ctx.resolve(owner)?.clone();
+            let receiver = ctx.resolve(receiver)?.clone();
+            KernelEventLog::WithdrawalRequested {
+                id: U64(*id),
+                owner,
+                receiver,
+                shares: U128(*shares),
+                expected_assets: U128(*expected_assets),
+            }
+            .emit()
+        }
+        KernelEvent::ExternalAssetsSynced {
+            op_id,
+            new_external_assets,
+            total_assets,
+        } => KernelEventLog::ExternalAssetsSynced {
+            op_id: U64(*op_id),
+            new_external_assets: U128(*new_external_assets),
+            total_assets: U128(*total_assets),
+        }
+        .emit(),
+        KernelEvent::FeesRefreshed {
+            now_ns,
+            total_assets,
+        } => KernelEventLog::FeesRefreshed {
+            now_ns: U64(*now_ns),
+            total_assets: U128(*total_assets),
+        }
+        .emit(),
+        KernelEvent::PauseUpdated { paused } => {
+            KernelEventLog::PauseUpdated { paused: *paused }.emit()
+        }
+    }
+
+    Ok(())
 }
 
 /// Apply kernel effects to NEAR storage.
@@ -76,9 +309,8 @@ pub(crate) fn apply_kernel_effects(
                 let transfer = Nep141Transfer::new(*shares, sender_ref, receiver_ref);
                 Gate::bypass_transfer(contract, &transfer);
             }
-            KernelEffect::EmitEvent { event: _ } => {
-                // Kernel events are emitted by kernel transitions. NEAR already
-                // emits its own events; explicit mapping will come later.
+            KernelEffect::EmitEvent { event } => {
+                emit_kernel_event(event, ctx)?;
             }
             KernelEffect::TransferAssetsFrom { .. } => {
                 // Assets are transferred via ft_on_transfer before kernel execution.
@@ -173,5 +405,27 @@ mod tests {
 
         let err = apply_kernel_effects(&mut c, &effects, &ctx).expect_err("unsupported effect");
         assert!(matches!(err, KernelEffectError::UnsupportedEffect(_)));
+    }
+
+    #[test]
+    fn test_apply_kernel_effects_emits_kernel_event() {
+        let vault_id = mk(0);
+        let mut c = new_test_contract(&vault_id);
+
+        let alice = mk(1);
+        let bob = mk(2);
+
+        let ctx = context_for(&[alice.clone(), bob.clone()]);
+
+        let effects = vec![KernelEffect::EmitEvent {
+            event: KernelEvent::DepositProcessed {
+                owner: account_id_to_address(&alice),
+                receiver: account_id_to_address(&bob),
+                assets_in: 10,
+                shares_out: 9,
+            },
+        }];
+
+        apply_kernel_effects(&mut c, &effects, &ctx).expect("apply effects");
     }
 }
