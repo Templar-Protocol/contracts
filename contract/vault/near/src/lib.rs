@@ -178,18 +178,8 @@ struct OldContract {
 #[fungible_token(force_unregister_hook = "Self")]
 #[rbac(roles = "Role", crate = "crate")]
 #[near(contract_state)]
-/// Vault contract that issues shares over an underlying fungible asset and allocates liquidity
-/// across configured markets. Implements 4626-like deposit/withdraw semantics.
-///
-/// What this contract does
-/// - Issues a share token (NEP-141) that represents a vault over an underlying NEP-141 “BorrowAsset”.
-/// - Allocates deposits across “markets” via a supply queue.
-/// - User withdrawals are enqueued in a FIFO pending-withdrawals queue, while the
-///   actual market route for each withdrawal is keeper-routed and provided per
-///   execution (no persistent global withdraw route).
-/// - Governance uses Owner + RBAC (Curator/Guardian/Allocator) with a timelock for certain changes.
-/// - Withdraw flow escrows shares, builds market-side withdrawal requests, then pays out and burns proportional escrow.
-/// - Performance fees accrue by minting fee shares based on increases in total assets.
+/// Vault contract issuing NEP-141 shares over a BorrowAsset.
+/// Uses 4626-like deposit/withdraw flows with queued withdrawals and allocator-routed markets.
 ///
 /// Critical invariants
 /// - Assets accounting is correct: total_assets = idle_balance + sum(all principals in markets).

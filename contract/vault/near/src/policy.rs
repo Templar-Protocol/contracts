@@ -1,9 +1,4 @@
-//! Policy module bridging curator-primitives with NEAR vault types.
-//!
-//! This module provides:
-//! - Type conversions between common/near types and curator-primitives types
-//! - Re-exports of curator-primitives pure functions for policy enforcement
-//! - NEAR-specific wrappers where needed
+//! Policy adapters around curator-primitives for NEAR vault types.
 // Note: adapters that touch templar_common types live here (not in curator-primitives)
 // to keep curator-primitives chain-agnostic and dependency-light.
 

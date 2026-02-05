@@ -1,8 +1,6 @@
 //! Kernel mirror utilities for NEAR state.
 //!
-//! These helpers construct a `templar_vault_kernel` view of the NEAR contract
-//! state without mutating storage. This is intended for parity checks and
-//! incremental migration toward kernel-driven execution.
+//! Builds a `templar_vault_kernel` view for parity checks without mutating storage.
 
 use near_sdk_contract_tools::ft::Nep141Controller;
 use templar_vault_kernel::fee::FeesSpec;
