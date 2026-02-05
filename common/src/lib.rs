@@ -17,6 +17,7 @@ pub mod time_chunk;
 #[cfg(feature = "rpc")]
 pub mod utils;
 pub mod vault;
+pub mod virtual_credit;
 pub mod withdrawal_queue;
 
 pub use primitive_types;

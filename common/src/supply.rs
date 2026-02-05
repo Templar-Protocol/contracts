@@ -230,6 +230,36 @@ impl<'a> SupplyPositionGuard<'a> {
         Self(SupplyPositionRef::new(market, account_id, position))
     }
 
+    /// Returns the amount of virtual supply that has been realized.
+    fn realize_virtual(
+        &mut self,
+        from_snapshot_index: u32,
+        through_snapshot_index: u32,
+    ) -> BorrowAssetAmount {
+        let mut next_incoming = 0;
+        let mut amount_virtual = self.position.borrow_asset_deposit.active_virtual;
+        let mut total_realized = BorrowAssetAmount::zero();
+
+        for i in from_snapshot_index..=through_snapshot_index {
+            while let Some(incoming) = self
+                .position
+                .borrow_asset_deposit
+                .incoming
+                .get(next_incoming)
+                .filter(|incoming| incoming.activate_at_snapshot_index == i)
+            {
+                next_incoming += 1;
+                amount_virtual += incoming.amount_virtual;
+            }
+
+            let amount_realized = self.market.take_virtual_credit(amount_virtual, i);
+            amount_virtual -= amount_realized;
+            total_realized += amount_realized;
+        }
+
+        total_realized
+    }
+
     fn activate_incoming(&mut self, through_snapshot_index: u32) {
         let mut incoming = self
             .position
@@ -353,20 +383,20 @@ impl<'a> SupplyPositionGuard<'a> {
     pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
         self.accumulate_yield_partial(u32::MAX);
 
-        let market_credit = self.market.borrow_asset_virtual_credit;
-        let my_virtual = self.position.borrow_asset_deposit.active_virtual;
+        // let market_credit = self.market.borrow_asset_virtual_credit;
+        // let my_virtual = self.position.borrow_asset_deposit.active_virtual;
 
         // Claim virtual to real
-        let convertible = my_virtual.min(market_credit);
-        if !convertible.is_zero() {
-            self.market.borrow_asset_virtual_credit -= convertible;
+        // let convertible = my_virtual.min(market_credit);
+        // if !convertible.is_zero() {
+        //     self.market.borrow_asset_virtual_credit -= convertible;
 
-            self.position.borrow_asset_deposit.active_virtual -= convertible;
-            self.market.borrow_asset_deposited_active_virtual -= convertible;
+        //     self.position.borrow_asset_deposit.active_virtual -= convertible;
+        //     self.market.borrow_asset_deposited_active_virtual -= convertible;
 
-            self.position.borrow_asset_deposit.active_real += convertible;
-            self.market.borrow_asset_deposited_active_real += convertible;
-        }
+        //     self.position.borrow_asset_deposit.active_real += convertible;
+        //     self.market.borrow_asset_deposited_active_real += convertible;
+        // }
 
         YieldAccumulationProof(())
     }
