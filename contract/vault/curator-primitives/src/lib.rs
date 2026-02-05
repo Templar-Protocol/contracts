@@ -6,6 +6,8 @@
 //!
 //! # Modules
 //!
+//! - [`auth`]: Pluggable authentication and authorization primitives
+//! - [`rbac`]: Role-based access control adapter
 //! - [`policy`]: Cap groups, supply queues, withdraw routes, refresh plans, and market locks
 //! - [`recovery`]: Recovery action determination and state machine recovery logic
 //!
@@ -13,6 +15,8 @@
 
 extern crate alloc;
 
+pub mod auth;
+pub mod rbac;
 pub mod policy;
 pub mod recovery;
 pub mod governance;
@@ -23,6 +27,9 @@ mod golden_tests;
 mod test_utils;
 
 // Re-exports for convenience
+pub use auth::{ActionKind, AuthAdapter, AuthError, AuthResult, PermissiveAuth, StrictAuth};
+pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
+
 pub use policy::{
     cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
     cooldown::{Cooldown, CooldownError},
