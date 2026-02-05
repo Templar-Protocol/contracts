@@ -398,6 +398,7 @@ pub fn start_withdrawal(state: OpState, request: WithdrawalRequest) -> Transitio
 /// # Arguments
 /// * `state` - Current state (must be Withdrawing)
 /// * `op_id` - Operation ID to verify correlation
+/// * `escrow_address` - Address holding escrowed shares
 /// * `amount_collected` - Amount collected in this step
 ///
 /// # Returns
@@ -509,7 +510,7 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
 ///
 /// # Returns
 /// * `Ok(TransitionResult)` with Idle state and refund effects
-pub fn stop_withdrawal(state: OpState, op_id: u64) -> TransitionRes {
+pub fn stop_withdrawal(state: OpState, op_id: u64, escrow_address: Address) -> TransitionRes {
     let withdraw = match &state {
         OpState::Withdrawing(s) => s,
         _ => {
@@ -532,8 +533,6 @@ pub fn stop_withdrawal(state: OpState, op_id: u64) -> TransitionRes {
     // Transfer shares back from escrow to owner (represented as an effect)
     // The actual escrow address would be handled by the runtime
     if withdraw.escrow_shares > 0 {
-        // Using a placeholder address for escrow - runtime will substitute
-        let escrow_address = [0u8; 32];
         let owner_address = withdraw.owner;
         effects.push(KernelEffect::TransferShares {
             from: escrow_address,
@@ -678,10 +677,16 @@ pub fn complete_refresh(state: OpState, op_id: u64) -> TransitionRes {
 /// * `state` - Current state (must be Payout)
 /// * `success` - Whether the transfer succeeded
 /// * `op_id` - Operation ID to verify correlation
+/// * `escrow_address` - Address holding escrowed shares
 ///
 /// # Returns
 /// * `Ok(TransitionResult)` with Idle state and appropriate effects
-pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionRes {
+pub fn payout_complete(
+    state: OpState,
+    success: bool,
+    op_id: u64,
+    escrow_address: Address,
+) -> TransitionRes {
     let payout = match &state {
         OpState::Payout(s) => s,
         _ => {
@@ -701,7 +706,6 @@ pub fn payout_complete(state: OpState, success: bool, op_id: u64) -> TransitionR
     let mut effects = vec![];
 
     let owner_address = payout.owner;
-    let escrow_address = [0u8; 32];
 
     let mut burn_shares = 0u128;
     let mut refund_shares = 0u128;
@@ -1043,7 +1047,8 @@ mod tests {
             escrow_shares: 100,
         });
 
-        let result = stop_withdrawal(state, 1).unwrap();
+        let escrow_address = owner_addr(99);
+        let result = stop_withdrawal(state, 1, escrow_address).unwrap();
 
         assert!(result.new_state.is_idle());
         // Should have a TransferShares effect for refund
@@ -1126,6 +1131,7 @@ mod tests {
 
     #[test]
     fn test_payout_complete_success() {
+        let escrow_address = owner_addr(99);
         let state = OpState::Payout(PayoutState {
             op_id: 1,
             receiver: receiver_addr(1),
@@ -1135,7 +1141,7 @@ mod tests {
             burn_shares: 400,
         });
 
-        let result = payout_complete(state, true, 1).unwrap();
+        let result = payout_complete(state, true, 1, escrow_address).unwrap();
 
         assert!(result.new_state.is_idle());
 
@@ -1148,7 +1154,7 @@ mod tests {
                 _ => None,
             })
             .expect("missing BurnShares effect");
-        assert_eq!(burn_owner, [0u8; 32]);
+        assert_eq!(burn_owner, escrow_address);
         assert_eq!(burn_shares, 400);
 
         // Should have TransferShares effect for refund (500 - 400 = 100)
@@ -1160,6 +1166,7 @@ mod tests {
 
     #[test]
     fn test_payout_complete_failure_refunds_all() {
+        let escrow_address = owner_addr(99);
         let state = OpState::Payout(PayoutState {
             op_id: 1,
             receiver: receiver_addr(1),
@@ -1169,7 +1176,7 @@ mod tests {
             burn_shares: 400,
         });
 
-        let result = payout_complete(state, false, 1).unwrap();
+        let result = payout_complete(state, false, 1, escrow_address).unwrap();
 
         assert!(result.new_state.is_idle());
 
@@ -1190,13 +1197,15 @@ mod tests {
     fn test_payout_complete_wrong_state_error() {
         let state = OpState::Idle;
 
-        let result = payout_complete(state, true, 1);
+        let escrow_address = owner_addr(99);
+        let result = payout_complete(state, true, 1, escrow_address);
 
         assert!(matches!(result, Err(TransitionError::NotPayout { .. })));
     }
 
     #[test]
     fn test_payout_complete_wrong_op_id_error() {
+        let escrow_address = owner_addr(99);
         let state = OpState::Payout(PayoutState {
             op_id: 1,
             receiver: receiver_addr(1),
@@ -1206,7 +1215,7 @@ mod tests {
             burn_shares: 400,
         });
 
-        let result = payout_complete(state, true, 999);
+        let result = payout_complete(state, true, 999, escrow_address);
 
         assert!(matches!(
             result,
@@ -1271,7 +1280,8 @@ mod tests {
         assert!(result.new_state.is_payout());
 
         // Complete payout
-        let result = payout_complete(result.new_state, true, 1).unwrap();
+        let escrow_address = owner_addr(99);
+        let result = payout_complete(result.new_state, true, 1, escrow_address).unwrap();
         assert!(result.new_state.is_idle());
     }
 
@@ -1602,7 +1612,8 @@ mod proptests {
             request in arb_withdrawal_request(),
         ) {
             let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
-            let stop = stop_withdrawal(result.new_state, request.op_id);
+            let escrow_address = owner_addr(99);
+            let stop = stop_withdrawal(result.new_state, request.op_id, escrow_address);
 
             prop_assert!(stop.is_ok());
             prop_assert!(stop.unwrap().new_state.is_idle());
@@ -1647,7 +1658,8 @@ mod proptests {
             };
             let state = OpState::Payout(payout);
 
-            let result = payout_complete(state, success, op_id);
+            let escrow_address = owner_addr(99);
+            let result = payout_complete(state, success, op_id, escrow_address);
             prop_assert!(result.is_ok());
             prop_assert!(result.unwrap().new_state.is_idle());
         }
@@ -1842,7 +1854,8 @@ mod proptests {
             escrow_shares: 50,
             burn_shares: 50,
         });
-        let result = payout_complete(state, true, 22).unwrap();
+        let escrow_address = owner_addr(99);
+        let result = payout_complete(state, true, 22, escrow_address).unwrap();
         let event = extract_event(&result.effects).expect("event");
         assert!(matches!(
             event,

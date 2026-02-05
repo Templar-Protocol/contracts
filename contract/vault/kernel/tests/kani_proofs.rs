@@ -2113,7 +2113,8 @@ mod kani_proofs {
         let request = withdrawal_request(op_id, 10, 10);
         let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
 
-        let stop = stop_withdrawal(result.new_state, request.op_id).unwrap();
+        let escrow_address = owner_addr(99);
+        let stop = stop_withdrawal(result.new_state, request.op_id, escrow_address).unwrap();
         assert!(stop.new_state.is_idle());
     }
 
@@ -2149,7 +2150,8 @@ mod kani_proofs {
         };
         let state = OpState::Payout(payout);
 
-        let result = payout_complete(state, success, op_id).unwrap();
+        let escrow_address = owner_addr(99);
+        let result = payout_complete(state, success, op_id, escrow_address).unwrap();
         assert!(result.new_state.is_idle());
     }
 

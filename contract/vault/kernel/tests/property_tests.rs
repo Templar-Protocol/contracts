@@ -1181,7 +1181,8 @@ proptest! {
         request in arb_withdrawal_request(),
     ) {
         let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
-        let stop = stop_withdrawal(result.new_state, request.op_id).unwrap();
+        let escrow_address = owner_addr(99);
+        let stop = stop_withdrawal(result.new_state, request.op_id, escrow_address).unwrap();
         prop_assert!(stop.new_state.is_idle());
     }
 
@@ -1216,7 +1217,8 @@ proptest! {
         };
         let state = OpState::Payout(payout);
 
-        let result = payout_complete(state, success, op_id).unwrap();
+        let escrow_address = owner_addr(99);
+        let result = payout_complete(state, success, op_id, escrow_address).unwrap();
         prop_assert!(result.new_state.is_idle());
     }
 

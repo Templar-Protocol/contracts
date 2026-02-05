@@ -306,7 +306,7 @@ pub fn apply_action(
             let effects = vec![
                 KernelEffect::TransferShares {
                     from: owner,
-                    to: [0u8; 32],
+                    to: *self_id,
                     shares,
                 },
                 KernelEffect::EmitEvent {
@@ -537,8 +537,8 @@ pub fn apply_action(
                 return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
             }
 
-            let result =
-                stop_withdrawal(state.op_state.clone(), op_id).map_err(KernelError::Transition)?;
+            let result = stop_withdrawal(state.op_state.clone(), op_id, *self_id)
+                .map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             state.withdraw_queue.dequeue();
             Ok(KernelResult::new(state, result.effects))
@@ -566,7 +566,7 @@ pub fn apply_action(
                 return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
             }
 
-            let escrow_address = [0u8; 32];
+            let escrow_address = *self_id;
             let mut effects = Vec::new();
 
             let (burn_shares, refund_shares, amount, success) = match outcome {
@@ -2246,7 +2246,7 @@ mod tests {
                 _ => None,
             })
             .expect("missing BurnShares effect");
-        assert_eq!(burn_owner, [0u8; 32]);
+        assert_eq!(burn_owner, addr(0xFF));
         assert_eq!(burn_shares, 100);
         let event = result
             .effects

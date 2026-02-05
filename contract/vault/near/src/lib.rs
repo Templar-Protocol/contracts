@@ -427,7 +427,7 @@ impl Contract {
         let mut ctx = KernelEffectContext::default();
         ctx.insert(owner_addr, sender.clone());
         ctx.insert(receiver_addr, receiver.clone());
-        ctx.insert(Address::default(), env::current_account_id());
+        ctx.insert(self_addr, env::current_account_id());
 
         apply_kernel_effects(self, &result.effects, &ctx).unwrap_or_else(|_| {
             panic_with_message("Failed to apply kernel withdraw effects")

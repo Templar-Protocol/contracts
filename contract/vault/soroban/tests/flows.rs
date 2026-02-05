@@ -106,7 +106,8 @@ fn withdrawal_flow_reaches_idle() {
     let result = withdrawal_collected(state, op_id, 150).unwrap();
     interpreter.execute_effects(&result.effects, &ctx).unwrap();
 
-    let result = payout_complete(result.new_state, true, op_id).unwrap();
+    let escrow_address = ctx.vault_address;
+    let result = payout_complete(result.new_state, true, op_id, escrow_address).unwrap();
     interpreter.execute_effects(&result.effects, &ctx).unwrap();
     assert!(matches!(result.new_state, OpState::Idle));
 }
