@@ -42,11 +42,14 @@ pub struct Market {
     /// amount might be compounded yield (deposited into the protocol without
     /// actually being transferred in).
     pub borrow_asset_balance: BorrowAssetAmount,
-    /// Total amount of borrow asset earning interest in the market.
+    /// Amount of borrow asset earning interest in the market that has real
+    /// deposits backing it.
     pub borrow_asset_deposited_active_real: BorrowAssetAmount,
-    /// How much of `borrow_asset_deposited_active` is actually virtual (compounded)?
+    /// Amount of borrow asset earning interest in the market that does not
+    /// have real deposits backing it (i.e. compounded yield).
     pub borrow_asset_deposited_active_virtual: BorrowAssetAmount,
-    /// Amount paid by borrowers for fees that has not yet been claimed/activated by supply positions during accumulation.
+    /// Amount paid by borrowers for fees that has not yet been "real"-ized
+    /// (converting virtual to real) by supply positions during accumulation.
     pub borrow_asset_virtual_credit: BorrowAssetAmount,
     /// Upcoming snapshot indices with amounts of borrow asset that will be activated.
     pub borrow_asset_deposited_incoming: Vec<IncomingDeposit>,
