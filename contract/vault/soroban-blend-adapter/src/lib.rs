@@ -31,6 +31,8 @@ pub enum AdapterError {
     Reentrancy = 5,
     /// Arithmetic overflow when computing total assets.
     ArithmeticOverflow = 6,
+    /// No supply position found for the given reserve index.
+    MissingPosition = 7,
 }
 
 #[contract]
@@ -158,7 +160,10 @@ impl BlendAdapterContract {
         let reserve = client.get_reserve(&asset);
         let positions = client.get_positions(&env.current_contract_address());
         let index = reserve.config.index;
-        let b_tokens = positions.supply.get(index).unwrap_or(0);
+        let b_tokens = positions
+            .supply
+            .get(index)
+            .ok_or(AdapterError::MissingPosition)?;
         b_tokens
             .checked_mul(reserve.data.b_rate)
             .and_then(|value| value.checked_div(SCALAR_12))
