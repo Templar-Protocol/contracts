@@ -1,7 +1,4 @@
-//! Effect interpreter for processing kernel effects on Soroban.
-//!
-//! This module provides the [`EffectInterpreter`] trait and supporting types
-//! for executing kernel effects on the Soroban blockchain.
+//! Effect interpreter for kernel effects on Soroban.
 
 use alloc::vec::Vec;
 use soroban_sdk::{contractevent, token::StellarAssetClient, Address, Env};
@@ -11,143 +8,108 @@ use templar_vault_kernel::AddressBook;
 use crate::error::RuntimeError;
 
 // ---------------------------------------------------------------------------
-// Contract Events (using #[contractevent] structs)
+// Contract Events
 // ---------------------------------------------------------------------------
 
 /// Deposit processed event.
 #[contractevent]
 pub struct DepositEvent {
-    /// Owner who deposited.
     #[topic]
     pub owner: Address,
-    /// Receiver of shares.
     #[topic]
     pub receiver: Address,
-    /// Assets deposited.
     pub assets_in: i128,
-    /// Shares minted.
     pub shares_out: i128,
 }
 
 /// Withdrawal requested event.
 #[contractevent]
 pub struct WithdrawRequestEvent {
-    /// Request ID.
     #[topic]
     pub id: u64,
-    /// Owner requesting withdrawal.
     #[topic]
     pub owner: Address,
-    /// Receiver of assets.
     pub receiver: Address,
-    /// Shares to burn.
     pub shares: i128,
-    /// Expected assets out.
     pub expected_assets: i128,
 }
 
 /// Withdrawal started event.
 #[contractevent]
 pub struct WithdrawStartEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Amount being withdrawn.
     pub amount: i128,
-    /// Shares in escrow.
     pub escrow_shares: i128,
-    /// Owner.
     pub owner: Address,
-    /// Receiver.
     pub receiver: Address,
 }
 
 /// Withdrawal collected event.
 #[contractevent]
 pub struct WithdrawCollectedEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Shares burned.
     pub burn_shares: i128,
-    /// Amount collected.
     pub collected: i128,
 }
 
 /// Withdrawal stopped event.
 #[contractevent]
 pub struct WithdrawStoppedEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Escrowed shares returned.
     pub escrow_shares: i128,
 }
 
 /// Payout completed event.
 #[contractevent]
 pub struct PayoutEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Whether payout succeeded.
     pub success: bool,
-    /// Shares burned.
     pub burn_shares: i128,
-    /// Shares refunded.
     pub refund_shares: i128,
-    /// Amount paid out.
     pub amount: i128,
 }
 
 /// Allocation started event.
 #[contractevent]
 pub struct AllocStartEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Total to allocate.
     pub total: i128,
-    /// Number of plan steps.
     pub plan_len: u32,
 }
 
 /// Allocation step failed event.
 #[contractevent]
 pub struct AllocStepFailEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Step index.
     pub index: u32,
-    /// Remaining amount.
     pub remaining: i128,
 }
 
 /// Allocation completed event.
 #[contractevent]
 pub struct AllocDoneEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Whether triggered by withdrawal.
     pub has_withdrawal: bool,
 }
 
 /// Refresh started event.
 #[contractevent]
 pub struct RefreshStartEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// Plan length.
     pub plan_len: u32,
 }
 
 /// Refresh completed event.
 #[contractevent]
 pub struct RefreshDoneEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
 }
@@ -155,28 +117,22 @@ pub struct RefreshDoneEvent {
 /// External assets synced event.
 #[contractevent]
 pub struct ExtAssetsSyncEvent {
-    /// Operation ID.
     #[topic]
     pub op_id: u64,
-    /// New external assets value.
     pub new_external_assets: i128,
-    /// Total assets.
     pub total_assets: i128,
 }
 
 /// Fees refreshed event.
 #[contractevent]
 pub struct FeesRefreshEvent {
-    /// Timestamp.
     pub now_ns: u64,
-    /// Total assets.
     pub total_assets: i128,
 }
 
 /// Pause state updated event.
 #[contractevent]
 pub struct PauseUpdatedEvent {
-    /// New pause state.
     pub paused: bool,
 }
 

@@ -1,23 +1,7 @@
 //! Manual reconciliation helpers for external assets.
 //!
-//! The Soroban executor can use these helpers to reconcile market principals
-//! in a privileged, audited entrypoint.
-//!
-//! # Overview
-//!
-//! This module provides:
-//!
-//! - **Audit events**: [`ReconciliationEvent`] for logging all reconciliation actions.
-//! - **Reconciliation entrypoint**: [`resync_external_assets`] privileged function
-//!   that runs the full refresh flow (BeginRefreshing -> read principals ->
-//!   SyncExternalAssets -> FinishRefreshing) in one call.
-//! - **Helper functions**: [`reconcile_external_assets`] and [`build_refresh_plan`]
-//!   for lower-level reconciliation logic.
-//!
-//! # Security
-//!
-//! The `resync_external_assets` entrypoint requires `ActionKind::ManualReconcile`
-//! authorization, which should be restricted to owner/guardian roles.
+//! `resync_external_assets` runs a privileged refresh flow and emits
+//! `ReconciliationEvent` entries for audit. Requires `ActionKind::ManualReconcile`.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -40,51 +24,34 @@ use crate::market::{MarketAdapter, MarketRef, SorobanMarketAdapter};
 pub enum ReconciliationEvent {
     /// Reconciliation started.
     Started {
-        /// Operation ID.
         op_id: u64,
-        /// Caller address (kernel format for auth).
         caller: KernelAddress,
-        /// Timestamp when reconciliation started (nanoseconds).
         timestamp_ns: TimestampNs,
-        /// Number of markets to refresh.
         market_count: u32,
     },
     /// Market principal read.
     MarketRead {
-        /// Operation ID.
         op_id: u64,
-        /// Market target ID.
         market_id: TargetId,
-        /// Principal value read.
         principal: i128,
     },
     /// External assets synced to kernel.
     AssetsSync {
-        /// Operation ID.
         op_id: u64,
-        /// Previous external assets value.
         old_external_assets: u128,
-        /// New external assets value.
         new_external_assets: u128,
     },
     /// Reconciliation completed successfully.
     Completed {
-        /// Operation ID.
         op_id: u64,
-        /// Timestamp when reconciliation completed (nanoseconds).
         timestamp_ns: TimestampNs,
-        /// Number of markets refreshed.
         markets_refreshed: u32,
-        /// Final external assets value.
         final_external_assets: u128,
     },
     /// Reconciliation failed.
     Failed {
-        /// Operation ID.
         op_id: u64,
-        /// Timestamp when failure occurred (nanoseconds).
         timestamp_ns: TimestampNs,
-        /// Error message.
         error: String,
     },
 }
@@ -182,11 +149,8 @@ impl ReconciliationEvent {
 /// Summary record for a manual reconciliation run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconciliationRecord {
-    /// Operation ID.
     pub op_id: u64,
-    /// Number of markets refreshed.
     pub markets_refreshed: u32,
-    /// New external assets value.
     pub new_external_assets: u128,
 }
 
