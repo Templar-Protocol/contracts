@@ -5,6 +5,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod actions;
+pub mod address_book;
 pub mod effects;
 pub mod error;
 pub mod fee;
@@ -24,6 +25,7 @@ pub use actions::{
     apply_action, preview_deposit_shares, preview_withdraw_assets, KernelAction, KernelResult,
     PayoutOutcome,
 };
+pub use address_book::AddressBook;
 pub use fee::{Fee, FeeSlot, Fees, FeesSpec};
 pub use math::number::Number;
 pub use math::wad::{

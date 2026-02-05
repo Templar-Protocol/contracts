@@ -13,6 +13,7 @@ use near_sdk::{
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Controller, Nep141Mint, Nep141Transfer};
 
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
+use templar_vault_kernel::AddressBook;
 use templar_vault_kernel::types::Address;
 
 use crate::governance::Gate;
@@ -107,13 +108,15 @@ pub enum KernelEventLog {
 /// Address resolution context for kernel effects.
 #[derive(Clone, Debug, Default)]
 pub struct KernelEffectContext {
-    accounts: BTreeMap<Address, AccountId>,
+    accounts: AddressBook<AccountId>,
 }
 
 impl KernelEffectContext {
     #[must_use]
     pub fn new(accounts: BTreeMap<Address, AccountId>) -> Self {
-        Self { accounts }
+        Self {
+            accounts: AddressBook::from(accounts),
+        }
     }
 
     pub fn insert(&mut self, address: Address, account: AccountId) {
@@ -122,7 +125,7 @@ impl KernelEffectContext {
 
     fn resolve(&self, address: &Address) -> Result<&AccountId, KernelEffectError> {
         self.accounts
-            .get(address)
+            .resolve(address)
             .ok_or(KernelEffectError::MissingAccount(*address))
     }
 }

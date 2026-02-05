@@ -6,6 +6,7 @@
 use alloc::vec::Vec;
 use soroban_sdk::{contractevent, token::StellarAssetClient, Address, Env};
 use templar_vault_kernel::effects::KernelEffect;
+use templar_vault_kernel::AddressBook;
 
 use crate::error::RuntimeError;
 
@@ -646,20 +647,18 @@ impl AddressRegistrar for MockInterpreter {
 /// Note: the map is expected to stay small (vault + escrow + a few
 /// participant addresses per call). If this ever grows large, consider
 /// a fixed-capacity array or Vec-based linear scan to reduce overhead.
-pub struct AddressMap<'a> {
-    env: &'a Env,
+pub struct AddressMap {
     /// Map of kernel address bytes to Soroban addresses.
-    addresses: alloc::collections::BTreeMap<[u8; 32], Address>,
+    addresses: AddressBook<Address>,
 }
 
-impl<'a> AddressMap<'a> {
+impl AddressMap {
     /// Create a new address map.
     #[inline]
     #[must_use]
-    pub fn new(env: &'a Env) -> Self {
+    pub fn new(_env: &Env) -> Self {
         Self {
-            env,
-            addresses: alloc::collections::BTreeMap::new(),
+            addresses: AddressBook::new(),
         }
     }
 
@@ -675,7 +674,7 @@ impl<'a> AddressMap<'a> {
     #[inline]
     #[must_use]
     pub fn resolve(&self, kernel_addr: &[u8; 32]) -> Option<&Address> {
-        self.addresses.get(kernel_addr)
+        self.addresses.resolve(kernel_addr)
     }
 }
 
@@ -699,7 +698,7 @@ where
     /// Asset token contract interface.
     pub asset_token: &'a A,
     /// Address mapping from kernel to Soroban addresses.
-    pub address_map: AddressMap<'a>,
+    pub address_map: AddressMap,
     /// Recorded events.
     pub events: Vec<templar_vault_kernel::effects::KernelEvent>,
 }
