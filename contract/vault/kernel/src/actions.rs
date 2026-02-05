@@ -369,6 +369,22 @@ pub fn apply_action(
         KernelAction::BeginAllocating { op_id, plan, .. } => {
             let result = start_allocation(state.op_state.clone(), plan, op_id)
                 .map_err(KernelError::Transition)?;
+
+            // Compute allocation total from the plan and decrement idle_assets.
+            let alloc_total = result
+                .new_state
+                .as_allocating()
+                .expect("start_allocation must return Allocating")
+                .remaining;
+
+            if alloc_total > state.idle_assets {
+                return Err(KernelError::InvalidState(
+                    "allocation plan exceeds idle_assets",
+                ));
+            }
+
+            state.idle_assets -= alloc_total;
+            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
@@ -1348,6 +1364,33 @@ mod tests {
         .unwrap();
 
         assert!(result.state.op_state.as_allocating().is_some());
+        // idle_assets must be decremented by allocation total
+        assert_eq!(result.state.idle_assets, 500);
+        assert_eq!(result.state.total_assets, 500);
+        assert!(result.state.check_invariant());
+    }
+
+    #[test]
+    fn begin_allocating_exceeds_idle() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::BeginAllocating {
+                op_id: 1,
+                plan: vec![(1, 1_500)], // more than idle_assets
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState("allocation plan exceeds idle_assets"))
+        ));
     }
 
     // =========================================================================
