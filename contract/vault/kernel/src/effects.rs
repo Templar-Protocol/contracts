@@ -81,6 +81,9 @@ pub enum KernelEvent {
         op_id: u64,
         index: u32,
         remaining: u128,
+        /// Amount successfully allocated before failure (original total - remaining).
+        /// Caller uses this to restore idle_assets correctly.
+        total_allocated: u128,
     },
     /// Allocation completed (either returns to Idle or proceeds to withdrawal).
     AllocationCompleted { op_id: u64, has_withdrawal: bool },

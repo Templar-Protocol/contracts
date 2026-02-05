@@ -754,32 +754,45 @@ impl Contract {
             let refund = escrow_shares.saturating_sub(burn_shares);
 
             if burn_shares > 0 {
-                // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
-                let _ = payout
+                // This must be infallible - panic to prevent orphaned shares in escrow.
+                payout
                     .burn(&Nep141Burn::new(burn_shares, env::current_account_id()))
-                    .inspect_err(|e| env::log_str(&format!("Failed to burn {e}")));
+                    .unwrap_or_else(|e| {
+                        templar_common::panic_with_message(&format!(
+                            "Escrow settlement burn failed: {e}"
+                        ))
+                    });
             }
 
             if refund > 0 {
-                // Note: this should be infallible since we are transferring to an existing owner, and they are unable to unregister from storage
+                // This must be infallible - panic to prevent orphaned shares in escrow.
                 Gate::bypass_transfer_with(
                     &mut payout,
                     &Nep141Transfer::new(refund, env::current_account_id(), &owner),
-                    // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
-                    |e| env::log_str(&e.to_string()),
+                    |e| {
+                        templar_common::panic_with_message(&format!(
+                            "Escrow settlement refund failed: {e}"
+                        ))
+                    },
                 );
             }
         } else {
             payout.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
+            // On payout failure, refund all escrow shares. Must be infallible.
             Gate::bypass_transfer_with(
                 &mut payout,
                 &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
-                |e| env::log_str(&e.to_string()),
+                |e| {
+                    templar_common::panic_with_message(&format!(
+                        "Escrow settlement failure refund failed: {e}"
+                    ))
+                },
             );
         }
 
         payout.pop_head();
         payout.withdraw_route.clear();
+        payout.market_execution_lock.clear();
         let _idle = payout.into_idle();
     }
 

@@ -29,6 +29,8 @@ pub enum AdapterError {
     InvalidInput = 3,
     MissingConfig = 4,
     Reentrancy = 5,
+    /// Arithmetic overflow when computing total assets.
+    ArithmeticOverflow = 6,
 }
 
 #[contract]
@@ -157,10 +159,10 @@ impl BlendAdapterContract {
         let positions = client.get_positions(&env.current_contract_address());
         let index = reserve.config.index;
         let b_tokens = positions.supply.get(index).unwrap_or(0);
-        Ok(b_tokens
+        b_tokens
             .checked_mul(reserve.data.b_rate)
             .and_then(|value| value.checked_div(SCALAR_12))
-            .unwrap_or(0))
+            .ok_or(AdapterError::ArithmeticOverflow)
     }
 
     pub fn admin(env: Env) -> Result<Address, AdapterError> {

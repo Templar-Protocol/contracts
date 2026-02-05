@@ -607,6 +607,11 @@ pub fn apply_action(
                             "payout failure settlement mismatch",
                         ));
                     }
+                    if restore_idle != payout.amount {
+                        return Err(KernelError::InvalidState(
+                            "payout failure restore_idle must equal payout.amount",
+                        ));
+                    }
 
                     if refund_amount > 0 {
                         effects.push(KernelEffect::TransferShares {
@@ -643,6 +648,10 @@ pub fn apply_action(
             }],
         )),
         KernelAction::RefreshFees { now_ns } => {
+            // Reject backwards time to prevent fee calculation issues
+            if now_ns < state.fee_anchor.timestamp_ns {
+                return Err(KernelError::InvalidState("fee refresh timestamp cannot go backwards"));
+            }
             state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, now_ns);
             let total_assets = state.total_assets;
             Ok(KernelResult::new(
@@ -2636,6 +2645,52 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn settle_payout_failure_restore_idle_mismatch_fails() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let config = test_config();
+        let owner = addr(1);
+        let receiver = addr(2);
+
+        state
+            .withdraw_queue
+            .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 21,
+            owner,
+            receiver,
+            amount: 100,
+            escrow_shares: 100,
+            burn_shares: 100,
+        });
+
+        // restore_idle: 200 doesn't match payout.amount: 100
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SettlePayout {
+                op_id: 21,
+                outcome: PayoutOutcome::Failure {
+                    restore_idle: 200, // Should be 100
+                    refund_shares: 100,
+                },
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "payout failure restore_idle must equal payout.amount"
+            ))
+        ));
+    }
+
     // =========================================================================
     // Pause action tests
     // =========================================================================
@@ -2687,6 +2742,29 @@ mod tests {
             Some(KernelEffect::EmitEvent {
                 event: KernelEvent::FeesRefreshed { now_ns: 12345, .. }
             })
+        ));
+    }
+
+    #[test]
+    fn refresh_fees_rejects_backwards_time() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.fee_anchor.timestamp_ns = 10000; // Current anchor at 10000
+        let config = test_config();
+
+        // Try to refresh with earlier timestamp
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns: 5000 },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "fee refresh timestamp cannot go backwards"
+            ))
         ));
     }
 

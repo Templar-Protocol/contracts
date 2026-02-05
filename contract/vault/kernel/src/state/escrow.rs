@@ -125,8 +125,9 @@ pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSe
         return EscrowSettlement::burn_all(entry.shares);
     }
 
-    // Proportional: burn shares proportional to actual/expected ratio
-    let to_burn = Number::mul_div_floor(
+    // Proportional: burn shares proportional to actual/expected ratio.
+    // Use ceil to avoid zero-burn partials (assets out without burning shares).
+    let to_burn = Number::mul_div_ceil(
         Number::from(entry.shares),
         Number::from(actual_assets),
         Number::from(entry.expected_assets),

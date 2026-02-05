@@ -90,6 +90,8 @@ pub struct AllocStepFailEvent {
     pub op_id: u64,
     pub index: u32,
     pub remaining: i128,
+    /// Amount successfully allocated before failure.
+    pub total_allocated: i128,
 }
 
 /// Allocation completed event.
@@ -840,12 +842,17 @@ where
                 op_id,
                 index,
                 remaining,
+                total_allocated,
             } => {
                 AllocStepFailEvent {
                     op_id: *op_id,
                     index: *index,
                     remaining: u128_to_i128_effect(
                         *remaining,
+                        "event amount overflow converting to i128",
+                    )?,
+                    total_allocated: u128_to_i128_effect(
+                        *total_allocated,
                         "event amount overflow converting to i128",
                     )?,
                 }

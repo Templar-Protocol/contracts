@@ -91,6 +91,10 @@ pub enum TransitionError {
     #[display("allocation overflow: allocated {allocated}, remaining {remaining}")]
     AllocationOverflow { allocated: u128, remaining: u128 },
 
+    /// Zero allocation amount reported on success.
+    #[display("zero allocation amount on success")]
+    ZeroAllocationAmount,
+
     /// Burn shares exceed escrow shares.
     #[display("burn {burn} exceeds escrow {escrow}")]
     BurnExceedsEscrow { burn: u128, escrow: u128 },
@@ -226,7 +230,16 @@ pub fn allocation_step_callback(
     }
 
     if !success {
-        // On failure, return to Idle
+        // On failure, return to Idle.
+        // Compute total_allocated so caller can restore idle_assets correctly.
+        let original_total: u128 = alloc
+            .plan
+            .iter()
+            .map(|(_, amt)| amt)
+            .copied()
+            .fold(0u128, |a, b| a.saturating_add(b));
+        let total_allocated = original_total.saturating_sub(alloc.remaining);
+
         return Ok(TransitionResult::with_effects(
             OpState::Idle,
             vec![KernelEffect::EmitEvent {
@@ -234,9 +247,16 @@ pub fn allocation_step_callback(
                     op_id: alloc.op_id,
                     index: alloc.index,
                     remaining: alloc.remaining,
+                    total_allocated,
                 },
             }],
         ));
+    }
+
+    // Reject zero allocation on success - prevents malicious markets from
+    // advancing allocation steps without actually allocating.
+    if amount_allocated == 0 {
+        return Err(TransitionError::ZeroAllocationAmount);
     }
 
     if amount_allocated > alloc.remaining {
@@ -712,6 +732,14 @@ pub fn payout_complete(
     let mut amount = 0u128;
 
     if success {
+        // Defense-in-depth: validate burn <= escrow (should be enforced at Payout creation)
+        if payout.burn_shares > payout.escrow_shares {
+            return Err(TransitionError::BurnExceedsEscrow {
+                burn: payout.burn_shares,
+                escrow: payout.escrow_shares,
+            });
+        }
+
         // Burn the designated shares
         if payout.burn_shares > 0 {
             burn_shares = payout.burn_shares;
@@ -721,8 +749,8 @@ pub fn payout_complete(
             });
         }
 
-        // Refund any remaining escrow shares
-        refund_shares = payout.escrow_shares.saturating_sub(payout.burn_shares);
+        // Refund any remaining escrow shares (subtraction is safe after validation)
+        refund_shares = payout.escrow_shares - payout.burn_shares;
         if refund_shares > 0 {
             effects.push(KernelEffect::TransferShares {
                 from: escrow_address,
@@ -872,6 +900,21 @@ mod tests {
                 actual: 999
             })
         ));
+    }
+
+    #[test]
+    fn test_allocation_step_callback_zero_amount_rejected() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 0,
+            remaining: 1000,
+            plan: vec![(0, 500)],
+        });
+
+        // Zero allocation on success should be rejected
+        let result = allocation_step_callback(state, true, 0, 1);
+
+        assert!(matches!(result, Err(TransitionError::ZeroAllocationAmount)));
     }
 
     #[test]

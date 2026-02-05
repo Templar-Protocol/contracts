@@ -552,12 +552,22 @@ impl WithdrawQueue {
             requested_at_ns,
         );
 
+        // Check for cache overflow before modifying state
+        let new_escrow = self
+            .cached_total_escrow
+            .checked_add(escrow_shares)
+            .ok_or(QueueError::CacheOverflow)?;
+        let new_expected = self
+            .cached_total_expected
+            .checked_add(expected_assets)
+            .ok_or(QueueError::CacheOverflow)?;
+
         self.pending_withdrawals.insert(id, withdrawal);
         self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
 
-        // Update cached totals
-        self.cached_total_escrow = self.cached_total_escrow.saturating_add(escrow_shares);
-        self.cached_total_expected = self.cached_total_expected.saturating_add(expected_assets);
+        // Update cached totals (overflow already checked)
+        self.cached_total_escrow = new_escrow;
+        self.cached_total_expected = new_expected;
 
         Ok(id)
     }
@@ -586,13 +596,19 @@ impl WithdrawQueue {
 
         let id = self.next_pending_withdrawal_id;
 
-        // Update cached totals before moving withdrawal
-        self.cached_total_escrow = self
+        // Check for cache overflow before modifying state
+        let new_escrow = self
             .cached_total_escrow
-            .saturating_add(withdrawal.escrow_shares);
-        self.cached_total_expected = self
+            .checked_add(withdrawal.escrow_shares)
+            .ok_or(QueueError::CacheOverflow)?;
+        let new_expected = self
             .cached_total_expected
-            .saturating_add(withdrawal.expected_assets);
+            .checked_add(withdrawal.expected_assets)
+            .ok_or(QueueError::CacheOverflow)?;
+
+        // Update cached totals (overflow already checked)
+        self.cached_total_escrow = new_escrow;
+        self.cached_total_expected = new_expected;
 
         self.pending_withdrawals.insert(id, withdrawal);
         self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
@@ -826,6 +842,8 @@ pub enum QueueError {
     QueueEmpty,
     /// Invariant violation detected.
     InvariantViolation { message: alloc::string::String },
+    /// Cached total overflow.
+    CacheOverflow,
 }
 
 // ============================================================================

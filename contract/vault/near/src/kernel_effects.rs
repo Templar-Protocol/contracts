@@ -41,6 +41,7 @@ pub enum KernelEventLog {
         op_id: U64,
         index: u32,
         remaining: U128,
+        total_allocated: U128,
     },
     #[event_version("1.0.0")]
     AllocationCompleted {
@@ -149,10 +150,12 @@ fn emit_kernel_event(
             op_id,
             index,
             remaining,
+            total_allocated,
         } => KernelEventLog::AllocationStepFailed {
             op_id: U64(*op_id),
             index: *index,
             remaining: U128(*remaining),
+            total_allocated: U128(*total_allocated),
         }
         .emit(),
         KernelEvent::AllocationCompleted {
