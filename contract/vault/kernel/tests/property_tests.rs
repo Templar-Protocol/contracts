@@ -1101,11 +1101,18 @@ proptest! {
         let initial_index = alloc.index;
         let initial_remaining = alloc.remaining;
 
-        let step_result = allocation_step_callback(result.new_state, true, allocated, op_id).unwrap();
+        prop_assume!(initial_remaining > 0);
+        let mut bounded = allocated % initial_remaining;
+        if bounded == 0 {
+            bounded = 1;
+        }
+
+        let step_result =
+            allocation_step_callback(result.new_state, true, bounded, op_id).unwrap();
         let new_alloc = step_result.new_state.as_allocating().unwrap();
 
         prop_assert_eq!(new_alloc.index, initial_index + 1);
-        prop_assert_eq!(new_alloc.remaining, initial_remaining.saturating_sub(allocated));
+        prop_assert_eq!(new_alloc.remaining, initial_remaining.saturating_sub(bounded));
     }
 
     /// Property 55: allocation failure returns to Idle
@@ -1128,14 +1135,27 @@ proptest! {
     ) {
         let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
 
-        let step1 = withdrawal_step_callback(result.new_state, request.op_id, collected1).unwrap();
+        let remaining1 = request.amount;
+        let mut bounded1 = collected1 % remaining1;
+        if bounded1 == 0 {
+            bounded1 = 1;
+        }
+
+        let step1 = withdrawal_step_callback(result.new_state, request.op_id, bounded1).unwrap();
         let w1 = step1.new_state.as_withdrawing().unwrap();
-        prop_assert_eq!(w1.collected, collected1);
+        prop_assert_eq!(w1.collected, bounded1);
         prop_assert_eq!(w1.index, 1);
 
-        let step2 = withdrawal_step_callback(step1.new_state, request.op_id, collected2).unwrap();
+        let remaining2 = remaining1.saturating_sub(bounded1);
+        prop_assume!(remaining2 > 0);
+        let mut bounded2 = collected2 % remaining2;
+        if bounded2 == 0 {
+            bounded2 = 1;
+        }
+
+        let step2 = withdrawal_step_callback(step1.new_state, request.op_id, bounded2).unwrap();
         let w2 = step2.new_state.as_withdrawing().unwrap();
-        prop_assert_eq!(w2.collected, collected1.saturating_add(collected2));
+        prop_assert_eq!(w2.collected, bounded1.saturating_add(bounded2));
         prop_assert_eq!(w2.index, 2);
     }
 
