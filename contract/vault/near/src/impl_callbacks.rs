@@ -1025,6 +1025,10 @@ impl Contract {
 
         self.market_execution_lock.clear();
 
+        // Clear idle resync flag in case this was a stuck resync_idle_balance operation.
+        // The flag blocks withdraw/redeem, so it must be cleared on any allocation abort.
+        self.idle_resync_inflight_op_id = 0;
+
         let allocating = OpGuard::<AllocatingSpec>::expect(self, Some(op_id))
             .unwrap_or_else(|e| panic_with_message(&e.to_string()));
         let _idle = allocating.into_idle();

@@ -131,7 +131,11 @@ impl CapGroup {
         }
 
         let effective_cap = self.effective_cap(total_assets);
-        let new_principal = current_principal.saturating_add(amount);
+        // Use checked_add to detect overflow - overflow means exceeds any cap
+        let new_principal = match current_principal.checked_add(amount) {
+            Some(p) => p,
+            None => return false, // Overflow always exceeds cap
+        };
 
         new_principal <= effective_cap
     }
@@ -147,7 +151,13 @@ impl CapGroup {
             return Ok(());
         }
 
-        let new_principal = current_principal.saturating_add(amount);
+        // Use checked_add to detect overflow
+        let new_principal = current_principal.checked_add(amount).ok_or(
+            CapGroupError::Overflow {
+                current_principal,
+                requested: amount,
+            },
+        )?;
 
         if let Some(abs_cap) = self.absolute_cap {
             if new_principal > abs_cap.get() {
@@ -276,6 +286,11 @@ pub enum CapGroupError {
     },
     /// Cap group not found.
     NotFound { id: CapGroupId },
+    /// Arithmetic overflow when computing new principal.
+    Overflow {
+        current_principal: u128,
+        requested: u128,
+    },
 }
 
 /// Validate a list of allocations against their cap groups.

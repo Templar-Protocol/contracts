@@ -1,6 +1,6 @@
 //! Supply queue for managing pending allocation requests.
 
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
@@ -145,19 +145,19 @@ impl SupplyQueue {
             .fold(0u128, |acc, e| acc.saturating_add(e.amount))
     }
 
+    /// Returns totals grouped by target ID.
+    /// Uses O(n log n) aggregation via BTreeMap instead of O(n²) linear search.
     #[must_use]
     pub fn totals_by_target(&self) -> Vec<(TargetId, u128)> {
-        let mut totals: Vec<(TargetId, u128)> = Vec::new();
+        let mut map: BTreeMap<TargetId, u128> = BTreeMap::new();
 
         for entry in &self.entries {
-            if let Some((_, amount)) = totals.iter_mut().find(|(id, _)| *id == entry.target_id) {
-                *amount = amount.saturating_add(entry.amount);
-            } else {
-                totals.push((entry.target_id, entry.amount));
-            }
+            map.entry(entry.target_id)
+                .and_modify(|sum| *sum = sum.saturating_add(entry.amount))
+                .or_insert(entry.amount);
         }
 
-        totals
+        map.into_iter().collect()
     }
 
     /// Remove all entries for a specific target from the queue.
