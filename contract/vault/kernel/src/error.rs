@@ -55,3 +55,23 @@ pub enum KernelError {
     #[display("invalid config: {_0}")]
     InvalidConfig(&'static str),
 }
+
+impl KernelError {
+    /// Stable numeric code for on-chain debugging and indexing.
+    #[must_use]
+    pub fn code(&self) -> u32 {
+        match self {
+            KernelError::InvalidState(_) => 1000,
+            KernelError::OpIdMismatch { .. } => 1001,
+            KernelError::Slippage { .. } => 1002,
+            KernelError::MinWithdrawal { .. } => 1003,
+            KernelError::QueueFull => 1004,
+            KernelError::EmptyQueue => 1005,
+            KernelError::Cooldown { .. } => 1006,
+            KernelError::Transition(_) => 1007,
+            KernelError::NotImplemented => 1008,
+            KernelError::Restricted(_) => 1009,
+            KernelError::InvalidConfig(_) => 1010,
+        }
+    }
+}
