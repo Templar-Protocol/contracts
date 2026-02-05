@@ -78,6 +78,7 @@ mod tests {
     use crate::test_utils::{mk, new_test_contract, set_block_ts, set_ctx};
     use near_sdk::json_types::{U128, U64};
     use near_sdk_contract_tools::ft::{Nep141Controller, Nep145};
+    use std::collections::BTreeMap;
     use templar_common::vault::MarketConfiguration;
     use templar_vault_kernel::actions::apply_action;
     use templar_vault_kernel::effects::KernelEffect;
@@ -122,16 +123,16 @@ mod tests {
         c.address_book.insert(owner_b_addr, owner_b.clone());
         c.address_book.insert(receiver_b_addr, receiver_b.clone());
 
-        c.withdraw_queue.next_withdraw_to_execute = 3;
-        c.withdraw_queue.next_pending_withdrawal_id = 5;
-        c.withdraw_queue.pending_withdrawals.insert(
+        let mut pending = BTreeMap::new();
+        pending.insert(
             3,
             KernelPendingWithdrawal::new(owner_a_addr, receiver_a_addr, 250, 400, 77),
         );
-        c.withdraw_queue.pending_withdrawals.insert(
+        pending.insert(
             4,
             KernelPendingWithdrawal::new(owner_b_addr, receiver_b_addr, 300, 600, 88),
         );
+        c.withdraw_queue = templar_vault_kernel::WithdrawQueue::with_state(pending, 3, 5);
 
         let kernel = c.kernel_state_mirror();
 
