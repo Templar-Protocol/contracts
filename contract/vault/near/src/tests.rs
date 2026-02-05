@@ -5345,6 +5345,7 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
 ) {
     let owner_id = c.own_get_owner().unwrap();
     setup_env(&near_sdk::env::current_account_id(), &owner_id, vec![]);
+    c.withdrawal_cooldown_ns = 0;
 
     // Prepare a withdraw market so a non-empty route makes sense
     let market_account = mk(1234);
@@ -5430,6 +5431,7 @@ fn execute_withdrawal_only_dust_drains_queue() {
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
+    c.withdrawal_cooldown_ns = 0;
 
     // Two dust entries
     let id0 = c.queue_tail();

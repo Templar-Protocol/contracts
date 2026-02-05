@@ -194,6 +194,7 @@ fn preview_kernel_config(paused: bool) -> VaultConfig {
     VaultConfig {
         fees: FeesSpec::zero(),
         min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+        withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
         max_pending_withdrawals: MAX_PENDING as u32,
         paused,
         virtual_shares: 0,

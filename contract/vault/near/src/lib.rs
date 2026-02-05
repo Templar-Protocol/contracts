@@ -58,6 +58,7 @@ use templar_curator_primitives::{
     determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
+use templar_vault_kernel::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
 use templar_vault_kernel::{Address, KernelAction, OpState as KernelOpState, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
@@ -218,6 +219,8 @@ pub struct Contract {
     last_refresh_ns: u64,
     /// Cooldown between refresh_markets calls (ns)
     refresh_cooldown_ns: u64,
+    /// Cooldown before a withdrawal can be executed (ns)
+    withdrawal_cooldown_ns: u64,
 
     idle_resync_last_ns: u64,
     idle_resync_cooldown_ns: u64,
@@ -279,6 +282,7 @@ impl Contract {
             fees,
             refresh_cooldown_ns,
             idle_resync_cooldown_ns,
+            withdrawal_cooldown_ns,
         } = configuration;
 
         require!(
@@ -319,6 +323,9 @@ impl Contract {
             refresh_cooldown_ns: refresh_cooldown_ns
                 .map(|v| v.0)
                 .unwrap_or(DEFAULT_REFRESH_COOLDOWN_NS),
+            withdrawal_cooldown_ns: withdrawal_cooldown_ns
+                .map(|v| v.0)
+                .unwrap_or(DEFAULT_COOLDOWN_NS),
             idle_resync_last_ns: 0,
             idle_resync_cooldown_ns: idle_resync_cooldown_ns
                 .map(|v| v.0)
@@ -466,6 +473,15 @@ impl Contract {
         self.internal_accrue_fee();
 
         while let Some((id, pending)) = self.withdraw_queue.head() {
+            let now = env::block_timestamp();
+            if !is_past_cooldown(
+                pending.requested_at_ns,
+                now,
+                self.withdrawal_cooldown_ns,
+            ) {
+                return PromiseOrValue::Value(());
+            }
+
             let owner = self.resolve_account(&pending.owner);
             let receiver = self.resolve_account(&pending.receiver);
 
@@ -999,6 +1015,7 @@ impl Contract {
             restrictions: self.gate.restrictions.clone(),
             refresh_cooldown_ns: Some(self.refresh_cooldown_ns.into()),
             idle_resync_cooldown_ns: Some(self.idle_resync_cooldown_ns.into()),
+            withdrawal_cooldown_ns: Some(self.withdrawal_cooldown_ns.into()),
         }
     }
 
@@ -2453,6 +2470,7 @@ impl OldContract {
             next_op_id: self.next_op_id,
             last_refresh_ns: self.last_refresh_ns,
             refresh_cooldown_ns: self.refresh_cooldown_ns,
+            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
             idle_resync_last_ns: self.idle_resync_last_ns,
             idle_resync_cooldown_ns: self.idle_resync_cooldown_ns,
             idle_resync_inflight_op_id: self.idle_resync_inflight_op_id,

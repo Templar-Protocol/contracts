@@ -78,6 +78,7 @@ impl Default for FeeAccrualAnchor {
 pub struct VaultConfig {
     pub fees: FeesSpec,
     pub min_withdrawal_assets: u128,
+    pub withdrawal_cooldown_ns: u64,
     pub max_pending_withdrawals: u32,
     pub paused: bool,
     pub virtual_shares: u128,
@@ -308,10 +309,12 @@ mod tests {
     #[test]
     fn test_vault_config_max_pending_valid() {
         use crate::fee::FeesSpec;
+        use crate::state::queue::DEFAULT_COOLDOWN_NS;
 
         let config = VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: 1000,
+            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
             max_pending_withdrawals: 1024,
             paused: false,
             virtual_shares: 0,

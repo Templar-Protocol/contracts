@@ -177,6 +177,7 @@ pub fn vault_configuration(
         restrictions: None,
         refresh_cooldown_ns: None,
         idle_resync_cooldown_ns: None,
+        withdrawal_cooldown_ns: Some(0u64.into()),
     }
 }
 

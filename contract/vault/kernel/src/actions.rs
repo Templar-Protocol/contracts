@@ -11,7 +11,7 @@ use crate::math::number::Number;
 use crate::math::wad::mul_div_floor;
 use crate::restrictions::Restrictions;
 use crate::state::op_state::{OpState, TargetId};
-use crate::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
+use crate::state::queue::is_past_cooldown;
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::transitions::{
     complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
@@ -332,11 +332,15 @@ pub fn apply_action(
                 enforce_restrictions(config, restrictions, self_id, &pending.owner)?;
                 enforce_restrictions(config, restrictions, self_id, &pending.receiver)?;
 
-                if !is_past_cooldown(pending.requested_at_ns, now_ns, DEFAULT_COOLDOWN_NS) {
+                if !is_past_cooldown(
+                    pending.requested_at_ns,
+                    now_ns,
+                    config.withdrawal_cooldown_ns,
+                ) {
                     return Err(KernelError::Cooldown {
                         requested_at: pending.requested_at_ns,
                         now: now_ns,
-                        cooldown_ns: DEFAULT_COOLDOWN_NS,
+                        cooldown_ns: config.withdrawal_cooldown_ns,
                     });
                 }
 
@@ -370,7 +374,11 @@ pub fn apply_action(
         }
         KernelAction::FinishAllocating { op_id, now_ns } => {
             let pending = state.withdraw_queue.head().and_then(|(_, w)| {
-                if is_past_cooldown(w.requested_at_ns, now_ns, DEFAULT_COOLDOWN_NS) {
+                if is_past_cooldown(
+                    w.requested_at_ns,
+                    now_ns,
+                    config.withdrawal_cooldown_ns,
+                ) {
                     Some(w.clone())
                 } else {
                     None
@@ -687,6 +695,7 @@ mod tests {
         VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: 0,
+            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
             max_pending_withdrawals: 10,
             paused: false,
             virtual_shares: 0,

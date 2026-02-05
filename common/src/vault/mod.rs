@@ -202,6 +202,8 @@ pub struct VaultConfiguration {
     pub refresh_cooldown_ns: Option<U64>,
     /// Optional cooldown (ns) between idle_resync calls; defaults to contract constant if None.
     pub idle_resync_cooldown_ns: Option<U64>,
+    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to contract constant if None.
+    pub withdrawal_cooldown_ns: Option<U64>,
 }
 
 /// Restrictions that can be applied to the vault.

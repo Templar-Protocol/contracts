@@ -60,6 +60,7 @@ impl Contract {
         VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: 0,
+            withdrawal_cooldown_ns: self.withdrawal_cooldown_ns,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused,
             virtual_shares,

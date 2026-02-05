@@ -28,6 +28,7 @@ use templar_vault_kernel::{
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
 use templar_vault_kernel::state::queue::{
     can_partially_satisfy, compute_full_withdrawal, compute_partial_withdrawal,
+    DEFAULT_COOLDOWN_NS,
 };
 
 use crate::auth::{ActionKind, AuthAdapter};
@@ -442,6 +443,7 @@ where
         VaultConfig {
             fees: self.config.fees,
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: self.paused,
             virtual_shares: 0,
@@ -1816,6 +1818,7 @@ impl SorobanVaultContract {
         let config = VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: storage.is_paused(),
             virtual_shares: 0,
@@ -1845,6 +1848,7 @@ impl SorobanVaultContract {
         let config = VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: storage.is_paused(),
             virtual_shares: 0,
