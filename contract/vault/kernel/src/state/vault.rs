@@ -14,17 +14,9 @@ use crate::state::op_state::OpState;
 use crate::state::queue::WithdrawQueue;
 use crate::types::TimestampNs;
 
-// ============================================================================
-// Constants
-// ============================================================================
-
 /// Maximum pending withdrawal queue length.
 /// This is an absolute upper bound enforced by the kernel.
 pub const MAX_PENDING: usize = 1024;
-
-// ============================================================================
-// Fee Anchor
-// ============================================================================
 
 /// Anchor point for fee accrual calculations.
 ///
@@ -71,10 +63,6 @@ impl Default for FeeAccrualAnchor {
     }
 }
 
-// ============================================================================
-// Vault Configuration
-// ============================================================================
-
 /// Static configuration for a vault.
 ///
 /// These settings can typically only be changed through governance.
@@ -103,10 +91,6 @@ impl VaultConfig {
         (self.max_pending_withdrawals as usize) <= MAX_PENDING
     }
 }
-
-// ============================================================================
-// Vault State
-// ============================================================================
 
 /// Core kernel vault state.
 ///

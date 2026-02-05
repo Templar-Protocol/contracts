@@ -15,10 +15,6 @@ use crate::types::{Address, TimestampNs};
 // Re-export EscrowSettlement from types module
 pub use crate::types::EscrowSettlement;
 
-// ============================================================================
-// Types
-// ============================================================================
-
 /// Escrow entry for a single actor.
 ///
 /// Tracks shares held in escrow for a pending withdrawal.
@@ -75,10 +71,6 @@ pub struct EscrowStats {
     pub total_shares: u128,
     pub total_expected_assets: u128,
 }
-
-// ============================================================================
-// Pure Functions - Settlement
-// ============================================================================
 
 /// Apply an escrow settlement to an escrow entry.
 #[must_use]
@@ -146,10 +138,6 @@ pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSe
     EscrowSettlement::partial(to_burn, refund)
 }
 
-// ============================================================================
-// Pure Functions - Validation
-// ============================================================================
-
 /// Validate that an escrow entry has sufficient shares for a settlement.
 #[inline]
 #[must_use]
@@ -164,10 +152,6 @@ pub fn can_apply_settlement(entry: &EscrowEntry, settlement: &EscrowSettlement) 
 pub fn is_stale(entry: &EscrowEntry, now_ns: TimestampNs, max_age_ns: u64) -> bool {
     now_ns > entry.created_at_ns.saturating_add(max_age_ns)
 }
-
-// ============================================================================
-// Pure Functions - Aggregation
-// ============================================================================
 
 /// Compute aggregate escrow statistics from an iterator of entries.
 #[must_use]

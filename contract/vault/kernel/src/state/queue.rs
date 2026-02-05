@@ -13,10 +13,6 @@ use crate::math::number::Number;
 use crate::math::wad::Wad;
 use crate::types::{Address, EscrowSettlement, TimestampNs};
 
-// ============================================================================
-// Constants
-// ============================================================================
-
 /// Minimum withdrawal amount in base asset units to prevent dust.
 /// Withdrawals below this threshold should be rejected.
 pub const MIN_WITHDRAWAL_ASSETS: u128 = 1_000;
@@ -28,10 +24,6 @@ pub const MAX_QUEUE_LENGTH: u32 = 1_000;
 /// Default cooldown period in nanoseconds (24 hours).
 /// Withdrawals cannot be processed until this time has elapsed.
 pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
-
-// ============================================================================
-// Types
-// ============================================================================
 
 /// A pending withdrawal request in the queue.
 ///
@@ -103,10 +95,6 @@ pub struct QueueStatus {
     pub total_escrow_shares: u128,
 }
 
-// ============================================================================
-// Pure Functions - Validation
-// ============================================================================
-
 #[inline]
 #[must_use]
 pub fn is_valid_withdrawal_amount(assets: u128) -> bool {
@@ -128,10 +116,6 @@ pub fn is_past_cooldown(
 ) -> bool {
     now_ns >= requested_at_ns.saturating_add(cooldown_ns)
 }
-
-// ============================================================================
-// Pure Functions - Satisfaction Checks
-// ============================================================================
 
 /// Check if a withdrawal can be satisfied given available assets.
 ///

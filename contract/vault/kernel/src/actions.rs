@@ -62,6 +62,8 @@ pub enum PayoutOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KernelAction {
     /// Begin allocating idle assets to external markets according to a plan.
+    ///
+    /// Transition: Idle -> Allocating
     BeginAllocating {
         op_id: u64,
         plan: Vec<(TargetId, u128)>,
@@ -87,9 +89,13 @@ pub enum KernelAction {
     },
 
     /// Execute the next pending withdrawal from the queue.
+    ///
+    /// Transition: Idle -> Withdrawing
     ExecuteWithdraw { now_ns: TimestampNs },
 
     /// Begin refreshing external market balances.
+    ///
+    /// Transition: Idle -> Refreshing
     BeginRefreshing {
         op_id: u64,
         plan: Vec<TargetId>,
@@ -97,6 +103,8 @@ pub enum KernelAction {
     },
 
     /// Complete an allocation operation.
+    ///
+    /// Transition: Allocating -> Idle or Withdrawing
     FinishAllocating { op_id: u64, now_ns: TimestampNs },
 
     /// Sync external asset balances during an active operation.
@@ -107,18 +115,28 @@ pub enum KernelAction {
     },
 
     /// Complete a refresh operation.
+    ///
+    /// Transition: Refreshing -> Idle
     FinishRefreshing { op_id: u64, now_ns: TimestampNs },
 
     /// Abort a refresh operation (e.g., on external call failure).
+    ///
+    /// Transition: Refreshing -> Idle
     AbortRefreshing { op_id: u64 },
 
     /// Settle a payout after asset transfer attempt.
+    ///
+    /// Transition: Payout -> Idle
     SettlePayout { op_id: u64, outcome: PayoutOutcome },
 
     /// Abort an allocation operation (e.g., on external call failure).
+    ///
+    /// Transition: Allocating -> Idle
     AbortAllocating { op_id: u64, restore_idle: u128 },
 
     /// Abort a withdrawal operation (e.g., on external call failure).
+    ///
+    /// Transition: Withdrawing -> Idle
     AbortWithdrawing { op_id: u64, refund_shares: u128 },
 
     /// Refresh fee calculations and mint fee shares.
