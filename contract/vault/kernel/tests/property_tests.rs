@@ -2316,3 +2316,173 @@ fn queue_churn_at_high_depth() {
     assert_eq!(status.length, n);
     assert_eq!(status.total_expected_assets, n as u128 * assets_per);
 }
+
+// ---------------------------------------------------------------------------
+// Kernel math boundary/fuzzing tests (templar-33h5)
+// ---------------------------------------------------------------------------
+
+use primitive_types::U256;
+
+/// mul_div_floor with U256::MAX inputs: MAX * MAX / MAX = MAX.
+#[test]
+fn mul_div_floor_u256_max_all() {
+    let max_n = Number(U256::MAX);
+    let result = Number::mul_div_floor(max_n, max_n, max_n);
+    assert_eq!(result.0, U256::MAX, "MAX * MAX / MAX should be MAX");
+}
+
+/// mul_div_floor: MAX * 1 / 1 = MAX.
+#[test]
+fn mul_div_floor_u256_max_times_one() {
+    let max_n = Number(U256::MAX);
+    let result = Number::mul_div_floor(max_n, Number::one(), Number::one());
+    assert_eq!(result.0, U256::MAX, "MAX * 1 / 1 should be MAX");
+}
+
+/// mul_div_floor: 1 * 1 / MAX = 0 (floor).
+#[test]
+fn mul_div_floor_one_over_max() {
+    let result = Number::mul_div_floor(Number::one(), Number::one(), Number(U256::MAX));
+    assert!(result.is_zero(), "1 * 1 / MAX should floor to 0");
+}
+
+/// mul_div_ceil: 1 * 1 / MAX = 1 (ceil).
+#[test]
+fn mul_div_ceil_one_over_max() {
+    let result = Number::mul_div_ceil(Number::one(), Number::one(), Number(U256::MAX));
+    assert_eq!(result.0, U256::one(), "ceil(1 * 1 / MAX) should be 1");
+}
+
+/// mul_div_floor: MAX * MAX / 1 uses denom==1 fast path (saturating_mul).
+#[test]
+fn mul_div_floor_max_squared_div_one() {
+    let max_n = Number(U256::MAX);
+    let result = Number::mul_div_floor(max_n, max_n, Number::one());
+    // Fast path: denom==1 → x.0.saturating_mul(y.0) = U256::MAX
+    assert_eq!(result.0, U256::MAX, "MAX * MAX / 1 saturates to MAX via fast path");
+}
+
+/// mul_div with zero operands: all combinations of zero produce zero.
+#[test]
+fn mul_div_zero_combinations() {
+    let z = Number::zero();
+    let one = Number::one();
+    let max_n = Number(U256::MAX);
+
+    // Zero x
+    assert!(Number::mul_div_floor(z, max_n, one).is_zero());
+    assert!(Number::mul_div_ceil(z, max_n, one).is_zero());
+    // Zero y
+    assert!(Number::mul_div_floor(max_n, z, one).is_zero());
+    assert!(Number::mul_div_ceil(max_n, z, one).is_zero());
+    // Zero denom (returns 0 by convention, not panic)
+    assert!(Number::mul_div_floor(max_n, max_n, z).is_zero());
+    assert!(Number::mul_div_ceil(max_n, max_n, z).is_zero());
+    // All zero
+    assert!(Number::mul_div_floor(z, z, z).is_zero());
+    assert!(Number::mul_div_ceil(z, z, z).is_zero());
+}
+
+/// saturating_add: U256::MAX + U256::MAX saturates to MAX.
+#[test]
+fn saturating_add_u256_max() {
+    let max_n = Number(U256::MAX);
+    let result = max_n.saturating_add(max_n);
+    assert_eq!(result.0, U256::MAX, "MAX + MAX should saturate to MAX");
+}
+
+/// saturating_sub: 0 - MAX saturates to 0.
+#[test]
+fn saturating_sub_zero_minus_max() {
+    let result = Number::zero().saturating_sub(Number(U256::MAX));
+    assert!(result.is_zero(), "0 - MAX should saturate to 0");
+}
+
+/// as_u128_saturating for values in the U256 range above u128::MAX.
+#[test]
+fn as_u128_saturating_boundary() {
+    // Exactly u128::MAX should return u128::MAX
+    let at_max = Number::from(u128::MAX);
+    assert_eq!(at_max.as_u128_saturating(), u128::MAX);
+
+    // One above u128::MAX should saturate
+    let above = Number(U256::from(u128::MAX) + U256::one());
+    assert_eq!(above.as_u128_saturating(), u128::MAX);
+
+    // U256::MAX should saturate
+    let way_above = Number(U256::MAX);
+    assert_eq!(way_above.as_u128_saturating(), u128::MAX);
+}
+
+/// Wad::apply_floored with pathological inputs doesn't panic.
+#[test]
+fn wad_apply_floored_u128_max() {
+    let max_amount = Number::from(u128::MAX);
+    // 100% fee on MAX amount
+    let result = Wad::one().apply_floored(max_amount);
+    assert_eq!(result, max_amount, "100% of MAX should be MAX");
+
+    // 50% fee on MAX
+    let half_wad = Wad::from(Wad::SCALE / 2);
+    let half_result = half_wad.apply_floored(max_amount);
+    let expected: u128 = u128::MAX / 2;
+    assert!(
+        u128::from(half_result) >= expected - 1 && u128::from(half_result) <= expected,
+        "50% of MAX should be approximately MAX/2, got {:?}",
+        half_result
+    );
+}
+
+/// Wad::apply_floored with Wad > 1.0 (super-WAD) produces result > input.
+#[test]
+fn wad_apply_floored_super_wad() {
+    let double_wad = Wad::from(Wad::SCALE * 2); // 200%
+    let amount = Number::from(1_000_000u128);
+    let result = double_wad.apply_floored(amount);
+    assert_eq!(u128::from(result), 2_000_000, "200% WAD should double the amount");
+}
+
+/// compute_fee_shares with every argument at u128::MAX: no panic.
+#[test]
+fn compute_fee_shares_all_max() {
+    let max = Number::from(u128::MAX);
+    // cur = MAX, last = 0 → profit = MAX
+    // fee = 100% → fee_assets = MAX
+    // fee_assets >= cur → returns 0
+    let result = compute_fee_shares(max, Number::zero(), Wad::one(), max);
+    assert_eq!(u128::from(result), 0, "100% fee on profit==total should be 0");
+}
+
+/// compute_fee_shares_from_assets with fee_assets = 1, total = u128::MAX.
+#[test]
+fn compute_fee_shares_from_assets_minimal_fee() {
+    let total = Number::from(u128::MAX);
+    let supply = Number::from(u128::MAX);
+    let fee_assets = Number::from(1u128);
+    // denom = MAX - 1, fee_shares = floor(1 * MAX / (MAX-1)) = 1
+    let result = compute_fee_shares_from_assets(fee_assets, total, supply);
+    assert_eq!(u128::from(result), 1, "Minimal fee on max total should mint 1 share");
+}
+
+/// Wad division: Wad::one() / 3 rounds down.
+#[test]
+fn wad_division_rounds_down() {
+    let third = Wad::one() / 3;
+    let expected = Wad::SCALE / 3;
+    assert_eq!(u128::from(third), expected);
+    // Verify it rounds down: expected * 3 < SCALE
+    assert!(expected * 3 < Wad::SCALE, "Division should round down");
+}
+
+/// mul_div_floor fast path: x == denom returns y exactly.
+#[test]
+fn mul_div_floor_cancellation_paths() {
+    let x = Number::from(12345u128);
+    let y = Number::from(67890u128);
+    // x * y / x = y
+    assert_eq!(Number::mul_div_floor(x, y, x), y);
+    // y * x / x = y
+    assert_eq!(Number::mul_div_floor(y, x, x), y);
+    // x * x / x = x
+    assert_eq!(Number::mul_div_floor(x, x, x), x);
+}
