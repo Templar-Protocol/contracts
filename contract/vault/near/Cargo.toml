@@ -33,7 +33,7 @@ near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-contract-standards.workspace = true
 templar-common.workspace = true
-templar-curator-primitives = { path = "../curator-primitives", features = ["borsh", "serde"] }
+templar-curator-primitives = { path = "../curator-primitives", features = ["borsh", "serde", "schemars", "std"] }
 templar-vault-kernel.workspace = true
 itertools.workspace = true
 primitive-types = { version = "0.14.0", features = ["serde"] }

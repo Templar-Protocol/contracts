@@ -11,7 +11,7 @@
 //! - [`policy`]: Cap groups, supply queues, withdraw routes, refresh plans, and market locks
 //! - [`recovery`]: Recovery action determination and state machine recovery logic
 //!
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 

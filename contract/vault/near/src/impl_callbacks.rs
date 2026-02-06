@@ -437,6 +437,7 @@ impl Contract {
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
+            payout_delta: principal_payout,
             remaining_next,
             collected_next,
             ..
@@ -448,8 +449,10 @@ impl Contract {
         );
 
         // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
-        let (payout_delta, remaining_next, collected_next) =
+        let (extra_payout, remaining_next, collected_next) =
             determine_payout_delta(remaining_next, collected_next, extra);
+
+        let payout_delta = principal_payout.saturating_add(extra_payout);
 
         let desired_index = match principal_delta.cmp(&inflow) {
             Ordering::Less | Ordering::Equal if principal_delta > 0 => ctx.index.saturating_add(1),
@@ -683,10 +686,15 @@ impl Contract {
         }
 
         if escrow_shares > 0 {
+            // Must be infallible - panic to prevent orphaned shares in escrow.
             Gate::bypass_transfer_with(
                 &mut payout,
                 &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
-                |e| env::log_str(&e.to_string()),
+                |e| {
+                    templar_common::panic_with_message(&format!(
+                        "Payout stop escrow refund failed: {e}"
+                    ))
+                },
             );
         }
 

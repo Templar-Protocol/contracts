@@ -489,10 +489,12 @@ async fn deposit_allowed_during_withdrawal_op(#[future(awt)] worker: Worker<Sand
 /// Tests partial withdrawal when market has insufficient liquidity.
 ///
 /// Scenario: user deposits 1000, vault allocates all to market, borrower takes 600.
-/// User requests full 1000 withdrawal. The vault routes through the market, but the
-/// market can only return ~400 (the unborrowed portion). Verifies that the vault
-/// performs a partial payout, burns proportional shares, refunds remaining escrow
-/// shares to the user, and returns to idle.
+/// User requests full 1000 withdrawal. The allocator creates a market withdrawal
+/// request for only 400 (the available liquidity). The vault collects 400 from the
+/// market but the user requested 1000, so the route is exhausted with remaining=600.
+/// Verifies that the vault performs a partial payout of 400, burns proportional
+/// shares (40%), refunds remaining escrow shares (60%) to the user, and returns
+/// to idle.
 #[rstest]
 #[tokio::test]
 async fn partial_withdrawal_when_market_has_insufficient_liquidity(
@@ -553,11 +555,14 @@ async fn partial_withdrawal_when_market_has_insufficient_liquidity(
         "All shares should be escrowed during withdrawal",
     );
 
-    // Create market-side withdrawal request for the full principal
+    // Create market-side withdrawal request for only the available liquidity.
+    // The market cannot partially fill a request, so we request only what the
+    // market can return (deposit - borrowed = 400).
+    let available = deposit_amount - borrow_amount; // 400
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(market_id, U128(deposit_amount))),
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(available))),
         )
         .await;
 
@@ -572,14 +577,12 @@ async fn partial_withdrawal_when_market_has_insufficient_liquidity(
         .await
         .expect("Should have withdrawing op");
 
-    // Execute market withdrawal — market can only return ~400 (600 is borrowed)
+    // Execute market withdrawal — market returns 400 (all available liquidity)
     vault
         .execute_market_withdrawal(&vault_curator, op_id, market_id, None)
         .await;
 
     // --- Assertions ---
-
-    let available = deposit_amount - borrow_amount; // 400
     let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
     let tokens_received = balance_after - balance_before;
 
