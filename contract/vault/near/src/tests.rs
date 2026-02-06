@@ -5472,3 +5472,133 @@ fn execute_withdrawal_only_dust_drains_queue() {
     );
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
 }
+
+// ---------------------------------------------------------------------------
+// Cross-chain address collision validation tests (templar-fo28)
+// ---------------------------------------------------------------------------
+
+/// Same AccountId always produces the same kernel Address (deterministic).
+#[test]
+fn address_mapping_is_deterministic() {
+    use crate::convert::account_id_to_address;
+    let vid = vault_id();
+    setup_env(&vid, &vid, vec![]);
+    let alice: AccountId = "alice.near".parse().unwrap();
+    let addr1 = account_id_to_address(&alice);
+    let addr2 = account_id_to_address(&alice);
+    assert_eq!(addr1, addr2, "Same AccountId must map to same Address");
+}
+
+/// Different AccountIds produce different kernel Addresses.
+#[test]
+fn address_mapping_distinct_accounts_no_collision() {
+    use crate::convert::account_id_to_address;
+    use std::collections::HashSet;
+    let vid = vault_id();
+    setup_env(&vid, &vid, vec![]);
+
+    let accounts: Vec<AccountId> = vec![
+        "alice.near".parse().unwrap(),
+        "bob.near".parse().unwrap(),
+        "carol.near".parse().unwrap(),
+        "alice.testnet".parse().unwrap(),
+        "a.near".parse().unwrap(),
+        "aa.near".parse().unwrap(),
+        "aaa.near".parse().unwrap(),
+        "alice-near.testnet".parse().unwrap(),
+    ];
+
+    let addresses: Vec<_> = accounts.iter().map(|a| account_id_to_address(a)).collect();
+    let unique: HashSet<_> = addresses.iter().collect();
+    assert_eq!(
+        unique.len(),
+        accounts.len(),
+        "All distinct AccountIds must produce distinct Addresses"
+    );
+}
+
+/// Similar AccountIds (prefix/suffix overlap) produce different addresses.
+#[test]
+fn address_mapping_similar_names_no_collision() {
+    use crate::convert::account_id_to_address;
+    let vid = vault_id();
+    setup_env(&vid, &vid, vec![]);
+
+    let a1: AccountId = "alice.near".parse().unwrap();
+    let a2: AccountId = "alice.nea".parse().unwrap();
+    let a3: AccountId = "lice.near".parse().unwrap();
+    assert_ne!(account_id_to_address(&a1), account_id_to_address(&a2));
+    assert_ne!(account_id_to_address(&a1), account_id_to_address(&a3));
+    assert_ne!(account_id_to_address(&a2), account_id_to_address(&a3));
+}
+
+/// Domain separation: NEAR's mapping differs from a raw SHA256 (no domain prefix).
+#[test]
+fn address_mapping_is_domain_separated() {
+    use crate::convert::account_id_to_address;
+    let vid = vault_id();
+    setup_env(&vid, &vid, vec![]);
+
+    let alice: AccountId = "alice.near".parse().unwrap();
+    let derived = account_id_to_address(&alice);
+
+    // Raw SHA256 without domain prefix should differ
+    let raw_hash = env::sha256(alice.as_bytes());
+    let raw_addr: [u8; 32] = raw_hash.as_slice().try_into().unwrap();
+    assert_ne!(
+        derived, raw_addr,
+        "Domain-prefixed hash must differ from raw hash"
+    );
+}
+
+/// Domain separation: NEAR domain prefix differs from Soroban's.
+/// Even if the same string were hashed, different domain prefixes
+/// guarantee different kernel Addresses across chains.
+#[test]
+fn address_mapping_cross_chain_domain_separation() {
+    let vid = vault_id();
+    setup_env(&vid, &vid, vec![]);
+
+    let input = b"alice.near";
+    let near_domain = b"templar:near:account-id";
+    let soroban_domain = b"templar:soroban:address";
+
+    let mut near_bytes = Vec::with_capacity(near_domain.len() + input.len());
+    near_bytes.extend_from_slice(near_domain);
+    near_bytes.extend_from_slice(input);
+    let near_hash: [u8; 32] = env::sha256(&near_bytes).as_slice().try_into().unwrap();
+
+    let mut soroban_bytes = Vec::with_capacity(soroban_domain.len() + input.len());
+    soroban_bytes.extend_from_slice(soroban_domain);
+    soroban_bytes.extend_from_slice(input);
+    let soroban_hash: [u8; 32] = env::sha256(&soroban_bytes).as_slice().try_into().unwrap();
+
+    assert_ne!(
+        near_hash, soroban_hash,
+        "Same input with different domain prefixes must produce different addresses"
+    );
+}
+
+/// Escrow address (all zeros) never collides with any real account mapping.
+#[test]
+fn address_mapping_never_produces_escrow_address() {
+    use crate::convert::account_id_to_address;
+    let vid = vault_id();
+    setup_env(&vid, &vid, vec![]);
+
+    let escrow: [u8; 32] = [0u8; 32];
+    let accounts: Vec<AccountId> = vec![
+        "alice.near".parse().unwrap(),
+        "bob.near".parse().unwrap(),
+        "vault.near".parse().unwrap(),
+        "a.testnet".parse().unwrap(),
+    ];
+    for account in &accounts {
+        assert_ne!(
+            account_id_to_address(account),
+            escrow,
+            "account_id_to_address must never produce the all-zero escrow address for {:?}",
+            account
+        );
+    }
+}

@@ -1884,3 +1884,67 @@ fn cooldown_u64_max_no_panic() {
     // now=0 is before requested_at=MAX, so not past cooldown
     assert!(!is_past_cooldown(u64::MAX, 0, 1), "now=0 before requested_at=MAX");
 }
+
+// ---------------------------------------------------------------------------
+// AddressBook collision validation tests (templar-fo28)
+// ---------------------------------------------------------------------------
+
+/// AddressBook: insert and resolve round-trips correctly.
+#[test]
+fn address_book_insert_resolve() {
+    use templar_vault_kernel::AddressBook;
+    let mut book = AddressBook::<&str>::new();
+    let addr_a: [u8; 32] = [1u8; 32];
+    let addr_b: [u8; 32] = [2u8; 32];
+
+    book.insert(addr_a, "alice");
+    book.insert(addr_b, "bob");
+
+    assert_eq!(book.resolve(&addr_a), Some(&"alice"));
+    assert_eq!(book.resolve(&addr_b), Some(&"bob"));
+    assert_eq!(book.len(), 2);
+}
+
+/// AddressBook: inserting same key overwrites (no silent collision).
+#[test]
+fn address_book_overwrite_same_key() {
+    use templar_vault_kernel::AddressBook;
+    let mut book = AddressBook::<&str>::new();
+    let addr: [u8; 32] = [1u8; 32];
+
+    book.insert(addr, "alice");
+    book.insert(addr, "bob");
+
+    assert_eq!(book.resolve(&addr), Some(&"bob"), "Last insert wins");
+    assert_eq!(book.len(), 1, "No duplicate entries");
+}
+
+/// AddressBook: distinct 32-byte addresses never shadow each other.
+#[test]
+fn address_book_distinct_addresses_no_collision() {
+    use templar_vault_kernel::AddressBook;
+    let mut book = AddressBook::<u32>::new();
+
+    for i in 0u8..=255 {
+        let mut addr = [0u8; 32];
+        addr[0] = i;
+        book.insert(addr, i as u32);
+    }
+
+    assert_eq!(book.len(), 256, "256 distinct single-byte-varied addresses");
+
+    for i in 0u8..=255 {
+        let mut addr = [0u8; 32];
+        addr[0] = i;
+        assert_eq!(book.resolve(&addr), Some(&(i as u32)));
+    }
+}
+
+/// AddressBook: resolving nonexistent address returns None.
+#[test]
+fn address_book_missing_returns_none() {
+    use templar_vault_kernel::AddressBook;
+    let book = AddressBook::<&str>::new();
+    assert_eq!(book.resolve(&[42u8; 32]), None);
+    assert!(book.is_empty());
+}
