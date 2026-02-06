@@ -1,6 +1,7 @@
 #![allow(clippy::all, clippy::pedantic)]
 
 use near_sdk::json_types::U128;
+use near_sdk::serde_json::json;
 use near_workspaces::{network::Sandbox, operations::Function, types::Gas, Worker};
 use rstest::rstest;
 use templar_common::vault::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
@@ -392,6 +393,97 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     vault
         .execute_market_withdrawal(&vault_curator, op_id, mkt_id, None)
         .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn deposit_allowed_during_withdrawal_op(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(vault, c, vault_curator)
+        accounts(supply_user, second_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
+    vault.init_account(&supply_user).await;
+    vault.init_account(&second_user).await;
+
+    let amount: U128 = 1000.into();
+    vault.supply(&supply_user, amount.0).await;
+
+    let market_id = vault.market_id_of(c.market.contract().id()).await;
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(market_id, amount)),
+        )
+        .await;
+    harvest(&c, &vault).await;
+
+    let withdraw_amount: U128 = 400.into();
+    let balance_before_withdraw = c.borrow_asset.balance_of(supply_user.id()).await;
+    vault.withdraw(&supply_user, withdraw_amount, None).await;
+    harvest(&c, &vault).await;
+
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Withdraw(Delta::new(market_id, withdraw_amount)),
+        )
+        .await;
+
+    let withdraw_route = vec![c.market.contract().id().clone()];
+    vault
+        .execute_withdrawal(&vault_curator, withdraw_route)
+        .await;
+
+    let op_id_before = vault
+        .get_withdrawing_op_id()
+        .await
+        .expect("withdraw op should exist");
+
+    let deposit_amount: u128 = 250;
+    let second_before = c.borrow_asset.balance_of(second_user.id()).await;
+    vault.supply(&second_user, deposit_amount).await;
+    let second_after = c.borrow_asset.balance_of(second_user.id()).await;
+    assert_eq!(
+        second_before - second_after,
+        deposit_amount,
+        "Second user deposit should transfer underlying"
+    );
+
+    let op_id_after = vault
+        .get_withdrawing_op_id()
+        .await
+        .expect("withdraw op should remain active");
+    assert_eq!(
+        op_id_before, op_id_after,
+        "Concurrent deposit must not reset withdrawing op"
+    );
+
+    let second_shares: U128 = vault
+        .view("ft_balance_of", json!({ "account_id": second_user.id() }))
+        .await;
+    assert!(
+        second_shares.0 > 0,
+        "Deposit during withdrawal should mint shares"
+    );
+
+    vault
+        .execute_market_withdrawal(&vault_curator, op_id_before, market_id, None)
+        .await;
+
+    assert_eq!(
+        c.borrow_asset.balance_of(supply_user.id()).await,
+        balance_before_withdraw + withdraw_amount.0,
+        "Withdrawer should receive assets after concurrent deposit"
+    );
+    assert!(
+        vault.get_withdrawing_op_id().await.is_none(),
+        "Withdraw op should complete"
+    );
 }
 
 pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
