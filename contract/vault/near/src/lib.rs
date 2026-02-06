@@ -459,7 +459,7 @@ impl Contract {
     pub fn execute_withdrawal(&mut self, route: Vec<MarketId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
-        Self::assert_allocator();
+        crate::auth::AuthPattern::Allocator.require();
 
         self.internal_accrue_fee();
 
@@ -531,7 +531,7 @@ impl Contract {
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
-        Self::assert_allocator();
+        crate::auth::AuthPattern::Allocator.require();
         self.internal_accrue_fee();
 
         let ctx = match self.ctx_withdrawing(op_id.0) {
@@ -597,7 +597,7 @@ impl Contract {
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
-        Self::assert_allocator_or_sentinel();
+        crate::auth::AuthPattern::AllocatorOrSentinel.require();
 
         self.ensure_idle();
 
@@ -779,7 +779,7 @@ impl Contract {
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
     /// - Clears withdraw state and market execution locks and returns the vault to Idle.
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
-        Self::assert_allocator_or_sentinel();
+        crate::auth::AuthPattern::AllocatorOrSentinel.require();
 
         let kernel_state = to_kernel_op_state(&self.op_state);
         let now = env::block_timestamp();
@@ -908,8 +908,8 @@ impl Contract {
     /// NOTE: When we rewrite this we should use a delta based approach
     pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
         match &delta {
-            AllocationDelta::Supply(_) => Self::assert_allocator(),
-            AllocationDelta::Withdraw(_) => Self::assert_allocator_or_sentinel(),
+            AllocationDelta::Supply(_) => crate::auth::AuthPattern::Allocator.require(),
+            AllocationDelta::Withdraw(_) => crate::auth::AuthPattern::AllocatorOrSentinel.require(),
         }
         self.ensure_idle();
         self.internal_accrue_fee();
@@ -1889,31 +1889,6 @@ impl Contract {
         .unwrap_or_else(|err| {
             panic_with_message(&format!("Kernel pause failed: {err:?}"))
         });
-    }
-
-    /* ----- Auth ----- */
-    fn assert_guardian_or_owner() {
-        crate::auth::AuthPattern::GuardianOrOwner.require();
-    }
-
-    fn assert_guardian_or_sentinel_or_owner() {
-        crate::auth::AuthPattern::GuardianOrSentinelOrOwner.require();
-    }
-
-    fn assert_curator_or_owner() {
-        crate::auth::AuthPattern::CuratorOrOwner.require();
-    }
-
-    fn assert_curator_or_sentinel_or_owner() {
-        crate::auth::AuthPattern::CuratorOrSentinelOrOwner.require();
-    }
-
-    fn assert_allocator() {
-        crate::auth::AuthPattern::Allocator.require();
-    }
-
-    fn assert_allocator_or_sentinel() {
-        crate::auth::AuthPattern::AllocatorOrSentinel.require();
     }
 
     /* ----- Internal: op orchestration ----- */

@@ -4,6 +4,7 @@ use templar_common::vault::{
 };
 
 use super::*;
+use crate::auth::AuthPattern;
 use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
 use near_sdk_contract_tools::ft::Nep141Transfer;
@@ -334,7 +335,7 @@ impl Contract {
 
     /// Revokes any pending fee change.
     pub fn revoke_pending_fees(&mut self) {
-        Self::assert_guardian_or_sentinel_or_owner();
+        AuthPattern::GuardianOrSentinelOrOwner.require();
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::FeesChange { .. })) {
             Event::FeesChangeRevoked.emit();
@@ -372,7 +373,7 @@ impl Contract {
 
     /// Revokes any pending Guardian change.
     pub fn revoke_pending_guardian(&mut self) {
-        Self::assert_guardian_or_sentinel_or_owner();
+        AuthPattern::GuardianOrSentinelOrOwner.require();
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::GuardianChange { .. })) {
             Event::PendingTimelockRevoked.emit();
@@ -400,7 +401,7 @@ impl Contract {
 
     /// Revokes any pending Sentinel change.
     pub fn revoke_pending_sentinel(&mut self) {
-        Self::assert_guardian_or_sentinel_or_owner();
+        AuthPattern::GuardianOrSentinelOrOwner.require();
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::SentinelChange { .. })) {
             Event::PendingTimelockRevoked.emit();
@@ -438,7 +439,7 @@ impl Contract {
 
     /// Revokes any pending timelock change.
     pub fn revoke_pending_timelock(&mut self) {
-        Self::assert_guardian_or_sentinel_or_owner();
+        AuthPattern::GuardianOrSentinelOrOwner.require();
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. })) {
             Event::PendingTimelockRevoked.emit();
         }
@@ -458,7 +459,7 @@ impl Contract {
     /// # Panics
     /// If there is no pending cap change for this market.
     pub fn accept_cap(&mut self, market: AccountId) {
-        Self::assert_curator_or_owner();
+        AuthPattern::CuratorOrOwner.require();
         self.ensure_idle();
 
         if let Some(action) = self.take_timelock(
@@ -472,7 +473,7 @@ impl Contract {
 
     /// Revokes any pending cap change for `market`.
     pub fn revoke_pending_cap(&mut self, market: AccountId) {
-        Self::assert_curator_or_sentinel_or_owner();
+        AuthPattern::CuratorOrSentinelOrOwner.require();
 
         let market_id = self.market_id_of_or_panic(&market);
 
@@ -514,7 +515,7 @@ impl Contract {
     /// # Panics
     /// If there is no matching pending cap-group update.
     pub fn accept_cap_group_update(&mut self, update: CapGroupUpdateKey) {
-        Self::assert_curator_or_owner();
+        AuthPattern::CuratorOrOwner.require();
         self.ensure_idle();
 
         let action = match update {
@@ -560,7 +561,7 @@ impl Contract {
 
     /// Revokes a pending cap-group update.
     pub fn revoke_pending_cap_group_update(&mut self, update: CapGroupUpdateKey) {
-        Self::assert_curator_or_owner();
+        AuthPattern::CuratorOrOwner.require();
 
         match update {
             CapGroupUpdateKey::SetCap { cap_group } => {
@@ -616,7 +617,7 @@ impl Contract {
 
     /// Accepts a pending market removal for `market` after the timelock has elapsed.
     pub fn accept_market_removal(&mut self, market: AccountId) {
-        Self::assert_curator_or_owner();
+        AuthPattern::CuratorOrOwner.require();
 
         if let Some(action) = self.take_timelock(
             |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
@@ -629,7 +630,7 @@ impl Contract {
 
     /// Revokes a pending market removal for `market`.
     pub fn revoke_pending_market_removal(&mut self, market: AccountId) {
-        Self::assert_curator_or_sentinel_or_owner();
+        AuthPattern::CuratorOrSentinelOrOwner.require();
 
         let market_id = self.market_id_of_or_panic(&market);
 
@@ -646,7 +647,7 @@ impl Contract {
     /// Rejects duplicates and markets without a positive cap. Requires the vault to be idle.
     #[payable]
     pub fn set_supply_queue(&mut self, markets: Vec<MarketId>) {
-        Self::assert_allocator();
+        AuthPattern::Allocator.require();
         Abdicator::require_not_abdicated(&self.abdicator, "set_supply_queue");
         self.ensure_idle();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");
@@ -679,7 +680,7 @@ impl Contract {
 
     /// Permanently disables a governance method by name.
     pub fn abdicate(&mut self, method_name: String) {
-        Self::assert_curator_or_owner();
+        AuthPattern::CuratorOrOwner.require();
         self.abdicator.abdicate(&method_name);
     }
 
@@ -698,7 +699,7 @@ impl Contract {
 
     /// Accepts a pending restrictions change after the timelock has elapsed.
     pub fn accept_restrictions(&mut self) {
-        Self::assert_guardian_or_owner();
+        AuthPattern::GuardianOrOwner.require();
 
         if let Some(action) =
             self.take_timelock(|a| matches!(a, TimelockedAction::RestrictionsChange { .. }))
@@ -711,7 +712,7 @@ impl Contract {
 
     /// Revokes any pending restrictions change.
     pub fn revoke_pending_restrictions(&mut self) {
-        Self::assert_guardian_or_sentinel_or_owner();
+        AuthPattern::GuardianOrSentinelOrOwner.require();
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::RestrictionsChange { .. })) {
             Event::RestrictionsChangeRevoked.emit();
@@ -773,7 +774,7 @@ impl Contract {
                 kind,
                 new_timelock_ns,
             } => {
-                Self::assert_guardian_or_owner();
+                AuthPattern::GuardianOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_timelock");
 
                 let new = new_timelock_ns.0;
@@ -863,7 +864,7 @@ impl Contract {
                 let is_relaxing = shared_gov::determine_relaxed(&current, &proposed);
 
                 if is_relaxing {
-                    Self::assert_guardian_or_owner();
+                    AuthPattern::GuardianOrOwner.require();
                     require!(
                         self.governance_timelocks
                             .seek_pending_timelock(|p| matches!(
@@ -877,13 +878,13 @@ impl Contract {
                 } else {
                     // Tightening (including emergency pause) is immediate and may be done by the
                     // guardian, sentinel, or owner.
-                    Self::assert_guardian_or_sentinel_or_owner();
+                    AuthPattern::GuardianOrSentinelOrOwner.require();
                     false
                 }
             }
             // Submit a timelocked governance change if the cap is greater than the current cap or there is a new market to be made
             TimelockedAction::CapChange { market, new_cap } => {
-                Self::assert_curator_or_owner();
+                AuthPattern::CuratorOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap");
                 self.ensure_idle();
 
@@ -920,7 +921,7 @@ impl Contract {
                 }
             }
             TimelockedAction::CapGroupChange { cap_group, new_cap } => {
-                Self::assert_curator_or_owner();
+                AuthPattern::CuratorOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
@@ -949,7 +950,7 @@ impl Contract {
                 cap_group,
                 new_relative_cap,
             } => {
-                Self::assert_curator_or_owner();
+                AuthPattern::CuratorOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
@@ -979,7 +980,7 @@ impl Contract {
                 decision.requires_timelock()
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
-                Self::assert_curator_or_owner();
+                AuthPattern::CuratorOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
@@ -1008,7 +1009,7 @@ impl Contract {
             }
             // Submit a timelocked governance change to remove a market
             TimelockedAction::MarketRemoval { market } => {
-                Self::assert_curator_or_owner();
+                AuthPattern::CuratorOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_market_removal");
 
                 let market_id = self.market_id_of_or_panic(market);
