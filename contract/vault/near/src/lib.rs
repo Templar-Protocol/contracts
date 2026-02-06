@@ -80,6 +80,7 @@ pub mod policy;
 
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
+pub(crate) mod auth;
 pub(crate) mod op_guard;
 pub mod storage_management;
 
@@ -1892,49 +1893,27 @@ impl Contract {
 
     /* ----- Auth ----- */
     fn assert_guardian_or_owner() {
-        let p = env::predecessor_account_id();
-
-        if !Self::has_role(&p, &Role::Guardian) {
-            Self::require_owner();
-        }
+        crate::auth::AuthPattern::GuardianOrOwner.require();
     }
 
     fn assert_guardian_or_sentinel_or_owner() {
-        let p = env::predecessor_account_id();
-        if !Self::has_role(&p, &Role::Guardian) && !Self::has_role(&p, &Role::Sentinel) {
-            Self::require_owner();
-        }
+        crate::auth::AuthPattern::GuardianOrSentinelOrOwner.require();
     }
 
     fn assert_curator_or_owner() {
-        let p = env::predecessor_account_id();
-        if !Self::has_role(&p, &Role::Curator) {
-            Self::require_owner();
-        }
+        crate::auth::AuthPattern::CuratorOrOwner.require();
     }
 
     fn assert_curator_or_sentinel_or_owner() {
-        let p = env::predecessor_account_id();
-        if !Self::has_role(&p, &Role::Curator) && !Self::has_role(&p, &Role::Sentinel) {
-            Self::require_owner();
-        }
+        crate::auth::AuthPattern::CuratorOrSentinelOrOwner.require();
     }
 
     fn assert_allocator() {
-        let p = env::predecessor_account_id();
-        if !Self::has_role(&p, &Role::Allocator) && !Self::has_role(&p, &Role::Curator) {
-            Self::require_owner();
-        }
+        crate::auth::AuthPattern::Allocator.require();
     }
 
     fn assert_allocator_or_sentinel() {
-        let p = env::predecessor_account_id();
-        if !Self::has_role(&p, &Role::Allocator)
-            && !Self::has_role(&p, &Role::Curator)
-            && !Self::has_role(&p, &Role::Sentinel)
-        {
-            Self::require_owner();
-        }
+        crate::auth::AuthPattern::AllocatorOrSentinel.require();
     }
 
     /* ----- Internal: op orchestration ----- */
