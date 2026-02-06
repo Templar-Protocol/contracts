@@ -486,6 +486,139 @@ async fn deposit_allowed_during_withdrawal_op(#[future(awt)] worker: Worker<Sand
     );
 }
 
+/// Tests partial withdrawal when market has insufficient liquidity.
+///
+/// Scenario: user deposits 1000, vault allocates all to market, borrower takes 600.
+/// User requests full 1000 withdrawal. The vault routes through the market, but the
+/// market can only return ~400 (the unborrowed portion). Verifies that the vault
+/// performs a partial payout, burns proportional shares, refunds remaining escrow
+/// shares to the user, and returns to idle.
+#[rstest]
+#[tokio::test]
+async fn partial_withdrawal_when_market_has_insufficient_liquidity(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    setup_test!(
+        worker
+        extract(vault, c, vault_curator)
+        accounts(supply_user, borrow_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
+    vault.init_account(&supply_user).await;
+
+    let deposit_amount: u128 = 1000;
+    vault.supply(&supply_user, deposit_amount).await;
+
+    let market_id = vault.market_id_of(c.market.contract().id()).await;
+
+    // Allocate everything to the market
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(market_id, U128(deposit_amount))),
+        )
+        .await;
+    harvest(&c, &vault).await;
+
+    assert_eq!(
+        vault.get_idle_balance().await.0, 0,
+        "All funds should be in the market",
+    );
+
+    // Reduce market liquidity: borrower takes 600, leaving ~400 available
+    c.collateralize(&borrow_user, 2000).await;
+    let borrow_amount: u128 = 600;
+    c.borrow(&borrow_user, borrow_amount).await;
+
+    let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
+    let shares_before: U128 = vault
+        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
+        .await;
+
+    // User requests full withdrawal of 1000
+    vault
+        .withdraw(&supply_user, deposit_amount.into(), None)
+        .await;
+    harvest(&c, &vault).await;
+
+    // Shares should be escrowed (moved to vault contract)
+    let shares_after_request: U128 = vault
+        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
+        .await;
+    assert_eq!(
+        shares_after_request.0, 0,
+        "All shares should be escrowed during withdrawal",
+    );
+
+    // Create market-side withdrawal request for the full principal
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(deposit_amount))),
+        )
+        .await;
+
+    // Execute withdrawal route through the market
+    let withdraw_route = vec![c.market.contract().id().clone()];
+    vault
+        .execute_withdrawal(&vault_curator, withdraw_route)
+        .await;
+
+    let op_id = vault
+        .get_withdrawing_op_id()
+        .await
+        .expect("Should have withdrawing op");
+
+    // Execute market withdrawal — market can only return ~400 (600 is borrowed)
+    vault
+        .execute_market_withdrawal(&vault_curator, op_id, market_id, None)
+        .await;
+
+    // --- Assertions ---
+
+    let available = deposit_amount - borrow_amount; // 400
+    let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
+    let tokens_received = balance_after - balance_before;
+
+    // User should receive the partial payout (~400)
+    assert_eq!(
+        tokens_received, available,
+        "User should receive partial payout equal to available market liquidity",
+    );
+
+    // Vault should be back to idle (route exhausted → partial payout → pop head → idle)
+    assert!(
+        vault.get_withdrawing_op_id().await.is_none(),
+        "Vault should return to idle after partial payout",
+    );
+
+    // User should have some shares refunded (proportional to uncollected portion)
+    let shares_after: U128 = vault
+        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
+        .await;
+    let expected_refund = shares_before.0 * borrow_amount / deposit_amount; // 600/1000 of original shares
+    assert!(
+        shares_after.0 > 0,
+        "User should have some shares refunded for the uncollected portion",
+    );
+    assert_eq!(
+        shares_after.0, expected_refund,
+        "Refunded shares should be proportional to the uncollected amount ({borrow_amount}/{deposit_amount})",
+    );
+
+    // Total supply should have decreased by the burned shares (proportional to collected)
+    let total_supply = vault.get_total_supply().await;
+    let expected_burned = shares_before.0 * available / deposit_amount; // 400/1000 of original shares
+    assert_eq!(
+        total_supply.0,
+        shares_before.0 - expected_burned,
+        "Total supply should decrease by burned shares (proportional to payout)",
+    );
+}
+
 pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
     // Wait for activation.
     while let Some(position) = c.get_supply_position(vault.contract().id()).await {
