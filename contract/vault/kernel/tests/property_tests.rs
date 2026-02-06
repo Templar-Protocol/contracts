@@ -28,7 +28,10 @@ use proptest::prelude::*;
 use templar_vault_kernel::{
     math::{
         number::Number,
-        wad::{compute_fee_shares, mul_div_ceil, mul_div_floor, Wad, MAX_PERFORMANCE_FEE_WAD},
+        wad::{
+            compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor, Wad,
+            MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+        },
     },
     state::{
         escrow::{
@@ -1947,4 +1950,207 @@ fn address_book_missing_returns_none() {
     let book = AddressBook::<&str>::new();
     assert_eq!(book.resolve(&[42u8; 32]), None);
     assert!(book.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Fee calculation edge case tests (templar-8jum)
+// ---------------------------------------------------------------------------
+
+/// Performance fee when profit is less than fee denominator floors to zero shares.
+#[test]
+fn fee_zero_when_profit_below_fee_threshold() {
+    // Tiny profit (1 wei), 50% fee → fee_assets = floor(1 * 0.5) = 0 → 0 shares
+    let fee_shares = compute_fee_shares(
+        Number::from(1_000_001u128), // cur_total_assets
+        Number::from(1_000_000u128), // last_total_assets → profit = 1
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // 50%
+        Number::from(1_000_000u128), // total_supply
+    );
+    // With profit=1, fee_assets = floor(1 * 0.5) = 0, so fee_shares = 0
+    assert_eq!(
+        u128::from(fee_shares), 0,
+        "Sub-threshold profit should yield zero fee shares"
+    );
+}
+
+/// No profit (cur <= last) → zero fee shares regardless of fee rate.
+#[test]
+fn fee_zero_when_no_profit() {
+    // cur == last → profit = 0
+    let fee_shares = compute_fee_shares(
+        Number::from(1_000_000u128),
+        Number::from(1_000_000u128),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(1_000_000u128),
+    );
+    assert_eq!(u128::from(fee_shares), 0, "No profit → no fee shares");
+
+    // cur < last → profit = 0 (saturating_sub)
+    let fee_shares_loss = compute_fee_shares(
+        Number::from(500_000u128),
+        Number::from(1_000_000u128),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(1_000_000u128),
+    );
+    assert_eq!(u128::from(fee_shares_loss), 0, "Loss → no fee shares");
+}
+
+/// Combined fee_assets equaling cur_total_assets → zero shares (denom = 0 case).
+#[test]
+fn fee_zero_when_fee_consumes_all_assets() {
+    // If fee_assets == cur_total_assets, compute_fee_shares_from_assets returns 0
+    let fee_shares = compute_fee_shares_from_assets(
+        Number::from(1_000u128), // fee_assets = all of total
+        Number::from(1_000u128), // cur_total_assets
+        Number::from(1_000u128), // total_supply
+    );
+    assert_eq!(
+        u128::from(fee_shares), 0,
+        "Fee consuming all assets must produce zero shares"
+    );
+}
+
+/// Fee_assets exceeding cur_total_assets → zero shares.
+#[test]
+fn fee_zero_when_fee_exceeds_total_assets() {
+    let fee_shares = compute_fee_shares_from_assets(
+        Number::from(2_000u128), // fee_assets > total
+        Number::from(1_000u128), // cur_total_assets
+        Number::from(1_000u128), // total_supply
+    );
+    assert_eq!(
+        u128::from(fee_shares), 0,
+        "Fee exceeding total assets must produce zero shares"
+    );
+}
+
+/// MAX_PERFORMANCE_FEE_WAD (50%) extracts correct proportion.
+#[test]
+fn fee_at_max_performance_rate() {
+    let total = 2_000_000u128;
+    let profit = 1_000_000u128;
+    let supply = 1_000_000u128;
+    let fee_shares = compute_fee_shares(
+        Number::from(total),
+        Number::from(total - profit),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // 50%
+        Number::from(supply),
+    );
+    // fee_assets = floor(profit * 0.5) = 500_000
+    // denom = total - fee_assets = 1_500_000
+    // fee_shares = floor(500_000 * 1_000_000 / 1_500_000) = 333_333
+    let expected = 500_000u128 * supply / (total - 500_000);
+    assert_eq!(
+        u128::from(fee_shares), expected,
+        "50% fee on 1M profit with 2M total should mint {expected} shares"
+    );
+}
+
+/// 100% fee rate (Wad::one()) → fee_assets = profit → denom = total - profit.
+/// If profit == total, fee_assets == total → 0 shares.
+#[test]
+fn fee_at_100_percent_rate() {
+    // 100% fee, profit == total → fee_assets == total → zero shares
+    let fee_shares_all = compute_fee_shares(
+        Number::from(1_000_000u128),
+        Number::from(0u128),
+        Wad::one(), // 100%
+        Number::from(1_000_000u128),
+    );
+    assert_eq!(
+        u128::from(fee_shares_all), 0,
+        "100% fee on profit==total should yield 0 (denom becomes 0)"
+    );
+
+    // 100% fee, profit < total → fee_assets = profit, denom = total - profit > 0
+    let fee_shares_partial = compute_fee_shares(
+        Number::from(2_000_000u128),
+        Number::from(1_000_000u128),
+        Wad::one(), // 100%
+        Number::from(1_000_000u128),
+    );
+    // fee_assets = 1_000_000, denom = 1_000_000
+    // fee_shares = floor(1_000_000 * 1_000_000 / 1_000_000) = 1_000_000
+    assert_eq!(
+        u128::from(fee_shares_partial), 1_000_000,
+        "100% fee on partial profit should mint shares equal to supply ratio"
+    );
+}
+
+/// Fee with zero total supply → always zero shares.
+#[test]
+fn fee_zero_on_zero_supply() {
+    let fee_shares = compute_fee_shares(
+        Number::from(2_000_000u128),
+        Number::from(1_000_000u128),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(0u128), // no supply
+    );
+    assert_eq!(u128::from(fee_shares), 0, "Zero supply → zero fee shares");
+}
+
+/// Fee anchor timestamp wraparound: RefreshFees rejects backwards time.
+#[test]
+fn fee_refresh_rejects_backwards_timestamp() {
+    let config = default_config();
+    let mut state = default_state();
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, 10_000);
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RefreshFees { now_ns: 5_000 },
+    );
+    assert!(result.is_err(), "Backwards timestamp must be rejected");
+}
+
+/// Fee anchor updates correctly on RefreshFees.
+#[test]
+fn fee_refresh_updates_anchor() {
+    let config = default_config();
+    let mut state = default_state();
+    state.total_assets = 5_000;
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, 100);
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RefreshFees { now_ns: 200 },
+    )
+    .expect("Forward timestamp should succeed");
+
+    assert_eq!(result.state.fee_anchor.total_assets, 5_000);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, 200);
+}
+
+/// Fee anchor at timestamp 0 → RefreshFees at 0 succeeds (not backwards).
+#[test]
+fn fee_refresh_at_zero_timestamp() {
+    let config = default_config();
+    let state = default_state(); // fee_anchor at (0, 0)
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RefreshFees { now_ns: 0 },
+    );
+    assert!(result.is_ok(), "RefreshFees at timestamp 0 should succeed when anchor is 0");
+}
+
+/// MAX_MANAGEMENT_FEE_WAD constant is 5% (sanity check).
+#[test]
+fn management_fee_cap_constant() {
+    assert_eq!(MAX_MANAGEMENT_FEE_WAD, Wad::SCALE / 100 * 5, "MAX_MANAGEMENT_FEE_WAD should be 5%");
+}
+
+/// MAX_PERFORMANCE_FEE_WAD constant is 50% (sanity check).
+#[test]
+fn performance_fee_cap_constant() {
+    assert_eq!(MAX_PERFORMANCE_FEE_WAD, Wad::SCALE / 100 * 50, "MAX_PERFORMANCE_FEE_WAD should be 50%");
 }
