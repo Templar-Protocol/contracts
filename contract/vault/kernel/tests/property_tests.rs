@@ -1372,3 +1372,340 @@ proptest! {
         prop_assert_eq!(entry.is_empty(), shares == 0);
     }
 }
+
+// ============================================================================
+// Deterministic Boundary / Edge Case Tests
+// ============================================================================
+
+use templar_vault_kernel::{
+    apply_action, preview_deposit_shares, preview_withdraw_assets, FeeSlot, FeesSpec, KernelAction,
+    VaultConfig,
+};
+
+fn default_config() -> VaultConfig {
+    VaultConfig {
+        fees: FeesSpec {
+            performance: FeeSlot::zero(),
+            management: FeeSlot::zero(),
+            max_total_assets_growth_rate: None,
+        },
+        min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+        withdrawal_cooldown_ns: 0,
+        max_pending_withdrawals: 100,
+        paused: false,
+        virtual_shares: 0,
+        virtual_assets: 0,
+    }
+}
+
+fn default_state() -> VaultState {
+    VaultState::new()
+}
+
+fn self_addr() -> templar_vault_kernel::Address {
+    [99u8; 32]
+}
+
+/// Boundary 1: Depositing zero assets returns Slippage error.
+#[test]
+fn deposit_zero_assets_returns_slippage() {
+    let state = default_state();
+    let config = default_config();
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            assets_in: 0,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    );
+    assert!(
+        matches!(result, Err(templar_vault_kernel::error::KernelError::Slippage { actual: 0, .. })),
+        "Depositing 0 assets should return Slippage, got: {result:?}",
+    );
+}
+
+/// Boundary 2: Depositing 1 wei succeeds and mints shares.
+#[test]
+fn deposit_one_wei_mints_shares() {
+    let state = default_state();
+    let config = default_config();
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            assets_in: 1,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    );
+    let result = result.expect("1 wei deposit should succeed");
+    assert_eq!(result.state.total_assets, 1);
+    assert_eq!(result.state.idle_assets, 1);
+    assert!(result.state.total_shares > 0, "Should mint at least 1 share");
+}
+
+/// Boundary 3: Preview deposit with 0 assets returns 0 shares.
+#[test]
+fn preview_deposit_zero_assets_returns_zero() {
+    let state = default_state();
+    let config = default_config();
+    assert_eq!(preview_deposit_shares(&state, &config, 0), 0);
+}
+
+/// Boundary 4: Preview withdraw with 0 shares returns 0 assets.
+#[test]
+fn preview_withdraw_zero_shares_returns_zero() {
+    let state = default_state();
+    let config = default_config();
+    assert_eq!(preview_withdraw_assets(&state, &config, 0), 0);
+}
+
+/// Boundary 5: Preview deposit/withdraw with 1 share/asset is consistent.
+#[test]
+fn preview_one_wei_roundtrip() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.idle_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    let shares = preview_deposit_shares(&state, &config, 1);
+    // With equal shares/assets ratio and virtual offset, 1 wei should give ~1 share
+    // (may be 0 due to rounding with virtual offsets)
+    let assets_back = preview_withdraw_assets(&state, &config, shares);
+    // Round-trip: assets_back <= 1 (rounding down is expected)
+    assert!(assets_back <= 1, "Round-trip should not inflate: got {assets_back}");
+}
+
+/// Boundary 6: Request withdraw below MIN_WITHDRAWAL_ASSETS is rejected.
+#[test]
+fn withdraw_below_min_withdrawal_rejected() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.idle_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    // Request a withdrawal that would yield MIN_WITHDRAWAL_ASSETS - 1
+    // We need shares that convert to exactly MIN_WITHDRAWAL_ASSETS - 1
+    let target = MIN_WITHDRAWAL_ASSETS - 1;
+    let shares = target; // With 1:1 ratio and virtual offset +1, shares ~= target
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RequestWithdraw {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            shares,
+            min_assets_out: 0,
+            now_ns: 1,
+        },
+    );
+    assert!(
+        matches!(result, Err(templar_vault_kernel::error::KernelError::MinWithdrawal { .. })),
+        "Withdrawal below MIN_WITHDRAWAL_ASSETS should be rejected, got: {result:?}",
+    );
+}
+
+/// Boundary 7: Request withdraw at exactly MIN_WITHDRAWAL_ASSETS succeeds.
+#[test]
+fn withdraw_at_min_withdrawal_succeeds() {
+    let mut state = default_state();
+    // Use large enough total so shares convert to >= MIN_WITHDRAWAL_ASSETS
+    state.total_assets = 10_000_000;
+    state.idle_assets = 10_000_000;
+    state.total_shares = 10_000_000;
+    let config = default_config();
+
+    // Find shares that yield exactly MIN_WITHDRAWAL_ASSETS
+    let expected = preview_withdraw_assets(&state, &config, MIN_WITHDRAWAL_ASSETS);
+    // Ensure we're at or above the minimum
+    assert!(
+        expected >= MIN_WITHDRAWAL_ASSETS,
+        "Expected assets {expected} should be >= MIN {MIN_WITHDRAWAL_ASSETS}",
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RequestWithdraw {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            shares: MIN_WITHDRAWAL_ASSETS,
+            min_assets_out: 0,
+            now_ns: 1,
+        },
+    );
+    assert!(result.is_ok(), "Withdrawal at MIN should succeed, got: {result:?}");
+}
+
+/// Boundary 8: Request withdraw with 0 shares returns Slippage.
+#[test]
+fn withdraw_zero_shares_returns_slippage() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RequestWithdraw {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            shares: 0,
+            min_assets_out: 0,
+            now_ns: 1,
+        },
+    );
+    assert!(
+        matches!(result, Err(templar_vault_kernel::error::KernelError::Slippage { actual: 0, .. })),
+        "Withdrawing 0 shares should return Slippage, got: {result:?}",
+    );
+}
+
+/// Boundary 9: Fee calculation with total_assets = 1.
+#[test]
+fn fee_shares_with_total_assets_one() {
+    // With minimal total_assets, fee shares should be 0 or very small
+    let fee_shares = compute_fee_shares(
+        Number::from(1u128),  // current total_assets
+        Number::from(0u128),  // last total_assets (0 → gain = 1)
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // max performance fee
+        Number::from(1u128),  // total_supply
+    );
+    // Fee shares should not exceed total supply
+    assert!(
+        fee_shares <= Number::from(1u128),
+        "Fee shares {:?} should not exceed total supply of 1",
+        fee_shares,
+    );
+}
+
+/// Boundary 10: Queue at exactly MAX_QUEUE_LENGTH rejects next enqueue.
+#[test]
+fn queue_at_max_rejects_enqueue() {
+    assert!(can_enqueue(MAX_QUEUE_LENGTH - 1), "Should allow enqueue below max");
+    assert!(!can_enqueue(MAX_QUEUE_LENGTH), "Should reject enqueue at max");
+    assert!(!can_enqueue(MAX_QUEUE_LENGTH + 1), "Should reject enqueue above max");
+}
+
+/// Boundary 11: is_valid_withdrawal_amount at boundary values.
+#[test]
+fn withdrawal_amount_boundary_values() {
+    assert!(!is_valid_withdrawal_amount(0), "0 is not valid");
+    assert!(!is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS - 1), "Below min is not valid");
+    assert!(is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS), "Exactly min is valid");
+    assert!(is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS + 1), "Above min is valid");
+    assert!(is_valid_withdrawal_amount(u128::MAX), "MAX is valid");
+}
+
+/// Boundary 12: compute_settlement with 1 wei actual vs large expected.
+#[test]
+fn settlement_one_wei_actual() {
+    let escrow = 1_000_000u128;
+    let expected = 1_000_000u128;
+    let actual = 1u128; // Only 1 wei collected
+
+    let settlement = compute_settlement(escrow, expected, actual);
+    // Burn should be proportional: ~1 share (1/1_000_000 * 1_000_000)
+    assert!(settlement.to_burn >= 1, "Should burn at least 1 share");
+    assert_eq!(
+        settlement.to_burn + settlement.refund, escrow,
+        "Conservation: burn + refund = escrow",
+    );
+}
+
+/// Boundary 13: compute_settlement with 0 actual (full refund).
+#[test]
+fn settlement_zero_actual_full_refund() {
+    let escrow = 1_000_000u128;
+    let expected = 500_000u128;
+
+    let settlement = compute_settlement(escrow, expected, 0);
+    assert_eq!(settlement.to_burn, 0, "Zero actual → zero burn");
+    assert_eq!(settlement.refund, escrow, "Zero actual → full refund");
+}
+
+/// Boundary 14: Queue enqueue fills to capacity then rejects.
+#[test]
+fn queue_fills_to_capacity_then_rejects() {
+    let mut queue = WithdrawQueue::default();
+    let max = 10u32; // Use small max for practical test
+
+    // Fill queue to capacity
+    for i in 0..max {
+        let result = queue.enqueue(
+            owner_addr(i as u64),
+            receiver_addr(i as u64),
+            1000,
+            MIN_WITHDRAWAL_ASSETS,
+            i as u64,
+            max,
+        );
+        assert!(result.is_ok(), "Enqueue {i} should succeed");
+    }
+
+    // Next enqueue should fail
+    let result = queue.enqueue(
+        owner_addr(max as u64),
+        receiver_addr(max as u64),
+        1000,
+        MIN_WITHDRAWAL_ASSETS,
+        max as u64,
+        max,
+    );
+    assert!(
+        result.is_err(),
+        "Enqueue beyond capacity should fail",
+    );
+}
+
+/// Boundary 15: Cooldown at exact boundary.
+#[test]
+fn cooldown_exact_boundary() {
+    let cooldown_ns = 1_000_000u64;
+    let requested_at = 100u64;
+
+    // Just before cooldown
+    assert!(
+        !is_past_cooldown(requested_at, requested_at + cooldown_ns - 1, cooldown_ns),
+        "Should NOT be past cooldown 1ns before",
+    );
+    // Exactly at cooldown
+    assert!(
+        is_past_cooldown(requested_at, requested_at + cooldown_ns, cooldown_ns),
+        "Should be past cooldown at exact boundary",
+    );
+    // Just after cooldown
+    assert!(
+        is_past_cooldown(requested_at, requested_at + cooldown_ns + 1, cooldown_ns),
+        "Should be past cooldown 1ns after",
+    );
+}
+
+/// Boundary 16: Zero cooldown means immediately ready when now >= requested_at.
+#[test]
+fn zero_cooldown_passes_when_now_gte_requested() {
+    assert!(is_past_cooldown(0, 0, 0), "Zero cooldown, same time → past");
+    assert!(is_past_cooldown(100, 100, 0), "Zero cooldown, same time → past");
+    assert!(is_past_cooldown(100, 101, 0), "Zero cooldown, later now → past");
+    assert!(!is_past_cooldown(100, 99, 0), "Zero cooldown, earlier now → not past (request not yet made)");
+}
