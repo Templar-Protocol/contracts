@@ -47,11 +47,12 @@ use templar_vault_kernel::{
         vault::{FeeAccrualAnchor, VaultState, MAX_PENDING},
     },
     transitions::{
-        allocation_step_callback, complete_refresh, payout_complete, start_allocation,
+        allocation_step_callback, complete_allocation, complete_refresh, payout_complete, start_allocation,
         start_refresh, start_withdrawal, stop_withdrawal, withdrawal_collected,
         withdrawal_step_callback, TransitionError, WithdrawalRequest,
     },
     types::EscrowSettlement,
+    effects::{KernelEffect, KernelEvent},
 };
 use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
@@ -2485,4 +2486,204 @@ fn mul_div_floor_cancellation_paths() {
     assert_eq!(Number::mul_div_floor(y, x, x), y);
     // x * x / x = x
     assert_eq!(Number::mul_div_floor(x, x, x), x);
+}
+
+// ---------------------------------------------------------------------------
+// Allocation failure and recovery tests (templar-1nn4)
+// ---------------------------------------------------------------------------
+
+/// Allocation step failure at step 2 of 5: returns to Idle with correct total_allocated.
+#[test]
+fn allocation_step_failure_mid_plan() {
+    let plan = vec![(0, 100), (1, 200), (2, 300), (3, 400), (4, 500)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    // Step 0 succeeds with 100
+    let result = allocation_step_callback(result.new_state, true, 100, op_id).unwrap();
+    assert!(matches!(result.new_state, OpState::Allocating(ref s) if s.index == 1));
+
+    // Step 1 succeeds with 200
+    let result = allocation_step_callback(result.new_state, true, 200, op_id).unwrap();
+    assert!(matches!(result.new_state, OpState::Allocating(ref s) if s.index == 2));
+
+    // Step 2 FAILS
+    let result = allocation_step_callback(result.new_state, false, 0, op_id).unwrap();
+    assert!(matches!(result.new_state, OpState::Idle), "Should return to Idle on failure");
+
+    // Verify the failure event contains correct total_allocated
+    let event = &result.effects[0];
+    match event {
+        KernelEffect::EmitEvent {
+            event: KernelEvent::AllocationStepFailed {
+                op_id: eid,
+                index,
+                remaining,
+                total_allocated,
+            },
+        } => {
+            assert_eq!(*eid, op_id);
+            assert_eq!(*index, 2, "Failed at step 2");
+            assert_eq!(*remaining, 1200, "remaining = 1500 - 100 - 200 = 1200");
+            assert_eq!(*total_allocated, 300, "allocated = 100 + 200 = 300");
+        }
+        _ => panic!("Expected AllocationStepFailed event"),
+    }
+}
+
+/// Allocation step with amount = 0 on success is rejected.
+#[test]
+fn allocation_step_zero_amount_rejected() {
+    let plan = vec![(0, 100), (1, 200)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    let err = allocation_step_callback(result.new_state, true, 0, op_id);
+    assert!(
+        matches!(err, Err(TransitionError::ZeroAllocationAmount)),
+        "Zero allocation amount on success should be rejected, got: {err:?}"
+    );
+}
+
+/// Allocation step with amount exceeding remaining is rejected.
+#[test]
+fn allocation_step_overflow_rejected() {
+    let plan = vec![(0, 100)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    let err = allocation_step_callback(result.new_state, true, 101, op_id);
+    assert!(
+        matches!(err, Err(TransitionError::AllocationOverflow { .. })),
+        "Overflow amount should be rejected, got: {err:?}"
+    );
+}
+
+/// AbortAllocating: returns to Idle and adds remaining back to idle_assets.
+///
+/// NOTE: BeginAllocating currently does NOT decrement idle_assets (known bug
+/// templar-2u41), so AbortAllocating's saturating_add causes idle_assets to
+/// exceed the pre-allocation value. This test documents current behavior.
+#[test]
+fn abort_allocating_restores_state() {
+    let config = default_config();
+    let mut state = default_state();
+    state.idle_assets = 1500;
+    state.total_assets = 1500;
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::BeginAllocating {
+            op_id: 1,
+            plan: vec![(0, 500), (1, 500), (2, 500)],
+            now_ns: 0,
+        },
+    )
+    .unwrap();
+    let op_id = match &result.state.op_state {
+        OpState::Allocating(s) => s.op_id,
+        _ => panic!("Should be Allocating"),
+    };
+    // BUG: idle_assets is NOT decremented by BeginAllocating (templar-2u41)
+    assert_eq!(result.state.idle_assets, 1500, "BeginAllocating does not decrement idle_assets");
+    let state_after_begin = result.state;
+
+    let result = apply_action(
+        state_after_begin,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::AbortAllocating {
+            op_id,
+            restore_idle: 1500,
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(result.state.op_state, OpState::Idle));
+    // Due to templar-2u41, idle_assets = 1500 + 1500 = 3000 (double-counted)
+    assert_eq!(result.state.idle_assets, 3000, "Double-counted due to templar-2u41 bug");
+}
+
+/// Start allocation with empty plan is rejected.
+#[test]
+fn allocation_empty_plan_rejected() {
+    let err = start_allocation(OpState::Idle, vec![], 1);
+    assert!(
+        matches!(err, Err(TransitionError::EmptyAllocationPlan)),
+        "Empty plan should be rejected, got: {err:?}"
+    );
+}
+
+/// Start allocation when not Idle is rejected.
+#[test]
+fn allocation_from_non_idle_rejected() {
+    let alloc_state = OpState::Allocating(AllocatingState {
+        op_id: 1,
+        index: 0,
+        remaining: 100,
+        plan: vec![(0, 100)],
+    });
+    let err = start_allocation(alloc_state, vec![(0, 100)], 2);
+    assert!(
+        matches!(err, Err(TransitionError::NotIdle { .. })),
+        "Allocation from non-Idle should be rejected, got: {err:?}"
+    );
+}
+
+/// Allocation step failure at first step (step 0): total_allocated = 0.
+#[test]
+fn allocation_failure_at_first_step() {
+    let plan = vec![(0, 1000), (1, 2000)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    // Step 0 fails immediately
+    let result = allocation_step_callback(result.new_state, false, 0, op_id).unwrap();
+    assert!(matches!(result.new_state, OpState::Idle));
+
+    match &result.effects[0] {
+        KernelEffect::EmitEvent {
+            event: KernelEvent::AllocationStepFailed {
+                total_allocated, remaining, ..
+            },
+        } => {
+            assert_eq!(*total_allocated, 0, "No steps completed → 0 allocated");
+            assert_eq!(*remaining, 3000, "Full plan amount still remaining");
+        }
+        _ => panic!("Expected AllocationStepFailed event"),
+    }
+}
+
+/// Allocation step with wrong op_id is rejected.
+#[test]
+fn allocation_step_wrong_op_id_rejected() {
+    let plan = vec![(0, 100)];
+    let result = start_allocation(OpState::Idle, plan, 1).unwrap();
+    let err = allocation_step_callback(result.new_state, true, 100, 999);
+    assert!(
+        matches!(err, Err(TransitionError::OpIdMismatch { .. })),
+        "Wrong op_id should be rejected, got: {err:?}"
+    );
+}
+
+/// Full allocation completes all steps and transitions to Idle.
+#[test]
+fn allocation_full_completion() {
+    let plan = vec![(0, 100), (1, 200), (2, 300)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    let result = allocation_step_callback(result.new_state, true, 100, op_id).unwrap();
+    let result = allocation_step_callback(result.new_state, true, 200, op_id).unwrap();
+    let result = allocation_step_callback(result.new_state, true, 300, op_id).unwrap();
+
+    // Should still be Allocating until complete_allocation is called
+    assert!(matches!(result.new_state, OpState::Allocating(ref s) if s.remaining == 0));
+
+    let result = complete_allocation(result.new_state, op_id, None).unwrap();
+    assert!(matches!(result.new_state, OpState::Idle));
 }
