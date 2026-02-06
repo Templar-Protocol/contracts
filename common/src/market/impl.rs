@@ -31,7 +31,6 @@ enum StorageKey {
     FinalizedSnapshots,
     WithdrawalQueue,
     StaticYield,
-    VirtualCredit,
 }
 
 #[near]
@@ -52,7 +51,7 @@ pub struct Market {
     pub borrow_asset_deposited_active_virtual: BorrowAssetAmount,
     /// Amount paid by borrowers for fees that has not yet been "real"-ized
     /// (converting virtual to real) by supply positions during accumulation.
-    pub borrow_asset_virtual_credit: LookupMap<u32, VirtualCredit>,
+    pub virtual_credit: VirtualCredit,
     /// Upcoming snapshot indices with amounts of borrow asset that will be activated.
     pub borrow_asset_deposited_incoming: Vec<IncomingDeposit>,
     pub borrow_asset_withdrawal_in_flight: BorrowAssetAmount,
@@ -105,7 +104,7 @@ impl Market {
             borrow_asset_balance: 0.into(),
             borrow_asset_deposited_active_real: 0.into(),
             borrow_asset_deposited_active_virtual: 0.into(),
-            borrow_asset_virtual_credit: LookupMap::new(key!(VirtualCredit)),
+            virtual_credit: VirtualCredit::default(),
             borrow_asset_deposited_incoming: Vec::new(),
             borrow_asset_withdrawal_in_flight: 0.into(),
             borrow_asset_borrowed_in_flight: 0.into(),
@@ -140,52 +139,6 @@ impl Market {
             .fold(BorrowAssetAmount::zero(), |total_incoming, incoming| {
                 total_incoming + incoming.amount_real
             })
-    }
-
-    pub fn virtual_credit_at(&self, snapshot_index: u32) -> Option<VirtualCredit> {
-        self.borrow_asset_virtual_credit.get(&snapshot_index)
-    }
-
-    pub fn take_virtual_credit(
-        &mut self,
-        position_virtual: BorrowAssetAmount,
-        snapshot_index: u32,
-    ) -> BorrowAssetAmount {
-        let Some(mut virtual_credit) = self.borrow_asset_virtual_credit.get(&snapshot_index) else {
-            return 0.into();
-        };
-
-        let Some(snapshot) = self.finalized_snapshots.get(snapshot_index) else {
-            crate::panic_with_message(&format!("Invariant violation: attempt to take virtual credit for nonexistent snapshot {snapshot_index}"));
-        };
-        let market_virtual = snapshot.borrow_asset_deposited_active_virtual;
-        let amount = virtual_credit.take(position_virtual, market_virtual);
-
-        if virtual_credit.market_virtual_redeemed == market_virtual {
-            // All virtual supply that existed at the snapshot has been realized, so we can remove this credit entry
-            if !virtual_credit.amount.is_zero() {
-                // Forward remaining virtual credit amount to next snapshot
-                self.add_virtual_credit(snapshot_index + 1, virtual_credit.amount);
-            }
-
-            self.borrow_asset_virtual_credit.remove(&snapshot_index);
-        } else {
-            // Update the entry.
-            self.borrow_asset_virtual_credit
-                .insert(&snapshot_index, &virtual_credit);
-        }
-
-        amount
-    }
-
-    pub fn add_virtual_credit(&mut self, snapshot_index: u32, amount: BorrowAssetAmount) {
-        let mut current = self
-            .borrow_asset_virtual_credit
-            .get(&snapshot_index)
-            .unwrap_or_else(|| VirtualCredit::new(snapshot_index));
-        current.amount += amount;
-        self.borrow_asset_virtual_credit
-            .insert(&snapshot_index, &current);
     }
 
     pub fn incoming_at(&self, snapshot_index: u32) -> Option<&IncomingDeposit> {
@@ -263,6 +216,8 @@ impl Market {
             if incoming.activate_at_snapshot_index == current_snapshot_index {
                 self.borrow_asset_deposited_active_real += incoming.amount_real;
                 self.borrow_asset_deposited_active_virtual += incoming.amount_virtual;
+                self.virtual_credit
+                    .add(current_snapshot_index, 0.into(), incoming.amount_virtual);
                 self.borrow_asset_deposited_incoming.remove(i);
                 break;
             }

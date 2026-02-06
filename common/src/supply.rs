@@ -45,6 +45,7 @@ impl Deposit {
 pub struct SupplyPosition {
     started_at_block_timestamp_ms: Option<U64>,
     borrow_asset_deposit: Deposit,
+    virtual_realized_until_snapshot_index: u32,
     pub borrow_asset_yield: Accumulator<BorrowAsset>,
 }
 
@@ -53,6 +54,7 @@ impl SupplyPosition {
         Self {
             started_at_block_timestamp_ms: None,
             borrow_asset_deposit: Deposit::default(),
+            virtual_realized_until_snapshot_index: current_snapshot_index,
             borrow_asset_yield: Accumulator::new(current_snapshot_index),
         }
     }
@@ -230,34 +232,17 @@ impl<'a> SupplyPositionGuard<'a> {
         Self(SupplyPositionRef::new(market, account_id, position))
     }
 
-    /// Returns the amount of virtual supply that has been realized.
-    fn realize_virtual(
-        &mut self,
-        from_snapshot_index: u32,
-        through_snapshot_index: u32,
-    ) -> BorrowAssetAmount {
-        let mut next_incoming = 0;
-        let mut amount_virtual = self.position.borrow_asset_deposit.active_virtual;
-        let mut total_realized = BorrowAssetAmount::zero();
+    fn realize_virtual(&mut self, until_snapshot_index: u32) {
+        let from = self.position.virtual_realized_until_snapshot_index;
+        let amount = self.position.borrow_asset_deposit.active_virtual;
+        let realization = self
+            .market
+            .virtual_credit
+            .realize(from, until_snapshot_index, amount);
 
-        for i in from_snapshot_index..=through_snapshot_index {
-            while let Some(incoming) = self
-                .position
-                .borrow_asset_deposit
-                .incoming
-                .get(next_incoming)
-                .filter(|incoming| incoming.activate_at_snapshot_index == i)
-            {
-                next_incoming += 1;
-                amount_virtual += incoming.amount_virtual;
-            }
-
-            let amount_realized = self.market.take_virtual_credit(amount_virtual, i);
-            amount_virtual -= amount_realized;
-            total_realized += amount_realized;
-        }
-
-        total_realized
+        self.position.virtual_realized_until_snapshot_index = realization.until_snapshot_index;
+        self.position.borrow_asset_deposit.active_virtual -= realization.amount;
+        self.position.borrow_asset_deposit.active_real += realization.amount;
     }
 
     fn activate_incoming(&mut self, through_snapshot_index: u32) {
@@ -271,9 +256,11 @@ impl<'a> SupplyPositionGuard<'a> {
         while let Some(deposit) =
             incoming.next_if(|d| d.activate_at_snapshot_index <= through_snapshot_index)
         {
+            self.realize_virtual(deposit.activate_at_snapshot_index);
             self.position.borrow_asset_deposit.active_real += deposit.amount_real;
             self.position.borrow_asset_deposit.active_virtual += deposit.amount_virtual;
         }
+        self.realize_virtual(through_snapshot_index);
         self.position.borrow_asset_deposit.incoming = incoming.collect();
 
         // Calling market.snapshot() performs the market accounting
