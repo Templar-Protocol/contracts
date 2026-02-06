@@ -1709,3 +1709,178 @@ fn zero_cooldown_passes_when_now_gte_requested() {
     assert!(is_past_cooldown(100, 101, 0), "Zero cooldown, later now → past");
     assert!(!is_past_cooldown(100, 99, 0), "Zero cooldown, earlier now → not past (request not yet made)");
 }
+
+// ============================================================================
+// Overflow / Saturation Tests
+// ============================================================================
+
+/// Overflow 1: Deposit when total_assets near u128::MAX saturates instead of panicking.
+#[test]
+fn deposit_near_max_saturates() {
+    let mut state = default_state();
+    state.total_assets = u128::MAX - 10;
+    state.idle_assets = u128::MAX - 10;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            assets_in: 100, // Would overflow total_assets
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    );
+    // Should succeed (saturating_add) without panic
+    let result = result.expect("Deposit near MAX should succeed via saturation");
+    assert!(result.state.total_assets >= u128::MAX - 10, "total_assets should saturate near MAX");
+}
+
+/// Overflow 2: Fee calculation with extreme values doesn't panic.
+#[test]
+fn fee_shares_extreme_values_no_panic() {
+    // Large total_assets with significant gain
+    let fee_shares = compute_fee_shares(
+        Number::from(u64::MAX as u128),     // current_total_assets
+        Number::from(u64::MAX as u128 / 2), // last_total_assets (50% gain)
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // max fee
+        Number::from(u64::MAX as u128),     // total_supply
+    );
+    // Should not panic; just verify it returns some value
+    let _ = fee_shares;
+}
+
+/// Overflow 3: Fee calculation at u128 boundary.
+#[test]
+fn fee_shares_u128_max_no_panic() {
+    let fee_shares = compute_fee_shares(
+        Number::from(u128::MAX / 2), // current
+        Number::from(u128::MAX / 4), // last (significant gain)
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(u128::MAX / 2), // total_supply
+    );
+    let _ = fee_shares;
+}
+
+/// Overflow 4: SyncExternalAssets at u128::MAX saturates total_assets.
+#[test]
+fn sync_external_near_max_saturates() {
+    let mut state = default_state();
+    state.idle_assets = u128::MAX / 2;
+    state.total_assets = u128::MAX / 2;
+    state.total_shares = 1_000_000;
+
+    // Start an allocation to get into a state where sync is allowed
+    let alloc_result = start_allocation(
+        state.op_state.clone(),
+        vec![(0, 1000)],
+        state.next_op_id,
+    )
+    .expect("allocation should start");
+    state.op_state = alloc_result.new_state;
+
+    let config = default_config();
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: u128::MAX, // Would overflow with idle_assets
+            op_id: 0,
+            now_ns: 1,
+        },
+    );
+    // Should succeed via saturating_add
+    let result = result.expect("SyncExternalAssets near MAX should succeed");
+    assert_eq!(
+        result.state.total_assets,
+        result.state.idle_assets.saturating_add(u128::MAX),
+        "total_assets should be idle + external (saturated)",
+    );
+}
+
+/// Overflow 5: Preview deposit with u128::MAX assets doesn't panic.
+#[test]
+fn preview_deposit_max_assets_no_panic() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    // Should not panic even with extreme input
+    let shares = preview_deposit_shares(&state, &config, u128::MAX);
+    let _ = shares;
+}
+
+/// Overflow 6: Preview withdraw with u128::MAX shares doesn't panic.
+#[test]
+fn preview_withdraw_max_shares_no_panic() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    let assets = preview_withdraw_assets(&state, &config, u128::MAX);
+    let _ = assets;
+}
+
+/// Overflow 7: compute_settlement with u128::MAX values preserves conservation.
+#[test]
+fn settlement_u128_max_conservation() {
+    let escrow = u128::MAX;
+    let expected = u128::MAX;
+    let actual = u128::MAX;
+
+    let settlement = compute_settlement(escrow, expected, actual);
+    assert_eq!(
+        settlement.to_burn.saturating_add(settlement.refund),
+        escrow,
+        "Conservation must hold even at u128::MAX",
+    );
+}
+
+/// Overflow 8: compute_settlement with extreme disparity.
+#[test]
+fn settlement_extreme_disparity() {
+    // Tiny actual relative to huge expected
+    let escrow = u128::MAX;
+    let expected = u128::MAX;
+    let actual = 1u128;
+
+    let settlement = compute_settlement(escrow, expected, actual);
+    assert!(settlement.to_burn >= 1, "Should burn at least 1 with 1 wei actual");
+    assert_eq!(
+        settlement.to_burn + settlement.refund, escrow,
+        "Conservation: burn + refund = escrow",
+    );
+}
+
+/// Overflow 9: mul_div_floor with large values doesn't panic.
+#[test]
+fn mul_div_floor_large_values_no_panic() {
+    let result = mul_div_floor(
+        Number::from(u128::MAX),
+        Number::from(u128::MAX),
+        Number::from(u128::MAX),
+    );
+    // MAX * MAX / MAX = MAX (approximately)
+    assert!(u128::from(result) > 0, "Should produce non-zero result");
+}
+
+/// Overflow 10: Cooldown with u64::MAX timestamp doesn't panic.
+/// saturating_add clamps overflow to MAX, so requested_at=MAX + cooldown=1 → MAX.
+#[test]
+fn cooldown_u64_max_no_panic() {
+    // requested_at=MAX, cooldown=1 → saturates to MAX; now=MAX >= MAX → true
+    assert!(is_past_cooldown(u64::MAX, u64::MAX, 1), "Saturating add clamps to MAX, so passes");
+    assert!(is_past_cooldown(u64::MAX, u64::MAX, 0), "Zero cooldown at MAX should pass");
+    assert!(is_past_cooldown(0, u64::MAX, u64::MAX), "Should be past when now=MAX, cooldown=MAX");
+    // now=0 is before requested_at=MAX, so not past cooldown
+    assert!(!is_past_cooldown(u64::MAX, 0, 1), "now=0 before requested_at=MAX");
+}
