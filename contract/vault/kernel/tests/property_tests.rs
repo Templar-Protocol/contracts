@@ -2154,3 +2154,165 @@ fn management_fee_cap_constant() {
 fn performance_fee_cap_constant() {
     assert_eq!(MAX_PERFORMANCE_FEE_WAD, Wad::SCALE / 100 * 50, "MAX_PERFORMANCE_FEE_WAD should be 50%");
 }
+
+// ---------------------------------------------------------------------------
+// Queue depth performance tests (templar-26de)
+// ---------------------------------------------------------------------------
+
+/// Build a queue with `n` pending withdrawals, each of `assets` expected.
+fn build_large_queue(n: u32, assets_per: u128) -> WithdrawQueue {
+    let mut queue = WithdrawQueue::new();
+    for i in 0..n {
+        let mut owner = [0u8; 32];
+        owner[..4].copy_from_slice(&i.to_le_bytes());
+        queue
+            .enqueue(
+                owner,
+                owner,
+                assets_per, // escrow_shares
+                assets_per, // expected_assets
+                i as u64,   // requested_at_ns
+                MAX_PENDING as u32,
+            )
+            .unwrap_or_else(|e| panic!("enqueue {i} failed: {e:?}"));
+    }
+    queue
+}
+
+/// Queue at MAX_PENDING capacity: enqueue fills, then rejects.
+#[test]
+fn queue_fills_to_max_pending_then_rejects() {
+    let queue = build_large_queue(MAX_PENDING as u32, 1_000);
+    assert_eq!(
+        queue.pending_withdrawals.len(),
+        MAX_PENDING as usize,
+        "Queue should hold exactly MAX_PENDING items"
+    );
+    // Next enqueue should fail
+    let mut queue = queue;
+    let result = queue.enqueue([255u8; 32], [255u8; 32], 1_000, 1_000, 9999, MAX_PENDING as u32);
+    assert!(result.is_err(), "Should reject enqueue at MAX_PENDING capacity");
+}
+
+/// count_satisfiable at MAX_PENDING depth: all satisfiable when enough assets.
+#[test]
+fn count_satisfiable_at_max_pending() {
+    let n = MAX_PENDING as u32;
+    let assets_per = 1_000u128;
+    let queue = build_large_queue(n, assets_per);
+    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+
+    // Enough assets to satisfy all
+    let available = n as u128 * assets_per;
+    let (count, total) = count_satisfiable(items.iter().copied(), available);
+    assert_eq!(count, n, "All {n} items should be satisfiable");
+    assert_eq!(total, available, "Total should equal all items");
+}
+
+/// count_satisfiable at MAX_PENDING depth: partial satisfaction.
+#[test]
+fn count_satisfiable_partial_at_max_pending() {
+    let n = MAX_PENDING as u32;
+    let assets_per = 1_000u128;
+    let queue = build_large_queue(n, assets_per);
+    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+
+    // Only enough for half
+    let half = n / 2;
+    let available = half as u128 * assets_per;
+    let (count, total) = count_satisfiable(items.iter().copied(), available);
+    assert_eq!(count, half, "Half items should be satisfiable with half assets");
+    assert_eq!(total, available);
+}
+
+/// compute_queue_status at MAX_PENDING depth: correct totals.
+#[test]
+fn queue_status_at_max_pending() {
+    let n = MAX_PENDING as u32;
+    let assets_per = 1_000u128;
+    let queue = build_large_queue(n, assets_per);
+    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+
+    let status = compute_queue_status(items.iter().copied());
+    assert_eq!(status.length, n, "Length should be MAX_PENDING");
+    assert_eq!(
+        status.total_expected_assets,
+        n as u128 * assets_per,
+        "Total expected assets"
+    );
+    assert_eq!(
+        status.total_escrow_shares,
+        n as u128 * assets_per,
+        "Total escrow shares"
+    );
+}
+
+/// find_request_status at MAX_PENDING depth: find last item (worst case O(n)).
+#[test]
+fn find_request_status_worst_case_at_max_pending() {
+    use templar_vault_kernel::state::queue::find_request_status;
+    let n = MAX_PENDING as u32;
+    let assets_per = 1_000u128;
+    let queue = build_large_queue(n, assets_per);
+    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+
+    // Find the last owner (worst-case linear scan)
+    let mut last_owner = [0u8; 32];
+    last_owner[..4].copy_from_slice(&(n - 1).to_le_bytes());
+
+    let status = find_request_status(items.iter().copied(), &last_owner);
+    assert!(status.is_some(), "Last owner should be found");
+    let status = status.unwrap();
+    assert_eq!(status.index, n - 1, "Should be at the last position");
+    assert_eq!(
+        status.depth_assets,
+        (n as u128 - 1) * assets_per,
+        "Depth should be sum of all preceding items"
+    );
+}
+
+/// find_request_status at MAX_PENDING depth: owner not found (full scan).
+#[test]
+fn find_request_status_miss_at_max_pending() {
+    use templar_vault_kernel::state::queue::find_request_status;
+    let n = MAX_PENDING as u32;
+    let queue = build_large_queue(n, 1_000);
+    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+
+    // Owner that doesn't exist
+    let missing_owner = [255u8; 32];
+    let status = find_request_status(items.iter().copied(), &missing_owner);
+    assert!(status.is_none(), "Non-existent owner should return None");
+}
+
+/// Queue enqueue/dequeue cycle at high volume: enqueue MAX_PENDING, dequeue half, re-enqueue.
+#[test]
+fn queue_churn_at_high_depth() {
+    let n = MAX_PENDING as u32;
+    let assets_per = 500u128;
+    let mut queue = build_large_queue(n, assets_per);
+    assert_eq!(queue.pending_withdrawals.len(), n as usize);
+
+    // Dequeue half from the front
+    let half = n / 2;
+    for _ in 0..half {
+        let _ = queue.dequeue();
+    }
+    assert_eq!(queue.pending_withdrawals.len(), (n - half) as usize);
+
+    // Re-enqueue to fill back up
+    for i in 0..half {
+        let mut owner = [128u8; 32];
+        owner[..4].copy_from_slice(&i.to_le_bytes());
+        queue
+            .enqueue(owner, owner, assets_per, assets_per, 10_000 + i as u64, n)
+            .unwrap_or_else(|e| panic!("re-enqueue {i} failed: {e:?}"));
+    }
+    assert_eq!(queue.pending_withdrawals.len(), n as usize, "Should be full again");
+
+    // Verify queue status is correct after churn
+    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+    let status = compute_queue_status(items.iter().copied());
+    assert_eq!(status.length, n);
+    assert_eq!(status.total_expected_assets, n as u128 * assets_per);
+}
