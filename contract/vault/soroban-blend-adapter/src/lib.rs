@@ -17,7 +17,6 @@ enum DataKey {
     Vault,
     Pool,
     ReentrancyLock,
-    Initialized,
 }
 
 #[contracterror]
@@ -25,7 +24,6 @@ enum DataKey {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AdapterError {
     Unauthorized = 1,
-    AlreadyInitialized = 2,
     InvalidInput = 3,
     MissingConfig = 4,
     Reentrancy = 5,
@@ -40,24 +38,15 @@ pub struct BlendAdapterContract;
 
 #[contractimpl]
 impl BlendAdapterContract {
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        vault: Address,
-        pool: Address,
-    ) -> Result<(), AdapterError> {
-        if env.storage().instance().has(&DataKey::Initialized) {
-            return Err(AdapterError::AlreadyInitialized);
-        }
-        admin.require_auth();
+    /// Runs atomically during contract deployment — no separate `initialize`
+    /// transaction that could be front-run.
+    pub fn __constructor(env: Env, admin: Address, vault: Address, pool: Address) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage().instance().set(&DataKey::Pool, &pool);
         env.storage()
             .instance()
             .set(&DataKey::ReentrancyLock, &false);
-        env.storage().instance().set(&DataKey::Initialized, &true);
-        Ok(())
     }
 
     pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
@@ -248,22 +237,17 @@ mod tests {
     use soroban_sdk::testutils::Address as _;
 
     #[test]
-    fn initialize_sets_config() {
+    fn constructor_sets_config() {
         let env = Env::default();
-        env.mock_all_auths();
         let admin = Address::generate(&env);
         let vault = Address::generate(&env);
         let pool = Address::generate(&env);
 
-        let contract_id = env.register_contract(None, BlendAdapterContract);
+        let contract_id = env.register(
+            BlendAdapterContract,
+            (&admin, &vault, &pool),
+        );
         env.as_contract(&contract_id, || {
-            BlendAdapterContract::initialize(
-                env.clone(),
-                admin.clone(),
-                vault.clone(),
-                pool.clone(),
-            )
-            .unwrap();
             assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
             assert_eq!(BlendAdapterContract::vault(env.clone()).unwrap(), vault);
             assert_eq!(BlendAdapterContract::pool(env.clone()).unwrap(), pool);
@@ -273,24 +257,197 @@ mod tests {
     #[test]
     fn reentrancy_guard_blocks_nested() {
         let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let pool = Address::generate(&env);
-
-        let contract_id = env.register_contract(None, BlendAdapterContract);
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
         env.as_contract(&contract_id, || {
-            BlendAdapterContract::initialize(
-                env.clone(),
-                admin.clone(),
-                vault.clone(),
-                pool.clone(),
-            )
-            .unwrap();
             let result = with_reentrancy_guard(&env, || {
                 with_reentrancy_guard(&env, || Ok(()))
             });
             assert_eq!(result, Err(AdapterError::Reentrancy));
         });
     }
+
+    /// Helper: deploy a contract via constructor and return (contract_id, admin, vault, pool).
+    fn setup_adapter(env: &Env) -> (Address, Address, Address, Address) {
+        let admin = Address::generate(env);
+        let vault = Address::generate(env);
+        let pool = Address::generate(env);
+        let contract_id = env.register(
+            BlendAdapterContract,
+            (&admin, &vault, &pool),
+        );
+        (contract_id, admin, vault, pool)
+    }
+
+    #[test]
+    fn supply_zero_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::supply(env.clone(), vault.clone(), asset.clone(), 0);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+        });
+    }
+
+    #[test]
+    fn supply_negative_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result =
+                BlendAdapterContract::supply(env.clone(), vault.clone(), asset.clone(), -100);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+        });
+    }
+
+    #[test]
+    fn supply_unauthorized_caller_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result =
+                BlendAdapterContract::supply(env.clone(), impostor.clone(), asset.clone(), 100);
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn withdraw_zero_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result =
+                BlendAdapterContract::withdraw(env.clone(), vault.clone(), asset.clone(), 0);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+        });
+    }
+
+    #[test]
+    fn withdraw_negative_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result =
+                BlendAdapterContract::withdraw(env.clone(), vault.clone(), asset.clone(), -50);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+        });
+    }
+
+    #[test]
+    fn withdraw_unauthorized_caller_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result =
+                BlendAdapterContract::withdraw(env.clone(), impostor.clone(), asset.clone(), 100);
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn rescue_zero_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        let receiver = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::rescue(
+                env.clone(),
+                vault.clone(),
+                asset.clone(),
+                0,
+                receiver.clone(),
+            );
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+        });
+    }
+
+    #[test]
+    fn rescue_unauthorized_caller_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        let receiver = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::rescue(
+                env.clone(),
+                impostor.clone(),
+                asset.clone(),
+                100,
+                receiver.clone(),
+            );
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn set_pool_updates_pool() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_pool = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_pool(env.clone(), admin.clone(), new_pool.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::pool(env.clone()).unwrap(), new_pool);
+        });
+    }
+
+    #[test]
+    fn set_vault_updates_vault() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_vault = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_vault(env.clone(), admin.clone(), new_vault.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::vault(env.clone()).unwrap(), new_vault);
+        });
+    }
+
+    #[test]
+    fn set_pool_unauthorized_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let impostor = Address::generate(&env);
+        let new_pool = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result =
+                BlendAdapterContract::set_pool(env.clone(), impostor.clone(), new_pool.clone());
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn set_vault_unauthorized_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let impostor = Address::generate(&env);
+        let new_vault = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result =
+                BlendAdapterContract::set_vault(env.clone(), impostor.clone(), new_vault.clone());
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    // Note: "query before initialize" test not applicable — __constructor
+    // runs atomically during `env.register()`, so there is no uninitialized state.
 }
