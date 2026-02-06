@@ -1832,7 +1832,7 @@ impl Contract {
         if performance_shares > Number::zero() {
             let minted: u128 = performance_shares.into();
             let recipient = self.fees.performance.recipient.clone();
-            let _ = self
+            let minted_res = self
                 .mint(&Nep141Mint::new(minted, &recipient))
                 .inspect_err(|e| {
                     Event::PerformanceFeeMintFailed {
@@ -1840,11 +1840,13 @@ impl Contract {
                     }
                     .emit();
                 });
-            Event::PerformanceFeeAccrued {
-                recipient,
-                shares: U128(minted),
+            if minted_res.is_ok() {
+                Event::PerformanceFeeAccrued {
+                    recipient,
+                    shares: U128(minted),
+                }
+                .emit();
             }
-            .emit();
         }
 
         self.apply_kernel_refresh_fees(now, cur_total_assets);

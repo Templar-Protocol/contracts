@@ -1066,10 +1066,15 @@ impl Contract {
         let owner = s.owner.clone();
 
         if s.escrow_shares > 0 {
+            // Must be infallible - panic to prevent orphaned shares in escrow.
             Gate::bypass_transfer_with(
                 self,
                 &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
-                |e| env::log_str(&e.to_string()),
+                |e| {
+                    templar_common::panic_with_message(&format!(
+                        "Withdrawing stop escrow refund failed: {e}"
+                    ))
+                },
             );
         }
 
@@ -1100,10 +1105,15 @@ impl Contract {
 
         let owner = s.owner.clone();
         if s.escrow_shares > 0 {
+            // Must be infallible - panic to prevent orphaned shares in escrow.
             Gate::bypass_transfer_with(
                 self,
                 &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
-                |e| env::log_str(&e.to_string()),
+                |e| {
+                    templar_common::panic_with_message(&format!(
+                        "Payout stop escrow refund failed: {e}"
+                    ))
+                },
             );
         }
 
