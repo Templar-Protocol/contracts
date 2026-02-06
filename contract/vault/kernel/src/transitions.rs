@@ -98,6 +98,10 @@ pub enum TransitionError {
     /// Burn shares exceed escrow shares.
     #[display("burn {burn} exceeds escrow {escrow}")]
     BurnExceedsEscrow { burn: u128, escrow: u128 },
+
+    /// Withdrawal collection is incomplete (remaining > 0).
+    #[display("withdrawal incomplete: remaining {remaining}, collected {collected}")]
+    WithdrawalIncomplete { remaining: u128, collected: u128 },
 }
 
 impl TransitionError {
@@ -491,6 +495,13 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
         return Err(TransitionError::OpIdMismatch {
             expected: withdraw.op_id,
             actual: op_id,
+        });
+    }
+
+    if withdraw.remaining > 0 {
+        return Err(TransitionError::WithdrawalIncomplete {
+            remaining: withdraw.remaining,
+            collected: withdraw.collected,
         });
     }
 
@@ -1079,6 +1090,29 @@ mod tests {
     }
 
     #[test]
+    fn test_withdrawal_collected_incomplete_fails() {
+        let state = OpState::Withdrawing(WithdrawingState {
+            op_id: 1,
+            index: 1,
+            remaining: 200,
+            collected: 800,
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
+            escrow_shares: 500,
+        });
+
+        let result = withdrawal_collected(state, 1, 400);
+
+        assert!(matches!(
+            result,
+            Err(TransitionError::WithdrawalIncomplete {
+                remaining: 200,
+                collected: 800
+            })
+        ));
+    }
+
+    #[test]
     fn test_stop_withdrawal_refunds_shares() {
         let state = OpState::Withdrawing(WithdrawingState {
             op_id: 1,
@@ -1637,10 +1671,20 @@ mod proptests {
             request in arb_withdrawal_request(),
             excess in 1u128..=1_000_000u128,
         ) {
-            let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+            // Build a fully-collected WithdrawingState (remaining=0) so the
+            // burn check is the one that fires.
+            let state = OpState::Withdrawing(WithdrawingState {
+                op_id: request.op_id,
+                index: 1,
+                remaining: 0,
+                collected: request.amount,
+                receiver: request.receiver,
+                owner: request.owner,
+                escrow_shares: request.escrow_shares,
+            });
             let burn_shares = request.escrow_shares.saturating_add(excess);
 
-            let collected = withdrawal_collected(result.new_state, request.op_id, burn_shares);
+            let collected = withdrawal_collected(state, request.op_id, burn_shares);
             prop_assert!(collected.is_err());
             let is_burn_exceeds = matches!(collected, Err(TransitionError::BurnExceedsEscrow { .. }));
             prop_assert!(is_burn_exceeds, "expected BurnExceedsEscrow error");

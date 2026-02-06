@@ -288,7 +288,7 @@ mod kani_proofs {
         payout_complete, settle_full_burn, settle_full_refund, settle_proportional, start_allocation,
         start_refresh, start_withdrawal, stop_withdrawal, total_burn, total_refund,
         withdrawal_collected, withdrawal_step_callback, EscrowEntry, EscrowSettlement, Number,
-        OpState, PayoutState, PendingWithdrawal, TransitionError, VaultState, Wad, WithdrawQueue,
+        OpState, PayoutState, PendingWithdrawal, TransitionError, VaultState, Wad, WithdrawQueue, WithdrawingState,
         WithdrawalRequest, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MAX_QUEUE_LENGTH,
         MIN_WITHDRAWAL_ASSETS,
     };
@@ -2097,10 +2097,20 @@ mod kani_proofs {
     fn kani_withdrawal_collected_validates_burn() {
         let op_id: u64 = kani::any();
         let request = withdrawal_request(op_id, 10, 10);
-        let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+
+        // Build a fully-collected state (remaining=0) so the burn check fires.
+        let state = OpState::Withdrawing(WithdrawingState {
+            op_id: request.op_id,
+            index: 1,
+            remaining: 0,
+            collected: request.amount,
+            receiver: request.receiver,
+            owner: request.owner,
+            escrow_shares: request.escrow_shares,
+        });
 
         let burn_shares = request.escrow_shares.saturating_add(1);
-        let collected = withdrawal_collected(result.new_state, request.op_id, burn_shares);
+        let collected = withdrawal_collected(state, request.op_id, burn_shares);
         assert!(matches!(
             collected,
             Err(TransitionError::BurnExceedsEscrow { .. })

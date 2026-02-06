@@ -35,7 +35,7 @@ use templar_vault_kernel::{
             apply_settlement, can_apply_settlement, compute_escrow_stats, settle_full_burn,
             settle_full_refund, settle_proportional, EscrowEntry,
         },
-        op_state::{AllocatingState, OpState, PayoutState, RefreshingState},
+        op_state::{AllocatingState, OpState, PayoutState, RefreshingState, WithdrawingState},
         queue::{
             can_enqueue, compute_queue_status, compute_settlement, count_satisfiable,
             is_past_cooldown, is_valid_withdrawal_amount, PendingWithdrawal, WithdrawQueue,
@@ -1165,10 +1165,19 @@ proptest! {
         request in arb_withdrawal_request(),
         excess in 1u128..=1_000_000u128,
     ) {
-        let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+        // Build a fully-collected state (remaining=0) so the burn check fires.
+        let state = OpState::Withdrawing(WithdrawingState {
+            op_id: request.op_id,
+            index: 1,
+            remaining: 0,
+            collected: request.amount,
+            receiver: request.receiver.clone(),
+            owner: request.owner.clone(),
+            escrow_shares: request.escrow_shares,
+        });
         let burn_shares = request.escrow_shares.saturating_add(excess);
 
-        let collected = withdrawal_collected(result.new_state, request.op_id, burn_shares);
+        let collected = withdrawal_collected(state, request.op_id, burn_shares);
         prop_assert!(
             matches!(collected, Err(TransitionError::BurnExceedsEscrow { .. })),
             "expected BurnExceedsEscrow when burn exceeds escrow"
