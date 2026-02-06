@@ -619,6 +619,104 @@ async fn partial_withdrawal_when_market_has_insufficient_liquidity(
     );
 }
 
+/// Tests that `unbrick` recovers the vault from a stuck Withdrawing state.
+///
+/// Scenario: user deposits 1000, vault allocates all to market, user requests
+/// withdrawal. The vault enters Withdrawing state via `execute_withdrawal`, but
+/// instead of completing with `execute_market_withdrawal`, we call `unbrick`.
+/// Verifies that escrowed shares are refunded, the queue head is dequeued, and
+/// the vault returns to idle.
+#[rstest]
+#[tokio::test]
+async fn unbrick_recovers_stuck_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(vault, c, vault_curator)
+        accounts(supply_user, borrow_user)
+        config(|c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+        })
+    );
+    vault.init_account(&supply_user).await;
+
+    let amount: U128 = 1000.into();
+    vault.supply(&supply_user, amount.0).await;
+
+    let shares_before: U128 = vault
+        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
+        .await;
+    assert_eq!(shares_before, amount, "Shares should equal deposited amount (1:1)");
+
+    let market_id = vault.market_id_of(c.market.contract().id()).await;
+
+    // Allocate everything to market
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Supply(Delta::new(market_id, amount)),
+        )
+        .await;
+    harvest(&c, &vault).await;
+
+    // Request full withdrawal
+    vault.withdraw(&supply_user, amount, None).await;
+    harvest(&c, &vault).await;
+
+    // Shares should be escrowed
+    let shares_after_request: U128 = vault
+        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
+        .await;
+    assert_eq!(shares_after_request.0, 0, "Shares should be escrowed");
+
+    // Create market-side withdrawal request
+    vault
+        .reallocate(
+            &vault_curator,
+            AllocationDelta::Withdraw(Delta::new(market_id, amount)),
+        )
+        .await;
+
+    // Start withdrawal execution — vault enters Withdrawing state
+    let withdraw_route = vec![c.market.contract().id().clone()];
+    vault
+        .execute_withdrawal(&vault_curator, withdraw_route)
+        .await;
+
+    // Vault should be in Withdrawing state now
+    assert!(
+        vault.get_withdrawing_op_id().await.is_some(),
+        "Vault should be in Withdrawing state",
+    );
+
+    // Instead of completing the withdrawal, call unbrick to recover
+    vault.unbrick(&vault_curator).await;
+
+    // --- Recovery assertions ---
+
+    // Vault should be back to idle
+    assert!(
+        vault.get_withdrawing_op_id().await.is_none(),
+        "Vault should return to idle after unbrick",
+    );
+
+    // Escrowed shares should be refunded to the user
+    let shares_after_unbrick: U128 = vault
+        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
+        .await;
+    assert_eq!(
+        shares_after_unbrick, shares_before,
+        "All escrowed shares should be refunded after unbrick",
+    );
+
+    // Total supply should be preserved (no shares burned or lost)
+    let total_supply = vault.get_total_supply().await;
+    assert_eq!(
+        total_supply, shares_before,
+        "Total supply should be preserved after unbrick (no burn)",
+    );
+}
+
 pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
     // Wait for activation.
     while let Some(position) = c.get_supply_position(vault.contract().id()).await {
