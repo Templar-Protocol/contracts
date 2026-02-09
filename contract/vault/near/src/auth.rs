@@ -118,6 +118,6 @@ pub fn auth_pattern_for(action: ActionKind) -> AuthPattern {
         ActionKind::Pause | ActionKind::SetRestrictions => AuthPattern::GuardianOrOwner,
 
         // Owner-only
-        ActionKind::ManualReconcile => AuthPattern::OwnerOnly,
+        ActionKind::ManualReconcile | ActionKind::EmergencyReset => AuthPattern::OwnerOnly,
     }
 }

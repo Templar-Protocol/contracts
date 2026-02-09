@@ -2,7 +2,10 @@
 
 extern crate alloc;
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contract, contracterror, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Vec,
+};
 
 use blend_contract_sdk::pool::{Client as PoolClient, Request};
 
@@ -80,11 +83,25 @@ impl BlendAdapterContract {
             let adapter = env.current_contract_address();
             let request = Request {
                 request_type: REQUEST_SUPPLY,
-                address: asset,
+                address: asset.clone(),
                 amount,
             };
             let mut requests = Vec::new(&env);
             requests.push_back(request);
+
+            // Authorize the token transfer the pool will make from the adapter.
+            env.authorize_as_current_contract(Vec::from_array(
+                &env,
+                [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                    context: ContractContext {
+                        contract: asset,
+                        fn_name: Symbol::new(&env, "transfer"),
+                        args: (adapter.clone(), pool.clone(), amount).into_val(&env),
+                    },
+                    sub_invocations: Vec::new(&env),
+                })],
+            ));
+
             client.submit(&adapter, &adapter, &adapter, &requests);
             Ok(())
         })
