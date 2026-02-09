@@ -3,7 +3,16 @@
 //! Provides swap functionality using the 1-Click API, which simplifies
 //! NEAR Intents cross-chain swaps through a REST interface.
 //!
-//! ## Three-phase process:
+//! ## Supported Asset Types
+//!
+//! - **NEP-245 (NEAR Intents)**: Cross-chain assets wrapped in `intents.near`
+//! - **NEP-141 on NEAR**: Direct NEAR tokens (automatically wrapped/unwrapped via Intents)
+//!
+//! The provider automatically detects asset types and configures the appropriate
+//! deposit and recipient modes to deliver tokens in the correct format.
+//!
+//! ## Three-phase Swap Process
+//!
 //! 1. **Quote**: Request quote and receive deposit address
 //! 2. **Deposit**: Transfer tokens to deposit address
 //! 3. **Poll**: Monitor swap status until completion
@@ -352,10 +361,28 @@ impl OneClickSwap {
         let deadline = chrono::Utc::now() + chrono::Duration::minutes(30);
         let deadline_str = deadline.to_rfc3339();
 
-        // For liquidation bot, we always deposit via NEAR Intents contract
-        // since our bot runs on NEAR and holds NEP-141 tokens.
-        // ORIGIN_CHAIN would be used if we were depositing from another blockchain (e.g., ETH on Ethereum)
-        let deposit_type = "INTENTS";
+        // Determine deposit and recipient types based on asset types
+        // - If from_asset is NEP-245 from intents.near: deposit_type = "INTENTS"
+        // - If from_asset is direct NEP-141 on NEAR: deposit_type = "ORIGIN_CHAIN"
+        let deposit_type = if from_asset.clone().into_nep245().is_some()
+            && from_asset.contract_id() == "intents.near"
+        {
+            "INTENTS"
+        } else {
+            "ORIGIN_CHAIN"
+        };
+
+        // - If to_asset is NEP-245 from intents.near: recipient_type = "INTENTS" (wrapped output)
+        // - If to_asset is direct NEP-141 on NEAR: recipient_type = "DESTINATION_CHAIN" (unwrapped output)
+        let recipient_type = if to_asset.clone().into_nep245().is_some()
+            && to_asset.contract_id() == "intents.near"
+        {
+            "INTENTS"
+        } else {
+            "DESTINATION_CHAIN"
+        };
+
+        let refund_type = deposit_type; // Refunds go back to where we deposited from
 
         let request = QuoteRequest {
             dry: false, // We want a real quote with deposit address
@@ -370,11 +397,9 @@ impl OneClickSwap {
             destination_asset: to_asset_id.clone(),
             amount: u128::from(input_amount).to_string(), // Input amount we're swapping
             refund_to: recipient.clone(),
-            // INTENTS: refunds go back to our NEAR account within Intents contract
-            refund_type: "INTENTS".to_string(),
+            refund_type: refund_type.to_string(),
             recipient: recipient.clone(),
-            // INTENTS: swapped tokens delivered to our NEAR account within Intents contract
-            recipient_type: "INTENTS".to_string(),
+            recipient_type: recipient_type.to_string(),
             deadline: deadline_str,
             referral: Some("templar-liquidator".to_string()), // Track bot usage
             quote_waiting_time_ms: Some(5000),                // Wait up to 5 seconds for quote
@@ -386,6 +411,8 @@ impl OneClickSwap {
             from = %from_str,
             to = %to_str,
             amount_raw = %u128::from(input_amount),
+            deposit_type = %deposit_type,
+            recipient_type = %recipient_type,
             "Requesting quote from 1-Click API"
         );
 
@@ -442,11 +469,29 @@ impl OneClickSwap {
             .parse()
             .unwrap_or_default();
 
+        // Calculate exchange rate for logging
+        let amount_in_u128: u128 = quote_response.quote.amount_in.parse().unwrap_or_default();
+        #[allow(clippy::cast_precision_loss)]
+        let exchange_rate = if amount_in_u128 > 0 {
+            (amount_out_u128 as f64) / (amount_in_u128 as f64)
+        } else {
+            0.0
+        };
+
         tracing::info!(
-            out_raw = %amount_out_u128,
+            deposit_address = %quote_response.quote.deposit_address,
+            deposit_memo = ?quote_response.quote.deposit_memo,
+            origin_asset_id = %from_asset_id,
+            destination_asset_id = %to_asset_id,
+            amount_in_raw = %amount_in_u128,
+            amount_out_raw = %amount_out_u128,
             min_out_raw = %min_amount_out_u128,
+            exchange_rate = %format!("{:.6}", exchange_rate),
+            slippage_bps = %self.max_slippage_bps,
             time_estimate_s = %quote_response.quote.time_estimate,
-            "Quote received"
+            deadline = %quote_response.quote.deadline,
+            quote_timestamp = %quote_response.timestamp,
+            "Quote received from 1-Click API"
         );
 
         Ok(quote_response)
@@ -554,7 +599,7 @@ impl OneClickSwap {
         from_asset: &FungibleAsset<F>,
         deposit_address: &str,
         amount: U128,
-        _memo: Option<&str>,
+        memo: Option<&str>,
     ) -> AppResult<String> {
         let asset_str = from_asset.to_string();
 
@@ -562,6 +607,7 @@ impl OneClickSwap {
             asset = %asset_str,
             amount_raw = %amount.0,
             deposit_address = %deposit_address,
+            deposit_memo = ?memo,
             "Depositing tokens to 1-Click"
         );
 
@@ -650,10 +696,23 @@ impl OneClickSwap {
 
         match &outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
-                tracing::debug!("Deposit transaction succeeded");
+                let account_type_str = match deposit_account.get_account_type() {
+                    near_account_id::AccountType::NearImplicitAccount => "implicit",
+                    near_account_id::AccountType::EthImplicitAccount => "eth-implicit",
+                    near_account_id::AccountType::NamedAccount => "named",
+                };
+                tracing::info!(
+                    tx_hash = %tx_hash_str,
+                    asset = %asset_str,
+                    amount_raw = %amount.0,
+                    deposit_address = %deposit_address,
+                    account_type = %account_type_str,
+                    "Deposit transaction succeeded"
+                );
             }
             FinalExecutionStatus::Failure(failure) => {
                 tracing::error!(
+                    tx_hash = %tx_hash_str,
                     failure = ?failure,
                     "Deposit transaction failed with detailed error"
                 );
@@ -662,7 +721,11 @@ impl OneClickSwap {
                 )));
             }
             _ => {
-                tracing::warn!(status = ?outcome.status, "Unexpected transaction status");
+                tracing::warn!(
+                    tx_hash = %tx_hash_str,
+                    status = ?outcome.status,
+                    "Unexpected transaction status"
+                );
             }
         }
 
@@ -852,11 +915,18 @@ impl OneClickSwap {
             return Err(AppError::ValidationError(error_msg));
         }
 
-        tracing::debug!(tx_hash = %tx_hash, "Deposit submitted to 1-Click API");
+        tracing::info!(
+            tx_hash = %tx_hash,
+            deposit_address = %deposit_address,
+            near_sender = %self.signer.get_account_id(),
+            memo = ?memo,
+            "Deposit submitted to 1-Click API"
+        );
         Ok(())
     }
 
     /// Polls the swap status until completion.
+    #[allow(clippy::too_many_lines)]
     async fn poll_swap_status(
         &self,
         deposit_address: &str,
@@ -944,11 +1014,59 @@ impl OneClickSwap {
 
             match status_response.status {
                 SwapStatus::Success => {
-                    tracing::debug!("Swap completed successfully");
+                    // Log comprehensive swap completion details
+                    if let Some(ref details) = status_response.swap_details {
+                        tracing::info!(
+                            deposit_address = %deposit_address,
+                            status = "SUCCESS",
+                            amount_in = ?details.amount_in,
+                            amount_in_formatted = ?details.amount_in_formatted,
+                            amount_in_usd = ?details.amount_in_usd,
+                            amount_out = ?details.amount_out,
+                            amount_out_formatted = ?details.amount_out_formatted,
+                            amount_out_usd = ?details.amount_out_usd,
+                            slippage_bps = ?details.slippage,
+                            intent_hashes = ?details.intent_hashes,
+                            near_tx_hashes = ?details.near_tx_hashes,
+                            origin_chain_txs = ?details.origin_chain_tx_hashes.iter().map(|tx| &tx.hash).collect::<Vec<_>>(),
+                            destination_chain_txs = ?details.destination_chain_tx_hashes.iter().map(|tx| &tx.hash).collect::<Vec<_>>(),
+                            attempt = %attempt,
+                            "Swap completed successfully via 1-Click"
+                        );
+                    } else {
+                        tracing::info!(
+                            deposit_address = %deposit_address,
+                            status = "SUCCESS",
+                            attempt = %attempt,
+                            "Swap completed successfully (no details available)"
+                        );
+                    }
                     return Ok(SwapStatus::Success);
                 }
                 SwapStatus::Failed | SwapStatus::Refunded => {
-                    tracing::error!(status = ?status_response.status, "Swap failed or refunded");
+                    // Log detailed failure information
+                    if let Some(ref details) = status_response.swap_details {
+                        tracing::error!(
+                            deposit_address = %deposit_address,
+                            status = ?status_response.status,
+                            refunded_amount = ?details.refunded_amount,
+                            amount_in = ?details.amount_in,
+                            amount_out = ?details.amount_out,
+                            intent_hashes = ?details.intent_hashes,
+                            near_tx_hashes = ?details.near_tx_hashes,
+                            origin_chain_txs = ?details.origin_chain_tx_hashes.iter().map(|tx| &tx.explorer_url).collect::<Vec<_>>(),
+                            destination_chain_txs = ?details.destination_chain_tx_hashes.iter().map(|tx| &tx.explorer_url).collect::<Vec<_>>(),
+                            attempt = %attempt,
+                            "Swap failed or refunded - contact 1-Click support with these details"
+                        );
+                    } else {
+                        tracing::error!(
+                            deposit_address = %deposit_address,
+                            status = ?status_response.status,
+                            attempt = %attempt,
+                            "Swap failed or refunded (no details available)"
+                        );
+                    }
                     return Ok(status_response.status);
                 }
                 SwapStatus::PendingDeposit
@@ -958,7 +1076,24 @@ impl OneClickSwap {
                     // Continue polling
                 }
                 SwapStatus::IncompleteDeposit => {
-                    tracing::warn!("Incomplete deposit detected");
+                    if let Some(ref details) = status_response.swap_details {
+                        tracing::warn!(
+                            deposit_address = %deposit_address,
+                            status = "INCOMPLETE_DEPOSIT",
+                            amount_in = ?details.amount_in,
+                            amount_out = ?details.amount_out,
+                            refunded_amount = ?details.refunded_amount,
+                            attempt = %attempt,
+                            "Incomplete deposit detected - partial amount deposited"
+                        );
+                    } else {
+                        tracing::warn!(
+                            deposit_address = %deposit_address,
+                            status = "INCOMPLETE_DEPOSIT",
+                            attempt = %attempt,
+                            "Incomplete deposit detected"
+                        );
+                    }
                     return Ok(SwapStatus::IncompleteDeposit);
                 }
             }
@@ -1002,6 +1137,15 @@ impl SwapProvider for OneClickSwap {
         to_asset: &FungibleAsset<T>,
         amount: FungibleAssetAmount<F>,
     ) -> AppResult<FinalExecutionStatus> {
+        let swap_start = std::time::Instant::now();
+
+        tracing::info!(
+            from_asset = %from_asset.to_string(),
+            to_asset = %to_asset.to_string(),
+            amount_raw = %u128::from(amount),
+            "Starting 1-Click swap"
+        );
+
         // Step 1: Get quote with deposit address
         let quote_response = self.request_quote(from_asset, to_asset, amount).await?;
 
@@ -1027,10 +1171,24 @@ impl SwapProvider for OneClickSwap {
             .poll_swap_status(deposit_address, memo, MAX_SWAP_WAIT_SECONDS)
             .await?;
 
+        let swap_duration = swap_start.elapsed();
+
         if status == SwapStatus::Success {
+            tracing::info!(
+                deposit_address = %deposit_address,
+                deposit_tx_hash = %tx_hash,
+                duration_ms = swap_duration.as_millis(),
+                "1-Click swap completed successfully"
+            );
             Ok(FinalExecutionStatus::SuccessValue("".as_bytes().to_vec()))
         } else {
-            tracing::error!(status = ?status, "Swap did not succeed");
+            tracing::error!(
+                deposit_address = %deposit_address,
+                deposit_tx_hash = %tx_hash,
+                status = ?status,
+                duration_ms = swap_duration.as_millis(),
+                "1-Click swap did not succeed"
+            );
             Err(AppError::ValidationError(format!(
                 "Swap failed with status: {status:?}"
             )))
@@ -1046,9 +1204,17 @@ impl SwapProvider for OneClickSwap {
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
     ) -> bool {
-        // 1-Click API only supports NEP-245 (NEAR Intents) tokens
-        // These are cross-chain assets wrapped in the intents.near contract
-        from_asset.clone().into_nep245().is_some() && to_asset.clone().into_nep245().is_some()
+        // 1-Click API supports:
+        // 1. NEP-245 (NEAR Intents) tokens - cross-chain assets via intents.near
+        // 2. Direct NEP-141 tokens on NEAR (can be wrapped/unwrapped to/from Intents)
+        //
+        // At least ONE asset should be NEP-245 (Intents) for 1-Click to be useful.
+        // If both are direct NEP-141 on NEAR, other DEXes (like Ref) would be better.
+        let from_is_nep245 = from_asset.clone().into_nep245().is_some();
+        let to_is_nep245 = to_asset.clone().into_nep245().is_some();
+
+        // Support if at least one is Intent token
+        from_is_nep245 || to_is_nep245
     }
 
     async fn ensure_storage_registration<F: AssetClass>(

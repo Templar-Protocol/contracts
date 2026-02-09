@@ -473,13 +473,8 @@ impl LiquidatorService {
                 // Fetch market version for version-specific liquidation logic
                 liquidator.fetch_market_version().await;
 
-                // Test market compatibility (including partial liquidation support if required)
-                let requires_partial = self.config.strategy.requires_partial_liquidation_support();
-                match liquidator
-                    .scanner()
-                    .check_market_compatibility(requires_partial)
-                    .await
-                {
+                // Test market compatibility
+                match liquidator.scanner().check_market_compatibility().await {
                     Ok(()) => {
                         supported_markets.insert(market, liquidator);
                     }
