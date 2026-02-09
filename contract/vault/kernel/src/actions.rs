@@ -5,6 +5,8 @@
 
 extern crate alloc;
 
+use core::mem;
+
 use crate::effects::{KernelEffect, KernelEvent};
 use crate::error::KernelError;
 use crate::math::number::Number;
@@ -320,52 +322,55 @@ pub fn apply_action(
 
             Ok(KernelResult::new(state, effects))
         }
-        KernelAction::ExecuteWithdraw { now_ns } => match state.op_state.clone() {
-            OpState::Idle => {
-                let Some((_, pending_ref)) = state.withdraw_queue.head() else {
-                    return Err(KernelError::EmptyQueue);
-                };
-                let pending = pending_ref.clone();
-
-                enforce_restrictions(config, restrictions, self_id, &pending.owner)?;
-                enforce_restrictions(config, restrictions, self_id, &pending.receiver)?;
-
-                if !is_past_cooldown(
-                    pending.requested_at_ns,
-                    now_ns,
-                    config.withdrawal_cooldown_ns,
-                ) {
-                    return Err(KernelError::Cooldown {
-                        requested_at: pending.requested_at_ns,
-                        now: now_ns,
-                        cooldown_ns: config.withdrawal_cooldown_ns,
-                    });
-                }
-
-                let op_id = state.allocate_op_id();
-                let request = WithdrawalRequest {
-                    op_id,
-                    amount: pending.expected_assets,
-                    receiver: pending.receiver,
-                    owner: pending.owner,
-                    escrow_shares: pending.escrow_shares,
-                };
-
-                let result = start_withdrawal(state.op_state.clone(), request)
-                    .map_err(KernelError::Transition)?;
-                state.op_state = result.new_state;
-
-                Ok(KernelResult::new(state, result.effects))
+        KernelAction::ExecuteWithdraw { now_ns } => {
+            if state.op_state.is_withdrawing() {
+                return Err(KernelError::InvalidState(
+                    "execute_withdraw requires Idle (use withdrawal callbacks to advance)",
+                ));
             }
-            OpState::Withdrawing(_) => Err(KernelError::InvalidState(
-                "execute_withdraw requires Idle (use withdrawal callbacks to advance)",
-            )),
-            _ => Err(KernelError::InvalidState(
-                "execute_withdraw requires Idle or Withdrawing",
-            )),
-        },
+            if !state.op_state.is_idle() {
+                return Err(KernelError::InvalidState(
+                    "execute_withdraw requires Idle or Withdrawing",
+                ));
+            }
+
+            let Some((_, pending_ref)) = state.withdraw_queue.head() else {
+                return Err(KernelError::EmptyQueue);
+            };
+            let pending = pending_ref.clone();
+
+            enforce_restrictions(config, restrictions, self_id, &pending.owner)?;
+            enforce_restrictions(config, restrictions, self_id, &pending.receiver)?;
+
+            if !is_past_cooldown(
+                pending.requested_at_ns,
+                now_ns,
+                config.withdrawal_cooldown_ns,
+            ) {
+                return Err(KernelError::Cooldown {
+                    requested_at: pending.requested_at_ns,
+                    now: now_ns,
+                    cooldown_ns: config.withdrawal_cooldown_ns,
+                });
+            }
+
+            let op_id = state.allocate_op_id();
+            let request = WithdrawalRequest {
+                op_id,
+                amount: pending.expected_assets,
+                receiver: pending.receiver,
+                owner: pending.owner,
+                escrow_shares: pending.escrow_shares,
+            };
+
+            let result = start_withdrawal(mem::take(&mut state.op_state), request)
+                .map_err(KernelError::Transition)?;
+            state.op_state = result.new_state;
+
+            Ok(KernelResult::new(state, result.effects))
+        }
         KernelAction::BeginAllocating { op_id, plan, .. } => {
-            let result = start_allocation(state.op_state.clone(), plan, op_id)
+            let result = start_allocation(mem::take(&mut state.op_state), plan, op_id)
                 .map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
@@ -391,20 +396,20 @@ pub fn apply_action(
                 escrow_shares: w.escrow_shares,
             });
 
-            let result = complete_allocation(state.op_state.clone(), op_id, pending_req)
+            let result = complete_allocation(mem::take(&mut state.op_state), op_id, pending_req)
                 .map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
         KernelAction::BeginRefreshing { op_id, plan, .. } => {
-            let result = start_refresh(state.op_state.clone(), plan, op_id)
+            let result = start_refresh(mem::take(&mut state.op_state), plan, op_id)
                 .map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
         KernelAction::FinishRefreshing { op_id, .. } => {
             let result =
-                complete_refresh(state.op_state.clone(), op_id).map_err(KernelError::Transition)?;
+                complete_refresh(mem::take(&mut state.op_state), op_id).map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
@@ -535,7 +540,7 @@ pub fn apply_action(
                 return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
             }
 
-            let result = stop_withdrawal(state.op_state.clone(), op_id, *self_id)
+            let result = stop_withdrawal(mem::take(&mut state.op_state), op_id, *self_id)
                 .map_err(KernelError::Transition)?;
             state.op_state = result.new_state;
             state.withdraw_queue.dequeue();
