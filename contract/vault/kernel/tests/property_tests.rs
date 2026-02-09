@@ -1383,7 +1383,7 @@ proptest! {
 
 use templar_vault_kernel::{
     apply_action, preview_deposit_shares, preview_withdraw_assets, FeeSlot, FeesSpec, KernelAction,
-    VaultConfig,
+    PayoutOutcome, VaultConfig,
 };
 
 fn default_config() -> VaultConfig {
@@ -2770,4 +2770,737 @@ fn regression_invariant_check_minimal_delta() {
     state.fee_anchor = FeeAccrualAnchor::new(total, 0);
     // total_assets(3) != idle(1) + external(1) = invariant violation
     assert!(!state.check_invariant(), "should detect invariant violation: 3 != 1 + 1");
+}
+
+// =============================================================================
+// Cross-Executor Parity Tests
+// =============================================================================
+use core::mem;
+// Both NEAR and Soroban executors call the same kernel `apply_action`. These
+// tests verify kernel determinism and that the state-preparation patterns both
+// executors use (decrement idle_assets before kernel, restore on abort, etc.)
+// produce consistent results.
+
+/// Parity: kernel is deterministic — identical inputs always produce identical
+/// outputs, regardless of which executor invokes it.
+#[test]
+fn parity_kernel_deterministic_deposit() {
+    let config = default_config();
+    let state = default_state();
+    let action = KernelAction::Deposit {
+        owner: owner_addr(1),
+        receiver: owner_addr(1),
+        assets_in: 1_000_000,
+        min_shares_out: 0,
+        now_ns: 100,
+    };
+
+    let result_a = apply_action(state.clone(), &config, None, &self_addr(), action.clone()).unwrap();
+    let result_b = apply_action(state, &config, None, &self_addr(), action).unwrap();
+
+    assert_eq!(result_a.state, result_b.state, "kernel must be deterministic");
+    assert_eq!(result_a.effects, result_b.effects, "effects must be deterministic");
+}
+
+/// Parity: deposit produces identical shares regardless of the amount already
+/// in the vault, so long as the share ratio is the same. Both executors rely
+/// on this for preview_deposit_shares accuracy.
+#[test]
+fn parity_deposit_shares_ratio_stable() {
+    let config = default_config();
+
+    // Deposit into empty vault
+    let state = default_state();
+    let r1 = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: owner_addr(1),
+            receiver: owner_addr(1),
+            assets_in: 10_000,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+
+    // Second deposit into the vault with 1:1 ratio
+    let r2 = apply_action(
+        r1.state.clone(),
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: owner_addr(2),
+            receiver: owner_addr(2),
+            assets_in: 5_000,
+            min_shares_out: 0,
+            now_ns: 2,
+        },
+    )
+    .unwrap();
+
+    // At 1:1 ratio, 5000 assets should mint 5000 shares
+    assert_eq!(r2.state.total_shares, 15_000);
+    assert_eq!(r2.state.total_assets, 15_000);
+    assert_eq!(r2.state.idle_assets, 15_000);
+
+    // preview_deposit_shares must agree
+    let preview = preview_deposit_shares(&r1.state, &config, 5_000);
+    assert_eq!(preview, 5_000, "preview must match actual deposit");
+}
+
+/// Parity: the executor pattern of decrementing idle_assets before calling
+/// kernel BeginAllocating, then using kernel's AbortAllocating with
+/// restore_idle, produces balanced accounting.
+///
+/// Both Soroban (contract.rs:903) and NEAR executors follow this pattern.
+#[test]
+fn parity_executor_idle_decrement_abort_roundtrip() {
+    let config = default_config();
+    let mut state = default_state();
+    state.idle_assets = 10_000;
+    state.total_assets = 10_000;
+
+    let plan = vec![(0, 3_000), (1, 2_000)];
+    let alloc_total: u128 = plan.iter().map(|(_, a)| *a).sum();
+
+    // --- Executor pre-kernel: decrement idle_assets (as both executors do) ---
+    state.idle_assets -= alloc_total;
+    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+    assert_eq!(state.idle_assets, 5_000);
+
+    // --- Kernel: BeginAllocating ---
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::BeginAllocating {
+            op_id: 1,
+            plan: plan.clone(),
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+
+    let op_id = match &result.state.op_state {
+        OpState::Allocating(s) => s.op_id,
+        _ => panic!("expected Allocating"),
+    };
+    // Kernel leaves idle_assets unchanged (already decremented by executor)
+    assert_eq!(result.state.idle_assets, 5_000);
+
+    // --- Kernel: AbortAllocating restores the allocation amount ---
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::AbortAllocating {
+            op_id,
+            restore_idle: alloc_total,
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    // After executor-decrement + kernel-restore, we should be back to 10_000
+    assert_eq!(result.state.idle_assets, 10_000, "abort must restore idle_assets to original");
+}
+
+/// Parity: the executor pattern of decrementing idle_assets, running
+/// allocation steps, then finishing — external_assets reflects allocated amount.
+///
+/// The kernel's 2x sanity guard on SyncExternalAssets means executors must sync
+/// incrementally (after each market deposit), not all at once.
+#[test]
+fn parity_executor_full_allocation_cycle() {
+    let config = default_config();
+    let mut state = default_state();
+    // Start with 80% idle, 20% already external — a realistic post-refresh state
+    state.idle_assets = 8_000;
+    state.external_assets = 2_000;
+    state.total_assets = 10_000;
+    state.fee_anchor = FeeAccrualAnchor::new(10_000, 0);
+
+    let plan = vec![(0, 2_000), (1, 1_000)];
+    let alloc_total: u128 = plan.iter().map(|(_, a)| *a).sum(); // 3_000
+
+    // Executor pre-kernel: decrement idle_assets
+    state.idle_assets -= alloc_total;
+    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+    // Now idle=5000, external=2000, total=7000
+
+    // BeginAllocating
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::BeginAllocating {
+            op_id: 1,
+            plan,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+
+    // Sync after allocation: external grew from 2000 to 5000 (allocated 3000).
+    // 2x check: new_total = 5000+5000 = 10000, old total=7000, 7000*2=14000. OK.
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 5_000,
+            op_id: 1,
+            now_ns: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(result.state.external_assets, 5_000);
+    assert_eq!(result.state.total_assets, 10_000); // idle(5000) + ext(5000)
+
+    // FinishAllocating
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::FinishAllocating {
+            op_id: 1,
+            now_ns: 3,
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    assert_eq!(result.state.idle_assets, 5_000, "idle = 8000 - 3000 allocated");
+    assert_eq!(result.state.external_assets, 5_000, "external = 2000 + 3000 allocated");
+    assert_eq!(result.state.total_assets, 10_000, "total unchanged");
+}
+
+/// Parity: deposit → request_withdraw → execute → stop → settle roundtrip.
+/// Both executors rely on this flow producing balanced accounting.
+/// Flow: Idle → Withdrawing → Payout → Idle.
+#[test]
+fn parity_deposit_withdraw_settle_roundtrip() {
+    let config = default_config();
+    let state = default_state();
+    let vault = self_addr();
+    let user = owner_addr(1);
+
+    // Deposit 10_000
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &vault,
+        KernelAction::Deposit {
+            owner: user,
+            receiver: user,
+            assets_in: 10_000,
+            min_shares_out: 0,
+            now_ns: 100,
+        },
+    )
+    .unwrap();
+    assert_eq!(result.state.total_shares, 10_000);
+
+    // Request withdraw of all shares
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::RequestWithdraw {
+            owner: user,
+            receiver: user,
+            shares: 10_000,
+            min_assets_out: 0,
+            now_ns: 200,
+        },
+    )
+    .unwrap();
+    assert!(!result.state.withdraw_queue.pending_withdrawals.is_empty());
+
+    // ExecuteWithdraw: Idle → Withdrawing
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::ExecuteWithdraw { now_ns: 300 },
+    )
+    .unwrap();
+    assert!(result.state.op_state.is_withdrawing());
+    let op_id = result.state.op_state.op_id().unwrap();
+
+    // Advance withdrawal: collect full amount (simulates executor pulling from idle)
+    let mut state = result.state;
+    let tr = withdrawal_step_callback(mem::take(&mut state.op_state), op_id, 10_000).unwrap();
+    state.op_state = tr.new_state;
+
+    // Now remaining=0, use withdrawal_collected → Payout
+    let tr = withdrawal_collected(mem::take(&mut state.op_state), op_id, 10_000).unwrap();
+    state.op_state = tr.new_state;
+    assert!(state.op_state.is_payout());
+
+    // SettlePayout: Payout → Idle
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &vault,
+        KernelAction::SettlePayout {
+            op_id,
+            outcome: PayoutOutcome::Success {
+                burn_shares: 10_000,
+                refund_shares: 0,
+            },
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    // Shares burned by kernel, but idle_assets/total_assets are decremented
+    // by the executor (which handles the actual asset transfer out). The kernel
+    // only burns shares; both executors then decrement idle_assets themselves.
+    assert_eq!(result.state.total_shares, 0, "shares burned");
+    assert_eq!(result.state.total_assets, 10_000, "kernel doesn't decrement assets — executor does");
+    assert_eq!(result.state.idle_assets, 10_000, "kernel doesn't decrement idle — executor does");
+}
+
+/// Parity: preview functions agree with actual kernel actions.
+/// Both executors expose preview_deposit/preview_redeem views that must match
+/// the kernel's actual share/asset calculations.
+#[test]
+fn parity_preview_matches_actual() {
+    let config = default_config();
+    let mut state = default_state();
+    state.idle_assets = 50_000;
+    state.total_assets = 50_000;
+    state.total_shares = 25_000; // 2:1 asset:share ratio
+
+    // Preview deposit
+    let preview_shares = preview_deposit_shares(&state, &config, 10_000);
+
+    // Actual deposit
+    let result = apply_action(
+        state.clone(),
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: owner_addr(1),
+            receiver: owner_addr(1),
+            assets_in: 10_000,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+    let actual_shares = result.state.total_shares - 25_000;
+    assert_eq!(preview_shares, actual_shares, "preview_deposit must match actual");
+
+    // Preview withdraw
+    let preview_assets = preview_withdraw_assets(&state, &config, 5_000);
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RequestWithdraw {
+            owner: owner_addr(1),
+            receiver: owner_addr(1),
+            shares: 5_000,
+            min_assets_out: 0,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+    let queued = result.state.withdraw_queue.pending_withdrawals.values().next().unwrap();
+    assert_eq!(preview_assets, queued.expected_assets, "preview_withdraw must match actual");
+}
+
+/// Parity: refresh cycle with external growth updates share price identically
+/// for both executors.
+#[test]
+fn parity_refresh_external_growth() {
+    let config = default_config();
+    let mut state = default_state();
+    state.idle_assets = 5_000;
+    state.external_assets = 5_000;
+    state.total_assets = 10_000;
+    state.total_shares = 10_000;
+    state.fee_anchor = FeeAccrualAnchor::new(10_000, 0);
+
+    let vault = self_addr();
+
+    // BeginRefreshing
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &vault,
+        KernelAction::BeginRefreshing {
+            op_id: 1,
+            plan: vec![0, 1],
+            now_ns: 100,
+        },
+    )
+    .unwrap();
+
+    // SyncExternalAssets with growth (5000 → 7000)
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 7_000,
+            op_id: 1,
+            now_ns: 200,
+        },
+    )
+    .unwrap();
+
+    // FinishRefreshing
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::FinishRefreshing {
+            op_id: 1,
+            now_ns: 300,
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    assert_eq!(result.state.external_assets, 7_000);
+    assert_eq!(result.state.total_assets, 12_000, "idle(5000) + external(7000)");
+    assert_eq!(result.state.total_shares, 10_000, "shares unchanged");
+
+    // Share price reflects external growth. With virtual_shares=0 and
+    // virtual_assets=0, effective_totals adds +1 to both supply and assets,
+    // so the exact preview uses floor(1000 * 12001 / 10001) = 1199.
+    let preview = preview_withdraw_assets(&result.state, &config, 1_000);
+    // Approximate check: growth is reflected (value > 1000)
+    assert!(preview >= 1_199 && preview <= 1_200, "share price reflects growth, got {preview}");
+}
+
+/// Parity: effect vectors are identical for deposit regardless of address
+/// domain prefix (NEAR uses sha256(accountId), Soroban uses sha256(domain+strkey)).
+/// The kernel doesn't care about address construction — only that the same
+/// address produces the same effects.
+#[test]
+fn parity_effects_identical_for_deposit() {
+    let config = default_config();
+    let state = default_state();
+
+    // Simulate "NEAR-style" address
+    let near_addr: [u8; 32] = [0xAA; 32];
+    let r1 = apply_action(
+        state.clone(),
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: near_addr,
+            receiver: near_addr,
+            assets_in: 5_000,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+
+    // Simulate "Soroban-style" address
+    let soroban_addr: [u8; 32] = [0xBB; 32];
+    let r2 = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::Deposit {
+            owner: soroban_addr,
+            receiver: soroban_addr,
+            assets_in: 5_000,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+
+    // States must match (modulo addresses in effects)
+    assert_eq!(r1.state.total_assets, r2.state.total_assets);
+    assert_eq!(r1.state.total_shares, r2.state.total_shares);
+    assert_eq!(r1.state.idle_assets, r2.state.idle_assets);
+    assert_eq!(r1.effects.len(), r2.effects.len(), "same number of effects");
+}
+
+/// Parity: abort_withdrawing refunds shares identically for both executors.
+#[test]
+fn parity_abort_withdrawing_refund() {
+    let config = default_config();
+    let state = default_state();
+    let vault = self_addr();
+    let user = owner_addr(1);
+
+    // Deposit
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &vault,
+        KernelAction::Deposit {
+            owner: user,
+            receiver: user,
+            assets_in: 10_000,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+
+    // Request withdrawal
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::RequestWithdraw {
+            owner: user,
+            receiver: user,
+            shares: 5_000,
+            min_assets_out: 0,
+            now_ns: 2,
+        },
+    )
+    .unwrap();
+    let shares_before = result.state.total_shares;
+
+    // Execute withdrawal — transitions Idle → Withdrawing
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::ExecuteWithdraw { now_ns: 3 },
+    )
+    .unwrap();
+    let op_id = result.state.op_state.op_id().unwrap();
+
+    // Abort with full refund
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::AbortWithdrawing {
+            op_id,
+            refund_shares: 5_000,
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    assert_eq!(result.state.total_shares, shares_before, "shares restored after abort");
+    assert_eq!(result.state.total_assets, 10_000, "assets unchanged");
+}
+
+/// Parity: multiple deposits from different users produce consistent share
+/// ratios. Both executors must see the same share price for concurrent users.
+#[test]
+fn parity_concurrent_deposits_share_consistency() {
+    let config = default_config();
+    let state = default_state();
+    let vault = self_addr();
+
+    // User A deposits 10_000
+    let r1 = apply_action(
+        state,
+        &config,
+        None,
+        &vault,
+        KernelAction::Deposit {
+            owner: owner_addr(1),
+            receiver: owner_addr(1),
+            assets_in: 10_000,
+            min_shares_out: 0,
+            now_ns: 1,
+        },
+    )
+    .unwrap();
+
+    // User B deposits 20_000
+    let r2 = apply_action(
+        r1.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::Deposit {
+            owner: owner_addr(2),
+            receiver: owner_addr(2),
+            assets_in: 20_000,
+            min_shares_out: 0,
+            now_ns: 2,
+        },
+    )
+    .unwrap();
+
+    // User C deposits 5_000
+    let r3 = apply_action(
+        r2.state.clone(),
+        &config,
+        None,
+        &vault,
+        KernelAction::Deposit {
+            owner: owner_addr(3),
+            receiver: owner_addr(3),
+            assets_in: 5_000,
+            min_shares_out: 0,
+            now_ns: 3,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(r3.state.total_assets, 35_000);
+    assert_eq!(r3.state.total_shares, 35_000); // 1:1 ratio maintained
+    assert_eq!(r3.state.idle_assets, 35_000);
+
+    // Preview at this state should also agree
+    let preview = preview_deposit_shares(&r2.state, &config, 5_000);
+    assert_eq!(preview, 5_000, "preview matches third deposit");
+}
+
+proptest! {
+    /// Parity property: for any valid deposit amount, kernel produces
+    /// identical state whether called once or reconstructed and called again.
+    #[test]
+    fn prop_parity_kernel_deposit_deterministic(
+        assets in 1u128..=1_000_000_000u128,
+        initial_idle in 0u128..=1_000_000_000u128,
+        initial_shares in 0u128..=1_000_000_000u128,
+    ) {
+        let config = default_config();
+        let state = VaultState::with_initial(initial_idle, initial_shares, initial_idle, 0, 0);
+        let action = KernelAction::Deposit {
+            owner: owner_addr(1),
+            receiver: owner_addr(1),
+            assets_in: assets,
+            min_shares_out: 0,
+            now_ns: 1,
+        };
+
+        let r1 = apply_action(state.clone(), &config, None, &self_addr(), action.clone());
+        let r2 = apply_action(state, &config, None, &self_addr(), action);
+
+        match (r1, r2) {
+            (Ok(a), Ok(b)) => {
+                prop_assert_eq!(a.state, b.state);
+                prop_assert_eq!(a.effects, b.effects);
+            }
+            (Err(_), Err(_)) => {} // both fail = parity
+            _ => prop_assert!(false, "one succeeded, the other failed"),
+        }
+    }
+
+    /// Parity property: executor idle_assets decrement + kernel abort always
+    /// restores to original value.
+    #[test]
+    fn prop_parity_executor_decrement_abort_roundtrip(
+        idle in 1_000u128..=1_000_000_000u128,
+        alloc_frac in 1u128..=100u128, // % of idle to allocate
+    ) {
+        let config = default_config();
+        let alloc_amount = idle * alloc_frac / 100;
+        if alloc_amount == 0 { return Ok(()); }
+
+        let mut state = VaultState::with_initial(idle, 0, idle, 0, 0);
+
+        // Executor pre-kernel: decrement
+        state.idle_assets -= alloc_amount;
+        state.total_assets = state.idle_assets;
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::BeginAllocating {
+                op_id: 1,
+                plan: vec![(0, alloc_amount)],
+                now_ns: 1,
+            },
+        );
+        prop_assert!(result.is_ok());
+
+        let result = apply_action(
+            result.unwrap().state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::AbortAllocating {
+                op_id: 1,
+                restore_idle: alloc_amount,
+            },
+        );
+        prop_assert!(result.is_ok());
+        let final_state = result.unwrap().state;
+
+        prop_assert_eq!(final_state.idle_assets, idle, "abort must restore original idle");
+        prop_assert!(final_state.op_state.is_idle());
+    }
+
+    /// Parity property: deposit followed by full withdrawal request always
+    /// queues the expected_assets equal to the deposited amount (at 1:1 ratio).
+    #[test]
+    fn prop_parity_deposit_withdraw_request_assets(
+        amount in 1u128..=1_000_000_000u128,
+    ) {
+        let config = default_config();
+        let state = default_state();
+        let vault = self_addr();
+        let user = owner_addr(1);
+
+        let r = apply_action(
+            state,
+            &config,
+            None,
+            &vault,
+            KernelAction::Deposit {
+                owner: user,
+                receiver: user,
+                assets_in: amount,
+                min_shares_out: 0,
+                now_ns: 1,
+            },
+        ).unwrap();
+
+        let r = apply_action(
+            r.state,
+            &config,
+            None,
+            &vault,
+            KernelAction::RequestWithdraw {
+                owner: user,
+                receiver: user,
+                shares: amount,
+                min_assets_out: 0,
+                now_ns: 2,
+            },
+        ).unwrap();
+
+        prop_assert_eq!(r.state.withdraw_queue.pending_withdrawals.len(), 1);
+        let queued = r.state.withdraw_queue.pending_withdrawals.values().next().unwrap();
+        prop_assert_eq!(queued.expected_assets, amount, "at 1:1 ratio, expected_assets == deposited");
+    }
 }
