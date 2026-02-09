@@ -12,8 +12,8 @@ use templar_vault_kernel::{Restrictions, VaultState};
 use crate::convert::{i128_to_u128_storage, u128_to_i128_storage};
 use crate::error::RuntimeError;
 
-const DEFAULT_TTL_THRESHOLD: u32 = 50_000;
-const DEFAULT_TTL_EXTEND_TO: u32 = 100_000;
+pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 50_000;
+pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 100_000;
 
 // ---------------------------------------------------------------------------
 // Soroban Storage Keys

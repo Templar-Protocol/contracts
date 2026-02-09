@@ -46,8 +46,7 @@ use crate::storage::{SorobanStorage, Storage, VersionedState};
 const ESCROW_ADDRESS: Address = [0u8; 32];
 const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 const YEAR_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
-const TTL_THRESHOLD_LEDGERS: u32 = 50_000;
-const TTL_EXTEND_TO_LEDGERS: u32 = 100_000;
+use crate::storage::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
 
 /// Deterministic one-way mapping from Soroban address to kernel Address.
 ///
@@ -893,6 +892,17 @@ where
         let op_id = state.next_op_id;
         state.next_op_id = state.next_op_id.saturating_add(1);
 
+        // Compute allocation total and decrement idle_assets before transitioning.
+        let alloc_total: u128 = filtered_plan.iter().map(|(_, amt)| *amt).sum();
+        if alloc_total > state.idle_assets {
+            return Err(RuntimeError::insufficient_balance(
+                state.idle_assets,
+                alloc_total,
+            ));
+        }
+        state.idle_assets -= alloc_total;
+        state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+
         // Call kernel transition with filtered plan
         let result = start_allocation(state.op_state.clone(), filtered_plan, op_id)
             .map_err(RuntimeError::transition_error)?;
@@ -1388,9 +1398,9 @@ type ContractVault<'a> = CuratorVault<
 fn extend_storage_ttl(env: &Env) {
     env.storage()
         .instance()
-        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        .extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
     let storage = SorobanStorage::new(env);
-    storage.extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    storage.extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
 }
 
 fn migrate_legacy_paused(env: &Env) {
@@ -2045,6 +2055,10 @@ mod tests {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
 
+        let state = vault.state_mut();
+        state.idle_assets = 2_000;
+        state.total_assets = 2_000;
+
         let op_id = vault
             .begin_allocating(caller, vec![(0, 500), (1, 500)], 1000)
             .unwrap();
@@ -2057,6 +2071,10 @@ mod tests {
     fn test_finish_allocating() {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
+
+        let state = vault.state_mut();
+        state.idle_assets = 2_000;
+        state.total_assets = 2_000;
 
         let op_id = vault.begin_allocating(caller, vec![(0, 500)], 1000).unwrap();
 
@@ -2108,6 +2126,10 @@ mod tests {
     fn test_sync_external_assets_in_allocating() {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
+
+        let state = vault.state_mut();
+        state.idle_assets = 2_000;
+        state.total_assets = 2_000;
 
         let op_id = vault.begin_allocating(caller, vec![(0, 500)], 1000).unwrap();
 
@@ -2399,6 +2421,10 @@ mod tests {
     fn test_begin_allocating_filters_locked_markets() {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
+
+        let state = vault.state_mut();
+        state.idle_assets = 2_000;
+        state.total_assets = 2_000;
 
         // Lock market 1
         vault
