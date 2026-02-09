@@ -837,7 +837,11 @@ impl LiquidatorService {
 
         if swapped > 0 || skipped > 0 {
             if dry_run {
-                tracing::info!(swapped, skipped, "[DRY RUN] Batch swap round summary (no swaps executed)");
+                tracing::info!(
+                    swapped,
+                    skipped,
+                    "[DRY RUN] Batch swap round summary (no swaps executed)"
+                );
             } else {
                 tracing::info!(swapped, skipped, "Batch swap round completed");
             }
@@ -908,7 +912,8 @@ fn is_usdc_asset(asset: &FungibleAsset<BorrowAsset>) -> bool {
         || s.contains("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48") // ETH USDC
         || s.contains("17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1") // native NEAR USDC
         || s.contains("5ce3bf3a31af18be40ba30f721101b4341690186") // Solana USDC
-        || s.contains("1100_111bzqbb65gxapavoxqmmcgyo5os3txhqs1uh1cgahkquetujq1tju") // Stellar USDC
+        || s.contains("1100_111bzqbb65gxapavoxqmmcgyo5os3txhqs1uh1cgahkquetujq1tju")
+    // Stellar USDC
 }
 
 /// Check if an error is a rate limit error

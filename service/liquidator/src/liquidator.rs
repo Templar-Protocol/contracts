@@ -738,11 +738,7 @@ impl Liquidator {
                         tracing::info!("Successfully updated Pyth prices, re-fetching");
                         oracle_response = self
                             .oracle_fetcher
-                            .get_oracle_prices(
-                                oracle_account.clone(),
-                                &price_ids,
-                                price_max_age,
-                            )
+                            .get_oracle_prices(oracle_account.clone(), &price_ids, price_max_age)
                             .await?;
                     }
                     Ok(false) => {

@@ -137,8 +137,7 @@ impl LiquidationExecutor {
                 && collateral_asset.to_string() != borrow_asset.to_string()
             {
                 #[allow(clippy::cast_precision_loss)]
-                let usd_estimate =
-                    u128::from(expected_collateral_value) as f64 / 1_000_000.0;
+                let usd_estimate = u128::from(expected_collateral_value) as f64 / 1_000_000.0;
 
                 if usd_estimate >= self.min_swap_value_usd {
                     tracing::info!(
