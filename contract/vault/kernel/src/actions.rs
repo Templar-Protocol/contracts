@@ -149,6 +149,15 @@ pub enum KernelAction {
 
     /// Update the vault's paused state.
     Pause { paused: bool },
+
+    /// Emergency reset: force the vault back to Idle from any non-Idle state.
+    ///
+    /// Unlike the regular abort actions, this does not require op_id matching.
+    /// For Withdrawing/Payout states, escrowed shares are refunded to the owner
+    /// and the queue head is dequeued.
+    ///
+    /// Authorization (Owner-only, timelock-gated) must be enforced by the executor.
+    EmergencyReset,
 }
 
 fn effective_totals(state: &VaultState, config: &VaultConfig) -> (u128, u128) {
@@ -737,6 +746,66 @@ pub fn apply_action(
                 event: crate::effects::KernelEvent::FeesRefreshed {
                     now_ns,
                     total_assets: cur_total_assets,
+                },
+            });
+
+            Ok(KernelResult::new(state, effects))
+        }
+        KernelAction::EmergencyReset => {
+            let prev_state = mem::take(&mut state.op_state);
+            let from_code = prev_state.kind_code();
+            let op_id = prev_state
+                .op_id()
+                .ok_or(KernelError::InvalidState("emergency_reset: vault is already Idle"))?;
+
+            let mut effects = Vec::new();
+            let escrow_address = *self_id;
+
+            match prev_state {
+                OpState::Idle => unreachable!(), // guarded by op_id() check
+                OpState::Refreshing(_) => {
+                    // No assets in-flight, just reset.
+                }
+                OpState::Allocating(alloc) => {
+                    // Restore unallocated assets back to idle.
+                    state.idle_assets = state.idle_assets.saturating_add(alloc.remaining);
+                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                }
+                OpState::Withdrawing(w) => {
+                    // Refund escrowed shares to the owner.
+                    if w.escrow_shares > 0 {
+                        effects.push(KernelEffect::TransferShares {
+                            from: escrow_address,
+                            to: w.owner,
+                            shares: w.escrow_shares,
+                        });
+                    }
+                    // Restore any collected assets back to idle.
+                    state.idle_assets = state.idle_assets.saturating_add(w.collected);
+                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                    state.withdraw_queue.dequeue();
+                }
+                OpState::Payout(p) => {
+                    // Refund all escrowed shares to the owner.
+                    if p.escrow_shares > 0 {
+                        effects.push(KernelEffect::TransferShares {
+                            from: escrow_address,
+                            to: p.owner,
+                            shares: p.escrow_shares,
+                        });
+                    }
+                    // Restore payout amount back to idle.
+                    state.idle_assets = state.idle_assets.saturating_add(p.amount);
+                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                    state.withdraw_queue.dequeue();
+                }
+            }
+
+            state.op_state = OpState::Idle;
+            effects.push(KernelEffect::EmitEvent {
+                event: KernelEvent::EmergencyResetCompleted {
+                    op_id,
+                    from_state: from_code,
                 },
             });
 
@@ -3172,5 +3241,185 @@ mod tests {
         let result = KernelResult::new(state.clone(), effects.clone());
         assert_eq!(result.state, state);
         assert_eq!(result.effects, effects);
+    }
+
+    // EmergencyReset action tests
+
+    #[test]
+    fn emergency_reset_from_idle_fails() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::EmergencyReset,
+        );
+        assert!(matches!(result, Err(KernelError::InvalidState(_))));
+    }
+
+    #[test]
+    fn emergency_reset_from_refreshing() {
+        use crate::state::op_state::RefreshingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        state.op_state = OpState::Refreshing(RefreshingState {
+            op_id: 7,
+            index: 1,
+            plan: vec![1, 2],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state.clone(),
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::EmergencyReset,
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert_eq!(result.state.idle_assets, 500);
+        assert_eq!(result.state.external_assets, 500);
+        assert!(result.effects.iter().any(|e| matches!(
+            e,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::EmergencyResetCompleted { op_id: 7, from_state: 3 }
+            }
+        )));
+    }
+
+    #[test]
+    fn emergency_reset_from_allocating_restores_idle() {
+        use crate::state::op_state::AllocatingState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 10,
+            index: 1,
+            remaining: 300,
+            plan: vec![(1, 500), (2, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::EmergencyReset,
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        assert_eq!(result.state.idle_assets, 500); // 200 + 300 restored
+        assert_eq!(result.state.total_assets, 1_300); // 500 + 800
+        assert!(result.effects.iter().any(|e| matches!(
+            e,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::EmergencyResetCompleted { op_id: 10, from_state: 1 }
+            }
+        )));
+    }
+
+    #[test]
+    fn emergency_reset_from_withdrawing_refunds_shares() {
+        let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+        let owner = addr(1);
+        let receiver = addr(2);
+        let _ = state
+            .withdraw_queue
+            .enqueue(owner, receiver, 200, 200, 0, 10)
+            .unwrap();
+
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 20,
+            index: 0,
+            remaining: 100,
+            collected: 50,
+            owner,
+            receiver,
+            escrow_shares: 200,
+        });
+        let config = test_config();
+        let escrow = addr(0xFF);
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &escrow,
+            KernelAction::EmergencyReset,
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        // collected (50) restored to idle
+        assert_eq!(result.state.idle_assets, 550);
+        assert_eq!(result.state.total_assets, 1_050);
+        // Queue head dequeued
+        assert_eq!(result.state.withdraw_queue.len(), 0);
+        // Shares refunded
+        assert!(result.effects.iter().any(|e| matches!(
+            e,
+            KernelEffect::TransferShares { from, to, shares: 200 }
+            if *from == escrow && *to == owner
+        )));
+    }
+
+    #[test]
+    fn emergency_reset_from_payout_refunds_and_restores() {
+        use crate::state::op_state::PayoutState;
+
+        let mut state = VaultState::with_initial(1_000, 1_000, 400, 600, 0);
+        let owner = addr(3);
+        let receiver = addr(4);
+        let _ = state
+            .withdraw_queue
+            .enqueue(owner, receiver, 300, 300, 0, 10)
+            .unwrap();
+
+        state.op_state = OpState::Payout(PayoutState {
+            op_id: 30,
+            receiver,
+            amount: 250,
+            owner,
+            escrow_shares: 300,
+            burn_shares: 280,
+        });
+        let config = test_config();
+        let escrow = addr(0xFF);
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &escrow,
+            KernelAction::EmergencyReset,
+        )
+        .unwrap();
+
+        assert!(result.state.is_idle());
+        // Payout amount (250) restored to idle
+        assert_eq!(result.state.idle_assets, 650);
+        assert_eq!(result.state.total_assets, 1_250);
+        // Queue head dequeued
+        assert_eq!(result.state.withdraw_queue.len(), 0);
+        // Shares refunded
+        assert!(result.effects.iter().any(|e| matches!(
+            e,
+            KernelEffect::TransferShares { from, to, shares: 300 }
+            if *from == escrow && *to == owner
+        )));
+        // Event emitted with correct state code
+        assert!(result.effects.iter().any(|e| matches!(
+            e,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::EmergencyResetCompleted { op_id: 30, from_state: 4 }
+            }
+        )));
     }
 }

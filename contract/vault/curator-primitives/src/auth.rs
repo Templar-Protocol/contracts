@@ -44,6 +44,8 @@ pub enum ActionKind {
     RefreshFees,
     /// Privileged manual reconciliation of external assets.
     ManualReconcile,
+    /// Emergency reset to force-idle a stuck vault.
+    EmergencyReset,
 }
 
 impl ActionKind {
@@ -82,6 +84,7 @@ impl From<&KernelAction> for ActionKind {
             KernelAction::AbortWithdrawing { .. } => ActionKind::AbortWithdrawing,
             KernelAction::RefreshFees { .. } => ActionKind::RefreshFees,
             KernelAction::Pause { .. } => ActionKind::Pause,
+            KernelAction::EmergencyReset => ActionKind::EmergencyReset,
         }
     }
 }

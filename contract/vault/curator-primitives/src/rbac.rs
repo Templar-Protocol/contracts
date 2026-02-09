@@ -187,7 +187,9 @@ pub fn required_role(action: ActionKind) -> Option<Role> {
         | ActionKind::RefreshFees => Some(Role::Allocator),
 
         // Admin-only actions
-        ActionKind::ManualReconcile | ActionKind::SetRestrictions => Some(Role::Admin),
+        ActionKind::ManualReconcile
+        | ActionKind::SetRestrictions
+        | ActionKind::EmergencyReset => Some(Role::Admin),
     }
 }
 

@@ -139,6 +139,13 @@ pub struct PauseUpdatedEvent {
     pub paused: bool,
 }
 
+/// Emergency reset completed event.
+#[contractevent]
+pub struct EmergencyResetCompletedEvent {
+    pub op_id: u64,
+    pub from_state: u32,
+}
+
 /// Result type for effect operations.
 pub type EffectResult<T> = Result<T, RuntimeError>;
 
@@ -911,6 +918,13 @@ where
             }
             KernelEvent::PauseUpdated { paused } => {
                 PauseUpdatedEvent { paused: *paused }.publish(self.env);
+            }
+            KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
+                EmergencyResetCompletedEvent {
+                    op_id: *op_id,
+                    from_state: *from_state,
+                }
+                .publish(self.env);
             }
         }
 

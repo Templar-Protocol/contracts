@@ -140,6 +140,11 @@ pub enum KernelEvent {
     FeesRefreshed { now_ns: u64, total_assets: u128 },
     /// Pause state updated.
     PauseUpdated { paused: bool },
+    /// Emergency reset forced the vault back to Idle.
+    EmergencyResetCompleted {
+        op_id: u64,
+        from_state: u32,
+    },
 }
 
 impl From<KernelEvent> for KernelEffect {

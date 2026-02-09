@@ -104,6 +104,8 @@ pub enum KernelEventLog {
     FeesRefreshed { now_ns: U64, total_assets: U128 },
     #[event_version("1.0.0")]
     PauseUpdated { paused: bool },
+    #[event_version("1.0.0")]
+    EmergencyResetCompleted { op_id: U64, from_state: u32 },
 }
 
 /// Address resolution context for kernel effects.
@@ -280,6 +282,13 @@ fn emit_kernel_event(
         .emit(),
         KernelEvent::PauseUpdated { paused } => {
             KernelEventLog::PauseUpdated { paused: *paused }.emit()
+        }
+        KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
+            KernelEventLog::EmergencyResetCompleted {
+                op_id: U64(*op_id),
+                from_state: *from_state,
+            }
+            .emit()
         }
     }
 
