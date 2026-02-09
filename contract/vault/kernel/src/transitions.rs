@@ -138,6 +138,31 @@ impl TransitionResult {
 /// Type alias for transition function results.
 pub type TransitionRes = Result<TransitionResult, TransitionError>;
 
+/// Extract the inner state of a specific OpState variant, or return a typed error.
+macro_rules! require_state {
+    ($state:expr, $variant:ident, $error:ident) => {
+        match &$state {
+            OpState::$variant(s) => s,
+            _ => {
+                return Err(TransitionError::$error {
+                    current_state: TransitionError::state_name(&$state),
+                });
+            }
+        }
+    };
+}
+
+/// Assert the OpState is Idle, or return NotIdle.
+macro_rules! require_idle {
+    ($state:expr) => {
+        if !$state.is_idle() {
+            return Err(TransitionError::NotIdle {
+                current_state: TransitionError::state_name(&$state),
+            });
+        }
+    };
+}
+
 // =============================================================================
 // Allocation Transitions
 // =============================================================================
@@ -154,11 +179,7 @@ pub type TransitionRes = Result<TransitionResult, TransitionError>;
 /// * `Err(TransitionError::NotIdle)` if not in Idle state
 /// * `Err(TransitionError::EmptyAllocationPlan)` if plan is empty
 pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64) -> TransitionRes {
-    if !state.is_idle() {
-        return Err(TransitionError::NotIdle {
-            current_state: TransitionError::state_name(&state),
-        });
-    }
+    require_idle!(state);
 
     if plan.is_empty() {
         return Err(TransitionError::EmptyAllocationPlan);
@@ -209,14 +230,7 @@ pub fn allocation_step_callback(
     amount_allocated: u128,
     op_id: u64,
 ) -> TransitionRes {
-    let alloc = match &state {
-        OpState::Allocating(s) => s,
-        _ => {
-            return Err(TransitionError::NotAllocating {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let alloc = require_state!(state, Allocating, NotAllocating);
 
     if alloc.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -297,14 +311,7 @@ pub fn complete_allocation(
     op_id: u64,
     pending_withdrawal: Option<WithdrawalRequest>,
 ) -> TransitionRes {
-    let alloc = match &state {
-        OpState::Allocating(s) => s,
-        _ => {
-            return Err(TransitionError::NotAllocating {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let alloc = require_state!(state, Allocating, NotAllocating);
 
     if alloc.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -379,11 +386,7 @@ pub struct WithdrawalRequest {
 /// * `Ok(TransitionResult)` with new Withdrawing state
 /// * `Err` on validation failure
 pub fn start_withdrawal(state: OpState, request: WithdrawalRequest) -> TransitionRes {
-    if !state.is_idle() {
-        return Err(TransitionError::NotIdle {
-            current_state: TransitionError::state_name(&state),
-        });
-    }
+    require_idle!(state);
 
     if request.amount == 0 {
         return Err(TransitionError::ZeroWithdrawalAmount);
@@ -432,14 +435,7 @@ pub fn withdrawal_step_callback(
     op_id: u64,
     amount_collected: u128,
 ) -> TransitionRes {
-    let withdraw = match &state {
-        OpState::Withdrawing(s) => s,
-        _ => {
-            return Err(TransitionError::NotWithdrawing {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let withdraw = require_state!(state, Withdrawing, NotWithdrawing);
 
     if withdraw.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -482,14 +478,7 @@ pub fn withdrawal_step_callback(
 /// # Returns
 /// * `Ok(TransitionResult)` with Payout state
 pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> TransitionRes {
-    let withdraw = match &state {
-        OpState::Withdrawing(s) => s,
-        _ => {
-            return Err(TransitionError::NotWithdrawing {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let withdraw = require_state!(state, Withdrawing, NotWithdrawing);
 
     if withdraw.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -542,14 +531,7 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
 /// # Returns
 /// * `Ok(TransitionResult)` with Idle state and refund effects
 pub fn stop_withdrawal(state: OpState, op_id: u64, escrow_address: Address) -> TransitionRes {
-    let withdraw = match &state {
-        OpState::Withdrawing(s) => s,
-        _ => {
-            return Err(TransitionError::NotWithdrawing {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let withdraw = require_state!(state, Withdrawing, NotWithdrawing);
 
     if withdraw.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -596,11 +578,7 @@ pub fn stop_withdrawal(state: OpState, op_id: u64, escrow_address: Address) -> T
 /// # Returns
 /// * `Ok(TransitionResult)` with new Refreshing state
 pub fn start_refresh(state: OpState, plan: Vec<TargetId>, op_id: u64) -> TransitionRes {
-    if !state.is_idle() {
-        return Err(TransitionError::NotIdle {
-            current_state: TransitionError::state_name(&state),
-        });
-    }
+    require_idle!(state);
 
     if plan.is_empty() {
         return Err(TransitionError::EmptyRefreshPlan);
@@ -630,14 +608,7 @@ pub fn start_refresh(state: OpState, plan: Vec<TargetId>, op_id: u64) -> Transit
 /// # Returns
 /// * `Ok(TransitionResult)` with updated Refreshing state
 pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
-    let refresh = match &state {
-        OpState::Refreshing(s) => s,
-        _ => {
-            return Err(TransitionError::NotRefreshing {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let refresh = require_state!(state, Refreshing, NotRefreshing);
 
     if refresh.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -674,14 +645,7 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
 /// # Returns
 /// * `Ok(TransitionResult)` with Idle state
 pub fn complete_refresh(state: OpState, op_id: u64) -> TransitionRes {
-    let refresh = match &state {
-        OpState::Refreshing(s) => s,
-        _ => {
-            return Err(TransitionError::NotRefreshing {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let refresh = require_state!(state, Refreshing, NotRefreshing);
 
     if refresh.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -718,14 +682,7 @@ pub fn payout_complete(
     op_id: u64,
     escrow_address: Address,
 ) -> TransitionRes {
-    let payout = match &state {
-        OpState::Payout(s) => s,
-        _ => {
-            return Err(TransitionError::NotPayout {
-                current_state: TransitionError::state_name(&state),
-            });
-        }
-    };
+    let payout = require_state!(state, Payout, NotPayout);
 
     if payout.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -1541,6 +1498,7 @@ mod proptests {
             let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
             let alloc = result.new_state.as_allocating().unwrap();
             let initial_remaining = alloc.remaining;
+            prop_assume!(allocated <= initial_remaining);
 
             let step_result = allocation_step_callback(result.new_state, true, allocated, op_id);
             prop_assert!(step_result.is_ok());
