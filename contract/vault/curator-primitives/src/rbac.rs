@@ -160,6 +160,37 @@ impl RbacConfig {
     }
 }
 
+/// Get the required role for an action.
+///
+/// This is the canonical action-to-role mapping shared across all executors.
+/// Returns `None` for user-facing actions that don't require a special role.
+#[inline]
+#[must_use]
+pub fn required_role(action: ActionKind) -> Option<Role> {
+    match action {
+        // User-facing actions don't require special roles
+        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::ExecuteWithdraw => None,
+
+        // Guardian actions
+        ActionKind::Pause => Some(Role::Guardian),
+
+        // Allocator actions
+        ActionKind::BeginAllocating
+        | ActionKind::FinishAllocating
+        | ActionKind::SyncExternalAssets
+        | ActionKind::BeginRefreshing
+        | ActionKind::FinishRefreshing
+        | ActionKind::AbortAllocating
+        | ActionKind::AbortWithdrawing
+        | ActionKind::AbortRefreshing
+        | ActionKind::SettlePayout
+        | ActionKind::RefreshFees => Some(Role::Allocator),
+
+        // Admin-only actions
+        ActionKind::ManualReconcile | ActionKind::SetRestrictions => Some(Role::Admin),
+    }
+}
+
 /// RBAC auth adapter implementation.
 ///
 /// This adapter enforces role-based access control for curator vault actions.
@@ -183,32 +214,6 @@ impl RbacAuth {
     #[must_use]
     pub fn with_admin(admin: Address) -> Self {
         Self::new(RbacConfig::with_admin(admin))
-    }
-
-    /// Get the required role for an action.
-    fn required_role(&self, action: ActionKind) -> Option<Role> {
-        match action {
-            // User-facing actions don't require special roles
-            ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::ExecuteWithdraw => None,
-
-            // Guardian actions
-            ActionKind::Pause => Some(Role::Guardian),
-
-            // Allocator actions
-            ActionKind::BeginAllocating
-            | ActionKind::FinishAllocating
-            | ActionKind::SyncExternalAssets
-            | ActionKind::BeginRefreshing
-            | ActionKind::FinishRefreshing
-            | ActionKind::AbortAllocating
-            | ActionKind::AbortWithdrawing
-            | ActionKind::AbortRefreshing
-            | ActionKind::SettlePayout
-            | ActionKind::RefreshFees => Some(Role::Allocator),
-
-            // Admin-only actions
-            ActionKind::ManualReconcile | ActionKind::SetRestrictions => Some(Role::Admin),
-        }
     }
 
     /// Check if the caller has the required role or is an admin.
@@ -249,7 +254,7 @@ impl AuthAdapter for RbacAuth {
         }
 
         // Check role requirements
-        if let Some(required_role) = self.required_role(action) {
+        if let Some(required_role) = required_role(action) {
             if !self.has_required_role(&caller, required_role) {
                 return Err(AuthError::MissingRole(String::from(required_role.as_str())));
             }

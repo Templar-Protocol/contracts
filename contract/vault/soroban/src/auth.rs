@@ -11,6 +11,7 @@ use soroban_sdk::{Address as SdkAddress, Env};
 pub use templar_curator_primitives::auth::{
     ActionKind, AuthAdapter, AuthError, AuthResult, PermissiveAuth, StrictAuth,
 };
+pub use templar_curator_primitives::rbac::{required_role, Role};
 
 // ---------------------------------------------------------------------------
 // Soroban Native Auth Adapter
@@ -139,58 +140,25 @@ impl<'a> SorobanAuth<'a> {
 
     /// Check role-based permissions without calling require_auth.
     ///
-    /// Use this when auth has already been verified elsewhere.
+    /// Delegates to the canonical `required_role()` mapping from
+    /// curator-primitives, then checks the Soroban-specific role holders.
     pub fn check_role(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
-        match action {
-            // User-facing actions don't require special roles
-            ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::ExecuteWithdraw => {
-                Ok(())
-            }
+        let role = match required_role(action) {
+            None => return Ok(()),
+            Some(r) => r,
+        };
 
-            // Guardian actions
-            ActionKind::Pause => {
-                if self.is_guardian(caller) {
-                    Ok(())
-                } else {
-                    Err(AuthError::MissingRole(String::from("guardian")))
-                }
-            }
+        let has_role = match role {
+            Role::Admin => self.is_admin(caller),
+            Role::Guardian => self.is_guardian(caller),
+            Role::Sentinel => self.is_admin(caller), // No sentinel in Soroban; admin fallback
+            Role::Allocator => self.is_allocator(caller),
+        };
 
-            // Admin-only actions
-            ActionKind::SetRestrictions => {
-                if self.is_admin(caller) {
-                    Ok(())
-                } else {
-                    Err(AuthError::MissingRole(String::from("admin")))
-                }
-            }
-
-            // Allocator actions
-            ActionKind::BeginAllocating
-            | ActionKind::FinishAllocating
-            | ActionKind::SyncExternalAssets
-            | ActionKind::BeginRefreshing
-            | ActionKind::FinishRefreshing
-            | ActionKind::AbortAllocating
-            | ActionKind::AbortWithdrawing
-            | ActionKind::AbortRefreshing
-            | ActionKind::SettlePayout
-            | ActionKind::RefreshFees => {
-                if self.is_allocator(caller) {
-                    Ok(())
-                } else {
-                    Err(AuthError::MissingRole(String::from("allocator")))
-                }
-            }
-
-            // Admin-only actions
-            ActionKind::ManualReconcile => {
-                if self.is_admin(caller) {
-                    Ok(())
-                } else {
-                    Err(AuthError::MissingRole(String::from("admin")))
-                }
-            }
+        if has_role {
+            Ok(())
+        } else {
+            Err(AuthError::MissingRole(String::from(role.as_str())))
         }
     }
 
