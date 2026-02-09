@@ -547,8 +547,8 @@ pub fn apply_action(
             Ok(KernelResult::new(state, result.effects))
         }
         KernelAction::SettlePayout { op_id, outcome } => {
-            let payout = match &state.op_state {
-                OpState::Payout(s) => s.clone(),
+            let payout = match mem::take(&mut state.op_state) {
+                OpState::Payout(s) => s,
                 _ => return Err(KernelError::InvalidState("settle_payout requires Payout")),
             };
 
