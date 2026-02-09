@@ -22,7 +22,7 @@ use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, compute_fee_shares_from_assets,
     mul_div_floor, preview_deposit_shares, preview_withdraw_assets, start_allocation,
     start_refresh, withdrawal_collected, withdrawal_step_callback, Address, FeeAccrualAnchor,
-    FeesSpec, KernelAction, Number, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
+    AssetId, FeesSpec, KernelAction, Number, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
     VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
@@ -915,6 +915,8 @@ where
 
     /// Sync external assets during an operation.
     ///
+    /// Verifies the caller's value against market adapter balances when
+    /// the active operation has a plan with targets (Allocating/Refreshing).
     pub fn sync_external_assets(
         &mut self,
         caller: Address,
@@ -926,12 +928,58 @@ where
         self.auth
             .authorize(ActionKind::SyncExternalAssets, caller, None)?;
 
+        // Verify caller's value against market adapter when targets are available
+        self.verify_external_assets_against_adapter(new_external_assets)?;
+
         let action = KernelAction::SyncExternalAssets {
             new_external_assets,
             op_id,
             now_ns,
         };
         let _summary = self.apply_kernel_action(action, now_ns)?;
+
+        Ok(())
+    }
+
+    /// Verify the claimed external_assets against adapter-reported balances.
+    ///
+    /// Extracts targets from the active operation plan, queries the market
+    /// adapter for each, and rejects if the claimed value doesn't match.
+    /// Silently passes if the adapter is not configured or query fails.
+    fn verify_external_assets_against_adapter(
+        &self,
+        claimed: u128,
+    ) -> Result<(), RuntimeError> {
+        let state = self.state();
+
+        // Extract target IDs from the active operation plan
+        let targets: Vec<TargetId> = match &state.op_state {
+            OpState::Allocating(s) => s.plan.iter().map(|(t, _)| *t).collect(),
+            OpState::Refreshing(s) => s.plan.clone(),
+            // Withdrawing has no plan — skip adapter verification
+            _ => return Ok(()),
+        };
+
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        // Query adapter for each target's balance
+        let asset_id = AssetId::from(self.config.asset_address);
+        let mut adapter_total: u128 = 0;
+        for target_id in &targets {
+            match self.market.total_assets(MarketRef::new(*target_id, asset_id.clone())) {
+                Ok(balance) => adapter_total = adapter_total.saturating_add(balance),
+                // Adapter not configured or query failed — fall through to kernel bounds
+                Err(_) => return Ok(()),
+            }
+        }
+
+        if claimed != adapter_total {
+            return Err(RuntimeError::contract_error(
+                "sync_external_assets: claimed value does not match adapter-reported balances",
+            ));
+        }
 
         Ok(())
     }

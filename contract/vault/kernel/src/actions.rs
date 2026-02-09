@@ -443,8 +443,26 @@ pub fn apply_action(
                 }
             }
 
+            // Overflow protection: idle_assets + new_external must fit in u128.
+            let new_total = state
+                .idle_assets
+                .checked_add(new_external_assets)
+                .ok_or(KernelError::InvalidState(
+                    "sync_external_assets overflow: idle + external exceeds u128",
+                ))?;
+
+            // Sanity bound: prevent a compromised allocator from inflating
+            // total_assets beyond 2x the previous value. Legitimate market
+            // gains within a single operation window are bounded well below
+            // this. Manual reconciliation should be used for larger swings.
+            if state.total_assets > 0 && new_total > state.total_assets.saturating_mul(2) {
+                return Err(KernelError::InvalidState(
+                    "sync_external_assets would more than double total_assets",
+                ));
+            }
+
             state.external_assets = new_external_assets;
-            state.total_assets = state.idle_assets.saturating_add(new_external_assets);
+            state.total_assets = new_total;
 
             let total_assets = state.total_assets;
             Ok(KernelResult::new(
@@ -1807,6 +1825,69 @@ mod tests {
                 "sync_external_assets requires Allocating/Withdrawing/Refreshing"
             ))
         ));
+    }
+
+    #[test]
+    fn sync_external_assets_rejects_doubling() {
+        use crate::state::op_state::AllocatingState;
+        // total_assets = 1000; trying to set external to 2001 would make new total > 2x
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 0,
+            remaining: 500,
+            plan: vec![(0, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 2_001,
+                op_id: 1,
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                "sync_external_assets would more than double total_assets"
+            ))
+        ));
+    }
+
+    #[test]
+    fn sync_external_assets_allows_up_to_double() {
+        use crate::state::op_state::AllocatingState;
+        // total_assets = 1000; setting external to 1000 with idle=1000 => new total=2000 = 2x, OK
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 0,
+            remaining: 500,
+            plan: vec![(0, 500)],
+        });
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: 1_000,
+                op_id: 1,
+                now_ns: 0,
+            },
+        );
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert_eq!(result.state.total_assets, 2_000);
     }
 
     // =========================================================================
