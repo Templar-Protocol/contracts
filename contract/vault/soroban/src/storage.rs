@@ -789,14 +789,23 @@ impl Migrator {
 
         let mut current = state;
 
-        // Apply migrations sequentially
-        // V1 -> V2 adds op_state + withdraw queue persistence.
-        // Future migrations would be added here:
-        // if current.version == StorageVersion::V1 {
-        //     current = migrate_v1_to_v2(current)?;
-        // }
+        // Apply migrations sequentially — each step must be explicit.
+        if current.version == StorageVersion::V1 {
+            // V1 -> V2: adds op_state + withdraw queue persistence.
+            // No data transformation needed — V1 states default to
+            // Idle op_state and empty queue (handled by load_state).
+            current.version = StorageVersion::V2;
+        }
 
-        current.version = StorageVersion::CURRENT;
+        // Safety: if we still need migration after all known steps,
+        // a step is missing. Fail loudly rather than silently
+        // bumping to CURRENT.
+        if current.needs_migration() {
+            return Err(RuntimeError::storage_error(
+                "unhandled migration step: add migration logic for this version",
+            ));
+        }
+
         Ok(current)
     }
 }
