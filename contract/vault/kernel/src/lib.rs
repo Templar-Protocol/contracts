@@ -28,8 +28,9 @@ pub use address_book::AddressBook;
 pub use fee::{Fee, FeeSlot, Fees, FeesSpec};
 pub use math::number::Number;
 pub use math::wad::{
-    compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor, mul_wad_floor,
-    Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+    compute_fee_shares, compute_fee_shares_from_assets, compute_management_fee_shares,
+    mul_div_ceil, mul_div_floor, mul_wad_floor, total_assets_for_fee_accrual, Wad, MAX_FEE_WAD,
+    MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD, YEAR_NS,
 };
 pub use restrictions::Restrictions;
 pub use state::escrow::{

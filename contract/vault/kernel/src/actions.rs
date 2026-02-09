@@ -10,7 +10,10 @@ use core::mem;
 use crate::effects::{KernelEffect, KernelEvent};
 use crate::error::KernelError;
 use crate::math::number::Number;
-use crate::math::wad::mul_div_floor;
+use crate::math::wad::{
+    compute_fee_shares_from_assets, compute_management_fee_shares, mul_div_floor,
+    total_assets_for_fee_accrual,
+};
 use crate::restrictions::Restrictions;
 use crate::state::op_state::{OpState, TargetId};
 use crate::state::queue::is_past_cooldown;
@@ -655,17 +658,71 @@ pub fn apply_action(
             if now_ns < state.fee_anchor.timestamp_ns {
                 return Err(KernelError::InvalidState("fee refresh timestamp cannot go backwards"));
             }
-            state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, now_ns);
-            let total_assets = state.total_assets;
-            Ok(KernelResult::new(
-                state,
-                vec![KernelEffect::EmitEvent {
-                    event: crate::effects::KernelEvent::FeesRefreshed {
-                        now_ns,
-                        total_assets,
-                    },
-                }],
-            ))
+
+            let cur_total_assets = state.total_assets;
+            let mut total_supply = state.total_shares;
+            let anchor = state.fee_anchor;
+            let mut effects = Vec::new();
+
+            // Cap effective total_assets for fee accrual (mitigates donation attacks)
+            let fee_total_assets = total_assets_for_fee_accrual(
+                cur_total_assets,
+                anchor.total_assets,
+                anchor.timestamp_ns,
+                now_ns,
+                config.fees.max_total_assets_growth_rate,
+            );
+
+            // Management fees (time-based, pro-rated over elapsed time)
+            let mgmt_shares = compute_management_fee_shares(
+                fee_total_assets,
+                cur_total_assets,
+                total_supply,
+                config.fees.management.fee_wad,
+                anchor.timestamp_ns,
+                now_ns,
+            );
+            if mgmt_shares > Number::zero() {
+                let minted: u128 = mgmt_shares.into();
+                effects.push(KernelEffect::MintShares {
+                    owner: config.fees.management.recipient,
+                    shares: minted,
+                });
+                total_supply = total_supply.saturating_add(minted);
+            }
+
+            // Performance fees (profit-based)
+            let profit = fee_total_assets.saturating_sub(anchor.total_assets);
+            let fee_assets = config
+                .fees
+                .performance
+                .fee_wad
+                .apply_floored(Number::from(profit));
+            let perf_shares = compute_fee_shares_from_assets(
+                fee_assets,
+                Number::from(cur_total_assets),
+                Number::from(total_supply),
+            );
+            if perf_shares > Number::zero() {
+                let minted: u128 = perf_shares.into();
+                effects.push(KernelEffect::MintShares {
+                    owner: config.fees.performance.recipient,
+                    shares: minted,
+                });
+                total_supply = total_supply.saturating_add(minted);
+            }
+
+            state.total_shares = total_supply;
+            state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
+
+            effects.push(KernelEffect::EmitEvent {
+                event: crate::effects::KernelEvent::FeesRefreshed {
+                    now_ns,
+                    total_assets: cur_total_assets,
+                },
+            });
+
+            Ok(KernelResult::new(state, effects))
         }
     }
 }
@@ -695,7 +752,8 @@ fn enforce_restrictions(
 mod tests {
     use super::*;
     use crate::effects::KernelEvent;
-    use crate::fee::FeesSpec;
+    use crate::fee::{FeeSlot, FeesSpec};
+    use crate::math::wad::Wad;
     use crate::state::op_state::WithdrawingState;
     use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING};
 
@@ -2725,9 +2783,9 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn refresh_fees_action() {
+    fn refresh_fees_action_zero_fees() {
         let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
-        let config = test_config();
+        let config = test_config(); // fees: FeesSpec::zero()
 
         let result = apply_action(
             state,
@@ -2740,12 +2798,228 @@ mod tests {
 
         assert_eq!(result.state.fee_anchor.total_assets, 1_000);
         assert_eq!(result.state.fee_anchor.timestamp_ns, 12345);
+        assert_eq!(result.state.total_shares, 1_000); // No fee shares minted
+        assert_eq!(result.effects.len(), 1); // Only FeesRefreshed event
         assert!(matches!(
             result.effects.first(),
             Some(KernelEffect::EmitEvent {
                 event: KernelEvent::FeesRefreshed { now_ns: 12345, .. }
             })
         ));
+    }
+
+    #[test]
+    fn refresh_fees_mints_performance_fee_shares() {
+        use crate::math::wad::YEAR_NS;
+        // Setup: vault started with 1000 assets/shares, now has 1500 assets (profit)
+        let mut state = VaultState::with_initial(1_500, 1_000, 1_500, 0, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0); // anchor at 1000 assets, time 0
+
+        let perf_recipient = addr(0xAA);
+        let mut config = test_config();
+        config.fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance fee
+            FeeSlot::zero(),                                 // no management fee
+            None,
+        );
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns: YEAR_NS },
+        )
+        .unwrap();
+
+        // Profit = 1500 - 1000 = 500; fee_assets = 10% * 500 = 50
+        // denom = 1500 - 50 = 1450; perf_shares = floor(50 * 1000 / 1450) = 34
+        let mint_effects: Vec<_> = result
+            .effects
+            .iter()
+            .filter(|e| matches!(e, KernelEffect::MintShares { .. }))
+            .collect();
+        assert_eq!(mint_effects.len(), 1);
+        assert!(matches!(
+            mint_effects[0],
+            KernelEffect::MintShares { owner, shares: 34 } if *owner == perf_recipient
+        ));
+        assert_eq!(result.state.total_shares, 1_000 + 34);
+    }
+
+    #[test]
+    fn refresh_fees_mints_management_fee_shares() {
+        use crate::math::wad::YEAR_NS;
+        // Setup: 1000 assets/shares, no profit, full year elapsed
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+
+        let mgmt_recipient = addr(0xBB);
+        let mut config = test_config();
+        config.fees = FeesSpec::new(
+            FeeSlot::zero(),                                   // no performance fee
+            FeeSlot::new(Wad::one() / 10, mgmt_recipient),    // 10% management fee
+            None,
+        );
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns: YEAR_NS },
+        )
+        .unwrap();
+
+        // Full year: annual_fee_assets = 10% * 1000 = 100
+        // fee_assets = floor(100 * YEAR_NS / YEAR_NS) = 100
+        // fee_shares = floor(100 * 1000 / (1000 - 100)) = floor(100000/900) = 111
+        let mint_effects: Vec<_> = result
+            .effects
+            .iter()
+            .filter(|e| matches!(e, KernelEffect::MintShares { .. }))
+            .collect();
+        assert_eq!(mint_effects.len(), 1);
+        assert!(matches!(
+            mint_effects[0],
+            KernelEffect::MintShares { owner, shares: 111 } if *owner == mgmt_recipient
+        ));
+        assert_eq!(result.state.total_shares, 1_000 + 111);
+    }
+
+    #[test]
+    fn refresh_fees_mints_both_management_and_performance() {
+        use crate::math::wad::YEAR_NS;
+        use crate::math::wad::compute_fee_shares_from_assets;
+
+        let mut state = VaultState::with_initial(1_500, 1_000, 1_500, 0, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+
+        let perf_recipient = addr(0xAA);
+        let mgmt_recipient = addr(0xBB);
+        let mut config = test_config();
+        config.fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, perf_recipient),  // 10% performance
+            FeeSlot::new(Wad::one() / 20, mgmt_recipient),  // 5% management
+            None,
+        );
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns: YEAR_NS },
+        )
+        .unwrap();
+
+        // Management first: annual_fee_assets = 5% * 1500 = 75
+        // mgmt_shares = floor(75 * 1000 / (1500 - 75)) = floor(75000/1425) = 52
+        let mgmt_expected: u128 = compute_fee_shares_from_assets(
+            Number::from(75u128),
+            Number::from(1_500u128),
+            Number::from(1_000u128),
+        )
+        .into();
+
+        // Performance: supply now = 1000 + mgmt_expected; profit = 500; fee_assets = 50
+        let total_supply_after_mgmt = 1_000 + mgmt_expected;
+        let perf_expected: u128 = compute_fee_shares_from_assets(
+            Number::from(50u128), // 10% of 500 profit
+            Number::from(1_500u128),
+            Number::from(total_supply_after_mgmt),
+        )
+        .into();
+
+        let mint_effects: Vec<_> = result
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                KernelEffect::MintShares { owner, shares } => Some((*owner, *shares)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(mint_effects.len(), 2);
+        assert_eq!(mint_effects[0], (mgmt_recipient, mgmt_expected));
+        assert_eq!(mint_effects[1], (perf_recipient, perf_expected));
+        assert_eq!(
+            result.state.total_shares,
+            1_000 + mgmt_expected + perf_expected
+        );
+    }
+
+    #[test]
+    fn refresh_fees_no_profit_skips_performance() {
+        use crate::math::wad::YEAR_NS;
+        // No profit (assets unchanged from anchor)
+        let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+
+        let perf_recipient = addr(0xAA);
+        let mut config = test_config();
+        config.fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance
+            FeeSlot::zero(),
+            None,
+        );
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns: YEAR_NS },
+        )
+        .unwrap();
+
+        let mint_effects: Vec<_> = result
+            .effects
+            .iter()
+            .filter(|e| matches!(e, KernelEffect::MintShares { .. }))
+            .collect();
+        assert_eq!(mint_effects.len(), 0);
+        assert_eq!(result.state.total_shares, 1_000);
+    }
+
+    #[test]
+    fn refresh_fees_max_rate_caps_fee_accrual() {
+        use crate::math::wad::YEAR_NS;
+        // 1000 -> 2000 (100% profit), but max_rate = 20% per year
+        let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+
+        let perf_recipient = addr(0xAA);
+        let mut config = test_config();
+        config.fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance
+            FeeSlot::zero(),
+            Some(Wad::one() / 5), // 20% max growth rate
+        );
+
+        // Half year elapsed
+        let half_year = YEAR_NS / 2;
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns: half_year },
+        )
+        .unwrap();
+
+        // Max growth = 1000 * 20% * 0.5 = 100; capped total_assets = 1000 + 100 = 1100
+        // Profit = 1100 - 1000 = 100; fee_assets = 10% * 100 = 10
+        // denom = 2000 - 10 = 1990; perf_shares = floor(10 * 1000 / 1990) = 5
+        let mint_effects: Vec<_> = result
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                KernelEffect::MintShares { shares, .. } => Some(*shares),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(mint_effects.len(), 1);
+        assert_eq!(mint_effects[0], 5);
     }
 
     #[test]

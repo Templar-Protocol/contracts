@@ -262,6 +262,74 @@ pub fn mul_div_ceil(x: Number, y: Number, denom: Number) -> Number {
     Number::mul_div_ceil(x, y, denom)
 }
 
+/// Nanoseconds in a standard year (365 days).
+pub const YEAR_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
+
+/// Compute the effective total_assets for fee accrual, clamping growth
+/// to the max rate if configured.
+///
+/// When `max_rate` is `Some`, limits the effective total_assets to
+/// `anchor_total_assets * (1 + max_rate * elapsed / YEAR)`.
+#[inline]
+#[must_use]
+pub fn total_assets_for_fee_accrual(
+    cur_total_assets: u128,
+    anchor_total_assets: u128,
+    anchor_timestamp_ns: u64,
+    now_ns: u64,
+    max_rate: Option<Wad>,
+) -> u128 {
+    let Some(max_rate) = max_rate else {
+        return cur_total_assets;
+    };
+    if cur_total_assets <= anchor_total_assets || anchor_total_assets == 0 || now_ns < anchor_timestamp_ns {
+        return cur_total_assets;
+    }
+    let elapsed_ns = now_ns - anchor_timestamp_ns;
+    if elapsed_ns == 0 {
+        return anchor_total_assets;
+    }
+    let annual_max_increase = max_rate.apply_floored(Number::from(anchor_total_assets));
+    let max_increase = mul_div_floor(
+        annual_max_increase,
+        Number::from(u128::from(elapsed_ns)),
+        Number::from(u128::from(YEAR_NS)),
+    )
+    .as_u128_saturating();
+    let max_total_assets = anchor_total_assets.saturating_add(max_increase);
+    cur_total_assets.min(max_total_assets)
+}
+
+/// Compute management fee shares (time-based fee pro-rated over elapsed time).
+///
+/// Returns the number of shares to mint for management fees.
+#[inline]
+#[must_use]
+pub fn compute_management_fee_shares(
+    fee_assets_base: u128,
+    cur_total_assets: u128,
+    total_supply: u128,
+    management_fee_wad: Wad,
+    last_timestamp_ns: u64,
+    now_ns: u64,
+) -> Number {
+    if management_fee_wad.is_zero() || total_supply == 0 || now_ns <= last_timestamp_ns {
+        return Number::zero();
+    }
+    let elapsed_ns = now_ns - last_timestamp_ns;
+    let annual_fee_assets = management_fee_wad.apply_floored(Number::from(fee_assets_base));
+    let fee_assets = mul_div_floor(
+        annual_fee_assets,
+        Number::from(u128::from(elapsed_ns)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    compute_fee_shares_from_assets(
+        fee_assets,
+        Number::from(cur_total_assets),
+        Number::from(total_supply),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
