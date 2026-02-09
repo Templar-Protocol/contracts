@@ -80,7 +80,8 @@ near-build:
 #
 # Configure via env vars (see contract/vault/soroban/.env.example):
 #   SOROBAN_NETWORK, SOROBAN_SOURCE, SOROBAN_WASM,
-#   SOROBAN_CONTRACT_ID, SOROBAN_ADMIN
+#   SOROBAN_CONTRACT_ID, SOROBAN_ADMIN,
+#   SHARE_TOKEN_NAME, SHARE_TOKEN_SYMBOL, SHARE_TOKEN_DECIMALS
 # --------------------------------------------------------------------
 
 # Common soroban CLI flags (DRY helper — not a recipe)
@@ -98,3 +99,14 @@ soroban-invoke fn *args:
 soroban-extend-ttl:
 	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
 	soroban contract extend --id "${SOROBAN_CONTRACT_ID}" {{_soroban_net}} --ledgers-to-extend 100000
+
+# Set share token metadata (SEP-41).
+# Env: SHARE_TOKEN_NAME, SHARE_TOKEN_SYMBOL, SHARE_TOKEN_DECIMALS
+soroban-share-metadata:
+	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
+	@name="${SHARE_TOKEN_NAME:-Templar Vault Share}"; \
+	symbol="${SHARE_TOKEN_SYMBOL:-tvSHARE}"; \
+	decimals="${SHARE_TOKEN_DECIMALS:-7}"; \
+	echo "Setting share metadata: name=${name} symbol=${symbol} decimals=${decimals}"; \
+	soroban contract invoke --id "${SOROBAN_CONTRACT_ID}" {{_soroban_net}} \
+		-- set_metadata --name "${name}" --symbol "${symbol}" --decimals "${decimals}"
