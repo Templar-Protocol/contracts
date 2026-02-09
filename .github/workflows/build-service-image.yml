@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - ".github/workflows/build-service-image.yml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "common/**"
@@ -12,6 +13,7 @@ on:
   push:
     branches: [main, dev]
     paths:
+      - ".github/workflows/build-service-image.yml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "common/**"
@@ -25,6 +27,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build-service-image:
@@ -38,7 +41,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (no push)
+      - name: Build image (no push on PR)
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -46,6 +50,61 @@ jobs:
           target: runtime
           tags: templar:${{ github.sha }}
           push: false
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate GCP CI configuration
+        if: github.event_name != 'pull_request'
+        run: |
+          test -n "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}" || (echo "Missing secret: GCP_WORKLOAD_IDENTITY_PROVIDER" && exit 1)
+          test -n "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}" || (echo "Missing secret: GCP_SERVICE_ACCOUNT_EMAIL" && exit 1)
+          test -n "${{ vars.GCP_ARTIFACT_REGISTRY_HOST }}" || (echo "Missing repo variable: GCP_ARTIFACT_REGISTRY_HOST" && exit 1)
+          test -n "${{ vars.GCP_ARTIFACT_REGISTRY_IMAGE_BASE }}" || (echo "Missing repo variable: GCP_ARTIFACT_REGISTRY_IMAGE_BASE" && exit 1)
+
+      - name: Authenticate to GCP (OIDC)
+        id: auth
+        if: github.event_name != 'pull_request'
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Login to Artifact Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_ARTIFACT_REGISTRY_HOST }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Compute image tags
+        id: tags
+        if: github.event_name != 'pull_request'
+        run: |
+          IMAGE="${{ vars.GCP_ARTIFACT_REGISTRY_IMAGE_BASE }}/templar"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:sha-${GITHUB_SHA}"
+            if [ "${GITHUB_REF_NAME}" = "main" ]; then
+              echo "${IMAGE}:latest"
+            fi
+            if [ "${GITHUB_REF_NAME}" = "dev" ]; then
+              echo "${IMAGE}:dev-latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: service/Dockerfile
+          target: runtime
+          tags: ${{ steps.tags.outputs.tags }}
+          push: true
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max

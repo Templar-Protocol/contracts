@@ -24,3 +24,11 @@ _site/
 **/fuzz*.log
 **/coverage
 .aider*
+
+# OpenTofu / Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/crash.log
+**/*.tfvars
+!**/terraform.tfvars.example

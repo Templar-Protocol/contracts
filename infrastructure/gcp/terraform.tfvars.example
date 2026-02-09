@@ -1,0 +1,13 @@
+project_id = "your-gcp-project-id"
+region     = "europe-west3"
+
+# Restrict GitHub OIDC trust to this repository.
+github_repository = "Templar-Protocol/contracts"
+
+# Optional: add deploy roles later when you wire deployment in CI.
+# github_actions_service_account_project_roles = [
+#   "roles/artifactregistry.reader",
+#   "roles/artifactregistry.writer",
+#   "roles/compute.instanceAdmin.v1",
+#   "roles/iam.serviceAccountUser",
+# ]
