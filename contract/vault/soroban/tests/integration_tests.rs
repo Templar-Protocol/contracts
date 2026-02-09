@@ -39,21 +39,12 @@ struct TrackingMarketAdapter {
 }
 
 impl TrackingMarketAdapter {
-    #[allow(dead_code)] // For future failure tests
     fn new() -> Self {
         Self {
             supply_calls: Vec::new(),
             withdraw_calls: Vec::new(),
             total_assets_per_market: vec![1000, 2000, 3000], // default assets
             fail_on_market: None,
-        }
-    }
-
-    #[allow(dead_code)] // For future failure tests
-    fn with_failure(market_id: u32) -> Self {
-        Self {
-            fail_on_market: Some(market_id),
-            ..Self::new()
         }
     }
 }
@@ -565,7 +556,9 @@ fn test_allocation_flow_abort() {
         .unwrap();
 
     assert!(vault.state().op_state.is_idle());
-    assert_eq!(vault.state().idle_assets, initial_idle + restore_idle);
+    // After abort, idle_assets should be restored to pre-allocation value.
+    // begin_allocating decremented idle by 5000, abort restores it.
+    assert_eq!(vault.state().idle_assets, initial_idle);
 }
 
 #[test]
