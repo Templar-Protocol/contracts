@@ -76,12 +76,25 @@ near-build:
 	cargo near build non-reproducible-wasm --manifest-path contract/vault/near/Cargo.toml
 
 # --------------------------------------------------------------------
-# Soroban deploy (requires soroban CLI + compiled wasm)
+# Soroban operations (requires soroban CLI)
+#
+# Configure via env vars (see contract/vault/soroban/.env.example):
+#   SOROBAN_NETWORK, SOROBAN_SOURCE, SOROBAN_WASM,
+#   SOROBAN_CONTRACT_ID, SOROBAN_ADMIN
 # --------------------------------------------------------------------
+
+# Common soroban CLI flags (DRY helper — not a recipe)
+_soroban_net := "--network ${SOROBAN_NETWORK:-testnet} --source ${SOROBAN_SOURCE:-identity}"
 
 soroban-deploy:
 	@if [ -z "${SOROBAN_WASM:-}" ]; then echo "Set SOROBAN_WASM=/path/to/contract.wasm"; exit 1; fi
-	@network="${SOROBAN_NETWORK:-testnet}"; \
-	source="${SOROBAN_SOURCE:-identity}"; \
-	echo "Deploying ${SOROBAN_WASM} to ${network} (source=${source})"; \
-	soroban contract deploy --wasm "${SOROBAN_WASM}" --network "${network}" --source "${source}"
+	@echo "Deploying ${SOROBAN_WASM} to ${SOROBAN_NETWORK:-testnet}"; \
+	soroban contract deploy --wasm "${SOROBAN_WASM}" {{_soroban_net}}
+
+soroban-invoke fn *args:
+	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
+	soroban contract invoke --id "${SOROBAN_CONTRACT_ID}" {{_soroban_net}} -- "{{fn}}" {{args}}
+
+soroban-extend-ttl:
+	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
+	soroban contract extend --id "${SOROBAN_CONTRACT_ID}" {{_soroban_net}} --ledgers-to-extend 100000
