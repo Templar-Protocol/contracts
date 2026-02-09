@@ -1,0 +1,222 @@
+
+services:
+  relayer:
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    command:
+      - "/app/bin/templar-relayer"
+    image: templar:latest
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - 3000:3000
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    stop_grace_period: 30s
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 10
+        window: 2m
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'templar-relayer' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  market-monitor:
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    command:
+      - "/app/bin/templar-market-monitor"
+    image: templar:latest
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=info,templar_market_monitor=info
+      - RUST_BACKTRACE=0
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'templar-market-monitor' >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  accumulator:
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    command:
+      - "/app/bin/templar-accumulator"
+    image: templar:latest
+    restart: always
+    env_file:
+      - .env
+    stop_grace_period: 20s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 30s
+        max_attempts: 5
+        window: 5m
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'templar-accumulator' >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  funding-bridge:
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    command: [
+      "/app/bin/templar-funding-bridge",
+      "--port", "${PORT:-3000}",
+      "--network", "${NETWORK:-mainnet}",
+      "--near-treasury-account", "${NEAR_TREASURY_ACCOUNT}",
+      "--near-treasury-key", "${NEAR_TREASURY_KEY}"
+    ]
+    image: templar:latest
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=info,templar_funding_bridge=info
+      - RUST_BACKTRACE=0
+    ports:
+      - "${PORT:-3000}:3001"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:$${PORT:-3000}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp
+
+  liquidator:
+    image: templar:latest
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=info,templar_liquidator=info
+      - RUST_BACKTRACE=0
+    command: [
+      "/app/bin/templar-liquidator",
+      "--network", "${NETWORK:-mainnet}",
+      "--signer-account", "${SIGNER_ACCOUNT_ID}",
+      "--signer-key", "${SIGNER_KEY}",
+      "--registries", "${REGISTRY_ACCOUNT_IDS:-v1.tmplr.near}",
+      "--liquidation-strategy", "${LIQUIDATION_STRATEGY:-partial}",
+      "--partial-percentage", "${PARTIAL_LIQUIDATION_PERCENTAGE:-50}",
+      "--min-profit-bps", "${MIN_PROFIT_BPS:-50}",
+      "--liquidation-scan-interval", "${LIQUIDATION_SCAN_INTERVAL:-600}",
+      "--registry-refresh-interval", "${REGISTRY_REFRESH_INTERVAL:-3600}",
+      "--concurrency", "${CONCURRENCY:-10}",
+      "--transaction-timeout", "${TRANSACTION_TIMEOUT:-60}",
+      "--collateral-strategy", "${COLLATERAL_STRATEGY:-hold}",
+      "--max-loop-iterations", "${MAX_LOOP_ITERATIONS:-10}",
+      "--hermes-url", "${PYTH_HERMES_URL:-https://hermes.pyth.network}"
+      # Uncomment to enable loop liquidation (repeatedly liquidate until healthy):
+      # "--loop-liquidation",
+      # "--fixed-liquidation-amount-usd", "${FIXED_LIQUIDATION_AMOUNT_USD}",
+      # "--oneclick-api-token", "${ONECLICK_API_TOKEN}",
+      # "--ref-contract", "${REF_CONTRACT:-v2.ref-finance.near}"
+    ]
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 3G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'templar-liquidator' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp
