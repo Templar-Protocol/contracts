@@ -7,6 +7,7 @@ pub mod fee;
 pub mod incoming_deposit;
 pub mod interest_rate_strategy;
 pub mod market;
+pub mod market_supply;
 pub mod number;
 pub mod oracle;
 pub mod price;
@@ -17,7 +18,6 @@ pub mod time_chunk;
 #[cfg(feature = "rpc")]
 pub mod utils;
 pub mod vault;
-pub mod virtual_credit;
 pub mod withdrawal_queue;
 
 pub use primitive_types;

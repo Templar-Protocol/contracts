@@ -569,6 +569,12 @@ impl<T: AssetClass, R: Into<Self>> std::ops::SubAssign<R> for FungibleAssetAmoun
     }
 }
 
+impl<T: AssetClass> std::iter::Sum for FungibleAssetAmount<T> {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::zero(), |a, b| a + b)
+    }
+}
+
 pub type BorrowAssetAmount = FungibleAssetAmount<BorrowAsset>;
 pub type CollateralAssetAmount = FungibleAssetAmount<CollateralAsset>;
 

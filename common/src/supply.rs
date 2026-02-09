@@ -237,7 +237,7 @@ impl<'a> SupplyPositionGuard<'a> {
         let amount = self.position.borrow_asset_deposit.active_virtual;
         let realization = self
             .market
-            .virtual_credit
+            .supply
             .realize(from, until_snapshot_index, amount);
 
         self.position.virtual_realized_until_snapshot_index = realization.until_snapshot_index;
@@ -370,21 +370,6 @@ impl<'a> SupplyPositionGuard<'a> {
     pub fn accumulate_yield(&mut self) -> YieldAccumulationProof {
         self.accumulate_yield_partial(u32::MAX);
 
-        // let market_credit = self.market.borrow_asset_virtual_credit;
-        // let my_virtual = self.position.borrow_asset_deposit.active_virtual;
-
-        // Claim virtual to real
-        // let convertible = my_virtual.min(market_credit);
-        // if !convertible.is_zero() {
-        //     self.market.borrow_asset_virtual_credit -= convertible;
-
-        //     self.position.borrow_asset_deposit.active_virtual -= convertible;
-        //     self.market.borrow_asset_deposited_active_virtual -= convertible;
-
-        //     self.position.borrow_asset_deposit.active_real += convertible;
-        //     self.market.borrow_asset_deposited_active_real += convertible;
-        // }
-
         YieldAccumulationProof(())
     }
 
@@ -410,8 +395,7 @@ impl<'a> SupplyPositionGuard<'a> {
         }
 
         let requested_amount = requested_amount.min(entitled_to_withdraw);
-        let available_to_me =
-            self.market.borrow_asset_deposited_active_real - self.market.borrowed() + my_incoming;
+        let available_to_me = self.market.supply.real() - self.market.borrowed() + my_incoming;
         let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
 
         if can_withdraw_now.is_zero() {
@@ -435,7 +419,7 @@ impl<'a> SupplyPositionGuard<'a> {
 
         if !amount_to_remove.is_zero() {
             self.position.borrow_asset_deposit.active_real -= amount_to_remove;
-            self.market.borrow_asset_deposited_active_real -= amount_to_remove;
+            self.market.supply.remove_real(amount_to_remove);
         }
 
         // The only way to withdraw from a position is if it already has a deposit.

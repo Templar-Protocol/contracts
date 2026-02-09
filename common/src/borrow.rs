@@ -427,9 +427,10 @@ impl<'a> BorrowPositionGuard<'a> {
                 "Invariant violation: guaranteed supply weight <= total weight",
             )
         };
+        let current_snapshot_index = self.market.finalized_snapshots.len();
         self.market
-            .virtual_credit
-            .add_virtual_credit(virtual_credit_amount.into());
+            .supply
+            .add_virtual_credit(current_snapshot_index, virtual_credit_amount.into());
 
         let to_principal = {
             let minimum_amount = u128::from(self.market.configuration.borrow_range.minimum);
@@ -838,7 +839,9 @@ mod tests {
         };
 
         let mut market = Market::new(b"m", configuration.clone());
-        market.borrow_asset_deposited_active_real += BorrowAssetAmount::new(100_000_000_000);
+        market
+            .supply
+            .advance(0, BorrowAssetAmount::new(100_000_000_000), 0.into());
         market.borrow_asset_balance += BorrowAssetAmount::new(100_000_000_000);
         let snapshot_proof = market.snapshot();
 

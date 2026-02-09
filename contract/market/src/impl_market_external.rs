@@ -36,8 +36,8 @@ impl MarketExternalInterface for Contract {
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics {
         BorrowAssetMetrics {
             available: self.get_borrow_asset_available_to_borrow(),
-            deposited_active_real: self.borrow_asset_deposited_active_real,
-            deposited_active_virtual: self.borrow_asset_deposited_active_virtual,
+            deposited_active_real: self.supply.real(),
+            deposited_active_virtual: self.supply.r#virtual(),
             deposited_incoming: self.borrow_asset_deposited_incoming.clone(),
             borrowed: self.borrowed(),
         }

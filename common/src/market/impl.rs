@@ -11,11 +11,11 @@ use crate::{
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
     market::MarketConfiguration,
+    market_supply::MarketSupply,
     number::Decimal,
     snapshot::Snapshot,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
-    virtual_credit::VirtualCredit,
     withdrawal_queue::WithdrawalQueue,
     YEAR_PER_MS,
 };
@@ -43,15 +43,7 @@ pub struct Market {
     /// amount might be compounded yield (deposited into the protocol without
     /// actually being transferred in).
     pub borrow_asset_balance: BorrowAssetAmount,
-    /// Amount of borrow asset earning interest in the market that has real
-    /// deposits backing it.
-    pub borrow_asset_deposited_active_real: BorrowAssetAmount,
-    /// Amount of borrow asset earning interest in the market that does not
-    /// have real deposits backing it (i.e. compounded yield).
-    pub borrow_asset_deposited_active_virtual: BorrowAssetAmount,
-    /// Amount paid by borrowers for fees that has not yet been "real"-ized
-    /// (converting virtual to real) by supply positions during accumulation.
-    pub virtual_credit: VirtualCredit,
+    pub supply: MarketSupply,
     /// Upcoming snapshot indices with amounts of borrow asset that will be activated.
     pub borrow_asset_deposited_incoming: Vec<IncomingDeposit>,
     pub borrow_asset_withdrawal_in_flight: BorrowAssetAmount,
@@ -102,9 +94,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_balance: 0.into(),
-            borrow_asset_deposited_active_real: 0.into(),
-            borrow_asset_deposited_active_virtual: 0.into(),
-            virtual_credit: VirtualCredit::default(),
+            supply: MarketSupply::default(),
             borrow_asset_deposited_incoming: Vec::new(),
             borrow_asset_withdrawal_in_flight: 0.into(),
             borrow_asset_borrowed_in_flight: 0.into(),
@@ -126,7 +116,7 @@ impl Market {
     }
 
     pub fn active_supply(&self) -> BorrowAssetAmount {
-        self.borrow_asset_deposited_active_real + self.borrow_asset_deposited_active_virtual
+        self.supply.total()
     }
 
     pub fn borrowed(&self) -> BorrowAssetAmount {
@@ -164,10 +154,9 @@ impl Market {
         let current_snapshot_index = self.finalized_snapshots.len();
         let incoming = self.incoming_at(current_snapshot_index);
 
-        let active_real =
-            self.borrow_asset_deposited_active_real + incoming.map_or(0.into(), |i| i.amount_real);
-        let active_virtual = self.borrow_asset_deposited_active_virtual
-            + incoming.map_or(0.into(), |i| i.amount_virtual);
+        let active_real = self.supply.real() + incoming.map_or(0.into(), |i| i.amount_real);
+        let active_virtual =
+            self.supply.r#virtual() + incoming.map_or(0.into(), |i| i.amount_virtual);
 
         let borrowed = self.borrowed();
 
@@ -214,10 +203,9 @@ impl Market {
         for i in 0..self.borrow_asset_deposited_incoming.len() {
             let incoming = &self.borrow_asset_deposited_incoming[i];
             if incoming.activate_at_snapshot_index == current_snapshot_index {
-                self.borrow_asset_deposited_active_real += incoming.amount_real;
-                self.borrow_asset_deposited_active_virtual += incoming.amount_virtual;
-                self.virtual_credit
-                    .add_virtual_supply(current_snapshot_index, incoming.amount_virtual);
+                let real = incoming.amount_real;
+                let virt = incoming.amount_virtual;
+                self.supply.advance(current_snapshot_index, real, virt);
                 self.borrow_asset_deposited_incoming.remove(i);
                 break;
             }
@@ -249,12 +237,13 @@ impl Market {
         )]
         let must_retain: BorrowAssetAmount = ((1u32
             - self.configuration.borrow_asset_maximum_usage_ratio)
-            * Decimal::from(self.borrow_asset_deposited_active_real))
+            * Decimal::from(self.supply.real()))
         .to_u128_ceil()
         .unwrap()
         .into();
 
-        self.borrow_asset_deposited_active_real
+        self.supply
+            .real()
             .saturating_sub(self.borrowed())
             .saturating_sub(must_retain)
     }
@@ -863,14 +852,8 @@ mod tests {
 
         c.tick(); // move incoming to active
         assert_eq!(c.market.borrow_asset_balance, 10_500_000.into());
-        assert_eq!(
-            c.market.borrow_asset_deposited_active_real,
-            10_000_000.into()
-        );
-        assert_eq!(
-            c.market.borrow_asset_deposited_active_virtual,
-            450_000.into()
-        );
+        assert_eq!(c.market.supply.real(), 10_000_000.into());
+        assert_eq!(c.market.supply.r#virtual(), 450_000.into());
         assert_eq!(
             c.market.get_borrow_asset_available_to_borrow(),
             BorrowAssetAmount::new(10_000_000 * 9 / 10),
@@ -975,19 +958,27 @@ mod tests {
             c.market.borrow_asset_balance,
             amount_repaid - BorrowAssetAmount::new(50_000_000),
         );
+        eprintln!("{:#?}", c.market.supply);
         assert_eq!(
             c.market.get_borrow_asset_available_to_borrow(),
-            BorrowAssetAmount::new(50_000_000) + yield_amount
+            BorrowAssetAmount::new(50_000_000) // + yield_amount
         );
 
         // Supply withdrawal final
         c.withdraw_supply_final(supply_id.clone(), &withdrawal);
-        // TODO: might need to accumulate yield
+        eprintln!("{:#?}", c.market.supply);
         assert_eq!(
             c.market.borrow_asset_balance,
             amount_repaid - BorrowAssetAmount::new(50_000_000),
         );
         assert_eq!(c.market.borrow_asset_deposited_incoming.len(), 0);
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            BorrowAssetAmount::new(50_000_000) // + yield_amount
+        );
+
+        c.accumulate_yield(supply_id.clone());
+        eprintln!("{:#?}", c.market.supply);
         assert_eq!(
             c.market.get_borrow_asset_available_to_borrow(),
             BorrowAssetAmount::new(50_000_000) + yield_amount
@@ -1010,14 +1001,8 @@ mod tests {
         );
         eprintln!("Borrow asset balance: {}", c.market.borrow_asset_balance);
         eprintln!("Borrow asset borrowed: {}", c.market.borrow_asset_borrowed);
-        eprintln!(
-            "Borrow asset deposited active real: {}",
-            c.market.borrow_asset_deposited_active_real,
-        );
-        eprintln!(
-            "Borrow asset deposited active virtual: {}",
-            c.market.borrow_asset_deposited_active_virtual,
-        );
+        eprintln!("Real supply: {}", c.market.supply.real());
+        eprintln!("Virtual supply: {}", c.market.supply.r#virtual());
 
         // Borrow2 initial
         let initial = c.borrow_initial(borrow_2_id.clone(), second_borrow_amount);
@@ -1047,14 +1032,8 @@ mod tests {
         );
         eprintln!("Borrow asset balance: {}", c.market.borrow_asset_balance);
         eprintln!("Borrow asset borrowed: {}", c.market.borrow_asset_borrowed);
-        eprintln!(
-            "Borrow asset deposited active real: {}",
-            c.market.borrow_asset_deposited_active_real,
-        );
-        eprintln!(
-            "Borrow asset deposited active virtual: {}",
-            c.market.borrow_asset_deposited_active_virtual,
-        );
+        eprintln!("Real supply: {}", c.market.supply.real());
+        eprintln!("Virtual supply: {}", c.market.supply.r#virtual());
     }
 
     #[test]
