@@ -2687,3 +2687,81 @@ fn allocation_full_completion() {
     let result = complete_allocation(result.new_state, op_id, None).unwrap();
     assert!(matches!(result.new_state, OpState::Idle));
 }
+
+// =============================================================================
+// Proptest Regression Edge Cases (deterministic)
+// =============================================================================
+// These tests encode specific edge cases discovered by proptest regressions.
+// See proptest-regressions/transitions.txt and property_tests.proptest-regressions.
+
+/// Regression: withdrawal with amount=1, escrow_shares=1 followed by
+/// collected1=1 leaves remaining=0 — second step is correctly skipped.
+/// Seeds: transitions.txt cc 0a7898a6, property_tests cc 0bd733bf.
+#[test]
+fn regression_withdrawal_amount_one_single_step() {
+    let request = WithdrawalRequest {
+        op_id: 1,
+        amount: 1,
+        receiver: [34; 32],
+        owner: [17; 32],
+        escrow_shares: 1,
+    };
+    let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+    assert!(result.new_state.is_withdrawing());
+
+    let w = result.new_state.as_withdrawing().unwrap();
+    assert_eq!(w.remaining, 1);
+    assert_eq!(w.collected, 0);
+
+    // Collect 1 — remaining becomes 0, no second step possible.
+    let step1 = withdrawal_step_callback(result.new_state, 1, 1).unwrap();
+    let w1 = step1.new_state.as_withdrawing().unwrap();
+    assert_eq!(w1.collected, 1);
+    assert_eq!(w1.remaining, 0);
+    assert_eq!(w1.index, 1);
+}
+
+/// Regression: withdrawal_collected with burn_shares <= escrow_shares succeeds
+/// when amount=1 and we collected everything in one step.
+/// Verifies the full withdrawal flow completes for minimal amounts.
+#[test]
+fn regression_minimal_withdrawal_full_flow() {
+    let request = WithdrawalRequest {
+        op_id: 1,
+        amount: 1,
+        receiver: [34; 32],
+        owner: [17; 32],
+        escrow_shares: 1,
+    };
+    let result = start_withdrawal(OpState::Idle, request).unwrap();
+
+    // Collect exactly 1
+    let step = withdrawal_step_callback(result.new_state, 1, 1).unwrap();
+
+    // Now we have remaining=0. Build the final state for withdrawal_collected.
+    // burn_shares=1 which equals escrow_shares=1 — should succeed.
+    let collected = withdrawal_collected(step.new_state, 1, 1);
+    assert!(collected.is_ok());
+    let final_result = collected.unwrap();
+    // After collection, we should be in Payout state
+    assert!(final_result.new_state.is_payout());
+}
+
+/// Regression: invariant check with idle=1, external=1, delta=1 — ensures
+/// total_assets != idle+external when extra delta is added.
+/// Seed: property_tests cc 22c3dbcf.
+#[test]
+fn regression_invariant_check_minimal_delta() {
+    let idle = 1u128;
+    let external = 1u128;
+    let delta = 1u128;
+    let total = idle.saturating_add(external).saturating_add(delta);
+    let mut state = VaultState::new();
+    state.total_assets = total; // 3
+    state.total_shares = 0;
+    state.idle_assets = idle; // 1
+    state.external_assets = external; // 1
+    state.fee_anchor = FeeAccrualAnchor::new(total, 0);
+    // total_assets(3) != idle(1) + external(1) = invariant violation
+    assert!(!state.check_invariant(), "should detect invariant violation: 3 != 1 + 1");
+}
