@@ -8,7 +8,7 @@ use clap::Parser;
 use near_sdk::AccountId;
 use templar_common::utils::Network;
 
-use crate::{service::ServiceConfig, CollateralStrategy};
+use crate::{service::ServiceConfig, swap::SwapRetryConfig, CollateralStrategy};
 
 /// Validator function for `partial_percentage` range
 fn validate_percentage(s: &str) -> Result<u8, String> {
@@ -27,6 +27,7 @@ fn validate_percentage(s: &str) -> Result<u8, String> {
 #[derive(Debug, Clone, Parser)]
 #[command(name = "templar-liquidator")]
 #[command(about = "Inventory-based liquidator bot for Templar Protocol")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Args {
     /// Market registries to run liquidations for
     #[arg(short, long, env = "REGISTRY_ACCOUNT_IDS")]
@@ -124,6 +125,23 @@ pub struct Args {
     /// Enable automatic Pyth price updates before liquidations
     #[arg(long, env = "AUTO_UPDATE_PRICES", default_value_t = false)]
     pub auto_update_prices: bool,
+
+    /// Minimum USD value to attempt a swap (JIT or batch).
+    /// Amounts below this threshold are skipped and left for batch swap.
+    #[arg(long, env = "MIN_SWAP_VALUE_USD", default_value_t = 10.0)]
+    pub min_swap_value_usd: f64,
+
+    /// Enable batch swap of accumulated collateral at the start of each liquidation round.
+    #[arg(long, env = "BATCH_SWAP_ON_CYCLE_START", default_value_t = true)]
+    pub batch_swap_on_cycle_start: bool,
+
+    /// Maximum retry attempts for transient swap errors
+    #[arg(long, env = "SWAP_RETRY_ATTEMPTS", default_value_t = 3)]
+    pub swap_retry_attempts: u32,
+
+    /// Base delay in milliseconds for swap retry exponential backoff (2s, 4s, 8s …)
+    #[arg(long, env = "SWAP_RETRY_BASE_DELAY_MS", default_value_t = 2000)]
+    pub swap_retry_base_delay_ms: u64,
 }
 
 impl Args {
@@ -268,6 +286,12 @@ impl Args {
             max_loop_iterations: self.max_loop_iterations,
             hermes_url: self.hermes_url.clone(),
             auto_update_prices: self.auto_update_prices,
+            min_swap_value_usd: self.min_swap_value_usd,
+            batch_swap_on_cycle_start: self.batch_swap_on_cycle_start,
+            swap_retry_config: SwapRetryConfig {
+                max_attempts: self.swap_retry_attempts,
+                base_delay_ms: self.swap_retry_base_delay_ms,
+            },
         }
     }
 
@@ -317,6 +341,10 @@ mod tests {
             max_loop_iterations: 10,
             hermes_url: "https://hermes.pyth.network".to_string(),
             auto_update_prices: false,
+            min_swap_value_usd: 10.0,
+            batch_swap_on_cycle_start: true,
+            swap_retry_attempts: 3,
+            swap_retry_base_delay_ms: 2000,
         }
     }
 

@@ -193,6 +193,8 @@ impl Liquidator {
         hermes_url: Option<String>,
         auto_update_prices: bool,
         signer_for_oracle: &Option<(AccountId, near_crypto::SecretKey)>,
+        swap_retry_config: crate::swap::SwapRetryConfig,
+        min_swap_value_usd: f64,
     ) -> Self {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
         let oracle_fetcher = oracle::OracleFetcher::new(
@@ -210,6 +212,8 @@ impl Liquidator {
             dry_run,
             collateral_strategy,
             swap_provider,
+            swap_retry_config,
+            min_swap_value_usd,
         );
 
         Self {
@@ -229,6 +233,11 @@ impl Liquidator {
     /// Get reference to the scanner (for compatibility checks)
     pub fn scanner(&self) -> &scanner::MarketScanner {
         &self.scanner
+    }
+
+    /// Get reference to the market configuration
+    pub fn market_configuration(&self) -> &MarketConfiguration {
+        &self.market_config
     }
 
     /// Fetches and caches the market version via NEP-330 contract metadata.
@@ -293,9 +302,12 @@ impl Liquidator {
         oracle_response: OracleResponse,
     ) -> Result<LiquidationOutcome, LiquidatorError> {
         // Loop liquidation support - controlled by LOOP_LIQUIDATION parameter
-        let loop_enabled = self.loop_liquidation;
+        // In dry run mode, skip looping since position state doesn't change
+        // (no actual liquidation happens, so re-checking yields identical results)
+        let dry_run = self.executor.is_dry_run();
+        let loop_enabled = self.loop_liquidation && !dry_run;
         let mut loop_iteration = 0;
-        let max_iterations = self.max_loop_iterations;
+        let max_iterations = if dry_run { 1 } else { self.max_loop_iterations };
         let mut total_liquidated_amount = 0u128;
         let mut total_collateral_received = 0u128;
 
@@ -702,30 +714,43 @@ impl Liquidator {
             });
 
         // If prices are missing/stale and auto-update is enabled, try to update them
+        let dry_run = self.executor.is_dry_run();
         if has_stale_prices && self.auto_update_prices {
-            tracing::warn!(
-                price_ids = ?price_ids,
-                max_age_s = price_max_age,
-                "Oracle prices are missing or stale, attempting to update from Pyth Hermes (AUTO_UPDATE_PRICES=true)"
-            );
+            if dry_run {
+                tracing::info!(
+                    price_ids = ?price_ids,
+                    max_age_s = price_max_age,
+                    "[DRY RUN] Oracle prices are missing or stale, skipping on-chain update"
+                );
+            } else {
+                tracing::warn!(
+                    price_ids = ?price_ids,
+                    max_age_s = price_max_age,
+                    "Oracle prices are missing or stale, attempting to update from Pyth Hermes (AUTO_UPDATE_PRICES=true)"
+                );
 
-            match self
-                .oracle_fetcher
-                .update_pyth_prices(&oracle_account, &price_ids)
-                .await
-            {
-                Ok(true) => {
-                    tracing::info!("Successfully updated Pyth prices, re-fetching");
-                    oracle_response = self
-                        .oracle_fetcher
-                        .get_oracle_prices(oracle_account.clone(), &price_ids, price_max_age)
-                        .await?;
-                }
-                Ok(false) => {
-                    tracing::warn!("Price update was skipped (no signer or already fresh)");
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to update Pyth prices");
+                match self
+                    .oracle_fetcher
+                    .update_pyth_prices(&oracle_account, &price_ids)
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::info!("Successfully updated Pyth prices, re-fetching");
+                        oracle_response = self
+                            .oracle_fetcher
+                            .get_oracle_prices(
+                                oracle_account.clone(),
+                                &price_ids,
+                                price_max_age,
+                            )
+                            .await?;
+                    }
+                    Ok(false) => {
+                        tracing::warn!("Price update was skipped (no signer or already fresh)");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to update Pyth prices");
+                    }
                 }
             }
         } else if has_stale_prices {
