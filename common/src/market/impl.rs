@@ -217,7 +217,7 @@ impl Market {
                 self.borrow_asset_deposited_active_real += incoming.amount_real;
                 self.borrow_asset_deposited_active_virtual += incoming.amount_virtual;
                 self.virtual_credit
-                    .add(current_snapshot_index, 0.into(), incoming.amount_virtual);
+                    .add_virtual_supply(current_snapshot_index, incoming.amount_virtual);
                 self.borrow_asset_deposited_incoming.remove(i);
                 break;
             }

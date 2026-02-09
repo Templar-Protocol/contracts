@@ -17,7 +17,12 @@ pub struct VirtualCredit {
 }
 
 impl VirtualCredit {
-    fn check_invariants(&self) -> bool {
+    #[cfg(not(test))]
+    #[inline(always)]
+    #[allow(clippy::unused_self)]
+    fn check_invariants(&self) {}
+    #[cfg(test)]
+    fn check_invariants(&self) {
         debug_assert!(
             self.excess_virtual_credit.is_zero() || self.uncredited_virtual_supply.is_zero(),
             "both excess credit and uncredited supply may not be nonzero simultaneously"
@@ -43,11 +48,9 @@ impl VirtualCredit {
                 prev.snapshot_index < curr.snapshot_index,
                 "snapshot indices did not increase: {} >= {}",
                 prev.snapshot_index,
-                curr.snapshot_index
+                curr.snapshot_index,
             );
         }
-
-        true
     }
 
     fn entry_index_for_snapshot_index(&self, snapshot_index: u32) -> usize {
@@ -82,14 +85,10 @@ impl VirtualCredit {
 
     fn merge(&mut self, from_entry_index: usize) {
         let mut merged = Vec::new();
-        let mut prev = Entry {
-            snapshot_index: 0,
-            add_virtual_credit: 0.into(),
-            add_market_virtual: 0.into(),
-        };
+        let mut prev = Entry::new(0, 0, 0);
         for current in &self.entries[from_entry_index..] {
             if (current.add_market_virtual.is_zero() && prev.add_market_virtual.is_zero())
-                || current.add_virtual_credit.is_zero()
+                || prev.add_virtual_credit.is_zero()
             {
                 prev.snapshot_index = current.snapshot_index;
                 prev.add_market_virtual += current.add_market_virtual;
@@ -105,7 +104,9 @@ impl VirtualCredit {
     }
 
     pub fn add_virtual_supply(&mut self, snapshot_index: u32, amount: BorrowAssetAmount) {
-        debug_assert!(self.check_invariants());
+        self.check_invariants();
+
+        eprintln!("add_virtual_supply({snapshot_index}, {amount})");
         let realized_excess = if amount > self.excess_virtual_credit {
             let realized_excess = self.excess_virtual_credit;
             self.uncredited_virtual_supply += amount - realized_excess;
@@ -116,29 +117,30 @@ impl VirtualCredit {
             amount
         };
 
-        if !realized_excess.is_zero() {
-            if let Some(current) = self
-                .entries
-                .last_mut()
-                .filter(|d| d.snapshot_index == snapshot_index)
-            {
-                current.add_market_virtual += amount;
-                current.add_virtual_credit += realized_excess;
-            } else {
-                self.entries.push(Entry {
-                    snapshot_index,
-                    add_virtual_credit: realized_excess,
-                    add_market_virtual: amount,
-                });
-            }
+        eprintln!("add_virtual_supply[realized_excess = {realized_excess}]");
 
-            self.merge(self.entries.len().saturating_sub(2));
+        if let Some(current) = self
+            .entries
+            .last_mut()
+            .filter(|d| d.snapshot_index == snapshot_index || d.add_virtual_credit.is_zero())
+        {
+            eprintln!("add_virtual_supply[current = {current:?}]");
+            current.snapshot_index = snapshot_index;
+            current.add_market_virtual += amount;
+            current.add_virtual_credit += realized_excess;
+        } else {
+            eprintln!("add_virtual_supply[pushing({snapshot_index}, {realized_excess}, {amount})]");
+            self.entries
+                .push(Entry::new(snapshot_index, realized_excess, amount));
         }
-        debug_assert!(self.check_invariants());
+
+        self.check_invariants();
     }
 
-    pub fn add_virtual_credit(&mut self, snapshot_index: u32, amount: BorrowAssetAmount) {
-        debug_assert!(self.check_invariants());
+    pub fn add_virtual_credit(&mut self, amount: BorrowAssetAmount) {
+        self.check_invariants();
+
+        eprintln!("add_virtual_credit({amount})");
         let amount_to_insert = if amount > self.uncredited_virtual_supply {
             let uncredited = self.uncredited_virtual_supply;
             self.excess_virtual_credit += amount - uncredited;
@@ -148,25 +150,19 @@ impl VirtualCredit {
             self.uncredited_virtual_supply -= amount;
             amount
         };
+        eprintln!("add_virtual_credit[amount_to_insert = {amount_to_insert}]");
 
         if !amount_to_insert.is_zero() {
-            if let Some(current) = self
-                .entries
-                .last_mut()
-                .filter(|d| d.snapshot_index == snapshot_index)
-            {
+            if let Some(current) = self.entries.last_mut() {
                 current.add_virtual_credit += amount_to_insert;
             } else {
-                self.entries.push(Entry {
-                    snapshot_index,
-                    add_virtual_credit: amount_to_insert,
-                    add_market_virtual: 0.into(),
-                });
+                crate::panic_with_message(
+                    "Invariant violation: entries must not be empty if amount_to_insert != 0",
+                );
             }
-
-            self.merge(self.entries.len().saturating_sub(2));
         }
-        debug_assert!(self.check_invariants());
+
+        self.check_invariants();
     }
 
     pub fn realize(
@@ -175,7 +171,8 @@ impl VirtualCredit {
         until_snapshot_index: u32,
         mut position_virtual: BorrowAssetAmount,
     ) -> Realization {
-        debug_assert!(self.check_invariants());
+        self.check_invariants();
+
         if from_snapshot_index > until_snapshot_index {
             crate::panic_with_message(&format!("Invariant violation: from_snapshot_index > until_snapshot_index ({from_snapshot_index} > {until_snapshot_index})"));
         }
@@ -210,7 +207,7 @@ impl VirtualCredit {
         self.reduce(from_entry_index, realized);
         self.merge(from_entry_index);
 
-        debug_assert!(self.check_invariants());
+        self.check_invariants();
 
         Realization {
             amount: realized,
@@ -233,6 +230,20 @@ struct Entry {
     add_market_virtual: BorrowAssetAmount,
 }
 
+impl Entry {
+    pub fn new(
+        snapshot_index: u32,
+        add_virtual_credit: impl Into<BorrowAssetAmount>,
+        add_market_virtual: impl Into<BorrowAssetAmount>,
+    ) -> Self {
+        Self {
+            snapshot_index,
+            add_virtual_credit: add_virtual_credit.into(),
+            add_market_virtual: add_market_virtual.into(),
+        }
+    }
+}
+
 #[allow(clippy::cast_possible_truncation)]
 #[cfg(test)]
 mod tests {
@@ -249,24 +260,13 @@ mod tests {
 
         v.add_virtual_supply(0, 0.into());
 
-        assert_eq!(
-            v.entries,
-            vec![Entry {
-                snapshot_index: 0,
-                add_virtual_credit: 0.into(),
-                add_market_virtual: 0.into(),
-            }]
-        );
+        assert_eq!(v.entries, vec![Entry::new(0, 0, 0)]);
 
         v.add_virtual_supply(0, 0.into());
 
         assert_eq!(
             v.entries,
-            vec![Entry {
-                snapshot_index: 0,
-                add_virtual_credit: 0.into(),
-                add_market_virtual: 0.into(),
-            }],
+            vec![Entry::new(0, 0, 0)],
             "merge identical zero entries"
         );
 
@@ -275,11 +275,7 @@ mod tests {
 
         assert_eq!(
             v.entries,
-            vec![Entry {
-                snapshot_index: 5,
-                add_virtual_credit: 0.into(),
-                add_market_virtual: 0.into(),
-            }],
+            vec![Entry::new(5, 0, 0)],
             "merge zero entries to highest snapshot"
         );
 
@@ -288,35 +284,23 @@ mod tests {
 
         assert_eq!(
             v.entries,
-            vec![Entry {
-                snapshot_index: 7,
-                add_virtual_credit: 0.into(),
-                add_market_virtual: 130.into(),
-            }],
+            vec![Entry::new(7, 0, 130)],
             "merge entries with zero virtual credit to highest snapshot"
         );
 
-        v.add_virtual_credit(8, 80.into());
+        v.add_virtual_credit(80.into());
 
         assert_eq!(
             v.entries,
-            vec![Entry {
-                snapshot_index: 8,
-                add_virtual_credit: 80.into(),
-                add_market_virtual: 130.into(),
-            }],
-            "add_market_virtual is evaluated before add_virtual_credit"
+            vec![Entry::new(7, 80, 130)],
+            "add virtual credit < market virtual"
         );
 
         v.add_virtual_supply(8, 10.into());
 
         assert_eq!(
             v.entries,
-            vec![Entry {
-                snapshot_index: 8,
-                add_virtual_credit: 80.into(),
-                add_market_virtual: 140.into(),
-            }],
+            vec![Entry::new(7, 80, 130), Entry::new(8, 0, 10)],
             "adding more virtual supply in same snapshot is ok"
         );
 
@@ -324,58 +308,70 @@ mod tests {
 
         assert_eq!(
             v.entries,
-            vec![
-                Entry {
-                    snapshot_index: 8,
-                    add_virtual_credit: 80.into(),
-                    add_market_virtual: 140.into(),
-                },
-                Entry {
-                    snapshot_index: 9,
-                    add_virtual_credit: 0.into(),
-                    add_market_virtual: 10.into(),
-                },
-            ],
-            "next snapshot after credit forces new entry"
+            vec![Entry::new(7, 80, 130), Entry::new(9, 0, 20)],
         );
 
-        v.add_virtual_supply(9, 10.into());
+        v.add_virtual_credit(100.into());
+
+        assert_eq!(
+            v.entries,
+            vec![Entry::new(7, 80, 130), Entry::new(9, 70, 20)],
+        );
+
+        v.add_virtual_supply(10, 20.into());
 
         assert_eq!(
             v.entries,
             vec![
-                Entry {
-                    snapshot_index: 8,
-                    add_virtual_credit: 80.into(),
-                    add_market_virtual: 140.into(),
-                },
-                Entry {
-                    snapshot_index: 9,
-                    add_virtual_credit: 0.into(),
-                    add_market_virtual: 20.into(),
-                },
+                Entry::new(7, 80, 130),
+                Entry::new(9, 70, 20),
+                Entry::new(10, 20, 20),
             ],
-            "adding virtual supply works as normal"
         );
 
-        v.add_virtual_supply(9, 10.into());
+        v.add_virtual_supply(11, 20.into());
 
         assert_eq!(
             v.entries,
             vec![
-                Entry {
-                    snapshot_index: 8,
-                    add_virtual_credit: 80.into(),
-                    add_market_virtual: 140.into(),
-                },
-                Entry {
-                    snapshot_index: 9,
-                    add_virtual_credit: 0.into(),
-                    add_market_virtual: 20.into(),
-                },
+                Entry::new(7, 80, 130),
+                Entry::new(9, 70, 20),
+                Entry::new(10, 20, 20),
+                Entry::new(11, 10, 20),
             ],
-            "adding virtual supply works as normal"
         );
+
+        let r = v.realize(0, 10, 140.into());
+        assert_eq!(r.amount, 140.into());
+        assert_eq!(r.until_snapshot_index, 10);
+
+        assert_eq!(
+            v.entries,
+            vec![
+                Entry::new(9, 10, 10),
+                Entry::new(10, 20, 20),
+                Entry::new(11, 10, 20),
+            ],
+        );
+
+        let r = v.realize(10, 11, 10.into());
+        assert_eq!(r.amount, 10.into());
+        assert_eq!(r.until_snapshot_index, 11);
+
+        assert_eq!(
+            v.entries,
+            vec![
+                Entry::new(9, 10, 10),
+                Entry::new(10, 10, 10),
+                Entry::new(11, 10, 20),
+            ],
+        );
+
+        let r = v.realize(0, 12, 40.into());
+        assert_eq!(r.amount, 30.into());
+        assert_eq!(r.until_snapshot_index, 12);
+
+        assert_eq!(v.entries, vec![Entry::new(11, 0, 10)]);
     }
 
     #[rstest::rstest]
@@ -383,6 +379,7 @@ mod tests {
         #[values(
             &[Cmd::VirtualSupply(100), Cmd::VirtualSupply(10), Cmd::Credit(50), Cmd::Credit(50), Cmd::VirtualSupply(20)],
             &[Cmd::VirtualSupply(100), Cmd::Credit(10), Cmd::Credit(50), Cmd::VirtualSupply(50), Cmd::VirtualSupply(20), Cmd::Credit(40)],
+            &[Cmd::Credit(100), Cmd::Credit(10), Cmd::Credit(50), Cmd::VirtualSupply(50), Cmd::VirtualSupply(20), Cmd::VirtualSupply(30)],
         )]
         ops: &[Cmd],
         #[values(&[50, 40, 10])] positions: &[u128],
@@ -392,10 +389,10 @@ mod tests {
         for (i, op) in ops.iter().enumerate() {
             match op {
                 Cmd::VirtualSupply(supply) => {
-                    v.add(i as u32, 0.into(), (*supply).into());
+                    v.add_virtual_supply(i as u32, (*supply).into());
                 }
                 Cmd::Credit(credit) => {
-                    v.add(i as u32, (*credit).into(), 0.into());
+                    v.add_virtual_credit((*credit).into());
                 }
             }
         }
@@ -416,10 +413,11 @@ mod tests {
         let position_virtual: BorrowAssetAmount = position_virtual.into();
 
         let mut v = VirtualCredit::default();
-        v.add(1, 0.into(), 50.into());
-        v.add(2, 10.into(), 50.into());
-        v.add(3, 100.into(), 0.into());
-        v.add(4, 0.into(), 50.into());
+        v.add_virtual_supply(1, 50.into());
+        v.add_virtual_supply(2, 50.into());
+        v.add_virtual_credit(10.into());
+        v.add_virtual_credit(100.into());
+        v.add_virtual_supply(4, 50.into());
         let mut total = BorrowAssetAmount::zero();
         let mut remaining = position_virtual;
         for i in 1..splits.len() {
