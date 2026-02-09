@@ -1,27 +1,33 @@
 # GCP Infrastructure (OpenTofu)
 
-This stack provisions the GCP foundation for a container-based CI/CD flow:
+This stack provisions both CI/CD integration and runtime infrastructure:
 
 - Required project APIs
 - Artifact Registry Docker repository
-- GitHub Actions service account
-- Workload Identity Federation (GitHub OIDC -> GCP SA impersonation)
+- GitHub Actions OIDC federation (no static JSON key)
+- Runtime VPC + subnet
+- Runtime service account and IAM
+- Relayer runtime as a regional managed instance group (HA + autoscaling)
+- Market-monitor runtime as a single Compute Engine VM
+- Funding-bridge runtime as a single Compute Engine VM
+- Accumulator runtime as a lightweight single Compute Engine VM
 
-This is enough to support the next step of pushing images from GitHub Actions without static JSON keys.
+`liquidator` is intentionally not included in this runtime stack.
 
 ## Prerequisites
 
 - OpenTofu `>= 1.8`
 - GCP project with billing enabled
-- A principal with permission to manage IAM, Service Usage, and Artifact Registry
+- A principal with permission to manage IAM, Service Usage, and Compute resources
 
 ## Files
 
 - `versions.tf`: provider and version constraints
 - `providers.tf`: Google provider config
 - `variables.tf`: input variables
-- `main.tf`: resources
-- `outputs.tf`: values used by CI
+- `main.tf`: CI/CD foundation resources
+- `runtime.tf`: runtime compute resources
+- `outputs.tf`: values used by CI and operations
 - `terraform.tfvars.example`: sample inputs
 
 ## Usage
@@ -32,20 +38,63 @@ cp terraform.tfvars.example terraform.tfvars
 # edit terraform.tfvars
 
 tofu init
+tofu workspace select -or-create dev
 tofu plan
 tofu apply
 ```
 
-## Key outputs
+State backend is fixed in `backend.tf`:
 
-After apply, capture:
+- bucket: `templar-contract-mvp-tfstate`
+- prefix: `templar/gcp`
 
-- `github_workload_identity_provider`
-- `github_actions_service_account_email`
-- `artifact_registry_host`
-- `artifact_registry_image_base`
+Use workspaces to separate environments (`dev`, `main`):
 
-Use those in GitHub Actions secrets/variables for build/push jobs.
+- `dev` workspace state
+- `main` workspace state
+
+For local validation without backend:
+
+```bash
+tofu init -backend=false
+tofu validate
+```
+
+## Runtime architecture
+
+- `relayer`
+  - `google_compute_region_instance_group_manager`
+  - default 2 replicas across zones (`<region>-b`, `<region>-c`)
+  - health check + autohealing
+  - optional autoscaling by CPU
+  - high-performance default machine type: `e2-standard-4`
+- `accumulator`
+  - `google_compute_instance` (single node)
+  - lightweight default machine type: `e2-micro`
+  - default schedule-oriented env (`INTERVAL=43200`, `STATIC_INTERVAL=86400`)
+- `market-monitor`
+  - `google_compute_instance` (single node)
+  - default machine type: `e2-small`
+- `funding-bridge`
+  - `google_compute_instance` (single node)
+  - default machine type: `e2-small`
+  - ingress firewall on `funding_bridge_port` (default `3000`)
+
+All runtime services run the pushed Artifact Registry image and execute service-specific binaries:
+
+- relayer: `/app/bin/templar-relayer`
+- market-monitor: `/app/bin/templar-market-monitor`
+- funding-bridge: `/app/bin/templar-funding-bridge`
+- accumulator: `/app/bin/templar-accumulator`
+
+## Required runtime env
+
+Set service env maps in `terraform.tfvars`:
+
+- `relayer_env` must include the required relayer configuration (database, signer keys, monitored registries, etc.)
+- `market_monitor_env` should contain monitor-specific runtime configuration
+- `funding_bridge_env` must include bridge treasury/runtime configuration
+- `accumulator_env` must include signer and registry configuration
 
 ## GitHub repository configuration
 
@@ -55,29 +104,42 @@ Set these in your GitHub repository after `tofu apply`:
   - `GCP_WORKLOAD_IDENTITY_PROVIDER` = `github_workload_identity_provider`
   - `GCP_SERVICE_ACCOUNT_EMAIL` = `github_actions_service_account_email`
 - `Variables`
+  - `GCP_PROJECT_ID` = your GCP project ID
   - `GCP_ARTIFACT_REGISTRY_HOST` = `artifact_registry_host`
   - `GCP_ARTIFACT_REGISTRY_IMAGE_BASE` = `artifact_registry_image_base`
 
-The workflow `.github/workflows/build-service-image.yml` uses these values to authenticate with OIDC and push images to Artifact Registry.
+Workflows:
 
-## Example GitHub Actions auth step
+- `.github/workflows/build-service-image.yml`: builds and pushes container images
+- `.github/workflows/infrastructure-gcp.yml`: runs `tofu plan` on PRs and `tofu apply` on pushes to `main`/`dev`
 
-```yaml
-permissions:
-  contents: read
-  id-token: write
+## Key outputs
 
-steps:
-  - uses: actions/checkout@v4
-  - uses: google-github-actions/auth@v2
-    with:
-      workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
-  - uses: google-github-actions/setup-gcloud@v2
-  - run: gcloud auth configure-docker ${{ vars.GCP_ARTIFACT_REGISTRY_HOST }} --quiet
-```
+CI/CD outputs:
+
+- `github_workload_identity_provider`
+- `github_actions_service_account_email`
+- `artifact_registry_host`
+- `artifact_registry_image_base`
+
+Runtime outputs:
+
+- `runtime_service_account_email`
+- `runtime_network`
+- `relayer_instance_group`
+- `relayer_region`
+- `relayer_service_port`
+- `market_monitor_instance_name`
+- `market_monitor_external_ip`
+- `funding_bridge_instance_name`
+- `funding_bridge_external_ip`
+- `funding_bridge_service_port`
+- `accumulator_instance_name`
+- `accumulator_external_ip`
 
 ## Notes
 
-- OIDC trust is restricted to `github_repository`.
-- Branch/tag-level restrictions can be added later using stricter provider conditions or IAM conditions once your deployment flow is finalized.
+- `relayer_allowed_source_ranges` defaults to `0.0.0.0/0`; tighten this for production.
+- `funding_bridge_allowed_source_ranges` defaults to `0.0.0.0/0`; tighten this for production.
+- Runtime env maps are stored in Terraform state; move secrets to Secret Manager integration in a follow-up.
+- This stack does not yet provision a public load balancer for relayer; add one in a follow-up if you need a single stable endpoint.

@@ -7,6 +7,7 @@ locals {
 
   required_project_services = toset(concat([
     "artifactregistry.googleapis.com",
+    "compute.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",

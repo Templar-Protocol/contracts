@@ -4,10 +4,74 @@ region     = "europe-west3"
 # Restrict GitHub OIDC trust to this repository.
 github_repository = "Templar-Protocol/contracts"
 
-# Optional: add deploy roles later when you wire deployment in CI.
-# github_actions_service_account_project_roles = [
-#   "roles/artifactregistry.reader",
-#   "roles/artifactregistry.writer",
-#   "roles/compute.instanceAdmin.v1",
-#   "roles/iam.serviceAccountUser",
-# ]
+# Runtime infrastructure
+# Set to false if you only want registry + OIDC.
+enable_runtime = true
+
+# Service enablement (liquidator intentionally excluded from this stack)
+relayer_enabled        = true
+market_monitor_enabled = true
+accumulator_enabled    = true
+funding_bridge_enabled = true
+
+# Optionally pin image tags for controlled rollouts.
+# relayer_image     = "europe-west3-docker.pkg.dev/your-gcp-project-id/templar-services/templar:sha-<commit>"
+# accumulator_image = "europe-west3-docker.pkg.dev/your-gcp-project-id/templar-services/templar:sha-<commit>"
+# market_monitor_image = "europe-west3-docker.pkg.dev/your-gcp-project-id/templar-services/templar:sha-<commit>"
+# funding_bridge_image = "europe-west3-docker.pkg.dev/your-gcp-project-id/templar-services/templar:sha-<commit>"
+
+# Lock down SSH.
+admin_source_ranges = ["203.0.113.10/32"]
+
+# Relayer (HA + performance)
+relayer_instance_count      = 2
+relayer_autoscaling_enabled = true
+relayer_min_replicas        = 2
+relayer_max_replicas        = 6
+relayer_machine_type        = "e2-standard-4"
+relayer_allowed_source_ranges = [
+  "0.0.0.0/0"
+]
+
+# Required relayer env vars (example placeholders)
+relayer_env = {
+  DATABASE_URL            = "postgres://user:pass@db-host:5432/relayer"
+  RPC_URL                 = "https://rpc.mainnet.near.org"
+  RELAY_ACCOUNT_ID        = "relayer.near"
+  RELAY_SECRET_KEY        = "ed25519:..."
+  UA_ACCOUNT_ID           = "ua-relayer.near"
+  UA_SECRET_KEY           = "ed25519:..."
+  UA_REGISTRY_ID          = "v1.tmplr.near"
+  UA_VERSION_KEY          = "market-current"
+  MONITOR_REGISTRY_ID     = "v1.tmplr.near"
+  PYTH_ORACLE_ID          = "pyth-oracle.near"
+  INTENTS_ID              = "intents.near"
+}
+
+# Accumulator (lightweight)
+accumulator_machine_type = "e2-micro"
+accumulator_env = {
+  NETWORK                = "mainnet"
+  SIGNER_ACCOUNT_ID      = "accumulator.near"
+  SIGNER_KEY             = "ed25519:..."
+  REGISTRIES_ACCOUNT_IDS = "v1.tmplr.near"
+  INTERVAL               = "43200"
+  STATIC_INTERVAL        = "86400"
+}
+
+# Market monitor
+market_monitor_machine_type = "e2-small"
+market_monitor_env = {
+  NETWORK = "mainnet"
+}
+
+# Funding bridge
+funding_bridge_port = 3000
+funding_bridge_allowed_source_ranges = [
+  "0.0.0.0/0"
+]
+funding_bridge_env = {
+  NETWORK              = "mainnet"
+  NEAR_TREASURY_ACCOUNT = "treasury.near"
+  NEAR_TREASURY_KEY     = "ed25519:..."
+}

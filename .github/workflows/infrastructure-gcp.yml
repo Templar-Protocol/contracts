@@ -1,0 +1,117 @@
+name: Infrastructure GCP
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - ".github/workflows/infrastructure-gcp.yml"
+      - "infrastructure/gcp/**"
+  push:
+    branches: [main, dev]
+    paths:
+      - ".github/workflows/infrastructure-gcp.yml"
+      - "infrastructure/gcp/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  plan:
+    name: OpenTofu Plan (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      TF_WORKSPACE: ${{ github.base_ref }}
+    defaults:
+      run:
+        working-directory: infrastructure/gcp
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate CI configuration
+        run: |
+          test -n "${{ vars.GCP_PROJECT_ID }}" || (echo "Missing repo variable: GCP_PROJECT_ID" && exit 1)
+          test -n "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}" || (echo "Missing secret: GCP_WORKLOAD_IDENTITY_PROVIDER" && exit 1)
+          test -n "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}" || (echo "Missing secret: GCP_SERVICE_ACCOUNT_EMAIL" && exit 1)
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: OpenTofu init
+        run: tofu init -input=false
+
+      - name: Select workspace
+        run: |
+          tofu workspace select -or-create "${TF_WORKSPACE}"
+
+      - name: OpenTofu fmt check
+        run: tofu fmt -check -recursive
+
+      - name: OpenTofu validate
+        run: tofu validate
+
+      - name: OpenTofu plan
+        env:
+          TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+          TF_VAR_github_repository: ${{ github.repository }}
+        run: |
+          tofu plan \
+            -input=false \
+            -lock=false \
+            -out=tfplan
+
+  apply:
+    name: OpenTofu Apply (main/dev)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      TF_WORKSPACE: ${{ github.ref_name }}
+    defaults:
+      run:
+        working-directory: infrastructure/gcp
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate CI configuration
+        run: |
+          test -n "${{ vars.GCP_PROJECT_ID }}" || (echo "Missing repo variable: GCP_PROJECT_ID" && exit 1)
+          test -n "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}" || (echo "Missing secret: GCP_WORKLOAD_IDENTITY_PROVIDER" && exit 1)
+          test -n "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}" || (echo "Missing secret: GCP_SERVICE_ACCOUNT_EMAIL" && exit 1)
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: OpenTofu init
+        run: tofu init -input=false
+
+      - name: Select workspace
+        run: |
+          tofu workspace select "${TF_WORKSPACE}" || tofu workspace new "${TF_WORKSPACE}"
+
+      - name: OpenTofu apply
+        env:
+          TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+          TF_VAR_github_repository: ${{ github.repository }}
+        run: |
+          tofu apply \
+            -input=false \
+            -auto-approve

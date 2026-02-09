@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  docker.io
+
+systemctl enable --now docker
+
+mkdir -p /opt/templar
+
+cat > /opt/templar/${container_name}.env <<'ENVFILE'
+${env_file}
+ENVFILE
+
+TOKEN="$(curl -fsS -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+
+echo "$${TOKEN}" | docker login -u oauth2accesstoken --password-stdin "https://${registry_host}"
+docker pull "${image}"
+
+docker rm -f "${container_name}" || true
+docker run -d \
+  --name "${container_name}" \
+  --restart unless-stopped \
+  --network host \
+  --env-file "/opt/templar/${container_name}.env" \
+  "${image}" \
+  "${binary_path}"
