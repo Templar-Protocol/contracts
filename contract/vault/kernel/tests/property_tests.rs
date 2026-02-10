@@ -1410,9 +1410,9 @@ fn self_addr() -> templar_vault_kernel::Address {
     [99u8; 32]
 }
 
-/// Boundary 1: Depositing zero assets returns Slippage error.
+/// Boundary 1: Depositing zero assets returns ZeroAmount error.
 #[test]
-fn deposit_zero_assets_returns_slippage() {
+fn deposit_zero_assets_returns_zero_amount() {
     let state = default_state();
     let config = default_config();
     let result = apply_action(
@@ -1429,8 +1429,8 @@ fn deposit_zero_assets_returns_slippage() {
         },
     );
     assert!(
-        matches!(result, Err(templar_vault_kernel::error::KernelError::Slippage { actual: 0, .. })),
-        "Depositing 0 assets should return Slippage, got: {result:?}",
+        matches!(result, Err(templar_vault_kernel::error::KernelError::ZeroAmount)),
+        "Depositing 0 assets should return ZeroAmount, got: {result:?}",
     );
 }
 
@@ -1558,9 +1558,9 @@ fn withdraw_at_min_withdrawal_succeeds() {
     assert!(result.is_ok(), "Withdrawal at MIN should succeed, got: {result:?}");
 }
 
-/// Boundary 8: Request withdraw with 0 shares returns Slippage.
+/// Boundary 8: Request withdraw with 0 shares returns ZeroAmount.
 #[test]
-fn withdraw_zero_shares_returns_slippage() {
+fn withdraw_zero_shares_returns_zero_amount() {
     let mut state = default_state();
     state.total_assets = 1_000_000;
     state.total_shares = 1_000_000;
@@ -1580,8 +1580,8 @@ fn withdraw_zero_shares_returns_slippage() {
         },
     );
     assert!(
-        matches!(result, Err(templar_vault_kernel::error::KernelError::Slippage { actual: 0, .. })),
-        "Withdrawing 0 shares should return Slippage, got: {result:?}",
+        matches!(result, Err(templar_vault_kernel::error::KernelError::ZeroAmount)),
+        "Withdrawing 0 shares should return ZeroAmount, got: {result:?}",
     );
 }
 

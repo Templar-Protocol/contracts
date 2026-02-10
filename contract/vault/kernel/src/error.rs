@@ -54,6 +54,10 @@ pub enum KernelError {
     /// Invalid configuration value.
     #[display("invalid config: {_0}")]
     InvalidConfig(&'static str),
+
+    /// Zero amount provided for deposit or withdrawal.
+    #[display("zero amount")]
+    ZeroAmount,
 }
 
 impl KernelError {
@@ -72,6 +76,7 @@ impl KernelError {
             KernelError::NotImplemented => 1008,
             KernelError::Restricted(_) => 1009,
             KernelError::InvalidConfig(_) => 1010,
+            KernelError::ZeroAmount => 1011,
         }
     }
 }

@@ -356,10 +356,7 @@ pub fn apply_action(
                 return Err(KernelError::InvalidState("deposit requires Idle"));
             }
             if assets_in == 0 {
-                return Err(KernelError::Slippage {
-                    min: min_shares_out,
-                    actual: 0,
-                });
+                return Err(KernelError::ZeroAmount);
             }
 
             let shares_out = convert_to_shares(&state, config, assets_in);
@@ -409,10 +406,7 @@ pub fn apply_action(
                 return Err(KernelError::InvalidState("request_withdraw requires Idle"));
             }
             if shares == 0 {
-                return Err(KernelError::Slippage {
-                    min: min_assets_out,
-                    actual: 0,
-                });
+                return Err(KernelError::ZeroAmount);
             }
 
             let expected_assets = convert_to_assets(&state, config, shares);
@@ -532,17 +526,15 @@ pub fn apply_action(
             Ok(KernelResult::new(state, result.effects))
         }
         KernelAction::FinishAllocating { op_id, now_ns } => {
-            let pending = state.withdraw_queue.head().and_then(|(_, w)| {
-                if is_past_cooldown(
-                    w.requested_at_ns,
-                    now_ns,
-                    config.withdrawal_cooldown_ns,
-                ) {
-                    Some(w.clone())
-                } else {
-                    None
-                }
-            });
+            // Clone the pending withdrawal to release the borrow on state,
+            // since allocate_op_id() requires &mut self.
+            let pending = state
+                .withdraw_queue
+                .head()
+                .filter(|(_, w)| {
+                    is_past_cooldown(w.requested_at_ns, now_ns, config.withdrawal_cooldown_ns)
+                })
+                .map(|(_, w)| w.clone());
 
             let pending_req = pending.map(|w| WithdrawalRequest {
                 op_id: state.allocate_op_id(),
@@ -1230,10 +1222,7 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            result,
-            Err(KernelError::Slippage { min: 1, actual: 0 })
-        ));
+        assert!(matches!(result, Err(KernelError::ZeroAmount)));
     }
 
     #[test]
@@ -1314,10 +1303,7 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            result,
-            Err(KernelError::Slippage { min: 1, actual: 0 })
-        ));
+        assert!(matches!(result, Err(KernelError::ZeroAmount)));
     }
 
     #[test]
