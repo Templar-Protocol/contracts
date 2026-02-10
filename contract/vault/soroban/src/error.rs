@@ -19,6 +19,10 @@ pub enum ContractError {
     AlreadyInitialized = 9,
     MissingConfig = 10,
     ConversionOverflow = 11,
+    /// Vault is not in Idle state (required for atomic withdraw/redeem).
+    VaultNotIdle = 12,
+    /// Insufficient idle assets for the requested withdrawal.
+    InsufficientIdleAssets = 13,
 }
 
 /// Errors that can occur during runtime execution.

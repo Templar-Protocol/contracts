@@ -33,10 +33,12 @@ pub(crate) mod convert;
 pub mod contract;
 pub mod effects;
 pub mod error;
+pub mod fungible_vault;
 pub mod market;
 pub mod policy;
 pub mod rbac;
 pub mod reconciliation;
+pub mod share_token;
 pub mod storage;
 
 // Re-exports for convenience
