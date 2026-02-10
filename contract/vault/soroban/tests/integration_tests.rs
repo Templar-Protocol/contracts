@@ -310,8 +310,6 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
         SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
     });
 
-    let shares_in = 800u128;
-
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
         let mut state = VaultState::default();
@@ -321,10 +319,20 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
         let versioned = VersionedState::new(state.clone());
         storage.save_state(&versioned).unwrap();
 
-        let preview =
-            SorobanVaultContract::preview_withdraw(env.clone(), shares_in as i128).unwrap();
-        let expected_assets = expected_assets_from_withdraw(state, shares_in);
-        assert_eq!(preview as u128, expected_assets);
+        // ERC-4626: preview_withdraw(assets) returns shares to burn (ceil)
+        let assets_in: i128 = 1000;
+        let shares_burned =
+            SorobanVaultContract::preview_withdraw(env.clone(), assets_in).unwrap();
+        // Effective totals with virtual +1: (12001, 20001)
+        // ceil(1000 * 12001 / 20001) = ceil(12001000/20001) = ceil(600.02) = 601
+        assert_eq!(shares_burned, 601);
+
+        // ERC-4626: preview_redeem(shares) returns assets received (floor)
+        let shares_in: i128 = 800;
+        let assets_out =
+            SorobanVaultContract::preview_redeem(env.clone(), shares_in).unwrap();
+        // floor(800 * 20001 / 12001) = floor(16000800/12001) = floor(1333.22) = 1333
+        assert_eq!(assets_out, 1333);
     });
 }
 
@@ -528,6 +536,28 @@ fn test_allocation_flow_basic() {
 
     assert_eq!(result.op_id, op_id);
     assert!(vault.state().op_state.is_idle());
+}
+
+#[test]
+fn test_begin_allocating_decrements_idle_assets() {
+    let mut vault = create_test_vault();
+    let allocator = allocator_addr();
+    let user = user_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+    let initial_idle = vault.state().idle_assets;
+
+    let alloc_total = 4000;
+    let _op_id = vault
+        .begin_allocating(allocator, vec![(0, alloc_total)], 1000)
+        .unwrap();
+
+    assert!(vault.state().op_state.is_allocating());
+    assert_eq!(vault.state().idle_assets, initial_idle - alloc_total);
+    assert_eq!(
+        vault.state().total_assets,
+        vault.state().idle_assets + vault.state().external_assets
+    );
 }
 
 #[test]
@@ -949,6 +979,8 @@ fn test_full_flow_deposit_allocate_refresh() {
 
     // 3. Refresh markets
     let op_id = vault.begin_refreshing(allocator, vec![0, 1], 1000).unwrap();
+    // Update adapter to reflect market growth (5000→5625, 3000→3375 = 9000 total)
+    vault.market.total_assets_per_market = vec![5625, 3375, 0];
     vault.sync_external_assets(allocator, 9000, op_id, 1000).unwrap(); // markets grew
     vault.finish_refreshing(allocator, op_id).unwrap();
 
@@ -1075,6 +1107,24 @@ fn test_execute_withdraw_in_idle_state() {
 }
 
 #[test]
+fn test_execute_withdraw_respects_cooldown() {
+    let mut vault = create_test_vault();
+    let user = user_addr();
+
+    vault.deposit(user, user, 10000, 0, 100).unwrap();
+    vault.request_withdraw(user, user, 1000, 0, 0).unwrap();
+
+    let early = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS - 1);
+    assert!(early.is_err());
+    assert!(vault.state().op_state.is_idle());
+    assert!(!vault.state().withdraw_queue.is_empty());
+
+    let ok = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
+    assert!(ok.is_ok());
+    assert!(vault.state().withdraw_queue.is_empty());
+}
+
+#[test]
 fn test_withdraw_flow_with_allocation() {
     let mut vault = create_test_vault();
     let user = user_addr();
@@ -1116,12 +1166,16 @@ fn test_full_flow_deposit_allocate_refresh_withdraw() {
 
     // 3. Refresh - markets grew
     let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
+    // Update adapter to reflect 20% market growth
+    vault.market.total_assets_per_market[0] = 6000;
     vault.sync_external_assets(allocator, 6000, op_id, 1000).unwrap(); // 20% growth
     vault.finish_refreshing(allocator, op_id).unwrap();
     assert_eq!(vault.state().external_assets, 6000);
 
-    // 4. Request withdrawal
-    let result = vault.request_withdraw(user, user, 5000, 0, 0).unwrap();
+    // 4. Request withdrawal — use fewer shares so the payout fits in idle.
+    // After yield growth: total_assets=11000, total_shares=10000, idle=5000.
+    // 4000 shares × (11000/10000) = 4400 assets, within idle(5000).
+    let result = vault.request_withdraw(user, user, 4000, 0, 0).unwrap();
     assert!(result.shares_escrowed > 0);
 
     // 5. Execute withdrawal (in idle state)
@@ -1200,6 +1254,8 @@ fn test_share_dilution_after_yield() {
 
     // Market grows - 20% yield (500 -> 600)
     let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
+    // Update adapter to reflect 20% yield on market 0
+    vault.market.total_assets_per_market[0] = 600;
     vault.sync_external_assets(allocator, 600, op_id, 1000).unwrap();
     vault.finish_refreshing(allocator, op_id).unwrap();
 

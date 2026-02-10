@@ -20,10 +20,14 @@ use templar_curator_primitives::{
 };
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, compute_fee_shares_from_assets,
-    mul_div_floor, preview_deposit_shares, preview_withdraw_assets, start_allocation,
+    convert_to_assets, convert_to_assets_ceil, convert_to_shares, convert_to_shares_ceil,
+    mul_div_floor, start_allocation,
     start_refresh, withdrawal_collected, withdrawal_step_callback, Address, FeeAccrualAnchor,
     AssetId, FeesSpec, KernelAction, Number, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
     VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+};
+use crate::fungible_vault::{
+    atomic_withdraw_internal, load_state_and_config, share_balance, to_i128, to_u128,
 };
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
 use templar_vault_kernel::state::queue::{
@@ -943,20 +947,25 @@ where
 
     /// Verify the claimed external_assets against adapter-reported balances.
     ///
-    /// Extracts targets from the active operation plan, queries the market
-    /// adapter for each, and rejects if the claimed value doesn't match.
-    /// Silently passes if the adapter is not configured or query fails.
+    /// Only performs an exact match during **refresh** operations, where the
+    /// plan covers all markets and the adapter total should equal the claimed
+    /// external_assets. During allocation, the plan only covers target markets
+    /// while `new_external_assets` includes non-plan markets too, so an exact
+    /// match is not possible — we fall through to the kernel's 2x bounds check.
+    ///
+    /// If the adapter is not configured (all queries fail), verification is
+    /// skipped. If some queries succeed and others fail (partial failure),
+    /// the call is rejected rather than silently accepting an unchecked value.
     fn verify_external_assets_against_adapter(
         &self,
         claimed: u128,
     ) -> Result<(), RuntimeError> {
         let state = self.state();
 
-        // Extract target IDs from the active operation plan
+        // Only verify during refresh (plan covers all markets).
+        // During allocation, plan covers only target markets — can't do exact match.
         let targets: Vec<TargetId> = match &state.op_state {
-            OpState::Allocating(s) => s.plan.iter().map(|(t, _)| *t).collect(),
             OpState::Refreshing(s) => s.plan.clone(),
-            // Withdrawing has no plan — skip adapter verification
             _ => return Ok(()),
         };
 
@@ -964,15 +973,35 @@ where
             return Ok(());
         }
 
-        // Query adapter for each target's balance
+        // Query adapter for each target's balance, tracking successes and failures
         let asset_id = AssetId::from(self.config.asset_address);
         let mut adapter_total: u128 = 0;
+        let mut ok_count: usize = 0;
+        let mut had_error = false;
         for target_id in &targets {
             match self.market.total_assets(MarketRef::new(*target_id, asset_id.clone())) {
-                Ok(balance) => adapter_total = adapter_total.saturating_add(balance),
-                // Adapter not configured or query failed — fall through to kernel bounds
-                Err(_) => return Ok(()),
+                Ok(balance) => {
+                    adapter_total = adapter_total.saturating_add(balance);
+                    ok_count += 1;
+                }
+                Err(_) => {
+                    had_error = true;
+                }
             }
+        }
+
+        if ok_count == 0 {
+            // Adapter not configured — all targets returned errors. Skip verification
+            // and rely on the kernel's 2x bounds check as fallback.
+            return Ok(());
+        }
+
+        if had_error {
+            // Partial failure: some targets succeeded, others failed. Reject to
+            // prevent accepting an unverifiable value.
+            return Err(RuntimeError::contract_error(
+                "sync_external_assets: adapter query failed for some markets",
+            ));
         }
 
         if claimed != adapter_total {
@@ -1604,9 +1633,10 @@ impl SorobanVaultContract {
         Ok(())
     }
 
-    /// Deposit assets into the vault.
+    /// Deposit assets into the vault with slippage protection.
     ///
-    pub fn deposit(
+    /// Use this over the standard `deposit` when you need `min_shares_out` guarantee.
+    pub fn deposit_with_min(
         env: Env,
         owner: SdkAddress,
         receiver: SdkAddress,
@@ -1818,16 +1848,6 @@ impl SorobanVaultContract {
         storage.is_paused()
     }
 
-    /// Get total assets under management.
-    pub fn total_assets(env: Env) -> i128 {
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        storage
-            .load_vault_state()
-            .map(|s| s.total_assets)
-            .unwrap_or(0)
-    }
-
     /// Get total shares in circulation.
     pub fn total_shares(env: Env) -> i128 {
         use crate::storage::SorobanStorage;
@@ -1858,66 +1878,6 @@ impl SorobanVaultContract {
             .unwrap_or(0)
     }
 
-    /// Calculate shares for a given deposit amount.
-    ///
-    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
-        if assets <= 0 {
-            return Ok(0);
-        }
-        let assets_u128 =
-            u128::try_from(assets).map_err(|_| ContractError::ConversionOverflow)?;
-
-        let storage = SorobanStorage::new(&env);
-        let state = storage
-            .load_state()
-            .map_err(ContractError::from)?
-            .map(|versioned| versioned.state)
-            .unwrap_or_default();
-        let config = VaultConfig {
-            fees: FeesSpec::zero(),
-            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
-            max_pending_withdrawals: MAX_PENDING as u32,
-            paused: storage.is_paused(),
-            virtual_shares: 0,
-            virtual_assets: 0,
-        };
-        let shares = preview_deposit_shares(&state, &config, assets_u128);
-        let shares_i128 =
-            i128::try_from(shares).map_err(|_| ContractError::ConversionOverflow)?;
-        Ok(shares_i128)
-    }
-
-    /// Calculate assets for a given withdrawal amount.
-    ///
-    pub fn preview_withdraw(env: Env, shares: i128) -> Result<i128, ContractError> {
-        if shares <= 0 {
-            return Ok(0);
-        }
-        let shares_u128 =
-            u128::try_from(shares).map_err(|_| ContractError::ConversionOverflow)?;
-
-        let storage = SorobanStorage::new(&env);
-        let state = storage
-            .load_state()
-            .map_err(ContractError::from)?
-            .map(|versioned| versioned.state)
-            .unwrap_or_default();
-        let config = VaultConfig {
-            fees: FeesSpec::zero(),
-            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
-            max_pending_withdrawals: MAX_PENDING as u32,
-            paused: storage.is_paused(),
-            virtual_shares: 0,
-            virtual_assets: 0,
-        };
-        let assets = preview_withdraw_assets(&state, &config, shares_u128);
-        let assets_i128 =
-            i128::try_from(assets).map_err(|_| ContractError::ConversionOverflow)?;
-        Ok(assets_i128)
-    }
-
     /// Extend the TTL of contract storage.
     ///
     /// Call periodically to prevent state expiry.
@@ -1937,6 +1897,247 @@ fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
         return Err(ContractError::Unauthorized);
     }
     Ok(())
+}
+
+// =========================================================================
+// ERC-4626 / FungibleVault methods (SEP-56 compatible)
+// =========================================================================
+//
+// Second #[contractimpl] block exposing the 16 standard FungibleVault
+// methods. Must be in the same module as the #[contract] struct to avoid
+// Soroban macro conflicts with client generation.
+
+#[contractimpl]
+impl SorobanVaultContract {
+    /// Returns the address of the underlying asset managed by the vault.
+    pub fn query_asset(env: Env) -> Result<SdkAddress, ContractError> {
+        env.storage()
+            .instance()
+            .get(&VaultDataKey::AssetToken)
+            .ok_or(ContractError::MissingConfig)
+    }
+
+    /// Returns the total amount of underlying assets under management.
+    ///
+    /// Includes both idle assets held in the contract and external assets
+    /// deployed to markets.
+    pub fn total_assets(env: Env) -> i128 {
+        let storage = SorobanStorage::new(&env);
+        storage
+            .load_vault_state()
+            .map(|s| s.total_assets)
+            .unwrap_or(0)
+    }
+
+    /// Convert assets to shares (floor rounding, favors vault).
+    pub fn convert_to_shares(env: Env, assets: i128) -> Result<i128, ContractError> {
+        if assets <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        to_i128(convert_to_shares(&state, &config, to_u128(assets)?))
+    }
+
+    /// Convert shares to assets (floor rounding, favors vault).
+    pub fn convert_to_assets(env: Env, shares: i128) -> Result<i128, ContractError> {
+        if shares <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        to_i128(convert_to_assets(&state, &config, to_u128(shares)?))
+    }
+
+    /// Maximum assets that can be deposited for `receiver`.
+    ///
+    /// Returns `i128::MAX` if the vault is idle and unpaused, 0 otherwise.
+    pub fn max_deposit(env: Env, _receiver: SdkAddress) -> i128 {
+        match load_state_and_config(&env) {
+            Ok((state, config)) => {
+                if state.op_state.is_idle() && !config.paused {
+                    i128::MAX
+                } else {
+                    0
+                }
+            }
+            Err(_) => 0,
+        }
+    }
+
+    /// Maximum shares that can be minted for `receiver`.
+    pub fn max_mint(env: Env, _receiver: SdkAddress) -> i128 {
+        match load_state_and_config(&env) {
+            Ok((state, config)) => {
+                if state.op_state.is_idle() && !config.paused {
+                    i128::MAX
+                } else {
+                    0
+                }
+            }
+            Err(_) => 0,
+        }
+    }
+
+    /// Maximum assets that `owner` can withdraw atomically.
+    ///
+    /// Limited by their share balance and available idle assets.
+    /// Returns 0 if the vault is not idle.
+    pub fn max_withdraw(env: Env, owner: SdkAddress) -> i128 {
+        let Ok((state, config)) = load_state_and_config(&env) else {
+            return 0;
+        };
+        if !state.op_state.is_idle() {
+            return 0;
+        }
+        let owner_shares_i128 = share_balance(&env, &owner);
+        let owner_shares = owner_shares_i128.max(0) as u128;
+        let assets_from_shares = convert_to_assets(&state, &config, owner_shares);
+        let max = assets_from_shares.min(state.idle_assets);
+        i128::try_from(max).unwrap_or(0)
+    }
+
+    /// Maximum shares that `owner` can redeem atomically.
+    ///
+    /// Limited by their share balance and what idle assets can cover.
+    /// Returns 0 if the vault is not idle.
+    pub fn max_redeem(env: Env, owner: SdkAddress) -> i128 {
+        let Ok((state, config)) = load_state_and_config(&env) else {
+            return 0;
+        };
+        if !state.op_state.is_idle() {
+            return 0;
+        }
+        let owner_shares_i128 = share_balance(&env, &owner);
+        let owner_shares = owner_shares_i128.max(0) as u128;
+        let shares_from_idle = convert_to_shares(&state, &config, state.idle_assets);
+        let max = owner_shares.min(shares_from_idle);
+        i128::try_from(max).unwrap_or(0)
+    }
+
+    /// Preview shares received for a deposit of `assets` (floor — fewer shares).
+    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
+        Self::convert_to_shares(env, assets)
+    }
+
+    /// Preview assets needed to mint `shares` (ceil — more assets required).
+    pub fn preview_mint(env: Env, shares: i128) -> Result<i128, ContractError> {
+        if shares <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        to_i128(convert_to_assets_ceil(&state, &config, to_u128(shares)?))
+    }
+
+    /// Preview shares burned to withdraw `assets` (ceil — more shares burned).
+    pub fn preview_withdraw(env: Env, assets: i128) -> Result<i128, ContractError> {
+        if assets <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        to_i128(convert_to_shares_ceil(&state, &config, to_u128(assets)?))
+    }
+
+    /// Preview assets received for redeeming `shares` (floor — fewer assets).
+    pub fn preview_redeem(env: Env, shares: i128) -> Result<i128, ContractError> {
+        Self::convert_to_assets(env, shares)
+    }
+
+    /// Deposit `assets` and mint shares to `receiver`. Returns shares minted.
+    ///
+    /// The `operator` must have authorized the call. `from` provides the assets.
+    /// The vault must be idle and unpaused.
+    pub fn deposit(
+        env: Env,
+        assets: i128,
+        receiver: SdkAddress,
+        from: SdkAddress,
+        operator: SdkAddress,
+    ) -> Result<i128, ContractError> {
+        operator.require_auth();
+        if assets <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        Self::deposit_with_min(env, from, receiver, assets, 0)
+    }
+
+    /// Mint exactly `shares` to `receiver`, pulling required assets from `from`.
+    /// Returns assets deposited.
+    pub fn mint(
+        env: Env,
+        shares: i128,
+        receiver: SdkAddress,
+        from: SdkAddress,
+        operator: SdkAddress,
+    ) -> Result<i128, ContractError> {
+        operator.require_auth();
+        if shares <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        let assets_needed = convert_to_assets_ceil(&state, &config, to_u128(shares)?);
+        let assets_i128 = to_i128(assets_needed)?;
+        let _shares_minted = Self::deposit_with_min(env, from, receiver, assets_i128, shares)?;
+        Ok(assets_i128)
+    }
+
+    /// Withdraw exactly `assets` from the vault, burning shares from `owner`.
+    /// Returns shares burned.
+    ///
+    /// Only works when the vault is Idle and has sufficient idle assets.
+    /// For the general case, use `request_withdraw` + `execute_withdraw`.
+    pub fn withdraw(
+        env: Env,
+        assets: i128,
+        receiver: SdkAddress,
+        owner: SdkAddress,
+        operator: SdkAddress,
+    ) -> Result<i128, ContractError> {
+        operator.require_auth();
+        owner.require_auth();
+        if assets <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        let assets_u128 = to_u128(assets)?;
+        let (state, config) = load_state_and_config(&env)?;
+        if !state.op_state.is_idle() {
+            return Err(ContractError::VaultNotIdle);
+        }
+        if assets_u128 > state.idle_assets {
+            return Err(ContractError::InsufficientIdleAssets);
+        }
+        let shares_to_burn = convert_to_shares_ceil(&state, &config, assets_u128);
+        atomic_withdraw_internal(&env, &owner, &receiver, assets_u128, shares_to_burn)?;
+        to_i128(shares_to_burn)
+    }
+
+    /// Redeem exactly `shares` for assets, sending to `receiver`.
+    /// Returns assets received.
+    ///
+    /// Only works when the vault is Idle and has sufficient idle assets.
+    /// For the general case, use `request_withdraw` + `execute_withdraw`.
+    pub fn redeem(
+        env: Env,
+        shares: i128,
+        receiver: SdkAddress,
+        owner: SdkAddress,
+        operator: SdkAddress,
+    ) -> Result<i128, ContractError> {
+        operator.require_auth();
+        owner.require_auth();
+        if shares <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        let shares_u128 = to_u128(shares)?;
+        let (state, config) = load_state_and_config(&env)?;
+        if !state.op_state.is_idle() {
+            return Err(ContractError::VaultNotIdle);
+        }
+        let assets_out = convert_to_assets(&state, &config, shares_u128);
+        if assets_out > state.idle_assets {
+            return Err(ContractError::InsufficientIdleAssets);
+        }
+        atomic_withdraw_internal(&env, &owner, &receiver, assets_out, shares_u128)?;
+        to_i128(assets_out)
+    }
 }
 
 #[cfg(test)]
@@ -1960,6 +2161,22 @@ mod tests {
 
         fn total_assets(&self, _market: MarketRef) -> Result<u128, RuntimeError> {
             Ok(1000)
+        }
+    }
+
+    struct FailingMarket;
+
+    impl MarketAdapter for FailingMarket {
+        fn supply(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        fn withdraw(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+
+        fn total_assets(&self, _market: MarketRef) -> Result<u128, RuntimeError> {
+            Err(RuntimeError::effect_failed("market total_assets failed"))
         }
     }
 
@@ -2010,6 +2227,21 @@ mod tests {
             PermissiveAuth,
             MockInterpreter::new(),
             MockMarket,
+            MockCrossChain,
+        );
+        vault.load_state().unwrap();
+        vault
+    }
+
+    fn create_test_vault_with_failing_market(
+    ) -> CuratorVault<MemoryStorage, PermissiveAuth, MockInterpreter, FailingMarket, MockCrossChain>
+    {
+        let mut vault = CuratorVault::new(
+            test_config(),
+            MemoryStorage::new(),
+            PermissiveAuth,
+            MockInterpreter::new(),
+            FailingMarket,
             MockCrossChain,
         );
         vault.load_state().unwrap();
@@ -2130,6 +2362,54 @@ mod tests {
 
         assert_eq!(result.op_id, op_id);
         assert!(vault.state().op_state.is_idle());
+    }
+
+    #[test]
+    fn test_sync_external_assets_rejects_adapter_mismatch_during_refresh() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        let state = vault.state_mut();
+        state.idle_assets = 2_000;
+        state.total_assets = 2_000;
+
+        // Use refresh (plan covers all markets, so adapter verification applies)
+        let op_id = vault
+            .begin_refreshing(caller, vec![0, 1], 1000)
+            .unwrap();
+
+        // MockMarket reports 1000 per target, so adapter_total is 2000.
+        // Claiming 1500 != 2000 triggers adapter mismatch.
+        let err = vault.sync_external_assets(caller, 1500, op_id, 1000);
+        let invalid_state = matches!(
+            &err,
+            Err(RuntimeError::InvalidState(msg))
+                if msg.contains("claimed value does not match")
+        );
+        assert!(invalid_state, "unexpected error: {err:?}");
+
+        assert!(vault.state().op_state.is_refreshing());
+    }
+
+    #[test]
+    fn test_sync_external_assets_skips_verification_when_adapter_not_configured() {
+        let mut vault = create_test_vault_with_failing_market();
+        let caller = [3u8; 32]; // allocator
+
+        let state = vault.state_mut();
+        state.idle_assets = 2_000;
+        state.total_assets = 2_000;
+
+        // Use refresh so adapter verification is attempted
+        let op_id = vault
+            .begin_refreshing(caller, vec![0, 1], 1000)
+            .unwrap();
+
+        // All adapter queries fail → adapter not configured → skip verification.
+        vault.sync_external_assets(caller, 2_000, op_id, 1000).unwrap();
+
+        assert!(vault.state().op_state.is_refreshing());
+        assert_eq!(vault.state().external_assets, 2_000);
     }
 
     #[test]
@@ -2418,6 +2698,43 @@ mod tests {
             .filter(|effect| matches!(effect, KernelEffect::MintShares { .. }))
             .count();
         assert_eq!(mint_effects, 2);
+    }
+
+    #[test]
+    fn test_refresh_fees_zero_elapsed_noop() {
+        use templar_vault_kernel::fee::FeeSlot;
+        use templar_vault_kernel::math::wad::Wad;
+
+        let mut vault = create_test_vault();
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, [9u8; 32]),
+            FeeSlot::new(Wad::one() / 10, [8u8; 32]),
+            None,
+        );
+        vault.config.fees = fees;
+
+        {
+            let state = vault.state_mut();
+            state.total_assets = 1_000;
+            state.total_shares = 1_000;
+            state.idle_assets = 1_000;
+            state.external_assets = 0;
+            state.fee_anchor = FeeAccrualAnchor::new(1_000, 123);
+        }
+
+        let minted = vault.refresh_fees([1u8; 32], 123).unwrap();
+
+        assert_eq!(minted, 0);
+        assert_eq!(vault.state().total_shares, 1_000);
+        assert_eq!(vault.state().fee_anchor.total_assets, 1_000);
+        assert_eq!(vault.state().fee_anchor.timestamp_ns, 123);
+        assert!(
+            !vault
+                .interpreter
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, KernelEffect::MintShares { .. }))
+        );
     }
 
     // =========================================================================

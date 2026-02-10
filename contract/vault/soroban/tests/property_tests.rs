@@ -304,7 +304,7 @@ proptest! {
     #[test]
     fn prop_allocation_flow_returns_idle(
         deposit_amount in arb_deposit_amount(),
-        external_assets in 0u128..=1_000_000_000u128,
+        external_pct in 0u32..=100u32,
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
@@ -317,6 +317,9 @@ proptest! {
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
         prop_assert!(vault.state().op_state.is_allocating());
 
+        // Constrain external_assets within 2x bound (kernel rejects values that
+        // would more than double total_assets).
+        let external_assets = deposit_amount.saturating_mul(external_pct as u128) / 100;
         vault.sync_external_assets(allocator, external_assets, op_id, 1000).unwrap();
         vault.finish_allocating(allocator, op_id).unwrap();
 
@@ -330,21 +333,30 @@ proptest! {
     #[test]
     fn prop_refresh_flow_returns_idle(
         deposit_amount in arb_deposit_amount(),
-        external_assets in 0u128..=1_000_000_000u128,
         plan in arb_refresh_plan(5),
     ) {
         let mut vault = create_prop_test_vault();
+
+        // Compute what adapter verification will expect for this plan.
+        let adapter_total: u128 = plan.iter().map(|id| {
+            *vault.market.total_assets_per_market.get(*id as usize).unwrap_or(&0)
+        }).sum();
+
+        // 2x bound: idle + external <= total * 2. During refresh (no in-flight),
+        // reference_total = deposit_amount, so external must be <= deposit_amount.
+        prop_assume!(adapter_total <= deposit_amount);
+
         let user = user_addr();
         let allocator = allocator_addr();
 
         // Setup: deposit
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        // Refresh flow
+        // Refresh flow — claimed value must match adapter total for verification
         let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
         prop_assert!(vault.state().op_state.is_refreshing());
 
-        vault.sync_external_assets(allocator, external_assets, op_id, 1000).unwrap();
+        vault.sync_external_assets(allocator, adapter_total, op_id, 1000).unwrap();
         vault.finish_refreshing(allocator, op_id).unwrap();
 
         prop_assert!(vault.state().op_state.is_idle());
@@ -496,6 +508,7 @@ proptest! {
     /// Both kernel and Soroban should return to Idle after completing allocation.
     #[test]
     fn prop_complete_allocation_returns_idle(
+        deposit_amount in arb_deposit_amount(),
         plan in arb_allocation_plan(3),
         op_id in 1u64..u64::MAX,
     ) {
@@ -504,10 +517,13 @@ proptest! {
         let complete_result = complete_allocation(start_result.new_state, op_id, None).unwrap();
         prop_assert!(complete_result.new_state.is_idle());
 
-        // Soroban: start and complete
+        // Soroban: start and complete — plan total must fit within idle_assets
+        let plan_total: u128 = plan.iter().map(|(_, amt)| amt).sum();
+        prop_assume!(plan_total <= deposit_amount);
+
         let mut vault = create_prop_test_vault();
         let allocator = allocator_addr();
-        vault.deposit(user_addr(), user_addr(), 10000, 0, 100).unwrap();
+        vault.deposit(user_addr(), user_addr(), deposit_amount, 0, 100).unwrap();
 
         let soroban_op_id = vault.begin_allocating(allocator, plan, 1000).unwrap();
         vault.finish_allocating(allocator, soroban_op_id).unwrap();
@@ -638,7 +654,7 @@ proptest! {
     #[test]
     fn prop_sync_external_assets_updates_state(
         deposit_amount in arb_deposit_amount(),
-        new_external in 0u128..=1_000_000_000u128,
+        external_pct in 0u32..=100u32,
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
@@ -647,6 +663,8 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
+        // Constrain within 2x bound
+        let new_external = deposit_amount.saturating_mul(external_pct as u128) / 100;
         vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
 
         prop_assert_eq!(vault.state().external_assets, new_external);
@@ -659,7 +677,7 @@ proptest! {
     #[test]
     fn prop_external_growth_increases_total(
         deposit_amount in 1_000_000u128..=1_000_000_000u128,
-        initial_external in 0u128..=500_000_000u128,
+        initial_pct in 0u32..=100u32,
         growth in 1u128..=100_000_000u128,
     ) {
         let mut vault = create_prop_test_vault();
@@ -669,15 +687,25 @@ proptest! {
         // Setup: deposit and allocate
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
+        let alloc_amount = deposit_amount / 2;
+        let initial_external = deposit_amount.saturating_mul(initial_pct as u128) / 100;
+
+        let op_id = vault.begin_allocating(allocator, vec![(0, alloc_amount)], 1000).unwrap();
         vault.sync_external_assets(allocator, initial_external, op_id, 1000).unwrap();
         vault.finish_allocating(allocator, op_id).unwrap();
 
         let total_before = vault.state().total_assets;
 
-        // Refresh with growth
-        let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
+        // Refresh with growth — 2x bound: growth <= idle + initial_external
+        // (since reference_total = idle + initial_external during refresh)
+        let idle = deposit_amount - alloc_amount;
+        prop_assume!(growth <= idle.saturating_add(initial_external));
+
+        // Set adapter values to match claimed value for refresh verification
         let new_external = initial_external.saturating_add(growth);
+        vault.market.total_assets_per_market = vec![new_external];
+
+        let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
         vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
         vault.finish_refreshing(allocator, op_id).unwrap();
 
@@ -756,6 +784,10 @@ proptest! {
 
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
+        // First plan must fit within idle_assets
+        let plan1_total: u128 = plan1.iter().map(|(_, amt)| amt).sum();
+        prop_assume!(plan1_total <= deposit_amount);
+
         // Start first allocation
         vault.begin_allocating(allocator, plan1, 1000).unwrap();
 
@@ -778,6 +810,10 @@ proptest! {
         let allocator = allocator_addr();
 
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
+
+        // Allocation plan must fit within idle_assets
+        let plan_total: u128 = alloc_plan.iter().map(|(_, amt)| amt).sum();
+        prop_assume!(plan_total <= deposit_amount);
 
         // Start allocation
         vault.begin_allocating(allocator, alloc_plan, 1000).unwrap();

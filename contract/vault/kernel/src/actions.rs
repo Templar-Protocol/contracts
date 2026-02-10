@@ -506,10 +506,16 @@ pub fn apply_action(
                 ))?;
 
             // Sanity bound: prevent a compromised allocator from inflating
-            // total_assets beyond 2x the previous value. Legitimate market
-            // gains within a single operation window are bounded well below
-            // this. Manual reconciliation should be used for larger swings.
-            if state.total_assets > 0 && new_total > state.total_assets.saturating_mul(2) {
+            // total_assets beyond 2x the previous value. During allocation,
+            // assets are "in flight" (decremented from idle, not yet synced
+            // to external) so we include the remaining allocation amount in
+            // the reference total for the bound check.
+            let in_flight = match &state.op_state {
+                OpState::Allocating(s) => s.remaining,
+                _ => 0,
+            };
+            let reference_total = state.total_assets.saturating_add(in_flight);
+            if reference_total > 0 && new_total > reference_total.saturating_mul(2) {
                 return Err(KernelError::InvalidState(
                     "sync_external_assets would more than double total_assets",
                 ));
