@@ -1938,7 +1938,7 @@ mod kani_proofs {
 
         let result1 = start_allocation(OpState::Idle, plan1, op_id1).unwrap();
         let result2 = start_allocation(result1.new_state, plan2, op_id2);
-        assert!(matches!(result2, Err(TransitionError::NotIdle { .. })));
+        assert!(matches!(result2, Err(TransitionError::WrongState { .. })));
     }
 
     #[kani::proof]
@@ -1973,7 +1973,7 @@ mod kani_proofs {
 
         let result1 = start_withdrawal(OpState::Idle, request1).unwrap();
         let result2 = start_withdrawal(result1.new_state, request2);
-        assert!(matches!(result2, Err(TransitionError::NotIdle { .. })));
+        assert!(matches!(result2, Err(TransitionError::WrongState { .. })));
     }
 
     #[kani::proof]

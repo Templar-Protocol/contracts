@@ -39,25 +39,12 @@ use derive_more::Display;
 /// Error types for state transitions.
 #[derive(Clone, Debug, PartialEq, Eq, Display)]
 pub enum TransitionError {
-    /// Attempted a transition that requires Idle state, but the machine was not Idle.
-    #[display("requires Idle state, but current state is {current_state}")]
-    NotIdle { current_state: &'static str },
-
-    /// Attempted a transition that requires Allocating state.
-    #[display("requires Allocating state, but current state is {current_state}")]
-    NotAllocating { current_state: &'static str },
-
-    /// Attempted a transition that requires Withdrawing state.
-    #[display("requires Withdrawing state, but current state is {current_state}")]
-    NotWithdrawing { current_state: &'static str },
-
-    /// Attempted a transition that requires Refreshing state.
-    #[display("requires Refreshing state, but current state is {current_state}")]
-    NotRefreshing { current_state: &'static str },
-
-    /// Attempted a transition that requires Payout state.
-    #[display("requires Payout state, but current state is {current_state}")]
-    NotPayout { current_state: &'static str },
+    /// Attempted a transition in the wrong state.
+    #[display("requires {expected} state, but current state is {actual}")]
+    WrongState {
+        expected: &'static str,
+        actual: &'static str,
+    },
 
     /// Operation ID mismatch - the callback doesn't match the current operation.
     #[display("op_id mismatch: expected {expected}, got {actual}")]
@@ -153,24 +140,26 @@ pub type TransitionRes = Result<TransitionResult, TransitionError>;
 
 /// Extract the inner state of a specific OpState variant, or return a typed error.
 macro_rules! require_state {
-    ($state:expr, $variant:ident, $error:ident) => {
+    ($state:expr, $variant:ident) => {
         match &$state {
             OpState::$variant(s) => s,
             _ => {
-                return Err(TransitionError::$error {
-                    current_state: TransitionError::state_name(&$state),
+                return Err(TransitionError::WrongState {
+                    expected: stringify!($variant),
+                    actual: TransitionError::state_name(&$state),
                 });
             }
         }
     };
 }
 
-/// Assert the OpState is Idle, or return NotIdle.
+/// Assert the OpState is Idle, or return WrongState.
 macro_rules! require_idle {
     ($state:expr) => {
         if !$state.is_idle() {
-            return Err(TransitionError::NotIdle {
-                current_state: TransitionError::state_name(&$state),
+            return Err(TransitionError::WrongState {
+                expected: "Idle",
+                actual: TransitionError::state_name(&$state),
             });
         }
     };
@@ -189,7 +178,7 @@ macro_rules! require_idle {
 ///
 /// # Returns
 /// * `Ok(TransitionResult)` with new Allocating state
-/// * `Err(TransitionError::NotIdle)` if not in Idle state
+/// * `Err(TransitionError::WrongState)` if not in Idle state
 /// * `Err(TransitionError::EmptyAllocationPlan)` if plan is empty
 pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64) -> TransitionRes {
     require_idle!(state);
@@ -243,7 +232,7 @@ pub fn allocation_step_callback(
     amount_allocated: u128,
     op_id: u64,
 ) -> TransitionRes {
-    let alloc = require_state!(state, Allocating, NotAllocating);
+    let alloc = require_state!(state, Allocating);
 
     if alloc.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -308,7 +297,7 @@ pub fn complete_allocation(
     op_id: u64,
     pending_withdrawal: Option<WithdrawalRequest>,
 ) -> TransitionRes {
-    let alloc = require_state!(state, Allocating, NotAllocating);
+    let alloc = require_state!(state, Allocating);
 
     if alloc.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -432,7 +421,7 @@ pub fn withdrawal_step_callback(
     op_id: u64,
     amount_collected: u128,
 ) -> TransitionRes {
-    let withdraw = require_state!(state, Withdrawing, NotWithdrawing);
+    let withdraw = require_state!(state, Withdrawing);
 
     if withdraw.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -461,7 +450,7 @@ pub fn withdrawal_step_callback(
 /// # Returns
 /// * `Ok(TransitionResult)` with Payout state
 pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> TransitionRes {
-    let withdraw = require_state!(state, Withdrawing, NotWithdrawing);
+    let withdraw = require_state!(state, Withdrawing);
 
     if withdraw.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -514,7 +503,7 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
 /// # Returns
 /// * `Ok(TransitionResult)` with Idle state and refund effects
 pub fn stop_withdrawal(state: OpState, op_id: u64, escrow_address: Address) -> TransitionRes {
-    let withdraw = require_state!(state, Withdrawing, NotWithdrawing);
+    let withdraw = require_state!(state, Withdrawing);
 
     if withdraw.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -591,7 +580,7 @@ pub fn start_refresh(state: OpState, plan: Vec<TargetId>, op_id: u64) -> Transit
 /// # Returns
 /// * `Ok(TransitionResult)` with updated Refreshing state
 pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
-    let refresh = require_state!(state, Refreshing, NotRefreshing);
+    let refresh = require_state!(state, Refreshing);
 
     if refresh.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -614,7 +603,7 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
 /// # Returns
 /// * `Ok(TransitionResult)` with Idle state
 pub fn complete_refresh(state: OpState, op_id: u64) -> TransitionRes {
-    let refresh = require_state!(state, Refreshing, NotRefreshing);
+    let refresh = require_state!(state, Refreshing);
 
     if refresh.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -651,7 +640,7 @@ pub fn payout_complete(
     op_id: u64,
     escrow_address: Address,
 ) -> TransitionRes {
-    let payout = require_state!(state, Payout, NotPayout);
+    let payout = require_state!(state, Payout);
 
     if payout.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -762,7 +751,7 @@ mod tests {
 
         let result = start_allocation(state, plan, 2);
 
-        assert!(matches!(result, Err(TransitionError::NotIdle { .. })));
+        assert!(matches!(result, Err(TransitionError::WrongState { .. })));
     }
 
     #[test]
@@ -1203,7 +1192,7 @@ mod tests {
         let escrow_address = owner_addr(99);
         let result = payout_complete(state, true, 1, escrow_address);
 
-        assert!(matches!(result, Err(TransitionError::NotPayout { .. })));
+        assert!(matches!(result, Err(TransitionError::WrongState { .. })));
     }
 
     #[test]
@@ -1388,8 +1377,8 @@ mod proptests {
             // Second start from Allocating fails
             let result2 = start_allocation(result1.new_state, plan2, op_id2);
             prop_assert!(result2.is_err());
-            let is_not_idle = matches!(result2, Err(TransitionError::NotIdle { .. }));
-            prop_assert!(is_not_idle, "expected NotIdle error");
+            let is_not_idle = matches!(result2, Err(TransitionError::WrongState { .. }));
+            prop_assert!(is_not_idle, "expected WrongState error");
         }
 
         // ===================================================================
@@ -1429,8 +1418,8 @@ mod proptests {
             // Second start from Withdrawing fails
             let result2 = start_withdrawal(result1.new_state, request2);
             prop_assert!(result2.is_err());
-            let is_not_idle = matches!(result2, Err(TransitionError::NotIdle { .. }));
-            prop_assert!(is_not_idle, "expected NotIdle error");
+            let is_not_idle = matches!(result2, Err(TransitionError::WrongState { .. }));
+            prop_assert!(is_not_idle, "expected WrongState error");
         }
 
         // ===================================================================

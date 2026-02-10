@@ -967,8 +967,8 @@ proptest! {
         });
         let result = start_allocation(non_idle, plan, op_id);
         prop_assert!(
-            matches!(result, Err(TransitionError::NotIdle { .. })),
-            "expected NotIdle when starting allocation from non-idle"
+            matches!(result, Err(TransitionError::WrongState { .. })),
+            "expected WrongState when starting allocation from non-idle"
         );
     }
 
@@ -989,8 +989,8 @@ proptest! {
         });
         let result = start_withdrawal(non_idle, request);
         prop_assert!(
-            matches!(result, Err(TransitionError::NotIdle { .. })),
-            "expected NotIdle when starting withdrawal from non-idle"
+            matches!(result, Err(TransitionError::WrongState { .. })),
+            "expected WrongState when starting withdrawal from non-idle"
         );
     }
 
@@ -1013,8 +1013,8 @@ proptest! {
         });
         let result = start_refresh(non_idle, plan, op_id);
         prop_assert!(
-            matches!(result, Err(TransitionError::NotIdle { .. })),
-            "expected NotIdle when starting refresh from non-idle"
+            matches!(result, Err(TransitionError::WrongState { .. })),
+            "expected WrongState when starting refresh from non-idle"
         );
     }
 
@@ -2634,7 +2634,7 @@ fn allocation_from_non_idle_rejected() {
     });
     let err = start_allocation(alloc_state, vec![(0, 100)], 2);
     assert!(
-        matches!(err, Err(TransitionError::NotIdle { .. })),
+        matches!(err, Err(TransitionError::WrongState { .. })),
         "Allocation from non-Idle should be rejected, got: {err:?}"
     );
 }
