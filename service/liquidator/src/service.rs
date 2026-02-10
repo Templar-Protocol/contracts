@@ -121,7 +121,12 @@ impl LiquidatorService {
             .as_deref()
             .unwrap_or_else(|| config.network.rpc_url());
 
-        tracing::info!(rpc_url = %rpc_url, "Connecting to RPC");
+        let redacted_url = if let Some(idx) = rpc_url.find('?') {
+            format!("{}?<redacted>", &rpc_url[..idx])
+        } else {
+            rpc_url.to_string()
+        };
+        tracing::info!(rpc_url = %redacted_url, "Connecting to RPC");
 
         let client = JsonRpcClient::connect(rpc_url);
         let signer = InMemorySigner::from_secret_key(
