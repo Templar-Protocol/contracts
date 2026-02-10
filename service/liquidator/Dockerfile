@@ -78,6 +78,3 @@ LABEL org.opencontainers.image.source="https://github.com/templar-protocol/contr
 
 # Default command
 ENTRYPOINT ["/app/liquidator"]
-
-# Default args (can be overridden)
-CMD ["--help"]
