@@ -371,7 +371,7 @@ pub fn apply_action(
             }
             if !state.op_state.is_idle() {
                 return Err(KernelError::InvalidState(
-                    "execute_withdraw requires Idle or Withdrawing",
+                    "execute_withdraw requires Idle",
                 ));
             }
 
@@ -418,7 +418,9 @@ pub fn apply_action(
             let alloc_total = result
                 .new_state
                 .as_allocating()
-                .expect("start_allocation must return Allocating")
+                .ok_or(KernelError::InvalidState(
+                    "start_allocation must return Allocating",
+                ))?
                 .remaining;
 
             if alloc_total > state.idle_assets {
@@ -1473,7 +1475,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(KernelError::InvalidState(
-                "execute_withdraw requires Idle or Withdrawing"
+                "execute_withdraw requires Idle"
             ))
         ));
     }

@@ -272,9 +272,10 @@ pub fn compute_settlement_by_price(
         return EscrowSettlement::burn_all(escrow_shares);
     }
 
-    // Partial burn: ratio of current to original price
-    // shares_to_burn = escrow_shares * current_price / original_price
-    let shares_to_burn = Number::mul_div_floor(
+    // Partial burn: ratio of current to original price.
+    // Use ceil to avoid zero-burn partials (consistent with compute_settlement).
+    // shares_to_burn = ceil(escrow_shares * current_price / original_price)
+    let shares_to_burn = Number::mul_div_ceil(
         Number::from(escrow_shares),
         share_price_wad.0,
         original_share_price_wad.0,
@@ -1154,6 +1155,16 @@ mod tests {
         );
         assert_eq!(settlement.to_burn, 50);
         assert_eq!(settlement.refund, 50);
+
+        // One-third price: ceil(100 * 1/3) = 34 burn, 66 refund
+        // Ceil rounding ensures vault keeps more shares (rounds against user).
+        let settlement = compute_settlement_by_price(
+            100,
+            Wad::from(Wad::SCALE / 3), // 0.333...
+            Wad::from(Wad::SCALE),     // 1.0
+        );
+        assert_eq!(settlement.to_burn, 34);
+        assert_eq!(settlement.refund, 66);
     }
 
     // =========================================================================
