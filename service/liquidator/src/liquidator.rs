@@ -27,7 +27,7 @@ use templar_common::{
     oracle::pyth::OracleResponse,
 };
 
-use crate::liquidation_strategy::LiquidationStrategy;
+use crate::liquidation_strategy::{LiquidationStrategy, SAFETY_BUFFER_BPS};
 
 // Modules
 pub mod config;
@@ -418,55 +418,25 @@ impl Liquidator {
                 return Ok(LiquidationOutcome::NotLiquidatable);
             }
 
-            // Create a temporary position with appropriate collateral for strategy calculation.
-            //
-            // Version-specific logic required because v1.0 and v1.1+ validate differently:
-            //
-            // v1.0 markets:
-            //   - Validate: amount >= total_collateral × price × (1 - spread)
-            //   - Behavior: Takes ALL collateral, zeros ALL debt
-            //   - No partial liquidation support
-            //
-            // v1.1+ markets:
-            //   - Validate: amount >= requested_collateral × price × (1 - spread)
-            //   - Enforce: requested_collateral <= liquidatable_collateral
-            //   - Behavior: Takes requested collateral, reduces debt proportionally
-            //   - Supports partial liquidation
-            //
-            // We adjust position.collateral_asset_deposit accordingly so the strategy
-            // calculates the correct liquidation amount for the contract's validation.
-            let mut adjusted_position = position.clone();
-            let use_total_collateral = if let Some((major, minor, _)) = self.market_version {
-                // If version is < 1.1.0, use total collateral
-                (major, minor) < (1, 1)
+            // v1.0.0 markets: use full position (no partial support)
+            // v1.1.0+ markets: adjust position to liquidatable collateral for strategy calculation
+            let adjusted_position = if self.market_version == Some((1, 0, 0)) {
+                position.clone()
             } else {
-                // If version is unknown, assume v1.0 for safety
-                true
+                let mut adj = position.clone();
+                adj.collateral_asset_deposit = liquidatable_collateral;
+                adj
             };
 
-            if use_total_collateral {
-                // v1.0: Keep total collateral - contract validates against total
-                let (_, _, coll_dec, coll_asset) = self.asset_info();
-                tracing::info!(
-                    borrower = %borrow_account,
-                    market = %self.market,
-                    market_version = ?self.market_version,
-                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
-                    "Using total collateral for v1.0 market"
-                );
-            } else {
-                // v1.1+: Use liquidatable collateral - contract enforces limit
-                adjusted_position.collateral_asset_deposit = liquidatable_collateral;
-                let (_, _, coll_dec, coll_asset) = self.asset_info();
-                tracing::info!(
-                    borrower = %borrow_account,
-                    market = %self.market,
-                    market_version = ?self.market_version,
-                    liquidatable_collateral = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
-                    total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
-                    "Using liquidatable collateral for v1.1+ market"
-                );
-            }
+            let (_, _, coll_dec, coll_asset) = self.asset_info();
+            tracing::info!(
+                borrower = %borrow_account,
+                market = %self.market,
+                market_version = ?self.market_version,
+                liquidatable_collateral = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
+                total_collateral = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
+                "Using liquidatable collateral for liquidation calculation"
+            );
 
             let Some((liquidation_amount, collateral_amount)) =
                 self.strategy.calculate_liquidation_amount(
@@ -474,6 +444,7 @@ impl Liquidator {
                     &oracle_response,
                     &self.market_config,
                     available_balance,
+                    self.market_version,
                 )?
             else {
                 if loop_iteration > 1 {
@@ -532,15 +503,17 @@ impl Liquidator {
                     gas_cost,
                 );
 
+            let theoretical_amount_for_profit =
+                U128((liquidation_amount.0 * 10_000) / (10_000 + SAFETY_BUFFER_BPS));
+
             let is_profitable = self.strategy.should_liquidate(
-                liquidation_amount,
+                theoretical_amount_for_profit,
                 expected_collateral_value,
                 gas_cost,
             )?;
 
             // Log consolidated liquidation info with human-readable amounts
             let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
-            let mode = if dry_run_mode { "[DRY RUN] " } else { "" };
 
             if is_profitable {
                 // Calculate signed profit for display (can be negative if unprofitable)
@@ -554,12 +527,17 @@ impl Liquidator {
                         -(i128::try_from(loss).unwrap_or(i128::MAX))
                     };
 
+                let message = if dry_run_mode {
+                    "[DRY RUN] Liquidatable position"
+                } else {
+                    "Liquidatable position"
+                };
+
                 // Only show iteration if loop is enabled (for partial/fixed strategies)
                 if loop_enabled {
                     tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
-                        mode = mode,
                         reason = ?reason,
                         iteration = %format::format_iteration(loop_iteration, max_iterations),
                         collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
@@ -567,27 +545,25 @@ impl Liquidator {
                         send = %format::format_amount(liquidation_amount.0, borrow_dec, &borrow_asset),
                         receive = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
                         profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, &borrow_asset),
-                        "Liquidatable position"
+                        "{}", message
                     );
                 } else {
                     tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
-                        mode = mode,
                         reason = ?reason,
                         collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
                         collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
                         send = %format::format_amount(liquidation_amount.0, borrow_dec, &borrow_asset),
                         receive = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
                         profit = %format::format_profit(signed_profit, liquidation_amount.0, borrow_dec, &borrow_asset),
-                        "Liquidatable position"
+                        "{}", message
                     );
                 }
             }
 
             if !is_profitable {
                 let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
-                let mode = if dry_run_mode { "[DRY RUN] " } else { "" };
 
                 // Calculate actual loss (revenue - cost, will be negative)
                 let total_cost = liquidation_amount.0 + gas_cost.0;
@@ -603,10 +579,15 @@ impl Liquidator {
                 let min_revenue_required = (total_cost * profit_margin_multiplier) / 10_000;
                 let spread_pct = spread.to_f64_lossy() * 100.0;
 
+                let message = if dry_run_mode {
+                    "[DRY RUN] Position not profitable, skipping"
+                } else {
+                    "Position not profitable, skipping"
+                };
+
                 tracing::info!(
                     market = %self.market,
                     borrower = %borrow_account,
-                    mode = mode,
                     collateral_total = %format::format_amount(position.collateral_asset_deposit.into(), coll_dec, &coll_asset),
                     collateral_liquidatable = %format::format_amount(liquidatable_collateral.into(), coll_dec, &coll_asset),
                     collateral_requested = %format::format_amount(collateral_amount.0, coll_dec, &coll_asset),
@@ -618,7 +599,7 @@ impl Liquidator {
                     min_revenue_required = %format::format_amount(min_revenue_required, borrow_dec, &borrow_asset),
                     spread = %format!("{:.1}%", spread_pct),
                     loss = %format::format_profit(loss, total_cost, borrow_dec, &borrow_asset),
-                    "Position not profitable, skipping"
+                    "{}", message
                 );
 
                 if loop_iteration > 1 {

@@ -2,59 +2,13 @@
 //!
 //! This module handles CLI argument parsing and service configuration creation.
 
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 
 use clap::Parser;
 use near_sdk::AccountId;
 use templar_common::utils::Network;
 
-use crate::{
-    liquidation_strategy::{FullLiquidationStrategy, PartialLiquidationStrategy},
-    service::ServiceConfig,
-    CollateralStrategy,
-};
-
-/// Liquidation strategy argument type for CLI parsing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LiquidationStrategyArg {
-    /// Full liquidation (100%)
-    Full,
-    /// Partial liquidation (percentage specified separately)
-    Partial,
-    /// Fixed amount liquidation (amount specified separately)
-    FixedAmount,
-}
-
-impl FromStr for LiquidationStrategyArg {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "full" => Ok(Self::Full),
-            "partial" => Ok(Self::Partial),
-            "fixed-amount" | "fixed_amount" => Ok(Self::FixedAmount),
-            _ => Err(format!(
-                "Invalid liquidation strategy: '{s}'. Valid options: 'full', 'partial', 'fixed-amount'"
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for LiquidationStrategyArg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Full => write!(f, "full"),
-            Self::Partial => write!(f, "partial"),
-            Self::FixedAmount => write!(f, "fixed-amount"),
-        }
-    }
-}
-
-impl Default for LiquidationStrategyArg {
-    fn default() -> Self {
-        Self::Partial
-    }
-}
+use crate::{service::ServiceConfig, CollateralStrategy};
 
 /// Validator function for `partial_percentage` range
 fn validate_percentage(s: &str) -> Result<u8, String> {
@@ -110,17 +64,16 @@ pub struct Args {
     #[arg(short, long, env = "CONCURRENCY", default_value_t = 10)]
     pub concurrency: usize,
 
-    /// Liquidation strategy: "partial" or "full"
-    #[arg(long, env = "LIQUIDATION_STRATEGY", default_value_t = LiquidationStrategyArg::default())]
-    pub liquidation_strategy: LiquidationStrategyArg,
+    /// Percentage of available liquidatable collateral to liquidate (1-100)
+    /// If not set and --fixed-liquidation-amount-usd is also not set, defaults to 100%
+    /// Mutually exclusive with --fixed-liquidation-amount-usd
+    #[arg(long, env = "PARTIAL_LIQUIDATION_PERCENTAGE", value_parser = validate_percentage)]
+    pub partial_percentage: Option<u8>,
 
-    /// Partial liquidation percentage (1-100, only used with partial strategy)
-    #[arg(long, env = "PARTIAL_LIQUIDATION_PERCENTAGE", value_parser = validate_percentage, default_value = "50")]
-    pub partial_percentage: u8,
-
-    /// Fixed liquidation amount in USD (only used with fixed-amount strategy)
+    /// Fixed liquidation amount in USD
     /// Example: 100.0 for $100 USD (works across all USD-based markets with any decimals)
     /// Only supports USD-based borrow assets (USDC, USDT, DAI, etc.)
+    /// Mutually exclusive with --partial-percentage
     #[arg(long, env = "FIXED_LIQUIDATION_AMOUNT_USD")]
     pub fixed_liquidation_amount_usd: Option<f64>,
 
@@ -181,27 +134,13 @@ impl Args {
 
     /// Create a liquidation strategy from the arguments
     pub fn create_strategy(&self) -> Arc<dyn crate::liquidation_strategy::LiquidationStrategy> {
-        match self.liquidation_strategy {
-            LiquidationStrategyArg::Full => {
-                tracing::info!("Using FullLiquidationStrategy (100% liquidation)");
-                Arc::new(FullLiquidationStrategy::new(self.min_profit_bps))
-            }
-            LiquidationStrategyArg::Partial => {
-                tracing::info!(
-                    percentage = self.partial_percentage,
-                    "Using PartialLiquidationStrategy"
+        match (self.partial_percentage, self.fixed_liquidation_amount_usd) {
+            (Some(_), Some(_)) => {
+                panic!(
+                    "Cannot specify both --partial-percentage and --fixed-liquidation-amount-usd. Choose one strategy."
                 );
-                Arc::new(PartialLiquidationStrategy::new(
-                    self.partial_percentage,
-                    self.min_profit_bps,
-                ))
             }
-            LiquidationStrategyArg::FixedAmount => {
-                let Some(fixed_amount_usd) = self.fixed_liquidation_amount_usd else {
-                    panic!(
-                        "FIXED_LIQUIDATION_AMOUNT_USD must be set when using fixed-amount strategy"
-                    );
-                };
+            (None, Some(fixed_amount_usd)) => {
                 tracing::info!(
                     fixed_amount_usd = fixed_amount_usd,
                     "Using FixedAmountLiquidationStrategy (USD-based, works across all USD markets)"
@@ -209,6 +148,20 @@ impl Args {
                 Arc::new(
                     crate::liquidation_strategy::FixedAmountLiquidationStrategy::new(
                         fixed_amount_usd,
+                        self.min_profit_bps,
+                    ),
+                )
+            }
+            (percentage, None) => {
+                let pct = percentage.unwrap_or(100);
+                tracing::info!(
+                    percentage = pct,
+                    "Using PercentageLiquidationStrategy ({}% of available liquidatable collateral, 100% = full liquidation)",
+                    pct
+                );
+                Arc::new(
+                    crate::liquidation_strategy::PercentageLiquidationStrategy::new(
+                        pct,
                         self.min_profit_bps,
                     ),
                 )
@@ -351,8 +304,7 @@ mod tests {
             liquidation_scan_interval: 600,
             registry_refresh_interval: 3600,
             concurrency: 10,
-            liquidation_strategy: LiquidationStrategyArg::Partial,
-            partial_percentage: 50,
+            partial_percentage: Some(50),
             fixed_liquidation_amount_usd: None,
             min_profit_bps: 100,
             dry_run: false,
@@ -387,26 +339,58 @@ mod tests {
     }
 
     #[test]
-    fn test_create_strategy_full() {
+    fn test_create_strategy_percentage_100() {
         let mut args = create_test_args();
-        args.liquidation_strategy = LiquidationStrategyArg::Full;
+        args.partial_percentage = Some(100);
         args.min_profit_bps = 200;
 
         let strategy = args.create_strategy();
-        assert_eq!(strategy.strategy_name(), "Full Liquidation");
+        assert_eq!(strategy.strategy_name(), "Percentage Liquidation");
         assert_eq!(strategy.max_liquidation_percentage(), 100);
     }
 
     #[test]
-    fn test_create_strategy_partial() {
+    fn test_create_strategy_percentage_75() {
         let mut args = create_test_args();
-        args.liquidation_strategy = LiquidationStrategyArg::Partial;
-        args.partial_percentage = 75;
+        args.partial_percentage = Some(75);
         args.min_profit_bps = 150;
 
         let strategy = args.create_strategy();
-        assert_eq!(strategy.strategy_name(), "Partial Liquidation");
+        assert_eq!(strategy.strategy_name(), "Percentage Liquidation");
         assert_eq!(strategy.max_liquidation_percentage(), 75);
+    }
+
+    #[test]
+    fn test_create_strategy_default_percentage() {
+        let mut args = create_test_args();
+        args.partial_percentage = None;
+        args.fixed_liquidation_amount_usd = None;
+
+        let strategy = args.create_strategy();
+        assert_eq!(strategy.strategy_name(), "Percentage Liquidation");
+        assert_eq!(strategy.max_liquidation_percentage(), 100);
+    }
+
+    #[test]
+    fn test_create_strategy_fixed_amount() {
+        let mut args = create_test_args();
+        args.partial_percentage = None;
+        args.fixed_liquidation_amount_usd = Some(100.0);
+
+        let strategy = args.create_strategy();
+        assert_eq!(strategy.strategy_name(), "Fixed Amount Liquidation");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Cannot specify both --partial-percentage and --fixed-liquidation-amount-usd"
+    )]
+    fn test_create_strategy_mutual_exclusivity() {
+        let mut args = create_test_args();
+        args.partial_percentage = Some(50);
+        args.fixed_liquidation_amount_usd = Some(100.0);
+
+        args.create_strategy();
     }
 
     #[test]
@@ -440,28 +424,6 @@ mod tests {
     fn test_network_display() {
         assert_eq!(Network::Mainnet.to_string(), "mainnet");
         assert_eq!(Network::Testnet.to_string(), "testnet");
-    }
-
-    #[test]
-    fn test_liquidation_strategy_parsing() {
-        // Test valid strategies
-        assert_eq!(
-            "partial".parse::<LiquidationStrategyArg>().unwrap(),
-            LiquidationStrategyArg::Partial
-        );
-        assert_eq!(
-            "full".parse::<LiquidationStrategyArg>().unwrap(),
-            LiquidationStrategyArg::Full
-        );
-        assert_eq!(
-            "FULL".parse::<LiquidationStrategyArg>().unwrap(),
-            LiquidationStrategyArg::Full
-        );
-
-        // Test invalid strategy
-        let result = "invalid".parse::<LiquidationStrategyArg>();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid liquidation strategy"));
     }
 
     #[test]
