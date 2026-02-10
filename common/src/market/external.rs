@@ -22,7 +22,6 @@ use super::{BorrowAssetMetrics, MarketConfiguration};
 pub enum HarvestYieldMode {
     #[default]
     Default,
-    Compounding,
     SnapshotLimit(u32),
 }
 
@@ -137,10 +136,6 @@ pub trait MarketExternalInterface {
     fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
 
     /// Claim any distributed yield to the supply record.
-    /// If mode is set to [`HarvestYieldMode::Compounding`], the all of the
-    /// yield (including any harvested in previous, non-compounding
-    /// `harvest_yield` calls) will be deposited to the supply record, so it
-    /// can be withdrawn and will contribute to future yield calculations.
     fn harvest_yield(
         &mut self,
         account_id: Option<AccountId>,

@@ -417,6 +417,8 @@ impl<'a> BorrowPositionGuard<'a> {
         );
         self.position.interest.remove(to_interest);
 
+        self.market.borrow_asset_paid_to_fees += to_fees + to_interest;
+
         let to_principal = {
             let minimum_amount = u128::from(self.market.configuration.borrow_range.minimum);
             let amount_remaining =
