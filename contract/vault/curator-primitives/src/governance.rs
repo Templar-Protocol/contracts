@@ -6,7 +6,6 @@
 //! each executor, but the decision math is shared here.
 
 use alloc::collections::{BTreeSet, VecDeque};
-use alloc::vec::Vec;
 
 use templar_vault_kernel::math::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_vault_kernel::types::TimestampNs;
@@ -36,37 +35,7 @@ impl<T> PendingValue<T> {
     }
 }
 
-/// Timelock queue helpers.
-pub fn queue_len<T>(queue: &VecDeque<PendingValue<T>>) -> usize {
-    queue.len()
-}
-
-pub fn queue_has_pending<T>(queue: &VecDeque<PendingValue<T>>) -> bool {
-    !queue.is_empty()
-}
-
-pub fn queue_pending_values<T: Clone>(queue: &VecDeque<PendingValue<T>>) -> Vec<PendingValue<T>> {
-    queue.iter().cloned().collect()
-}
-
-pub fn queue_seek<T>(
-    queue: &VecDeque<PendingValue<T>>,
-    find_fn: impl Fn(&T) -> bool,
-) -> Option<(usize, &PendingValue<T>)> {
-    queue
-        .iter()
-        .enumerate()
-        .find(|(_, entry)| find_fn(&entry.value))
-}
-
-pub fn queue_remove<T>(
-    queue: &mut VecDeque<PendingValue<T>>,
-    find_fn: impl Fn(&T) -> bool,
-) -> Option<PendingValue<T>> {
-    let (idx, _) = queue_seek(queue, find_fn)?;
-    queue.remove(idx)
-}
-
+/// Schedule a new timelocked value on the queue.
 pub fn queue_schedule<T>(
     queue: &mut VecDeque<PendingValue<T>>,
     value: T,

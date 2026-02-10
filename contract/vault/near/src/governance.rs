@@ -111,22 +111,25 @@ impl Timelocks {
     }
 
     pub fn pending_len(&self) -> usize {
-        shared_gov::queue_len(&self.pending_actions)
+        self.pending_actions.len()
     }
 
     pub fn has_pending(&self) -> bool {
-        shared_gov::queue_has_pending(&self.pending_actions)
+        !self.pending_actions.is_empty()
     }
 
     pub fn pending_actions(&self) -> Vec<PendingValue<TimelockedAction>> {
-        shared_gov::queue_pending_values(&self.pending_actions)
+        self.pending_actions.iter().cloned().collect()
     }
 
     fn seek_pending_timelock(
         &self,
         find_fn: impl Fn(&TimelockedAction) -> bool,
     ) -> Option<(usize, &PendingValue<TimelockedAction>)> {
-        shared_gov::queue_seek(&self.pending_actions, find_fn)
+        self.pending_actions
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| find_fn(&entry.value))
     }
 }
 

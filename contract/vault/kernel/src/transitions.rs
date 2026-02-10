@@ -111,6 +111,19 @@ impl TransitionError {
     }
 }
 
+/// Validate that a plan step index is within bounds.
+#[inline]
+fn validate_plan_index(index: u32, plan_len: usize) -> Result<(), TransitionError> {
+    let len = plan_len as u32;
+    if index >= len {
+        return Err(TransitionError::InvalidIndex {
+            index,
+            max: len.saturating_sub(1),
+        });
+    }
+    Ok(())
+}
+
 /// Result of a successful state transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitionResult {
@@ -239,13 +252,7 @@ pub fn allocation_step_callback(
         });
     }
 
-    let plan_len = alloc.plan.len() as u32;
-    if alloc.index >= plan_len {
-        return Err(TransitionError::InvalidIndex {
-            index: alloc.index,
-            max: plan_len.saturating_sub(1),
-        });
-    }
+    validate_plan_index(alloc.index, alloc.plan.len())?;
 
     if !success {
         // On failure, return to Idle.
@@ -617,13 +624,7 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
         });
     }
 
-    let plan_len = refresh.plan.len() as u32;
-    if refresh.index >= plan_len {
-        return Err(TransitionError::InvalidIndex {
-            index: refresh.index,
-            max: plan_len.saturating_sub(1),
-        });
-    }
+    validate_plan_index(refresh.index, refresh.plan.len())?;
 
     let new_index = refresh.index.saturating_add(1);
 

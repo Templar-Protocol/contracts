@@ -37,53 +37,30 @@ pub enum AuthPattern {
 }
 
 impl AuthPattern {
+    /// Returns the set of non-owner roles that are permitted for this pattern.
+    ///
+    /// The Owner is *always* allowed as a fallback and is not listed here.
+    /// An empty slice means only the Owner may call the action.
+    pub fn allowed_roles(self) -> &'static [Role] {
+        match self {
+            AuthPattern::OwnerOnly => &[],
+            AuthPattern::GuardianOrOwner => &[Role::Guardian],
+            AuthPattern::GuardianOrSentinelOrOwner => &[Role::Guardian, Role::Sentinel],
+            AuthPattern::CuratorOrOwner => &[Role::Curator],
+            AuthPattern::CuratorOrSentinelOrOwner => &[Role::Curator, Role::Sentinel],
+            AuthPattern::Allocator => &[Role::Allocator, Role::Curator],
+            AuthPattern::AllocatorOrSentinel => &[Role::Allocator, Role::Curator, Role::Sentinel],
+        }
+    }
+
     /// Require the caller to match this auth pattern. Panics if unauthorized.
     pub fn require(self) {
         let caller = env::predecessor_account_id();
-        match self {
-            AuthPattern::OwnerOnly => {
-                Contract::require_owner();
-            }
-            AuthPattern::GuardianOrOwner => {
-                if !Contract::has_role(&caller, &Role::Guardian) {
-                    Contract::require_owner();
-                }
-            }
-            AuthPattern::GuardianOrSentinelOrOwner => {
-                if !Contract::has_role(&caller, &Role::Guardian)
-                    && !Contract::has_role(&caller, &Role::Sentinel)
-                {
-                    Contract::require_owner();
-                }
-            }
-            AuthPattern::CuratorOrOwner => {
-                if !Contract::has_role(&caller, &Role::Curator) {
-                    Contract::require_owner();
-                }
-            }
-            AuthPattern::CuratorOrSentinelOrOwner => {
-                if !Contract::has_role(&caller, &Role::Curator)
-                    && !Contract::has_role(&caller, &Role::Sentinel)
-                {
-                    Contract::require_owner();
-                }
-            }
-            AuthPattern::Allocator => {
-                if !Contract::has_role(&caller, &Role::Allocator)
-                    && !Contract::has_role(&caller, &Role::Curator)
-                {
-                    Contract::require_owner();
-                }
-            }
-            AuthPattern::AllocatorOrSentinel => {
-                if !Contract::has_role(&caller, &Role::Allocator)
-                    && !Contract::has_role(&caller, &Role::Curator)
-                    && !Contract::has_role(&caller, &Role::Sentinel)
-                {
-                    Contract::require_owner();
-                }
-            }
+        let roles = self.allowed_roles();
+        if roles.iter().any(|r| Contract::has_role(&caller, r)) {
+            return;
         }
+        Contract::require_owner();
     }
 }
 
