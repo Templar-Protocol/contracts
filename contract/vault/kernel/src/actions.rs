@@ -16,7 +16,7 @@ use crate::math::wad::{
 };
 use crate::restrictions::Restrictions;
 use crate::state::op_state::{OpState, TargetId};
-use crate::state::queue::is_past_cooldown;
+use crate::state::queue::{is_past_cooldown, WithdrawQueue};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::transitions::{
     complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
@@ -160,36 +160,44 @@ pub enum KernelAction {
     EmergencyReset,
 }
 
-/// Compute effective totals including virtual shares/assets for conversion math.
+/// Effective totals after applying virtual share/asset offsets.
 ///
-/// Returns `(effective_supply, effective_assets)`.
-pub fn effective_totals(state: &VaultState, config: &VaultConfig) -> (u128, u128) {
-    let supply = state
-        .total_shares
-        .saturating_add(config.virtual_shares.max(1));
-    let assets = state
-        .total_assets
-        .saturating_add(config.virtual_assets.max(1));
-    (supply, assets)
+/// Named fields prevent callers from confusing supply vs assets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectiveTotals {
+    pub supply: u128,
+    pub assets: u128,
+}
+
+/// Compute effective totals including virtual shares/assets for conversion math.
+pub fn effective_totals(state: &VaultState, config: &VaultConfig) -> EffectiveTotals {
+    EffectiveTotals {
+        supply: state
+            .total_shares
+            .saturating_add(config.virtual_shares.max(1)),
+        assets: state
+            .total_assets
+            .saturating_add(config.virtual_assets.max(1)),
+    }
 }
 
 /// Convert an asset amount to shares (floor rounding — fewer shares, favors vault).
 pub fn convert_to_shares(state: &VaultState, config: &VaultConfig, assets: u128) -> u128 {
-    let (supply, assets_total) = effective_totals(state, config);
+    let t = effective_totals(state, config);
     u128::from(mul_div_floor(
         Number::from(assets),
-        Number::from(supply),
-        Number::from(assets_total),
+        Number::from(t.supply),
+        Number::from(t.assets),
     ))
 }
 
 /// Convert a share amount to assets (floor rounding — fewer assets, favors vault).
 pub fn convert_to_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
-    let (supply, assets_total) = effective_totals(state, config);
+    let t = effective_totals(state, config);
     u128::from(mul_div_floor(
         Number::from(shares),
-        Number::from(assets_total),
-        Number::from(supply),
+        Number::from(t.assets),
+        Number::from(t.supply),
     ))
 }
 
@@ -197,11 +205,11 @@ pub fn convert_to_assets(state: &VaultState, config: &VaultConfig, shares: u128)
 ///
 /// Used by ERC-4626 `preview_withdraw` to compute shares burned (rounds against user).
 pub fn convert_to_shares_ceil(state: &VaultState, config: &VaultConfig, assets: u128) -> u128 {
-    let (supply, assets_total) = effective_totals(state, config);
+    let t = effective_totals(state, config);
     u128::from(mul_div_ceil(
         Number::from(assets),
-        Number::from(supply),
-        Number::from(assets_total),
+        Number::from(t.supply),
+        Number::from(t.assets),
     ))
 }
 
@@ -209,11 +217,11 @@ pub fn convert_to_shares_ceil(state: &VaultState, config: &VaultConfig, assets: 
 ///
 /// Used by ERC-4626 `preview_mint` to compute assets needed (rounds against user).
 pub fn convert_to_assets_ceil(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
-    let (supply, assets_total) = effective_totals(state, config);
+    let t = effective_totals(state, config);
     u128::from(mul_div_ceil(
         Number::from(shares),
-        Number::from(assets_total),
-        Number::from(supply),
+        Number::from(t.assets),
+        Number::from(t.supply),
     ))
 }
 
@@ -257,6 +265,67 @@ fn check_op_id(expected: u64, actual: u64) -> Result<(), KernelError> {
         return Err(KernelError::OpIdMismatch { expected, actual });
     }
     Ok(())
+}
+
+/// Validate that the withdrawal queue head matches the expected owner/receiver/escrow.
+///
+/// Used by both `AbortWithdrawing` and `SettlePayout` to ensure consistency
+/// between the op-state and the queue.
+fn validate_queue_head(
+    queue: &WithdrawQueue,
+    owner: &Address,
+    receiver: &Address,
+    escrow_shares: u128,
+) -> Result<(), KernelError> {
+    let Some((_, pending)) = queue.head() else {
+        return Err(KernelError::EmptyQueue);
+    };
+    if pending.owner != *owner
+        || pending.receiver != *receiver
+        || pending.escrow_shares != escrow_shares
+    {
+        return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
+    }
+    Ok(())
+}
+
+/// Push a `TransferShares` effect to refund escrowed shares to an owner.
+///
+/// No-op if `shares` is zero.
+#[inline]
+fn push_refund_shares(
+    effects: &mut Vec<KernelEffect>,
+    escrow: Address,
+    owner: Address,
+    shares: u128,
+) {
+    if shares > 0 {
+        effects.push(KernelEffect::TransferShares {
+            from: escrow,
+            to: owner,
+            shares,
+        });
+    }
+}
+
+/// Mint fee shares to a recipient and update total supply.
+///
+/// No-op if `shares` is zero.
+#[inline]
+fn mint_fee_shares(
+    effects: &mut Vec<KernelEffect>,
+    total_supply: &mut u128,
+    shares: Number,
+    recipient: Address,
+) {
+    if shares > Number::zero() {
+        let minted: u128 = shares.into();
+        effects.push(KernelEffect::MintShares {
+            owner: recipient,
+            shares: minted,
+        });
+        *total_supply = total_supply.saturating_add(minted);
+    }
 }
 
 /// Apply a kernel action to state, returning updated state and effects.
@@ -619,15 +688,12 @@ pub fn apply_action(
                 ));
             }
 
-            let Some((_, pending)) = state.withdraw_queue.head() else {
-                return Err(KernelError::EmptyQueue);
-            };
-            if pending.owner != withdraw.owner
-                || pending.receiver != withdraw.receiver
-                || pending.escrow_shares != withdraw.escrow_shares
-            {
-                return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
-            }
+            validate_queue_head(
+                &state.withdraw_queue,
+                &withdraw.owner,
+                &withdraw.receiver,
+                withdraw.escrow_shares,
+            )?;
 
             let result = stop_withdrawal(mem::take(&mut state.op_state), op_id, *self_id)
                 .map_err(KernelError::Transition)?;
@@ -643,15 +709,12 @@ pub fn apply_action(
 
             check_op_id(payout.op_id, op_id)?;
 
-            let Some((_, pending)) = state.withdraw_queue.head() else {
-                return Err(KernelError::EmptyQueue);
-            };
-            if pending.owner != payout.owner
-                || pending.receiver != payout.receiver
-                || pending.escrow_shares != payout.escrow_shares
-            {
-                return Err(KernelError::InvalidState("withdrawal queue head mismatch"));
-            }
+            validate_queue_head(
+                &state.withdraw_queue,
+                &payout.owner,
+                &payout.receiver,
+                payout.escrow_shares,
+            )?;
 
             let escrow_address = *self_id;
             let mut effects = Vec::new();
@@ -679,13 +742,12 @@ pub fn apply_action(
                                 "payout burn exceeds total_shares",
                             ))?;
                     }
-                    if refund_amount > 0 {
-                        effects.push(KernelEffect::TransferShares {
-                            from: escrow_address,
-                            to: payout.owner,
-                            shares: refund_amount,
-                        });
-                    }
+                    push_refund_shares(
+                        &mut effects,
+                        escrow_address,
+                        payout.owner,
+                        refund_amount,
+                    );
 
                     state.op_state = OpState::Idle;
                     (burn_amount, refund_amount, payout.amount, true)
@@ -705,13 +767,12 @@ pub fn apply_action(
                         ));
                     }
 
-                    if refund_amount > 0 {
-                        effects.push(KernelEffect::TransferShares {
-                            from: escrow_address,
-                            to: payout.owner,
-                            shares: refund_amount,
-                        });
-                    }
+                    push_refund_shares(
+                        &mut effects,
+                        escrow_address,
+                        payout.owner,
+                        refund_amount,
+                    );
 
                     state.restore_to_idle(restore_idle);
                     state.op_state = OpState::Idle;
@@ -767,14 +828,12 @@ pub fn apply_action(
                 anchor.timestamp_ns,
                 now_ns,
             );
-            if mgmt_shares > Number::zero() {
-                let minted: u128 = mgmt_shares.into();
-                effects.push(KernelEffect::MintShares {
-                    owner: config.fees.management.recipient,
-                    shares: minted,
-                });
-                total_supply = total_supply.saturating_add(minted);
-            }
+            mint_fee_shares(
+                &mut effects,
+                &mut total_supply,
+                mgmt_shares,
+                config.fees.management.recipient,
+            );
 
             // Performance fees (profit-based)
             let profit = fee_total_assets.saturating_sub(anchor.total_assets);
@@ -788,14 +847,12 @@ pub fn apply_action(
                 Number::from(cur_total_assets),
                 Number::from(total_supply),
             );
-            if perf_shares > Number::zero() {
-                let minted: u128 = perf_shares.into();
-                effects.push(KernelEffect::MintShares {
-                    owner: config.fees.performance.recipient,
-                    shares: minted,
-                });
-                total_supply = total_supply.saturating_add(minted);
-            }
+            mint_fee_shares(
+                &mut effects,
+                &mut total_supply,
+                perf_shares,
+                config.fees.performance.recipient,
+            );
 
             state.total_shares = total_supply;
             state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
@@ -829,27 +886,13 @@ pub fn apply_action(
                     state.restore_to_idle(alloc.remaining);
                 }
                 OpState::Withdrawing(w) => {
-                    // Refund escrowed shares to the owner.
-                    if w.escrow_shares > 0 {
-                        effects.push(KernelEffect::TransferShares {
-                            from: escrow_address,
-                            to: w.owner,
-                            shares: w.escrow_shares,
-                        });
-                    }
+                    push_refund_shares(&mut effects, escrow_address, w.owner, w.escrow_shares);
                     // Restore any collected assets back to idle.
                     state.restore_to_idle(w.collected);
                     state.withdraw_queue.dequeue();
                 }
                 OpState::Payout(p) => {
-                    // Refund all escrowed shares to the owner.
-                    if p.escrow_shares > 0 {
-                        effects.push(KernelEffect::TransferShares {
-                            from: escrow_address,
-                            to: p.owner,
-                            shares: p.escrow_shares,
-                        });
-                    }
+                    push_refund_shares(&mut effects, escrow_address, p.owner, p.escrow_shares);
                     // Restore payout amount back to idle.
                     state.restore_to_idle(p.amount);
                     state.withdraw_queue.dequeue();
@@ -3285,9 +3328,9 @@ mod tests {
         config.virtual_shares = 100;
         config.virtual_assets = 200;
 
-        let (supply, assets) = effective_totals(&state, &config);
-        assert_eq!(supply, 1_000 + 100); // shares + max(virtual, 1)
-        assert_eq!(assets, 1_000 + 200); // assets + max(virtual, 1)
+        let totals = effective_totals(&state, &config);
+        assert_eq!(totals.supply, 1_000 + 100); // shares + max(virtual, 1)
+        assert_eq!(totals.assets, 1_000 + 200); // assets + max(virtual, 1)
     }
 
     #[test]
