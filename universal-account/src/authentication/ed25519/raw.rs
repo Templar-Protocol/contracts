@@ -1,23 +1,16 @@
-use near_sdk::{env, near};
+use near_sdk::env;
 
 use crate::{
-    authentication::{HashForSigning, Key},
+    authentication::{verify_key, HashForSigning, Key},
     encoding,
 };
 
 pub type Message<T> = super::Message<VerifyKey, T>;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-pub struct VerifyKey(pub encoding::ed25519::PublicKey);
+verify_key!(encoding::ed25519::PublicKey);
+
 impl super::Ed25519Variant for VerifyKey {
     const PREFIX: &'static [u8] = b"\x19UAccount Signed Message:\n";
-}
-
-impl std::fmt::Display for VerifyKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
 }
 
 impl<T> Key<Message<T>> for VerifyKey {

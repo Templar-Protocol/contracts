@@ -154,3 +154,19 @@ async fn liquidation_maximum_spread_greater_than_1() {
     )
     .await;
 }
+
+#[tokio::test]
+#[should_panic = "Smart contract panicked: Invalid configuration field `liquidation_maximum_spread`: out of bounds"]
+async fn liquidation_maximum_spread_mcr_underflow() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    setup_everything(
+        &worker,
+        |c| {
+            c.borrow_mcr_maintenance = dec!("1.5");
+            c.borrow_mcr_liquidation = dec!("1.1");
+            c.liquidation_maximum_spread = dec!("0.1");
+        },
+        |_c| {},
+    )
+    .await;
+}

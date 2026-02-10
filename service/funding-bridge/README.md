@@ -180,7 +180,7 @@ curl -X POST http://localhost:3000/withdraw \
   -d '{
     "destination_chain": "ethereum",
     "asset": "USDC",
-    "amount": "500000",
+    "amount": "0.5",
     "dry_run": false
   }'
 ```
@@ -188,7 +188,7 @@ curl -X POST http://localhost:3000/withdraw \
 **Request Fields:**
 - `destination_chain` - Target chain (see supported formats below)
 - `asset` - Asset identifier (e.g., "USDC", "USDT", "ETH")
-- `amount` - Amount in smallest units
+- `amount` - Amount in human-readable format (e.g., "100.5")
 - `dry_run` (optional) - If true, simulate without executing
 
 **Supported Chain Formats:**

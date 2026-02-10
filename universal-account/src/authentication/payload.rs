@@ -1,4 +1,3 @@
-use alloy::sol;
 use near_sdk::near;
 
 use crate::{KeyParameters, PayloadExecutionParameters};
@@ -68,9 +67,11 @@ pub struct PayloadV1<T> {
     pub payload: T,
 }
 
-sol! {
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-    struct SolBytes {
-        bytes inner;
+pub mod solidity {
+    alloy::sol! {
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+        struct Payload {
+            string payload;
+        }
     }
 }

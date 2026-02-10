@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use near_sdk::json_types::{U128, U64};
 use near_workspaces::{network::Sandbox, Worker};
 use templar_universal_account::{
-    authentication::passkey::Passkey, contract_state::Migration, NEAR_TESTNET_CHAIN_ID,
+    authentication::passkey, contract_state::Migration, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::{worker, ContractController, UniversalAccountController};
 
@@ -15,7 +15,7 @@ static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_p
 #[tokio::test]
 pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
     let sk = p256::SecretKey::from_bytes(&[0x55u8; 32].into()).unwrap();
-    let passkey = Passkey(sk.public_key().into());
+    let passkey = passkey::VerifyKey(sk.public_key().into());
 
     let ua = worker
         .dev_deploy(UniversalAccountController::wasm_0_2_0())
