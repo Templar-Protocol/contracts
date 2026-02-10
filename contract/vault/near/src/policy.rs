@@ -6,6 +6,7 @@ use crate::convert::{IntoMarketId, IntoTargetId};
 use near_sdk::{env, near};
 use std::ops::{Deref, DerefMut};
 use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, Event, MarketId};
+use templar_curator_primitives::policy::target_set::find_first_duplicate;
 
 // Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
@@ -21,6 +22,8 @@ pub use templar_curator_primitives::policy::{
         WithdrawRoute as PrimitiveWithdrawRoute, WithdrawRouteEntry, WithdrawRouteError,
     },
 };
+
+pub const ERR_MARKET_LOCKED: &str = "Market is locked";
 
 /// NEAR wrapper for the curator supply queue (preserves Vec<MarketId> layout).
 #[near(serializers = [borsh, serde])]
@@ -92,12 +95,15 @@ pub struct MarketExecutionLock {
 }
 
 impl MarketExecutionLock {
+    fn acquire_lock_or_panic(set: &MarketLockSet, market: MarketId, now_ns: u64) -> MarketLockSet {
+        let lock = MarketLock::new(market.into_target_id(), now_ns);
+        set.acquire(lock, now_ns)
+            .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LOCKED))
+    }
+
     pub fn lock(&mut self, market: MarketId) {
         let now = env::block_timestamp();
-        let lock = MarketLock::new(market.into_target_id(), now);
-        let Ok(new_set) = self.inner.acquire(lock, now) else {
-            env::panic_str("Market is locked");
-        };
+        let new_set = Self::acquire_lock_or_panic(&self.inner, market, now);
 
         Event::LockChange {
             is_locked: true,
@@ -133,11 +139,7 @@ impl MarketExecutionLock {
     pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {
         let mut set = MarketLockSet::new();
         for market in markets {
-            let lock = MarketLock::new(market.into_target_id(), locked_at_ns);
-            let Ok(new_set) = set.acquire(lock, locked_at_ns) else {
-                env::panic_str("Market is locked");
-            };
-            set = new_set;
+            set = Self::acquire_lock_or_panic(&set, market, locked_at_ns);
         }
         Self { inner: set }
     }
@@ -211,13 +213,14 @@ pub fn compute_available_capacity_for_common(
 /// while curator-primitives uses a more detailed SupplyQueueEntry structure.
 /// This function validates the basic requirements: no duplicates.
 pub fn validate_supply_queue_no_duplicates(queue: &[MarketId]) -> bool {
-    let mut seen = std::collections::HashSet::new();
-    for m in queue {
-        if !seen.insert(m.into_target_id()) {
-            return false;
-        }
-    }
-    true
+    find_duplicate_market_id(queue).is_none()
+}
+
+/// Returns the first duplicate market ID in insertion order.
+#[must_use]
+pub fn find_duplicate_market_id(markets: &[MarketId]) -> Option<MarketId> {
+    let target_ids: Vec<u32> = markets.iter().map(IntoTargetId::into_target_id).collect();
+    find_first_duplicate(&target_ids).map(IntoMarketId::into_market_id)
 }
 
 /// Build a withdraw route from market principals.
@@ -248,13 +251,7 @@ pub fn build_withdraw_route_from_markets(
 ///
 /// Checks for duplicates in the route.
 pub fn validate_withdraw_route_no_duplicates(route: &[MarketId]) -> bool {
-    let mut seen = std::collections::HashSet::new();
-    for m in route {
-        if !seen.insert(m.into_target_id()) {
-            return false;
-        }
-    }
-    true
+    find_duplicate_market_id(route).is_none()
 }
 
 /// Check if any markets in the list are locked.

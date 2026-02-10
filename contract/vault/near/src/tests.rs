@@ -1180,6 +1180,8 @@ fn withdraw_balance_read_failure_stops_operation() {
 
     let owner = mk(5);
     let receiver = mk(13);
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
     c.insert_pending_withdrawal_for_tests(
         0,
         PendingWithdrawal {

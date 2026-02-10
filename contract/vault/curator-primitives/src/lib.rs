@@ -33,6 +33,9 @@ pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 pub use policy::{
     cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
     cooldown::{Cooldown, CooldownError},
+    lock_filter::{
+        filter_allocation_plan, filter_supply_queue, filter_unlocked_targets, filter_withdraw_route,
+    },
     market_lock::{MarketLock, MarketLockSet},
     refresh_plan::{RefreshPlan, RefreshPlanError},
     state::{MarketConfig, PolicyState},

@@ -61,6 +61,8 @@ use templar_vault_kernel::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
 use templar_vault_kernel::{Address, KernelAction, OpState as KernelOpState, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
+const ERR_WITHDRAW_DURING_IDLE_RESYNC: &str = "Cannot withdraw/redeem during idle resync";
+const ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS: &str = "Missing address mapping for withdrawal queue";
 
 // Re-export share math types and functions for tests and external consumers.
 // Note: These types originate from templar_vault_kernel and are available via
@@ -357,7 +359,7 @@ impl Contract {
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
         require_at_least(templar_common::vault::WITHDRAW_GAS);
         if self.idle_resync_inflight_op_id != 0 {
-            panic_with_message("Cannot withdraw/redeem during idle resync");
+            panic_with_message(ERR_WITHDRAW_DURING_IDLE_RESYNC);
         }
         self.internal_accrue_fee();
         let shares_needed = self.preview_withdraw(amount).0;
@@ -382,7 +384,7 @@ impl Contract {
         require!(shares > 0, "Invalid shares");
 
         if self.idle_resync_inflight_op_id != 0 {
-            panic_with_message("Cannot withdraw/redeem during idle resync");
+            panic_with_message(ERR_WITHDRAW_DURING_IDLE_RESYNC);
         }
 
         let _ = require_attached_for_pending_withdrawal();
@@ -1232,7 +1234,7 @@ impl Contract {
         self.address_book
             .get(address)
             .cloned()
-            .unwrap_or_else(|| panic_with_message("Missing address mapping for withdrawal queue"))
+            .unwrap_or_else(|| panic_with_message(ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS))
     }
 
     fn resolve_account_fallback(&mut self, address: &Address) -> AccountId {
@@ -1267,7 +1269,7 @@ impl Contract {
             return account;
         }
 
-        panic_with_message("Missing address mapping for withdrawal queue");
+        panic_with_message(ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS);
     }
 
     fn apply_kernel_op_state(&mut self, state: &KernelOpState) {
@@ -1626,7 +1628,8 @@ impl Contract {
         let owner_addr = self.record_account(&entry.owner);
         let receiver_addr = self.record_account(&entry.receiver);
 
-        self.withdraw_queue.pending_withdrawals.insert(
+        let mut pending = self.withdraw_queue.pending_withdrawals.clone();
+        pending.insert(
             id,
             templar_vault_kernel::PendingWithdrawal::new(
                 owner_addr,
@@ -1637,10 +1640,21 @@ impl Contract {
             ),
         );
 
-        let next_id = id.saturating_add(1);
-        if self.withdraw_queue.next_pending_withdrawal_id < next_id {
-            self.withdraw_queue.next_pending_withdrawal_id = next_id;
-        }
+        let next_pending_withdrawal_id = self
+            .withdraw_queue
+            .next_pending_withdrawal_id
+            .max(id.saturating_add(1));
+        let next_withdraw_to_execute = pending
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(next_pending_withdrawal_id);
+
+        self.withdraw_queue = templar_vault_kernel::WithdrawQueue::with_state(
+            pending,
+            next_withdraw_to_execute,
+            next_pending_withdrawal_id,
+        );
     }
 
     #[cfg(test)]
@@ -2065,11 +2079,9 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
 
-        // Validate withdraw route has no duplicates using curator-primitives
-        require!(
-            crate::policy::validate_withdraw_route_no_duplicates(&route),
-            "Duplicate market in withdraw route"
-        );
+        if let Some(duplicate) = crate::policy::find_duplicate_market_id(&route) {
+            panic_with_message(&format!("Duplicate market in withdraw route: {duplicate}"));
+        }
 
         self.ensure_idle();
 

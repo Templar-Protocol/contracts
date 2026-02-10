@@ -4,6 +4,7 @@ use alloc::{collections::BTreeSet, vec::Vec};
 use templar_vault_kernel::TargetId;
 
 use super::cooldown::Cooldown;
+use super::target_set::find_first_duplicate;
 
 /// A plan for refreshing market principal data.
 #[cfg_attr(
@@ -70,7 +71,7 @@ impl RefreshPlan {
             return Err(RefreshPlanError::EmptyPlan);
         }
 
-        if let Some(dup) = find_duplicate(&self.targets) {
+        if let Some(dup) = find_first_duplicate(&self.targets) {
             return Err(RefreshPlanError::DuplicateTarget { target_id: dup });
         }
 
@@ -121,17 +122,6 @@ impl From<Vec<TargetId>> for RefreshPlan {
     fn from(targets: Vec<TargetId>) -> Self {
         Self::new(targets)
     }
-}
-
-/// Helper to find the first duplicate in a slice.
-fn find_duplicate<T: Ord + Copy>(items: &[T]) -> Option<T> {
-    let mut seen = BTreeSet::new();
-    for item in items {
-        if !seen.insert(*item) {
-            return Some(*item);
-        }
-    }
-    None
 }
 
 /// Errors that can occur during refresh plan operations.
@@ -192,7 +182,6 @@ pub fn build_targeted_refresh_plan(
         return Err(RefreshPlanError::EmptyPlan);
     }
 
-    // Use BTreeSet for O(log n) lookup
     let enabled_set: BTreeSet<_> = enabled_targets.iter().copied().collect();
 
     // Validate all targets are enabled
@@ -203,7 +192,7 @@ pub fn build_targeted_refresh_plan(
     }
 
     // Check for duplicates
-    if let Some(dup) = find_duplicate(targets) {
+    if let Some(dup) = find_first_duplicate(targets) {
         return Err(RefreshPlanError::DuplicateTarget { target_id: dup });
     }
 
@@ -408,10 +397,10 @@ mod tests {
     }
 
     #[test]
-    fn test_find_duplicate_helper() {
-        assert_eq!(find_duplicate(&[1, 2, 3]), None);
-        assert_eq!(find_duplicate(&[1, 2, 1]), Some(1));
-        assert_eq!(find_duplicate(&[1, 2, 2, 3]), Some(2));
-        assert_eq!(find_duplicate::<i32>(&[]), None);
+    fn test_find_first_duplicate_shared_helper() {
+        assert_eq!(find_first_duplicate(&[1, 2, 3]), None);
+        assert_eq!(find_first_duplicate(&[1, 2, 1]), Some(1));
+        assert_eq!(find_first_duplicate(&[1, 2, 2, 3]), Some(2));
+        assert_eq!(find_first_duplicate::<i32>(&[]), None);
     }
 }

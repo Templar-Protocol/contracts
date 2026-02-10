@@ -652,11 +652,9 @@ impl Contract {
         self.ensure_idle();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
-        // Invariant: supply_queue has no duplicates (using curator-primitives validation)
-        require!(
-            crate::policy::validate_supply_queue_no_duplicates(&markets),
-            "Duplicate market in supply queue"
-        );
+        if let Some(duplicate) = crate::policy::find_duplicate_market_id(&markets) {
+            panic_with_message(&format!("Duplicate market in supply queue: {duplicate}"));
+        }
 
         // Validate all markets are authorized (cap > 0) before charging storage
         for m in &markets {

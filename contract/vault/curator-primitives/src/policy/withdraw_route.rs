@@ -1,8 +1,10 @@
 //! Withdraw route planning for collecting assets from markets.
 
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
+
+use super::target_set::find_first_duplicate;
 
 /// An entry in a withdraw route.
 #[cfg_attr(
@@ -130,20 +132,19 @@ impl WithdrawRoute {
             return Err(WithdrawRouteError::EmptyRoute);
         }
 
-        // Check for zero amounts and duplicates using BTreeSet
-        let mut seen_targets: BTreeSet<TargetId> = BTreeSet::new();
+        // Check for zero amounts.
         for entry in &self.entries {
             if entry.max_amount == 0 {
                 return Err(WithdrawRouteError::ZeroMaxAmount {
                     target_id: entry.target_id,
                 });
             }
+        }
 
-            if !seen_targets.insert(entry.target_id) {
-                return Err(WithdrawRouteError::DuplicateTarget {
-                    target_id: entry.target_id,
-                });
-            }
+        // Check duplicates via shared target-set helper.
+        let targets: Vec<TargetId> = self.entries.iter().map(|e| e.target_id).collect();
+        if let Some(target_id) = find_first_duplicate(&targets) {
+            return Err(WithdrawRouteError::DuplicateTarget { target_id });
         }
 
         // Check route total covers target

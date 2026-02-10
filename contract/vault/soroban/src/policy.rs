@@ -6,6 +6,12 @@
 //! - Type aliases for Soroban market identifiers
 
 use alloc::vec::Vec;
+use templar_curator_primitives::policy::lock_filter::{
+    filter_allocation_plan as filter_unlocked_allocation_plan,
+    filter_supply_queue as filter_unlocked_supply_queue,
+    filter_unlocked_targets as filter_unlocked_target_list,
+    filter_withdraw_route as filter_unlocked_withdraw_route,
+};
 use templar_vault_kernel::TargetId;
 
 // Re-export curator-primitives types for external consumers
@@ -25,11 +31,7 @@ pub fn filter_unlocked_targets(
     targets: &[TargetId],
     current_ns: u64,
 ) -> Vec<TargetId> {
-    targets
-        .iter()
-        .filter(|t| !lock_set.is_locked(**t, current_ns))
-        .copied()
-        .collect()
+    filter_unlocked_target_list(lock_set, targets, current_ns)
 }
 
 /// Build an allocation plan excluding locked markets.
@@ -42,16 +44,7 @@ pub fn build_allocation_plan_with_locks(
     lock_set: &MarketLockSet,
     current_ns: u64,
 ) -> Vec<(TargetId, u128)> {
-    // Filter queue to exclude locked markets
-    let filtered: SupplyQueue = queue
-        .entries
-        .iter()
-        .filter(|e| !lock_set.is_locked(e.target_id, current_ns))
-        .cloned()
-        .collect::<Vec<_>>()
-        .into();
-
-    filtered.to_allocation_plan()
+    filter_unlocked_supply_queue(queue, lock_set, current_ns).to_allocation_plan()
 }
 
 /// Build a withdrawal plan excluding locked markets.
@@ -61,16 +54,7 @@ pub fn build_withdrawal_plan_with_locks(
     lock_set: &MarketLockSet,
     current_ns: u64,
 ) -> Vec<(TargetId, u128)> {
-    let filtered_entries: Vec<WithdrawRouteEntry> = route
-        .entries
-        .iter()
-        .filter(|e| !lock_set.is_locked(e.target_id, current_ns))
-        .cloned()
-        .collect();
-
-    let filtered_route = WithdrawRoute::from_entries(filtered_entries, route.target_amount);
-
-    filtered_route.to_withdrawal_plan()
+    filter_unlocked_withdraw_route(route, lock_set, current_ns).to_withdrawal_plan()
 }
 
 /// Build a refresh plan excluding locked markets.
@@ -93,10 +77,7 @@ pub fn filter_allocation_plan(
     lock_set: &MarketLockSet,
     current_ns: u64,
 ) -> Vec<(TargetId, u128)> {
-    plan.iter()
-        .filter(|(target_id, _)| !lock_set.is_locked(*target_id, current_ns))
-        .copied()
-        .collect()
+    filter_unlocked_allocation_plan(plan, lock_set, current_ns)
 }
 
 #[cfg(test)]
