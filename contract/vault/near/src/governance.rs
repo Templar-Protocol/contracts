@@ -906,6 +906,15 @@ impl Contract {
                         cfg.removable_at == 0,
                         "Market removal pending, cannot change cap"
                     );
+                    require!(
+                        self.governance_timelocks
+                            .seek_pending_timelock(|p| matches!(
+                                p,
+                                TimelockedAction::CapChange { market: m, .. } if m == market
+                            ))
+                            .is_none(),
+                        "Cap change already pending for this market"
+                    );
                     let decision = match shared_gov::cap_change_decision(
                         Some(cfg.cap.0),
                         new_cap.0,
