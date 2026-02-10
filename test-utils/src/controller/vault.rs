@@ -141,7 +141,7 @@ impl VaultController {
         pub fn set_is_allocator(account: AccountId, allowed: bool);
 
         #[call(exec, tgas(50))]
-        pub fn submit_guardian(new_g: AccountId);
+        pub fn submit_guardian(account: AccountId);
 
         #[call(exec, tgas(50))]
         pub fn accept_guardian();
@@ -150,7 +150,7 @@ impl VaultController {
         pub fn revoke_pending_guardian();
 
         #[call(exec, tgas(50))]
-        pub fn submit_sentinel(new_s: AccountId);
+        pub fn submit_sentinel(account: AccountId);
 
         #[call(exec, tgas(50))]
         pub fn accept_sentinel();
