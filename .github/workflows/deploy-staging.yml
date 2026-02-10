@@ -36,7 +36,6 @@ jobs:
     if: needs.check-changes.outputs.should-run-contracts == 'true'
     uses: ./.github/workflows/test.yml
     with:
-      timeout-minutes: 40
       skip_coverage: true
 
   gas-report:
