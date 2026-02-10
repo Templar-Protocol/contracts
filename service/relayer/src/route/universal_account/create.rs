@@ -299,6 +299,7 @@ pub async fn create(
                 &templar_universal_account::InitArgs {
                     key: create.key,
                     chain_id: app.args.ua.chain_id.into(),
+                    execute: None,
                 },
                 None,
             ),
