@@ -449,6 +449,18 @@ impl Default for WithdrawQueue {
     }
 }
 
+/// Sum escrow shares and expected assets across an iterator of pending withdrawals.
+fn compute_pending_totals<'a>(
+    iter: impl Iterator<Item = &'a PendingWithdrawal>,
+) -> (u128, u128) {
+    iter.fold((0u128, 0u128), |(esc, exp), w| {
+        (
+            esc.saturating_add(w.escrow_shares),
+            exp.saturating_add(w.expected_assets),
+        )
+    })
+}
+
 impl WithdrawQueue {
     /// Create a new empty withdrawal queue.
     #[inline]
@@ -470,16 +482,8 @@ impl WithdrawQueue {
         next_withdraw_to_execute: u64,
         next_pending_withdrawal_id: u64,
     ) -> Self {
-        // Compute cached totals from the provided withdrawals
         let (cached_total_escrow, cached_total_expected) =
-            pending_withdrawals
-                .values()
-                .fold((0u128, 0u128), |(esc, exp), w| {
-                    (
-                        esc.saturating_add(w.escrow_shares),
-                        exp.saturating_add(w.expected_assets),
-                    )
-                });
+            compute_pending_totals(pending_withdrawals.values());
         Self {
             pending_withdrawals,
             next_withdraw_to_execute,
@@ -518,18 +522,8 @@ impl WithdrawQueue {
 
     /// Enqueue a new pending withdrawal.
     ///
-    /// Allocates a new monotonic ID and inserts the withdrawal at the tail.
-    ///
-    /// # Arguments
-    /// * `owner` - Owner of the shares being redeemed.
-    /// * `receiver` - Receiver of the assets.
-    /// * `escrow_shares` - Shares held in escrow.
-    /// * `expected_assets` - Expected assets at time of request.
-    /// * `requested_at_ns` - Timestamp of the request.
-    /// * `max_pending` - Maximum allowed pending withdrawals.
-    ///
-    /// # Returns
-    /// `Ok(id)` with the allocated withdrawal ID, or `Err(QueueError)` if full.
+    /// Convenience wrapper that constructs a `PendingWithdrawal` and delegates
+    /// to [`enqueue_withdrawal`](Self::enqueue_withdrawal).
     pub fn enqueue(
         &mut self,
         owner: Address,
@@ -539,14 +533,6 @@ impl WithdrawQueue {
         requested_at_ns: TimestampNs,
         max_pending: u32,
     ) -> Result<u64, QueueError> {
-        if !self.can_enqueue(max_pending) {
-            return Err(QueueError::QueueFull {
-                current: self.pending_withdrawals.len() as u32,
-                max: max_pending,
-            });
-        }
-
-        let id = self.next_pending_withdrawal_id;
         let withdrawal = PendingWithdrawal::new(
             owner,
             receiver,
@@ -554,34 +540,12 @@ impl WithdrawQueue {
             expected_assets,
             requested_at_ns,
         );
-
-        // Check for cache overflow before modifying state
-        let new_escrow = self
-            .cached_total_escrow
-            .checked_add(escrow_shares)
-            .ok_or(QueueError::CacheOverflow)?;
-        let new_expected = self
-            .cached_total_expected
-            .checked_add(expected_assets)
-            .ok_or(QueueError::CacheOverflow)?;
-
-        self.pending_withdrawals.insert(id, withdrawal);
-        self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
-
-        // Update cached totals (overflow already checked)
-        self.cached_total_escrow = new_escrow;
-        self.cached_total_expected = new_expected;
-
-        Ok(id)
+        self.enqueue_withdrawal(withdrawal, max_pending)
     }
 
     /// Enqueue a pre-constructed pending withdrawal.
     ///
     /// Allocates a new monotonic ID and inserts the withdrawal at the tail.
-    ///
-    /// # Arguments
-    /// * `withdrawal` - The pending withdrawal to enqueue.
-    /// * `max_pending` - Maximum allowed pending withdrawals.
     ///
     /// # Returns
     /// `Ok(id)` with the allocated withdrawal ID, or `Err(QueueError)` if full.
@@ -609,12 +573,12 @@ impl WithdrawQueue {
             .checked_add(withdrawal.expected_assets)
             .ok_or(QueueError::CacheOverflow)?;
 
+        self.pending_withdrawals.insert(id, withdrawal);
+        self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
+
         // Update cached totals (overflow already checked)
         self.cached_total_escrow = new_escrow;
         self.cached_total_expected = new_expected;
-
-        self.pending_withdrawals.insert(id, withdrawal);
-        self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
 
         Ok(id)
     }
@@ -625,18 +589,12 @@ impl WithdrawQueue {
     /// `Some((id, &withdrawal))` if non-empty, `None` if empty.
     #[must_use]
     pub fn peek(&self) -> Option<(u64, &PendingWithdrawal)> {
-        if self.is_empty() {
-            return None;
-        }
         self.pending_withdrawals
             .get(&self.next_withdraw_to_execute)
             .map(|w| (self.next_withdraw_to_execute, w))
     }
 
-    /// Get the head of the queue (same as peek).
-    ///
-    /// # Returns
-    /// `Some((id, &withdrawal))` if non-empty, `None` if empty.
+    /// Alias for [`peek`](Self::peek) — get the head of the queue.
     #[inline]
     #[must_use]
     pub fn head(&self) -> Option<(u64, &PendingWithdrawal)> {
@@ -754,14 +712,7 @@ impl WithdrawQueue {
 
         // Verify cached totals match computed totals
         let (computed_escrow, computed_expected) =
-            self.pending_withdrawals
-                .values()
-                .fold((0u128, 0u128), |(esc, exp), w| {
-                    (
-                        esc.saturating_add(w.escrow_shares),
-                        exp.saturating_add(w.expected_assets),
-                    )
-                });
+            compute_pending_totals(self.pending_withdrawals.values());
 
         if self.cached_total_escrow != computed_escrow {
             return false;
