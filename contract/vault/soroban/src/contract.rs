@@ -1377,6 +1377,9 @@ where
         &mut self.policy_state
     }
 
+    /// Maximum lock duration: 7 days in nanoseconds.
+    const MAX_LOCK_DURATION_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+
     /// Acquire a market lock.
     ///
     pub fn acquire_market_lock(
@@ -1391,6 +1394,19 @@ where
         // Authorize - requires allocator privileges
         self.auth
             .authorize(ActionKind::BeginAllocating, caller, None)?;
+
+        // Validate lock duration
+        if expiry_ns <= current_ns {
+            return Err(RuntimeError::contract_error(
+                "lock expiry must be in the future",
+            ));
+        }
+        let duration = expiry_ns - current_ns;
+        if duration > Self::MAX_LOCK_DURATION_NS {
+            return Err(RuntimeError::contract_error(
+                "lock duration exceeds maximum (7 days)",
+            ));
+        }
 
         let lock = MarketLock::new(target_id, current_ns).with_expiry(expiry_ns);
         self.policy_state.locks =
@@ -2780,6 +2796,37 @@ mod tests {
 
         // Market 1 should be unlocked after expiry
         assert!(!vault.is_market_locked(1, 2500));
+    }
+
+    #[test]
+    fn test_lock_expiry_in_past_rejected() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        // expiry_ns <= current_ns should be rejected
+        let result = vault.acquire_market_lock(caller, 1, 1000, 1000);
+        assert!(result.is_err());
+        let result = vault.acquire_market_lock(caller, 1, 500, 1000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lock_max_duration_exceeded_rejected() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        // Duration > 7 days should be rejected
+        let current_ns = 1_000_000_000u64;
+        let eight_days_ns = 8 * 24 * 60 * 60 * 1_000_000_000u64;
+        let result =
+            vault.acquire_market_lock(caller, 1, current_ns + eight_days_ns, current_ns);
+        assert!(result.is_err());
+
+        // Duration exactly 7 days should succeed
+        let seven_days_ns = 7 * 24 * 60 * 60 * 1_000_000_000u64;
+        let result =
+            vault.acquire_market_lock(caller, 1, current_ns + seven_days_ns, current_ns);
+        assert!(result.is_ok());
     }
 
     #[test]
