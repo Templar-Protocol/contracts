@@ -1,47 +1,51 @@
-use super::ContractController;
-use crate::{
-    controller::storage_management::StorageManagementController, define, get_contract,
-    print_execution, UnifiedMarketController,
-};
+use std::{env, ops::Deref};
+
+use near_api::types::transaction::result::ExecutionSuccess;
 use near_sdk::{
     json_types::{U128, U64},
     serde_json::{self, json},
     AccountId, NearToken,
 };
-use near_workspaces::{
-    network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
-};
-use std::{env, ops::Deref};
-use templar_common::vault::{AllocationDelta, DepositMsg, VaultConfiguration};
 use tokio::sync::OnceCell;
+
+use templar_common::vault::{AllocationDelta, DepositMsg, VaultConfiguration};
+
+use super::ContractController;
+use crate::{
+    define, get_contract, print_execution, StorageManagementController, TestAccount,
+    UnifiedMarketController,
+};
 
 #[derive(Clone)]
 pub struct VaultController {
-    contract: Contract,
+    account: TestAccount,
 }
 
 impl ContractController for VaultController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
 impl StorageManagementController for VaultController {}
 
 impl VaultController {
-    pub async fn deploy(account: Account, configuration: &VaultConfiguration) -> Self {
-        let wasm = load_wasm().await;
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+        WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault"))
+            .await
+    }
 
-        let init_call = contract
-            .call("new")
-            .args_json(json!({
-                "configuration": configuration,
-            }))
-            .transact()
+    pub async fn deploy(account: TestAccount, configuration: &VaultConfiguration) -> Self {
+        let init_call = near_api::Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call("new", json!({ "configuration": configuration }))
+            .unwrap()
+            .with_signer(account.signer())
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
         eprintln!("Init call logs");
         eprintln!("--------------");
@@ -50,7 +54,7 @@ impl VaultController {
         }
         eprintln!("--------------");
 
-        Self { contract }
+        Self { account }
     }
 
     define! {
@@ -177,13 +181,6 @@ impl VaultController {
     }
 }
 
-static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
-
-pub async fn load_wasm() -> &'static [u8] {
-    WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault"))
-        .await
-}
-
 #[derive(Clone)]
 pub struct UnifiedVaultController {
     pub vault: VaultController,
@@ -200,29 +197,31 @@ impl Deref for UnifiedVaultController {
     }
 }
 
-fn contract_with_dummy_sk(worker: &Worker<Sandbox>, account_id: AccountId) -> Contract {
-    let dummy_key = SecretKey::from_seed(near_workspaces::types::KeyType::ED25519, "");
-
-    Contract::from_secret_key(account_id, dummy_key.clone(), worker)
+macro_rules! debug_method {
+    ($(
+        fn $n:ident ($($a:ident : $t:ty),*);
+    )*) => {
+        $(
+            debug_method! {
+                fn $n ($($a : $t),*)
+            }
+        )*
+    };
+    (fn $n:ident ($($a:ident : $t:ty),*)) => {
+        pub async fn $n(
+            &self,
+            $( $a : $t ),*
+        ) -> ExecutionSuccess {
+            let e = self.vault.$n($($a),*).await;
+            if self.debug {
+                print_execution(&e);
+            }
+            e
+        }
+    };
 }
 
 impl UnifiedVaultController {
-    pub async fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {
-        let vault = VaultController {
-            contract: contract_with_dummy_sk(worker, market_id.clone()),
-        };
-        let market = UnifiedMarketController::attach(worker, market_id).await;
-
-        let configuration = vault.get_configuration().await;
-
-        Self {
-            vault,
-            configuration,
-            market,
-            debug: is_debug(),
-        }
-    }
-
     #[must_use]
     pub fn new(
         vault: VaultController,
@@ -237,12 +236,12 @@ impl UnifiedVaultController {
         }
     }
 
-    pub async fn init_account(&self, account: &Account) {
+    pub async fn init_account(&self, account: &TestAccount) {
         self.storage_deposits(account).await;
         self.market.init_account(account).await;
     }
 
-    pub async fn storage_deposits(&self, account: &Account) {
+    pub async fn storage_deposits(&self, account: &TestAccount) {
         eprintln!("Performing storage deposits for {}...", account.id());
         let bounds = self.vault.storage_balance_bounds().await;
 
@@ -250,7 +249,7 @@ impl UnifiedVaultController {
         self.market.storage_deposits(account).await;
     }
 
-    pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn supply(&self, supply_user: &TestAccount, amount: u128) -> ExecutionSuccess {
         eprintln!(
             "{} transferring {amount} tokens for supply...",
             supply_user.id()
@@ -260,7 +259,7 @@ impl UnifiedVaultController {
             .borrow_asset
             .transfer_call(
                 supply_user,
-                self.vault.contract().id(),
+                &self.vault.account.id,
                 amount,
                 serde_json::to_string(&DepositMsg::Supply).unwrap(),
             )
@@ -271,7 +270,7 @@ impl UnifiedVaultController {
         e
     }
 
-    pub async fn setup_caps(&self, owner: &Account, markets: &[AccountId], amount: u128) {
+    pub async fn setup_caps(&self, owner: &TestAccount, markets: &[AccountId], amount: u128) {
         for mkt in markets {
             self.submit_cap(owner, mkt.clone(), amount.into()).await;
             self.accept_cap(owner, mkt.clone()).await;
@@ -280,24 +279,12 @@ impl UnifiedVaultController {
         self.set_supply_queue(owner, markets).await;
     }
 
-    pub async fn allocate(&self, allocator: &Account, delta: AllocationDelta) -> ExecutionSuccess {
-        let e = self.vault.reallocate(allocator, delta).await;
-        if self.debug {
-            print_execution(&e);
-        }
-        e
-    }
-
-    pub async fn execute_rebalance_withdrawal(
+    pub async fn allocate(
         &self,
-        allocator: &Account,
-        market: AccountId,
-        batch_limit: Option<u32>,
+        allocator: &TestAccount,
+        delta: AllocationDelta,
     ) -> ExecutionSuccess {
-        let e = self
-            .vault
-            .execute_rebalance_withdrawal(allocator, market, batch_limit)
-            .await;
+        let e = self.vault.reallocate(allocator, delta).await;
         if self.debug {
             print_execution(&e);
         }
@@ -306,7 +293,7 @@ impl UnifiedVaultController {
 
     pub async fn withdraw(
         &self,
-        withdrawer: &Account,
+        withdrawer: &TestAccount,
         amount: U128,
         receiver: Option<AccountId>,
     ) -> ExecutionSuccess {
@@ -315,7 +302,7 @@ impl UnifiedVaultController {
             .withdraw(
                 withdrawer,
                 amount,
-                receiver.unwrap_or(withdrawer.id().clone()),
+                receiver.unwrap_or(withdrawer.id.clone()),
             )
             .await;
         if self.debug {
@@ -324,78 +311,14 @@ impl UnifiedVaultController {
         e
     }
 
-    pub async fn execute_withdrawal(
-        &self,
-        allocator: &Account,
-        route: Vec<AccountId>,
-    ) -> ExecutionSuccess {
-        let e = self.vault.execute_withdrawal(allocator, route).await;
-        if self.debug {
-            print_execution(&e);
-        }
-        e
-    }
-
-    pub async fn execute_market_withdrawal(
-        &self,
-        allocator: &Account,
-        op_id: U64,
-        market_index: u32,
-        batch_limit: Option<u32>,
-    ) -> ExecutionSuccess {
-        let e = self
-            .vault
-            .execute_market_withdrawal(allocator, op_id, market_index, batch_limit)
-            .await;
-        if self.debug {
-            print_execution(&e);
-        }
-        e
-    }
-
-    pub async fn submit_cap(
-        &self,
-        submitter: &Account,
-        market: AccountId,
-        amount: U128,
-    ) -> ExecutionSuccess {
-        let e = self.vault.submit_cap(submitter, market, amount).await;
-        if self.debug {
-            print_execution(&e);
-        }
-        e
-    }
-
-    pub async fn accept_cap(&self, acceptor: &Account, market: AccountId) -> ExecutionSuccess {
-        let e = self.vault.accept_cap(acceptor, market).await;
-        if self.debug {
-            print_execution(&e);
-        }
-        e
-    }
-
-    pub async fn set_supply_queue(
-        &self,
-        allocator: &Account,
-        markets: &[AccountId],
-    ) -> ExecutionSuccess {
-        let e = self.vault.set_supply_queue(allocator, markets).await;
-        if self.debug {
-            print_execution(&e);
-        }
-        e
-    }
-
-    pub async fn set_withdraw_queue(
-        &self,
-        allocator: &Account,
-        markets: &[AccountId],
-    ) -> ExecutionSuccess {
-        let e = self.vault.set_withdraw_queue(allocator, markets).await;
-        if self.debug {
-            print_execution(&e);
-        }
-        e
+    debug_method! {
+        fn execute_rebalance_withdrawal(allocator: &TestAccount, market: AccountId, batch_limit: Option<u32>);
+        fn execute_withdrawal(allocator: &TestAccount, route: Vec<AccountId>);
+        fn execute_market_withdrawal(allocator: &TestAccount, op_id: U64, market_index: u32, batch_limit: Option<u32>);
+        fn submit_cap(submitter: &TestAccount, market: AccountId, amount: U128);
+        fn accept_cap(acceptor: &TestAccount, market: AccountId);
+        fn set_supply_queue(allocator: &TestAccount, markets: &[AccountId]);
+        fn set_withdraw_queue(allocator: &TestAccount, markets: &[AccountId]);
     }
 }
 

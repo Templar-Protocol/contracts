@@ -1,52 +1,55 @@
+use std::sync::Arc;
+
+use near_api::types::transaction::result::ExecutionSuccess;
 use near_sdk::{
     borsh,
     json_types::{Base58CryptoHash, Base64VecU8},
     serde_json::json,
     AccountId, Gas, NearToken,
 };
-use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 use templar_common::registry::{DeployMode, Deployment};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, TestAccount};
 
 use super::ContractController;
 
 #[derive(Clone, Debug)]
 pub struct RegistryController {
-    pub contract: Contract,
+    pub account: TestAccount,
 }
 
 impl ContractController for RegistryController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
 impl RegistryController {
-    pub async fn new(account: Account) -> Self {
-        static WASM_REGISTRY: OnceCell<Vec<u8>> = OnceCell::const_new();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM_REGISTRY
-            .get_or_init(|| get_contract("templar_registry_contract", "contract/registry"))
-            .await;
+        WASM.get_or_init(|| get_contract("templar_registry_contract", "contract/registry"))
+            .await
+    }
 
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
-        // Registry account will be its own owner
-        contract
-            .call("new")
-            .args_json(json!({}))
-            .transact()
+    pub async fn new(account: TestAccount) -> Self {
+        near_api::Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call("new", json!({}))
+            .unwrap()
+            .with_signer(Arc::clone(&account.signer))
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
-        Self { contract }
+        Self { account }
     }
 
     pub async fn add_version(
         &self,
-        executor: &Account,
+        executor: &TestAccount,
         deposit: NearToken,
         version_key: &str,
         mode: DeployMode,
@@ -71,7 +74,7 @@ impl RegistryController {
         full_access_keys: Option<Vec<near_sdk::PublicKey>>,
     ) -> ExecutionSuccess {
         self.call_exec(
-            self.contract.as_account(),
+            &self.account,
             "deploy",
             json!({
                 "name": name,

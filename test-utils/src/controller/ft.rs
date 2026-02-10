@@ -1,45 +1,53 @@
+use near_api::Contract;
 use near_sdk::{json_types::U128, serde_json::json, AccountId};
-use near_workspaces::{Account, Contract};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, TestAccount};
 
 use super::{storage_management::StorageManagementController, ContractController};
 
 #[derive(Clone)]
 pub struct FtController {
-    pub contract: Contract,
+    pub account: TestAccount,
 }
 
 impl ContractController for FtController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
 impl StorageManagementController for FtController {}
 
 impl FtController {
-    pub async fn deploy(account: Account, name: impl AsRef<str>, symbol: impl AsRef<str>) -> Self {
-        static WASM_MOCK_FT: OnceCell<Vec<u8>> = OnceCell::const_new();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+        WASM.get_or_init(|| get_contract("mock_ft", "mock/ft"))
+            .await
+    }
 
-        let wasm = WASM_MOCK_FT
-            .get_or_init(|| get_contract("mock_ft", "mock/ft"))
-            .await;
-
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
-        contract
-            .call("new")
-            .args_json(json!({
-                "name": name.as_ref(),
-                "symbol": symbol.as_ref(),
-            }))
-            .transact()
+    pub async fn deploy(
+        account: TestAccount,
+        name: impl AsRef<str>,
+        symbol: impl AsRef<str>,
+    ) -> Self {
+        Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call(
+                "new",
+                json!({
+                    "name": name.as_ref(),
+                    "symbol": symbol.as_ref(),
+                }),
+            )
+            .unwrap()
+            .with_signer(account.signer())
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
-        Self { contract }
+        Self { account }
     }
 
     define! {

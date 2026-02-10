@@ -149,11 +149,11 @@ impl ConfigValidator {
             ("protocol", config.protocol_account_id.to_string()),
             (
                 "borrow asset",
-                config.borrow_asset.contract_id().as_ref().to_string(),
+                config.borrow_asset.contract_id().to_string(),
             ),
             (
                 "collateral asset",
-                config.collateral_asset.contract_id().as_ref().to_string(),
+                config.collateral_asset.contract_id().to_string(),
             ),
         ];
 
@@ -256,8 +256,7 @@ async fn fetch_decimals<T: templar_common::asset::AssetClass>(
         return token_metadata(client, resolved_contract, resolved_token_id).await;
     }
 
-    #[allow(clippy::unwrap_used, reason = "Parsing should not fail here")]
-    let id: AccountId = asset.contract_id().as_ref().parse().unwrap();
+    let id: AccountId = asset.contract_id().to_owned();
     token_metadata(client, id, None).await
 }
 

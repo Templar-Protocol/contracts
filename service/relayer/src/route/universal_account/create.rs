@@ -312,7 +312,7 @@ pub async fn create(
             .transaction
             .actions()
             .iter()
-            .map(|a| a.get_prepaid_gas())
+            .map(|a| a.get_prepaid_gas().as_gas())
             .sum(),
     );
 
@@ -339,7 +339,7 @@ pub async fn create(
         .send_and_resolve_transaction(
             account_id.clone(),
             gas_cost_estimate,
-            NearToken::from_near(0),
+            NearToken::ZERO,
             signed_transaction,
             near_primitives::views::TxExecutionStatus::Included,
         )

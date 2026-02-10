@@ -5,7 +5,7 @@ use near_sdk::{
     json_types::{Base58CryptoHash, Base64VecU8},
     near, require,
     store::{IterableMap, IterableSet},
-    AccountId, CryptoHash, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue, PromiseResult,
+    AccountId, CryptoHash, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -145,8 +145,8 @@ impl Contract {
 
     #[private]
     pub fn add_version_01_finalize(&mut self, version_key: String) -> PromiseOrValue<()> {
-        let result = env::promise_result(0);
-        if matches!(result, PromiseResult::Successful(_)) {
+        let result = env::promise_result_checked(0, 16);
+        if result.is_ok() {
             PromiseOrValue::Value(())
         } else {
             self.versions.remove(&version_key);
@@ -229,7 +229,7 @@ impl Contract {
 
                 promise = promise.deploy_contract(code.clone());
             }
-            VersionEntry::GlobalHash(hash) => promise = promise.use_global_contract(hash.to_vec()),
+            VersionEntry::GlobalHash(hash) => promise = promise.use_global_contract(*hash),
         }
 
         for key in full_access_keys.unwrap_or_default() {
@@ -244,7 +244,7 @@ impl Contract {
             .function_call_weight(
                 "new".to_string(),
                 init_args.0,
-                NearToken::from_near(0),
+                NearToken::ZERO,
                 Gas::from_tgas(2),
                 near_sdk::GasWeight(20),
             )
@@ -269,7 +269,7 @@ impl Contract {
         market_id: AccountId,
         deployment: Deployment,
     ) -> PromiseOrValue<AccountId> {
-        let successful = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        let successful = env::promise_result_checked(0, 16).is_ok();
 
         if successful {
             self.registry

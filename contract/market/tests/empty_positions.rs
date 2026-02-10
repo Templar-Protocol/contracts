@@ -1,11 +1,11 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use test_utils::*;
 
 #[rstest]
 #[tokio::test]
-async fn empty_positions_are_removed(#[future(awt)] worker: Worker<Sandbox>) {
+async fn empty_positions_are_removed(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)

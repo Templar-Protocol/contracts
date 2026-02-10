@@ -1,28 +1,25 @@
 #![allow(clippy::all, clippy::pedantic)]
 
 use near_sdk::json_types::U128;
-use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
+
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
     vault::{AllocationDelta, Delta},
 };
-use test_utils::{
-    controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
-    UnifiedMarketController,
-};
+use test_utils::*;
 
 #[rstest]
 #[tokio::test]
 #[should_panic = "Duplicate market"]
-async fn supply_queue_mustnt_have_duplicates(#[future(awt)] worker: Worker<Sandbox>) {
+async fn supply_queue_mustnt_have_duplicates(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(vault, c, vault_curator)
         accounts(supply_user, borrow_user)
     );
-    let m = c.market.contract().id().clone();
+    let m = c.market.account().id().clone();
 
     let queue = vec![m.clone(), m.clone()];
     vault.set_supply_queue(&vault_curator, &queue).await;
@@ -31,9 +28,7 @@ async fn supply_queue_mustnt_have_duplicates(#[future(awt)] worker: Worker<Sandb
 #[rstest]
 #[tokio::test]
 #[should_panic = "Invariant: Only one op in flight"]
-async fn state_machine_is_locked_when_another_op_is_running(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
+async fn state_machine_is_locked_when_another_op_is_running(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(vault, c, vault_owner)
@@ -46,7 +41,7 @@ async fn state_machine_is_locked_when_another_op_is_running(
         Box::pin(vault.allocate(
             &vault_owner,
             AllocationDelta::Supply(Delta::new(
-                vault.market.market.contract().id().clone(),
+                vault.market.market.account().id().clone(),
                 U128(1),
             )),
         ))
@@ -56,7 +51,7 @@ async fn state_machine_is_locked_when_another_op_is_running(
 
 #[rstest]
 #[tokio::test]
-async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
+async fn happy(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(vault, c, vault_curator)
@@ -71,7 +66,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     let initial_user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
     println!("Initial supply_user balance: {initial_user_balance}");
 
-    let v = vault.contract().id();
+    let v = vault.account().id();
     let amount: U128 = 1000.into();
 
     assert_eq!(
@@ -88,12 +83,12 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     vault
         .reallocate(
             &vault_curator,
-            AllocationDelta::Supply(Delta::new(c.market.contract().id().clone(), amount)),
+            AllocationDelta::Supply(Delta::new(c.market.account().id().clone(), amount)),
         )
         .await;
 
     assert_eq!(
-        c.borrow_asset.balance_of(vault.contract().id()).await,
+        c.borrow_asset.balance_of(vault.account().id()).await,
         0,
         "Vault should not have any assets leftover after rebalancing 100%"
     );
@@ -136,7 +131,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     harvest(&c, &vault).await;
 
-    let mkt = c.market.contract().id();
+    let mkt = c.market.account().id();
 
     vault
         .reallocate(
@@ -172,11 +167,11 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         "Supply position should be closed"
     );
 
-    c.storage_deposits(vault.contract().as_account()).await;
+    c.storage_deposits(vault.account()).await;
 
     // Resupply and wait
     vault.supply(&supply_user, amount.0).await;
-    let mkt = c.market.contract().id();
+    let mkt = c.market.account().id();
     vault
         .reallocate(
             &vault_curator,
@@ -243,7 +238,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     println!(
         "Balance of the market for the collateral asset: {}",
-        c.borrow_asset.balance_of(c.market.contract().id()).await
+        c.borrow_asset.balance_of(c.market.account().id()).await
     );
 
     let borrowed = amount.0 / 2;
@@ -257,7 +252,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     // Ensure deposits are activated before we attempt to route and execute the withdrawal
     harvest(&c, &vault).await;
     // Plan the withdraw route (single market) and execute it via allocator methods
-    let withdraw_route = vec![c.market.contract().id().clone()];
+    let withdraw_route = vec![c.market.account().id().clone()];
     vault
         .execute_withdrawal(&vault_curator, withdraw_route.clone())
         .await;
@@ -273,11 +268,10 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
 pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
     // Wait for activation.
-    while let Some(position) = c.get_supply_position(vault.contract().id()).await {
+    while let Some(position) = c.get_supply_position(vault.account().id()).await {
         if position.get_deposit().incoming.is_empty() {
             break;
         }
-        c.harvest_yield(vault.contract().as_account(), None, None)
-            .await;
+        c.harvest_yield(vault.account(), None, None).await;
     }
 }

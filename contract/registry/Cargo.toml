@@ -34,8 +34,9 @@ near-sdk-contract-tools.workspace = true
 templar-common.workspace = true
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
+near-api-types.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
 rstest.workspace = true
 test-utils.workspace = true
 tokio.workspace = true

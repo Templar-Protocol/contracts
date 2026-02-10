@@ -1,6 +1,6 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use templar_common::{
@@ -21,7 +21,7 @@ use test_utils::*;
 )]
 #[tokio::test]
 async fn compounding_yield(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] principal: u128,
     #[case] strategy: InterestRateStrategy,
     #[case] compounding: HarvestYieldMode,

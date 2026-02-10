@@ -226,7 +226,7 @@ impl App {
                             contract_id,
                             storage_balance_bounds
                                 .as_ref()
-                                .map_or(NearToken::from_near(0), |bounds| bounds.min),
+                                .map_or(NearToken::ZERO, |bounds| bounds.min),
                         );
 
                         e.insert(ContractData {
@@ -383,7 +383,7 @@ impl App {
         )
         .map_err(PayloadRejectionReason::FunctionCallRejection)?;
 
-        let gas_total = calls.iter().map(|call| call.gas).sum();
+        let gas_total = calls.iter().map(|call| call.gas.as_gas()).sum();
 
         Ok((near_sdk::Gas::from_gas(gas_total), contract_data))
     }

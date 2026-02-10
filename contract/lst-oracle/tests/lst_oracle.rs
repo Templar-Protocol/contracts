@@ -1,6 +1,7 @@
-use controller::lst_oracle::LstOracleController;
-use near_workspaces::{network::Sandbox, Account, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
+
+use controller::lst_oracle::LstOracleController;
 use templar_common::{
     dec,
     fee::Fee,
@@ -19,15 +20,15 @@ const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
 
 async fn setup_lst_oracle(
     c: &UnifiedMarketController,
-    lst_oracle: Account,
-    lst_market: Account,
-    storage_deposits: impl IntoIterator<Item = &Account>,
+    lst_oracle: TestAccount,
+    lst_market: TestAccount,
+    storage_deposits: impl IntoIterator<Item = &TestAccount>,
     config_fn: impl FnOnce(&mut MarketConfiguration),
 ) -> (UnifiedMarketController, LstOracleController) {
     let mut configuration = market_configuration(
-        lst_oracle.id().clone(),
-        c.borrow_asset.contract().id().clone(),
-        c.collateral_asset.contract().id().clone(),
+        lst_oracle.id().to_owned(),
+        c.borrow_asset.account().id().to_owned(),
+        c.collateral_asset.account().id().to_owned(),
         c.configuration.protocol_account_id.clone(),
         YieldWeights::new_with_supply_weight(1),
     );
@@ -42,17 +43,17 @@ async fn setup_lst_oracle(
         async { MarketController::deploy(lst_market, &configuration).await },
         async {
             let lst_oracle =
-                LstOracleController::deploy(lst_oracle, c.price_oracle.contract().id()).await;
+                LstOracleController::deploy(lst_oracle, c.price_oracle.account().id()).await;
 
             lst_oracle
                 .create_transformer(
-                    lst_oracle.contract().as_account(),
+                    lst_oracle.account(),
                     COLLATERAL_LST_ID,
                     PriceTransformer::lst(
                         DEFAULT_COLLATERAL_PRICE_ID,
                         24,
                         price_transformer::Call::new_simple(
-                            c.collateral_asset.contract().id(),
+                            c.collateral_asset.account().id(),
                             "redemption_rate",
                         ),
                     ),
@@ -79,7 +80,7 @@ async fn setup_lst_oracle(
 
 #[rstest]
 #[tokio::test]
-async fn lst_oracle(#[future(awt)] worker: Worker<Sandbox>) {
+async fn lst_oracle(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c, protocol_yield_user)
@@ -125,7 +126,7 @@ async fn lst_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         PriceTransformer::lst(
             DEFAULT_COLLATERAL_PRICE_ID,
             24,
-            Call::new_simple(c.collateral_asset.contract().id(), "redemption_rate"),
+            Call::new_simple(c.collateral_asset.account().id(), "redemption_rate"),
         ),
     );
 
@@ -136,7 +137,7 @@ async fn lst_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     ] {
         assert!(
             lst_oracle
-                .price_feed_exists(lst_oracle.contract.as_account(), should_exist)
+                .price_feed_exists(lst_oracle.account(), should_exist)
                 .await,
             "Price ID {should_exist} should exist",
         );
@@ -144,16 +145,13 @@ async fn lst_oracle(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert!(
         !lst_oracle
-            .price_feed_exists(
-                lst_oracle.contract.as_account(),
-                PriceIdentifier([0x88; 32]),
-            )
+            .price_feed_exists(lst_oracle.account(), PriceIdentifier([0x88; 32]),)
             .await,
     );
 
     let oracle_response = lst_oracle
         .list_ema_prices_no_older_than(
-            lst_oracle.contract().as_account(),
+            lst_oracle.account(),
             vec![DEFAULT_BORROW_PRICE_ID, COLLATERAL_LST_ID],
             60u32,
         )

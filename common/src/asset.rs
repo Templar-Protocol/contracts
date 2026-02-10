@@ -83,7 +83,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 ref contract_id,
                 ref token_id,
             } => Promise::new(contract_id.clone()).function_call(
-                "mt_transfer".into(),
+                "mt_transfer",
                 serde_json::to_vec(&json!({
                    "receiver_id": receiver_id,
                    "token_id": token_id,
@@ -121,7 +121,7 @@ impl<T: AssetClass> FungibleAsset<T> {
                 ref contract_id,
                 ref token_id,
             } => Promise::new(contract_id.clone()).function_call(
-                "mt_transfer_call".into(),
+                "mt_transfer_call",
                 serde_json::to_vec(&json!({
                    "receiver_id": receiver_id,
                    "token_id": token_id,
@@ -166,8 +166,8 @@ impl<T: AssetClass> FungibleAsset<T> {
             method_name: method_name.to_string(),
             #[allow(clippy::unwrap_used)]
             args: serde_json::to_vec(&args).unwrap(),
-            gas: gas.as_gas(),
-            deposit: 1, // 1 yoctoNEAR for security
+            gas: near_primitives::gas::Gas::from_gas(gas.as_gas()),
+            deposit: NearToken::from_yoctonear(1),
         }
     }
 
@@ -205,8 +205,8 @@ impl<T: AssetClass> FungibleAsset<T> {
                 reason = "All of the types have infallible serialization"
             )]
             args: serde_json::to_vec(&args).unwrap(),
-            gas: gas.as_gas(),
-            deposit: NearToken::from_yoctonear(1).as_yoctonear(),
+            gas: near_primitives::gas::Gas::from_gas(gas.as_gas()),
+            deposit: NearToken::from_yoctonear(1),
         }
     }
 
@@ -235,8 +235,8 @@ impl<T: AssetClass> FungibleAsset<T> {
                 reason = "All of the types have infallible serialization"
             )]
             args: serde_json::to_vec(&args).unwrap(),
-            gas: Gas::from_tgas(3).as_gas(),
-            deposit: 0,
+            gas: near_primitives::gas::Gas::from_teragas(3),
+            deposit: NearToken::ZERO,
         }
     }
 
@@ -294,13 +294,13 @@ impl<T: AssetClass> FungibleAsset<T> {
                 ref contract_id,
                 ref token_id,
             } => Promise::new(contract_id.clone()).function_call(
-                "mt_balance_of".into(),
+                "mt_balance_of",
                 serde_json::to_vec(&json!({
                     "account_id": current_account_id,
                     "token_id": token_id,
                 }))
                 .unwrap(),
-                NearToken::from_millinear(0),
+                NearToken::ZERO,
                 Gas::from_tgas(4),
             ),
         }

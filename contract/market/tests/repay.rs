@@ -1,5 +1,5 @@
+use near_sandbox::Sandbox;
 use near_sdk::AccountIdRef;
-use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 
 use templar_common::interest_rate_strategy::InterestRateStrategy;
@@ -15,7 +15,7 @@ enum RepayAccount {
 #[rstest]
 #[tokio::test]
 async fn repay(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[values(1, 999_999, 1_000_000, 1_000_001, 2_000_000)] repay_amount: u128,
     #[values(
         RepayAccount::Implicit,

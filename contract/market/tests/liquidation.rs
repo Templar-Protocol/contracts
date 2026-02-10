@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 
 use templar_common::{
@@ -17,7 +17,7 @@ use tokio::time::Instant;
 
 #[rstest]
 #[tokio::test]
-async fn successful_liquidation_totally_underwater(#[future(awt)] worker: Worker<Sandbox>) {
+async fn successful_liquidation_totally_underwater(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -65,7 +65,7 @@ async fn successful_liquidation_totally_underwater(#[future(awt)] worker: Worker
 
 #[rstest]
 #[tokio::test]
-async fn successful_liquidation_exactly_to_zero(#[future(awt)] worker: Worker<Sandbox>) {
+async fn successful_liquidation_exactly_to_zero(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -137,7 +137,7 @@ async fn successful_liquidation_exactly_to_zero(#[future(awt)] worker: Worker<Sa
 #[case(120, 1250, 1000, 88, dec!(".95"))]
 #[tokio::test]
 async fn successful_liquidation_good_debt_under_mcr(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] mcr: u16,
     #[case] collateral_amount: u128,
     #[case] borrow_amount: u128,
@@ -243,7 +243,7 @@ async fn successful_liquidation_good_debt_under_mcr(
 #[case(150, 33, 32)]
 #[tokio::test]
 async fn successful_liquidation_with_spread(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] mcr: u16,
     #[case] maximum_spread_pct: u16,
     #[case] spread_pct: u16,
@@ -305,7 +305,7 @@ async fn successful_liquidation_with_spread(
 
 #[rstest]
 #[tokio::test]
-async fn fail_liquidation_too_little_attached(#[future(awt)] worker: Worker<Sandbox>) {
+async fn fail_liquidation_too_little_attached(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -352,7 +352,7 @@ async fn fail_liquidation_too_little_attached(#[future(awt)] worker: Worker<Sand
 
 #[rstest]
 #[tokio::test]
-async fn fail_liquidation_healthy_borrow(#[future(awt)] worker: Worker<Sandbox>) {
+async fn fail_liquidation_healthy_borrow(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -399,7 +399,7 @@ async fn fail_liquidation_healthy_borrow(#[future(awt)] worker: Worker<Sandbox>)
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Attempt to liquidate more collateral than is currently eligible"]
-async fn liquidators_race(#[future(awt)] worker: Worker<Sandbox>) {
+async fn liquidators_race(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -443,7 +443,7 @@ async fn liquidators_race(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Worker<Sandbox>) {
+async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -530,7 +530,7 @@ async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Worker
 #[case((10, 1000), (10, 1000), (10, -1000), (10, 1000))]
 #[tokio::test]
 async fn extreme_prices(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] (collateral_price, collateral_exponent): (i64, i32),
     #[case] (borrow_price, borrow_exponent): (i64, i32),
     #[case] (new_collateral_price, new_collateral_exponent): (i64, i32),
@@ -658,7 +658,7 @@ async fn extreme_prices(
 
 #[rstest]
 #[tokio::test]
-async fn partial_liquidation(#[future(awt)] worker: Worker<Sandbox>) {
+async fn partial_liquidation(#[future(awt)] worker: Sandbox) {
     let spread = dec!("0.05");
     setup_test!(
         worker
@@ -782,7 +782,7 @@ async fn partial_liquidation(#[future(awt)] worker: Worker<Sandbox>) {
 #[rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Liquidation offer too low"]
-async fn partial_liquidation_fail_offer_too_little(#[future(awt)] worker: Worker<Sandbox>) {
+async fn partial_liquidation_fail_offer_too_little(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -843,7 +843,7 @@ async fn partial_liquidation_fail_offer_too_little(#[future(awt)] worker: Worker
 #[case(&[dec!("0.5"), dec!("0.25"), dec!("0.125"), dec!("0.0625"), dec!("0.06235")])]
 #[tokio::test]
 async fn many_little_partial_liquidations(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] pattern: &[Decimal],
 ) {
     setup_test!(

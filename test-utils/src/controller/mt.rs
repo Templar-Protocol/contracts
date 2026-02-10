@@ -1,40 +1,47 @@
+use std::sync::Arc;
+
 use near_sdk::{json_types::U128, serde_json::json, AccountId};
-use near_workspaces::{Account, Contract};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, TestAccount};
 
 use super::ContractController;
 
 #[derive(Clone)]
 pub struct MtController {
-    pub contract: Contract,
+    pub account: TestAccount,
 }
 
 impl ContractController for MtController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
 impl MtController {
-    pub async fn deploy(account: Account) -> Self {
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
-
-        let wasm = WASM
+        eprintln!("MtController::wasm");
+        let w = WASM
             .get_or_init(|| get_contract("mock_mt", "mock/mt"))
             .await;
+        eprintln!("MtController::wasm[return]");
+        w
+    }
 
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
-        contract
-            .call("new")
-            .args_json(json!({}))
-            .transact()
+    pub async fn deploy(account: TestAccount) -> Self {
+        eprintln!("MtController::deploy");
+        near_api::Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call("new", json!({}))
+            .unwrap()
+            .with_signer(Arc::clone(&account.signer))
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
-        Self { contract }
+        Self { account }
     }
 
     define! {
@@ -53,7 +60,7 @@ impl MtController {
         #[call(exec)]
         pub fn mint(token_id: String, amount: U128);
 
-        #[call]
+        #[call(exec)]
         pub fn set_redemption_rate(token_id: String, redemption_rate: U128);
     }
 }

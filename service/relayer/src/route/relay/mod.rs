@@ -97,7 +97,7 @@ pub async fn relay(
         .send_and_resolve_transaction(
             account_id,
             cost_of_gas,
-            NearToken::from_near(0),
+            NearToken::ZERO,
             signed_transaction,
             wait_until,
         )

@@ -13,7 +13,7 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
     types::BlockReference,
 };
-use near_sdk::{serde_json::json, AccountId};
+use near_sdk::{serde_json::json, AccountId, NearToken};
 use std::collections::HashMap;
 use templar_common::{
     number::Decimal,
@@ -234,8 +234,8 @@ impl OracleFetcher {
                 })
                 .to_string()
                 .into_bytes(),
-                gas: 100_000_000_000_000,               // 100 TGas
-                deposit: 1_000_000_000_000_000_000_000, // 0.001 NEAR
+                gas: near_primitives::gas::Gas::from_teragas(100),
+                deposit: NearToken::from_millinear(1),
             }
             .into()],
         });

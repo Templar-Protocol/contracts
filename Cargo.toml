@@ -33,17 +33,20 @@ hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 itertools = "0.14.0"
 libfuzzer-sys = "0.4"
-near-account-id = "1.1.4"
-near-chain-configs = "0.31.1"
-near-contract-standards = "5.17.2"
-near-crypto = "0.31.1"
-near-jsonrpc-client = "0.18.0"
-near-jsonrpc-primitives = "0.31.1"
-near-parameters = "0.31.1"
-near-primitives = "0.31.1"
-near-sdk = { version = "5.17.2", features = ["unstable"] }
+near-api = "0.8.2"
+near-api-types = "0.8.2"
+near-account-id = "2.5.0"
+near-chain-configs = "0.34.4"
+near-contract-standards = "5.24.0"
+near-crypto = "0.34.4"
+near-jsonrpc-client = "0.20.0"
+near-jsonrpc-primitives = "0.34.4"
+near-parameters = "0.34.4"
+near-primitives = "0.34.4"
+near-sandbox = "0.3.4"
+near-sdk = { version = "5.24.0", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
-near-workspaces = { version = "0.21.0", features = ["unstable"] }
+near-workspaces = { version = "0.22.1", features = ["unstable"] }
 p256 = "0.13.2"
 primitive-types = { version = "0.10.1" }
 rstest = { version = "0.24" }

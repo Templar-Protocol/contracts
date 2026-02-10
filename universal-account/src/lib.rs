@@ -299,7 +299,7 @@ impl PayloadExecutionParametersBuilder<u64, u64, u64, AccountId, ()> {
     pub fn build_salt(self) -> PayloadExecutionParameters {
         let salt = Base58CryptoHash::from(near_sdk::env::keccak256_array(
             #[allow(clippy::unwrap_used, reason = "Infallible")]
-            &near_sdk::borsh::to_vec(&(U64(self.block_height), U64(self.index))).unwrap(),
+            near_sdk::borsh::to_vec(&(U64(self.block_height), U64(self.index))).unwrap(),
         ));
 
         PayloadExecutionParameters {

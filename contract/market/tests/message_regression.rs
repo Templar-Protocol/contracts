@@ -1,26 +1,30 @@
+use near_sandbox::Sandbox;
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
     Gas, NearToken,
 };
-use near_workspaces::{
-    network::Sandbox,
-    result::{ExecutionOutcome, ExecutionResult},
-    Worker,
-};
 use rstest::rstest;
 
 use templar_common::interest_rate_strategy::InterestRateStrategy;
-use test_utils::*;
+use test_utils::{near_api::types::transaction::result::ExecutionResult, *};
 
 #[allow(clippy::needless_pass_by_value)]
 fn assert_no_failures<T>(result: ExecutionResult<T>) {
-    assert_eq!(result.failures(), Vec::<&ExecutionOutcome>::new());
+    let failures = result.failures();
+    if !failures.is_empty() {
+        for failure in failures {
+            if let Err(e) = failure.clone().into_result() {
+                eprintln!("{e}");
+            }
+        }
+        panic!("Failures detected in execution");
+    }
 }
 
 #[rstest]
 #[tokio::test]
-async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
+async fn message_regression(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)
@@ -34,7 +38,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
         c.borrow_asset
             .transfer_call(
                 &supply_user,
-                c.market.contract().id(),
+                c.market.account().id(),
                 10_000_000,
                 r#""Supply""#,
             )
@@ -49,7 +53,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
                 "account_id": supply_user.id(),
                 "mode": "Default",
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(30),
         )
         .await,
@@ -59,7 +63,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
         c.collateral_asset
             .transfer_call(
                 &borrow_user,
-                c.market.contract().id(),
+                c.market.account().id(),
                 2_000_000,
                 r#""Collateralize""#,
             )
@@ -73,7 +77,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
             json!({
                 "amount": U128(1_000_000),
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(100),
         )
         .await,
@@ -81,12 +85,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_no_failures(
         c.borrow_asset
-            .transfer_call(
-                &borrow_user,
-                c.market.contract().id(),
-                250_000,
-                r#""Repay""#,
-            )
+            .transfer_call(&borrow_user, c.market.account().id(), 250_000, r#""Repay""#)
             .await,
     );
 
@@ -94,7 +93,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
         c.borrow_asset
             .transfer_call(
                 &third_party,
-                c.market.contract().id(),
+                c.market.account().id(),
                 250_000,
                 serde_json::to_string(&json!({
                     "RepayAccount": {
@@ -113,7 +112,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
             json!({
                 "amount": U128(1_000_000),
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(100),
         )
         .await,
@@ -127,7 +126,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
                 "account_id": borrow_user.id(),
                 "snapshot_limit": 100,
             }),
-            NearToken::from_near(0),
+            NearToken::ZERO,
             Gas::from_tgas(100),
         )
         .await,
@@ -139,7 +138,7 @@ async fn message_regression(#[future(awt)] worker: Worker<Sandbox>) {
         c.borrow_asset
             .transfer_call(
                 &third_party,
-                c.market.contract().id(),
+                c.market.account().id(),
                 500_000,
                 serde_json::to_string(&json!({
                     "Liquidate": {

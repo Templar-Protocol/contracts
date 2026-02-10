@@ -3,7 +3,7 @@
 use near_sdk::{
     assert_one_yocto, borsh::BorshSerialize, collections::UnorderedMap, env, near,
     serde::de::DeserializeOwned, serde_json, AccountId, BorshStorageKey, Gas, IntoStorageKey,
-    PanicOnDefault, PromiseError, PromiseOrValue, PromiseResult,
+    PanicOnDefault, PromiseError, PromiseOrValue,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -146,10 +146,10 @@ impl Contract {
         original_price_ids: Vec<PriceIdentifier>,
     ) -> OracleResponse {
         fn callback_result<T: DeserializeOwned>(index: u64) -> T {
-            match env::promise_result(index) {
-                PromiseResult::Successful(vec) => serde_json::from_slice(&vec)
+            match env::promise_result_checked(index, 1024) {
+                Ok(vec) => serde_json::from_slice(&vec)
                     .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
-                PromiseResult::Failed => {
+                Err(_) => {
                     templar_common::panic_with_message(&format!("Promise index {index} failed"))
                 }
             }

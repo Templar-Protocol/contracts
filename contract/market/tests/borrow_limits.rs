@@ -1,4 +1,4 @@
-use near_workspaces::{network::Sandbox, Worker};
+use near_sandbox::Sandbox;
 use rstest::rstest;
 use templar_common::{fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal};
 use test_utils::*;
@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 #[case(0, &[20, 20, 20, 20, 20], 100)]
 #[tokio::test]
 async fn borrow_within_bounds(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] minimum: u128,
     #[case] amounts: &[u128],
     #[case] maximum: u128,
@@ -49,7 +49,7 @@ async fn borrow_within_bounds(
 #[tokio::test]
 #[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
 async fn borrow_below_minimum(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] minimum: u128,
     #[case] amount: u128,
     #[case] maximum: u128,
@@ -83,7 +83,7 @@ async fn borrow_below_minimum(
 #[tokio::test]
 #[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
 async fn borrow_above_maximum(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] worker: Sandbox,
     #[case] minimum: u128,
     #[case] amounts: &[u128],
     #[case] maximum: u128,
@@ -114,7 +114,7 @@ async fn borrow_above_maximum(
 
 #[rstest]
 #[tokio::test]
-async fn withdraw_below_minimum(#[future(awt)] worker: Worker<Sandbox>) {
+async fn withdraw_below_minimum(#[future(awt)] worker: Sandbox) {
     setup_test!(
         worker
         extract(c)

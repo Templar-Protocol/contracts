@@ -13,7 +13,7 @@ use near_primitives::{
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
-use near_sdk::{serde_json::json, AccountId};
+use near_sdk::{serde_json::json, AccountId, NearToken};
 use rpc::{get_contract_version, is_v1_0_0};
 use templar_common::market::MarketConfiguration;
 use tracing::{debug, error, info, instrument};
@@ -157,8 +157,8 @@ impl Accumulator {
                 args: serialize_and_encode(json!({
                     "account_id": borrow,
                 })),
-                gas: DEFAULT_GAS,
-                deposit: 0,
+                gas: near_primitives::gas::Gas::from_gas(DEFAULT_GAS),
+                deposit: NearToken::ZERO,
             }))],
         })
     }
@@ -643,8 +643,8 @@ mod tests {
                             outcome: ExecutionOutcomeView {
                                 logs: Vec::new(),
                                 receipt_ids: Vec::new(),
-                                gas_burnt: 0,
-                                tokens_burnt: 0,
+                                gas_burnt: near_primitives::gas::Gas::ZERO,
+                                tokens_burnt: NearToken::ZERO,
                                 executor_id: "market.testnet".parse().unwrap(),
                                 status: ExecutionStatusView::SuccessValue(Vec::new()),
                                 metadata: ExecutionMetadataView::default(),

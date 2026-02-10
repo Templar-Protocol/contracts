@@ -1,4 +1,4 @@
-use near_sdk::{env, near, require, serde_json, AccountId, Gas, Promise, PromiseResult};
+use near_sdk::{env, near, require, serde_json, AccountId, Gas, Promise};
 use templar_common::{
     asset::{
         BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
@@ -13,6 +13,13 @@ use templar_common::{
 };
 
 use crate::{Contract, ContractExt};
+
+fn transfer_succeeded(index: u64) -> bool {
+    // The standard implementation of these functions _should_ return void.
+    const TRANSFER_RESULT_MAX_LENGTH: usize = 32;
+
+    env::promise_result_checked(index, TRANSFER_RESULT_MAX_LENGTH).is_ok()
+}
 
 /// Internal helpers.
 impl Contract {
@@ -164,7 +171,7 @@ impl Contract {
         };
 
         let proof = borrow_position.accumulate_interest();
-        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        let success = transfer_succeeded(0);
         borrow_position.record_borrow_final(
             snapshot,
             proof,
@@ -186,7 +193,7 @@ impl Contract {
         let snapshot = self.snapshot();
 
         for (i, resolution) in resolutions.iter().enumerate() {
-            let succeeded = matches!(env::promise_result(i as u64), PromiseResult::Successful(_));
+            let succeeded = transfer_succeeded(i as u64);
 
             if let Some(mut position) =
                 self.supply_position_guard(snapshot, resolution.account_id.clone())
@@ -372,7 +379,7 @@ impl Contract {
         account_id: AccountId,
         amount: CollateralAssetAmount,
     ) {
-        let succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        let succeeded = transfer_succeeded(0);
 
         let snapshot = self.snapshot();
         let Some(mut position) = self.borrow_position_guard(snapshot, account_id.clone()) else {
@@ -401,7 +408,7 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
     ) {
-        if matches!(env::promise_result(0), PromiseResult::Failed) {
+        if !transfer_succeeded(0) {
             let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
                 templar_common::panic_with_message(
                     "Invariant violation: static yield entry must exist during callback",

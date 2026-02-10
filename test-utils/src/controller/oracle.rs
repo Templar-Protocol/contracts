@@ -1,41 +1,43 @@
+use std::sync::Arc;
+
 use near_sdk::serde_json::json;
-use near_workspaces::{Account, Contract};
 use templar_common::oracle::pyth::{self, OracleResponse, PriceIdentifier};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, TestAccount};
 
 use super::ContractController;
 
 #[derive(Clone)]
 pub struct OracleController {
-    pub contract: Contract,
+    pub account: TestAccount,
 }
 
 impl ContractController for OracleController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
 impl OracleController {
-    pub async fn deploy(account: Account) -> Self {
-        static WASM_MOCK_ORACLE: OnceCell<Vec<u8>> = OnceCell::const_new();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+        WASM.get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
+            .await
+    }
 
-        let wasm = WASM_MOCK_ORACLE
-            .get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
-            .await;
-
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
-        contract
-            .call("new")
-            .args_json(json!({}))
-            .transact()
+    pub async fn deploy(account: TestAccount) -> Self {
+        near_api::Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call("new", json!({}))
+            .unwrap()
+            .with_signer(Arc::clone(&account.signer))
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
-        Self { contract }
+        Self { account }
     }
 
     define! {

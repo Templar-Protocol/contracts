@@ -378,8 +378,7 @@ WHERE
         status: &FinalExecutionOutcomeView,
     ) -> Result<(), error::RecordTransactionError> {
         tracing::info!("Recording transaction result");
-        let allowance_spent_gas =
-            NearToken::from_yoctonear(status.transaction_outcome.outcome.tokens_burnt);
+        let allowance_spent_gas = status.transaction_outcome.outcome.tokens_burnt;
 
         let success = matches!(status.status, FinalExecutionStatus::SuccessValue(_));
 
@@ -495,7 +494,7 @@ WHERE
         let (status, allowance_spent_inner) = if succeeded {
             (TransactionStatus::Succeeded, allowance_spent_inner)
         } else {
-            (TransactionStatus::Failed, NearToken::from_near(0))
+            (TransactionStatus::Failed, NearToken::ZERO)
         };
 
         sqlx::query!(

@@ -1,22 +1,23 @@
-use near_workspaces::{Account, Contract};
+use std::sync::Arc;
+
 use templar_universal_account::{
     contract_state::Migration, transaction::Transaction, ExecuteArgs, InitArgs, KeyId,
     PayloadExecutionParameters,
 };
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, TestAccount};
 
 use super::ContractController;
 
 #[derive(Clone)]
 pub struct UniversalAccountController {
-    pub contract: Contract,
+    pub account: TestAccount,
 }
 
 impl ContractController for UniversalAccountController {
-    fn contract(&self) -> &Contract {
-        &self.contract
+    fn account(&self) -> &TestAccount {
+        &self.account
     }
 }
 
@@ -37,20 +38,24 @@ impl UniversalAccountController {
         .await
     }
 
-    pub async fn deploy(account: Account, key: KeyId, chain_id: u128) -> Self {
-        let contract = account.deploy(Self::wasm().await).await.unwrap().unwrap();
-        contract
-            .call("new")
-            .args_json(InitArgs {
-                key,
-                chain_id: chain_id.into(),
-            })
-            .transact()
+    pub async fn deploy(account: TestAccount, key: KeyId, chain_id: u128) -> Self {
+        near_api::Contract::deploy(account.id.clone())
+            .use_code(Self::wasm().await.to_vec())
+            .with_init_call(
+                "new",
+                InitArgs {
+                    key,
+                    chain_id: chain_id.into(),
+                },
+            )
+            .unwrap()
+            .with_signer(Arc::clone(&account.signer))
+            .send_to(&account.network)
             .await
             .unwrap()
-            .unwrap();
+            .assert_success();
 
-        Self { contract }
+        Self { account }
     }
 
     define! {
