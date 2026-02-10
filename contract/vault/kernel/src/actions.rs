@@ -671,7 +671,12 @@ pub fn apply_action(
                             owner: escrow_address,
                             shares: burn_amount,
                         });
-                        state.total_shares = state.total_shares.saturating_sub(burn_amount);
+                        state.total_shares = state
+                            .total_shares
+                            .checked_sub(burn_amount)
+                            .ok_or(KernelError::InvalidState(
+                                "payout burn exceeds total_shares",
+                            ))?;
                     }
                     if refund_amount > 0 {
                         effects.push(KernelEffect::TransferShares {
