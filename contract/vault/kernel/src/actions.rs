@@ -11,7 +11,7 @@ use crate::effects::{KernelEffect, KernelEvent};
 use crate::error::KernelError;
 use crate::math::number::Number;
 use crate::math::wad::{
-    compute_fee_shares_from_assets, compute_management_fee_shares, mul_div_floor,
+    compute_fee_shares_from_assets, compute_management_fee_shares, mul_div_ceil, mul_div_floor,
     total_assets_for_fee_accrual,
 };
 use crate::restrictions::Restrictions;
@@ -160,7 +160,10 @@ pub enum KernelAction {
     EmergencyReset,
 }
 
-fn effective_totals(state: &VaultState, config: &VaultConfig) -> (u128, u128) {
+/// Compute effective totals including virtual shares/assets for conversion math.
+///
+/// Returns `(effective_supply, effective_assets)`.
+pub fn effective_totals(state: &VaultState, config: &VaultConfig) -> (u128, u128) {
     let supply = state
         .total_shares
         .saturating_add(config.virtual_shares.max(1));
@@ -170,7 +173,8 @@ fn effective_totals(state: &VaultState, config: &VaultConfig) -> (u128, u128) {
     (supply, assets)
 }
 
-fn convert_to_shares(state: &VaultState, config: &VaultConfig, assets: u128) -> u128 {
+/// Convert an asset amount to shares (floor rounding — fewer shares, favors vault).
+pub fn convert_to_shares(state: &VaultState, config: &VaultConfig, assets: u128) -> u128 {
     let (supply, assets_total) = effective_totals(state, config);
     u128::from(mul_div_floor(
         Number::from(assets),
@@ -179,9 +183,34 @@ fn convert_to_shares(state: &VaultState, config: &VaultConfig, assets: u128) -> 
     ))
 }
 
-fn convert_to_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
+/// Convert a share amount to assets (floor rounding — fewer assets, favors vault).
+pub fn convert_to_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
     let (supply, assets_total) = effective_totals(state, config);
     u128::from(mul_div_floor(
+        Number::from(shares),
+        Number::from(assets_total),
+        Number::from(supply),
+    ))
+}
+
+/// Convert an asset amount to shares (ceil rounding — more shares, favors user).
+///
+/// Used by ERC-4626 `preview_withdraw` to compute shares burned (rounds against user).
+pub fn convert_to_shares_ceil(state: &VaultState, config: &VaultConfig, assets: u128) -> u128 {
+    let (supply, assets_total) = effective_totals(state, config);
+    u128::from(mul_div_ceil(
+        Number::from(assets),
+        Number::from(supply),
+        Number::from(assets_total),
+    ))
+}
+
+/// Convert a share amount to assets (ceil rounding — more assets, favors user).
+///
+/// Used by ERC-4626 `preview_mint` to compute assets needed (rounds against user).
+pub fn convert_to_assets_ceil(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
+    let (supply, assets_total) = effective_totals(state, config);
+    u128::from(mul_div_ceil(
         Number::from(shares),
         Number::from(assets_total),
         Number::from(supply),
@@ -384,6 +413,22 @@ pub fn apply_action(
         KernelAction::BeginAllocating { op_id, plan, .. } => {
             let result = start_allocation(mem::take(&mut state.op_state), plan, op_id)
                 .map_err(KernelError::Transition)?;
+
+            // Compute allocation total from the plan and decrement idle_assets.
+            let alloc_total = result
+                .new_state
+                .as_allocating()
+                .expect("start_allocation must return Allocating")
+                .remaining;
+
+            if alloc_total > state.idle_assets {
+                return Err(KernelError::InvalidState(
+                    "allocation plan exceeds idle_assets",
+                ));
+            }
+
+            state.idle_assets -= alloc_total;
+            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
@@ -1496,6 +1541,30 @@ mod tests {
         .unwrap();
 
         assert!(result.state.op_state.as_allocating().is_some());
+        // idle_assets must be decremented by allocation total
+        assert_eq!(result.state.idle_assets, 500);
+        assert_eq!(result.state.total_assets, 500);
+        assert!(result.state.check_invariant());
+    }
+
+    #[test]
+    fn begin_allocating_exceeds_idle() {
+        let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+        let config = test_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::BeginAllocating {
+                op_id: 1,
+                plan: vec![(1, 1_500)], // exceeds idle_assets of 1_000
+                now_ns: 0,
+            },
+        );
+
+        assert!(matches!(result, Err(KernelError::InvalidState(_))));
     }
 
     // =========================================================================

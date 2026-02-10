@@ -1911,12 +1911,6 @@ impl Contract {
 
         self.ensure_idle();
 
-        require!(
-            amount <= self.idle_balance,
-            "Policy violation: reserve amount must be <= idle_balance"
-        );
-        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
-
         let op_id = self.next_op_id;
         self.next_op_id = self.next_op_id.saturating_add(1);
 
@@ -1928,6 +1922,7 @@ impl Contract {
         let kernel_config = self.kernel_config_mirror();
         let self_addr = account_id_to_address(&env::current_account_id());
 
+        // Kernel handles idle_assets validation and decrement in BeginAllocating.
         let result = apply_action(
             kernel_state,
             &kernel_config,
@@ -1943,6 +1938,7 @@ impl Contract {
             panic_with_message(&format!("Kernel begin allocation failed: {err:?}"))
         });
 
+        self.idle_balance = result.state.idle_assets;
         self.apply_kernel_op_state(&result.state.op_state);
         self.next_op_id = result.state.next_op_id;
 

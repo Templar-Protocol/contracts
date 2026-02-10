@@ -2591,8 +2591,9 @@ fn abort_allocating_restores_state() {
         OpState::Allocating(s) => s.op_id,
         _ => panic!("Should be Allocating"),
     };
-    // Kernel intentionally leaves idle_assets unchanged — executors handle the decrement.
-    assert_eq!(result.state.idle_assets, 1500, "kernel does not decrement idle_assets");
+    // Kernel decrements idle_assets by allocation total (1500).
+    assert_eq!(result.state.idle_assets, 0, "idle_assets decremented by allocation total");
+    assert_eq!(result.state.total_assets, 0, "total_assets recomputed after decrement");
     let state_after_begin = result.state;
 
     let result = apply_action(
@@ -2608,10 +2609,8 @@ fn abort_allocating_restores_state() {
     .unwrap();
 
     assert!(matches!(result.state.op_state, OpState::Idle));
-    // In kernel-only tests idle_assets was never decremented, so restore_idle
-    // adds on top: 1500 (unchanged) + 1500 (restored) = 3000. In a real
-    // executor the pre-BeginAllocating decrement would make this balance out.
-    assert_eq!(result.state.idle_assets, 3000, "kernel-only: restore adds on top of un-decremented value");
+    // AbortAllocating restores the decremented amount, bringing us back to 1500.
+    assert_eq!(result.state.idle_assets, 1500, "idle_assets restored after abort");
 }
 
 /// Start allocation with empty plan is rejected.
@@ -2856,7 +2855,9 @@ fn parity_deposit_shares_ratio_stable() {
 /// kernel BeginAllocating, then using kernel's AbortAllocating with
 /// restore_idle, produces balanced accounting.
 ///
-/// Both Soroban (contract.rs:903) and NEAR executors follow this pattern.
+/// The kernel handles idle_assets decrement in BeginAllocating.
+/// Soroban calls start_allocation directly (bypasses apply_action) and
+/// handles idle_assets itself. NEAR delegates to apply_action.
 #[test]
 fn parity_executor_idle_decrement_abort_roundtrip() {
     let config = default_config();
@@ -2867,12 +2868,7 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
     let plan = vec![(0, 3_000), (1, 2_000)];
     let alloc_total: u128 = plan.iter().map(|(_, a)| *a).sum();
 
-    // --- Executor pre-kernel: decrement idle_assets (as both executors do) ---
-    state.idle_assets -= alloc_total;
-    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
-    assert_eq!(state.idle_assets, 5_000);
-
-    // --- Kernel: BeginAllocating ---
+    // --- Kernel: BeginAllocating decrements idle_assets ---
     let result = apply_action(
         state,
         &config,
@@ -2890,7 +2886,7 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
         OpState::Allocating(s) => s.op_id,
         _ => panic!("expected Allocating"),
     };
-    // Kernel leaves idle_assets unchanged (already decremented by executor)
+    // Kernel decrements idle_assets by allocation total
     assert_eq!(result.state.idle_assets, 5_000);
 
     // --- Kernel: AbortAllocating restores the allocation amount ---
@@ -2907,12 +2903,12 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
     .unwrap();
 
     assert!(result.state.op_state.is_idle());
-    // After executor-decrement + kernel-restore, we should be back to 10_000
+    // After kernel-decrement + kernel-restore, we should be back to 10_000
     assert_eq!(result.state.idle_assets, 10_000, "abort must restore idle_assets to original");
 }
 
-/// Parity: the executor pattern of decrementing idle_assets, running
-/// allocation steps, then finishing — external_assets reflects allocated amount.
+/// Parity: kernel BeginAllocating decrements idle_assets, SyncExternalAssets
+/// updates external_assets, FinishAllocating returns to Idle.
 ///
 /// The kernel's 2x sanity guard on SyncExternalAssets means executors must sync
 /// incrementally (after each market deposit), not all at once.
@@ -2927,14 +2923,8 @@ fn parity_executor_full_allocation_cycle() {
     state.fee_anchor = FeeAccrualAnchor::new(10_000, 0);
 
     let plan = vec![(0, 2_000), (1, 1_000)];
-    let alloc_total: u128 = plan.iter().map(|(_, a)| *a).sum(); // 3_000
 
-    // Executor pre-kernel: decrement idle_assets
-    state.idle_assets -= alloc_total;
-    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
-    // Now idle=5000, external=2000, total=7000
-
-    // BeginAllocating
+    // BeginAllocating — kernel decrements idle_assets by alloc_total (3_000)
     let result = apply_action(
         state,
         &config,
@@ -2947,6 +2937,9 @@ fn parity_executor_full_allocation_cycle() {
         },
     )
     .unwrap();
+    // idle=5000, external=2000, total=7000 (assets in-flight to markets)
+    assert_eq!(result.state.idle_assets, 5_000);
+    assert_eq!(result.state.total_assets, 7_000);
 
     // Sync after allocation: external grew from 2000 to 5000 (allocated 3000).
     // 2x check: new_total = 5000+5000 = 10000, old total=7000, 7000*2=14000. OK.
@@ -3424,12 +3417,9 @@ proptest! {
         let alloc_amount = idle * alloc_frac / 100;
         if alloc_amount == 0 { return Ok(()); }
 
-        let mut state = VaultState::with_initial(idle, 0, idle, 0, 0);
+        let state = VaultState::with_initial(idle, 0, idle, 0, 0);
 
-        // Executor pre-kernel: decrement
-        state.idle_assets -= alloc_amount;
-        state.total_assets = state.idle_assets;
-
+        // Kernel handles idle_assets decrement in BeginAllocating
         let result = apply_action(
             state,
             &config,
@@ -3443,8 +3433,11 @@ proptest! {
         );
         prop_assert!(result.is_ok());
 
+        let after_alloc = result.unwrap().state;
+        prop_assert_eq!(after_alloc.idle_assets, idle - alloc_amount, "kernel must decrement idle_assets");
+
         let result = apply_action(
-            result.unwrap().state,
+            after_alloc,
             &config,
             None,
             &self_addr(),
