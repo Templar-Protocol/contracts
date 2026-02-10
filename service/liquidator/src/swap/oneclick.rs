@@ -425,7 +425,12 @@ impl OneClickSwap {
 
         let response = req.send().await.map_err(|e| {
             tracing::error!(?e, "Failed to send quote request");
-            AppError::ValidationError(format!("Quote request failed: {e}"))
+            crate::swap::SwapError::new(
+                crate::swap::SwapErrorKind::NetworkError {
+                    message: e.to_string(),
+                },
+                "Quote request",
+            )
         })?;
 
         let status = response.status();
@@ -435,25 +440,15 @@ impl OneClickSwap {
         })?;
 
         if !status.is_success() {
-            use reqwest::StatusCode;
-            let error_msg = match status {
-                StatusCode::BAD_REQUEST => {
-                    format!("Bad Request - Invalid input data: {response_text}")
-                }
-                StatusCode::UNAUTHORIZED => {
-                    format!("Unauthorized - JWT token is invalid or missing: {response_text}")
-                }
-                StatusCode::NOT_FOUND => {
-                    format!("Not Found - Endpoint or resource not found: {response_text}")
-                }
-                _ => format!("Quote request failed with status {status}: {response_text}"),
-            };
+            let kind =
+                crate::swap::SwapErrorKind::from_oneclick_response(status.as_u16(), &response_text);
             tracing::error!(
                 status = %status,
                 response = %response_text,
+                retryable = kind.is_retryable(),
                 "Quote request failed"
             );
-            return Err(AppError::ValidationError(error_msg));
+            return Err(crate::swap::SwapError::new(kind, "Quote request").into());
         }
 
         let quote_response: QuoteResponse = near_sdk::serde_json::from_str(&response_text)
@@ -1100,9 +1095,13 @@ impl OneClickSwap {
         }
 
         tracing::warn!("Swap status polling timed out");
-        Err(AppError::ValidationError(
-            "Swap did not complete within timeout".to_string(),
-        ))
+        Err(crate::swap::SwapError::new(
+            crate::swap::SwapErrorKind::Timeout {
+                message: format!("Swap did not complete within {max_wait_seconds}s"),
+            },
+            "Poll swap status",
+        )
+        .into())
     }
 }
 
@@ -1189,9 +1188,13 @@ impl SwapProvider for OneClickSwap {
                 duration_ms = swap_duration.as_millis(),
                 "1-Click swap did not succeed"
             );
-            Err(AppError::ValidationError(format!(
-                "Swap failed with status: {status:?}"
-            )))
+            Err(crate::swap::SwapError::new(
+                crate::swap::SwapErrorKind::Unknown {
+                    message: format!("Swap ended with status: {status:?}"),
+                },
+                "1-Click swap",
+            )
+            .into())
         }
     }
 
