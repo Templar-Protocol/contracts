@@ -43,10 +43,23 @@ enum StorageKey {
     Keys,
 }
 
+/// # Panics
+///
+/// - If the list of transactions is empty.
+fn transactions_to_promise(transactions: &[Transaction]) -> Promise {
+    let mut promise = transactions[0].to_promise();
+
+    for transaction in &transactions[1..] {
+        promise = promise.then(transaction.to_promise());
+    }
+
+    promise
+}
+
 #[near]
 impl Contract {
     #[init]
-    pub fn new(key: KeyId, chain_id: U128) -> Self {
+    pub fn new(key: KeyId, chain_id: U128, execute: Option<Vec<Transaction>>) -> Self {
         let mut self_ = Self(StateV1 {
             next_key_index: 0,
             keys: IterableMap::new(StorageKey::Keys),
@@ -54,6 +67,11 @@ impl Contract {
         });
 
         self_.add_key(key);
+
+        if let Some(transactions) = execute.filter(|e| !e.is_empty()) {
+            let p = transactions_to_promise(&transactions);
+            p.as_return();
+        }
 
         self_
     }
@@ -119,13 +137,7 @@ impl Contract {
 
         require!(!transactions.is_empty(), "Transaction list is empty");
 
-        let mut promise = transactions[0].to_promise();
-
-        for transaction in &transactions[1..] {
-            promise = promise.then(transaction.to_promise());
-        }
-
-        promise
+        transactions_to_promise(&transactions)
     }
 }
 
