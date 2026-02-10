@@ -231,6 +231,34 @@ pub fn preview_withdraw_assets(state: &VaultState, config: &VaultConfig, shares:
     convert_to_assets(state, config, shares)
 }
 
+/// Validate that the provided `op_id` matches the active operation.
+///
+/// Extracts the current op_id from `op_state` and compares it to `provided`.
+/// Returns an error if the state has no active operation or if the IDs mismatch.
+fn require_active_op_id(
+    op_state: &OpState,
+    provided: u64,
+    action: &'static str,
+) -> Result<(), KernelError> {
+    let active = op_state.op_id().ok_or(KernelError::InvalidState(action))?;
+    if active != provided {
+        return Err(KernelError::OpIdMismatch {
+            expected: active,
+            actual: provided,
+        });
+    }
+    Ok(())
+}
+
+/// Validate that a destructured op_id matches the provided one.
+#[inline]
+fn check_op_id(expected: u64, actual: u64) -> Result<(), KernelError> {
+    if expected != actual {
+        return Err(KernelError::OpIdMismatch { expected, actual });
+    }
+    Ok(())
+}
+
 /// Apply a kernel action to state, returning updated state and effects.
 pub fn apply_action(
     mut state: VaultState,
@@ -430,7 +458,7 @@ pub fn apply_action(
             }
 
             state.idle_assets -= alloc_total;
-            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            state.sync_total_assets();
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
@@ -477,18 +505,11 @@ pub fn apply_action(
             op_id,
             ..
         } => {
-            let Some(active_op_id) = state.op_state.op_id() else {
-                return Err(KernelError::InvalidState(
-                    "sync_external_assets requires active op",
-                ));
-            };
-
-            if active_op_id != op_id {
-                return Err(KernelError::OpIdMismatch {
-                    expected: active_op_id,
-                    actual: op_id,
-                });
-            }
+            require_active_op_id(
+                &state.op_state,
+                op_id,
+                "sync_external_assets requires active op",
+            )?;
 
             match state.op_state {
                 OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => {}
@@ -539,15 +560,11 @@ pub fn apply_action(
             ))
         }
         KernelAction::AbortRefreshing { op_id } => {
-            let current_op_id = state.op_state.op_id().ok_or(KernelError::InvalidState(
+            require_active_op_id(
+                &state.op_state,
+                op_id,
                 "abort_refreshing requires active op",
-            ))?;
-            if current_op_id != op_id {
-                return Err(KernelError::OpIdMismatch {
-                    expected: current_op_id,
-                    actual: op_id,
-                });
-            }
+            )?;
 
             if !matches!(state.op_state, OpState::Refreshing(_)) {
                 return Err(KernelError::InvalidState(
@@ -571,20 +588,14 @@ pub fn apply_action(
                 }
             };
 
-            if alloc.op_id != op_id {
-                return Err(KernelError::OpIdMismatch {
-                    expected: alloc.op_id,
-                    actual: op_id,
-                });
-            }
+            check_op_id(alloc.op_id, op_id)?;
             if restore_idle != alloc.remaining {
                 return Err(KernelError::InvalidState(
                     "abort_allocating restore_idle mismatch",
                 ));
             }
 
-            state.idle_assets = state.idle_assets.saturating_add(restore_idle);
-            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            state.restore_to_idle(restore_idle);
             state.op_state = OpState::Idle;
             Ok(KernelResult::new(state, vec![]))
         }
@@ -601,12 +612,7 @@ pub fn apply_action(
                 }
             };
 
-            if withdraw.op_id != op_id {
-                return Err(KernelError::OpIdMismatch {
-                    expected: withdraw.op_id,
-                    actual: op_id,
-                });
-            }
+            check_op_id(withdraw.op_id, op_id)?;
             if refund_shares != withdraw.escrow_shares {
                 return Err(KernelError::InvalidState(
                     "abort_withdrawing refund_shares mismatch",
@@ -635,12 +641,7 @@ pub fn apply_action(
                 _ => return Err(KernelError::InvalidState("settle_payout requires Payout")),
             };
 
-            if payout.op_id != op_id {
-                return Err(KernelError::OpIdMismatch {
-                    expected: payout.op_id,
-                    actual: op_id,
-                });
-            }
+            check_op_id(payout.op_id, op_id)?;
 
             let Some((_, pending)) = state.withdraw_queue.head() else {
                 return Err(KernelError::EmptyQueue);
@@ -712,8 +713,7 @@ pub fn apply_action(
                         });
                     }
 
-                    state.idle_assets = state.idle_assets.saturating_add(restore_idle);
-                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                    state.restore_to_idle(restore_idle);
                     state.op_state = OpState::Idle;
                     (0, refund_amount, 0, false)
                 }
@@ -826,8 +826,7 @@ pub fn apply_action(
                 }
                 OpState::Allocating(alloc) => {
                     // Restore unallocated assets back to idle.
-                    state.idle_assets = state.idle_assets.saturating_add(alloc.remaining);
-                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                    state.restore_to_idle(alloc.remaining);
                 }
                 OpState::Withdrawing(w) => {
                     // Refund escrowed shares to the owner.
@@ -839,8 +838,7 @@ pub fn apply_action(
                         });
                     }
                     // Restore any collected assets back to idle.
-                    state.idle_assets = state.idle_assets.saturating_add(w.collected);
-                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                    state.restore_to_idle(w.collected);
                     state.withdraw_queue.dequeue();
                 }
                 OpState::Payout(p) => {
@@ -853,8 +851,7 @@ pub fn apply_action(
                         });
                     }
                     // Restore payout amount back to idle.
-                    state.idle_assets = state.idle_assets.saturating_add(p.amount);
-                    state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+                    state.restore_to_idle(p.amount);
                     state.withdraw_queue.dequeue();
                 }
             }

@@ -195,6 +195,25 @@ impl VaultState {
     pub fn current_op_id(&self) -> Option<u64> {
         self.op_state.op_id()
     }
+
+    /// Recompute `total_assets` from `idle_assets + external_assets`.
+    ///
+    /// Call this after any mutation of `idle_assets` or `external_assets`
+    /// to restore the fundamental accounting invariant.
+    #[inline]
+    pub fn sync_total_assets(&mut self) {
+        self.total_assets = self.idle_assets.saturating_add(self.external_assets);
+    }
+
+    /// Add `amount` back to idle assets and recompute totals.
+    ///
+    /// Common pattern during abort / emergency-reset paths where
+    /// in-flight assets are returned to idle.
+    #[inline]
+    pub fn restore_to_idle(&mut self, amount: u128) {
+        self.idle_assets = self.idle_assets.saturating_add(amount);
+        self.sync_total_assets();
+    }
 }
 
 impl Default for VaultState {
