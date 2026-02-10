@@ -12,12 +12,12 @@ use crate::policy::cap_group::CapGroup;
 use crate::policy::refresh_plan::build_refresh_plan;
 use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use crate::policy::withdraw_route::{build_withdraw_route, WithdrawRoute, WithdrawRouteEntry};
-use crate::test_utils::{owner_addr, receiver_addr};
-use templar_vault_kernel::Wad;
 use crate::recovery::{
     compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
     RecoveryProgress,
 };
+use crate::test_utils::{owner_addr, receiver_addr};
+use templar_vault_kernel::Wad;
 use templar_vault_kernel::{
     AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
     WithdrawingState,
@@ -166,32 +166,16 @@ fn golden_cap_group_allocation_validation() {
     let volatile_principal = 2_500_000_000_000u128;
 
     // Should succeed: allocate 400_000_000_000 (0.4M)
-    assert!(volatile_cap.can_allocate(
-        volatile_principal,
-        400_000_000_000,
-        snapshot.total_assets
-    ));
+    assert!(volatile_cap.can_allocate(volatile_principal, 400_000_000_000, snapshot.total_assets));
 
     // Should succeed: allocate exactly 500_000_000_000 (0.5M)
-    assert!(volatile_cap.can_allocate(
-        volatile_principal,
-        500_000_000_000,
-        snapshot.total_assets
-    ));
+    assert!(volatile_cap.can_allocate(volatile_principal, 500_000_000_000, snapshot.total_assets));
 
     // Should fail: allocate 600_000_000_000 (0.6M)
-    assert!(!volatile_cap.can_allocate(
-        volatile_principal,
-        600_000_000_000,
-        snapshot.total_assets
-    ));
+    assert!(!volatile_cap.can_allocate(volatile_principal, 600_000_000_000, snapshot.total_assets));
 
     // Enforcement should return proper error
-    let result = volatile_cap.enforce(
-        volatile_principal,
-        600_000_000_000,
-        snapshot.total_assets,
-    );
+    let result = volatile_cap.enforce(volatile_principal, 600_000_000_000, snapshot.total_assets);
     assert!(result.is_err());
 }
 
@@ -205,11 +189,21 @@ fn golden_supply_queue_to_plan() {
     let mut queue = SupplyQueue::new();
 
     // Add entries simulating batched deposits
-    queue = queue.enqueue(SupplyQueueEntry::new(0, 500_000_000_000)).unwrap();
-    queue = queue.enqueue(SupplyQueueEntry::new(1, 300_000_000_000)).unwrap();
-    queue = queue.enqueue(SupplyQueueEntry::new(0, 200_000_000_000)).unwrap();
-    queue = queue.enqueue(SupplyQueueEntry::new(2, 400_000_000_000)).unwrap();
-    queue = queue.enqueue(SupplyQueueEntry::new(1, 100_000_000_000)).unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(0, 500_000_000_000))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(1, 300_000_000_000))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(0, 200_000_000_000))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(2, 400_000_000_000))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(1, 100_000_000_000))
+        .unwrap();
 
     // Expected total: 1.5M
     let total = queue.total();
@@ -344,7 +338,10 @@ fn golden_recovery_allocating_state() {
     let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
     match action {
-        KernelAction::AbortAllocating { op_id, restore_idle } => {
+        KernelAction::AbortAllocating {
+            op_id,
+            restore_idle,
+        } => {
             assert_eq!(op_id, 42);
             assert_eq!(restore_idle, 500_000_000_000);
         }
@@ -375,7 +372,10 @@ fn golden_recovery_withdrawing_state() {
     let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
 
     match action {
-        KernelAction::AbortWithdrawing { op_id, refund_shares } => {
+        KernelAction::AbortWithdrawing {
+            op_id,
+            refund_shares,
+        } => {
             assert_eq!(op_id, 43);
             assert_eq!(refund_shares, 1_000_000_000_000);
         }
@@ -423,8 +423,7 @@ fn golden_recovery_payout_state() {
 #[test]
 fn golden_settlement_shares_full() {
     // Full withdrawal: collected == expected
-    let settlement =
-        compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 500_000_000_000);
+    let settlement = compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 500_000_000_000);
     assert_eq!(settlement.to_burn, 1_000_000_000_000); // All shares burned
     assert_eq!(settlement.refund, 0); // Nothing refunded
 }
@@ -432,8 +431,7 @@ fn golden_settlement_shares_full() {
 #[test]
 fn golden_settlement_shares_partial() {
     // Partial withdrawal: collected 60% of expected
-    let settlement =
-        compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 300_000_000_000);
+    let settlement = compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 300_000_000_000);
 
     // burn = 1_000_000_000_000 * 300 / 500 = 600_000_000_000
     assert_eq!(settlement.to_burn, 600_000_000_000);
@@ -443,8 +441,7 @@ fn golden_settlement_shares_partial() {
 #[test]
 fn golden_settlement_shares_over_collection() {
     // Over-collection: collected > expected (edge case)
-    let settlement =
-        compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 600_000_000_000);
+    let settlement = compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 600_000_000_000);
     assert_eq!(settlement.to_burn, 1_000_000_000_000); // All shares burned
     assert_eq!(settlement.refund, 0); // Nothing refunded
 }
@@ -474,9 +471,15 @@ fn golden_full_allocation_cycle() {
 
     // Step 1: Create supply queue with batched deposits (1M total)
     let mut queue = SupplyQueue::new();
-    queue = queue.enqueue(SupplyQueueEntry::new(0, 400_000_000_000)).unwrap();
-    queue = queue.enqueue(SupplyQueueEntry::new(1, 300_000_000_000)).unwrap();
-    queue = queue.enqueue(SupplyQueueEntry::new(2, 300_000_000_000)).unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(0, 400_000_000_000))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(1, 300_000_000_000))
+        .unwrap();
+    queue = queue
+        .enqueue(SupplyQueueEntry::new(2, 300_000_000_000))
+        .unwrap();
 
     // Step 2: Convert to allocation plan
     let plan = queue.to_allocation_plan();

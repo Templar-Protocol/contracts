@@ -5,9 +5,7 @@
 use crate::convert::{IntoMarketId, IntoTargetId};
 use near_sdk::{env, near};
 use std::ops::{Deref, DerefMut};
-use templar_common::vault::{
-    CapGroupRecord as CommonCapGroupRecord, Event, MarketId,
-};
+use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, Event, MarketId};
 
 // Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
@@ -269,7 +267,10 @@ pub fn find_locked_markets(
 ) -> Vec<MarketId> {
     let targets: Vec<u32> = markets.iter().map(|m| m.into_target_id()).collect();
     let locked = lock_set.find_locked_targets(&targets, current_ns);
-    locked.into_iter().map(IntoMarketId::into_market_id).collect()
+    locked
+        .into_iter()
+        .map(IntoMarketId::into_market_id)
+        .collect()
 }
 
 /// Check if a specific market is locked.

@@ -5,9 +5,9 @@
 //! executors (NEAR, Soroban, etc.).
 
 #[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
-#[cfg(feature = "borsh")]
 use alloc::string::ToString;
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,10 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize, BorshSchema))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingWithdrawal {
@@ -425,7 +428,10 @@ pub use crate::state::vault::MAX_PENDING;
 /// - FIFO withdrawal ordering; no skipping head
 /// - `cached_total_escrow == sum(pending_withdrawals.values().map(|w| w.escrow_shares))`
 /// - `cached_total_expected == sum(pending_withdrawals.values().map(|w| w.expected_assets))`
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize, BorshSchema))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WithdrawQueue {
@@ -450,9 +456,7 @@ impl Default for WithdrawQueue {
 }
 
 /// Sum escrow shares and expected assets across an iterator of pending withdrawals.
-fn compute_pending_totals<'a>(
-    iter: impl Iterator<Item = &'a PendingWithdrawal>,
-) -> (u128, u128) {
+fn compute_pending_totals<'a>(iter: impl Iterator<Item = &'a PendingWithdrawal>) -> (u128, u128) {
     iter.fold((0u128, 0u128), |(esc, exp), w| {
         (
             esc.saturating_add(w.escrow_shares),
@@ -1549,9 +1553,9 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
+    use crate::test_utils::{owner_addr, receiver_addr};
     use alloc::vec::Vec;
     use proptest::prelude::*;
-    use crate::test_utils::{owner_addr, receiver_addr};
 
     /// Strategy for generating a PendingWithdrawal
     fn arb_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {

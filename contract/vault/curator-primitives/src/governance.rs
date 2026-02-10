@@ -11,7 +11,10 @@ use templar_vault_kernel::math::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMAN
 use templar_vault_kernel::types::TimestampNs;
 
 /// A pending governance value gated by a timelock.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -64,8 +67,8 @@ impl TimelockDecision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Restrictions<T> {
     Paused,
-    BlackList(BTreeSet<T>),
-    WhiteList(BTreeSet<T>),
+    Blacklist(BTreeSet<T>),
+    Whitelist(BTreeSet<T>),
 }
 
 /// Determine if a restriction change is relaxing (thus usually timelocked).
@@ -80,18 +83,18 @@ pub fn determine_relaxed<T: Ord>(
         (Some(_), None) => true,
         (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
         (Some(Restrictions::Paused), Some(_)) => true,
-        (Some(Restrictions::BlackList(old)), Some(Restrictions::BlackList(new))) => {
+        (Some(Restrictions::Blacklist(old)), Some(Restrictions::Blacklist(new))) => {
             old.difference(new).next().is_some()
         }
-        (Some(Restrictions::WhiteList(old)), Some(Restrictions::WhiteList(new))) => {
+        (Some(Restrictions::Whitelist(old)), Some(Restrictions::Whitelist(new))) => {
             new.difference(old).next().is_some()
         }
-        (Some(Restrictions::BlackList(old)), Some(Restrictions::WhiteList(new))) => {
+        (Some(Restrictions::Blacklist(old)), Some(Restrictions::Whitelist(new))) => {
             old.intersection(new).next().is_some()
         }
-        (Some(Restrictions::WhiteList(_)), Some(Restrictions::Paused))
-        | (Some(Restrictions::BlackList(_)), Some(Restrictions::Paused)) => false,
-        (Some(Restrictions::WhiteList(_)), Some(Restrictions::BlackList(_))) => true,
+        (Some(Restrictions::Whitelist(_)), Some(Restrictions::Paused))
+        | (Some(Restrictions::Blacklist(_)), Some(Restrictions::Paused)) => false,
+        (Some(Restrictions::Whitelist(_)), Some(Restrictions::Blacklist(_))) => true,
     }
 }
 
@@ -153,7 +156,8 @@ pub fn evaluate_fee_change<R: PartialEq>(
     let management_fee_changed = proposed.management_fee != current.management_fee;
     let performance_recipient_changed =
         proposed.performance_recipient != current.performance_recipient;
-    let management_recipient_changed = proposed.management_recipient != current.management_recipient;
+    let management_recipient_changed =
+        proposed.management_recipient != current.management_recipient;
     let max_rate_changed = proposed.max_rate != current.max_rate;
 
     if !(performance_fee_changed
@@ -257,7 +261,9 @@ pub enum MembershipChangeError {
     NoChange,
 }
 
-pub fn membership_change_decision(changed: bool) -> Result<TimelockDecision, MembershipChangeError> {
+pub fn membership_change_decision(
+    changed: bool,
+) -> Result<TimelockDecision, MembershipChangeError> {
     if changed {
         Ok(TimelockDecision::Timelocked)
     } else {

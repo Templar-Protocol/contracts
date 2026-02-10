@@ -8,8 +8,8 @@ use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::test_utils::*;
-use crate::{Contract, OldContract, StorageKey};
 use crate::Number;
+use crate::{Contract, OldContract, StorageKey};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
 use near_sdk::serde_json;
@@ -43,8 +43,8 @@ use templar_common::vault::PayoutState;
 use templar_common::vault::PendingWithdrawal;
 use templar_common::vault::{
     AllocatingState, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
-    IdleResyncOutcome, MarketConfiguration, MarketId, Restrictions, WithdrawingState,
-    MAX_TIMELOCK_NS, YEAR_NS,
+    IdleResyncOutcome, MarketConfiguration, MarketId, RestrictionReason, Restrictions,
+    WithdrawingState, MAX_TIMELOCK_NS, YEAR_NS,
 };
 
 #[fixture]
@@ -174,6 +174,10 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+fn supply_msg() -> String {
+    serde_json::to_string(&DepositMsg::Supply).unwrap()
+}
+
 #[fixture]
 fn c_max(vault_id: AccountId) -> Contract {
     setup_env(
@@ -202,7 +206,7 @@ proptest! {
     fn paused_restricts_all_accounts(account in any::<u32>().prop_map(mk)) {
         let r = Restrictions::Paused;
         let out = r.is_restricted(account.as_ref());
-        prop_assert_eq!(out, Some(Restrictions::Paused));
+        prop_assert_eq!(out, Some(RestrictionReason::Paused));
     }
 
     #[test]
@@ -211,19 +215,11 @@ proptest! {
         account in any::<u32>().prop_map(mk)
     ) {
         let set: BTreeSet<AccountId> = blacklist.into_iter().collect();
-        let r = Restrictions::BlackList(set.clone());
+        let r = Restrictions::Blacklist(set.clone());
         let out = r.is_restricted(account.as_ref());
 
         if set.contains(&account) {
-            match &out {
-                Some(Restrictions::BlackList(cloned)) => {
-                    prop_assert_eq!(cloned, &set);
-                    prop_assert!(cloned.contains(&account));
-                }
-                other => {
-                    prop_assert!(false, "expected Some(BlackList), got {:?}", other);
-                }
-            }
+            prop_assert_eq!(out, Some(RestrictionReason::Blacklisted));
         } else {
             prop_assert_eq!(out, None);
         }
@@ -235,21 +231,13 @@ proptest! {
         account in any::<u32>().prop_map(mk)
     ) {
         let set: BTreeSet<AccountId> = whitelist.into_iter().collect();
-        let r = Restrictions::WhiteList(set.clone());
+        let r = Restrictions::Whitelist(set.clone());
         let out = r.is_restricted(account.as_ref());
 
         if set.contains(&account) {
             prop_assert_eq!(out, None);
         } else {
-            match &out {
-                Some(Restrictions::WhiteList(cloned)) => {
-                    prop_assert_eq!(cloned, &set);
-                    prop_assert!(!cloned.contains(&account));
-                }
-                other => {
-                    prop_assert!(false, "expected Some(WhiteList), got {:?}", other);
-                }
-            }
+            prop_assert_eq!(out, Some(RestrictionReason::NotWhitelisted));
         }
     }
 }
@@ -2603,11 +2591,7 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
     let deposit = 50u128;
     let expect_shares = c.preview_deposit(U128(deposit)).0;
 
-    let res = c.ft_on_transfer(
-        sender.clone(),
-        U128(deposit),
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
-    );
+    let res = c.ft_on_transfer(sender.clone(), U128(deposit), supply_msg());
     match res {
         PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 0, "no refund expected"),
         _ => panic!("expected Value refund"),
@@ -2651,11 +2635,7 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
     let accept = 50u128;
     let expect_shares = c.preview_deposit(U128(accept)).0;
 
-    let res = c.ft_on_transfer(
-        sender.clone(),
-        U128(deposit),
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
-    );
+    let res = c.ft_on_transfer(sender.clone(), U128(deposit), supply_msg());
     match res {
         PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, deposit - accept),
         _ => panic!("expected Value refund"),
@@ -2764,11 +2744,7 @@ fn cap_group_relative_caps_scale_with_aum() {
     assert_eq!(c.get_max_deposit().0, 2_000);
 
     let sender = mk(1);
-    let res = c.ft_on_transfer(
-        sender,
-        U128(3_000),
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
-    );
+    let res = c.ft_on_transfer(sender, U128(3_000), supply_msg());
     match res {
         PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 1_000),
         _ => panic!("expected refund"),
@@ -2808,11 +2784,7 @@ fn cap_group_refunds_when_saturated() {
     assert_eq!(c.get_max_deposit().0, 0);
 
     let sender = accounts(5);
-    let res = c.ft_on_transfer(
-        sender,
-        U128(25),
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
-    );
+    let res = c.ft_on_transfer(sender, U128(25), supply_msg());
     match res {
         PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 25),
         _ => panic!("expected refund"),
@@ -2842,11 +2814,7 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
     let sender = mk(3);
     let deposit = 70u128;
 
-    let res = c.ft_on_transfer(
-        sender.clone(),
-        U128(deposit),
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
-    );
+    let res = c.ft_on_transfer(sender.clone(), U128(deposit), supply_msg());
     match res {
         PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, deposit, "full refund expected"),
         _ => panic!("expected Value refund"),
@@ -2884,11 +2852,7 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
 
     let sender: AccountId = c.underlying_asset.contract_id().into();
 
-    c.ft_on_transfer(
-        sender.clone(),
-        U128(0),
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
-    );
+    c.ft_on_transfer(sender.clone(), U128(0), supply_msg());
 }
 
 #[test]
@@ -2919,7 +2883,7 @@ fn mt_on_transfer_rejects_multiple_tokens() {
         vec![mk(2)],
         vec!["a".to_string(), "b".to_string()],
         vec![U128(1)],
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+        supply_msg(),
     );
 }
 
@@ -2935,7 +2899,7 @@ fn mt_on_transfer_rejects_invalid_input_lengths() {
         vec![mk(3), mk(4)],
         vec!["t".to_string()],
         vec![U128(1)],
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+        supply_msg(),
     );
 }
 
@@ -2958,7 +2922,7 @@ fn mt_on_transfer_wrong_asset_refunds_full() {
         vec![sender.clone()],
         vec![token_id],
         vec![U128(amount)],
-        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+        supply_msg(),
     );
     match res {
         PromiseOrValue::Value(refunds) => {

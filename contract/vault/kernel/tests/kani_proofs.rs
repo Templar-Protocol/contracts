@@ -37,6 +37,7 @@ mod test_equivalents {
     //! Test equivalents for Kani proofs that can run without the Kani verifier.
     //! These demonstrate the proof logic but don't provide formal guarantees.
 
+    use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
     use templar_vault_kernel::{
         math::{number::Number, wad::mul_div_floor},
         state::{
@@ -45,7 +46,6 @@ mod test_equivalents {
             vault::MAX_PENDING,
         },
     };
-    use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
     /// Test: Queue length never exceeds MAX_PENDING
     #[test]
@@ -278,6 +278,7 @@ mod test_equivalents {
 #[cfg(kani)]
 mod kani_proofs {
     use primitive_types::{U256, U512};
+    use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
     use templar_vault_kernel::{
         allocation_step_callback, apply_settlement, can_apply_settlement, can_enqueue,
         can_partially_satisfy, can_satisfy_withdrawal, complete_allocation, complete_refresh,
@@ -285,17 +286,22 @@ mod kani_proofs {
         compute_partial_withdrawal, compute_queue_status, compute_settlement,
         compute_settlement_by_price, count_satisfiable, find_request_status, is_past_cooldown,
         is_stale, is_valid_withdrawal_amount, mul_div_ceil, mul_div_floor, mul_wad_floor,
-        payout_complete, settle_full_burn, settle_full_refund, settle_proportional, start_allocation,
-        start_refresh, start_withdrawal, stop_withdrawal, total_burn, total_refund,
-        withdrawal_collected, withdrawal_step_callback, EscrowEntry, EscrowSettlement, Number,
-        OpState, PayoutState, PendingWithdrawal, TransitionError, VaultState, Wad, WithdrawQueue, WithdrawingState,
-        WithdrawalRequest, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MAX_QUEUE_LENGTH,
-        MIN_WITHDRAWAL_ASSETS,
+        payout_complete, settle_full_burn, settle_full_refund, settle_proportional,
+        start_allocation, start_refresh, start_withdrawal, stop_withdrawal, total_burn,
+        total_refund, withdrawal_collected, withdrawal_step_callback, EscrowEntry,
+        EscrowSettlement, Number, OpState, PayoutState, PendingWithdrawal, TransitionError,
+        VaultState, Wad, WithdrawQueue, WithdrawalRequest, WithdrawingState, MAX_PENDING,
+        MAX_PERFORMANCE_FEE_WAD, MAX_QUEUE_LENGTH, MIN_WITHDRAWAL_ASSETS,
     };
-    use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
     fn pending_withdrawal(index: u64, shares: u128, expected: u128, ts: u64) -> PendingWithdrawal {
-        PendingWithdrawal::new(owner_addr(index), receiver_addr(index), shares, expected, ts)
+        PendingWithdrawal::new(
+            owner_addr(index),
+            receiver_addr(index),
+            shares,
+            expected,
+            ts,
+        )
     }
 
     fn withdrawal_request(op_id: u64, amount: u128, escrow_shares: u128) -> WithdrawalRequest {
@@ -1041,7 +1047,11 @@ mod kani_proofs {
         kani::assume(fee_a <= Wad::SCALE);
         kani::assume(fee_b <= Wad::SCALE);
 
-        let (low, high) = if fee_a <= fee_b { (fee_a, fee_b) } else { (fee_b, fee_a) };
+        let (low, high) = if fee_a <= fee_b {
+            (fee_a, fee_b)
+        } else {
+            (fee_b, fee_a)
+        };
         let minted_low = compute_fee_shares(
             Number::from(cur),
             Number::from(last),
@@ -1182,7 +1192,11 @@ mod kani_proofs {
         kani::assume(wad1 <= Wad::SCALE);
         kani::assume(wad2 <= Wad::SCALE);
 
-        let (lo, hi) = if wad1 <= wad2 { (wad1, wad2) } else { (wad2, wad1) };
+        let (lo, hi) = if wad1 <= wad2 {
+            (wad1, wad2)
+        } else {
+            (wad2, wad1)
+        };
         let result_lo = Wad::from(lo).apply_floored(Number::from(amount));
         let result_hi = Wad::from(hi).apply_floored(Number::from(amount));
         assert!(result_lo.0 <= result_hi.0);
@@ -1615,9 +1629,7 @@ mod kani_proofs {
 
         let w = pending_withdrawal(1, 1000, expected, 0);
         let can = can_partially_satisfy(&w, available);
-        let should = available > 0
-            && available < expected
-            && available >= MIN_WITHDRAWAL_ASSETS;
+        let should = available > 0 && available < expected && available >= MIN_WITHDRAWAL_ASSETS;
         assert_eq!(can, should);
     }
 

@@ -55,7 +55,10 @@ pub const WITHDRAW_CREATE_REQUEST_CALLBACK_GAS: Gas =
 // Budget for the final "settle" phase of a withdraw execution:
 // reconcile principal and idle_balance, and potentially transition to
 // payout or the next market.
-const AFTER_EXECUTE_NEXT_WITHDRAW: u64 = 5 + 5 + AFTER_SEND_TO_USER;
+const RECONCILE_PRINCIPAL: u64 = 5;
+const RECONCILE_IDLE_BALANCE: u64 = 5;
+const AFTER_EXECUTE_NEXT_WITHDRAW: u64 =
+    RECONCILE_PRINCIPAL + RECONCILE_IDLE_BALANCE + AFTER_SEND_TO_USER;
 pub const WITHDRAW_SETTLE_CALLBACK_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
 
 // Budget for executing the next supply-withdrawal request on a market
@@ -68,7 +71,7 @@ const AFTER_SUPPLY_2_READ: u64 = 5;
 pub const SUPPLY_POSITION_READ_CALLBACK_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
 pub const SUPPLY_AFTER_TRANSFER_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
 
-// NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
+// NOTE: these are taken after running the contract with the gas report and ceiled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);
 pub const ALLOCATE_GAS: Gas = buffer(20);
 pub const WITHDRAW_GAS: Gas = buffer(4);

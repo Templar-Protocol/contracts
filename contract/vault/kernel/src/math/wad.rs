@@ -282,7 +282,10 @@ pub fn total_assets_for_fee_accrual(
     let Some(max_rate) = max_rate else {
         return cur_total_assets;
     };
-    if cur_total_assets <= anchor_total_assets || anchor_total_assets == 0 || now_ns < anchor_timestamp_ns {
+    if cur_total_assets <= anchor_total_assets
+        || anchor_total_assets == 0
+        || now_ns < anchor_timestamp_ns
+    {
         return cur_total_assets;
     }
     let elapsed_ns = now_ns - anchor_timestamp_ns;

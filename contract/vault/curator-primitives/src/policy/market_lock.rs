@@ -5,7 +5,10 @@ use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
 
 /// A lock on a specific market/target.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -67,12 +70,16 @@ impl MarketLock {
 
     #[must_use]
     pub fn remaining(&self, current_ns: u64) -> Option<u64> {
-        self.expires_at_ns.map(|expiry| expiry.saturating_sub(current_ns))
+        self.expires_at_ns
+            .map(|expiry| expiry.saturating_sub(current_ns))
     }
 }
 
 /// A set of market locks.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -191,9 +198,7 @@ impl MarketLockSet {
     /// Get all currently locked target IDs.
     #[must_use]
     pub fn locked_targets(&self, current_ns: u64) -> Vec<TargetId> {
-        self.active_iter(current_ns)
-            .map(|l| l.target_id)
-            .collect()
+        self.active_iter(current_ns).map(|l| l.target_id).collect()
     }
 
     /// Check if any of the targets in a list are locked.
@@ -212,7 +217,6 @@ impl From<Vec<MarketLock>> for MarketLockSet {
         Self { locks }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

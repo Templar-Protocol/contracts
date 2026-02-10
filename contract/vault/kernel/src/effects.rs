@@ -1,4 +1,5 @@
-#[cfg(feature = "near")]
+extern crate alloc;
+
 use alloc::vec::Vec;
 
 use crate::types::Address;
@@ -141,14 +142,47 @@ pub enum KernelEvent {
     /// Pause state updated.
     PauseUpdated { paused: bool },
     /// Emergency reset forced the vault back to Idle.
-    EmergencyResetCompleted {
-        op_id: u64,
-        from_state: u32,
-    },
+    EmergencyResetCompleted { op_id: u64, from_state: u32 },
 }
 
 impl From<KernelEvent> for KernelEffect {
     fn from(event: KernelEvent) -> Self {
         Self::EmitEvent { event }
+    }
+}
+
+impl KernelEffect {
+    /// Collect all addresses that must be resolved before this effect can be applied.
+    pub fn required_addresses(&self) -> Vec<Address> {
+        match self {
+            KernelEffect::MintShares { owner, .. } => alloc::vec![*owner],
+            KernelEffect::BurnShares { owner, .. } => alloc::vec![*owner],
+            KernelEffect::TransferShares { from, to, .. } => alloc::vec![*from, *to],
+            KernelEffect::TransferAssets { to, .. } => alloc::vec![*to],
+            KernelEffect::TransferAssetsFrom { from, to, .. } => alloc::vec![*from, *to],
+            #[cfg(feature = "near")]
+            KernelEffect::ExternalCall { target, .. } => alloc::vec![*target],
+            #[cfg(feature = "near")]
+            KernelEffect::ChargeStorage { payer, .. } => alloc::vec![*payer],
+            KernelEffect::EmitEvent { event } => event.required_addresses(),
+        }
+    }
+}
+
+impl KernelEvent {
+    /// Collect all addresses referenced by this event.
+    pub fn required_addresses(&self) -> Vec<Address> {
+        match self {
+            KernelEvent::WithdrawalStarted {
+                owner, receiver, ..
+            } => alloc::vec![*owner, *receiver],
+            KernelEvent::DepositProcessed {
+                owner, receiver, ..
+            } => alloc::vec![*owner, *receiver],
+            KernelEvent::WithdrawalRequested {
+                owner, receiver, ..
+            } => alloc::vec![*owner, *receiver],
+            _ => alloc::vec![],
+        }
     }
 }

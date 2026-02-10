@@ -101,10 +101,7 @@ impl CapGroup {
             return u128::MAX;
         }
 
-        let absolute = self
-            .absolute_cap
-            .map(|c| c.get())
-            .unwrap_or(u128::MAX);
+        let absolute = self.absolute_cap.map(|c| c.get()).unwrap_or(u128::MAX);
 
         let relative = self
             .relative_cap
@@ -120,12 +117,7 @@ impl CapGroup {
 
     /// Check if an allocation is allowed under cap group constraints.
     #[must_use]
-    pub fn can_allocate(
-        &self,
-        current_principal: u128,
-        amount: u128,
-        total_assets: u128,
-    ) -> bool {
+    pub fn can_allocate(&self, current_principal: u128, amount: u128, total_assets: u128) -> bool {
         if self.is_unlimited() {
             return true;
         }
@@ -152,12 +144,13 @@ impl CapGroup {
         }
 
         // Use checked_add to detect overflow
-        let new_principal = current_principal.checked_add(amount).ok_or(
-            CapGroupError::Overflow {
-                current_principal,
-                requested: amount,
-            },
-        )?;
+        let new_principal =
+            current_principal
+                .checked_add(amount)
+                .ok_or(CapGroupError::Overflow {
+                    current_principal,
+                    requested: amount,
+                })?;
 
         if let Some(abs_cap) = self.absolute_cap {
             if new_principal > abs_cap.get() {
@@ -310,7 +303,6 @@ pub fn validate_allocations(
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

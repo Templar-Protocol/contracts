@@ -6,9 +6,9 @@ use templar_common::vault::{
     WithdrawingState as CommonWithdrawingState,
 };
 use templar_vault_kernel::{
-    AllocatingState as KernelAllocatingState, Address, OpState as KernelOpState,
-    PayoutState as KernelPayoutState, RefreshingState as KernelRefreshingState,
-    TargetId, WithdrawingState as KernelWithdrawingState,
+    Address, AllocatingState as KernelAllocatingState, OpState as KernelOpState,
+    PayoutState as KernelPayoutState, RefreshingState as KernelRefreshingState, TargetId,
+    WithdrawingState as KernelWithdrawingState,
 };
 
 /// Convert executor-facing identifiers into kernel TargetId.

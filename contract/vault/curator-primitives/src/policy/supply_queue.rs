@@ -6,7 +6,10 @@ use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
 
 /// An entry in the supply queue representing a pending allocation.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
@@ -50,7 +53,10 @@ impl From<(TargetId, u128)> for SupplyQueueEntry {
 }
 
 /// A queue of pending supply requests.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct SupplyQueue {
@@ -203,7 +209,6 @@ impl SupplyQueue {
         self.entries.iter().any(|e| e.target_id == target_id)
     }
 }
-
 
 impl From<Vec<SupplyQueueEntry>> for SupplyQueue {
     fn from(entries: Vec<SupplyQueueEntry>) -> Self {

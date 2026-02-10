@@ -526,7 +526,8 @@ async fn partial_withdrawal_when_market_has_insufficient_liquidity(
     harvest(&c, &vault).await;
 
     assert_eq!(
-        vault.get_idle_balance().await.0, 0,
+        vault.get_idle_balance().await.0,
+        0,
         "All funds should be in the market",
     );
 
@@ -649,7 +650,10 @@ async fn unbrick_recovers_stuck_withdrawal(#[future(awt)] worker: Worker<Sandbox
     let shares_before: U128 = vault
         .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
         .await;
-    assert_eq!(shares_before, amount, "Shares should equal deposited amount (1:1)");
+    assert_eq!(
+        shares_before, amount,
+        "Shares should equal deposited amount (1:1)"
+    );
 
     let market_id = vault.market_id_of(c.market.contract().id()).await;
 

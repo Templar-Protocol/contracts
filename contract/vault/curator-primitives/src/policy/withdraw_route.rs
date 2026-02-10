@@ -5,7 +5,10 @@ use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
 
 /// An entry in a withdraw route.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
@@ -40,7 +43,10 @@ impl From<(TargetId, u128)> for WithdrawRouteEntry {
 }
 
 /// A planned route for withdrawing assets.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct WithdrawRoute {
@@ -299,7 +305,6 @@ pub fn build_withdraw_route_with_liquidity(
     Ok(route)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,11 +483,7 @@ mod tests {
 
     #[test]
     fn test_build_withdraw_route_with_liquidity_tie_breaker() {
-        let market_data = vec![
-            (2, 1000, 500),
-            (1, 200, 500),
-            (3, 300, 400),
-        ];
+        let market_data = vec![(2, 1000, 500), (1, 200, 500), (3, 300, 400)];
 
         let route = build_withdraw_route_with_liquidity(&market_data, 100).unwrap();
 
@@ -523,16 +524,10 @@ mod tests {
 
     #[test]
     fn test_can_satisfy() {
-        let route = WithdrawRoute::from_entries(
-            vec![WithdrawRouteEntry::new(1, 500)],
-            1000,
-        );
+        let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 1000);
         assert!(!route.can_satisfy());
 
-        let route = WithdrawRoute::from_entries(
-            vec![WithdrawRouteEntry::new(1, 1000)],
-            1000,
-        );
+        let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 1000)], 1000);
         assert!(route.can_satisfy());
     }
 

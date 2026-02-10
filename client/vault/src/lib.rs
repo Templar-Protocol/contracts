@@ -408,19 +408,19 @@ impl FeesBuilder {
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum Restrictions {
     Paused,
-    BlackList(Vec<AccountId>),
-    WhiteList(Vec<AccountId>),
+    Blacklist(Vec<AccountId>),
+    Whitelist(Vec<AccountId>),
 }
 
 impl From<templar_common::vault::Restrictions> for Restrictions {
     fn from(value: templar_common::vault::Restrictions) -> Self {
         match value {
             templar_common::vault::Restrictions::Paused => Restrictions::Paused,
-            templar_common::vault::Restrictions::BlackList(set) => {
-                Restrictions::BlackList(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::Blacklist(set) => {
+                Restrictions::Blacklist(set.iter().map(|a| a.to_string().into()).collect())
             }
-            templar_common::vault::Restrictions::WhiteList(set) => {
-                Restrictions::WhiteList(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::Whitelist(set) => {
+                Restrictions::Whitelist(set.iter().map(|a| a.to_string().into()).collect())
             }
         }
     }
@@ -432,19 +432,19 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
     fn try_from(value: Restrictions) -> Result<Self, Self::Error> {
         Ok(match value {
             Restrictions::Paused => templar_common::vault::Restrictions::Paused,
-            Restrictions::BlackList(accounts) => {
+            Restrictions::Blacklist(accounts) => {
                 let set: BTreeSet<NearAccountId> = accounts
                     .into_iter()
                     .map(|a| parse_account_id(&a))
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::BlackList(set)
+                templar_common::vault::Restrictions::Blacklist(set)
             }
-            Restrictions::WhiteList(accounts) => {
+            Restrictions::Whitelist(accounts) => {
                 let set: BTreeSet<NearAccountId> = accounts
                     .into_iter()
                     .map(|a| parse_account_id(&a))
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::WhiteList(set)
+                templar_common::vault::Restrictions::Whitelist(set)
             }
         })
     }

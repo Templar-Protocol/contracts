@@ -44,7 +44,7 @@ near-workspaces.workspace = true
 rstest.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
-templar-relayer = { path = "../../service/relayer" }
+templar-relayer = { path = "../../../service/relayer" }
 rand = "0.8"
 proptest = "*"
 futures.workspace = true

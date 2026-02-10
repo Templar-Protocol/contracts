@@ -9,11 +9,8 @@ use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
 use near_sdk_contract_tools::ft::Nep141Transfer;
 use std::collections::VecDeque;
+use templar_common::{panic_with_message, vault::Restrictions};
 use templar_curator_primitives::governance as shared_gov;
-use templar_common::{
-    panic_with_message,
-    vault::Restrictions,
-};
 use templar_curator_primitives::governance::PendingValue;
 
 #[near(serializers = [borsh, json])]
@@ -60,12 +57,12 @@ fn to_shared_restrictions(
     match restrictions {
         None => None,
         Some(Restrictions::Paused) => Some(shared_gov::Restrictions::Paused),
-        Some(Restrictions::BlackList(list)) => {
-            Some(shared_gov::Restrictions::BlackList(list.iter().cloned().collect()))
-        }
-        Some(Restrictions::WhiteList(list)) => {
-            Some(shared_gov::Restrictions::WhiteList(list.iter().cloned().collect()))
-        }
+        Some(Restrictions::Blacklist(list)) => Some(shared_gov::Restrictions::Blacklist(
+            list.iter().cloned().collect(),
+        )),
+        Some(Restrictions::Whitelist(list)) => Some(shared_gov::Restrictions::Whitelist(
+            list.iter().cloned().collect(),
+        )),
     }
 }
 
@@ -691,7 +688,7 @@ impl Contract {
     ///
     /// Operational guidance:
     /// - Incident response should use `Restrictions::Paused` rather than per-account blacklisting.
-    /// - `BlackList`/`WhiteList` are governance/policy controls and are censorship-sensitive.
+    /// - `Blacklist`/`Whitelist` are governance/policy controls and are censorship-sensitive.
     ///
     /// Timelock semantics:
     /// - Tightening restrictions (including `Paused`) applies immediately.
@@ -822,8 +819,7 @@ impl Contract {
 
                 let proposed_performance_fee = Wad::from(fees.performance.fee.0);
                 let proposed_management_fee = Wad::from(fees.management.fee.0);
-                let proposed_max_rate =
-                    fees.max_total_assets_growth_rate.map(|r| Wad::from(r.0));
+                let proposed_max_rate = fees.max_total_assets_growth_rate.map(|r| Wad::from(r.0));
 
                 let current = shared_gov::FeeConfig::new(
                     self.fees.performance.fee,
@@ -918,10 +914,8 @@ impl Contract {
                             .is_none(),
                         "Cap change already pending for this market"
                     );
-                    let decision = match shared_gov::cap_change_decision(
-                        Some(cfg.cap.0),
-                        new_cap.0,
-                    ) {
+                    let decision = match shared_gov::cap_change_decision(Some(cfg.cap.0), new_cap.0)
+                    {
                         Ok(decision) => decision,
                         Err(shared_gov::CapChangeError::NoChange) => {
                             panic_with_message("New cap is same as current")
@@ -949,13 +943,12 @@ impl Contract {
                 );
 
                 let current = self.cap_groups.get(cap_group).map(|record| record.cap.0);
-                let decision =
-                    match shared_gov::cap_change_decision(current, new_cap.0) {
-                        Ok(decision) => decision,
-                        Err(shared_gov::CapChangeError::NoChange) => {
-                            panic_with_message("New cap is same as current")
-                        }
-                    };
+                let decision = match shared_gov::cap_change_decision(current, new_cap.0) {
+                    Ok(decision) => decision,
+                    Err(shared_gov::CapChangeError::NoChange) => {
+                        panic_with_message("New cap is same as current")
+                    }
+                };
                 decision.requires_timelock()
             }
             TimelockedAction::CapGroupRelativeCapChange {
@@ -979,7 +972,10 @@ impl Contract {
                     "Cap group relative cap change already pending"
                 );
 
-                let current = self.cap_groups.get(cap_group).map(|record| record.relative_cap);
+                let current = self
+                    .cap_groups
+                    .get(cap_group)
+                    .map(|record| record.relative_cap);
                 let decision = match shared_gov::relative_cap_change_decision(current, new_wad) {
                     Ok(decision) => decision,
                     Err(shared_gov::RelativeCapChangeError::RelativeCapTooHigh) => {
@@ -1333,9 +1329,9 @@ impl Contract {
                     removable_at: rec.cfg.removable_at.into(),
                 }
                 .emit();
+            }
         }
     }
-}
 
     /// Schedule a new timelocked governance action.
     ///
@@ -1386,7 +1382,7 @@ impl Contract {
             Event::CapGroupRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_cap: *new_cap,
-                valid_at_ns,
+                valid_at_ns: valid_at_ns.into(),
             }
             .emit();
         }
@@ -1399,7 +1395,7 @@ impl Contract {
             Event::CapGroupRelativeCapRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_relative_cap: *new_relative_cap,
-                valid_at_ns,
+                valid_at_ns: valid_at_ns.into(),
             }
             .emit();
         }
@@ -1407,7 +1403,7 @@ impl Contract {
         if let TimelockedAction::FeesChange { fees } = action {
             Event::FeesChangeSubmitted {
                 fees: fees.clone(),
-                valid_at_ns,
+                valid_at_ns: valid_at_ns.into(),
             }
             .emit();
         }
@@ -1415,7 +1411,7 @@ impl Contract {
         if let TimelockedAction::RestrictionsChange { restrictions } = action {
             Event::RestrictionsChangeSubmitted {
                 restrictions: restrictions.clone(),
-                valid_at_ns,
+                valid_at_ns: valid_at_ns.into(),
             }
             .emit();
         }

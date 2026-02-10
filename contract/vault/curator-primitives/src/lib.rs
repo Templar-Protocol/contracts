@@ -16,10 +16,10 @@
 extern crate alloc;
 
 pub mod auth;
-pub mod rbac;
-pub mod policy;
-pub mod recovery;
 pub mod governance;
+pub mod policy;
+pub mod rbac;
+pub mod recovery;
 
 #[cfg(test)]
 mod golden_tests;

@@ -219,8 +219,8 @@ pub fn compute_settlement_shares(
         return EscrowSettlement::burn_all(escrow_shares);
     }
 
-    let burn = (escrow_shares.saturating_mul(collected_amount) / expected_amount)
-        .min(escrow_shares);
+    let burn =
+        (escrow_shares.saturating_mul(collected_amount) / expected_amount).min(escrow_shares);
 
     EscrowSettlement::partial(burn, escrow_shares.saturating_sub(burn))
 }
@@ -328,10 +328,7 @@ fn is_recovery_eligible(context: &RecoveryContext, progress: &RecoveryProgress) 
         return true;
     }
 
-    context
-        .current_ns
-        .saturating_sub(progress.last_progress_ns)
-        >= threshold
+    context.current_ns.saturating_sub(progress.last_progress_ns) >= threshold
 }
 
 fn abort_allocating_action(state: &AllocatingState) -> KernelAction {
@@ -362,9 +359,9 @@ fn settle_payout_failure_action(state: &PayoutState, restore_idle: u128) -> Kern
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{owner_addr, receiver_addr};
     use alloc::string::String;
     use alloc::vec;
-    use crate::test_utils::{owner_addr, receiver_addr};
 
     #[test]
     fn test_determine_recovery_action_idle() {

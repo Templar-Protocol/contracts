@@ -2,8 +2,13 @@
 resolver = "3"
 members = [
     "common",
-    "contract/*",
-    "contract/vault/*",
+    "contract/lst-oracle",
+    "contract/market",
+    "contract/registry",
+    "contract/universal-account",
+    "contract/vault/curator-primitives",
+    "contract/vault/kernel",
+    "contract/vault/near",
     "fuzz",
     "client/*",
     "mock/*",
@@ -29,7 +34,7 @@ borsh = { version = "1.5", features = ["unstable__schema"] }
 clap = { version = "4.5.23", features = ["derive", "env"] }
 ed25519-dalek = "2.2.0"
 futures = "0.3.31"
-derive_more = { version = "1", default-features = false, features = ["from", "into", "display"] }
+derive_more = { version = "1", default-features = false, features = ["from", "into", "display", "is_variant"] }
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"

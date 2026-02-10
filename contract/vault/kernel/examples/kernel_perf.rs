@@ -126,7 +126,10 @@ fn main() {
         0.0
     };
 
-    println!("kernel-perf iterations={} queue_len={}", iterations, queue_len);
+    println!(
+        "kernel-perf iterations={} queue_len={}",
+        iterations, queue_len
+    );
     println!("p50={:?}", percentile(&samples, 0.50));
     println!("p95={:?}", percentile(&samples, 0.95));
     println!("p99={:?}", percentile(&samples, 0.99));

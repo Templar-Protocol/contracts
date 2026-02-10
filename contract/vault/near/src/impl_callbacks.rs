@@ -4,9 +4,9 @@ use core::cmp::Ordering;
 use std::fmt::Display;
 
 use crate::{
+    convert::to_kernel_op_state,
     governance::Gate,
     near,
-    convert::to_kernel_op_state,
     op_guard::{AllocatingSpec, OpGuard, PayoutSpec, RefreshingSpec, WithdrawingSpec},
     Contract, ContractExt, Error, Nep141Controller, RealAssetsReport,
 };
@@ -23,11 +23,10 @@ use templar_common::{
     panic_with_message,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, AllocationPositionIssueKind, Event, IdleBalanceDelta,
-        MarketId, OpState, PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind,
-        WithdrawingState, AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS,
-        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
-        WITHDRAW_SETTLE_CALLBACK_GAS,
+        AllocatingState, AllocationPositionIssueKind, Event, IdleBalanceDelta, MarketId, OpState,
+        PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind, WithdrawingState,
+        AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS,
+        GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
 
@@ -1018,14 +1017,17 @@ impl Contract {
             .as_allocating()
             .unwrap_or_else(|| panic_with_message("OpState::Allocating expected"));
 
-        msg.map_or(Event::AllocationCompleted { op_id: s.op_id }, |m| {
-            Event::AllocationStopped {
+        msg.map_or(
+            Event::AllocationCompleted {
+                op_id: s.op_id.into(),
+            },
+            |m| Event::AllocationStopped {
                 op_id: s.op_id.into(),
                 index: s.index,
                 remaining: U128(s.remaining),
                 reason: Some(Reason::Other(m.to_string())),
-            }
-        })
+            },
+        )
         .emit();
 
         self.update_idle_balance(IdleBalanceDelta::Increase(s.remaining.into()));
@@ -1088,12 +1090,7 @@ impl Contract {
 
     /// Shared cleanup for Withdrawing and Payout stop-and-exit paths:
     /// refund escrowed shares, clear locks/queue, and transition to Idle.
-    fn refund_escrow_and_go_idle(
-        &mut self,
-        owner: AccountId,
-        escrow_shares: u128,
-        context: &str,
-    ) {
+    fn refund_escrow_and_go_idle(&mut self, owner: AccountId, escrow_shares: u128, context: &str) {
         self.market_execution_lock.clear();
 
         if escrow_shares > 0 {

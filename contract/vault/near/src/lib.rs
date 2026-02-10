@@ -17,8 +17,7 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, serde_json,
     store::IterableMap,
-    AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, Promise,
-    PromiseOrValue,
+    AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
@@ -46,11 +45,11 @@ use templar_common::{
         },
         AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
         FeeAccrualAnchor, Fees, IdleBalanceDelta, MarketConfiguration, MarketId, OpState,
-        PayoutState, PendingWithdrawal, QueueAction, QueueStatus, RealAssetsReport,
-        Reason, RefreshingState, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase,
-        WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
-        EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS,
-        MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
+        PayoutState, PendingWithdrawal, QueueAction, QueueStatus, RealAssetsReport, Reason,
+        RefreshingState, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase, WithdrawingState,
+        AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
+        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
+        SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
@@ -73,14 +72,14 @@ pub use templar_common::vault::wad::{mul_div_ceil, mul_div_floor, Number, Wad};
 
 pub mod aum;
 pub(crate) mod convert;
-pub(crate) mod kernel_mirror;
-pub(crate) mod kernel_effects;
 pub mod governance;
+pub(crate) mod kernel_effects;
+pub(crate) mod kernel_mirror;
 pub mod policy;
 
+pub(crate) mod auth;
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
-pub(crate) mod auth;
 pub(crate) mod op_guard;
 pub mod storage_management;
 
@@ -430,9 +429,8 @@ impl Contract {
         ctx.insert(receiver_addr, receiver.clone());
         ctx.insert(self_addr, env::current_account_id());
 
-        apply_kernel_effects(self, &result.effects, &ctx).unwrap_or_else(|_| {
-            panic_with_message("Failed to apply kernel withdraw effects")
-        });
+        apply_kernel_effects(self, &result.effects, &ctx)
+            .unwrap_or_else(|_| panic_with_message("Failed to apply kernel withdraw effects"));
 
         self.withdraw_queue = result.state.withdraw_queue;
 
@@ -465,11 +463,7 @@ impl Contract {
 
         while let Some((id, pending)) = self.withdraw_queue.head() {
             let now = env::block_timestamp();
-            if !is_past_cooldown(
-                pending.requested_at_ns,
-                now,
-                self.withdrawal_cooldown_ns,
-            ) {
+            if !is_past_cooldown(pending.requested_at_ns, now, self.withdrawal_cooldown_ns) {
                 return PromiseOrValue::Value(());
             }
 
@@ -665,12 +659,10 @@ impl Contract {
             idle.refresh_cooldown_ns,
             idle.last_refresh_ns,
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Invalid refresh plan: {err:?}"))
-        });
-        refresh_plan.check_cooldown(now).unwrap_or_else(|err| {
-            panic_with_message(&format!("Refresh throttled: {err:?}"))
-        });
+        .unwrap_or_else(|err| panic_with_message(&format!("Invalid refresh plan: {err:?}")));
+        refresh_plan
+            .check_cooldown(now)
+            .unwrap_or_else(|err| panic_with_message(&format!("Refresh throttled: {err:?}")));
         idle.last_refresh_ns = now;
 
         let op_id = idle.next_op_id;
@@ -699,9 +691,7 @@ impl Contract {
                 now_ns: now,
             },
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel begin refresh failed: {err:?}"))
-        });
+        .unwrap_or_else(|err| panic_with_message(&format!("Kernel begin refresh failed: {err:?}")));
 
         idle.apply_kernel_op_state(&result.state.op_state);
         idle.next_op_id = result.state.next_op_id;
@@ -1239,9 +1229,10 @@ impl Contract {
     }
 
     fn resolve_account(&self, address: &Address) -> AccountId {
-        self.address_book.get(address).cloned().unwrap_or_else(|| {
-            panic_with_message("Missing address mapping for withdrawal queue")
-        })
+        self.address_book
+            .get(address)
+            .cloned()
+            .unwrap_or_else(|| panic_with_message("Missing address mapping for withdrawal queue"))
     }
 
     fn resolve_account_fallback(&mut self, address: &Address) -> AccountId {
@@ -1864,9 +1855,7 @@ impl Contract {
             &self_address,
             KernelAction::RefreshFees { now_ns: now },
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel refresh fees failed: {err:?}"))
-        });
+        .unwrap_or_else(|err| panic_with_message(&format!("Kernel refresh fees failed: {err:?}")));
 
         // Anchor updates to the *actual* AUM snapshot, so the max-rate limiter
         // only affects what can be charged as fees for the elapsed interval.
@@ -1888,9 +1877,7 @@ impl Contract {
             &self_address,
             KernelAction::Pause { paused },
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel pause failed: {err:?}"))
-        });
+        .unwrap_or_else(|err| panic_with_message(&format!("Kernel pause failed: {err:?}")));
     }
 
     /* ----- Internal: op orchestration ----- */
@@ -2102,11 +2089,10 @@ impl Contract {
             escrow_shares,
         };
         let kernel_state = to_kernel_op_state(&self.op_state);
-        let mut result =
-            templar_vault_kernel::transitions::start_withdrawal(kernel_state, request)
-                .unwrap_or_else(|err| {
-                    panic_with_message(&format!("Kernel start withdrawal failed: {err:?}"))
-                });
+        let mut result = templar_vault_kernel::transitions::start_withdrawal(kernel_state, request)
+            .unwrap_or_else(|err| {
+                panic_with_message(&format!("Kernel start withdrawal failed: {err:?}"))
+            });
 
         if cov.collected_from_idle > 0 {
             result = templar_vault_kernel::transitions::withdrawal_step_callback(
@@ -2382,9 +2368,7 @@ impl OldContract {
         let next_pending_withdrawal_id = if pending_withdrawals.is_empty() {
             self.next_withdraw_to_execute
         } else {
-            max_id
-                .saturating_add(1)
-                .max(self.next_withdraw_to_execute)
+            max_id.saturating_add(1).max(self.next_withdraw_to_execute)
         };
 
         let withdraw_queue = templar_vault_kernel::WithdrawQueue::with_state(

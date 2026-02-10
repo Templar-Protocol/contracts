@@ -11,7 +11,10 @@ use super::cap_group::{CapGroupId, CapGroupRecord};
 use super::market_lock::MarketLockSet;
 use super::supply_queue::SupplyQueue;
 
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MarketConfig {
@@ -38,7 +41,10 @@ impl Default for MarketConfig {
 }
 
 /// Curator policy state used by executors.
-#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default)]
 pub struct PolicyState {
@@ -143,7 +149,9 @@ mod tests {
     fn refresh_cap_group_principals_updates_records() {
         let mut state = PolicyState::new();
         let group = CapGroupId::new(String::from("group"));
-        state.cap_groups.insert(group.clone(), CapGroupRecord::default());
+        state
+            .cap_groups
+            .insert(group.clone(), CapGroupRecord::default());
         state.set_market_config(1, MarketConfig::new(true, Some(group.clone())));
         state.set_principal(1, 123);
 

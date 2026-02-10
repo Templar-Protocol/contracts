@@ -176,7 +176,6 @@ pub fn build_refresh_plan(
     Ok(plan)
 }
 
-
 /// Build a refresh plan for specific targets only.
 ///
 /// # Arguments
@@ -268,10 +267,7 @@ mod tests {
     #[test]
     fn test_validate_refresh_plan_empty() {
         let plan = RefreshPlan::empty();
-        assert!(matches!(
-            plan.validate(),
-            Err(RefreshPlanError::EmptyPlan)
-        ));
+        assert!(matches!(plan.validate(), Err(RefreshPlanError::EmptyPlan)));
     }
 
     #[test]

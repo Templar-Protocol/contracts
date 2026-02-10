@@ -53,7 +53,10 @@ async fn unbrick_recovers_stuck_allocation(#[future(awt)] worker: Worker<Sandbox
 
     let total_assets_before = vault.get_total_assets().await;
     let idle_before = vault.get_idle_balance().await;
-    assert_eq!(idle_before, amount, "All assets should be idle before allocation");
+    assert_eq!(
+        idle_before, amount,
+        "All assets should be idle before allocation"
+    );
 
     let market_id = vault.market_id_of(c.market.contract().id()).await;
 
@@ -182,10 +185,7 @@ async fn vault_usable_after_unbrick_recovery(#[future(awt)] worker: Worker<Sandb
     vault.supply(&borrow_user, second_amount.0).await;
 
     let borrow_user_shares: U128 = vault
-        .view(
-            "ft_balance_of",
-            json!({ "account_id": borrow_user.id() }),
-        )
+        .view("ft_balance_of", json!({ "account_id": borrow_user.id() }))
         .await;
     assert!(
         borrow_user_shares.0 > 0,

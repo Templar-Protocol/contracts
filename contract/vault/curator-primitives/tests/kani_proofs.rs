@@ -241,7 +241,10 @@ mod proofs {
         let new_principal = current.saturating_add(amount);
 
         if new_principal > absolute {
-            assert!(matches!(result, Err(CapGroupError::ExceedsAbsoluteCap { .. })));
+            assert!(matches!(
+                result,
+                Err(CapGroupError::ExceedsAbsoluteCap { .. })
+            ));
         } else {
             assert!(result.is_ok());
         }
@@ -385,7 +388,9 @@ mod proofs {
         let now: u64 = kani::any();
         let lock1 = MarketLock::new(1, now);
         let lock2 = MarketLock::new(2, now);
-        let set = MarketLockSet { locks: vec![lock1, lock2] };
+        let set = MarketLockSet {
+            locks: vec![lock1, lock2],
+        };
         assert!(set.active_count(now) <= set.len());
     }
 

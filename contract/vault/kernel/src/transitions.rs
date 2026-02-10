@@ -280,7 +280,9 @@ pub fn allocation_step_callback(
         });
     }
 
-    Ok(TransitionResult::new(OpState::Allocating(alloc.advance(amount_allocated))))
+    Ok(TransitionResult::new(OpState::Allocating(
+        alloc.advance(amount_allocated),
+    )))
 }
 
 /// Complete allocation and transition to next state.
@@ -437,7 +439,9 @@ pub fn withdrawal_step_callback(
         });
     }
 
-    Ok(TransitionResult::new(OpState::Withdrawing(withdraw.advance(amount_collected))))
+    Ok(TransitionResult::new(OpState::Withdrawing(
+        withdraw.advance(amount_collected),
+    )))
 }
 
 /// Transition from Withdrawing to Payout when enough has been collected.
@@ -591,7 +595,9 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
 
     validate_plan_index(refresh.index, refresh.plan.len())?;
 
-    Ok(TransitionResult::new(OpState::Refreshing(refresh.advance())))
+    Ok(TransitionResult::new(OpState::Refreshing(
+        refresh.advance(),
+    )))
 }
 
 /// Complete refresh and return to Idle.
@@ -1309,10 +1315,10 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::*;
+    use crate::test_utils::{owner_addr, receiver_addr};
     use alloc::vec;
     use alloc::vec::Vec;
     use proptest::prelude::*;
-    use crate::test_utils::{owner_addr, receiver_addr};
 
     /// Strategy for generating an allocation plan
     fn arb_plan(max_len: usize) -> impl Strategy<Value = Vec<(TargetId, u128)>> {

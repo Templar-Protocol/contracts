@@ -3,10 +3,10 @@ use crate::kernel_effects::{apply_kernel_effects, KernelEffectContext};
 use crate::{Contract, ContractExt, OpState};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
+use templar_common::vault::{require_at_least, DepositMsg, IdleBalanceDelta, SUPPLY_GAS};
 use templar_vault_kernel::actions::apply_action;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::KernelAction;
-use templar_common::vault::{require_at_least, DepositMsg, IdleBalanceDelta, SUPPLY_GAS};
 
 use near_sdk_contract_tools::mt::{Nep245Receiver, TokenId};
 
@@ -153,9 +153,7 @@ impl Contract {
             },
         )
         .unwrap_or_else(|err| {
-            templar_common::panic_with_message(&format!(
-                "Kernel deposit failed: {err:?}"
-            ))
+            templar_common::panic_with_message(&format!("Kernel deposit failed: {err:?}"))
         });
 
         let shares_out = result

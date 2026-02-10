@@ -25,7 +25,9 @@
 //! - Fee shares never exceed performance gain
 
 use proptest::prelude::*;
+use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 use templar_vault_kernel::{
+    effects::{KernelEffect, KernelEvent},
     math::{
         number::Number,
         wad::{
@@ -47,14 +49,12 @@ use templar_vault_kernel::{
         vault::{FeeAccrualAnchor, VaultState, MAX_PENDING},
     },
     transitions::{
-        allocation_step_callback, complete_allocation, complete_refresh, payout_complete, start_allocation,
-        start_refresh, start_withdrawal, stop_withdrawal, withdrawal_collected,
+        allocation_step_callback, complete_allocation, complete_refresh, payout_complete,
+        start_allocation, start_refresh, start_withdrawal, stop_withdrawal, withdrawal_collected,
         withdrawal_step_callback, TransitionError, WithdrawalRequest,
     },
     types::EscrowSettlement,
-    effects::{KernelEffect, KernelEvent},
 };
-use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
 // ============================================================================
 // Arbitrary Strategies
@@ -1429,7 +1429,10 @@ fn deposit_zero_assets_returns_zero_amount() {
         },
     );
     assert!(
-        matches!(result, Err(templar_vault_kernel::error::KernelError::ZeroAmount)),
+        matches!(
+            result,
+            Err(templar_vault_kernel::error::KernelError::ZeroAmount)
+        ),
         "Depositing 0 assets should return ZeroAmount, got: {result:?}",
     );
 }
@@ -1455,7 +1458,10 @@ fn deposit_one_wei_mints_shares() {
     let result = result.expect("1 wei deposit should succeed");
     assert_eq!(result.state.total_assets, 1);
     assert_eq!(result.state.idle_assets, 1);
-    assert!(result.state.total_shares > 0, "Should mint at least 1 share");
+    assert!(
+        result.state.total_shares > 0,
+        "Should mint at least 1 share"
+    );
 }
 
 /// Boundary 3: Preview deposit with 0 assets returns 0 shares.
@@ -1488,7 +1494,10 @@ fn preview_one_wei_roundtrip() {
     // (may be 0 due to rounding with virtual offsets)
     let assets_back = preview_withdraw_assets(&state, &config, shares);
     // Round-trip: assets_back <= 1 (rounding down is expected)
-    assert!(assets_back <= 1, "Round-trip should not inflate: got {assets_back}");
+    assert!(
+        assets_back <= 1,
+        "Round-trip should not inflate: got {assets_back}"
+    );
 }
 
 /// Boundary 6: Request withdraw below MIN_WITHDRAWAL_ASSETS is rejected.
@@ -1519,7 +1528,10 @@ fn withdraw_below_min_withdrawal_rejected() {
         },
     );
     assert!(
-        matches!(result, Err(templar_vault_kernel::error::KernelError::MinWithdrawal { .. })),
+        matches!(
+            result,
+            Err(templar_vault_kernel::error::KernelError::MinWithdrawal { .. })
+        ),
         "Withdrawal below MIN_WITHDRAWAL_ASSETS should be rejected, got: {result:?}",
     );
 }
@@ -1555,7 +1567,10 @@ fn withdraw_at_min_withdrawal_succeeds() {
             now_ns: 1,
         },
     );
-    assert!(result.is_ok(), "Withdrawal at MIN should succeed, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Withdrawal at MIN should succeed, got: {result:?}"
+    );
 }
 
 /// Boundary 8: Request withdraw with 0 shares returns ZeroAmount.
@@ -1580,7 +1595,10 @@ fn withdraw_zero_shares_returns_zero_amount() {
         },
     );
     assert!(
-        matches!(result, Err(templar_vault_kernel::error::KernelError::ZeroAmount)),
+        matches!(
+            result,
+            Err(templar_vault_kernel::error::KernelError::ZeroAmount)
+        ),
         "Withdrawing 0 shares should return ZeroAmount, got: {result:?}",
     );
 }
@@ -1590,10 +1608,10 @@ fn withdraw_zero_shares_returns_zero_amount() {
 fn fee_shares_with_total_assets_one() {
     // With minimal total_assets, fee shares should be 0 or very small
     let fee_shares = compute_fee_shares(
-        Number::from(1u128),  // current total_assets
-        Number::from(0u128),  // last total_assets (0 → gain = 1)
+        Number::from(1u128),                // current total_assets
+        Number::from(0u128),                // last total_assets (0 → gain = 1)
         Wad::from(MAX_PERFORMANCE_FEE_WAD), // max performance fee
-        Number::from(1u128),  // total_supply
+        Number::from(1u128),                // total_supply
     );
     // Fee shares should not exceed total supply
     assert!(
@@ -1606,18 +1624,36 @@ fn fee_shares_with_total_assets_one() {
 /// Boundary 10: Queue at exactly MAX_QUEUE_LENGTH rejects next enqueue.
 #[test]
 fn queue_at_max_rejects_enqueue() {
-    assert!(can_enqueue(MAX_QUEUE_LENGTH - 1), "Should allow enqueue below max");
-    assert!(!can_enqueue(MAX_QUEUE_LENGTH), "Should reject enqueue at max");
-    assert!(!can_enqueue(MAX_QUEUE_LENGTH + 1), "Should reject enqueue above max");
+    assert!(
+        can_enqueue(MAX_QUEUE_LENGTH - 1),
+        "Should allow enqueue below max"
+    );
+    assert!(
+        !can_enqueue(MAX_QUEUE_LENGTH),
+        "Should reject enqueue at max"
+    );
+    assert!(
+        !can_enqueue(MAX_QUEUE_LENGTH + 1),
+        "Should reject enqueue above max"
+    );
 }
 
 /// Boundary 11: is_valid_withdrawal_amount at boundary values.
 #[test]
 fn withdrawal_amount_boundary_values() {
     assert!(!is_valid_withdrawal_amount(0), "0 is not valid");
-    assert!(!is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS - 1), "Below min is not valid");
-    assert!(is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS), "Exactly min is valid");
-    assert!(is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS + 1), "Above min is valid");
+    assert!(
+        !is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS - 1),
+        "Below min is not valid"
+    );
+    assert!(
+        is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS),
+        "Exactly min is valid"
+    );
+    assert!(
+        is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS + 1),
+        "Above min is valid"
+    );
     assert!(is_valid_withdrawal_amount(u128::MAX), "MAX is valid");
 }
 
@@ -1632,7 +1668,8 @@ fn settlement_one_wei_actual() {
     // Burn should be proportional: ~1 share (1/1_000_000 * 1_000_000)
     assert!(settlement.to_burn >= 1, "Should burn at least 1 share");
     assert_eq!(
-        settlement.to_burn + settlement.refund, escrow,
+        settlement.to_burn + settlement.refund,
+        escrow,
         "Conservation: burn + refund = escrow",
     );
 }
@@ -1676,10 +1713,7 @@ fn queue_fills_to_capacity_then_rejects() {
         max as u64,
         max,
     );
-    assert!(
-        result.is_err(),
-        "Enqueue beyond capacity should fail",
-    );
+    assert!(result.is_err(), "Enqueue beyond capacity should fail",);
 }
 
 /// Boundary 15: Cooldown at exact boundary.
@@ -1709,9 +1743,18 @@ fn cooldown_exact_boundary() {
 #[test]
 fn zero_cooldown_passes_when_now_gte_requested() {
     assert!(is_past_cooldown(0, 0, 0), "Zero cooldown, same time → past");
-    assert!(is_past_cooldown(100, 100, 0), "Zero cooldown, same time → past");
-    assert!(is_past_cooldown(100, 101, 0), "Zero cooldown, later now → past");
-    assert!(!is_past_cooldown(100, 99, 0), "Zero cooldown, earlier now → not past (request not yet made)");
+    assert!(
+        is_past_cooldown(100, 100, 0),
+        "Zero cooldown, same time → past"
+    );
+    assert!(
+        is_past_cooldown(100, 101, 0),
+        "Zero cooldown, later now → past"
+    );
+    assert!(
+        !is_past_cooldown(100, 99, 0),
+        "Zero cooldown, earlier now → not past (request not yet made)"
+    );
 }
 
 // ============================================================================
@@ -1742,7 +1785,10 @@ fn deposit_near_max_saturates() {
     );
     // Should succeed (saturating_add) without panic
     let result = result.expect("Deposit near MAX should succeed via saturation");
-    assert!(result.state.total_assets >= u128::MAX - 10, "total_assets should saturate near MAX");
+    assert!(
+        result.state.total_assets >= u128::MAX - 10,
+        "total_assets should saturate near MAX"
+    );
 }
 
 /// Overflow 2: Fee calculation with extreme values doesn't panic.
@@ -1780,12 +1826,8 @@ fn sync_external_near_max_saturates() {
     state.total_shares = 1_000_000;
 
     // Start an allocation to get into a state where sync is allowed
-    let alloc_result = start_allocation(
-        state.op_state.clone(),
-        vec![(0, 1000)],
-        state.next_op_id,
-    )
-    .expect("allocation should start");
+    let alloc_result = start_allocation(state.op_state.clone(), vec![(0, 1000)], state.next_op_id)
+        .expect("allocation should start");
     state.op_state = alloc_result.new_state;
 
     let config = default_config();
@@ -1801,10 +1843,7 @@ fn sync_external_near_max_saturates() {
         },
     );
     // Should fail: idle + MAX would overflow u128
-    assert!(
-        result.is_err(),
-        "SyncExternalAssets should reject overflow",
-    );
+    assert!(result.is_err(), "SyncExternalAssets should reject overflow",);
 }
 
 /// Overflow 5: Preview deposit with u128::MAX assets doesn't panic.
@@ -1856,9 +1895,13 @@ fn settlement_extreme_disparity() {
     let actual = 1u128;
 
     let settlement = compute_settlement(escrow, expected, actual);
-    assert!(settlement.to_burn >= 1, "Should burn at least 1 with 1 wei actual");
+    assert!(
+        settlement.to_burn >= 1,
+        "Should burn at least 1 with 1 wei actual"
+    );
     assert_eq!(
-        settlement.to_burn + settlement.refund, escrow,
+        settlement.to_burn + settlement.refund,
+        escrow,
         "Conservation: burn + refund = escrow",
     );
 }
@@ -1880,11 +1923,23 @@ fn mul_div_floor_large_values_no_panic() {
 #[test]
 fn cooldown_u64_max_no_panic() {
     // requested_at=MAX, cooldown=1 → saturates to MAX; now=MAX >= MAX → true
-    assert!(is_past_cooldown(u64::MAX, u64::MAX, 1), "Saturating add clamps to MAX, so passes");
-    assert!(is_past_cooldown(u64::MAX, u64::MAX, 0), "Zero cooldown at MAX should pass");
-    assert!(is_past_cooldown(0, u64::MAX, u64::MAX), "Should be past when now=MAX, cooldown=MAX");
+    assert!(
+        is_past_cooldown(u64::MAX, u64::MAX, 1),
+        "Saturating add clamps to MAX, so passes"
+    );
+    assert!(
+        is_past_cooldown(u64::MAX, u64::MAX, 0),
+        "Zero cooldown at MAX should pass"
+    );
+    assert!(
+        is_past_cooldown(0, u64::MAX, u64::MAX),
+        "Should be past when now=MAX, cooldown=MAX"
+    );
     // now=0 is before requested_at=MAX, so not past cooldown
-    assert!(!is_past_cooldown(u64::MAX, 0, 1), "now=0 before requested_at=MAX");
+    assert!(
+        !is_past_cooldown(u64::MAX, 0, 1),
+        "now=0 before requested_at=MAX"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1960,14 +2015,15 @@ fn address_book_missing_returns_none() {
 fn fee_zero_when_profit_below_fee_threshold() {
     // Tiny profit (1 wei), 50% fee → fee_assets = floor(1 * 0.5) = 0 → 0 shares
     let fee_shares = compute_fee_shares(
-        Number::from(1_000_001u128), // cur_total_assets
-        Number::from(1_000_000u128), // last_total_assets → profit = 1
+        Number::from(1_000_001u128),        // cur_total_assets
+        Number::from(1_000_000u128),        // last_total_assets → profit = 1
         Wad::from(MAX_PERFORMANCE_FEE_WAD), // 50%
-        Number::from(1_000_000u128), // total_supply
+        Number::from(1_000_000u128),        // total_supply
     );
     // With profit=1, fee_assets = floor(1 * 0.5) = 0, so fee_shares = 0
     assert_eq!(
-        u128::from(fee_shares), 0,
+        u128::from(fee_shares),
+        0,
         "Sub-threshold profit should yield zero fee shares"
     );
 }
@@ -2004,7 +2060,8 @@ fn fee_zero_when_fee_consumes_all_assets() {
         Number::from(1_000u128), // total_supply
     );
     assert_eq!(
-        u128::from(fee_shares), 0,
+        u128::from(fee_shares),
+        0,
         "Fee consuming all assets must produce zero shares"
     );
 }
@@ -2018,7 +2075,8 @@ fn fee_zero_when_fee_exceeds_total_assets() {
         Number::from(1_000u128), // total_supply
     );
     assert_eq!(
-        u128::from(fee_shares), 0,
+        u128::from(fee_shares),
+        0,
         "Fee exceeding total assets must produce zero shares"
     );
 }
@@ -2040,7 +2098,8 @@ fn fee_at_max_performance_rate() {
     // fee_shares = floor(500_000 * 1_000_000 / 1_500_000) = 333_333
     let expected = 500_000u128 * supply / (total - 500_000);
     assert_eq!(
-        u128::from(fee_shares), expected,
+        u128::from(fee_shares),
+        expected,
         "50% fee on 1M profit with 2M total should mint {expected} shares"
     );
 }
@@ -2057,7 +2116,8 @@ fn fee_at_100_percent_rate() {
         Number::from(1_000_000u128),
     );
     assert_eq!(
-        u128::from(fee_shares_all), 0,
+        u128::from(fee_shares_all),
+        0,
         "100% fee on profit==total should yield 0 (denom becomes 0)"
     );
 
@@ -2071,7 +2131,8 @@ fn fee_at_100_percent_rate() {
     // fee_assets = 1_000_000, denom = 1_000_000
     // fee_shares = floor(1_000_000 * 1_000_000 / 1_000_000) = 1_000_000
     assert_eq!(
-        u128::from(fee_shares_partial), 1_000_000,
+        u128::from(fee_shares_partial),
+        1_000_000,
         "100% fee on partial profit should mint shares equal to supply ratio"
     );
 }
@@ -2139,19 +2200,30 @@ fn fee_refresh_at_zero_timestamp() {
         &self_addr(),
         KernelAction::RefreshFees { now_ns: 0 },
     );
-    assert!(result.is_ok(), "RefreshFees at timestamp 0 should succeed when anchor is 0");
+    assert!(
+        result.is_ok(),
+        "RefreshFees at timestamp 0 should succeed when anchor is 0"
+    );
 }
 
 /// MAX_MANAGEMENT_FEE_WAD constant is 5% (sanity check).
 #[test]
 fn management_fee_cap_constant() {
-    assert_eq!(MAX_MANAGEMENT_FEE_WAD, Wad::SCALE / 100 * 5, "MAX_MANAGEMENT_FEE_WAD should be 5%");
+    assert_eq!(
+        MAX_MANAGEMENT_FEE_WAD,
+        Wad::SCALE / 100 * 5,
+        "MAX_MANAGEMENT_FEE_WAD should be 5%"
+    );
 }
 
 /// MAX_PERFORMANCE_FEE_WAD constant is 50% (sanity check).
 #[test]
 fn performance_fee_cap_constant() {
-    assert_eq!(MAX_PERFORMANCE_FEE_WAD, Wad::SCALE / 100 * 50, "MAX_PERFORMANCE_FEE_WAD should be 50%");
+    assert_eq!(
+        MAX_PERFORMANCE_FEE_WAD,
+        Wad::SCALE / 100 * 50,
+        "MAX_PERFORMANCE_FEE_WAD should be 50%"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2189,8 +2261,18 @@ fn queue_fills_to_max_pending_then_rejects() {
     );
     // Next enqueue should fail
     let mut queue = queue;
-    let result = queue.enqueue([255u8; 32], [255u8; 32], 1_000, 1_000, 9999, MAX_PENDING as u32);
-    assert!(result.is_err(), "Should reject enqueue at MAX_PENDING capacity");
+    let result = queue.enqueue(
+        [255u8; 32],
+        [255u8; 32],
+        1_000,
+        1_000,
+        9999,
+        MAX_PENDING as u32,
+    );
+    assert!(
+        result.is_err(),
+        "Should reject enqueue at MAX_PENDING capacity"
+    );
 }
 
 /// count_satisfiable at MAX_PENDING depth: all satisfiable when enough assets.
@@ -2220,7 +2302,10 @@ fn count_satisfiable_partial_at_max_pending() {
     let half = n / 2;
     let available = half as u128 * assets_per;
     let (count, total) = count_satisfiable(items.iter().copied(), available);
-    assert_eq!(count, half, "Half items should be satisfiable with half assets");
+    assert_eq!(
+        count, half,
+        "Half items should be satisfiable with half assets"
+    );
     assert_eq!(total, available);
 }
 
@@ -2307,7 +2392,11 @@ fn queue_churn_at_high_depth() {
             .enqueue(owner, owner, assets_per, assets_per, 10_000 + i as u64, n)
             .unwrap_or_else(|e| panic!("re-enqueue {i} failed: {e:?}"));
     }
-    assert_eq!(queue.pending_withdrawals.len(), n as usize, "Should be full again");
+    assert_eq!(
+        queue.pending_withdrawals.len(),
+        n as usize,
+        "Should be full again"
+    );
 
     // Verify queue status is correct after churn
     let items: Vec<_> = queue.pending_withdrawals.values().collect();
@@ -2358,7 +2447,11 @@ fn mul_div_floor_max_squared_div_one() {
     let max_n = Number(U256::MAX);
     let result = Number::mul_div_floor(max_n, max_n, Number::one());
     // Fast path: denom==1 → x.0.saturating_mul(y.0) = U256::MAX
-    assert_eq!(result.0, U256::MAX, "MAX * MAX / 1 saturates to MAX via fast path");
+    assert_eq!(
+        result.0,
+        U256::MAX,
+        "MAX * MAX / 1 saturates to MAX via fast path"
+    );
 }
 
 /// mul_div with zero operands: all combinations of zero produce zero.
@@ -2438,7 +2531,11 @@ fn wad_apply_floored_super_wad() {
     let double_wad = Wad::from(Wad::SCALE * 2); // 200%
     let amount = Number::from(1_000_000u128);
     let result = double_wad.apply_floored(amount);
-    assert_eq!(u128::from(result), 2_000_000, "200% WAD should double the amount");
+    assert_eq!(
+        u128::from(result),
+        2_000_000,
+        "200% WAD should double the amount"
+    );
 }
 
 /// compute_fee_shares with every argument at u128::MAX: no panic.
@@ -2449,7 +2546,11 @@ fn compute_fee_shares_all_max() {
     // fee = 100% → fee_assets = MAX
     // fee_assets >= cur → returns 0
     let result = compute_fee_shares(max, Number::zero(), Wad::one(), max);
-    assert_eq!(u128::from(result), 0, "100% fee on profit==total should be 0");
+    assert_eq!(
+        u128::from(result),
+        0,
+        "100% fee on profit==total should be 0"
+    );
 }
 
 /// compute_fee_shares_from_assets with fee_assets = 1, total = u128::MAX.
@@ -2460,7 +2561,11 @@ fn compute_fee_shares_from_assets_minimal_fee() {
     let fee_assets = Number::from(1u128);
     // denom = MAX - 1, fee_shares = floor(1 * MAX / (MAX-1)) = 1
     let result = compute_fee_shares_from_assets(fee_assets, total, supply);
-    assert_eq!(u128::from(result), 1, "Minimal fee on max total should mint 1 share");
+    assert_eq!(
+        u128::from(result),
+        1,
+        "Minimal fee on max total should mint 1 share"
+    );
 }
 
 /// Wad division: Wad::one() / 3 rounds down.
@@ -2507,18 +2612,22 @@ fn allocation_step_failure_mid_plan() {
 
     // Step 2 FAILS
     let result = allocation_step_callback(result.new_state, false, 0, op_id).unwrap();
-    assert!(matches!(result.new_state, OpState::Idle), "Should return to Idle on failure");
+    assert!(
+        matches!(result.new_state, OpState::Idle),
+        "Should return to Idle on failure"
+    );
 
     // Verify the failure event contains correct total_allocated
     let event = &result.effects[0];
     match event {
         KernelEffect::EmitEvent {
-            event: KernelEvent::AllocationStepFailed {
-                op_id: eid,
-                index,
-                remaining,
-                total_allocated,
-            },
+            event:
+                KernelEvent::AllocationStepFailed {
+                    op_id: eid,
+                    index,
+                    remaining,
+                    total_allocated,
+                },
         } => {
             assert_eq!(*eid, op_id);
             assert_eq!(*index, 2, "Failed at step 2");
@@ -2592,8 +2701,14 @@ fn abort_allocating_restores_state() {
         _ => panic!("Should be Allocating"),
     };
     // Kernel decrements idle_assets by allocation total (1500).
-    assert_eq!(result.state.idle_assets, 0, "idle_assets decremented by allocation total");
-    assert_eq!(result.state.total_assets, 0, "total_assets recomputed after decrement");
+    assert_eq!(
+        result.state.idle_assets, 0,
+        "idle_assets decremented by allocation total"
+    );
+    assert_eq!(
+        result.state.total_assets, 0,
+        "total_assets recomputed after decrement"
+    );
     let state_after_begin = result.state;
 
     let result = apply_action(
@@ -2610,7 +2725,10 @@ fn abort_allocating_restores_state() {
 
     assert!(matches!(result.state.op_state, OpState::Idle));
     // AbortAllocating restores the decremented amount, bringing us back to 1500.
-    assert_eq!(result.state.idle_assets, 1500, "idle_assets restored after abort");
+    assert_eq!(
+        result.state.idle_assets, 1500,
+        "idle_assets restored after abort"
+    );
 }
 
 /// Start allocation with empty plan is rejected.
@@ -2652,9 +2770,12 @@ fn allocation_failure_at_first_step() {
 
     match &result.effects[0] {
         KernelEffect::EmitEvent {
-            event: KernelEvent::AllocationStepFailed {
-                total_allocated, remaining, ..
-            },
+            event:
+                KernelEvent::AllocationStepFailed {
+                    total_allocated,
+                    remaining,
+                    ..
+                },
         } => {
             assert_eq!(*total_allocated, 0, "No steps completed → 0 allocated");
             assert_eq!(*remaining, 3000, "Full plan amount still remaining");
@@ -2768,7 +2889,10 @@ fn regression_invariant_check_minimal_delta() {
     state.external_assets = external; // 1
     state.fee_anchor = FeeAccrualAnchor::new(total, 0);
     // total_assets(3) != idle(1) + external(1) = invariant violation
-    assert!(!state.check_invariant(), "should detect invariant violation: 3 != 1 + 1");
+    assert!(
+        !state.check_invariant(),
+        "should detect invariant violation: 3 != 1 + 1"
+    );
 }
 
 // =============================================================================
@@ -2794,11 +2918,18 @@ fn parity_kernel_deterministic_deposit() {
         now_ns: 100,
     };
 
-    let result_a = apply_action(state.clone(), &config, None, &self_addr(), action.clone()).unwrap();
+    let result_a =
+        apply_action(state.clone(), &config, None, &self_addr(), action.clone()).unwrap();
     let result_b = apply_action(state, &config, None, &self_addr(), action).unwrap();
 
-    assert_eq!(result_a.state, result_b.state, "kernel must be deterministic");
-    assert_eq!(result_a.effects, result_b.effects, "effects must be deterministic");
+    assert_eq!(
+        result_a.state, result_b.state,
+        "kernel must be deterministic"
+    );
+    assert_eq!(
+        result_a.effects, result_b.effects,
+        "effects must be deterministic"
+    );
 }
 
 /// Parity: deposit produces identical shares regardless of the amount already
@@ -2904,7 +3035,10 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
 
     assert!(result.state.op_state.is_idle());
     // After kernel-decrement + kernel-restore, we should be back to 10_000
-    assert_eq!(result.state.idle_assets, 10_000, "abort must restore idle_assets to original");
+    assert_eq!(
+        result.state.idle_assets, 10_000,
+        "abort must restore idle_assets to original"
+    );
 }
 
 /// Parity: kernel BeginAllocating decrements idle_assets, SyncExternalAssets
@@ -2972,8 +3106,14 @@ fn parity_executor_full_allocation_cycle() {
     .unwrap();
 
     assert!(result.state.op_state.is_idle());
-    assert_eq!(result.state.idle_assets, 5_000, "idle = 8000 - 3000 allocated");
-    assert_eq!(result.state.external_assets, 5_000, "external = 2000 + 3000 allocated");
+    assert_eq!(
+        result.state.idle_assets, 5_000,
+        "idle = 8000 - 3000 allocated"
+    );
+    assert_eq!(
+        result.state.external_assets, 5_000,
+        "external = 2000 + 3000 allocated"
+    );
     assert_eq!(result.state.total_assets, 10_000, "total unchanged");
 }
 
@@ -3064,8 +3204,14 @@ fn parity_deposit_withdraw_settle_roundtrip() {
     // by the executor (which handles the actual asset transfer out). The kernel
     // only burns shares; both executors then decrement idle_assets themselves.
     assert_eq!(result.state.total_shares, 0, "shares burned");
-    assert_eq!(result.state.total_assets, 10_000, "kernel doesn't decrement assets — executor does");
-    assert_eq!(result.state.idle_assets, 10_000, "kernel doesn't decrement idle — executor does");
+    assert_eq!(
+        result.state.total_assets, 10_000,
+        "kernel doesn't decrement assets — executor does"
+    );
+    assert_eq!(
+        result.state.idle_assets, 10_000,
+        "kernel doesn't decrement idle — executor does"
+    );
 }
 
 /// Parity: preview functions agree with actual kernel actions.
@@ -3098,7 +3244,10 @@ fn parity_preview_matches_actual() {
     )
     .unwrap();
     let actual_shares = result.state.total_shares - 25_000;
-    assert_eq!(preview_shares, actual_shares, "preview_deposit must match actual");
+    assert_eq!(
+        preview_shares, actual_shares,
+        "preview_deposit must match actual"
+    );
 
     // Preview withdraw
     let preview_assets = preview_withdraw_assets(&state, &config, 5_000);
@@ -3117,8 +3266,17 @@ fn parity_preview_matches_actual() {
         },
     )
     .unwrap();
-    let queued = result.state.withdraw_queue.pending_withdrawals.values().next().unwrap();
-    assert_eq!(preview_assets, queued.expected_assets, "preview_withdraw must match actual");
+    let queued = result
+        .state
+        .withdraw_queue
+        .pending_withdrawals
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(
+        preview_assets, queued.expected_assets,
+        "preview_withdraw must match actual"
+    );
 }
 
 /// Parity: refresh cycle with external growth updates share price identically
@@ -3178,7 +3336,10 @@ fn parity_refresh_external_growth() {
 
     assert!(result.state.op_state.is_idle());
     assert_eq!(result.state.external_assets, 7_000);
-    assert_eq!(result.state.total_assets, 12_000, "idle(5000) + external(7000)");
+    assert_eq!(
+        result.state.total_assets, 12_000,
+        "idle(5000) + external(7000)"
+    );
     assert_eq!(result.state.total_shares, 10_000, "shares unchanged");
 
     // Share price reflects external growth. With virtual_shares=0 and
@@ -3186,7 +3347,10 @@ fn parity_refresh_external_growth() {
     // so the exact preview uses floor(1000 * 12001 / 10001) = 1199.
     let preview = preview_withdraw_assets(&result.state, &config, 1_000);
     // Approximate check: growth is reflected (value > 1000)
-    assert!(preview >= 1_199 && preview <= 1_200, "share price reflects growth, got {preview}");
+    assert!(
+        preview >= 1_199 && preview <= 1_200,
+        "share price reflects growth, got {preview}"
+    );
 }
 
 /// Parity: effect vectors are identical for deposit regardless of address
@@ -3305,7 +3469,10 @@ fn parity_abort_withdrawing_refund() {
     .unwrap();
 
     assert!(result.state.op_state.is_idle());
-    assert_eq!(result.state.total_shares, shares_before, "shares restored after abort");
+    assert_eq!(
+        result.state.total_shares, shares_before,
+        "shares restored after abort"
+    );
     assert_eq!(result.state.total_assets, 10_000, "assets unchanged");
 }
 

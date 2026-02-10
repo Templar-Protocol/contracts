@@ -152,7 +152,10 @@ mod tests {
             kernel.withdraw_queue.next_withdraw_to_execute,
             c.withdraw_queue.next_withdraw_to_execute
         );
-        assert_eq!(kernel.withdraw_queue.next_pending_withdrawal_id, c.queue_tail());
+        assert_eq!(
+            kernel.withdraw_queue.next_pending_withdrawal_id,
+            c.queue_tail()
+        );
         assert_eq!(kernel.withdraw_queue.pending_withdrawals.len(), 2);
 
         let pending = kernel.withdraw_queue.pending_withdrawals.get(&3).unwrap();
@@ -300,11 +303,7 @@ mod tests {
         )
         .expect("kernel deposit");
 
-        let refund = c.execute_supply(
-            sender,
-            c.underlying_asset.contract_id().into(),
-            deposit,
-        );
+        let refund = c.execute_supply(sender, c.underlying_asset.contract_id().into(), deposit);
         assert_eq!(refund, 0);
 
         let mirror = c.kernel_state_mirror();

@@ -13,8 +13,8 @@ use near_sdk::{
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Controller, Nep141Mint, Nep141Transfer};
 
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
-use templar_vault_kernel::AddressBook;
 use templar_vault_kernel::types::Address;
+use templar_vault_kernel::AddressBook;
 
 use crate::governance::Gate;
 use crate::Contract;
@@ -44,10 +44,7 @@ pub enum KernelEventLog {
         total_allocated: U128,
     },
     #[event_version("1.0.0")]
-    AllocationCompleted {
-        op_id: U64,
-        has_withdrawal: bool,
-    },
+    AllocationCompleted { op_id: U64, has_withdrawal: bool },
     #[event_version("1.0.0")]
     WithdrawalStarted {
         op_id: U64,
@@ -63,10 +60,7 @@ pub enum KernelEventLog {
         collected: U128,
     },
     #[event_version("1.0.0")]
-    WithdrawalStopped {
-        op_id: U64,
-        escrow_shares: U128,
-    },
+    WithdrawalStopped { op_id: U64, escrow_shares: U128 },
     #[event_version("1.0.0")]
     RefreshStarted { op_id: U64, plan_len: u32 },
     #[event_version("1.0.0")]
@@ -204,13 +198,11 @@ fn emit_kernel_event(
             escrow_shares: U128(*escrow_shares),
         }
         .emit(),
-        KernelEvent::RefreshStarted { op_id, plan_len } => {
-            KernelEventLog::RefreshStarted {
-                op_id: U64(*op_id),
-                plan_len: *plan_len,
-            }
-            .emit()
+        KernelEvent::RefreshStarted { op_id, plan_len } => KernelEventLog::RefreshStarted {
+            op_id: U64(*op_id),
+            plan_len: *plan_len,
         }
+        .emit(),
         KernelEvent::RefreshCompleted { op_id } => {
             KernelEventLog::RefreshCompleted { op_id: U64(*op_id) }.emit()
         }
@@ -327,32 +319,32 @@ pub(crate) fn apply_kernel_effects(
             KernelEffect::EmitEvent { event } => {
                 emit_kernel_event(event, ctx)?;
             }
-        KernelEffect::TransferAssetsFrom { .. } => {
-            // Assets are transferred via ft_on_transfer before kernel execution.
-        }
-        KernelEffect::TransferAssets { to, amount } => {
-            // NEAR transfers are orchestrated explicitly in contract flows (see `pay` and
-            // withdrawal callbacks). Kernel-driven execution should not schedule raw asset
-            // transfers without a callback, so we treat this as a documented no-op.
-            let _ = ctx.resolve(to)?;
-            let _ = amount;
-        }
-        KernelEffect::ExternalCall {
-            target,
-            selector: _,
-            args: _,
-            attached_value: _,
-            callback: _,
-        } => {
-            // External calls are handled by explicit Promise flows in the NEAR contract.
-            // This synchronous interpreter does not schedule async cross-contract calls.
-            let _ = ctx.resolve(target)?;
-        }
-        KernelEffect::ChargeStorage { payer, bytes: _ } => {
-            // Storage charging is enforced at entrypoints (NEP-145). Kernel effects do not
-            // have access to attached deposits, so this is a documented no-op here.
-            let _ = ctx.resolve(payer)?;
-        }
+            KernelEffect::TransferAssetsFrom { .. } => {
+                // Assets are transferred via ft_on_transfer before kernel execution.
+            }
+            KernelEffect::TransferAssets { to, amount } => {
+                // NEAR transfers are orchestrated explicitly in contract flows (see `pay` and
+                // withdrawal callbacks). Kernel-driven execution should not schedule raw asset
+                // transfers without a callback, so we treat this as a documented no-op.
+                let _ = ctx.resolve(to)?;
+                let _ = amount;
+            }
+            KernelEffect::ExternalCall {
+                target,
+                selector: _,
+                args: _,
+                attached_value: _,
+                callback: _,
+            } => {
+                // External calls are handled by explicit Promise flows in the NEAR contract.
+                // This synchronous interpreter does not schedule async cross-contract calls.
+                let _ = ctx.resolve(target)?;
+            }
+            KernelEffect::ChargeStorage { payer, bytes: _ } => {
+                // Storage charging is enforced at entrypoints (NEP-145). Kernel effects do not
+                // have access to attached deposits, so this is a documented no-op here.
+                let _ = ctx.resolve(payer)?;
+            }
             _ => {
                 return Err(KernelEffectError::UnsupportedEffect(
                     "unhandled kernel effect",

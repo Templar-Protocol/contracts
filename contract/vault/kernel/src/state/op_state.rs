@@ -318,8 +318,8 @@ impl OpState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::test_utils::{owner_addr, receiver_addr};
+    use alloc::vec;
 
     #[test]
     fn test_idle_state_default() {

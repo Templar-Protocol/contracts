@@ -116,10 +116,7 @@ async fn blacklist_blocks_deposit(#[future(awt)] worker: Worker<Sandbox>) {
     let mut blacklist = BTreeSet::new();
     blacklist.insert(supply_user.id().clone());
     vault
-        .set_restrictions(
-            &vault_guardian,
-            Some(Restrictions::BlackList(blacklist)),
-        )
+        .set_restrictions(&vault_guardian, Some(Restrictions::Blacklist(blacklist)))
         .await;
 
     // Attempt deposit — should fail
@@ -318,9 +315,5 @@ async fn allocator_role_required_for_reallocation(#[future(awt)] worker: Worker<
 
     // Verify allocation happened
     let idle = vault.get_idle_balance().await;
-    assert_eq!(
-        idle,
-        U128(0),
-        "Idle balance should be 0 after allocation",
-    );
+    assert_eq!(idle, U128(0), "Idle balance should be 0 after allocation",);
 }
