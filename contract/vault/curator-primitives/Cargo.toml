@@ -28,6 +28,7 @@ schemars = { version = "0.8", optional = true }
 
 [dev-dependencies]
 proptest = "1.4"
+rstest.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

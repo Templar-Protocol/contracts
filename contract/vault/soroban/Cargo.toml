@@ -31,3 +31,4 @@ stellar-tokens = { path = "../../../vendor/stellar-tokens" }
 [dev-dependencies]
 proptest = "1.4"
 soroban-sdk = { version = "23.4.1", features = ["testutils"] }
+rstest.workspace = true

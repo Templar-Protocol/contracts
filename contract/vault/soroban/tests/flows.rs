@@ -1,3 +1,4 @@
+use rstest::{fixture, rstest};
 use templar_soroban_runtime::{effects::MockInterpreter, EffectContext, EffectInterpreter};
 use templar_vault_kernel::{
     effects::KernelEffect,
@@ -9,14 +10,18 @@ use templar_vault_kernel::{
     },
 };
 
+#[fixture]
 fn dummy_ctx() -> EffectContext {
     EffectContext::new(0, [1u8; 32], [2u8; 32], [3u8; 32])
 }
 
-#[test]
-fn deposit_effects_execute() {
-    let mut interpreter = MockInterpreter::new();
-    let ctx = dummy_ctx();
+#[fixture]
+fn mock_interpreter() -> MockInterpreter {
+    MockInterpreter::new()
+}
+
+#[rstest]
+fn deposit_effects_execute(mut mock_interpreter: MockInterpreter, dummy_ctx: EffectContext) {
     let effects = vec![
         KernelEffect::MintShares {
             owner: [9u8; 32],
@@ -32,21 +37,23 @@ fn deposit_effects_execute() {
         },
     ];
 
-    let summary = interpreter.execute_effects(&effects, &ctx).unwrap();
+    let summary = mock_interpreter
+        .execute_effects(&effects, &dummy_ctx)
+        .unwrap();
     assert_eq!(summary.shares_minted, 100);
     assert_eq!(summary.events_emitted, 1);
-    assert_eq!(interpreter.effects.len(), 2);
+    assert_eq!(mock_interpreter.effects.len(), 2);
 }
 
-#[test]
-fn allocation_flow_reaches_idle() {
-    let mut interpreter = MockInterpreter::new();
-    let ctx = dummy_ctx();
+#[rstest]
+fn allocation_flow_reaches_idle(mut mock_interpreter: MockInterpreter, dummy_ctx: EffectContext) {
     let op_id = 7u64;
     let plan = vec![(0u32, 100u128), (1u32, 200u128)];
 
     let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
-    interpreter.execute_effects(&result.effects, &ctx).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
     let mut state = result.new_state;
 
     state = allocation_step_callback(state, true, 100, op_id)
@@ -57,19 +64,21 @@ fn allocation_flow_reaches_idle() {
         .new_state;
 
     let result = complete_allocation(state, op_id, None).unwrap();
-    interpreter.execute_effects(&result.effects, &ctx).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
     assert!(matches!(result.new_state, OpState::Idle));
 }
 
-#[test]
-fn refresh_flow_reaches_idle() {
-    let mut interpreter = MockInterpreter::new();
-    let ctx = dummy_ctx();
+#[rstest]
+fn refresh_flow_reaches_idle(mut mock_interpreter: MockInterpreter, dummy_ctx: EffectContext) {
     let op_id = 12u64;
     let plan = vec![0u32, 1u32, 2u32];
 
     let result = start_refresh(OpState::Idle, plan.clone(), op_id).unwrap();
-    interpreter.execute_effects(&result.effects, &ctx).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
     let mut state = result.new_state;
 
     // simulate each refresh step
@@ -78,14 +87,14 @@ fn refresh_flow_reaches_idle() {
     }
 
     let result = complete_refresh(state, op_id).unwrap();
-    interpreter.execute_effects(&result.effects, &ctx).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
     assert!(matches!(result.new_state, OpState::Idle));
 }
 
-#[test]
-fn withdrawal_flow_reaches_idle() {
-    let mut interpreter = MockInterpreter::new();
-    let ctx = dummy_ctx();
+#[rstest]
+fn withdrawal_flow_reaches_idle(mut mock_interpreter: MockInterpreter, dummy_ctx: EffectContext) {
     let op_id = 33u64;
 
     let request = WithdrawalRequest {
@@ -97,18 +106,24 @@ fn withdrawal_flow_reaches_idle() {
     };
 
     let result = start_withdrawal(OpState::Idle, request).unwrap();
-    interpreter.execute_effects(&result.effects, &ctx).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
     let state = result.new_state;
 
     let state = withdrawal_step_callback(state, op_id, 150)
         .unwrap()
         .new_state;
     let result = withdrawal_collected(state, op_id, 150).unwrap();
-    interpreter.execute_effects(&result.effects, &ctx).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
 
-    let escrow_address = ctx.vault_address;
+    let escrow_address = dummy_ctx.vault_address;
     let result = payout_complete(result.new_state, true, op_id, escrow_address).unwrap();
-    interpreter.execute_effects(&result.effects, &ctx).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
     assert!(matches!(result.new_state, OpState::Idle));
 }
 

@@ -7,6 +7,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use rstest::{fixture, rstest};
 use soroban_sdk::{testutils::Address as _, Env};
 use templar_curator_primitives::{RecoveryContext, RecoveryProgress};
 use templar_soroban_runtime::{
@@ -408,6 +409,11 @@ fn create_test_vault() -> TestVault {
     vault
 }
 
+#[fixture]
+fn vault() -> TestVault {
+    create_test_vault()
+}
+
 type RbacVault = CuratorVault<
     MemoryStorage,
     RbacAuth,
@@ -437,9 +443,8 @@ fn create_rbac_vault() -> RbacVault {
 // Deposit Flow Tests
 // ============================================================================
 
-#[test]
-fn test_deposit_flow_single() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_deposit_flow_single(mut vault: TestVault) {
     let user = user_addr();
     let receiver = [11u8; 32];
 
@@ -456,9 +461,8 @@ fn test_deposit_flow_single() {
     assert_eq!(vault.state().external_assets, 0);
 }
 
-#[test]
-fn test_deposit_flow_multiple() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_deposit_flow_multiple(mut vault: TestVault) {
     let user = user_addr();
     let receiver = [11u8; 32];
 
@@ -473,9 +477,8 @@ fn test_deposit_flow_multiple() {
     assert_eq!(result.total_assets, 1500);
 }
 
-#[test]
-fn test_deposit_flow_with_slippage_protection() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_deposit_flow_with_slippage_protection(mut vault: TestVault) {
     let user = user_addr();
     let receiver = [11u8; 32];
 
@@ -491,9 +494,8 @@ fn test_deposit_flow_with_slippage_protection() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_deposit_flow_zero_amount_fails() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_deposit_flow_zero_amount_fails(mut vault: TestVault) {
     let user = user_addr();
     let receiver = [11u8; 32];
 
@@ -505,9 +507,8 @@ fn test_deposit_flow_zero_amount_fails() {
 // Allocation Flow Tests
 // ============================================================================
 
-#[test]
-fn test_allocation_flow_basic() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_allocation_flow_basic(mut vault: TestVault) {
     let allocator = allocator_addr();
     let user = user_addr();
 
@@ -536,9 +537,8 @@ fn test_allocation_flow_basic() {
     assert!(vault.state().op_state.is_idle());
 }
 
-#[test]
-fn test_begin_allocating_decrements_idle_assets() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_begin_allocating_decrements_idle_assets(mut vault: TestVault) {
     let allocator = allocator_addr();
     let user = user_addr();
 
@@ -558,9 +558,8 @@ fn test_begin_allocating_decrements_idle_assets() {
     );
 }
 
-#[test]
-fn test_allocation_flow_abort() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_allocation_flow_abort(mut vault: TestVault) {
     let allocator = allocator_addr();
     let user = user_addr();
 
@@ -591,9 +590,8 @@ fn test_allocation_flow_abort() {
     assert_eq!(vault.state().idle_assets, initial_idle);
 }
 
-#[test]
-fn test_allocation_flow_wrong_op_id_fails() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_allocation_flow_wrong_op_id_fails(mut vault: TestVault) {
     let allocator = allocator_addr();
     let user = user_addr();
 
@@ -612,9 +610,8 @@ fn test_allocation_flow_wrong_op_id_fails() {
 // Refresh Flow Tests
 // ============================================================================
 
-#[test]
-fn test_refresh_flow_basic() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_refresh_flow_basic(mut vault: TestVault) {
     let allocator = allocator_addr();
     let user = user_addr();
 
@@ -641,9 +638,8 @@ fn test_refresh_flow_basic() {
     assert_eq!(vault.state().external_assets, 6000);
 }
 
-#[test]
-fn test_refresh_flow_abort() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_refresh_flow_abort(mut vault: TestVault) {
     let allocator = allocator_addr();
     let user = user_addr();
 
@@ -657,9 +653,8 @@ fn test_refresh_flow_abort() {
     assert!(vault.state().op_state.is_idle());
 }
 
-#[test]
-fn test_abort_withdrawing_clears_queue() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_abort_withdrawing_clears_queue(mut vault: TestVault) {
     let allocator = allocator_addr();
     let owner = user_addr();
     let receiver = user_addr();
@@ -703,9 +698,8 @@ fn test_abort_withdrawing_clears_queue() {
     assert!(!vault.interpreter.effects.is_empty());
 }
 
-#[test]
-fn test_settle_payout_success_burns_and_dequeues() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_settle_payout_success_burns_and_dequeues(mut vault: TestVault) {
     let allocator = allocator_addr();
     let owner = user_addr();
     let receiver = user_addr();
@@ -759,9 +753,8 @@ fn test_settle_payout_success_burns_and_dequeues() {
     );
 }
 
-#[test]
-fn test_recover_payout_failure_restores_idle() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_recover_payout_failure_restores_idle(mut vault: TestVault) {
     let allocator = allocator_addr();
     let owner = user_addr();
     let receiver = user_addr();
@@ -921,9 +914,8 @@ fn test_restrictions_blacklist_blocks_deposit() {
 // State Persistence Tests
 // ============================================================================
 
-#[test]
-fn test_state_persists_after_deposit() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_state_persists_after_deposit(mut vault: TestVault) {
     let user = user_addr();
 
     vault.deposit(user, user, 1000, 0, 100).unwrap();
@@ -934,9 +926,8 @@ fn test_state_persists_after_deposit() {
     assert_eq!(stored.state.total_shares, 1000);
 }
 
-#[test]
-fn test_state_persists_after_allocation() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_state_persists_after_allocation(mut vault: TestVault) {
     let allocator = allocator_addr();
     let user = user_addr();
 
@@ -960,9 +951,8 @@ fn test_state_persists_after_allocation() {
 // Effect Execution Tests
 // ============================================================================
 
-#[test]
-fn test_deposit_emits_mint_effect() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_deposit_emits_mint_effect(mut vault: TestVault) {
     let user = user_addr();
     let receiver = [11u8; 32];
 
@@ -983,9 +973,8 @@ fn test_deposit_emits_mint_effect() {
 // Full Flow Integration Tests
 // ============================================================================
 
-#[test]
-fn test_full_flow_deposit_allocate_refresh() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1024,9 +1013,8 @@ fn test_full_flow_deposit_allocate_refresh() {
 // Withdraw Flow Tests
 // ============================================================================
 
-#[test]
-fn test_withdraw_request_basic() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_withdraw_request_basic(mut vault: TestVault) {
     let user = user_addr();
 
     // First deposit some funds
@@ -1048,9 +1036,8 @@ fn test_withdraw_request_basic() {
     assert_eq!(pending.escrow_shares, 1000);
 }
 
-#[test]
-fn test_withdraw_request_calculates_assets_correctly() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_withdraw_request_calculates_assets_correctly(mut vault: TestVault) {
     let user = user_addr();
 
     // Deposit and establish share ratio
@@ -1067,9 +1054,8 @@ fn test_withdraw_request_calculates_assets_correctly() {
     assert_eq!(pending.expected_assets, 5000);
 }
 
-#[test]
-fn test_withdraw_request_slippage_protection() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_withdraw_request_slippage_protection(mut vault: TestVault) {
     let user = user_addr();
 
     // Deposit
@@ -1080,9 +1066,8 @@ fn test_withdraw_request_slippage_protection() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_withdraw_request_zero_shares_fails() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_withdraw_request_zero_shares_fails(mut vault: TestVault) {
     let user = user_addr();
 
     // Deposit first
@@ -1093,9 +1078,8 @@ fn test_withdraw_request_zero_shares_fails() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_withdraw_request_no_shares_fails() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_withdraw_request_no_shares_fails(mut vault: TestVault) {
     let user = user_addr();
 
     // Try to withdraw without any deposits
@@ -1103,9 +1087,8 @@ fn test_withdraw_request_no_shares_fails() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_execute_withdraw_requires_idle() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_execute_withdraw_requires_idle(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1122,9 +1105,8 @@ fn test_execute_withdraw_requires_idle() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_execute_withdraw_in_idle_state() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_execute_withdraw_in_idle_state(mut vault: TestVault) {
     let user = user_addr();
 
     // Deposit
@@ -1138,9 +1120,8 @@ fn test_execute_withdraw_in_idle_state() {
     assert!(vault.state().withdraw_queue.is_empty());
 }
 
-#[test]
-fn test_execute_withdraw_respects_cooldown() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_execute_withdraw_respects_cooldown(mut vault: TestVault) {
     let user = user_addr();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
@@ -1156,9 +1137,8 @@ fn test_execute_withdraw_respects_cooldown() {
     assert!(vault.state().withdraw_queue.is_empty());
 }
 
-#[test]
-fn test_withdraw_flow_with_allocation() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_withdraw_flow_with_allocation(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1183,9 +1163,8 @@ fn test_withdraw_flow_with_allocation() {
 // Full Flow Integration Tests - Deposit, Allocate, Refresh, Withdraw
 // ============================================================================
 
-#[test]
-fn test_full_flow_deposit_allocate_refresh_withdraw() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1227,9 +1206,8 @@ fn test_full_flow_deposit_allocate_refresh_withdraw() {
     assert!(vault.state().withdraw_queue.is_empty());
 }
 
-#[test]
-fn test_withdraw_queue_orders_and_dequeues() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     let user = user_addr();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
@@ -1262,9 +1240,8 @@ fn test_withdraw_queue_orders_and_dequeues() {
 // Edge Case Tests
 // ============================================================================
 
-#[test]
-fn test_multiple_deposits_share_calculation() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_multiple_deposits_share_calculation(mut vault: TestVault) {
     let user1 = user_addr();
     let user2 = [20u8; 32];
 
@@ -1279,9 +1256,8 @@ fn test_multiple_deposits_share_calculation() {
     assert_eq!(vault.state().total_assets, 3000);
 }
 
-#[test]
-fn test_share_dilution_after_yield() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_share_dilution_after_yield(mut vault: TestVault) {
     let user1 = user_addr();
     let user2 = [20u8; 32];
     let allocator = allocator_addr();
@@ -1319,9 +1295,8 @@ fn test_share_dilution_after_yield() {
     assert_eq!(result.shares_minted, expected_shares);
 }
 
-#[test]
-fn test_allocation_multiple_markets() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_allocation_multiple_markets(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1342,9 +1317,8 @@ fn test_allocation_multiple_markets() {
     assert_eq!(vault.state().external_assets, 6000);
 }
 
-#[test]
-fn test_refresh_multiple_markets() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_refresh_multiple_markets(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1374,9 +1348,8 @@ fn test_refresh_multiple_markets() {
 // Concurrency / State Machine Tests
 // ============================================================================
 
-#[test]
-fn test_cannot_allocate_while_allocating() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_cannot_allocate_while_allocating(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1392,9 +1365,8 @@ fn test_cannot_allocate_while_allocating() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_cannot_refresh_while_allocating() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_cannot_refresh_while_allocating(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
@@ -1410,9 +1382,8 @@ fn test_cannot_refresh_while_allocating() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_cannot_allocate_while_refreshing() {
-    let mut vault = create_test_vault();
+#[rstest]
+fn test_cannot_allocate_while_refreshing(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 

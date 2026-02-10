@@ -12047,6 +12047,7 @@ dependencies = [
  "borsh 1.6.0",
  "derive_more 1.0.0",
  "proptest",
+ "rstest",
  "schemars",
  "serde",
  "templar-vault-kernel",
