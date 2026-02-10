@@ -14,7 +14,7 @@ use crate::math::wad::{
     compute_fee_shares_from_assets, compute_management_fee_shares, mul_div_ceil, mul_div_floor,
     total_assets_for_fee_accrual,
 };
-use crate::restrictions::Restrictions;
+use crate::restrictions::{RestrictionKind, Restrictions};
 use crate::state::op_state::{OpState, TargetId};
 use crate::state::queue::{is_past_cooldown, WithdrawQueue};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
@@ -911,11 +911,11 @@ fn enforce_restrictions(
     actor: &Address,
 ) -> Result<(), KernelError> {
     if config.paused {
-        return Err(KernelError::Restricted(Restrictions::Paused));
+        return Err(KernelError::Restricted(RestrictionKind::Paused));
     }
     if let Some(restrictions) = restrictions {
-        if let Some(reason) = restrictions.is_restricted(actor, self_id) {
-            return Err(KernelError::Restricted(reason));
+        if let Some(kind) = restrictions.is_restricted(actor, self_id) {
+            return Err(KernelError::Restricted(kind));
         }
     }
     Ok(())
@@ -1096,7 +1096,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(KernelError::Restricted(Restrictions::Paused))
+            Err(KernelError::Restricted(RestrictionKind::Paused))
         ));
     }
 
@@ -1126,7 +1126,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(KernelError::Restricted(Restrictions::BlackList(_)))
+            Err(KernelError::Restricted(RestrictionKind::BlackListed))
         ));
     }
 

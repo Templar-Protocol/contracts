@@ -291,17 +291,7 @@ pub fn allocation_step_callback(
         });
     }
 
-    let new_remaining = alloc.remaining.saturating_sub(amount_allocated);
-    let new_index = alloc.index.saturating_add(1);
-
-    let new_state = OpState::Allocating(AllocatingState {
-        op_id: alloc.op_id,
-        index: new_index,
-        remaining: new_remaining,
-        plan: alloc.plan.clone(),
-    });
-
-    Ok(TransitionResult::new(new_state))
+    Ok(TransitionResult::new(OpState::Allocating(alloc.advance(amount_allocated))))
 }
 
 /// Complete allocation and transition to next state.
@@ -458,21 +448,7 @@ pub fn withdrawal_step_callback(
         });
     }
 
-    let new_collected = withdraw.collected.saturating_add(amount_collected);
-    let new_remaining = withdraw.remaining.saturating_sub(amount_collected);
-    let new_index = withdraw.index.saturating_add(1);
-
-    let new_state = OpState::Withdrawing(WithdrawingState {
-        op_id: withdraw.op_id,
-        index: new_index,
-        remaining: new_remaining,
-        collected: new_collected,
-        receiver: withdraw.receiver,
-        owner: withdraw.owner,
-        escrow_shares: withdraw.escrow_shares,
-    });
-
-    Ok(TransitionResult::new(new_state))
+    Ok(TransitionResult::new(OpState::Withdrawing(withdraw.advance(amount_collected))))
 }
 
 /// Transition from Withdrawing to Payout when enough has been collected.
@@ -626,15 +602,7 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
 
     validate_plan_index(refresh.index, refresh.plan.len())?;
 
-    let new_index = refresh.index.saturating_add(1);
-
-    let new_state = OpState::Refreshing(RefreshingState {
-        op_id: refresh.op_id,
-        index: new_index,
-        plan: refresh.plan.clone(),
-    });
-
-    Ok(TransitionResult::new(new_state))
+    Ok(TransitionResult::new(OpState::Refreshing(refresh.advance())))
 }
 
 /// Complete refresh and return to Idle.

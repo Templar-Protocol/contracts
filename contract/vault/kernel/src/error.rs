@@ -1,6 +1,6 @@
 //! Kernel error types.
 
-use crate::restrictions::Restrictions;
+use crate::restrictions::RestrictionKind;
 use crate::transitions::TransitionError;
 use derive_more::Display;
 
@@ -49,7 +49,7 @@ pub enum KernelError {
 
     /// Action blocked by access restrictions.
     #[display("restricted: {_0:?}")]
-    Restricted(Restrictions),
+    Restricted(RestrictionKind),
 
     /// Invalid configuration value.
     #[display("invalid config: {_0}")]

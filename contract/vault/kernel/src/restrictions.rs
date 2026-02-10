@@ -12,6 +12,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::Address;
 
+/// Lightweight tag indicating why an actor was restricted.
+///
+/// Unlike [`Restrictions`], this does not carry the full BTreeSet, avoiding
+/// allocations on every auth-failure path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestrictionKind {
+    /// Vault is paused.
+    Paused,
+    /// Actor appears on the blacklist.
+    BlackListed,
+    /// Actor is not on the whitelist.
+    NotWhiteListed,
+}
+
 /// Restrictions that can be applied to the vault.
 ///
 /// Supports Pausing, Whitelist, and Blacklist functionality.
@@ -30,17 +44,18 @@ pub enum Restrictions {
 impl Restrictions {
     /// Check if the given actor is restricted.
     ///
-    /// Returns `Some(restriction)` if blocked, `None` if allowed.
+    /// Returns `Some(kind)` if blocked, `None` if allowed.
+    /// The returned [`RestrictionKind`] is a lightweight tag — no allocations.
     ///
     /// # Arguments
     /// * `actor_id` - The actor to check.
     /// * `self_id` - The vault's own identity (whitelist allows self by default).
-    pub fn is_restricted(&self, actor_id: &Address, self_id: &Address) -> Option<Restrictions> {
+    pub fn is_restricted(&self, actor_id: &Address, self_id: &Address) -> Option<RestrictionKind> {
         match self {
-            Restrictions::Paused => Some(Restrictions::Paused),
+            Restrictions::Paused => Some(RestrictionKind::Paused),
             Restrictions::BlackList(blacklist) => {
                 if blacklist.contains(actor_id) {
-                    Some(Restrictions::BlackList(blacklist.clone()))
+                    Some(RestrictionKind::BlackListed)
                 } else {
                     None
                 }
@@ -49,7 +64,7 @@ impl Restrictions {
                 if whitelist.contains(actor_id) || actor_id == self_id {
                     None
                 } else {
-                    Some(Restrictions::WhiteList(whitelist.clone()))
+                    Some(RestrictionKind::NotWhiteListed)
                 }
             }
         }
@@ -71,8 +86,8 @@ mod tests {
         let r = Restrictions::Paused;
         let actor = addr(1);
         let self_id = addr(2);
-        assert!(r.is_restricted(&actor, &self_id).is_some());
-        assert!(r.is_restricted(&self_id, &self_id).is_some());
+        assert_eq!(r.is_restricted(&actor, &self_id), Some(RestrictionKind::Paused));
+        assert_eq!(r.is_restricted(&self_id, &self_id), Some(RestrictionKind::Paused));
     }
 
     #[test]
@@ -82,8 +97,8 @@ mod tests {
         let r = Restrictions::BlackList(blacklist);
 
         let self_id = addr(2);
-        assert!(r.is_restricted(&addr(1), &self_id).is_some());
-        assert!(r.is_restricted(&addr(3), &self_id).is_none());
+        assert_eq!(r.is_restricted(&addr(1), &self_id), Some(RestrictionKind::BlackListed));
+        assert_eq!(r.is_restricted(&addr(3), &self_id), None);
     }
 
     #[test]
@@ -93,8 +108,8 @@ mod tests {
         let r = Restrictions::WhiteList(whitelist);
 
         let self_id = addr(2);
-        assert!(r.is_restricted(&addr(1), &self_id).is_none());
-        assert!(r.is_restricted(&self_id, &self_id).is_none());
-        assert!(r.is_restricted(&addr(3), &self_id).is_some());
+        assert_eq!(r.is_restricted(&addr(1), &self_id), None);
+        assert_eq!(r.is_restricted(&self_id, &self_id), None);
+        assert_eq!(r.is_restricted(&addr(3), &self_id), Some(RestrictionKind::NotWhiteListed));
     }
 }
