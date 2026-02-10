@@ -1017,7 +1017,6 @@ impl Contract {
             .op_state
             .as_allocating()
             .unwrap_or_else(|| panic_with_message("OpState::Allocating expected"));
-        let op_id = s.op_id;
 
         msg.map_or(Event::AllocationCompleted { op_id: s.op_id }, |m| {
             Event::AllocationStopped {
@@ -1037,9 +1036,7 @@ impl Contract {
         // The flag blocks withdraw/redeem, so it must be cleared on any allocation abort.
         self.idle_resync_inflight_op_id = 0;
 
-        let allocating = OpGuard::<AllocatingSpec>::expect(self, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
-        let _idle = allocating.into_idle();
+        self.op_state = OpState::Idle;
     }
 
     pub fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
@@ -1050,7 +1047,6 @@ impl Contract {
             .op_state
             .as_withdrawing()
             .unwrap_or_else(|| panic_with_message("OpState::Withdrawing expected"));
-        let op_id = s.op_id;
 
         Event::WithdrawalStopped {
             op_id: s.op_id.into(),
@@ -1061,29 +1057,10 @@ impl Contract {
         }
         .emit();
 
-        self.market_execution_lock.clear();
-
         let owner = s.owner.clone();
+        let escrow_shares = s.escrow_shares;
 
-        if s.escrow_shares > 0 {
-            // Must be infallible - panic to prevent orphaned shares in escrow.
-            Gate::bypass_transfer_with(
-                self,
-                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
-                |e| {
-                    templar_common::panic_with_message(&format!(
-                        "Withdrawing stop escrow refund failed: {e}"
-                    ))
-                },
-            );
-        }
-
-        self.pop_head();
-        self.withdraw_route.clear();
-
-        let withdrawing = OpGuard::<WithdrawingSpec>::expect(self, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
-        let _idle = withdrawing.into_idle();
+        self.refund_escrow_and_go_idle(owner, escrow_shares, "Withdrawing");
     }
 
     pub fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(
@@ -1094,7 +1071,7 @@ impl Contract {
             .op_state
             .as_payout()
             .unwrap_or_else(|| panic_with_message("OpState::Payout expected"));
-        let op_id = s.op_id;
+
         Event::PayoutStopped {
             op_id: (s.op_id).into(),
             receiver: s.receiver.clone(),
@@ -1104,26 +1081,37 @@ impl Contract {
         .emit();
 
         let owner = s.owner.clone();
-        if s.escrow_shares > 0 {
+        let escrow_shares = s.escrow_shares;
+
+        self.refund_escrow_and_go_idle(owner, escrow_shares, "Payout");
+    }
+
+    /// Shared cleanup for Withdrawing and Payout stop-and-exit paths:
+    /// refund escrowed shares, clear locks/queue, and transition to Idle.
+    fn refund_escrow_and_go_idle(
+        &mut self,
+        owner: AccountId,
+        escrow_shares: u128,
+        context: &str,
+    ) {
+        self.market_execution_lock.clear();
+
+        if escrow_shares > 0 {
             // Must be infallible - panic to prevent orphaned shares in escrow.
             Gate::bypass_transfer_with(
                 self,
-                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
+                &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
                 |e| {
                     templar_common::panic_with_message(&format!(
-                        "Payout stop escrow refund failed: {e}"
+                        "{context} stop escrow refund failed: {e}"
                     ))
                 },
             );
         }
 
-        self.market_execution_lock.clear();
         self.pop_head();
         self.withdraw_route.clear();
-
-        let payout = OpGuard::<PayoutSpec>::expect(self, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
-        let _idle = payout.into_idle();
+        self.op_state = OpState::Idle;
     }
 
     pub(crate) fn stop_and_exit<T: Display + core::fmt::Debug + ?Sized>(

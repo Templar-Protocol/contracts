@@ -45,7 +45,7 @@ use crate::market::{CrossChainMarketAdapter, MarketAdapter, MarketRef};
 use crate::policy::{build_refresh_plan_with_locks, filter_allocation_plan};
 use crate::reconciliation::{reconcile_external_assets, ReconciliationRecord};
 use crate::rbac::{RbacAuth, RbacConfig};
-use crate::storage::{SorobanStorage, Storage, VersionedState};
+use crate::storage::{SorobanStorage, SorobanVaultState, Storage, VersionedState};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
 const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
@@ -1496,6 +1496,44 @@ fn extend_storage_ttl(env: &Env) {
     storage.extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
 }
 
+// ---------------------------------------------------------------------------
+// Config address helpers — reduce boilerplate for VaultDataKey get/set
+// ---------------------------------------------------------------------------
+
+/// Read a required `SdkAddress` from instance storage, returning
+/// `ContractError::MissingConfig` when absent.
+pub(crate) fn get_config_address(env: &Env, key: &VaultDataKey) -> Result<SdkAddress, ContractError> {
+    env.storage()
+        .instance()
+        .get(key)
+        .ok_or(ContractError::MissingConfig)
+}
+
+/// Read an optional `SdkAddress` from instance storage.
+fn get_optional_config_address(env: &Env, key: &VaultDataKey) -> Option<SdkAddress> {
+    env.storage().instance().get(key)
+}
+
+/// Write an `SdkAddress` into instance storage.
+pub(crate) fn set_config_address(env: &Env, key: &VaultDataKey, addr: &SdkAddress) {
+    env.storage().instance().set(key, addr);
+}
+
+// ---------------------------------------------------------------------------
+// Vault state query helper — loads SorobanVaultState and extracts one i128
+// field, returning 0 when uninitialized.
+// ---------------------------------------------------------------------------
+
+/// Read a single i128 field from the persisted `SorobanVaultState`.
+///
+/// Returns `0` when no state has been persisted yet (fresh deployment).
+fn query_vault_field(env: &Env, f: fn(&SorobanVaultState) -> i128) -> i128 {
+    SorobanStorage::new(env)
+        .load_vault_state()
+        .map(|s| f(&s))
+        .unwrap_or(0)
+}
+
 fn migrate_legacy_paused(env: &Env) {
     if let Some(paused) = env.storage().instance().get(&VaultDataKey::Paused) {
         let storage = SorobanStorage::new(env);
@@ -1510,21 +1548,12 @@ fn with_contract_vault<T>(
 ) -> Result<T, RuntimeError> {
     extend_storage_ttl(env);
     migrate_legacy_paused(env);
-    let admin: SdkAddress = env
-        .storage()
-        .instance()
-        .get(&VaultDataKey::Admin)
-        .ok_or_else(|| RuntimeError::storage_error("admin not set"))?;
-    let asset_token: SdkAddress = env
-        .storage()
-        .instance()
-        .get(&VaultDataKey::AssetToken)
-        .ok_or_else(|| RuntimeError::storage_error("asset token not set"))?;
-    let share_token: SdkAddress = env
-        .storage()
-        .instance()
-        .get(&VaultDataKey::ShareToken)
-        .ok_or_else(|| RuntimeError::storage_error("share token not set"))?;
+    let admin: SdkAddress = get_config_address(env, &VaultDataKey::Admin)
+        .map_err(|_| RuntimeError::storage_error("admin not set"))?;
+    let asset_token: SdkAddress = get_config_address(env, &VaultDataKey::AssetToken)
+        .map_err(|_| RuntimeError::storage_error("asset token not set"))?;
+    let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)
+        .map_err(|_| RuntimeError::storage_error("share token not set"))?;
 
     let vault_sdk = env.current_contract_address();
     let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
@@ -1541,13 +1570,13 @@ fn with_contract_vault<T>(
         share_kernel,
     );
 
-    if let Some(adapter) = env.storage().instance().get(&VaultDataKey::BlendAdapter) {
+    if let Some(adapter) = get_optional_config_address(env, &VaultDataKey::BlendAdapter) {
         config = config.with_blend_adapter(kernel_address_from_sdk(env, &adapter));
     }
-    if let Some(pool) = env.storage().instance().get(&VaultDataKey::BlendPool) {
+    if let Some(pool) = get_optional_config_address(env, &VaultDataKey::BlendPool) {
         config = config.with_blend_pool(kernel_address_from_sdk(env, &pool));
     }
-    if let Some(factory) = env.storage().instance().get(&VaultDataKey::BlendFactory) {
+    if let Some(factory) = get_optional_config_address(env, &VaultDataKey::BlendFactory) {
         config = config.with_blend_factory(kernel_address_from_sdk(env, &factory));
     }
 
@@ -1622,15 +1651,9 @@ impl SorobanVaultContract {
         }
 
         // Store configuration
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::AssetToken, &asset_token);
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::ShareToken, &share_token);
+        set_config_address(&env, &VaultDataKey::Admin, &admin);
+        set_config_address(&env, &VaultDataKey::AssetToken, &asset_token);
+        set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
         env.storage()
             .instance()
             .set(&VaultDataKey::ReentrancyLock, &false);
@@ -1778,9 +1801,7 @@ impl SorobanVaultContract {
         adapter: SdkAddress,
     ) -> Result<(), ContractError> {
         require_admin(&env, &caller)?;
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::BlendAdapter, &adapter);
+        set_config_address(&env, &VaultDataKey::BlendAdapter, &adapter);
         Ok(())
     }
 
@@ -1791,9 +1812,7 @@ impl SorobanVaultContract {
         pool: SdkAddress,
     ) -> Result<(), ContractError> {
         require_admin(&env, &caller)?;
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::BlendPool, &pool);
+        set_config_address(&env, &VaultDataKey::BlendPool, &pool);
         Ok(())
     }
 
@@ -1804,58 +1823,38 @@ impl SorobanVaultContract {
         factory: SdkAddress,
     ) -> Result<(), ContractError> {
         require_admin(&env, &caller)?;
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::BlendFactory, &factory);
+        set_config_address(&env, &VaultDataKey::BlendFactory, &factory);
         Ok(())
     }
 
     /// Get the admin address.
     pub fn admin(env: Env) -> Result<SdkAddress, ContractError> {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::Admin)
-            .ok_or(ContractError::MissingConfig)
+        get_config_address(&env, &VaultDataKey::Admin)
     }
 
     /// Get the asset token address.
     pub fn asset_token(env: Env) -> Result<SdkAddress, ContractError> {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::AssetToken)
-            .ok_or(ContractError::MissingConfig)
+        get_config_address(&env, &VaultDataKey::AssetToken)
     }
 
     /// Get the share token address.
     pub fn share_token(env: Env) -> Result<SdkAddress, ContractError> {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::ShareToken)
-            .ok_or(ContractError::MissingConfig)
+        get_config_address(&env, &VaultDataKey::ShareToken)
     }
 
     /// Get the Blend adapter contract address.
     pub fn blend_adapter(env: Env) -> Result<SdkAddress, ContractError> {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::BlendAdapter)
-            .ok_or(ContractError::MissingConfig)
+        get_config_address(&env, &VaultDataKey::BlendAdapter)
     }
 
     /// Get the Blend pool contract address.
     pub fn blend_pool(env: Env) -> Result<SdkAddress, ContractError> {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::BlendPool)
-            .ok_or(ContractError::MissingConfig)
+        get_config_address(&env, &VaultDataKey::BlendPool)
     }
 
     /// Get the Blend factory contract address.
     pub fn blend_factory(env: Env) -> Result<SdkAddress, ContractError> {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::BlendFactory)
-            .ok_or(ContractError::MissingConfig)
+        get_config_address(&env, &VaultDataKey::BlendFactory)
     }
 
     /// Check if the vault is paused.
@@ -1866,32 +1865,17 @@ impl SorobanVaultContract {
 
     /// Get total shares in circulation.
     pub fn total_shares(env: Env) -> i128 {
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        storage
-            .load_vault_state()
-            .map(|s| s.total_shares)
-            .unwrap_or(0)
+        query_vault_field(&env, |s| s.total_shares)
     }
 
     /// Get idle assets (not deployed to markets).
     pub fn idle_assets(env: Env) -> i128 {
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        storage
-            .load_vault_state()
-            .map(|s| s.idle_assets)
-            .unwrap_or(0)
+        query_vault_field(&env, |s| s.idle_assets)
     }
 
     /// Get external assets (deployed to markets).
     pub fn external_assets(env: Env) -> i128 {
-        use crate::storage::SorobanStorage;
-        let storage = SorobanStorage::new(&env);
-        storage
-            .load_vault_state()
-            .map(|s| s.external_assets)
-            .unwrap_or(0)
+        query_vault_field(&env, |s| s.external_assets)
     }
 
     /// Extend the TTL of contract storage.
@@ -1904,11 +1888,7 @@ impl SorobanVaultContract {
 
 fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
     caller.require_auth();
-    let admin: SdkAddress = env
-        .storage()
-        .instance()
-        .get(&VaultDataKey::Admin)
-        .ok_or(ContractError::MissingConfig)?;
+    let admin: SdkAddress = get_config_address(env, &VaultDataKey::Admin)?;
     if caller != &admin {
         return Err(ContractError::Unauthorized);
     }
@@ -1927,10 +1907,7 @@ fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
 impl SorobanVaultContract {
     /// Returns the address of the underlying asset managed by the vault.
     pub fn query_asset(env: Env) -> Result<SdkAddress, ContractError> {
-        env.storage()
-            .instance()
-            .get(&VaultDataKey::AssetToken)
-            .ok_or(ContractError::MissingConfig)
+        get_config_address(&env, &VaultDataKey::AssetToken)
     }
 
     /// Returns the total amount of underlying assets under management.
@@ -1938,11 +1915,7 @@ impl SorobanVaultContract {
     /// Includes both idle assets held in the contract and external assets
     /// deployed to markets.
     pub fn total_assets(env: Env) -> i128 {
-        let storage = SorobanStorage::new(&env);
-        storage
-            .load_vault_state()
-            .map(|s| s.total_assets)
-            .unwrap_or(0)
+        query_vault_field(&env, |s| s.total_assets)
     }
 
     /// Convert assets to shares (floor rounding, favors vault).

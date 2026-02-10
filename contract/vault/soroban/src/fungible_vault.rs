@@ -19,7 +19,7 @@ use templar_vault_kernel::{
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 
-use crate::contract::VaultDataKey;
+use crate::contract::{get_config_address, VaultDataKey};
 use crate::error::ContractError;
 use crate::storage::{SorobanStorage, Storage};
 
@@ -45,9 +45,9 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
 
 /// Read the share token balance for an address.
 pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
-    let share_token: SdkAddress = match env.storage().instance().get(&VaultDataKey::ShareToken) {
-        Some(addr) => addr,
-        None => return 0,
+    let share_token: SdkAddress = match get_config_address(env, &VaultDataKey::ShareToken) {
+        Ok(addr) => addr,
+        Err(_) => return 0,
     };
     token::Client::new(env, &share_token).balance(owner)
 }
@@ -95,24 +95,14 @@ pub(crate) fn atomic_withdraw_internal(
     storage.save_state(&versioned).map_err(ContractError::from)?;
 
     // Burn shares from owner via share token contract
-    let share_token: SdkAddress = env
-        .storage()
-        .instance()
-        .get(&VaultDataKey::ShareToken)
-        .ok_or(ContractError::MissingConfig)?;
-    let shares_i128 =
-        i128::try_from(shares).map_err(|_| ContractError::ConversionOverflow)?;
+    let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)?;
+    let shares_i128 = to_i128(shares)?;
     let share_client = token::Client::new(env, &share_token);
     share_client.burn(owner, &shares_i128);
 
     // Transfer underlying assets to receiver
-    let asset_token: SdkAddress = env
-        .storage()
-        .instance()
-        .get(&VaultDataKey::AssetToken)
-        .ok_or(ContractError::MissingConfig)?;
-    let assets_i128 =
-        i128::try_from(assets).map_err(|_| ContractError::ConversionOverflow)?;
+    let asset_token: SdkAddress = get_config_address(env, &VaultDataKey::AssetToken)?;
+    let assets_i128 = to_i128(assets)?;
     let asset_client = token::Client::new(env, &asset_token);
     asset_client.transfer(&env.current_contract_address(), receiver, &assets_i128);
 
