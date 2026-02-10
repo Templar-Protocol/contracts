@@ -831,6 +831,20 @@ mod tests {
         )
     }
 
+    /// Shorthand to enqueue a test withdrawal: owner == receiver, ts derived from index.
+    fn enqueue_simple(queue: &mut WithdrawQueue, index: u64, shares: u128, expected: u128) {
+        queue
+            .enqueue(
+                owner_addr(index),
+                owner_addr(index),
+                shares,
+                expected,
+                index.saturating_mul(1_000_000_000_000),
+                100, // max_pending
+            )
+            .unwrap();
+    }
+
     #[test]
     fn test_is_valid_withdrawal_amount() {
         assert!(!is_valid_withdrawal_amount(0));
@@ -1249,32 +1263,13 @@ mod tests {
     #[test]
     fn test_withdraw_queue_peek() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
 
         // Empty queue
         assert!(queue.peek().is_none());
 
         // Add items
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
 
         // Peek should return the first item
         let (id, withdrawal) = queue.peek().unwrap();
@@ -1291,18 +1286,7 @@ mod tests {
     #[test]
     fn test_withdraw_queue_head() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
 
         let (id, withdrawal) = queue.head().unwrap();
         assert_eq!(id, 0);
@@ -1312,42 +1296,14 @@ mod tests {
     #[test]
     fn test_withdraw_queue_dequeue() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
 
         // Empty queue
         assert!(queue.dequeue().is_none());
 
         // Add items
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(3),
-                owner_addr(3),
-                300,
-                3000,
-                3_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
+        enqueue_simple(&mut queue, 3, 300, 3000);
 
         // Dequeue first
         let (id1, w1) = queue.dequeue().unwrap();
@@ -1380,28 +1336,8 @@ mod tests {
     #[test]
     fn test_withdraw_queue_get() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
 
         // Get existing
         let w = queue.get(0).unwrap();
@@ -1418,18 +1354,7 @@ mod tests {
     #[test]
     fn test_withdraw_queue_contains() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
 
         assert!(queue.contains(0));
         assert!(!queue.contains(1));
@@ -1439,28 +1364,8 @@ mod tests {
     #[test]
     fn test_withdraw_queue_iter() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
 
         let items: Vec<_> = queue.iter().collect();
         assert_eq!(items.len(), 2);
@@ -1473,38 +1378,9 @@ mod tests {
     #[test]
     fn test_withdraw_queue_status() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(3),
-                owner_addr(3),
-                300,
-                3000,
-                3_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
+        enqueue_simple(&mut queue, 3, 300, 3000);
 
         let status = queue.status();
         assert_eq!(status.length, 3);
@@ -1515,28 +1391,8 @@ mod tests {
     #[test]
     fn test_withdraw_queue_total_escrow_shares() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
 
         assert_eq!(queue.total_escrow_shares(), 300);
     }
@@ -1544,28 +1400,8 @@ mod tests {
     #[test]
     fn test_withdraw_queue_total_expected_assets() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
 
         assert_eq!(queue.total_expected_assets(), 3000);
     }
@@ -1576,16 +1412,7 @@ mod tests {
         assert!(queue.check_invariants());
 
         // After enqueue
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                100,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
         assert!(queue.check_invariants());
 
         // After dequeue
@@ -1596,28 +1423,8 @@ mod tests {
     #[test]
     fn test_withdraw_queue_check_invariants_with_max() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
-        queue
-            .enqueue(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                2_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
+        enqueue_simple(&mut queue, 2, 200, 2000);
 
         // Valid max
         assert!(queue.check_invariants_with_max(100));
@@ -1661,20 +1468,10 @@ mod tests {
     #[test]
     fn test_withdraw_queue_fifo_ordering() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
 
         // Enqueue in order
-        for i in 0..5 {
-            queue
-                .enqueue(
-                    owner_addr(i as u64),
-                    owner_addr(i as u64),
-                    (i as u128 + 1) * 100,
-                    (i as u128 + 1) * 1000,
-                    (i as u64 + 1) * 1_000_000_000_000,
-                    max_pending,
-                )
-                .unwrap();
+        for i in 0..5u64 {
+            enqueue_simple(&mut queue, i, (i as u128 + 1) * 100, (i as u128 + 1) * 1000);
         }
 
         // Dequeue should maintain FIFO order
@@ -1713,18 +1510,7 @@ mod tests {
     #[test]
     fn test_withdraw_queue_get_mut() {
         let mut queue = WithdrawQueue::new();
-        let max_pending = 100u32;
-
-        queue
-            .enqueue(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                1_000_000_000_000,
-                max_pending,
-            )
-            .unwrap();
+        enqueue_simple(&mut queue, 1, 100, 1000);
 
         // Modify the withdrawal
         if let Some(w) = queue.get_mut(0) {
