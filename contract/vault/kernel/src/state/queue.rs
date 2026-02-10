@@ -657,13 +657,16 @@ impl WithdrawQueue {
         let head_id = self.next_withdraw_to_execute;
         let withdrawal = self.pending_withdrawals.remove(&head_id)?;
 
-        // Update cached totals
+        // Update cached totals — use checked_sub to detect invariant violations.
+        // If the cache is less than the withdrawal amount, the queue is corrupt.
         self.cached_total_escrow = self
             .cached_total_escrow
-            .saturating_sub(withdrawal.escrow_shares);
+            .checked_sub(withdrawal.escrow_shares)
+            .expect("dequeue: cached_total_escrow underflow — queue cache corrupt");
         self.cached_total_expected = self
             .cached_total_expected
-            .saturating_sub(withdrawal.expected_assets);
+            .checked_sub(withdrawal.expected_assets)
+            .expect("dequeue: cached_total_expected underflow — queue cache corrupt");
 
         // Advance to the next ID in the queue
         self.next_withdraw_to_execute = self
