@@ -15,7 +15,9 @@ use crate::fungible_vault::{
 };
 use alloc::vec;
 use alloc::vec::Vec;
-use soroban_sdk::{contract, contractimpl, contracttype, Address as SdkAddress, Bytes, Env};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, panic_with_error, Address as SdkAddress, Bytes, Env,
+};
 use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
 };
@@ -1897,6 +1899,14 @@ fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
     Ok(())
 }
 
+#[inline]
+fn must<T>(env: &Env, result: Result<T, ContractError>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(err) => panic_with_error!(env, err),
+    }
+}
+
 // =========================================================================
 // ERC-4626 / FungibleVault methods (SEP-56 compatible)
 // =========================================================================
@@ -1908,8 +1918,8 @@ fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
 #[contractimpl]
 impl SorobanVaultContract {
     /// Returns the address of the underlying asset managed by the vault.
-    pub fn query_asset(env: Env) -> Result<SdkAddress, ContractError> {
-        get_config_address(&env, &VaultDataKey::AssetToken)
+    pub fn query_asset(env: Env) -> SdkAddress {
+        must(&env, get_config_address(&env, &VaultDataKey::AssetToken))
     }
 
     /// Returns the total amount of underlying assets under management.
@@ -1921,21 +1931,29 @@ impl SorobanVaultContract {
     }
 
     /// Convert assets to shares (floor rounding, favors vault).
-    pub fn convert_to_shares(env: Env, assets: i128) -> Result<i128, ContractError> {
+    pub fn convert_to_shares(env: Env, assets: i128) -> i128 {
         if assets <= 0 {
-            return Ok(0);
+            return 0;
         }
-        let (state, config) = load_state_and_config(&env)?;
-        to_i128(convert_to_shares(&state, &config, to_u128(assets)?))
+        let (state, config) = must(&env, load_state_and_config(&env));
+        let assets_u128 = must(&env, to_u128(assets));
+        must(
+            &env,
+            to_i128(convert_to_shares(&state, &config, assets_u128)),
+        )
     }
 
     /// Convert shares to assets (floor rounding, favors vault).
-    pub fn convert_to_assets(env: Env, shares: i128) -> Result<i128, ContractError> {
+    pub fn convert_to_assets(env: Env, shares: i128) -> i128 {
         if shares <= 0 {
-            return Ok(0);
+            return 0;
         }
-        let (state, config) = load_state_and_config(&env)?;
-        to_i128(convert_to_assets(&state, &config, to_u128(shares)?))
+        let (state, config) = must(&env, load_state_and_config(&env));
+        let shares_u128 = must(&env, to_u128(shares));
+        must(
+            &env,
+            to_i128(convert_to_assets(&state, &config, shares_u128)),
+        )
     }
 
     /// Maximum assets that can be deposited for `receiver`.
@@ -2005,30 +2023,38 @@ impl SorobanVaultContract {
     }
 
     /// Preview shares received for a deposit of `assets` (floor — fewer shares).
-    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
+    pub fn preview_deposit(env: Env, assets: i128) -> i128 {
         Self::convert_to_shares(env, assets)
     }
 
     /// Preview assets needed to mint `shares` (ceil — more assets required).
-    pub fn preview_mint(env: Env, shares: i128) -> Result<i128, ContractError> {
+    pub fn preview_mint(env: Env, shares: i128) -> i128 {
         if shares <= 0 {
-            return Ok(0);
+            return 0;
         }
-        let (state, config) = load_state_and_config(&env)?;
-        to_i128(convert_to_assets_ceil(&state, &config, to_u128(shares)?))
+        let (state, config) = must(&env, load_state_and_config(&env));
+        let shares_u128 = must(&env, to_u128(shares));
+        must(
+            &env,
+            to_i128(convert_to_assets_ceil(&state, &config, shares_u128)),
+        )
     }
 
     /// Preview shares burned to withdraw `assets` (ceil — more shares burned).
-    pub fn preview_withdraw(env: Env, assets: i128) -> Result<i128, ContractError> {
+    pub fn preview_withdraw(env: Env, assets: i128) -> i128 {
         if assets <= 0 {
-            return Ok(0);
+            return 0;
         }
-        let (state, config) = load_state_and_config(&env)?;
-        to_i128(convert_to_shares_ceil(&state, &config, to_u128(assets)?))
+        let (state, config) = must(&env, load_state_and_config(&env));
+        let assets_u128 = must(&env, to_u128(assets));
+        must(
+            &env,
+            to_i128(convert_to_shares_ceil(&state, &config, assets_u128)),
+        )
     }
 
     /// Preview assets received for redeeming `shares` (floor — fewer assets).
-    pub fn preview_redeem(env: Env, shares: i128) -> Result<i128, ContractError> {
+    pub fn preview_redeem(env: Env, shares: i128) -> i128 {
         Self::convert_to_assets(env, shares)
     }
 
@@ -2042,12 +2068,12 @@ impl SorobanVaultContract {
         receiver: SdkAddress,
         from: SdkAddress,
         operator: SdkAddress,
-    ) -> Result<i128, ContractError> {
+    ) -> i128 {
         operator.require_auth();
         if assets <= 0 {
-            return Err(ContractError::InvalidInput);
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
-        Self::deposit_with_min(env, from, receiver, assets, 0)
+        must(&env, Self::deposit_with_min(env, from, receiver, assets, 0))
     }
 
     /// Mint exactly `shares` to `receiver`, pulling required assets from `from`.
@@ -2058,16 +2084,20 @@ impl SorobanVaultContract {
         receiver: SdkAddress,
         from: SdkAddress,
         operator: SdkAddress,
-    ) -> Result<i128, ContractError> {
+    ) -> i128 {
         operator.require_auth();
         if shares <= 0 {
-            return Err(ContractError::InvalidInput);
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
-        let (state, config) = load_state_and_config(&env)?;
-        let assets_needed = convert_to_assets_ceil(&state, &config, to_u128(shares)?);
-        let assets_i128 = to_i128(assets_needed)?;
-        let _shares_minted = Self::deposit_with_min(env, from, receiver, assets_i128, shares)?;
-        Ok(assets_i128)
+        let (state, config) = must(&env, load_state_and_config(&env));
+        let shares_u128 = must(&env, to_u128(shares));
+        let assets_needed = convert_to_assets_ceil(&state, &config, shares_u128);
+        let assets_i128 = must(&env, to_i128(assets_needed));
+        let _shares_minted = must(
+            &env,
+            Self::deposit_with_min(env, from, receiver, assets_i128, shares),
+        );
+        assets_i128
     }
 
     /// Withdraw exactly `assets` from the vault, burning shares from `owner`.
@@ -2081,23 +2111,26 @@ impl SorobanVaultContract {
         receiver: SdkAddress,
         owner: SdkAddress,
         operator: SdkAddress,
-    ) -> Result<i128, ContractError> {
+    ) -> i128 {
         operator.require_auth();
         owner.require_auth();
         if assets <= 0 {
-            return Err(ContractError::InvalidInput);
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
-        let assets_u128 = to_u128(assets)?;
-        let (state, config) = load_state_and_config(&env)?;
+        let assets_u128 = must(&env, to_u128(assets));
+        let (state, config) = must(&env, load_state_and_config(&env));
         if !state.op_state.is_idle() {
-            return Err(ContractError::VaultNotIdle);
+            panic_with_error!(&env, ContractError::VaultNotIdle);
         }
         if assets_u128 > state.idle_assets {
-            return Err(ContractError::InsufficientIdleAssets);
+            panic_with_error!(&env, ContractError::InsufficientIdleAssets);
         }
         let shares_to_burn = convert_to_shares_ceil(&state, &config, assets_u128);
-        atomic_withdraw_internal(&env, &owner, &receiver, assets_u128, shares_to_burn)?;
-        to_i128(shares_to_burn)
+        must(
+            &env,
+            atomic_withdraw_internal(&env, &owner, &receiver, assets_u128, shares_to_burn),
+        );
+        must(&env, to_i128(shares_to_burn))
     }
 
     /// Redeem exactly `shares` for assets, sending to `receiver`.
@@ -2111,23 +2144,26 @@ impl SorobanVaultContract {
         receiver: SdkAddress,
         owner: SdkAddress,
         operator: SdkAddress,
-    ) -> Result<i128, ContractError> {
+    ) -> i128 {
         operator.require_auth();
         owner.require_auth();
         if shares <= 0 {
-            return Err(ContractError::InvalidInput);
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
-        let shares_u128 = to_u128(shares)?;
-        let (state, config) = load_state_and_config(&env)?;
+        let shares_u128 = must(&env, to_u128(shares));
+        let (state, config) = must(&env, load_state_and_config(&env));
         if !state.op_state.is_idle() {
-            return Err(ContractError::VaultNotIdle);
+            panic_with_error!(&env, ContractError::VaultNotIdle);
         }
         let assets_out = convert_to_assets(&state, &config, shares_u128);
         if assets_out > state.idle_assets {
-            return Err(ContractError::InsufficientIdleAssets);
+            panic_with_error!(&env, ContractError::InsufficientIdleAssets);
         }
-        atomic_withdraw_internal(&env, &owner, &receiver, assets_out, shares_u128)?;
-        to_i128(assets_out)
+        must(
+            &env,
+            atomic_withdraw_internal(&env, &owner, &receiver, assets_out, shares_u128),
+        );
+        must(&env, to_i128(assets_out))
     }
 }
 

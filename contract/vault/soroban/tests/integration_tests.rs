@@ -273,8 +273,7 @@ fn soroban_contract_preview_deposit_matches_kernel() {
         let versioned = VersionedState::new(empty_state.clone());
         storage.save_state(&versioned).unwrap();
 
-        let preview =
-            SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128).unwrap();
+        let preview = SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128);
         let minted = mint_shares_from_deposit(empty_state, assets_in);
         assert_eq!(preview as u128, minted);
     });
@@ -288,8 +287,7 @@ fn soroban_contract_preview_deposit_matches_kernel() {
         let versioned = VersionedState::new(state.clone());
         storage.save_state(&versioned).unwrap();
 
-        let preview =
-            SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128).unwrap();
+        let preview = SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128);
         let minted = mint_shares_from_deposit(state, assets_in);
         assert_eq!(preview as u128, minted);
     });
@@ -320,14 +318,14 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
 
         // ERC-4626: preview_withdraw(assets) returns shares to burn (ceil)
         let assets_in: i128 = 1000;
-        let shares_burned = SorobanVaultContract::preview_withdraw(env.clone(), assets_in).unwrap();
+        let shares_burned = SorobanVaultContract::preview_withdraw(env.clone(), assets_in);
         // Effective totals with virtual +1: (12001, 20001)
         // ceil(1000 * 12001 / 20001) = ceil(12001000/20001) = ceil(600.02) = 601
         assert_eq!(shares_burned, 601);
 
         // ERC-4626: preview_redeem(shares) returns assets received (floor)
         let shares_in: i128 = 800;
-        let assets_out = SorobanVaultContract::preview_redeem(env.clone(), shares_in).unwrap();
+        let assets_out = SorobanVaultContract::preview_redeem(env.clone(), shares_in);
         // floor(800 * 20001 / 12001) = floor(16000800/12001) = floor(1333.22) = 1333
         assert_eq!(assets_out, 1333);
     });
