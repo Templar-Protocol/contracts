@@ -12,8 +12,12 @@ use templar_vault_kernel::{Restrictions, VaultState};
 use crate::convert::{i128_to_u128_storage, u128_to_i128_storage};
 use crate::error::RuntimeError;
 
-pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 50_000;
-pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 100_000;
+/// Re-extend TTL when remaining TTL drops below ~30 days (at ~5s/ledger).
+pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
+/// Extend TTL to the Soroban maximum (~6 months at ~5s/ledger).
+/// For a vault contract holding real assets, maximum TTL prevents state
+/// loss during extended pauses or periods of inactivity.
+pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 
 // ---------------------------------------------------------------------------
 // Soroban Storage Keys
