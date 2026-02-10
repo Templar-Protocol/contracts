@@ -13,30 +13,38 @@ use tokio::time::sleep;
 use crate::rpc::{AppError, AppResult};
 
 /// Classification of swap errors for retry decisions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum SwapErrorKind {
     /// Amount below bridge/swap minimum (not retryable, batchable)
+    #[error("Amount too low: {message}")]
     AmountTooLow { message: String },
 
     /// Generic quote failure — may be transient (retryable)
+    #[error("Quote failed: {message}")]
     QuoteFailed { message: String },
 
     /// Network/connection error (retryable)
+    #[error("Network error: {message}")]
     NetworkError { message: String },
 
     /// Server error 5xx (retryable)
+    #[error("Server error ({status}): {message}")]
     ServerError { status: u16, message: String },
 
     /// Rate limited 429 (retryable)
+    #[error("Rate limited")]
     RateLimited,
 
     /// Client validation error 400 (not retryable)
+    #[error("Validation error: {message}")]
     ValidationError { message: String },
 
     /// Swap timed out waiting for completion (retryable)
+    #[error("Timeout: {message}")]
     Timeout { message: String },
 
     /// Unknown / uncategorized error (not retryable)
+    #[error("Unknown error: {message}")]
     Unknown { message: String },
 }
 
@@ -88,25 +96,9 @@ impl SwapErrorKind {
     }
 }
 
-impl std::fmt::Display for SwapErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AmountTooLow { message } => write!(f, "Amount too low: {message}"),
-            Self::QuoteFailed { message } => write!(f, "Quote failed: {message}"),
-            Self::NetworkError { message } => write!(f, "Network error: {message}"),
-            Self::ServerError { status, message } => {
-                write!(f, "Server error ({status}): {message}")
-            }
-            Self::RateLimited => write!(f, "Rate limited"),
-            Self::ValidationError { message } => write!(f, "Validation error: {message}"),
-            Self::Timeout { message } => write!(f, "Timeout: {message}"),
-            Self::Unknown { message } => write!(f, "Unknown error: {message}"),
-        }
-    }
-}
-
 /// Swap error with classification and context.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{context}: {kind}")]
 pub struct SwapError {
     /// Error classification
     pub kind: SwapErrorKind,
@@ -130,14 +122,6 @@ impl SwapError {
         self.kind.is_amount_too_low()
     }
 }
-
-impl std::fmt::Display for SwapError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.context, self.kind)
-    }
-}
-
-impl std::error::Error for SwapError {}
 
 /// Convert `SwapError` into `AppError` so it can flow through existing error paths.
 impl From<SwapError> for AppError {
