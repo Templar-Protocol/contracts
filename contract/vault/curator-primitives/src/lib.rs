@@ -22,9 +22,9 @@ pub mod rbac;
 pub mod recovery;
 
 #[cfg(test)]
-mod golden_tests;
-#[cfg(test)]
 mod test_utils;
+#[cfg(test)]
+mod tests;
 
 // Re-exports for convenience
 pub use auth::{

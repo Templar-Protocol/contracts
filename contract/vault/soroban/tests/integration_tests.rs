@@ -26,9 +26,7 @@ use templar_vault_kernel::{
     PayoutState, VaultConfig, VaultState, WithdrawingState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 
-// ============================================================================
 // Test Helpers
-// ============================================================================
 
 /// Mock market adapter that tracks calls.
 #[derive(Clone, Debug, Default)]
@@ -437,9 +435,7 @@ fn create_rbac_vault() -> RbacVault {
     vault
 }
 
-// ============================================================================
 // Deposit Flow Tests
-// ============================================================================
 
 #[rstest]
 fn test_deposit_flow_single(mut vault: TestVault) {
@@ -501,9 +497,7 @@ fn test_deposit_flow_zero_amount_fails(mut vault: TestVault) {
     assert!(result.is_err());
 }
 
-// ============================================================================
 // Allocation Flow Tests
-// ============================================================================
 
 #[rstest]
 fn test_allocation_flow_basic(mut vault: TestVault) {
@@ -604,9 +598,7 @@ fn test_allocation_flow_wrong_op_id_fails(mut vault: TestVault) {
     assert!(result.is_err());
 }
 
-// ============================================================================
 // Refresh Flow Tests
-// ============================================================================
 
 #[rstest]
 fn test_refresh_flow_basic(mut vault: TestVault) {
@@ -798,9 +790,7 @@ fn test_recover_payout_failure_restores_idle(mut vault: TestVault) {
     assert_eq!(vault.state().total_assets, amount);
 }
 
-// ============================================================================
 // RBAC Tests
-// ============================================================================
 
 #[test]
 fn test_rbac_user_can_deposit() {
@@ -908,9 +898,7 @@ fn test_restrictions_blacklist_blocks_deposit() {
     assert!(result.is_err());
 }
 
-// ============================================================================
 // State Persistence Tests
-// ============================================================================
 
 #[rstest]
 fn test_state_persists_after_deposit(mut vault: TestVault) {
@@ -945,9 +933,7 @@ fn test_state_persists_after_allocation(mut vault: TestVault) {
     assert!(stored.state.op_state.is_idle());
 }
 
-// ============================================================================
 // Effect Execution Tests
-// ============================================================================
 
 #[rstest]
 fn test_deposit_emits_mint_effect(mut vault: TestVault) {
@@ -967,9 +953,7 @@ fn test_deposit_emits_mint_effect(mut vault: TestVault) {
     );
 }
 
-// ============================================================================
 // Full Flow Integration Tests
-// ============================================================================
 
 #[rstest]
 fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
@@ -1007,9 +991,7 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
     // In our implementation, total_assets is adjusted based on external_assets changes
 }
 
-// ============================================================================
 // Withdraw Flow Tests
-// ============================================================================
 
 #[rstest]
 fn test_withdraw_request_basic(mut vault: TestVault) {
@@ -1157,9 +1139,7 @@ fn test_withdraw_flow_with_allocation(mut vault: TestVault) {
     assert!(result.is_ok());
 }
 
-// ============================================================================
 // Full Flow Integration Tests - Deposit, Allocate, Refresh, Withdraw
-// ============================================================================
 
 #[rstest]
 fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
@@ -1234,9 +1214,7 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     assert_eq!(next_pending.escrow_shares, 2000);
 }
 
-// ============================================================================
 // Edge Case Tests
-// ============================================================================
 
 #[rstest]
 fn test_multiple_deposits_share_calculation(mut vault: TestVault) {
@@ -1342,9 +1320,7 @@ fn test_refresh_multiple_markets(mut vault: TestVault) {
     assert_eq!(vault.state().external_assets, 6000);
 }
 
-// ============================================================================
 // Concurrency / State Machine Tests
-// ============================================================================
 
 #[rstest]
 fn test_cannot_allocate_while_allocating(mut vault: TestVault) {

@@ -1917,9 +1917,7 @@ fn must<T>(env: &Env, result: Result<T, ContractError>) -> T {
     }
 }
 
-// =========================================================================
 // ERC-4626 / FungibleVault methods (SEP-56 compatible)
-// =========================================================================
 //
 // Second #[contractimpl] block exposing the 16 standard FungibleVault
 // methods. Must be in the same module as the #[contract] struct to avoid

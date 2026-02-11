@@ -49,6 +49,26 @@ pub struct SorobanAuth<'a> {
 }
 
 impl<'a> SorobanAuth<'a> {
+    #[inline]
+    #[must_use]
+    fn is_admin_or(addr: &SdkAddress, delegated: &Option<SdkAddress>, admin: &SdkAddress) -> bool {
+        addr == admin
+            || delegated
+                .as_ref()
+                .is_some_and(|candidate| candidate == addr)
+    }
+
+    #[inline]
+    #[must_use]
+    fn has_role(&self, role: Role, caller: &SdkAddress) -> bool {
+        match role {
+            Role::Admin => self.is_admin(caller),
+            Role::Guardian => self.is_guardian(caller),
+            Role::Sentinel => self.is_admin(caller),
+            Role::Allocator => self.is_allocator(caller),
+        }
+    }
+
     /// Create a new Soroban auth adapter.
     #[inline]
     #[must_use]
@@ -97,14 +117,14 @@ impl<'a> SorobanAuth<'a> {
     #[inline]
     #[must_use]
     pub fn is_guardian(&self, addr: &SdkAddress) -> bool {
-        self.is_admin(addr) || self.guardian.as_ref().is_some_and(|g| g == addr)
+        Self::is_admin_or(addr, &self.guardian, &self.admin)
     }
 
     /// Check if an address is an allocator.
     #[inline]
     #[must_use]
     pub fn is_allocator(&self, addr: &SdkAddress) -> bool {
-        self.is_admin(addr) || self.allocator.as_ref().is_some_and(|a| a == addr)
+        Self::is_admin_or(addr, &self.allocator, &self.admin)
     }
 
     /// Verify caller signature and authorize an action.
@@ -118,11 +138,7 @@ impl<'a> SorobanAuth<'a> {
     ///
     /// Returns `AuthError::NotAuthorized` if the caller lacks the required role.
     /// Returns `AuthError::VaultPaused` if the vault is paused and action is not Pause.
-    pub fn verify_and_authorize(
-        &self,
-        action: ActionKind,
-        caller: &SdkAddress,
-    ) -> AuthResult<()> {
+    pub fn verify_and_authorize(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
         // Verify the caller has signed the transaction
         caller.require_auth();
 
@@ -148,12 +164,7 @@ impl<'a> SorobanAuth<'a> {
             Some(r) => r,
         };
 
-        let has_role = match role {
-            Role::Admin => self.is_admin(caller),
-            Role::Guardian => self.is_guardian(caller),
-            Role::Sentinel => self.is_admin(caller), // No sentinel in Soroban; admin fallback
-            Role::Allocator => self.is_allocator(caller),
-        };
+        let has_role = self.has_role(role, caller);
 
         if has_role {
             Ok(())
@@ -302,9 +313,7 @@ mod tests {
             .is_ok());
 
         // Admin can too
-        assert!(auth
-            .check_role(ActionKind::BeginAllocating, &admin)
-            .is_ok());
+        assert!(auth.check_role(ActionKind::BeginAllocating, &admin).is_ok());
 
         // User cannot
         let result = auth.check_role(ActionKind::BeginAllocating, &user);

@@ -56,9 +56,7 @@ use templar_vault_kernel::{
     types::EscrowSettlement,
 };
 
-// ============================================================================
 // Arbitrary Strategies
-// ============================================================================
 
 /// Generate a valid allocation plan
 fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<(u32, u128)>> {
@@ -1377,9 +1375,7 @@ proptest! {
     }
 }
 
-// ============================================================================
 // Deterministic Boundary / Edge Case Tests
-// ============================================================================
 
 use templar_vault_kernel::{
     apply_action, preview_deposit_shares, preview_withdraw_assets, FeeSlot, FeesSpec, KernelAction,
@@ -1757,9 +1753,7 @@ fn zero_cooldown_passes_when_now_gte_requested() {
     );
 }
 
-// ============================================================================
 // Overflow / Saturation Tests
-// ============================================================================
 
 /// Overflow 1: Deposit when total_assets near u128::MAX saturates instead of panicking.
 #[test]
@@ -2814,9 +2808,7 @@ fn allocation_full_completion() {
     assert!(matches!(result.new_state, OpState::Idle));
 }
 
-// =============================================================================
 // Proptest Regression Edge Cases (deterministic)
-// =============================================================================
 // These tests encode specific edge cases discovered by proptest regressions.
 // See proptest-regressions/transitions.txt and property_tests.proptest-regressions.
 
@@ -2895,9 +2887,7 @@ fn regression_invariant_check_minimal_delta() {
     );
 }
 
-// =============================================================================
 // Cross-Executor Parity Tests
-// =============================================================================
 use core::mem;
 // Both NEAR and Soroban executors call the same kernel `apply_action`. These
 // tests verify kernel determinism and that the state-preparation patterns both

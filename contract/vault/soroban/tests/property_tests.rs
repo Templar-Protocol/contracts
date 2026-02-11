@@ -45,9 +45,7 @@ use templar_vault_kernel::{
     Address,
 };
 
-// ============================================================================
 // Test Infrastructure
-// ============================================================================
 
 /// Mock market adapter for property tests.
 #[derive(Clone, Debug, Default)]
@@ -158,9 +156,7 @@ fn allocator_addr() -> Address {
     [3u8; 32]
 }
 
-// ============================================================================
 // Arbitrary Strategies
-// ============================================================================
 
 /// Generate a valid deposit amount (non-zero, reasonable bounds).
 fn arb_deposit_amount() -> impl Strategy<Value = u128> {
@@ -177,9 +173,7 @@ fn arb_refresh_plan(max_len: usize) -> impl Strategy<Value = Vec<u32>> {
     proptest::collection::vec(0u32..100u32, 1..=max_len)
 }
 
-// ============================================================================
 // Accounting Invariant Tests
-// ============================================================================
 
 proptest! {
     /// Property 1: Total assets accounting after deposit
@@ -292,9 +286,7 @@ proptest! {
     }
 }
 
-// ============================================================================
 // State Machine Invariant Tests
-// ============================================================================
 
 proptest! {
     /// Property 6: Allocation flow returns to Idle
@@ -412,9 +404,7 @@ proptest! {
     }
 }
 
-// ============================================================================
 // Kernel Parity Tests
-// ============================================================================
 
 proptest! {
     /// Property 10: Soroban allocation transition matches kernel
@@ -554,9 +544,7 @@ proptest! {
     }
 }
 
-// ============================================================================
 // Effect Invariant Tests
-// ============================================================================
 
 proptest! {
     /// Property 16: Deposit generates MintShares effect
@@ -642,9 +630,7 @@ proptest! {
     }
 }
 
-// ============================================================================
 // External Assets Tracking Tests
-// ============================================================================
 
 proptest! {
     /// Property 19: Sync external assets updates state correctly
@@ -717,9 +703,7 @@ proptest! {
     }
 }
 
-// ============================================================================
 // Slippage Protection Tests
-// ============================================================================
 
 proptest! {
     /// Property 21: Deposit respects min_shares_out
@@ -764,9 +748,7 @@ proptest! {
     }
 }
 
-// ============================================================================
 // Busy State Rejection Tests
-// ============================================================================
 
 proptest! {
     /// Property 23: Cannot start allocation while allocating

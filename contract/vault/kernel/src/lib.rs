@@ -9,11 +9,10 @@ pub mod address_book;
 pub mod effects;
 pub mod error;
 pub mod fee;
-#[cfg(kani)]
-pub mod kani;
 pub mod math;
 pub mod restrictions;
 pub mod state;
+
 #[doc(hidden)]
 pub mod test_utils;
 pub mod transitions;
